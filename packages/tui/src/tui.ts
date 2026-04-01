@@ -8,6 +8,7 @@ import type {
   OperatorAttentionReport,
   OperatorSummaryReport,
   PermissionCacheRecord,
+  PromptConsoleReport,
   RuntimeChain,
   RuntimeChainEvent,
   RuntimeProgressEvent,
@@ -371,6 +372,11 @@ while (true) {
       continue;
     }
 
+    if (command === "prompt-console") {
+      await handlePromptConsoleCommand(args);
+      continue;
+    }
+
     if (command === "runs") {
       if (!currentThreadId) {
         console.log("no active thread; run `bootstrap` or `use <threadId>` first");
@@ -596,6 +602,7 @@ function printHelp(): void {
   console.log("  runtime-chain-progress <chainId> [limit] show recent runtime progress for one chain");
   console.log("  operator-summary     show current thread operator summary");
   console.log("  operator-attention [limit]           show cross-surface attention items for current thread");
+  console.log("  prompt-console [limit]               show recent prompt boundary diagnostics for current thread");
   console.log("  runs                 show current thread role runs");
   console.log("  session-memory       show current thread session memory");
   console.log("  inspect              show messages, flows, and runs together");
@@ -978,6 +985,89 @@ function printRuntimeProgress(events: RuntimeProgressEvent[]): void {
     }
     console.log(`- ${parts.join("  ")}`);
     console.log(`  ${event.summary}`);
+  }
+}
+
+function printPromptConsole(report: PromptConsoleReport): void {
+  console.log("Prompt Console");
+  console.log(`  total boundaries: ${report.totalBoundaries}`);
+  console.log(`  compactions: ${report.compactionCount}`);
+  console.log(`  reductions: ${report.reductionCount}`);
+  if (Object.keys(report.boundaryKindCounts).length > 0) {
+    console.log(
+      `  boundary kinds: ${Object.entries(report.boundaryKindCounts)
+        .map(([kind, count]) => `${kind}=${count}`)
+        .join(", ")}`
+    );
+  }
+  if (Object.keys(report.reductionLevelCounts).length > 0) {
+    console.log(
+      `  reduction levels: ${Object.entries(report.reductionLevelCounts)
+        .map(([level, count]) => `${level}=${count}`)
+        .join(", ")}`
+    );
+  }
+  if (Object.keys(report.modelCounts).length > 0) {
+    console.log(
+      `  models: ${Object.entries(report.modelCounts)
+        .map(([model, count]) => `${model}=${count}`)
+        .join(", ")}`
+    );
+  }
+  if (Object.keys(report.modelChainCounts).length > 0) {
+    console.log(
+      `  model chains: ${Object.entries(report.modelChainCounts)
+        .map(([chain, count]) => `${chain}=${count}`)
+        .join(", ")}`
+    );
+  }
+  if (Object.keys(report.compactedSegmentCounts).length > 0) {
+    console.log(
+      `  compacted segments: ${Object.entries(report.compactedSegmentCounts)
+        .map(([segment, count]) => `${segment}=${count}`)
+        .join(", ")}`
+    );
+  }
+  console.log(`  unique fingerprints: ${report.uniqueAssemblyFingerprintCount}`);
+  if (report.latestBoundaries.length > 0) {
+    console.log("  latest boundaries:");
+    for (const entry of report.latestBoundaries) {
+      const parts = [
+        new Date(entry.recordedAt).toISOString(),
+        entry.boundaryKind,
+      ];
+      if (entry.roleId) {
+        parts.push(`role=${entry.roleId}`);
+      }
+      if (entry.modelId) {
+        parts.push(`model=${entry.modelId}`);
+      }
+      if (entry.modelChainId) {
+        parts.push(`chain=${entry.modelChainId}`);
+      }
+      if (entry.reductionLevel) {
+        parts.push(`reduction=${entry.reductionLevel}`);
+      }
+      console.log(`    - ${parts.join("  ")}`);
+      console.log(`      ${entry.summary}`);
+      if (entry.assemblyFingerprint) {
+        console.log(`      fingerprint: ${entry.assemblyFingerprint}`);
+      }
+      if (entry.compactedSegments?.length) {
+        console.log(`      compacted: ${entry.compactedSegments.join(", ")}`);
+      }
+      if (entry.omittedSections?.length) {
+        console.log(`      omitted: ${entry.omittedSections.join(", ")}`);
+      }
+      if (entry.sectionOrder?.length) {
+        console.log(`      sections: ${entry.sectionOrder.join(" -> ")}`);
+      }
+      if (entry.tokenEstimate) {
+        console.log(
+          `      tokens: input=${entry.tokenEstimate.inputTokens} projected=${entry.tokenEstimate.totalProjectedTokens} reserved=${entry.tokenEstimate.outputTokensReserved}`
+        );
+      }
+    }
   }
 }
 
@@ -1531,6 +1621,21 @@ async function handleRecoverySummaryCommand(raw: string): Promise<void> {
     params.set("limit", String(limit));
   }
   printRecoveryConsole((await getJson(`/recovery-summary?${params.toString()}`)) as RecoveryConsoleReport);
+}
+
+async function handlePromptConsoleCommand(raw: string): Promise<void> {
+  if (!currentThreadId) {
+    console.log("no active thread; run `bootstrap` or `use <threadId>` first");
+    return;
+  }
+  const params = new URLSearchParams({
+    threadId: currentThreadId,
+  });
+  const limit = Number(raw.trim() || "20");
+  if (Number.isFinite(limit) && limit > 0) {
+    params.set("limit", String(limit));
+  }
+  printPromptConsole((await getJson(`/prompt-console?${params.toString()}`)) as PromptConsoleReport);
 }
 
 async function handleOperatorAttentionCommand(raw: string): Promise<void> {

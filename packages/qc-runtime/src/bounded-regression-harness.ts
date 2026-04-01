@@ -5,6 +5,7 @@ import type {
   ReplayRecord,
   RoleRunState,
   RuntimeChain,
+  RuntimeProgressEvent,
   RuntimeChainStatus,
   TeamEvent,
   WorkerSessionState,
@@ -32,6 +33,7 @@ import {
   buildRuntimeSummaryReport,
   decorateRuntimeChainStatus,
 } from "./runtime-chain-inspection";
+import { buildPromptConsoleReport } from "./prompt-inspection";
 
 export interface BoundedRegressionCaseDescriptor {
   caseId: string;
@@ -887,6 +889,82 @@ const BUILT_IN_CASES: RegressionCase[] = [
         status.activeSubjectId === "browser-query" &&
         status.lastHeartbeatAt === 25 &&
         status.currentWaitingPoint === "Waiting for browser snapshot before merge.";
+      return buildResult(this, passed, details);
+    },
+  },
+  {
+    caseId: "runtime-prompt-console-summarizes-boundaries",
+    title: "Prompt console summarizes boundary diagnostics by model and reduction",
+    area: "runtime",
+    summary:
+      "Prompt compaction and request-envelope reduction boundaries should aggregate into one prompt console view with stable model, chain, and fingerprint counts.",
+    run() {
+      const progressEvents: RuntimeProgressEvent[] = [
+        {
+          progressId: "progress:prompt-assembly:task-1",
+          threadId: "thread-1",
+          chainId: "flow:flow-prompt",
+          spanId: "role:role-lead",
+          subjectKind: "role_run",
+          subjectId: "role:role-lead",
+          phase: "degraded",
+          progressKind: "boundary",
+          summary: "Prompt assembly entered compact boundary with 2 compacted segment(s).",
+          recordedAt: 10,
+          flowId: "flow-prompt",
+          taskId: "task-1",
+          roleId: "role-lead",
+          metadata: {
+            boundaryKind: "prompt_compaction",
+            modelId: "gpt-5",
+            modelChainId: "reasoning_primary",
+            assemblyFingerprint: "fp-prompt",
+            compactedSegments: ["recent-turns", "worker-evidence"],
+          },
+        },
+        {
+          progressId: "progress:prompt-reduction:task-1",
+          threadId: "thread-1",
+          chainId: "flow:flow-prompt",
+          spanId: "role:role-lead",
+          subjectKind: "role_run",
+          subjectId: "role:role-lead",
+          phase: "degraded",
+          progressKind: "boundary",
+          summary: "Prompt request envelope reduced to minimal.",
+          recordedAt: 20,
+          flowId: "flow-prompt",
+          taskId: "task-1",
+          roleId: "role-lead",
+          metadata: {
+            boundaryKind: "request_envelope_reduction",
+            modelId: "gpt-5",
+            modelChainId: "reasoning_primary",
+            assemblyFingerprint: "fp-prompt",
+            compactedSegments: ["recent-turns"],
+            reductionLevel: "minimal",
+            omittedSections: ["worker-evidence"],
+          },
+        },
+      ];
+      const report = buildPromptConsoleReport(progressEvents);
+      const details = [
+        `total=${report.totalBoundaries}`,
+        `compactions=${report.compactionCount}`,
+        `reductions=${report.reductionCount}`,
+        `model=${report.modelCounts["gpt-5"] ?? 0}`,
+        `chain=${report.modelChainCounts.reasoning_primary ?? 0}`,
+        `fp=${report.uniqueAssemblyFingerprintCount}`,
+      ];
+      const passed =
+        report.totalBoundaries === 2 &&
+        report.compactionCount === 1 &&
+        report.reductionCount === 1 &&
+        report.modelCounts["gpt-5"] === 2 &&
+        report.modelChainCounts.reasoning_primary === 2 &&
+        report.uniqueAssemblyFingerprintCount === 1 &&
+        report.reductionLevelCounts.minimal === 1 &&
+        report.compactedSegmentCounts["recent-turns"] === 2;
       return buildResult(this, passed, details);
     },
   },

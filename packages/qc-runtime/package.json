@@ -16,6 +16,7 @@
     "./file-replay-recorder": "./src/file-replay-recorder.ts",
     "./operator-inspection": "./src/operator-inspection.ts",
     "./permission-governance-policy": "./src/permission-governance-policy.ts",
+    "./prompt-inspection": "./src/prompt-inspection.ts",
     "./prompt-admission-policy": "./src/prompt-admission-policy.ts",
     "./replay-inspection": "./src/replay-inspection.ts",
     "./runtime-chain-inspection": "./src/runtime-chain-inspection.ts",

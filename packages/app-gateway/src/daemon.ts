@@ -62,6 +62,7 @@ import {
   buildOperatorSummaryReport,
   buildRecoveryConsoleReport,
 } from "@turnkeyai/qc-runtime/operator-inspection";
+import { buildPromptConsoleReport } from "@turnkeyai/qc-runtime/prompt-inspection";
 import {
   buildReplayConsoleReport,
   buildReplayIncidentBundle,
@@ -762,6 +763,19 @@ const server = http.createServer(async (req, res) => {
       }
       const synced = await loadRecoveryRuntime(threadId);
       return sendJson(res, 200, buildRecoveryConsoleReport(synced.runs, limit));
+    }
+
+    if (req.method === "GET" && url.pathname === "/prompt-console") {
+      const threadId = url.searchParams.get("threadId");
+      if (!threadId) {
+        return sendJson(res, 400, { error: "threadId is required" });
+      }
+      const limit = parsePositiveLimit(url.searchParams.get("limit"));
+      if (limit == null) {
+        return sendJson(res, 400, { error: "limit must be a positive integer" });
+      }
+      const progressEvents = await runtimeProgressStore.listByThread(threadId, Math.max(limit * 20, 200));
+      return sendJson(res, 200, buildPromptConsoleReport(progressEvents, limit));
     }
 
     if (req.method === "GET" && url.pathname === "/operator-summary") {

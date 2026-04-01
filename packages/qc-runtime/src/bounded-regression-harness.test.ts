@@ -16,6 +16,7 @@ test("bounded regression harness lists built-in cases", () => {
   assert.ok(cases.some((item) => item.caseId === "session-follow-up-reuses-existing-chain"));
   assert.ok(cases.some((item) => item.caseId === "session-scheduled-reentry-preserves-existing-continuity"));
   assert.ok(cases.some((item) => item.caseId === "runtime-chain-query-answers-root-active-and-waiting-point"));
+  assert.ok(cases.some((item) => item.caseId === "runtime-prompt-console-summarizes-boundaries"));
   assert.ok(cases.some((item) => item.caseId === "recovery-retry-escalation"));
   assert.ok(cases.some((item) => item.caseId === "recovery-browser-detached-target"));
   assert.ok(cases.some((item) => item.caseId === "browser-recovery-cold-reopen-outcome"));
@@ -114,12 +115,13 @@ test("bounded regression harness can run runtime validation cases", () => {
     "session-follow-up-reuses-existing-chain",
     "session-scheduled-reentry-preserves-existing-continuity",
     "runtime-chain-query-answers-root-active-and-waiting-point",
+    "runtime-prompt-console-summarizes-boundaries",
     "context-continuity-keeps-decisions-and-constraints-under-budget",
     "context-continuity-keeps-journal-notes-under-budget",
     "context-evidence-heavy-keeps-pending-work",
     "context-reentry-preserves-active-tasks-and-open-questions",
   ]);
-  assert.equal(result.totalCases, 14);
+  assert.equal(result.totalCases, 15);
   assert.equal(result.failedCases, 0);
 });
 

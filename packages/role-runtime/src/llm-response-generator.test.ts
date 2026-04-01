@@ -105,12 +105,15 @@ test("llm role response generator retries with a smaller request envelope after 
   );
   assert.equal(progressEvents.length, 1);
   assert.match(progressEvents[0]?.summary ?? "", /reduced to reference-only/i);
+  assert.equal(progressEvents[0]?.metadata?.["boundaryKind"], "request_envelope_reduction");
+  assert.equal(progressEvents[0]?.metadata?.["modelId"], "claude-test");
   assert.deepEqual(progressEvents[0]?.metadata?.["omittedSections"], [
     "recent-turns",
     "role-scratchpad",
     "retrieved-memory",
     "worker-evidence",
   ]);
+  assert.equal(progressEvents[0]?.metadata?.["assemblyFingerprint"], "fp");
 });
 
 test("llm role response generator forwards model chain and model ref routing", async () => {
@@ -145,7 +148,7 @@ test("llm role response generator forwards model chain and model ref routing", a
 });
 
 test("llm role response generator emits a boundary event when prompt assembly is already compacted", async () => {
-  const summaries: string[] = [];
+  const progressEvents: Array<{ summary: string; metadata?: Record<string, unknown> }> = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async () => ({
     text: "ok",
@@ -159,7 +162,10 @@ test("llm role response generator emits a boundary event when prompt assembly is
     gateway,
     runtimeProgressRecorder: {
       async record(event) {
-        summaries.push(event.summary);
+        progressEvents.push({
+          summary: event.summary,
+          ...(event.metadata ? { metadata: event.metadata } : {}),
+        });
       },
     },
   });
@@ -175,7 +181,12 @@ test("llm role response generator emits a boundary event when prompt assembly is
     },
   });
 
-  assert.ok(summaries.some((summary) => /compact boundary/i.test(summary)));
+  assert.equal(progressEvents.length, 1);
+  assert.match(progressEvents[0]?.summary ?? "", /compact boundary/i);
+  assert.equal(progressEvents[0]?.metadata?.["boundaryKind"], "prompt_compaction");
+  assert.equal(progressEvents[0]?.metadata?.["modelId"], "claude-test");
+  assert.equal(progressEvents[0]?.metadata?.["assemblyFingerprint"], "fp");
+  assert.deepEqual(progressEvents[0]?.metadata?.["compactedSegments"], ["recent-turns", "worker-evidence"]);
 });
 
 test("llm role response generator ignores boundary recorder failures", async () => {

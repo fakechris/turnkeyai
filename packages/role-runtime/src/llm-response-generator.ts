@@ -32,7 +32,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         }
       | undefined;
 
-    await this.recordAssemblyBoundarySafely(input.activation, input.packet);
+    await this.recordAssemblyBoundarySafely(input.activation, input.packet, selection);
 
     try {
       result = await this.gateway.generate(
@@ -68,7 +68,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             level,
             omittedSections: reduced.omittedSections,
           };
-          await this.recordReductionBoundarySafely(input.activation, input.packet, reduction);
+          await this.recordReductionBoundarySafely(input.activation, input.packet, selection, reduction);
           break;
         } catch (retryError) {
           if (!(retryError instanceof RequestEnvelopeOverflowError)) {
@@ -102,7 +102,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
   private async recordAssemblyBoundary(
     activation: RoleActivationInput,
-    packet: RolePromptPacket
+    packet: RolePromptPacket,
+    selection: {
+      modelId?: string;
+      modelChainId?: string;
+    }
   ): Promise<void> {
     if (!this.runtimeProgressRecorder) {
       return;
@@ -131,6 +135,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       taskId: activation.handoff.taskId,
       roleId: activation.runState.roleId,
       metadata: {
+        boundaryKind: "prompt_compaction",
+        ...(selection.modelId ? { modelId: selection.modelId } : {}),
+        ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+        ...(packet.promptAssembly?.assemblyFingerprint
+          ? { assemblyFingerprint: packet.promptAssembly.assemblyFingerprint }
+          : {}),
+        ...(packet.promptAssembly?.sectionOrder ? { sectionOrder: packet.promptAssembly.sectionOrder } : {}),
+        ...(packet.promptAssembly?.tokenEstimate ? { tokenEstimate: packet.promptAssembly.tokenEstimate } : {}),
+        ...(packet.promptAssembly?.envelopeHint ? { envelopeHint: packet.promptAssembly.envelopeHint } : {}),
         compactedSegments,
         usedArtifacts: packet.promptAssembly?.usedArtifacts ?? [],
       },
@@ -139,10 +152,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
   private async recordAssemblyBoundarySafely(
     activation: RoleActivationInput,
-    packet: RolePromptPacket
+    packet: RolePromptPacket,
+    selection: {
+      modelId?: string;
+      modelChainId?: string;
+    }
   ): Promise<void> {
     try {
-      await this.recordAssemblyBoundary(activation, packet);
+      await this.recordAssemblyBoundary(activation, packet, selection);
     } catch (error) {
       console.error("runtime assembly boundary recording failed", {
         threadId: activation.thread.threadId,
@@ -156,6 +173,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private async recordReductionBoundary(
     activation: RoleActivationInput,
     packet: RolePromptPacket,
+    selection: {
+      modelId?: string;
+      modelChainId?: string;
+    },
     reduction: {
       level: RequestEnvelopeReductionLevel;
       omittedSections: string[];
@@ -184,9 +205,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       taskId: activation.handoff.taskId,
       roleId: activation.runState.roleId,
       metadata: {
+        boundaryKind: "request_envelope_reduction",
+        ...(selection.modelId ? { modelId: selection.modelId } : {}),
+        ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+        ...(packet.promptAssembly?.assemblyFingerprint
+          ? { assemblyFingerprint: packet.promptAssembly.assemblyFingerprint }
+          : {}),
+        ...(packet.promptAssembly?.sectionOrder ? { sectionOrder: packet.promptAssembly.sectionOrder } : {}),
+        ...(packet.promptAssembly?.tokenEstimate ? { tokenEstimate: packet.promptAssembly.tokenEstimate } : {}),
+        ...(packet.promptAssembly?.envelopeHint ? { envelopeHint: packet.promptAssembly.envelopeHint } : {}),
         reductionLevel: reduction.level,
         omittedSections: reduction.omittedSections,
         compactedSegments: packet.promptAssembly?.compactedSegments ?? [],
+        usedArtifacts: packet.promptAssembly?.usedArtifacts ?? [],
       },
     });
   }
@@ -194,13 +225,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private async recordReductionBoundarySafely(
     activation: RoleActivationInput,
     packet: RolePromptPacket,
+    selection: {
+      modelId?: string;
+      modelChainId?: string;
+    },
     reduction: {
       level: RequestEnvelopeReductionLevel;
       omittedSections: string[];
     }
   ): Promise<void> {
     try {
-      await this.recordReductionBoundary(activation, packet, reduction);
+      await this.recordReductionBoundary(activation, packet, selection, reduction);
     } catch (error) {
       console.error("runtime reduction boundary recording failed", {
         threadId: activation.thread.threadId,
