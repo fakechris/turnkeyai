@@ -1,4 +1,5 @@
 export type ModelProtocol = "openai-compatible" | "anthropic-compatible";
+export type ModelApiType = "openai" | "anthropic";
 
 export interface ModelConfigEntry {
   id: string;
@@ -6,7 +7,8 @@ export interface ModelConfigEntry {
   providerId: string;
   protocol: ModelProtocol;
   model: string;
-  baseURL: string;
+  baseURL?: string;
+  baseURLEnv?: string;
   apiKeyEnv: string;
   headers?: Record<string, string>;
   query?: Record<string, string>;
@@ -16,13 +18,40 @@ export interface ModelConfigEntry {
   enabled?: boolean;
 }
 
-export interface ModelCatalog {
-  defaultModelId?: string;
-  models: ModelConfigEntry[];
+export interface ModelChainEntry {
+  id: string;
+  primary: string;
+  fallbacks?: string[];
+  aliases?: string[];
+  enabled?: boolean;
 }
 
-export interface ResolvedModelConfig extends ModelConfigEntry {
+export interface NamedModelConfigEntry extends Omit<ModelConfigEntry, "id" | "protocol"> {
+  id?: string;
+  protocol?: ModelProtocol;
+  apiType?: ModelApiType | ModelProtocol;
+}
+
+export interface NamedModelChainEntry extends Omit<ModelChainEntry, "id"> {
+  id?: string;
+}
+
+export interface ModelCatalog {
+  defaultModelId?: string;
+  defaultModelChainId?: string;
+  models: ModelConfigEntry[] | Record<string, NamedModelConfigEntry>;
+  modelChains?: ModelChainEntry[] | Record<string, NamedModelChainEntry>;
+}
+
+export interface ResolvedModelConfig extends Omit<ModelConfigEntry, "baseURL"> {
+  baseURL: string;
   apiKey: string;
+}
+
+export interface ModelSelection {
+  chainId?: string;
+  primaryModelId: string;
+  fallbackModelIds: string[];
 }
 
 export interface LLMMessage {
@@ -82,7 +111,8 @@ export interface RequestEnvelopeDiagnostics {
 }
 
 export interface GenerateTextInput {
-  modelId: string;
+  modelId?: string;
+  modelChainId?: string;
   messages: LLMMessage[];
   temperature?: number;
   maxOutputTokens?: number;
@@ -93,9 +123,11 @@ export interface GenerateTextInput {
 export interface GenerateTextResult {
   text: string;
   modelId: string;
+  modelChainId?: string;
   providerId: string;
   protocol: ModelProtocol;
   adapterName: string;
+  attemptedModelIds?: string[];
   stopReason?: string;
   usage?: {
     inputTokens?: number;

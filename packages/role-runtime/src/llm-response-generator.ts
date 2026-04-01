@@ -5,6 +5,7 @@ import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 import type { GeneratedRoleReply, RoleResponseGenerator } from "./deterministic-response-generator";
 import type { RolePromptPacket } from "./prompt-policy";
 import { reducePromptPacketForRequestEnvelope, type RequestEnvelopeReductionLevel } from "./request-envelope-reducer";
+import { getRoleModelSelection } from "./role-model-selection";
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
@@ -17,8 +18,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
   async generate(input: { activation: RoleActivationInput; packet: RolePromptPacket }): Promise<GeneratedRoleReply> {
     const role = input.activation.thread.roles.find((item) => item.roleId === input.activation.runState.roleId);
-    const modelId = role?.model?.name;
-    if (!modelId) {
+    const selection = role ? getRoleModelSelection(role) : {};
+    if (!selection.modelId && !selection.modelChainId) {
       throw new Error(`no model configured for role ${input.activation.runState.roleId}`);
     }
 
@@ -34,7 +35,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     await this.recordAssemblyBoundarySafely(input.activation, input.packet);
 
     try {
-      result = await this.gateway.generate(buildGatewayInput({ activation: input.activation, packet: input.packet, modelId }));
+      result = await this.gateway.generate(
+        buildGatewayInput({
+          activation: input.activation,
+          packet: input.packet,
+          ...(selection.modelId ? { modelId: selection.modelId } : {}),
+          ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+        })
+      );
     } catch (error) {
       if (!(error instanceof RequestEnvelopeOverflowError)) {
         throw error;
@@ -48,7 +56,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             buildGatewayInput({
               activation: input.activation,
               packet: input.packet,
-              modelId,
+              ...(selection.modelId ? { modelId: selection.modelId } : {}),
+              ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
               overrideSystemPrompt: reduced.reducedSystemPrompt,
               overrideTaskPrompt: reduced.reducedTaskPrompt,
               artifactIds: reduced.artifactIds,
@@ -81,6 +90,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         adapterName: result.adapterName,
         providerId: result.providerId,
         modelId: result.modelId,
+        ...(result.modelChainId ? { modelChainId: result.modelChainId } : {}),
+        ...(result.attemptedModelIds?.length ? { attemptedModelIds: result.attemptedModelIds } : {}),
         protocol: result.protocol,
         stopReason: result.stopReason,
         ...(reduction ? { requestEnvelopeReduction: reduction } : {}),
@@ -205,7 +216,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 function buildGatewayInput(input: {
   activation: RoleActivationInput;
   packet: RolePromptPacket;
-  modelId: string;
+  modelId?: string;
+  modelChainId?: string;
   overrideSystemPrompt?: string;
   overrideTaskPrompt?: string;
   artifactIds?: string[];
@@ -221,7 +233,8 @@ function buildGatewayInput(input: {
   };
 }) {
   return {
-    modelId: input.modelId,
+    ...(input.modelId ? { modelId: input.modelId } : {}),
+    ...(input.modelChainId ? { modelChainId: input.modelChainId } : {}),
     messages: [
       {
         role: "system" as const,

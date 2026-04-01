@@ -48,7 +48,7 @@ export class AnthropicCompatibleClient implements ProtocolClient {
 
     return {
       text: extractAnthropicContent(raw?.content),
-      modelId: input.modelId,
+      modelId: input.modelId ?? model.id,
       providerId: model.providerId,
       protocol: model.protocol,
       adapterName: "anthropic-compatible",

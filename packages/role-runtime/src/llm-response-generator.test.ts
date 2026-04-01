@@ -113,6 +113,37 @@ test("llm role response generator retries with a smaller request envelope after 
   ]);
 });
 
+test("llm role response generator forwards model chain and model ref routing", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    return {
+      text: "ok",
+      modelId: "gpt-5",
+      modelChainId: "reasoning_primary",
+      attemptedModelIds: ["gpt-5"],
+      providerId: "openai",
+      protocol: "openai-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const generator = new LLMRoleResponseGenerator({ gateway });
+
+  await generator.generate({
+    activation: buildActivation({
+      modelRef: "gpt-5",
+      modelChain: "reasoning_primary",
+    }, { omitLegacyModel: true }),
+    packet: buildPacket(),
+  });
+
+  assert.equal(gatewayInputs.length, 1);
+  assert.equal(gatewayInputs[0]?.modelId, "gpt-5");
+  assert.equal(gatewayInputs[0]?.modelChainId, "reasoning_primary");
+});
+
 test("llm role response generator emits a boundary event when prompt assembly is already compacted", async () => {
   const summaries: string[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -180,7 +211,10 @@ test("llm role response generator ignores boundary recorder failures", async () 
   assert.equal(result.content, "ok");
 });
 
-function buildActivation(): RoleActivationInput {
+function buildActivation(
+  roleOverrides?: Partial<RoleActivationInput["thread"]["roles"][number]>,
+  options?: { omitLegacyModel?: boolean }
+): RoleActivationInput {
   return {
     thread: {
       threadId: "thread-1",
@@ -193,10 +227,15 @@ function buildActivation(): RoleActivationInput {
           name: "Lead",
           seat: "lead",
           runtime: "local",
-          model: {
-            provider: "anthropic",
-            name: "claude-test",
-          },
+          ...(options?.omitLegacyModel
+            ? {}
+            : {
+                model: {
+                  provider: "anthropic",
+                  name: "claude-test",
+                },
+              }),
+          ...roleOverrides,
         },
       ],
       participantLinks: [],

@@ -57,6 +57,8 @@ export interface RoleSlot {
   avatar?: string;
   runtime: "local" | "remote";
   model?: ModelRef;
+  modelRef?: string;
+  modelChain?: string;
   status?: "online" | "offline" | "busy";
   capabilities?: string[];
 }

@@ -16,18 +16,45 @@ export class LLMGateway {
   }
 
   async generate(input: GenerateTextInput): Promise<GenerateTextResult> {
-    const model = await this.registry.resolve(input.modelId);
-    const requestEnvelope = assertRequestEnvelopeWithinLimits(input, undefined, model);
-    const client = this.clients.find((item) => item.supports(model.protocol));
+    const selection = await this.registry.resolveSelection({
+      ...(input.modelId ? { modelId: input.modelId } : {}),
+      ...(input.modelChainId ? { modelChainId: input.modelChainId } : {}),
+    });
+    const attemptedModelIds = [selection.primaryModelId, ...selection.fallbackModelIds];
+    let lastError: unknown;
 
-    if (!client) {
-      throw new Error(`no protocol client for ${model.protocol}`);
+    for (const modelId of attemptedModelIds) {
+      try {
+        const model = await this.registry.resolve(modelId);
+        const requestEnvelope = assertRequestEnvelopeWithinLimits(
+          {
+            ...input,
+            modelId,
+          },
+          undefined,
+          model
+        );
+        const client = this.clients.find((item) => item.supports(model.protocol));
+
+        if (!client) {
+          throw new Error(`no protocol client for ${model.protocol}`);
+        }
+
+        const result = await client.generate(model, {
+          ...input,
+          modelId,
+        });
+        return {
+          ...result,
+          requestEnvelope,
+          ...(selection.chainId ? { modelChainId: selection.chainId } : {}),
+          ...(attemptedModelIds.length > 1 ? { attemptedModelIds } : {}),
+        };
+      } catch (error) {
+        lastError = error;
+      }
     }
 
-    const result = await client.generate(model, input);
-    return {
-      ...result,
-      requestEnvelope,
-    };
+    throw lastError ?? new Error("model generation failed without an error");
   }
 }
