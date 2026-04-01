@@ -154,9 +154,15 @@ npx @turnkeyai/cli tui
 当前 TUI 也可以直接运行：
 
 - bounded regression harness
+- long-chain stability soak harness
 - scenario parity acceptance harness
 - failure injection harness
 - unified validation catalog: `validation-cases` / `validation-run [suite[:item] ...]`
+
+对应命令包括：
+
+- `soak-cases`
+- `soak-run [scenarioId ...]`
 
 `replay-console` 会同时显示仍需处理的 `latest bundles`，以及最近已收敛的 `latest resolved bundles`，便于把当前告警和刚恢复的 case 分开看。
 

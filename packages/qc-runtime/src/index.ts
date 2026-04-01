@@ -9,6 +9,15 @@ export type {
   FailureInjectionSuiteResult,
 } from "./failure-injection-suite";
 export {
+  listSoakScenarios,
+  runSoakSuite,
+} from "./soak-suite";
+export type {
+  SoakScenarioDescriptor,
+  SoakScenarioResult,
+  SoakSuiteResult,
+} from "./soak-suite";
+export {
   listScenarioParityAcceptanceScenarios,
   runScenarioParityAcceptanceSuite,
 } from "./scenario-parity-acceptance";

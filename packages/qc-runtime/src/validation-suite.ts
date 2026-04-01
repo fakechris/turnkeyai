@@ -15,6 +15,14 @@ import {
   runFailureInjectionSuite,
 } from "./failure-injection-suite";
 import type {
+  SoakScenarioDescriptor,
+  SoakScenarioResult,
+} from "./soak-suite";
+import {
+  listSoakScenarios,
+  runSoakSuite,
+} from "./soak-suite";
+import type {
   ScenarioParityAcceptanceScenarioDescriptor,
   ScenarioParityAcceptanceScenarioResult,
 } from "./scenario-parity-acceptance";
@@ -23,7 +31,7 @@ import {
   runScenarioParityAcceptanceSuite,
 } from "./scenario-parity-acceptance";
 
-export type ValidationSuiteId = "regression" | "failure" | "acceptance";
+export type ValidationSuiteId = "regression" | "soak" | "failure" | "acceptance";
 
 export interface ValidationCatalogItemDescriptor {
   suiteId: ValidationSuiteId;
@@ -98,6 +106,10 @@ const SUITE_METADATA: Record<ValidationSuiteId, { title: string; summary: string
     title: "Bounded Regression",
     summary: "细粒度回归样本，覆盖 browser / recovery / context / parallel / governance / runtime 主线。",
   },
+  soak: {
+    title: "Stability Soak",
+    summary: "按长链稳定性场景编排的验证套件，聚焦 browser / recovery / context 的跨面收敛。",
+  },
   failure: {
     title: "Failure Injection",
     summary: "按失败场景编排的验证套件，检查 retry / fallback / approval / recovery 语义。",
@@ -110,11 +122,13 @@ const SUITE_METADATA: Record<ValidationSuiteId, { title: string; summary: string
 
 export function listValidationSuites(): ValidationSuiteDescriptor[] {
   const regressionItems = listBoundedRegressionCases().map(mapRegressionDescriptor);
+  const soakItems = listSoakScenarios().map(mapSoakDescriptor);
   const failureItems = listFailureInjectionScenarios().map(mapFailureDescriptor);
   const acceptanceItems = listScenarioParityAcceptanceScenarios().map(mapAcceptanceDescriptor);
 
   return [
     buildSuiteDescriptor("regression", regressionItems),
+    buildSuiteDescriptor("soak", soakItems),
     buildSuiteDescriptor("failure", failureItems),
     buildSuiteDescriptor("acceptance", acceptanceItems),
   ];
@@ -139,16 +153,18 @@ export function runValidationSuites(selectors?: string[]): ValidationRunResult {
 
 function buildValidationSuiteRunResults(selectors?: ValidationSelector[]): ValidationRunSuiteResult[] {
   const suiteIds = selectors?.length
-    ? (["regression", "failure", "acceptance"] as ValidationSuiteId[]).filter((suiteId) =>
+    ? (["regression", "soak", "failure", "acceptance"] as ValidationSuiteId[]).filter((suiteId) =>
         selectors.some((selector) => selector.suiteId === suiteId)
       )
-    : (["regression", "failure", "acceptance"] as ValidationSuiteId[]);
+    : (["regression", "soak", "failure", "acceptance"] as ValidationSuiteId[]);
 
   return suiteIds.map((suiteId) => {
     const suiteSelectors = selectors?.filter((selector) => selector.suiteId === suiteId) ?? [];
     switch (suiteId) {
       case "regression":
         return buildRegressionSuiteRunResult(suiteSelectors);
+      case "soak":
+        return buildSoakSuiteRunResult(suiteSelectors);
       case "failure":
         return buildFailureSuiteRunResult(suiteSelectors);
       case "acceptance":
@@ -186,6 +202,16 @@ function buildFailureSuiteRunResult(selectors: ValidationSelector[]): Validation
   });
   const result = runFailureInjectionSuite(selectedScenarioIds);
   return finalizeRunSuite("failure", result.scenarios.map(mapFailureRunItem));
+}
+
+function buildSoakSuiteRunResult(selectors: ValidationSelector[]): ValidationRunSuiteResult {
+  const selectedScenarioIds = resolveSelectedItemIds({
+    selectors,
+    validItemIds: listSoakScenarios().map((item) => item.scenarioId),
+    suiteLabel: "soak",
+  });
+  const result = runSoakSuite(selectedScenarioIds);
+  return finalizeRunSuite("soak", result.scenarios.map(mapSoakRunItem));
 }
 
 function buildAcceptanceSuiteRunResult(selectors: ValidationSelector[]): ValidationRunSuiteResult {
@@ -278,7 +304,7 @@ function dedupeSelectors(selectors: ValidationSelector[]): ValidationSelector[] 
 }
 
 function isValidationSuiteId(value: string): value is ValidationSuiteId {
-  return value === "regression" || value === "failure" || value === "acceptance";
+  return value === "regression" || value === "soak" || value === "failure" || value === "acceptance";
 }
 
 function buildSuiteDescriptor(
@@ -308,6 +334,17 @@ function mapRegressionDescriptor(descriptor: BoundedRegressionCaseDescriptor): V
 function mapFailureDescriptor(descriptor: FailureInjectionScenarioDescriptor): ValidationCatalogItemDescriptor {
   return {
     suiteId: "failure",
+    itemId: descriptor.scenarioId,
+    area: descriptor.area,
+    title: descriptor.title,
+    summary: descriptor.summary,
+    caseIds: [...descriptor.caseIds],
+  };
+}
+
+function mapSoakDescriptor(descriptor: SoakScenarioDescriptor): ValidationCatalogItemDescriptor {
+  return {
+    suiteId: "soak",
     itemId: descriptor.scenarioId,
     area: descriptor.area,
     title: descriptor.title,
@@ -347,6 +384,21 @@ function mapRegressionRunItem(result: BoundedRegressionCaseResult): ValidationRu
 function mapFailureRunItem(result: FailureInjectionScenarioResult): ValidationRunItemResult {
   return {
     suiteId: "failure",
+    itemId: result.scenarioId,
+    area: result.area,
+    title: result.title,
+    summary: result.summary,
+    status: result.status,
+    totalCases: result.totalCases,
+    passedCases: result.passedCases,
+    failedCases: result.failedCases,
+    caseResults: result.caseResults,
+  };
+}
+
+function mapSoakRunItem(result: SoakScenarioResult): ValidationRunItemResult {
+  return {
+    suiteId: "soak",
     itemId: result.scenarioId,
     area: result.area,
     title: result.title,

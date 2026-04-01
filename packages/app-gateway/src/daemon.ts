@@ -88,6 +88,10 @@ import {
 import { DefaultPermissionGovernancePolicy } from "@turnkeyai/qc-runtime/permission-governance-policy";
 import { DefaultPromptAdmissionPolicy } from "@turnkeyai/qc-runtime/prompt-admission-policy";
 import {
+  listSoakScenarios,
+  runSoakSuite,
+} from "@turnkeyai/qc-runtime/soak-suite";
+import {
   listScenarioParityAcceptanceScenarios,
   runScenarioParityAcceptanceSuite,
 } from "@turnkeyai/qc-runtime/scenario-parity-acceptance";
@@ -957,6 +961,32 @@ const server = http.createServer(async (req, res) => {
         ? body.scenarioIds.filter((value): value is string => typeof value === "string" && value.length > 0)
         : undefined;
       return sendJson(res, 200, runFailureInjectionSuite(scenarioIds));
+    }
+
+    if (req.method === "GET" && url.pathname === "/soak-cases") {
+      const scenarios = listSoakScenarios();
+      return sendJson(res, 200, {
+        totalScenarios: scenarios.length,
+        scenarios,
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/soak-cases/run") {
+      const body = await readJsonBody<{ scenarioIds?: string[] }>(req);
+      const scenarioIds = Array.isArray(body.scenarioIds)
+        ? body.scenarioIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+        : undefined;
+      if (scenarioIds && scenarioIds.length > 0) {
+        const validScenarioIds = new Set(listSoakScenarios().map((scenario) => scenario.scenarioId));
+        const invalidScenarioIds = scenarioIds.filter((scenarioId) => !validScenarioIds.has(scenarioId));
+        if (invalidScenarioIds.length > 0) {
+          return sendJson(res, 400, {
+            error: "unknown scenario ids",
+            invalidScenarioIds,
+          });
+        }
+      }
+      return sendJson(res, 200, runSoakSuite(scenarioIds));
     }
 
     if (req.method === "GET" && url.pathname === "/acceptance-cases") {

@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     "./failure-injection-suite": "./src/failure-injection-suite.ts",
+    "./soak-suite": "./src/soak-suite.ts",
     "./scenario-parity-acceptance": "./src/scenario-parity-acceptance.ts",
     "./validation-suite": "./src/validation-suite.ts",
     "./api-execution-verifier": "./src/api-execution-verifier.ts",

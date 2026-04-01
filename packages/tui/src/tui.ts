@@ -445,6 +445,16 @@ while (true) {
       continue;
     }
 
+    if (command === "soak-cases") {
+      await handleSoakCasesCommand();
+      continue;
+    }
+
+    if (command === "soak-run") {
+      await handleSoakRunCommand(args);
+      continue;
+    }
+
     if (command === "acceptance-cases") {
       await handleAcceptanceCasesCommand();
       continue;
@@ -628,6 +638,8 @@ function printHelp(): void {
   console.log("  regression-run [caseId ...]           run bounded regression harness");
   console.log("  failure-cases                         list built-in failure injection scenarios");
   console.log("  failure-run [scenarioId ...]          run failure injection harness");
+  console.log("  soak-cases                            list long-chain stability soak scenarios");
+  console.log("  soak-run [scenarioId ...]             run long-chain stability soak suite");
   console.log("  acceptance-cases                      list scenario parity acceptance suites");
   console.log("  acceptance-run [scenarioId ...]       run scenario parity acceptance harness");
   console.log("  validation-cases                      list unified validation suites and items");
@@ -1745,6 +1757,72 @@ async function handleFailureRunCommand(raw: string): Promise<void> {
   );
 }
 
+async function handleSoakCasesCommand(): Promise<void> {
+  printSoakScenarioList(
+    (await getJson("/soak-cases")) as {
+      totalScenarios: number;
+      scenarios: Array<{
+        scenarioId: string;
+        area:
+          | "dispatch"
+          | "parallel"
+          | "browser"
+          | "recovery"
+          | "context"
+          | "governance"
+          | "operator"
+          | "observability"
+          | "runtime";
+        title: string;
+        summary: string;
+        caseIds: string[];
+      }>;
+    }
+  );
+}
+
+async function handleSoakRunCommand(raw: string): Promise<void> {
+  const scenarioIds = raw.split(/\s+/).filter(Boolean);
+  printSoakRunResult(
+    (await postJson("/soak-cases/run", scenarioIds.length > 0 ? { scenarioIds } : {})) as {
+      totalScenarios: number;
+      passedScenarios: number;
+      failedScenarios: number;
+      totalCases: number;
+      passedCases: number;
+      failedCases: number;
+      scenarios: Array<{
+        scenarioId: string;
+        area:
+          | "dispatch"
+          | "parallel"
+          | "browser"
+          | "recovery"
+          | "context"
+          | "governance"
+          | "operator"
+          | "observability"
+          | "runtime";
+        title: string;
+        summary: string;
+        caseIds: string[];
+        status: "passed" | "failed";
+        totalCases: number;
+        passedCases: number;
+        failedCases: number;
+        caseResults: Array<{
+          caseId: string;
+          title: string;
+          area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+          summary: string;
+          status: "passed" | "failed";
+          details: string[];
+        }>;
+      }>;
+    }
+  );
+}
+
 async function handleAcceptanceCasesCommand(): Promise<void> {
   printAcceptanceScenarioList(
     (await getJson("/acceptance-cases")) as {
@@ -1815,12 +1893,12 @@ async function handleValidationCasesCommand(): Promise<void> {
       totalSuites: number;
       totalItems: number;
       suites: Array<{
-        suiteId: "regression" | "failure" | "acceptance";
+        suiteId: "regression" | "soak" | "failure" | "acceptance";
         title: string;
         summary: string;
         totalItems: number;
         items: Array<{
-          suiteId: "regression" | "failure" | "acceptance";
+          suiteId: "regression" | "soak" | "failure" | "acceptance";
           itemId: string;
           area: string;
           title: string;
@@ -1848,7 +1926,7 @@ async function handleValidationRunCommand(raw: string): Promise<void> {
         passedCases: number;
         failedCases: number;
         suites: Array<{
-          suiteId: "regression" | "failure" | "acceptance";
+          suiteId: "regression" | "soak" | "failure" | "acceptance";
           title: string;
           summary: string;
           totalItems: number;
@@ -1858,7 +1936,7 @@ async function handleValidationRunCommand(raw: string): Promise<void> {
           passedCases: number;
           failedCases: number;
           items: Array<{
-            suiteId: "regression" | "failure" | "acceptance";
+            suiteId: "regression" | "soak" | "failure" | "acceptance";
             itemId: string;
             area: string;
             title: string;
@@ -2709,6 +2787,89 @@ function printFailureInjectionRunResult(payload: {
   }
 }
 
+function printSoakScenarioList(payload: {
+  totalScenarios: number;
+  scenarios: Array<{
+    scenarioId: string;
+    area:
+      | "dispatch"
+      | "parallel"
+      | "browser"
+      | "recovery"
+      | "context"
+      | "governance"
+      | "operator"
+      | "observability"
+      | "runtime";
+    title: string;
+    summary: string;
+    caseIds: string[];
+  }>;
+}): void {
+  console.log(`Soak Scenarios: ${payload.totalScenarios}`);
+  for (const scenario of payload.scenarios) {
+    console.log(`- ${scenario.scenarioId}  [${scenario.area}] ${scenario.title}`);
+    console.log(`  ${scenario.summary}`);
+    console.log(`  cases: ${scenario.caseIds.join(", ")}`);
+  }
+}
+
+function printSoakRunResult(payload: {
+  totalScenarios: number;
+  passedScenarios: number;
+  failedScenarios: number;
+  totalCases: number;
+  passedCases: number;
+  failedCases: number;
+  scenarios: Array<{
+    scenarioId: string;
+    area:
+      | "dispatch"
+      | "parallel"
+      | "browser"
+      | "recovery"
+      | "context"
+      | "governance"
+      | "operator"
+      | "observability"
+      | "runtime";
+    title: string;
+    summary: string;
+    caseIds: string[];
+    status: "passed" | "failed";
+    totalCases: number;
+    passedCases: number;
+    failedCases: number;
+    caseResults: Array<{
+      caseId: string;
+      title: string;
+      area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+      summary: string;
+      status: "passed" | "failed";
+      details: string[];
+    }>;
+  }>;
+}): void {
+  console.log(
+    `Soak: ${payload.passedScenarios}/${payload.totalScenarios} scenarios passed, ${payload.passedCases}/${payload.totalCases} cases passed`
+  );
+  for (const scenario of payload.scenarios) {
+    console.log(
+      `- ${scenario.scenarioId}  [${scenario.area}] ${scenario.title}  status=${scenario.status}  cases=${scenario.passedCases}/${scenario.totalCases}`
+    );
+    console.log(`  ${scenario.summary}`);
+    if (scenario.failedCases > 0) {
+      console.log(`  failed cases: ${scenario.failedCases}`);
+    }
+    for (const result of scenario.caseResults) {
+      console.log(`    - ${result.caseId}  status=${result.status}`);
+      for (const detail of result.details) {
+        console.log(`      ${detail}`);
+      }
+    }
+  }
+}
+
 function printAcceptanceScenarioList(payload: {
   totalScenarios: number;
   scenarios: Array<{
@@ -2794,12 +2955,12 @@ function printValidationSuiteList(payload: {
   totalSuites: number;
   totalItems: number;
   suites: Array<{
-    suiteId: "regression" | "failure" | "acceptance";
+    suiteId: "regression" | "soak" | "failure" | "acceptance";
     title: string;
     summary: string;
     totalItems: number;
     items: Array<{
-      suiteId: "regression" | "failure" | "acceptance";
+      suiteId: "regression" | "soak" | "failure" | "acceptance";
       itemId: string;
       area: string;
       title: string;
@@ -2834,7 +2995,7 @@ function printValidationRunResult(payload: {
   passedCases: number;
   failedCases: number;
   suites: Array<{
-    suiteId: "regression" | "failure" | "acceptance";
+    suiteId: "regression" | "soak" | "failure" | "acceptance";
     title: string;
     summary: string;
     totalItems: number;
@@ -2844,7 +3005,7 @@ function printValidationRunResult(payload: {
     passedCases: number;
     failedCases: number;
     items: Array<{
-      suiteId: "regression" | "failure" | "acceptance";
+      suiteId: "regression" | "soak" | "failure" | "acceptance";
       itemId: string;
       area: string;
       title: string;
