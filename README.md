@@ -149,6 +149,11 @@ npx @turnkeyai/cli tui
 - capability discovery 查询接口
 - replay / recovery / regression 查询接口
 
+当前 TUI 也可以直接运行：
+
+- bounded regression harness
+- failure injection harness
+
 模型配置默认会按这个顺序查找：
 
 - `models.local.json`

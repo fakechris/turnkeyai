@@ -49,6 +49,10 @@ import {
 import { BrowserResultVerifier } from "@turnkeyai/qc-runtime/browser-result-verifier";
 import { BrowserStepVerifier } from "@turnkeyai/qc-runtime/browser-step-verifier";
 import { DefaultEvidenceTrustPolicy } from "@turnkeyai/qc-runtime/evidence-trust-policy";
+import {
+  listFailureInjectionScenarios,
+  runFailureInjectionSuite,
+} from "@turnkeyai/qc-runtime/failure-injection-suite";
 import { classifyRuntimeError } from "@turnkeyai/qc-runtime/failure-taxonomy";
 import { FileReplayRecorder } from "@turnkeyai/qc-runtime/file-replay-recorder";
 import {
@@ -914,6 +918,22 @@ const server = http.createServer(async (req, res) => {
         ? body.caseIds.filter((value): value is string => typeof value === "string" && value.length > 0)
         : undefined;
       return sendJson(res, 200, runBoundedRegressionSuite(caseIds));
+    }
+
+    if (req.method === "GET" && url.pathname === "/failure-cases") {
+      const scenarios = listFailureInjectionScenarios();
+      return sendJson(res, 200, {
+        totalScenarios: scenarios.length,
+        scenarios,
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/failure-cases/run") {
+      const body = await readJsonBody<{ scenarioIds?: string[] }>(req);
+      const scenarioIds = Array.isArray(body.scenarioIds)
+        ? body.scenarioIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+        : undefined;
+      return sendJson(res, 200, runFailureInjectionSuite(scenarioIds));
     }
 
     if (req.method === "GET" && url.pathname === "/replay-incidents") {

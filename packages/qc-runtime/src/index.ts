@@ -1,5 +1,14 @@
 export * from "./api-execution-verifier";
 export {
+  listFailureInjectionScenarios,
+  runFailureInjectionSuite,
+} from "./failure-injection-suite";
+export type {
+  FailureInjectionScenarioDescriptor,
+  FailureInjectionScenarioResult,
+  FailureInjectionSuiteResult,
+} from "./failure-injection-suite";
+export {
   listScenarioParityAcceptanceScenarios,
   runScenarioParityAcceptanceSuite,
 } from "./scenario-parity-acceptance";

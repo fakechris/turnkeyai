@@ -424,6 +424,16 @@ while (true) {
       continue;
     }
 
+    if (command === "failure-cases") {
+      await handleFailureCasesCommand();
+      continue;
+    }
+
+    if (command === "failure-run") {
+      await handleFailureRunCommand(args);
+      continue;
+    }
+
     if (command === "replay-incidents") {
       await handleReplayIncidentsCommand(args);
       continue;
@@ -584,6 +594,8 @@ function printHelp(): void {
   console.log("  replay-console [limit]                show replay console snapshot for current thread");
   console.log("  regression-cases                      list built-in bounded regression cases");
   console.log("  regression-run [caseId ...]           run bounded regression harness");
+  console.log("  failure-cases                         list built-in failure injection scenarios");
+  console.log("  failure-run [scenarioId ...]          run failure injection harness");
   console.log("  replay-incidents [limit] [action]     show replay incidents for current thread");
   console.log("  replay-group <groupId>                show one grouped replay task with its related replays");
   console.log("  replay-bundle <groupId>               show one incident bundle with timeline");
@@ -1551,6 +1563,54 @@ async function handleRegressionRunCommand(raw: string): Promise<void> {
   );
 }
 
+async function handleFailureCasesCommand(): Promise<void> {
+  printFailureInjectionScenarioList(
+    (await getJson("/failure-cases")) as {
+      totalScenarios: number;
+      scenarios: Array<{
+        scenarioId: string;
+        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+        title: string;
+        summary: string;
+        caseIds: string[];
+      }>;
+    }
+  );
+}
+
+async function handleFailureRunCommand(raw: string): Promise<void> {
+  const scenarioIds = raw.split(/\s+/).filter(Boolean);
+  printFailureInjectionRunResult(
+    (await postJson("/failure-cases/run", scenarioIds.length > 0 ? { scenarioIds } : {})) as {
+      totalScenarios: number;
+      passedScenarios: number;
+      failedScenarios: number;
+      totalCases: number;
+      passedCases: number;
+      failedCases: number;
+      scenarios: Array<{
+        scenarioId: string;
+        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+        title: string;
+        summary: string;
+        caseIds: string[];
+        status: "passed" | "failed";
+        totalCases: number;
+        passedCases: number;
+        failedCases: number;
+        caseResults: Array<{
+          caseId: string;
+          title: string;
+          area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+          summary: string;
+          status: "passed" | "failed";
+          details: string[];
+        }>;
+      }>;
+    }
+  );
+}
+
 async function handleReplayIncidentsCommand(raw: string): Promise<void> {
   const [first, second] = raw.split(" ").filter(Boolean);
   const params = new URLSearchParams();
@@ -2099,6 +2159,71 @@ function printRegressionRunResult(payload: {
     console.log(`  ${result.title}`);
     if (result.details.length > 0) {
       console.log(`  details: ${result.details.join(" | ")}`);
+    }
+  }
+}
+
+function printFailureInjectionScenarioList(payload: {
+  totalScenarios: number;
+  scenarios: Array<{
+    scenarioId: string;
+    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+    title: string;
+    summary: string;
+    caseIds: string[];
+  }>;
+}): void {
+  console.log(`Failure Injection Scenarios: ${payload.totalScenarios}`);
+  for (const scenario of payload.scenarios) {
+    console.log(`- ${scenario.scenarioId}  [${scenario.area}] ${scenario.title}`);
+    console.log(`  ${scenario.summary}`);
+    console.log(`  cases: ${scenario.caseIds.join(", ")}`);
+  }
+}
+
+function printFailureInjectionRunResult(payload: {
+  totalScenarios: number;
+  passedScenarios: number;
+  failedScenarios: number;
+  totalCases: number;
+  passedCases: number;
+  failedCases: number;
+  scenarios: Array<{
+    scenarioId: string;
+    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+    title: string;
+    summary: string;
+    caseIds: string[];
+    status: "passed" | "failed";
+    totalCases: number;
+    passedCases: number;
+    failedCases: number;
+    caseResults: Array<{
+      caseId: string;
+      title: string;
+      area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+      summary: string;
+      status: "passed" | "failed";
+      details: string[];
+    }>;
+  }>;
+}): void {
+  console.log(
+    `Failure Injection: ${payload.passedScenarios}/${payload.totalScenarios} scenarios passed, ${payload.passedCases}/${payload.totalCases} cases passed`
+  );
+  for (const scenario of payload.scenarios) {
+    console.log(
+      `- ${scenario.scenarioId}  [${scenario.area}] ${scenario.title}  status=${scenario.status}  cases=${scenario.passedCases}/${scenario.totalCases}`
+    );
+    console.log(`  ${scenario.summary}`);
+    if (scenario.failedCases > 0) {
+      console.log(`  failed cases: ${scenario.failedCases}`);
+    }
+    for (const result of scenario.caseResults) {
+      console.log(`    - ${result.caseId}  status=${result.status}`);
+      for (const detail of result.details) {
+        console.log(`      ${detail}`);
+      }
     }
   }
 }

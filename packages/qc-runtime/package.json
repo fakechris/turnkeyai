@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./failure-injection-suite": "./src/failure-injection-suite.ts",
     "./scenario-parity-acceptance": "./src/scenario-parity-acceptance.ts",
     "./api-execution-verifier": "./src/api-execution-verifier.ts",
     "./auth-and-scope-diagnosis-policy": "./src/auth-and-scope-diagnosis-policy.ts",
