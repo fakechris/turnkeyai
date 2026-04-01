@@ -100,7 +100,7 @@ export class ModelRegistry {
         return {
           chainId: chain.id,
           primaryModelId: chain.primary,
-          fallbackModelIds: dedupeModelIds(chain.fallbacks ?? []),
+          fallbackModelIds: dedupeModelIds(chain.fallbacks ?? []).filter((modelId) => modelId !== chain.primary),
         };
       }
       if (input.modelId) {

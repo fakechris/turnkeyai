@@ -20,10 +20,12 @@ export class LLMGateway {
       ...(input.modelId ? { modelId: input.modelId } : {}),
       ...(input.modelChainId ? { modelChainId: input.modelChainId } : {}),
     });
-    const attemptedModelIds = [selection.primaryModelId, ...selection.fallbackModelIds];
+    const candidateModelIds = [selection.primaryModelId, ...selection.fallbackModelIds];
+    const attemptedModelIds: string[] = [];
     let lastError: unknown;
 
-    for (const modelId of attemptedModelIds) {
+    for (const modelId of candidateModelIds) {
+      attemptedModelIds.push(modelId);
       try {
         const model = await this.registry.resolve(modelId);
         const requestEnvelope = assertRequestEnvelopeWithinLimits(
@@ -48,7 +50,7 @@ export class LLMGateway {
           ...result,
           requestEnvelope,
           ...(selection.chainId ? { modelChainId: selection.chainId } : {}),
-          ...(attemptedModelIds.length > 1 ? { attemptedModelIds } : {}),
+          ...(selection.chainId || attemptedModelIds.length > 1 ? { attemptedModelIds } : {}),
         };
       } catch (error) {
         lastError = error;

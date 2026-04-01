@@ -105,3 +105,41 @@ test("model registry falls back to model ref when a requested chain does not exi
   assert.equal(selection.primaryModelId, "gpt-5");
   assert.deepEqual(selection.fallbackModelIds, []);
 });
+
+test("model registry excludes the primary model from fallback ids", async () => {
+  const registry = new ModelRegistry(
+    new InMemoryCatalogSource({
+      models: {
+        "primary-model": {
+          label: "Primary",
+          providerId: "openai",
+          protocol: "openai-compatible",
+          model: "primary-model",
+          baseURL: "https://primary.example/v1",
+          apiKeyEnv: "OPENAI_API_KEY",
+        },
+        "fallback-model": {
+          label: "Fallback",
+          providerId: "openai",
+          protocol: "openai-compatible",
+          model: "fallback-model",
+          baseURL: "https://fallback.example/v1",
+          apiKeyEnv: "OPENAI_API_KEY",
+        },
+      },
+      modelChains: {
+        reasoning_primary: {
+          primary: "primary-model",
+          fallbacks: ["primary-model", "fallback-model", "fallback-model"],
+        },
+      },
+    })
+  );
+
+  const selection = await registry.resolveSelection({
+    modelChainId: "reasoning_primary",
+  });
+
+  assert.equal(selection.primaryModelId, "primary-model");
+  assert.deepEqual(selection.fallbackModelIds, ["fallback-model"]);
+});
