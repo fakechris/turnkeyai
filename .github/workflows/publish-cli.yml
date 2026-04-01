@@ -1,5 +1,8 @@
 name: Publish CLI
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   workflow_dispatch:
   release:
@@ -13,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,7 +24,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
 
@@ -34,7 +37,18 @@ jobs:
       - name: Validate CLI package
         run: npm run pack:cli
 
+      - name: Pack CLI release artifact
+        run: |
+          mkdir -p .artifacts
+          npm pack --workspace @turnkeyai/cli --pack-destination .artifacts
+
       - name: Publish @turnkeyai/cli to npm
         run: npm publish --workspace @turnkeyai/cli --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Upload tarball to GitHub release
+        if: github.event_name == 'release'
+        run: gh release upload "${{ github.event.release.tag_name }}" .artifacts/*.tgz --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

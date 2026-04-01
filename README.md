@@ -113,6 +113,10 @@ npm run typecheck
 npm test
 ```
 
+当前仓库与公开 CLI 包统一要求 `Node.js 24+`。
+
+主干 PR 的基础 CI 当前会运行 `npm run typecheck`、`npm test` 和 `npm run build`。
+
 启动本地 daemon：
 
 ```bash

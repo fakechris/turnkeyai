@@ -21,7 +21,7 @@
     "playwright-core": "^1.58.2"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "publishConfig": {
     "access": "public"

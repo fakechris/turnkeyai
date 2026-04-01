@@ -1,5 +1,8 @@
 name: CI
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   pull_request:
     branches:
@@ -21,7 +24,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -41,7 +44,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -61,7 +64,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -73,12 +76,19 @@ jobs:
       - name: Validate npm package contents
         run: npm run pack:cli
 
+      - name: Pack CLI release artifact
+        run: |
+          mkdir -p .artifacts
+          npm pack --workspace @turnkeyai/cli --pack-destination .artifacts
+
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: turnkeyai-cli-dist
+          name: turnkeyai-cli-package
           path: |
+            .artifacts/*.tgz
             packages/cli/bin
             packages/cli/dist
+            packages/cli/LICENSE
             packages/cli/package.json
             packages/cli/README.md

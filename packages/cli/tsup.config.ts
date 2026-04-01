@@ -8,7 +8,7 @@ export default defineConfig({
   },
   format: ["esm"],
   platform: "node",
-  target: "node20",
+  target: "node24",
   outDir: "dist",
   bundle: true,
   splitting: false,
