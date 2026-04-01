@@ -393,7 +393,12 @@ export class BrowserSessionManager {
 
       const targets = await this.browserTargetStore.listBySession(browserSessionId);
       const replacement = [...targets]
-        .filter((target) => target.targetId !== closedTargetId && target.status !== "closed")
+        .filter(
+          (target) =>
+            target.targetId !== closedTargetId &&
+            target.status !== "closed" &&
+            target.status !== "detached"
+        )
         .sort((left, right) => right.updatedAt - left.updatedAt)[0];
 
       const nextTargetIds = session.targetIds.includes(closedTargetId)
@@ -416,7 +421,12 @@ export class BrowserSessionManager {
       await this.browserSessionStore.put({
         ...sessionWithoutActiveTarget,
         targetIds: nextTargetIds,
-        status: this.isLeaseActive(session, now) ? "busy" : emptySessionStatus,
+        status:
+          emptySessionStatus === "disconnected"
+            ? "disconnected"
+            : this.isLeaseActive(session, now)
+              ? "busy"
+              : emptySessionStatus,
         updatedAt: now,
         lastActiveAt: now,
       });

@@ -248,6 +248,118 @@ test("role memory resolver gives evidence queries a non-zero prior for admitted 
   }
 });
 
+test("role memory resolver keeps promotable evidence out of continuation recall when it carries no active follow-up signal", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "role-memory-resolver-continuation-evidence-prune-"));
+
+  try {
+    const threadSummaryStore = new FileThreadSummaryStore({ rootDir: path.join(tempDir, "summary") });
+    const threadMemoryStore = new FileThreadMemoryStore({ rootDir: path.join(tempDir, "memory") });
+    const threadSessionMemoryStore = new FileThreadSessionMemoryStore({ rootDir: path.join(tempDir, "session-memory") });
+    const threadJournalStore = new FileThreadJournalStore({ rootDir: path.join(tempDir, "journal") });
+    const roleScratchpadStore = new FileRoleScratchpadStore({ rootDir: path.join(tempDir, "scratchpad") });
+    const workerEvidenceDigestStore = new FileWorkerEvidenceDigestStore({ rootDir: path.join(tempDir, "worker") });
+
+    await threadSessionMemoryStore.put({
+      threadId: "thread-1",
+      updatedAt: 20,
+      activeTasks: ["Resume the supplier review and finish the pending recommendation."],
+      openQuestions: ["Which supplier is still waiting on approval?"],
+      recentDecisions: [],
+      constraints: [],
+      continuityNotes: ["Waiting on the browser pricing snapshot before the next step."],
+      latestJournalEntries: [],
+    });
+    await workerEvidenceDigestStore.put({
+      workerRunKey: "worker-promotable-1",
+      threadId: "thread-1",
+      workerType: "browser",
+      status: "completed",
+      updatedAt: 30,
+      findings: ["Visited the public pricing page and captured the entry plan."],
+      artifactIds: [],
+      trustLevel: "promotable",
+      admissionMode: "full",
+      sourceType: "browser",
+    });
+
+    const resolver = new DefaultRoleMemoryResolver({
+      threadSummaryStore,
+      threadMemoryStore,
+      threadSessionMemoryStore,
+      threadJournalStore,
+      roleScratchpadStore,
+      workerEvidenceDigestStore,
+    });
+
+    const hits = await resolver.retrieveMemory({
+      threadId: "thread-1",
+      roleId: "role-finance",
+      queryText: "Continue the task and tell me what is pending or waiting next.",
+    });
+
+    assert.equal(hits.some((hit) => hit.source === "knowledge-note"), false);
+    assert.equal(hits[0]?.source, "session-memory");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("role memory resolver keeps promotable evidence reachable for continuation recall when the evidence itself carries the blocker", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "role-memory-resolver-continuation-evidence-keep-"));
+
+  try {
+    const threadSummaryStore = new FileThreadSummaryStore({ rootDir: path.join(tempDir, "summary") });
+    const threadMemoryStore = new FileThreadMemoryStore({ rootDir: path.join(tempDir, "memory") });
+    const threadSessionMemoryStore = new FileThreadSessionMemoryStore({ rootDir: path.join(tempDir, "session-memory") });
+    const threadJournalStore = new FileThreadJournalStore({ rootDir: path.join(tempDir, "journal") });
+    const roleScratchpadStore = new FileRoleScratchpadStore({ rootDir: path.join(tempDir, "scratchpad") });
+    const workerEvidenceDigestStore = new FileWorkerEvidenceDigestStore({ rootDir: path.join(tempDir, "worker") });
+
+    await threadSessionMemoryStore.put({
+      threadId: "thread-1",
+      updatedAt: 20,
+      activeTasks: ["Resume the supplier review."],
+      openQuestions: ["Which supplier is still waiting on approval?"],
+      recentDecisions: [],
+      constraints: [],
+      continuityNotes: ["Keep the approval blocker visible."],
+      latestJournalEntries: [],
+    });
+    await workerEvidenceDigestStore.put({
+      workerRunKey: "worker-promotable-2",
+      threadId: "thread-1",
+      workerType: "browser",
+      status: "partial",
+      updatedAt: 30,
+      findings: ["Approval is still pending before the browser retry can continue."],
+      artifactIds: [],
+      trustLevel: "promotable",
+      admissionMode: "summary_only",
+      sourceType: "browser",
+    });
+
+    const resolver = new DefaultRoleMemoryResolver({
+      threadSummaryStore,
+      threadMemoryStore,
+      threadSessionMemoryStore,
+      threadJournalStore,
+      roleScratchpadStore,
+      workerEvidenceDigestStore,
+    });
+
+    const hits = await resolver.retrieveMemory({
+      threadId: "thread-1",
+      roleId: "role-finance",
+      queryText: "Continue the task and tell me what is pending or waiting next.",
+    });
+
+    assert.equal(hits.some((hit) => hit.source === "knowledge-note"), true);
+    assert.ok(hits.some((hit) => /approval is still pending before the browser retry can continue/i.test(hit.content)));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("role memory resolver prioritizes merge follow-up memory for unresolved shard queries", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "role-memory-resolver-merge-followup-"));
 

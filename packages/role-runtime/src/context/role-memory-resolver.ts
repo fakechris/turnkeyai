@@ -394,6 +394,10 @@ function shouldIncludeEvidenceDigest(digest: WorkerEvidenceDigest, query: Memory
     return false;
   }
 
+  if (query.continuationSeeking && !query.evidenceSeeking && !isContinuationRelevantEvidenceDigest(digest)) {
+    return false;
+  }
+
   if (digest.admissionMode === "full") {
     return true;
   }
@@ -403,6 +407,13 @@ function shouldIncludeEvidenceDigest(digest: WorkerEvidenceDigest, query: Memory
   }
 
   return query.evidenceSeeking;
+}
+
+function isContinuationRelevantEvidenceDigest(digest: WorkerEvidenceDigest): boolean {
+  const content = [digest.microcompactSummary ?? "", ...digest.findings].join(" ");
+  return /\b(pending|waiting|blocked|follow[- ]?up|next step|remaining|outstanding|unresolved|approval|retry|fallback|resume|continue|missing|conflict|duplicate|merge)\b/i.test(
+    content
+  );
 }
 
 function minimumMemoryScore(query: MemoryQueryAnalysis, source: MemoryHit["source"]): number {

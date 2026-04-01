@@ -224,6 +224,149 @@ test("browser reliability soak preserves target continuity across detach, reopen
   }
 });
 
+test("browser reliability soak marks the session disconnected when every target is detached and reopens cold on resume", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "browser-reliability-detached-all-soak-"));
+
+  try {
+    let nowTick = 2_000;
+    let idTick = 0;
+    const livePages: Array<Page & { __url: string; __title: string; __closed: boolean }> = [];
+
+    const createPage = (initialUrl = "about:blank", initialTitle = "Blank") => {
+      const page = {
+        __url: initialUrl,
+        __title: initialTitle,
+        __closed: false,
+        url() {
+          return page.__url;
+        },
+        async title() {
+          return page.__title;
+        },
+        async goto(url: string) {
+          page.__url = url;
+          page.__title = url.includes("pricing") ? "Pricing" : "Example";
+          return { status: () => 200 };
+        },
+        async waitForLoadState() {
+          return undefined;
+        },
+        async waitForTimeout() {
+          return undefined;
+        },
+        async screenshot() {
+          return undefined;
+        },
+        async close() {
+          page.__closed = true;
+        },
+      } as unknown as Page & { __url: string; __title: string; __closed: boolean };
+      livePages.push(page);
+      return page;
+    };
+
+    const fakeContext = {
+      on() {
+        return this;
+      },
+      pages() {
+        return livePages.filter((item) => !item.__closed);
+      },
+      async newPage() {
+        return createPage();
+      },
+      async close() {
+        for (const page of livePages) {
+          page.__closed = true;
+        }
+      },
+    } as unknown as BrowserContext;
+
+    const sessionStore = new FileBrowserSessionStore({
+      rootDir: path.join(tempDir, "sessions"),
+    });
+    const browserSessionManager = new BrowserSessionManager({
+      browserProfileStore: new FileBrowserProfileStore({
+        rootDir: path.join(tempDir, "profiles"),
+      }),
+      browserSessionStore: sessionStore,
+      browserTargetStore: new FileBrowserTargetStore({
+        rootDir: path.join(tempDir, "targets"),
+      }),
+      profileRootDir: path.join(tempDir, "profiles"),
+      now: () => ++nowTick,
+      createId: (prefix) => `${prefix}-${++idTick}`,
+    });
+    const historyStore = new FileBrowserSessionHistoryStore({
+      rootDir: path.join(tempDir, "history"),
+    });
+    const manager = new ChromeSessionManager({
+      artifactRootDir: path.join(tempDir, "artifacts"),
+      browserSessionManager,
+      browserSessionHistoryStore: historyStore,
+      createId: (prefix) => `${prefix}-${++idTick}`,
+      launchPersistentContext: async () => fakeContext,
+      createEphemeralContext: async () => fakeContext,
+      captureSnapshot: async ({ page, requestedUrl }) => ({
+        requestedUrl,
+        finalUrl: page.url() || requestedUrl,
+        title: (await page.title()) || "",
+        textExcerpt: (await page.title()) || "",
+        statusCode: 200,
+        interactives: [],
+      }),
+    });
+
+    const spawned = await manager.spawnSession({
+      taskId: "task-detached-all-1",
+      threadId: "thread-detached-all",
+      instructions: "Open the home page",
+      actions: [
+        { kind: "open", url: "https://example.com/" },
+        { kind: "snapshot", note: "home" },
+      ],
+      ownerType: "thread",
+      ownerId: "thread-detached-all",
+      profileOwnerType: "thread",
+      profileOwnerId: "thread-detached-all",
+      leaseHolderRunKey: "worker:browser:detached-all-a",
+      leaseTtlMs: 10,
+    });
+    assert.ok(spawned.targetId);
+
+    const spawnedPage = fakeContext.pages()[0] as (Page & {
+      __closed?: boolean;
+    }) | undefined;
+    if (spawnedPage) {
+      spawnedPage.__closed = true;
+    }
+    await browserSessionManager.markTargetDetached(spawned.sessionId, spawned.targetId!);
+
+    const disconnectedSession = await sessionStore.get(spawned.sessionId);
+    assert.equal(disconnectedSession?.status, "disconnected");
+    assert.equal(disconnectedSession?.activeTargetId, undefined);
+
+    const resumed = await manager.resumeSession({
+      taskId: "task-detached-all-2",
+      threadId: "thread-detached-all",
+      instructions: "Reopen the detached target",
+      actions: [{ kind: "snapshot", note: "resume" }],
+      browserSessionId: spawned.sessionId,
+      targetId: spawned.targetId,
+      ownerType: "thread",
+      ownerId: "thread-detached-all",
+      leaseHolderRunKey: "worker:browser:detached-all-a",
+      leaseTtlMs: 10,
+    });
+    assert.equal(resumed.resumeMode, "cold");
+    assert.equal(resumed.targetResolution, "reopen");
+    assert.equal(resumed.targetId, spawned.targetId);
+    assert.equal(resumed.page.finalUrl, "https://example.com/");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("browser reliability soak handles lease reclaim, wrong-owner denial, and hot target attach", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "browser-reliability-lease-soak-"));
 

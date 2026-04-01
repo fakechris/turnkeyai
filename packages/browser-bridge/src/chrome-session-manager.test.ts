@@ -391,6 +391,105 @@ test("chrome session manager allows detached target resume when the first action
   assert.equal(result.page, page);
 });
 
+test("chrome session manager does not reuse a blank page after manager restart when the stored handle belongs to an older runtime", async () => {
+  const stalePage = {
+    url() {
+      return "about:blank";
+    },
+    async title() {
+      return "";
+    },
+  } as unknown as Page;
+  let gotoUrl = "";
+  const reopenedPage = {
+    url() {
+      return gotoUrl || "about:blank";
+    },
+    async title() {
+      return gotoUrl ? "Pricing" : "";
+    },
+    async goto(url: string) {
+      gotoUrl = url;
+      return { status: () => 200 };
+    },
+    async waitForLoadState() {
+      return undefined;
+    },
+    async waitForTimeout() {
+      return undefined;
+    },
+  } as unknown as Page;
+  const fakeContext = {
+    pages() {
+      return [stalePage];
+    },
+    async newPage() {
+      return reopenedPage;
+    },
+  } as unknown as BrowserContext;
+
+  const oldManager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    createId: (() => {
+      let tick = 0;
+      return (prefix: string) => `${prefix}-${++tick}`;
+    })(),
+  });
+  const oldInternal = oldManager as unknown as {
+    getOrCreatePageHandle(page: Page): string;
+  };
+  const persistedTransportSessionId = oldInternal.getOrCreatePageHandle(stalePage);
+
+  const newManager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    createId: (() => {
+      let tick = 100;
+      return (prefix: string) => `${prefix}-${++tick}`;
+    })(),
+    browserSessionManager: {
+      async listTargets() {
+        return [
+          {
+            targetId: "target-restart-reopen",
+            browserSessionId: "browser-session-restart",
+            ownerType: "thread",
+            ownerId: "thread-1",
+            transportSessionId: persistedTransportSessionId,
+            url: "https://example.com/pricing",
+            title: "Pricing",
+            status: "attached",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ];
+      },
+    } as never,
+  });
+
+  const internal = newManager as unknown as {
+    resolvePageForTask(input: {
+      context: BrowserContext;
+      sessionId: string;
+      liveReuse: boolean;
+      currentTargetId?: string;
+      actions: Array<{ kind: string }>;
+    }): Promise<{ page: Page; resumeMode: "hot" | "warm" | "cold"; targetResolution: "attach" | "reconnect" | "reopen" | "new_target" }>;
+  };
+
+  const result = await internal.resolvePageForTask({
+    context: fakeContext,
+    sessionId: "browser-session-restart",
+    liveReuse: false,
+    currentTargetId: "target-restart-reopen",
+    actions: [{ kind: "snapshot" }],
+  });
+
+  assert.equal(result.page, reopenedPage);
+  assert.equal(result.resumeMode, "cold");
+  assert.equal(result.targetResolution, "reopen");
+  assert.equal(gotoUrl, "https://example.com/pricing");
+});
+
 test("chrome session manager releases a resumed session when openTarget fails", async () => {
   let released = 0;
   const fakeContext = {

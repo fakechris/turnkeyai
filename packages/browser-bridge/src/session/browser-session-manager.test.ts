@@ -223,6 +223,47 @@ test("browser session manager can explicitly activate another existing target an
   }
 });
 
+test("browser session manager marks the session disconnected when all remaining targets are detached", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "browser-session-manager-detached-all-"));
+
+  try {
+    let nowTick = 60;
+    let idTick = 0;
+    const manager = createManager(tempDir, () => ++nowTick, () => ++idTick);
+    const sessionStore = new FileBrowserSessionStore({
+      rootDir: path.join(tempDir, "sessions"),
+    });
+
+    const lease = await manager.acquireSession({
+      ownerType: "thread",
+      ownerId: "thread-detached-all",
+      profileOwnerType: "thread",
+      profileOwnerId: "thread-detached-all",
+      reusable: true,
+      leaseHolderRunKey: "worker:browser:thread-detached-all",
+    });
+    const firstTarget = await manager.ensureTarget({
+      browserSessionId: lease.session.browserSessionId,
+      url: "https://example.com/",
+      createIfMissing: true,
+    });
+    const secondTarget = await manager.ensureTarget({
+      browserSessionId: lease.session.browserSessionId,
+      url: "https://example.com/pricing",
+      createIfMissing: true,
+    });
+
+    await manager.markTargetDetached(lease.session.browserSessionId, firstTarget.targetId);
+    await manager.markTargetDetached(lease.session.browserSessionId, secondTarget.targetId);
+
+    const session = await sessionStore.get(lease.session.browserSessionId);
+    assert.equal(session?.status, "disconnected");
+    assert.equal(session?.activeTargetId, undefined);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("browser session manager expires and reclaims leases", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "browser-session-manager-lease-"));
 

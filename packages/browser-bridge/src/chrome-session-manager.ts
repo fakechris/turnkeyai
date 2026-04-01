@@ -40,6 +40,7 @@ export class ChromeSessionManager {
   private readonly snapshotRefStore: SnapshotRefStore | undefined;
   private readonly browserArtifactStore: BrowserArtifactStore | undefined;
   private readonly createId: (prefix: string) => string;
+  private readonly pageHandleNamespace: string;
   private readonly captureSnapshot: (input: {
     page: Page;
     requestedUrl: string;
@@ -79,6 +80,7 @@ export class ChromeSessionManager {
     this.snapshotRefStore = options.snapshotRefStore;
     this.browserArtifactStore = options.browserArtifactStore;
     this.createId = options.createId ?? ((prefix) => `${prefix}-${Date.now()}`);
+    this.pageHandleNamespace = this.createId("page-handle-session");
     this.captureSnapshot = options.captureSnapshot ?? captureDomSnapshot;
     this.launchPersistentContext =
       options.launchPersistentContext ??
@@ -771,7 +773,7 @@ export class ChromeSessionManager {
       return existing;
     }
 
-    const created = `page-handle-${++this.pageHandleCounter}`;
+    const created = `${this.pageHandleNamespace}-${++this.pageHandleCounter}`;
     this.livePageHandles.set(page, created);
     return created;
   }
