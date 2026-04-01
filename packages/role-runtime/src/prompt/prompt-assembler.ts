@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 
+import {
+  hasContinuationActionSignal,
+  hasContinuationBacklogSignal,
+  hasMergeContinuationSignal,
+} from "@turnkeyai/core-types/continuation-semantics";
 import { getRelayBrief } from "@turnkeyai/core-types/team";
 import type {
   FlowLedger,
@@ -471,20 +476,13 @@ function pickSalientEarlierTurns(
 
 function recentTurnSalienceScore(message: TeamMessageSummary): number {
   let score = 0;
-  if (
-    /\b(pending|waiting|blocked|blocker|next step|remaining|unresolved|outstanding|approval|missing|conflict|duplicate)\b/i.test(
-      message.content
-    )
-  ) {
+  if (hasContinuationBacklogSignal(message.content)) {
     score += 3;
   }
-  if (
-    /\bmerge\b/i.test(message.content) &&
-    /\b(missing|conflict|duplicate|follow[- ]?up|blocked|blocker|approval)\b/i.test(message.content)
-  ) {
+  if (hasMergeContinuationSignal(message.content)) {
     score += 2;
   }
-  if (/\b(follow[- ]?up|retry|fallback|resume|inspect)\b/i.test(message.content)) {
+  if (hasContinuationActionSignal(message.content)) {
     score += 2;
   }
   if (/\b(question|open question|why|what remains|what's next)\b/i.test(message.content)) {

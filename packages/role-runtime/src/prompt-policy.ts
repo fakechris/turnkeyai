@@ -1,3 +1,4 @@
+import { hasContinuationDirectiveSignal } from "@turnkeyai/core-types/continuation-semantics";
 import type {
   CapabilityDiscoveryService,
   CapabilityInspectionResult,
@@ -608,7 +609,7 @@ function inferContinuityMode(input: RoleActivationInput): "fresh" | "prefer-exis
     .join("\n")
     .toLowerCase();
 
-  if (/\b(continue|resume|pick up|follow up|same worker|same browser)\b/i.test(text)) {
+  if (hasContinuationDirectiveSignal(text)) {
     return "prefer-existing";
   }
 

@@ -12,6 +12,12 @@ import type {
   WorkerEvidenceDigest,
   WorkerEvidenceDigestStore,
 } from "@turnkeyai/core-types/team";
+import {
+  hasApprovalSignal,
+  hasContinuationBacklogSignal,
+  hasContinuationSignal,
+  hasMergeSignal,
+} from "@turnkeyai/core-types/continuation-semantics";
 
 export interface MemoryHit {
   memoryId: string;
@@ -337,10 +343,7 @@ function normalizeContent(content: string): string {
 
 function analyzeQuery(content: string): MemoryQueryAnalysis {
   const normalizedQuery = normalizeContent(content);
-  const continuationSeeking =
-    /\b(continue|resume|pending|waiting|blocked|blocker|next step|follow[- ]?up|remaining|outstanding|unresolved|approval|retry|fallback|inspect|merge|missing|conflict|duplicate)\b/i.test(
-      content
-    );
+  const continuationSeeking = hasContinuationSignal(content);
   const preferenceSeeking = /\b(preference|style|tone|format|remember|recall)\b/i.test(content);
   const constraintSeeking = /\b(constraint|budget|deadline|limit|required|must|cannot|can't)\b/i.test(content);
   const decisionSeeking =
@@ -365,13 +368,13 @@ function analyzeQuery(content: string): MemoryQueryAnalysis {
 
 function extractSemanticTags(content: string): Set<string> {
   const tags = new Set<string>();
-  if (/\b(pending|waiting|waiting on|blocked|blocker|outstanding|remaining|next step|follow[- ]?up|continue|resume)\b/i.test(content)) {
+  if (hasContinuationSignal(content)) {
     tags.add("continuation");
   }
-  if (/\b(approval|approve|manual|permission|review)\b/i.test(content)) {
+  if (hasApprovalSignal(content)) {
     tags.add("approval");
   }
-  if (/\b(merge|shard|missing|conflict|duplicate|follow[- ]?up|blocker)\b/i.test(content)) {
+  if (hasMergeSignal(content)) {
     tags.add("merge");
   }
   if (/\b(evidence|source|citation|trace|artifact|proof|prove|verified)\b/i.test(content)) {
@@ -411,9 +414,7 @@ function shouldIncludeEvidenceDigest(digest: WorkerEvidenceDigest, query: Memory
 
 function isContinuationRelevantEvidenceDigest(digest: WorkerEvidenceDigest): boolean {
   const content = [digest.microcompactSummary ?? "", ...digest.findings].join(" ");
-  return /\b(pending|waiting|blocked|blocker|follow[- ]?up|next step|remaining|outstanding|unresolved|approval|retry|fallback|resume|continue|missing|conflict|duplicate|merge)\b/i.test(
-    content
-  );
+  return hasContinuationSignal(content);
 }
 
 function minimumMemoryScore(query: MemoryQueryAnalysis, source: MemoryHit["source"]): number {
@@ -451,12 +452,7 @@ function minimumMemoryScore(query: MemoryQueryAnalysis, source: MemoryHit["sourc
 
 function intentWeight(content: string, query: MemoryQueryAnalysis): number {
   let weight = 1;
-  if (
-    query.continuationSeeking &&
-    /\b(pending|waiting on|blocked|blocker|follow[- ]?up|next step|remaining|outstanding|unresolved|missing|conflict|duplicate|merge)\b/i.test(
-      content
-    )
-  ) {
+  if (query.continuationSeeking && hasContinuationBacklogSignal(content)) {
     weight += 0.4;
   }
   if (query.preferenceSeeking && /\b(preference|prefer|style|format|tone)\b/i.test(content)) {
@@ -476,7 +472,7 @@ function intentWeight(content: string, query: MemoryQueryAnalysis): number {
   if (query.semanticTags.has("approval") && /\b(approval|approve|manual|permission|required)\b/i.test(content)) {
     weight += 0.25;
   }
-  if (query.semanticTags.has("merge") && /\b(merge|shard|missing|conflict|duplicate|follow[- ]?up|blocker)\b/i.test(content)) {
+  if (query.semanticTags.has("merge") && hasMergeSignal(content)) {
     weight += 0.25;
   }
   if (query.evidenceSeeking && /\b(source=|trust=|admission=|evidence)\b/i.test(content)) {

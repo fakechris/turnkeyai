@@ -1156,3 +1156,173 @@ test("browser reliability soak preserves hot continuity after a reopened target 
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("browser reliability soak reopens a detached target instead of attaching to a different live page with the same URL", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "browser-reliability-same-url-detached-soak-"));
+
+  try {
+    let nowTick = 8_000;
+    let idTick = 0;
+    const livePages: Array<Page & { __url: string; __title: string; __closed: boolean }> = [];
+
+    const createPage = (initialUrl = "about:blank", initialTitle = "Blank") => {
+      const page = {
+        __url: initialUrl,
+        __title: initialTitle,
+        __closed: false,
+        url() {
+          return page.__url;
+        },
+        async title() {
+          return page.__title;
+        },
+        async goto(url: string) {
+          page.__url = url;
+          page.__title = url.includes("pricing") ? "Pricing" : "Example";
+          return { status: () => 200 };
+        },
+        async waitForLoadState() {
+          return undefined;
+        },
+        async waitForTimeout() {
+          return undefined;
+        },
+        async screenshot() {
+          return undefined;
+        },
+        async close() {
+          page.__closed = true;
+        },
+      } as unknown as Page & { __url: string; __title: string; __closed: boolean };
+      livePages.push(page);
+      return page;
+    };
+
+    const fakeContext = {
+      on() {
+        return this;
+      },
+      pages() {
+        return livePages.filter((item) => !item.__closed);
+      },
+      async newPage() {
+        return createPage();
+      },
+      async close() {
+        for (const page of livePages) {
+          page.__closed = true;
+        }
+      },
+    } as unknown as BrowserContext;
+
+    const browserSessionManager = new BrowserSessionManager({
+      browserProfileStore: new FileBrowserProfileStore({
+        rootDir: path.join(tempDir, "profiles"),
+      }),
+      browserSessionStore: new FileBrowserSessionStore({
+        rootDir: path.join(tempDir, "sessions"),
+      }),
+      browserTargetStore: new FileBrowserTargetStore({
+        rootDir: path.join(tempDir, "targets"),
+      }),
+      profileRootDir: path.join(tempDir, "profiles"),
+      now: () => ++nowTick,
+      createId: (prefix) => `${prefix}-${++idTick}`,
+    });
+    const historyStore = new FileBrowserSessionHistoryStore({
+      rootDir: path.join(tempDir, "history"),
+    });
+    const manager = new ChromeSessionManager({
+      artifactRootDir: path.join(tempDir, "artifacts"),
+      browserSessionManager,
+      browserSessionHistoryStore: historyStore,
+      createId: (prefix) => `${prefix}-${++idTick}`,
+      launchPersistentContext: async () => fakeContext,
+      createEphemeralContext: async () => fakeContext,
+      captureSnapshot: async ({ page, requestedUrl }) => ({
+        requestedUrl,
+        finalUrl: page.url() || requestedUrl,
+        title: (await page.title()) || "",
+        textExcerpt: (await page.title()) || "",
+        statusCode: 200,
+        interactives: [],
+      }),
+    });
+
+    const spawned = await manager.spawnSession({
+      taskId: "task-same-url-1",
+      threadId: "thread-same-url",
+      instructions: "Open the home page",
+      actions: [
+        { kind: "open", url: "https://example.com/" },
+        { kind: "snapshot", note: "home" },
+      ],
+      ownerType: "thread",
+      ownerId: "thread-same-url",
+      profileOwnerType: "thread",
+      profileOwnerId: "thread-same-url",
+      leaseHolderRunKey: "worker:browser:same-url-a",
+      leaseTtlMs: 5,
+    });
+    const pricingTargetA = await manager.openTarget(spawned.sessionId, "https://example.com/pricing", {
+      ownerType: "thread",
+      ownerId: "thread-same-url",
+    });
+    const pricingTargetB = await manager.openTarget(spawned.sessionId, "https://example.com/pricing", {
+      ownerType: "thread",
+      ownerId: "thread-same-url",
+    });
+
+    const pricingPageA = livePages[1];
+    if (pricingPageA) {
+      pricingPageA.__closed = true;
+    }
+    await browserSessionManager.markTargetDetached(spawned.sessionId, pricingTargetA.targetId);
+
+    nowTick += 20;
+
+    const reopenedPricingA = await manager.resumeSession({
+      taskId: "task-same-url-2",
+      threadId: "thread-same-url",
+      instructions: "Reopen the detached pricing target instead of attaching to the other live pricing page",
+      actions: [{ kind: "snapshot", note: "pricing-a-reopen" }],
+      browserSessionId: spawned.sessionId,
+      targetId: pricingTargetA.targetId,
+      ownerType: "thread",
+      ownerId: "thread-same-url",
+      leaseHolderRunKey: "worker:browser:same-url-b",
+    });
+    assert.equal(reopenedPricingA.targetId, pricingTargetA.targetId);
+    assert.equal(reopenedPricingA.resumeMode, "cold");
+    assert.equal(reopenedPricingA.targetResolution, "reopen");
+    assert.equal(reopenedPricingA.page.finalUrl, "https://example.com/pricing");
+
+    const attachedPricingB = await manager.sendSession({
+      taskId: "task-same-url-3",
+      threadId: "thread-same-url",
+      instructions: "Attach to the still-live second pricing target",
+      actions: [{ kind: "snapshot", note: "pricing-b-attach" }],
+      browserSessionId: spawned.sessionId,
+      targetId: pricingTargetB.targetId,
+      ownerType: "thread",
+      ownerId: "thread-same-url",
+      leaseHolderRunKey: "worker:browser:same-url-b",
+      leaseTtlMs: 5,
+    });
+    assert.equal(attachedPricingB.targetId, pricingTargetB.targetId);
+    assert.equal(attachedPricingB.resumeMode, "hot");
+    assert.equal(attachedPricingB.targetResolution, "attach");
+
+    const history = await manager.getSessionHistory({ browserSessionId: spawned.sessionId });
+    assert.deepEqual(
+      history.map((entry) => `${entry.dispatchMode}:${entry.targetId ?? "-"}:${entry.resumeMode ?? "none"}`),
+      [
+        `spawn:${spawned.targetId ?? "-"}:cold`,
+        `resume:${pricingTargetA.targetId}:cold`,
+        `send:${pricingTargetB.targetId}:hot`,
+      ]
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

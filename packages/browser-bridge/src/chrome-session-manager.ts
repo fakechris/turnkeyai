@@ -752,19 +752,25 @@ export class ChromeSessionManager {
       }
     }
 
+    if (target.status === "detached") {
+      return null;
+    }
+
+    const candidates: Page[] = [];
     for (const page of pages) {
       if (target.url && page.url() === target.url) {
-        return page;
+        candidates.push(page);
+        continue;
       }
       if (target.title) {
         const title = await page.title().catch(() => "");
         if (title === target.title) {
-          return page;
+          candidates.push(page);
         }
       }
     }
 
-    return null;
+    return candidates.length === 1 ? candidates[0]! : null;
   }
 
   private getOrCreatePageHandle(page: Page): string {

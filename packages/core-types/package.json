@@ -7,6 +7,7 @@
     "./async-mutex": "./src/async-mutex.ts",
     "./file-store-utils": "./src/file-store-utils.ts",
     "./browser-session-payload": "./src/browser-session-payload.ts",
-    "./shard-result-analysis": "./src/shard-result-analysis.ts"
+    "./shard-result-analysis": "./src/shard-result-analysis.ts",
+    "./continuation-semantics": "./src/continuation-semantics.ts"
   }
 }

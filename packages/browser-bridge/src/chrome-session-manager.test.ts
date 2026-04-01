@@ -282,6 +282,89 @@ test("chrome session manager reconnects a detached target with cold resume by re
   assert.equal(gotoUrl, "https://example.com/pricing");
 });
 
+test("chrome session manager does not attach a detached target to a different live page with the same URL", async () => {
+  const livePricingPage = {
+    url() {
+      return "https://example.com/pricing";
+    },
+    async title() {
+      return "Pricing";
+    },
+  } as unknown as Page;
+  let gotoUrl = "";
+  const reopenedPage = {
+    url() {
+      return gotoUrl || "about:blank";
+    },
+    async title() {
+      return gotoUrl ? "Pricing" : "Blank";
+    },
+    async goto(url: string) {
+      gotoUrl = url;
+      return { status: () => 200 };
+    },
+    async waitForLoadState() {
+      return undefined;
+    },
+    async waitForTimeout() {
+      return undefined;
+    },
+  } as unknown as Page;
+  const fakeContext = {
+    pages() {
+      return [livePricingPage];
+    },
+    async newPage() {
+      return reopenedPage;
+    },
+  } as unknown as BrowserContext;
+
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    browserSessionManager: {
+      async listTargets() {
+        return [
+          {
+            targetId: "target-detached-same-url",
+            browserSessionId: "browser-session-detached-same-url",
+            ownerType: "thread",
+            ownerId: "thread-1",
+            transportSessionId: "stale-detached-handle",
+            url: "https://example.com/pricing",
+            title: "Pricing",
+            status: "detached",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ];
+      },
+    } as never,
+  });
+
+  const internal = manager as unknown as {
+    resolvePageForTask(input: {
+      context: BrowserContext;
+      sessionId: string;
+      liveReuse: boolean;
+      currentTargetId?: string;
+      actions: Array<{ kind: string }>;
+    }): Promise<{ page: Page; resumeMode: "hot" | "warm" | "cold"; targetResolution: "attach" | "reconnect" | "reopen" | "new_target" }>;
+  };
+
+  const result = await internal.resolvePageForTask({
+    context: fakeContext,
+    sessionId: "browser-session-detached-same-url",
+    liveReuse: false,
+    currentTargetId: "target-detached-same-url",
+    actions: [{ kind: "snapshot" }],
+  });
+
+  assert.equal(result.page, reopenedPage);
+  assert.equal(result.resumeMode, "cold");
+  assert.equal(result.targetResolution, "reopen");
+  assert.equal(gotoUrl, "https://example.com/pricing");
+});
+
 test("chrome session manager rejects invalid detached-target resume when no reopen URL is available", async () => {
   const fakeContext = {
     pages() {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { hasContinuationBacklogSignal } from "@turnkeyai/core-types/continuation-semantics";
 import type {
   RoleId,
   RoleScratchpadStore,
@@ -510,8 +511,8 @@ function selectPersistentSummaryNotes(values: string[]): string[] {
 }
 
 function selectPersistentSummaryCarryForward(values: string[]): string[] {
-  return values.filter((value) =>
-    /\b(open question|pending|waiting|blocked|follow(?:-| )?up|next step|remaining|need to|should)\b/i.test(value)
+  return values.filter(
+    (value) => /\b(open question|need to|should)\b/i.test(value) || hasContinuationBacklogSignal(value)
   );
 }
 

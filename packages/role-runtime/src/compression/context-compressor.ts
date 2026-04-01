@@ -7,6 +7,11 @@ import type {
   ThreadSummaryRecord,
   WorkerEvidenceDigest,
 } from "@turnkeyai/core-types/team";
+import {
+  hasContinuationBacklogSignal,
+  hasMergeSignal,
+  hasWaitingDependencySignal,
+} from "@turnkeyai/core-types/continuation-semantics";
 
 export interface ThreadCompressionInput {
   threadId: string;
@@ -288,9 +293,7 @@ function extractDecisions(messages: TeamMessageSummary[]): string[] {
 function extractOpenQuestions(messages: TeamMessageSummary[]): string[] {
   return messages
     .map((message) => message.content.trim())
-    .filter(
-      (content) => content.includes("?") || /\b(unresolved|missing|conflict|duplicate|follow[- ]?up|approval|blocker)\b/i.test(content)
-    )
+    .filter((content) => content.includes("?") || hasMergeSignal(content) || /\b(unresolved|approval)\b/i.test(content))
     .map((content) => truncate(content));
 }
 
@@ -299,9 +302,8 @@ function extractPendingWork(messages: TeamMessageSummary[]): string[] {
     .filter((message) => message.role === "user" || message.role === "assistant")
     .map((message) => message.content.trim())
     .filter((content) =>
-      /\b(please|need|should|track|check|compare|follow up|review|confirm|next step|pending|remaining|todo|to do|awaiting|unresolved|missing|conflict|duplicate|merge|approval|blocker)\b/i.test(
-        content
-      )
+      /\b(please|need|should|track|check|compare|review|confirm|todo|to do|awaiting|unresolved)\b/i.test(content) ||
+      hasContinuationBacklogSignal(content)
     )
     .map((content) => truncate(content));
 }
@@ -368,13 +370,13 @@ function extractWaitingOn(messages: TeamMessageSummary[]): string | null {
   const candidate = [...messages]
     .reverse()
     .map((message) => message.content.trim())
-    .find((content) => /\b(waiting on|blocked on|need input from|awaiting)\b/i.test(content));
+    .find((content) => hasWaitingDependencySignal(content));
 
   return candidate ? truncate(candidate) : null;
 }
 
 function isContinuationRelevant(content: string): boolean {
-  return /\b(pending|waiting on|blocked|blocker|follow up|next step|remaining|must|budget|deadline|need)\b/i.test(content);
+  return hasContinuationBacklogSignal(content) || /\b(must|budget|deadline|need)\b/i.test(content);
 }
 
 function truncate(content: string, maxChars = 160): string {
