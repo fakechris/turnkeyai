@@ -1,0 +1,38 @@
+{
+  "name": "@turnkeyai/cli",
+  "version": "0.1.0",
+  "description": "TurnkeyAI local-first agent runtime CLI",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "turnkeyai": "./bin/turnkeyai.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup --config tsup.config.ts",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "playwright-core": "^1.58.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fakechris/turnkeyai.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/fakechris/turnkeyai",
+  "bugs": {
+    "url": "https://github.com/fakechris/turnkeyai/issues"
+  }
+}

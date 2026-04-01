@@ -125,6 +125,18 @@ npm run daemon
 npm run tui
 ```
 
+如果使用公开发布的 CLI 包：
+
+```bash
+npx @turnkeyai/cli daemon
+```
+
+另一个终端中连接 TUI：
+
+```bash
+npx @turnkeyai/cli tui
+```
+
 当前 daemon 主要提供：
 
 - thread / message / flow 调试接口
@@ -196,3 +208,7 @@ npm run tui
 
 - 一个正在成型的本地 Agent Runtime
 - 而不是一个已经完整打磨好的桌面产品
+
+## License
+
+Apache-2.0. See [LICENSE](./LICENSE).
