@@ -8,6 +8,7 @@
     "./file-store-utils": "./src/file-store-utils.ts",
     "./browser-session-payload": "./src/browser-session-payload.ts",
     "./shard-result-analysis": "./src/shard-result-analysis.ts",
-    "./continuation-semantics": "./src/continuation-semantics.ts"
+    "./continuation-semantics": "./src/continuation-semantics.ts",
+    "./recovery-operator-semantics": "./src/recovery-operator-semantics.ts"
   }
 }

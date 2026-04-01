@@ -5,6 +5,7 @@ import type {
   ReplayRecord,
   RoleRunState,
   RuntimeChain,
+  RuntimeProgressEvent,
   RuntimeChainStatus,
   TeamEvent,
   WorkerSessionState,
@@ -32,6 +33,7 @@ import {
   buildRuntimeSummaryReport,
   decorateRuntimeChainStatus,
 } from "./runtime-chain-inspection";
+import { buildPromptConsoleReport } from "./prompt-inspection";
 
 export interface BoundedRegressionCaseDescriptor {
   caseId: string;
@@ -891,6 +893,82 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
   {
+    caseId: "runtime-prompt-console-summarizes-boundaries",
+    title: "Prompt console summarizes boundary diagnostics by model and reduction",
+    area: "runtime",
+    summary:
+      "Prompt compaction and request-envelope reduction boundaries should aggregate into one prompt console view with stable model, chain, and fingerprint counts.",
+    run() {
+      const progressEvents: RuntimeProgressEvent[] = [
+        {
+          progressId: "progress:prompt-assembly:task-1",
+          threadId: "thread-1",
+          chainId: "flow:flow-prompt",
+          spanId: "role:role-lead",
+          subjectKind: "role_run",
+          subjectId: "role:role-lead",
+          phase: "degraded",
+          progressKind: "boundary",
+          summary: "Prompt assembly entered compact boundary with 2 compacted segment(s).",
+          recordedAt: 10,
+          flowId: "flow-prompt",
+          taskId: "task-1",
+          roleId: "role-lead",
+          metadata: {
+            boundaryKind: "prompt_compaction",
+            modelId: "gpt-5",
+            modelChainId: "reasoning_primary",
+            assemblyFingerprint: "fp-prompt",
+            compactedSegments: ["recent-turns", "worker-evidence"],
+          },
+        },
+        {
+          progressId: "progress:prompt-reduction:task-1",
+          threadId: "thread-1",
+          chainId: "flow:flow-prompt",
+          spanId: "role:role-lead",
+          subjectKind: "role_run",
+          subjectId: "role:role-lead",
+          phase: "degraded",
+          progressKind: "boundary",
+          summary: "Prompt request envelope reduced to minimal.",
+          recordedAt: 20,
+          flowId: "flow-prompt",
+          taskId: "task-1",
+          roleId: "role-lead",
+          metadata: {
+            boundaryKind: "request_envelope_reduction",
+            modelId: "gpt-5",
+            modelChainId: "reasoning_primary",
+            assemblyFingerprint: "fp-prompt",
+            compactedSegments: ["recent-turns"],
+            reductionLevel: "minimal",
+            omittedSections: ["worker-evidence"],
+          },
+        },
+      ];
+      const report = buildPromptConsoleReport(progressEvents);
+      const details = [
+        `total=${report.totalBoundaries}`,
+        `compactions=${report.compactionCount}`,
+        `reductions=${report.reductionCount}`,
+        `model=${report.modelCounts["gpt-5"] ?? 0}`,
+        `chain=${report.modelChainCounts.reasoning_primary ?? 0}`,
+        `fp=${report.uniqueAssemblyFingerprintCount}`,
+      ];
+      const passed =
+        report.totalBoundaries === 2 &&
+        report.compactionCount === 1 &&
+        report.reductionCount === 1 &&
+        report.modelCounts["gpt-5"] === 2 &&
+        report.modelChainCounts.reasoning_primary === 2 &&
+        report.uniqueAssemblyFingerprintCount === 1 &&
+        report.reductionLevelCounts.minimal === 1 &&
+        report.compactedSegmentCounts["recent-turns"] === 2;
+      return buildResult(this, passed, details);
+    },
+  },
+  {
     caseId: "parallel-three-shard-success-ready-to-merge",
     title: "Parallel shard success reaches merge-ready state",
     area: "parallel",
@@ -1515,13 +1593,15 @@ const BUILT_IN_CASES: RegressionCase[] = [
         `replay=${report.replay.attentionCount}`,
         `governance=${report.governance.attentionCount}`,
         `recovery=${report.recovery.attentionCount}`,
+        `recoveryGate=${report.recovery.gateCounts["waiting for approval"] ?? 0}`,
       ];
       const passed =
         report.totalAttentionCount === 4 &&
         report.flow.attentionCount === 1 &&
         report.replay.attentionCount === 1 &&
         report.governance.attentionCount === 1 &&
-        report.recovery.attentionCount === 1;
+        report.recovery.attentionCount === 1 &&
+        report.recovery.gateCounts["waiting for approval"] === 1;
       return buildResult(this, passed, details);
     },
   },
@@ -1577,12 +1657,14 @@ const BUILT_IN_CASES: RegressionCase[] = [
         `recovery=${report.recovery.attentionCount}`,
         `statusRecovered=${report.recovery.statusCounts.recovered ?? 0}`,
         `phaseRecovered=${report.recovery.phaseCounts.recovered ?? 0}`,
+        `gateRecovered=${report.recovery.gateCounts.recovered ?? 0}`,
       ];
       const passed =
         report.totalAttentionCount === 0 &&
         report.recovery.attentionCount === 0 &&
         report.recovery.statusCounts.recovered === 1 &&
-        report.recovery.phaseCounts.recovered === 1;
+        report.recovery.phaseCounts.recovered === 1 &&
+        report.recovery.gateCounts.recovered === 1;
       return buildResult(this, passed, details);
     },
   },
@@ -2553,6 +2635,99 @@ const BUILT_IN_CASES: RegressionCase[] = [
         run.attempts[1]?.status === "recovered" &&
         run.attempts[1]?.triggeredByAttemptId === "recovery:task-z:attempt:1" &&
         run.attempts[1]?.browserOutcome === "cold_reopen";
+      return buildResult(this, Boolean(passed), details);
+    },
+  },
+  {
+    caseId: "replay-console-surfaces-workflow-state",
+    title: "Replay console surfaces workflow and case-state summaries",
+    area: "recovery",
+    summary:
+      "Replay console should expose bundle-level workflow status, case state, and latest bundle summaries for actionable incidents.",
+    run() {
+      const records = [
+        {
+          replayId: "task-workflow:worker:worker:browser:task:task-workflow",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 10,
+          threadId: "thread-1",
+          taskId: "task-workflow",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "browser failed",
+          failure: {
+            category: "invalid_resume",
+            layer: "worker",
+            retryable: false,
+            message: "stale browser handle",
+            recommendedAction: "inspect",
+          },
+          metadata: {
+            payload: {
+              sessionId: "browser-session-workflow",
+              targetId: "target-workflow",
+              resumeMode: "warm",
+              targetResolution: "reconnect",
+            },
+          },
+        },
+        {
+          replayId: "task-workflow-follow:scheduled",
+          layer: "scheduled",
+          status: "completed",
+          recordedAt: 20,
+          threadId: "thread-1",
+          taskId: "task-workflow-follow",
+          summary: "recovery dispatched",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-workflow",
+              attemptId: "recovery:task-workflow:attempt:1",
+              dispatchReplayId: "task-workflow-follow:scheduled",
+            },
+          },
+        },
+        {
+          replayId: "task-workflow-follow:worker:worker:browser:task:task-workflow-follow",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 30,
+          threadId: "thread-1",
+          taskId: "task-workflow-follow",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "manual approval required",
+          failure: {
+            category: "permission_denied",
+            layer: "worker",
+            retryable: false,
+            message: "manual approval required",
+            recommendedAction: "request_approval",
+          },
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-workflow",
+              attemptId: "recovery:task-workflow:attempt:1",
+              dispatchReplayId: "task-workflow-follow:scheduled",
+            },
+          },
+        },
+      ] satisfies ReplayRecord[];
+
+      const report = buildReplayConsoleReport(records, 5);
+      const rootBundle = report.latestBundles.find((bundle) => bundle.groupId === "task-workflow");
+      const details = [
+        `workflow=${report.workflowStatusCounts.manual_follow_up ?? 0}`,
+        `case=${report.caseStateCounts.waiting_manual ?? 0}`,
+        `bundleWorkflow=${rootBundle?.workflowStatus ?? "-"}`,
+        `bundleCase=${rootBundle?.caseState ?? "-"}`,
+      ];
+      const passed =
+        report.workflowStatusCounts.manual_follow_up === 1 &&
+        report.caseStateCounts.waiting_manual === 1 &&
+        rootBundle?.workflowStatus === "manual_follow_up" &&
+        rootBundle.caseState === "waiting_manual";
       return buildResult(this, Boolean(passed), details);
     },
   },

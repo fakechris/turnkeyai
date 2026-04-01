@@ -15,6 +15,7 @@ import type {
   ShardResultRecord,
   TeamEvent,
 } from "@turnkeyai/core-types/team";
+import { describeRecoveryRunGate } from "@turnkeyai/core-types/recovery-operator-semantics";
 import { detectConflictRoleIds, detectDuplicateRoleIds } from "@turnkeyai/core-types/shard-result-analysis";
 import {
   buildRecoveryRunProgress,
@@ -176,6 +177,7 @@ export function buildGovernanceConsoleReport(
 export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): RecoveryConsoleReport {
   const statusCounts: RecoveryConsoleReport["statusCounts"] = {};
   const phaseCounts: RecoveryConsoleReport["phaseCounts"] = {};
+  const gateCounts: RecoveryConsoleReport["gateCounts"] = {};
   const nextActionCounts: RecoveryConsoleReport["nextActionCounts"] = {};
   const browserResumeCounts: RecoveryConsoleReport["browserResumeCounts"] = {};
   const browserOutcomeCounts: RecoveryConsoleReport["browserOutcomeCounts"] = {};
@@ -185,6 +187,8 @@ export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): Rec
     statusCounts[run.status] = (statusCounts[run.status] ?? 0) + 1;
     const progress = buildRecoveryRunProgress(run);
     phaseCounts[progress.phase] = (phaseCounts[progress.phase] ?? 0) + 1;
+    const gate = describeRecoveryRunGate(run.status);
+    gateCounts[gate] = (gateCounts[gate] ?? 0) + 1;
     nextActionCounts[run.nextAction] = (nextActionCounts[run.nextAction] ?? 0) + 1;
     if (run.browserSession?.resumeMode) {
       browserResumeCounts[run.browserSession.resumeMode] = (browserResumeCounts[run.browserSession.resumeMode] ?? 0) + 1;
@@ -214,6 +218,7 @@ export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): Rec
     attentionCount,
     statusCounts,
     phaseCounts,
+    gateCounts,
     nextActionCounts,
     browserResumeCounts,
     browserOutcomeCounts,
@@ -400,7 +405,7 @@ export function buildOperatorAttentionReport(input: {
       severity: deriveRecoveryAttentionSeverity(run),
       lifecycle: deriveRecoveryAttentionLifecycle(run),
       status: run.status,
-      gate: run.waitingReason ? "waiting" : run.status,
+      gate: describeRecoveryRunGate(run.status),
       reasons: [
         run.status,
         ...(run.waitingReason ? [run.waitingReason] : []),

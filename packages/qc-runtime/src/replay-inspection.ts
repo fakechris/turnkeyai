@@ -190,14 +190,30 @@ export function buildReplayConsoleReport(records: ReplayRecord[], limit = 10): R
   const report = buildReplayInspectionReport(records);
   const incidentGroups = listActionableReplayIncidents(records, report);
   const recoveries = incidentGroups.map((group) => buildReplayRecoveryPlan(group));
+  const bundleByGroupId = new Map(
+    incidentGroups.map((group) => [group.groupId, buildReplayIncidentBundle(records, group.groupId)])
+  );
   const actionableGroupIds = new Set(incidentGroups.map((group) => group.groupId));
   const replayParentByGroupId = buildReplayParentByGroupId(records);
   const actionCounts: ReplayConsoleReport["actionCounts"] = {};
+  const workflowStatusCounts: ReplayConsoleReport["workflowStatusCounts"] = {};
+  const caseStateCounts: ReplayConsoleReport["caseStateCounts"] = {};
   const browserContinuityCounts: ReplayConsoleReport["browserContinuityCounts"] = {};
   const resolvedRootGroupIds = new Set<string>();
 
   for (const recovery of recoveries) {
     actionCounts[recovery.nextAction] = (actionCounts[recovery.nextAction] ?? 0) + 1;
+  }
+  for (const bundle of bundleByGroupId.values()) {
+    if (!bundle) {
+      continue;
+    }
+    if (bundle.recoveryWorkflow?.status) {
+      workflowStatusCounts[bundle.recoveryWorkflow.status] = (workflowStatusCounts[bundle.recoveryWorkflow.status] ?? 0) + 1;
+    }
+    if (bundle.caseState) {
+      caseStateCounts[bundle.caseState] = (caseStateCounts[bundle.caseState] ?? 0) + 1;
+    }
   }
   for (const group of report.groups) {
     if (group.browserContinuity) {
@@ -221,10 +237,30 @@ export function buildReplayConsoleReport(records: ReplayRecord[], limit = 10): R
     recoveredGroups: resolvedRootGroupIds.size,
     attentionCount: recoveries.length,
     actionCounts,
+    workflowStatusCounts,
+    caseStateCounts,
     browserContinuityCounts,
     layerCounts: report.layerCounts,
     failureCounts: report.failureCounts,
     latestIncidents: recoveries.slice(0, limit),
+    latestBundles: recoveries
+      .slice(0, limit)
+      .map((recovery) => {
+        const bundle = bundleByGroupId.get(recovery.groupId) ?? null;
+        return {
+          groupId: recovery.groupId,
+          latestStatus: recovery.latestStatus,
+          nextAction: recovery.nextAction,
+          autoDispatchReady: recovery.autoDispatchReady,
+          ...(bundle?.caseState ? { caseState: bundle.caseState } : {}),
+          ...(bundle?.recoveryWorkflow?.status ? { workflowStatus: bundle.recoveryWorkflow.status } : {}),
+          ...(bundle?.recoveryWorkflow?.summary ? { workflowSummary: bundle.recoveryWorkflow.summary } : {}),
+          ...(bundle?.caseHeadline ? { caseHeadline: bundle.caseHeadline } : {}),
+          ...(bundle?.browserContinuity?.state ? { browserContinuityState: bundle.browserContinuity.state } : {}),
+          ...(recovery.targetLayer ? { targetLayer: recovery.targetLayer } : {}),
+          ...(recovery.targetWorker ? { targetWorker: recovery.targetWorker } : {}),
+        };
+      }),
     latestGroups: report.groups.slice(0, limit),
   };
 }

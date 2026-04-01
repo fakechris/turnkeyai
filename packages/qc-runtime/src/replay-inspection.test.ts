@@ -216,7 +216,14 @@ test("replay inspection builds replay console and incident bundle views", () => 
   assert.equal(consoleReport.recoveredGroups, 0);
   assert.equal(consoleReport.attentionCount, 1);
   assert.equal(consoleReport.actionCounts.auto_resume, 1);
+  assert.equal(consoleReport.workflowStatusCounts.not_started, 1);
+  assert.equal(consoleReport.caseStateCounts.open, 1);
   assert.equal(consoleReport.browserContinuityCounts.attention, 1);
+  assert.equal(consoleReport.latestBundles[0]?.groupId, "task-5");
+  assert.equal(consoleReport.latestBundles[0]?.caseState, "open");
+  assert.equal(consoleReport.latestBundles[0]?.workflowStatus, "not_started");
+  assert.equal(consoleReport.latestBundles[0]?.browserContinuityState, "attention");
+  assert.match(consoleReport.latestBundles[0]?.workflowSummary ?? "", /not been dispatched yet/i);
   assert.equal(consoleReport.latestIncidents[0]?.groupId, "task-5");
   assert.equal(consoleReport.latestGroups[0]?.browserContinuity?.state, "attention");
 
@@ -232,6 +239,86 @@ test("replay inspection builds replay console and incident bundle views", () => 
   assert.equal(bundle?.followUpGroups.length, 0);
   assert.equal(bundle?.browserContinuity?.state, "attention");
   assert.equal(bundle?.browserContinuity?.sessionId, "browser-session-5");
+});
+
+test("replay console surfaces recovery workflow states from actionable bundles", () => {
+  const records = [
+    {
+      replayId: "task-8:worker:worker:browser:task:task-8",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-8",
+      roleId: "role-operator",
+      workerType: "browser",
+      summary: "browser failed",
+      failure: {
+        category: "invalid_resume",
+        layer: "worker",
+        retryable: false,
+        message: "stale browser handle",
+        recommendedAction: "inspect",
+      },
+      metadata: {
+        payload: {
+          sessionId: "browser-session-8",
+          targetId: "target-8",
+          resumeMode: "warm",
+          targetResolution: "reconnect",
+        },
+      },
+    },
+    {
+      replayId: "task-9:scheduled",
+      layer: "scheduled",
+      status: "completed",
+      recordedAt: 20,
+      threadId: "thread-1",
+      taskId: "task-9",
+      summary: "recovery dispatched",
+      metadata: {
+        recoveryContext: {
+          parentGroupId: "task-8",
+          attemptId: "recovery:task-8:attempt:1",
+          dispatchReplayId: "task-9:scheduled",
+        },
+      },
+    },
+    {
+      replayId: "task-9:worker:worker:browser:task:task-9",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 30,
+      threadId: "thread-1",
+      taskId: "task-9",
+      roleId: "role-operator",
+      workerType: "browser",
+      summary: "follow-up still blocked",
+      failure: {
+        category: "permission_denied",
+        layer: "worker",
+        retryable: false,
+        message: "manual approval required",
+        recommendedAction: "request_approval",
+      },
+      metadata: {
+        recoveryContext: {
+          parentGroupId: "task-8",
+          attemptId: "recovery:task-8:attempt:1",
+          dispatchReplayId: "task-9:scheduled",
+        },
+      },
+    },
+  ] as Parameters<typeof buildReplayInspectionReport>[0];
+
+  const consoleReport = buildReplayConsoleReport(records, 5);
+  const rootBundle = consoleReport.latestBundles.find((bundle) => bundle.groupId === "task-8");
+  assert.equal(consoleReport.workflowStatusCounts.manual_follow_up, 1);
+  assert.equal(consoleReport.caseStateCounts.waiting_manual, 1);
+  assert.equal(rootBundle?.workflowStatus, "manual_follow_up");
+  assert.equal(rootBundle?.caseState, "waiting_manual");
+  assert.match(rootBundle?.workflowSummary ?? "", /manual approval required/i);
 });
 
 test("replay inspection records recovered browser continuity from follow-up execution", () => {

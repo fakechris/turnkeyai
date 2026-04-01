@@ -26,6 +26,7 @@ export * from "./failure-taxonomy";
 export * from "./file-replay-recorder";
 export * from "./operator-inspection";
 export * from "./permission-governance-policy";
+export * from "./prompt-inspection";
 export * from "./prompt-admission-policy";
 export * from "./replay-inspection";
 export * from "./runtime-chain-inspection";

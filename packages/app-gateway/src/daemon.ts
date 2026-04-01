@@ -62,6 +62,7 @@ import {
   buildOperatorSummaryReport,
   buildRecoveryConsoleReport,
 } from "@turnkeyai/qc-runtime/operator-inspection";
+import { buildPromptConsoleReport } from "@turnkeyai/qc-runtime/prompt-inspection";
 import {
   buildReplayConsoleReport,
   buildReplayIncidentBundle,
@@ -145,7 +146,7 @@ import { FinanceWorkerHandler } from "@turnkeyai/worker-runtime/finance-worker-h
 import { LocalWorkerRuntime } from "@turnkeyai/worker-runtime/local-worker-runtime";
 import { DefaultWorkerRegistry } from "@turnkeyai/worker-runtime/worker-registry";
 
-import { validateRecoveryRunAction } from "./recovery-run-guards";
+import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
 
 const PORT = Number(process.env.TURNKEYAI_DAEMON_PORT ?? 4100);
 const DATA_DIR = path.resolve(process.cwd(), ".daemon-data");
@@ -762,6 +763,19 @@ const server = http.createServer(async (req, res) => {
       }
       const synced = await loadRecoveryRuntime(threadId);
       return sendJson(res, 200, buildRecoveryConsoleReport(synced.runs, limit));
+    }
+
+    if (req.method === "GET" && url.pathname === "/prompt-console") {
+      const threadId = url.searchParams.get("threadId");
+      if (!threadId) {
+        return sendJson(res, 400, { error: "threadId is required" });
+      }
+      const limit = parsePositiveLimit(url.searchParams.get("limit"));
+      if (limit == null) {
+        return sendJson(res, 400, { error: "limit must be a positive integer" });
+      }
+      const progressEvents = await runtimeProgressStore.listByThread(threadId);
+      return sendJson(res, 200, buildPromptConsoleReport(progressEvents, limit));
     }
 
     if (req.method === "GET" && url.pathname === "/operator-summary") {
@@ -2364,14 +2378,11 @@ async function executeRecoveryRunAction(input: {
     const recoveryPlan = findReplayRecoveryPlan(synced.records, run.sourceGroupId, synced.report);
     const syncedRun = findRecoveryRun(synced.records, run.recoveryRunId, [run], now) ?? run;
 
-    const actionGuardFailure = validateRecoveryRunAction(syncedRun, input.action);
-    if (actionGuardFailure) {
+    const actionGuardConflict = buildRecoveryRunActionConflict(syncedRun, input.action);
+    if (actionGuardConflict) {
       return {
         statusCode: 409,
-        body: {
-          error: actionGuardFailure,
-          recoveryRun: syncedRun,
-        },
+        body: actionGuardConflict,
       };
     }
 
@@ -2433,45 +2444,37 @@ async function executeRecoveryRunAction(input: {
     }
 
     if (!recoveryPlan && (input.action === "dispatch" || input.action === "retry" || input.action === "fallback" || input.action === "resume")) {
-    return {
-      statusCode: 409,
-      body: {
-        error: "recovery can no longer be resumed automatically",
-        recoveryRun: syncedRun,
-      },
-    };
-  }
+      return {
+        statusCode: 409,
+        body: buildRecoveryRunActionConflict(
+          syncedRun,
+          input.action,
+          "recovery can no longer be resumed automatically"
+        )!,
+      };
+    }
 
     if (!syncedRun.roleId) {
-    return {
-      statusCode: 409,
-      body: {
-        error: "recovery run is missing target role",
-        recoveryRun: syncedRun,
-      },
-    };
-  }
+      return {
+        statusCode: 409,
+        body: buildRecoveryRunActionConflict(syncedRun, input.action, "recovery run is missing target role")!,
+      };
+    }
 
     const dispatchNextAction = mapRecoveryRunActionToNextAction(input.action, recoveryPlan, syncedRun);
     if (!dispatchNextAction) {
-    return {
-      statusCode: 409,
-      body: {
-        error: "recovery action is not dispatchable",
-        recoveryRun: syncedRun,
-      },
-    };
-  }
+      return {
+        statusCode: 409,
+        body: buildRecoveryRunActionConflict(syncedRun, input.action, "recovery action is not dispatchable")!,
+      };
+    }
 
     if ((dispatchNextAction === "retry_same_layer" || dispatchNextAction === "fallback_transport" || dispatchNextAction === "auto_resume") && syncedRun.targetLayer === "worker" && !syncedRun.targetWorker) {
-    return {
-      statusCode: 409,
-      body: {
-        error: "recovery run is missing target worker",
-        recoveryRun: syncedRun,
-      },
-    };
-  }
+      return {
+        statusCode: 409,
+        body: buildRecoveryRunActionConflict(syncedRun, input.action, "recovery run is missing target worker")!,
+      };
+    }
 
     const browserSession = deriveRecoveryBrowserSessionHint(synced.records, syncedRun);
     const attemptId = `${syncedRun.recoveryRunId}:attempt:${syncedRun.attempts.length + 1}`;

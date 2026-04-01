@@ -1269,10 +1269,25 @@ export interface ReplayConsoleReport {
   recoveredGroups: number;
   attentionCount: number;
   actionCounts: Partial<Record<ReplayRecoveryPlan["nextAction"], number>>;
+  workflowStatusCounts: Partial<Record<NonNullable<ReplayIncidentBundle["recoveryWorkflow"]>["status"], number>>;
+  caseStateCounts: Partial<Record<OperatorCaseState, number>>;
   browserContinuityCounts: Partial<Record<ReplayBrowserContinuitySummary["state"], number>>;
   layerCounts: Partial<Record<ReplayLayer, number>>;
   failureCounts: Partial<Record<FailureCategory, number>>;
   latestIncidents: ReplayRecoveryPlan[];
+  latestBundles: Array<{
+    groupId: string;
+    latestStatus: ReplayTaskSummary["latestStatus"];
+    nextAction: ReplayRecoveryPlan["nextAction"];
+    autoDispatchReady: boolean;
+    caseState?: OperatorCaseState;
+    workflowStatus?: NonNullable<ReplayIncidentBundle["recoveryWorkflow"]>["status"];
+    workflowSummary?: string;
+    caseHeadline?: string;
+    browserContinuityState?: ReplayBrowserContinuitySummary["state"];
+    targetLayer?: ReplayRecoveryPlan["targetLayer"];
+    targetWorker?: ReplayRecoveryPlan["targetWorker"];
+  }>;
   latestGroups: ReplayTaskSummary[];
 }
 
@@ -1353,10 +1368,65 @@ export interface RecoveryConsoleReport {
   attentionCount: number;
   statusCounts: Partial<Record<RecoveryRunStatus, number>>;
   phaseCounts: Partial<Record<RecoveryRunProgress["phase"], number>>;
+  gateCounts: Record<string, number>;
   nextActionCounts: Partial<Record<RecoveryRun["nextAction"], number>>;
   browserResumeCounts: Partial<Record<BrowserResumeMode, number>>;
   browserOutcomeCounts: Partial<Record<RecoveryBrowserOutcome, number>>;
   latestRuns: RecoveryRun[];
+}
+
+export type PromptBoundaryKind = "prompt_compaction" | "request_envelope_reduction";
+export type PromptBoundaryReductionLevel = "compact" | "minimal" | "reference-only";
+
+export interface PromptBoundaryEntry {
+  progressId: string;
+  recordedAt: number;
+  summary: string;
+  threadId: ThreadId;
+  roleId?: RoleId;
+  flowId?: FlowId;
+  taskId?: TaskId;
+  chainId?: string;
+  spanId?: string;
+  boundaryKind: PromptBoundaryKind;
+  modelId?: string;
+  modelChainId?: string;
+  assemblyFingerprint?: string;
+  sectionOrder?: string[];
+  compactedSegments?: string[];
+  omittedSections?: string[];
+  usedArtifacts?: string[];
+  reductionLevel?: PromptBoundaryReductionLevel;
+  tokenEstimate?: {
+    inputTokens: number;
+    outputTokensReserved: number;
+    totalProjectedTokens: number;
+    overBudget: boolean;
+  };
+  envelopeHint?: {
+    toolResultCount?: number;
+    toolResultBytes?: number;
+    inlineAttachmentBytes?: number;
+    inlineImageCount?: number;
+    inlineImageBytes?: number;
+    inlinePdfCount?: number;
+    inlinePdfBytes?: number;
+    multimodalPartCount?: number;
+  };
+}
+
+export interface PromptConsoleReport {
+  totalBoundaries: number;
+  compactionCount: number;
+  reductionCount: number;
+  boundaryKindCounts: Partial<Record<PromptBoundaryKind, number>>;
+  reductionLevelCounts: Partial<Record<PromptBoundaryReductionLevel, number>>;
+  modelCounts: Record<string, number>;
+  modelChainCounts: Record<string, number>;
+  roleCounts: Record<string, number>;
+  compactedSegmentCounts: Record<string, number>;
+  uniqueAssemblyFingerprintCount: number;
+  latestBoundaries: PromptBoundaryEntry[];
 }
 
 export interface OperatorSummaryReport {

@@ -434,7 +434,7 @@ test("operator inspection builds one operator summary from flow, replay, and gov
   assert.equal(activeCasesByKey["governance:evt-op"]?.reasonPreview, "browser");
   assert.equal(activeCasesByKey["governance:evt-op"]?.nextStep, "fallback_browser");
   assert.match(activeCasesByKey["governance:evt-op"]?.latestUpdate ?? "", /requires attention/);
-  assert.equal(activeCasesByKey["incident:task-op"]?.gate, "waiting");
+  assert.equal(activeCasesByKey["incident:task-op"]?.gate, "waiting for approval");
   assert.equal(activeCasesByKey["incident:task-op"]?.action, "request_approval");
   assert.match(activeCasesByKey["incident:task-op"]?.reasonPreview ?? "", /\S+/);
   assert.equal(activeCasesByKey["incident:task-op"]?.browserContinuityState, "recovered");
@@ -667,6 +667,8 @@ test("operator inspection summarizes recovery run phases and browser outcomes", 
   assert.equal(report.statusCounts.recovered, 1);
   assert.equal(report.phaseCounts.awaiting_approval, 1);
   assert.equal(report.phaseCounts.recovered, 1);
+  assert.equal(report.gateCounts["waiting for approval"], 1);
+  assert.equal(report.gateCounts.recovered, 1);
   assert.equal(report.nextActionCounts.request_approval, 1);
   assert.equal(report.nextActionCounts.none, 1);
   assert.equal(report.browserResumeCounts.warm, 1);
@@ -848,6 +850,7 @@ test("operator inspection flattens cross-surface attention items", () => {
   assert.equal(bySource.recovery?.lifecycle, "waiting_manual");
   assert.equal(bySource.recovery?.caseKey, bySource.replay?.caseKey);
   assert.equal(bySource.recovery?.headline, bySource.replay?.headline);
+  assert.equal(bySource.recovery?.gate, "waiting for approval");
   assert.deepEqual(bySource.recovery?.reasons, ["waiting_approval", "Approval required."]);
 });
 
