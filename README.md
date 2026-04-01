@@ -113,6 +113,8 @@ npm run typecheck
 npm test
 ```
 
+主干 PR 的基础 CI 当前会运行 `npm run typecheck`、`npm test` 和 `npm run build`。
+
 启动本地 daemon：
 
 ```bash
