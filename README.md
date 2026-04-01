@@ -149,6 +149,19 @@ npx @turnkeyai/cli tui
 - capability discovery 查询接口
 - replay / recovery / regression 查询接口
 
+模型配置默认会按这个顺序查找：
+
+- `models.local.json`
+- `models.json`
+- `models.example.json`
+
+当前模型配置同时支持：
+
+- model catalog
+- model chain catalog
+
+角色可以通过 `modelRef` 或 `modelChain` 引用模型；`modelChain` 支持 `primary + fallbacks`。
+
 ## 仓库结构
 
 主要 package：
@@ -180,6 +193,7 @@ npx @turnkeyai/cli tui
 - [Project Foundation](./docs/design/project-foundation.md)
 - [Browser Session And Worker Protocol](./docs/design/browser-session-and-worker-protocol.md)
 - [Prompt Context Compression Design](./docs/design/prompt-context-compression-design.md)
+- [Model Catalog And Chain Config](./docs/design/model-catalog-and-chain-config.md)
 
 ## 当前里程碑判断
 

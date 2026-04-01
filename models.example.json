@@ -1,8 +1,8 @@
 {
   "defaultModelId": "gpt-5",
-  "models": [
-    {
-      "id": "gpt-5",
+  "defaultModelChainId": "builder_primary",
+  "models": {
+    "gpt-5": {
       "label": "GPT 5",
       "providerId": "openai",
       "protocol": "openai-compatible",
@@ -10,8 +10,7 @@
       "baseURL": "https://api.openai.com/v1",
       "apiKeyEnv": "OPENAI_API_KEY"
     },
-    {
-      "id": "claude-opus",
+    "claude-opus": {
       "label": "Claude Opus",
       "providerId": "anthropic",
       "protocol": "anthropic-compatible",
@@ -19,8 +18,7 @@
       "baseURL": "https://api.anthropic.com/v1",
       "apiKeyEnv": "ANTHROPIC_API_KEY"
     },
-    {
-      "id": "gemini",
+    "gemini": {
       "label": "Gemini via OpenAI-Compatible",
       "providerId": "gemini",
       "protocol": "openai-compatible",
@@ -28,8 +26,7 @@
       "baseURL": "https://your-gemini-compatible-baseurl.example/v1",
       "apiKeyEnv": "GEMINI_API_KEY"
     },
-    {
-      "id": "kimi",
+    "kimi": {
       "label": "Kimi via OpenAI-Compatible",
       "providerId": "kimi",
       "protocol": "openai-compatible",
@@ -37,8 +34,7 @@
       "baseURL": "https://your-kimi-compatible-baseurl.example/v1",
       "apiKeyEnv": "KIMI_API_KEY"
     },
-    {
-      "id": "minimax",
+    "minimax": {
       "label": "MiniMax via OpenAI-Compatible",
       "providerId": "minimax",
       "protocol": "openai-compatible",
@@ -46,5 +42,31 @@
       "baseURL": "https://your-minimax-compatible-baseurl.example/v1",
       "apiKeyEnv": "MINIMAX_API_KEY"
     }
-  ]
+  },
+  "modelChains": {
+    "lead_reasoning": {
+      "primary": "claude-opus",
+      "fallbacks": ["gpt-5"]
+    },
+    "builder_primary": {
+      "primary": "gpt-5",
+      "fallbacks": ["claude-opus"]
+    },
+    "browser_primary": {
+      "primary": "gemini",
+      "fallbacks": ["gpt-5"]
+    },
+    "explore_primary": {
+      "primary": "gpt-5",
+      "fallbacks": ["kimi"]
+    },
+    "analyst_primary": {
+      "primary": "kimi",
+      "fallbacks": ["gpt-5"]
+    },
+    "finance_primary": {
+      "primary": "minimax",
+      "fallbacks": ["gpt-5"]
+    }
+  }
 }

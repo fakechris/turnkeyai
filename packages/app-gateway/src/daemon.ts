@@ -340,9 +340,12 @@ const heuristicResponseGenerator = new DeterministicRoleResponseGenerator({
   modelAdapter: new HeuristicModelAdapter(),
   roleProfileRegistry,
 });
-const llmGateway = modelCatalogPath
+const modelRegistry = modelCatalogPath
+  ? new ModelRegistry(new FileModelCatalogSource(modelCatalogPath))
+  : null;
+const llmGateway = modelRegistry
   ? new LLMGateway({
-      registry: new ModelRegistry(new FileModelCatalogSource(modelCatalogPath)),
+      registry: modelRegistry,
       clients: [new OpenAICompatibleClient(), new AnthropicCompatibleClient()],
     })
   : null;
@@ -356,6 +359,7 @@ const roleRuntime = new PolicyRoleRuntime({
     roleMemoryResolver,
     promptAssembler,
     capabilityDiscoveryService,
+    ...(modelRegistry ? { modelSelectionDescriber: modelRegistry } : {}),
   }),
   responseGenerator: llmGateway
     ? new HybridRoleResponseGenerator({
@@ -1444,10 +1448,8 @@ function buildDemoRoles(variant: string) {
     name: "Lead",
     seat: "lead" as const,
     runtime: "local" as const,
-    model: {
-      provider: "anthropic-compatible",
-      name: "claude-opus",
-    },
+    modelRef: "claude-opus",
+    modelChain: "lead_reasoning",
   };
 
   if (variant === "coder") {
@@ -1458,10 +1460,8 @@ function buildDemoRoles(variant: string) {
         name: "Coder",
         seat: "member" as const,
         runtime: "local" as const,
-        model: {
-          provider: "openai-compatible",
-          name: "gpt-5",
-        },
+        modelRef: "gpt-5",
+        modelChain: "builder_primary",
       },
     ];
   }
@@ -1475,10 +1475,8 @@ function buildDemoRoles(variant: string) {
         seat: "member" as const,
         runtime: "local" as const,
         capabilities: ["finance"],
-        model: {
-          provider: "openai-compatible",
-          name: "minimax",
-        },
+        modelRef: "minimax",
+        modelChain: "finance_primary",
       },
     ];
   }
@@ -1492,10 +1490,8 @@ function buildDemoRoles(variant: string) {
         seat: "member" as const,
         runtime: "local" as const,
         capabilities: ["browser"],
-        model: {
-          provider: "openai-compatible",
-          name: "gemini",
-        },
+        modelRef: "gemini",
+        modelChain: "browser_primary",
       },
     ];
   }
@@ -1509,10 +1505,8 @@ function buildDemoRoles(variant: string) {
         seat: "member" as const,
         runtime: "local" as const,
         capabilities: ["explore"],
-        model: {
-          provider: "openai-compatible",
-          name: "gpt-5",
-        },
+        modelRef: "gpt-5",
+        modelChain: "explore_primary",
       },
       {
         roleId: "role-finance",
@@ -1520,10 +1514,8 @@ function buildDemoRoles(variant: string) {
         seat: "member" as const,
         runtime: "local" as const,
         capabilities: ["finance"],
-        model: {
-          provider: "openai-compatible",
-          name: "minimax",
-        },
+        modelRef: "minimax",
+        modelChain: "finance_primary",
       },
     ];
   }
@@ -1536,10 +1528,8 @@ function buildDemoRoles(variant: string) {
       seat: "member" as const,
       runtime: "local" as const,
       capabilities: ["explore"],
-      model: {
-        provider: "openai-compatible",
-        name: "kimi",
-      },
+      modelRef: "kimi",
+      modelChain: "analyst_primary",
     },
   ];
 }

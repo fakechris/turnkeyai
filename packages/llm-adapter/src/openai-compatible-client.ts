@@ -44,7 +44,7 @@ export class OpenAICompatibleClient implements ProtocolClient {
 
     return {
       text,
-      modelId: input.modelId,
+      modelId: input.modelId ?? model.id,
       providerId: model.providerId,
       protocol: model.protocol,
       adapterName: "openai-compatible",

@@ -26,6 +26,7 @@ import {
 import { DefaultContextBudgeter, type ContextBudgeter, type PromptTokenEstimate } from "./context/context-budgeter";
 import { DefaultRoleMemoryResolver, type RoleMemoryResolver } from "./context/role-memory-resolver";
 import { DefaultPromptAssembler, type OmittedPromptSegment, type PromptAssembler } from "./prompt/prompt-assembler";
+import { getRoleModelHint, getRoleModelSelection } from "./role-model-selection";
 import type { RoleProfileRegistry } from "./role-profile";
 
 export interface RolePromptPacket extends RolePromptPacketLike {
@@ -55,6 +56,15 @@ export interface RolePromptPolicy {
   buildPacket(input: RoleActivationInput): Promise<RolePromptPacket>;
 }
 
+interface ModelSelectionDescriber {
+  describeSelection(input: { modelId?: string; modelChainId?: string }): Promise<{
+    primary: {
+      providerId: string;
+      model: string;
+    };
+  }>;
+}
+
 export class DefaultRolePromptPolicy implements RolePromptPolicy {
   private static readonly MAX_SYSTEM_PROMPT_CACHE_ENTRIES = 64;
   private readonly roleProfileRegistry: RoleProfileRegistry;
@@ -63,6 +73,7 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
   private readonly promptAssembler: PromptAssembler;
   private readonly reservedOutputTokens: number;
   private readonly capabilityDiscoveryService: CapabilityDiscoveryService | undefined;
+  private readonly modelSelectionDescriber: ModelSelectionDescriber | undefined;
   private readonly systemPromptCache = new Map<string, string>();
 
   constructor(options: {
@@ -72,6 +83,7 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
     promptAssembler?: PromptAssembler;
     reservedOutputTokens?: number;
     capabilityDiscoveryService?: CapabilityDiscoveryService;
+    modelSelectionDescriber?: ModelSelectionDescriber;
   }) {
     this.roleProfileRegistry = options.roleProfileRegistry;
     this.contextBudgeter = options.contextBudgeter ?? new DefaultContextBudgeter();
@@ -90,6 +102,7 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
       });
     this.reservedOutputTokens = options.reservedOutputTokens ?? 1_200;
     this.capabilityDiscoveryService = options.capabilityDiscoveryService;
+    this.modelSelectionDescriber = options.modelSelectionDescriber;
   }
 
   async buildPacket(input: RoleActivationInput): Promise<RolePromptPacket> {
@@ -123,11 +136,12 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
       queryText: buildMemoryQuery(input),
     });
     const workerEvidence = await this.roleMemoryResolver.loadWorkerEvidence(input.thread.threadId);
+    const modelHint = await this.resolveModelHint(currentRole);
     const budget = await this.contextBudgeter.allocate({
       model: {
-        provider: currentRole.model?.provider ?? "unknown",
-        name: currentRole.model?.name ?? "unknown",
-        contextWindow: inferContextWindow(currentRole.model?.name),
+        provider: modelHint.provider,
+        name: modelHint.name,
+        contextWindow: inferContextWindow(modelHint.name),
       },
       reservedOutputTokens: this.reservedOutputTokens,
       mode: currentRole.seat === "lead" ? "lead" : "member",
@@ -214,6 +228,27 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
         ...(assembly.envelopeHint ? { envelopeHint: assembly.envelopeHint } : {}),
       },
     };
+  }
+
+  private async resolveModelHint(role: RoleSlot): Promise<{ provider: string; name: string }> {
+    const fallbackHint = getRoleModelHint(role);
+    if (!this.modelSelectionDescriber) {
+      return fallbackHint;
+    }
+
+    try {
+      const selection = getRoleModelSelection(role);
+      if (!selection.modelId && !selection.modelChainId) {
+        return fallbackHint;
+      }
+      const described = await this.modelSelectionDescriber.describeSelection(selection);
+      return {
+        provider: described.primary.providerId,
+        name: described.primary.model,
+      };
+    } catch {
+      return fallbackHint;
+    }
   }
 
   private buildCachedSystemPrompt(role: RoleSlot, styleHints: string[]): string {

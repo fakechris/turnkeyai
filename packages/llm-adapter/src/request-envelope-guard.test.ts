@@ -146,7 +146,7 @@ test("gateway returns request envelope diagnostics on successful model calls", a
     clients: [
       new StubClient(async (_model, input) => ({
         text: "ok",
-        modelId: input.modelId,
+        modelId: input.modelId ?? "test-model",
         providerId: "test",
         protocol: "openai-compatible",
         adapterName: "stub",
