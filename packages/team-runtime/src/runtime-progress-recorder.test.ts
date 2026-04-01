@@ -11,12 +11,13 @@ import { DefaultRuntimeProgressRecorder } from "./runtime-progress-recorder";
 
 async function waitForOutboxItems<T>(
   outbox: FileBatchOutbox<T>,
-  expectedAtLeast = 1
+  expectedAtLeast = 1,
+  isReady?: (items: Array<OutboxBatchRecord<T>>) => boolean
 ): Promise<Array<OutboxBatchRecord<T>>> {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
     const items = await outbox.listDue(32, Date.now() + 1_000);
-    if (items.length >= expectedAtLeast) {
+    if (items.length >= expectedAtLeast && (isReady ? isReady(items) : true)) {
       return items;
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -294,7 +295,13 @@ test("runtime progress recorder persists failed remote deliveries in the durable
     const outbox = new FileBatchOutbox<unknown>({
       rootDir: tempDir,
     });
-    const remaining = await waitForOutboxItems(outbox);
+    const remaining = await waitForOutboxItems(
+      outbox,
+      1,
+      (items) =>
+        (items[0] as { attemptCount?: number; lastError?: string } | undefined)?.attemptCount === 1 &&
+        String((items[0] as { lastError?: string } | undefined)?.lastError ?? "").includes("remote sink unavailable")
+    );
 
     assert.equal(remaining.length, 1);
     assert.equal((remaining[0] as { attemptCount?: number }).attemptCount, 1);
