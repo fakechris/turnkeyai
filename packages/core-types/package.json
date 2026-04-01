@@ -1,0 +1,12 @@
+{
+  "name": "@turnkeyai/core-types",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./team": "./src/team.ts",
+    "./async-mutex": "./src/async-mutex.ts",
+    "./file-store-utils": "./src/file-store-utils.ts",
+    "./browser-session-payload": "./src/browser-session-payload.ts",
+    "./shard-result-analysis": "./src/shard-result-analysis.ts"
+  }
+}

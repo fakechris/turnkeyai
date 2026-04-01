@@ -1,0 +1,14 @@
+{
+  "name": "@turnkeyai/llm-adapter",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./anthropic-compatible-client": "./src/anthropic-compatible-client.ts",
+    "./file-model-catalog": "./src/file-model-catalog.ts",
+    "./gateway": "./src/gateway.ts",
+    "./index": "./src/index.ts",
+    "./openai-compatible-client": "./src/openai-compatible-client.ts",
+    "./registry": "./src/registry.ts",
+    "./types": "./src/types.ts"
+  }
+}

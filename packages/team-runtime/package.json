@@ -1,0 +1,24 @@
+{
+  "name": "@turnkeyai/team-runtime",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./coordination-engine": "./src/coordination-engine.ts",
+    "./context-state-maintainer": "./src/context-state-maintainer.ts",
+    "./coalescing-state-uploader": "./src/coalescing-state-uploader.ts",
+    "./file-backed-team-route-map": "./src/file-backed-team-route-map.ts",
+    "./file-batch-outbox": "./src/file-batch-outbox.ts",
+    "./handoff-planner": "./src/handoff-planner.ts",
+    "./in-memory-team-event-bus": "./src/in-memory-team-event-bus.ts",
+    "./inline-role-loop-runner": "./src/inline-role-loop-runner.ts",
+    "./outbox-batch-shipper": "./src/outbox-batch-shipper.ts",
+    "./role-run-coordinator": "./src/role-run-coordinator.ts",
+    "./recovery-director": "./src/recovery-director.ts",
+    "./runtime-chain-recorder": "./src/runtime-chain-recorder.ts",
+    "./runtime-progress-recorder": "./src/runtime-progress-recorder.ts",
+    "./runtime-state-recorder": "./src/runtime-state-recorder.ts",
+    "./session-memory-refresh-worker": "./src/session-memory-refresh-worker.ts",
+    "./serial-batch-uploader": "./src/serial-batch-uploader.ts",
+    "./scheduled-task-runtime": "./src/scheduled-task-runtime.ts"
+  }
+}

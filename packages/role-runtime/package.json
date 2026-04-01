@@ -1,0 +1,18 @@
+{
+  "name": "@turnkeyai/role-runtime",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./compression/context-compressor": "./src/compression/context-compressor.ts",
+    "./context/context-budgeter": "./src/context/context-budgeter.ts",
+    "./context/role-memory-resolver": "./src/context/role-memory-resolver.ts",
+    "./deterministic-response-generator": "./src/deterministic-response-generator.ts",
+    "./hybrid-response-generator": "./src/hybrid-response-generator.ts",
+    "./llm-response-generator": "./src/llm-response-generator.ts",
+    "./model-adapter": "./src/model-adapter.ts",
+    "./policy-role-runtime": "./src/policy-role-runtime.ts",
+    "./prompt/prompt-assembler": "./src/prompt/prompt-assembler.ts",
+    "./prompt-policy": "./src/prompt-policy.ts",
+    "./role-profile": "./src/role-profile.ts"
+  }
+}

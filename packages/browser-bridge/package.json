@@ -1,0 +1,20 @@
+{
+  "name": "@turnkeyai/browser-bridge",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./fetch-browser-bridge": "./src/fetch-browser-bridge.ts",
+    "./local-chrome-browser-bridge": "./src/local-chrome-browser-bridge.ts",
+    "./chrome-session-manager": "./src/chrome-session-manager.ts",
+    "./session/browser-session-manager": "./src/session/browser-session-manager.ts",
+    "./session/file-browser-session-history-store": "./src/session/file-browser-session-history-store.ts",
+    "./session/file-browser-profile-store": "./src/session/file-browser-profile-store.ts",
+    "./session/file-browser-session-store": "./src/session/file-browser-session-store.ts",
+    "./session/file-browser-target-store": "./src/session/file-browser-target-store.ts",
+    "./refs/file-snapshot-ref-store": "./src/refs/file-snapshot-ref-store.ts",
+    "./artifacts/file-browser-artifact-store": "./src/artifacts/file-browser-artifact-store.ts"
+  },
+  "dependencies": {
+    "playwright-core": "^1.58.2"
+  }
+}

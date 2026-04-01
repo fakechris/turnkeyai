@@ -1,0 +1,14 @@
+{
+  "name": "@turnkeyai/worker-runtime",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./browser-task-planner": "./src/browser-task-planner.ts",
+    "./local-worker-runtime": "./src/local-worker-runtime.ts",
+    "./worker-registry": "./src/worker-registry.ts",
+    "./browser-worker-handler": "./src/browser-worker-handler.ts",
+    "./capability-discovery-service": "./src/capability-discovery-service.ts",
+    "./explore-worker-handler": "./src/explore-worker-handler.ts",
+    "./finance-worker-handler": "./src/finance-worker-handler.ts"
+  }
+}

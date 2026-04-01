@@ -1,0 +1,5 @@
+{
+  "name": "@turnkeyai/app-gateway",
+  "private": true,
+  "type": "module"
+}

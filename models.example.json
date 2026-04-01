@@ -1,0 +1,50 @@
+{
+  "defaultModelId": "gpt-5",
+  "models": [
+    {
+      "id": "gpt-5",
+      "label": "GPT 5",
+      "providerId": "openai",
+      "protocol": "openai-compatible",
+      "model": "gpt-5",
+      "baseURL": "https://api.openai.com/v1",
+      "apiKeyEnv": "OPENAI_API_KEY"
+    },
+    {
+      "id": "claude-opus",
+      "label": "Claude Opus",
+      "providerId": "anthropic",
+      "protocol": "anthropic-compatible",
+      "model": "claude-opus",
+      "baseURL": "https://api.anthropic.com/v1",
+      "apiKeyEnv": "ANTHROPIC_API_KEY"
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini via OpenAI-Compatible",
+      "providerId": "gemini",
+      "protocol": "openai-compatible",
+      "model": "gemini",
+      "baseURL": "https://your-gemini-compatible-baseurl.example/v1",
+      "apiKeyEnv": "GEMINI_API_KEY"
+    },
+    {
+      "id": "kimi",
+      "label": "Kimi via OpenAI-Compatible",
+      "providerId": "kimi",
+      "protocol": "openai-compatible",
+      "model": "kimi",
+      "baseURL": "https://your-kimi-compatible-baseurl.example/v1",
+      "apiKeyEnv": "KIMI_API_KEY"
+    },
+    {
+      "id": "minimax",
+      "label": "MiniMax via OpenAI-Compatible",
+      "providerId": "minimax",
+      "protocol": "openai-compatible",
+      "model": "minimax",
+      "baseURL": "https://your-minimax-compatible-baseurl.example/v1",
+      "apiKeyEnv": "MINIMAX_API_KEY"
+    }
+  ]
+}
