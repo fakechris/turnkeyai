@@ -90,6 +90,10 @@ import {
   listScenarioParityAcceptanceScenarios,
   runScenarioParityAcceptanceSuite,
 } from "@turnkeyai/qc-runtime/scenario-parity-acceptance";
+import {
+  listValidationSuites,
+  runValidationSuites,
+} from "@turnkeyai/qc-runtime/validation-suite";
 import { CoordinationEngine } from "@turnkeyai/team-runtime/coordination-engine";
 import { DefaultContextStateMaintainer } from "@turnkeyai/team-runtime/context-state-maintainer";
 import { FileBackedTeamRouteMap } from "@turnkeyai/team-runtime/file-backed-team-route-map";
@@ -954,6 +958,27 @@ const server = http.createServer(async (req, res) => {
         ? body.scenarioIds.filter((value): value is string => typeof value === "string" && value.length > 0)
         : undefined;
       return sendJson(res, 200, runScenarioParityAcceptanceSuite(scenarioIds));
+    }
+
+    if (req.method === "GET" && url.pathname === "/validation-cases") {
+      const suites = listValidationSuites();
+      return sendJson(res, 200, {
+        totalSuites: suites.length,
+        totalItems: suites.reduce((sum: number, suite) => sum + suite.totalItems, 0),
+        suites,
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/validation-cases/run") {
+      const body = await readJsonBody<{ selectors?: string[] }>(req);
+      const selectors = Array.isArray(body.selectors)
+        ? body.selectors.filter((value): value is string => typeof value === "string" && value.length > 0)
+        : undefined;
+      try {
+        return sendJson(res, 200, runValidationSuites(selectors));
+      } catch (error) {
+        return sendJson(res, 400, { error: error instanceof Error ? error.message : "invalid validation selectors" });
+      }
     }
 
     if (req.method === "GET" && url.pathname === "/replay-incidents") {

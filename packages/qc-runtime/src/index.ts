@@ -29,3 +29,4 @@ export * from "./permission-governance-policy";
 export * from "./prompt-admission-policy";
 export * from "./replay-inspection";
 export * from "./runtime-chain-inspection";
+export * from "./validation-suite";
