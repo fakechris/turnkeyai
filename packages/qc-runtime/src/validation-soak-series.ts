@@ -62,9 +62,8 @@ export function runValidationSoakSeries(
   options: ValidationSoakSeriesOptions = {}
 ): ValidationSoakSeriesResult {
   const selectedCycles = normalizeCycleCount(options.cycles);
-  const selectors = options.selectors && options.selectors.length > 0
-    ? options.selectors.filter((selector) => selector.trim().length > 0)
-    : [...DEFAULT_VALIDATION_SOAK_SELECTORS];
+  const normalizedSelectors = options.selectors?.map((selector) => selector.trim()).filter((selector) => selector.length > 0) ?? [];
+  const selectors = normalizedSelectors.length > 0 ? normalizedSelectors : [...DEFAULT_VALIDATION_SOAK_SELECTORS];
   const startedAt = Date.now();
   const cycleResults: ValidationSoakSeriesCycleResult[] = [];
 
@@ -138,4 +137,3 @@ function normalizeCycleCount(value?: number): number {
   }
   return Math.max(1, Math.floor(value!));
 }
-

@@ -24,6 +24,7 @@ import type {
 import { describeRecoveryRunGate, listAllowedRecoveryRunActions } from "@turnkeyai/core-types/recovery-operator-semantics";
 import { detectConflictRoleIds, detectDuplicateRoleIds } from "@turnkeyai/core-types/shard-result-analysis";
 import {
+  attachRecoveryRunToReplayIncidentBundle,
   buildRecoveryRunProgress,
   buildReplayConsoleReport,
   buildReplayIncidentBundle,
@@ -349,7 +350,7 @@ export function buildOperatorAttentionReport(input: {
       summary: `Flow ${group.flowId} shard ${group.groupId} needs attention: ${group.reasons.join(", ")}.`,
       action: group.status === "ready_to_merge" ? "merge" : "inspect_shard_group",
     })),
-    ...replayIncidents.slice(0, Math.max(limit, 20)).map((incident) => {
+    ...replayIncidents.map((incident) => {
       const bundle = bundleByGroupId.get(incident.groupId) ?? null;
       const lifecycle = deriveReplayAttentionLifecycle(bundle);
       return {
@@ -855,8 +856,26 @@ function buildResolvedRecentCaseSummaries(
   return report.groups
     .filter((group) => resolveReplayRootGroupId(group.groupId, replayParentByGroupId) === group.groupId)
     .filter((group) => !actionable.has(group.groupId))
-    .map((group) => buildReplayIncidentBundle(records, group.groupId))
-    .filter((bundle): bundle is NonNullable<typeof bundle> => bundle != null && bundle.caseState === "resolved")
+    .map((group) => {
+      const bundle = buildReplayIncidentBundle(records, group.groupId);
+      if (!bundle) {
+        return null;
+      }
+      const run = recoveryRuns.find((item) => item.sourceGroupId === group.groupId) ?? null;
+      return run
+        ? attachRecoveryRunToReplayIncidentBundle({
+            bundle,
+            run,
+            records,
+          })
+        : bundle;
+    })
+    .filter(
+      (bundle): bundle is NonNullable<typeof bundle> =>
+        bundle != null &&
+        bundle.caseState === "resolved" &&
+        (bundle.recoveryOperator?.caseState ?? "resolved") === "resolved"
+    )
     .sort((left, right) => {
       const leftRecordedAt = Math.max(
         left.group.latestRecordedAt,

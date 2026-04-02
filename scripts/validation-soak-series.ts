@@ -15,7 +15,7 @@ for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
   if (arg === "--cycles") {
     const rawValue = Number(args[index + 1] ?? "");
-    if (Number.isFinite(rawValue) && rawValue > 0) {
+    if (Number.isInteger(rawValue) && rawValue > 0) {
       cycles = rawValue;
     }
     index += 1;
@@ -66,4 +66,3 @@ if (jsonPath) {
 }
 
 process.exit(result.failedCycles === 0 ? 0 : 1);
-

@@ -11,12 +11,20 @@ let skipBuild = false;
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
   if (arg === "--json") {
-    jsonPath = args[index + 1] ?? null;
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) {
+      throw new Error("missing path for --json");
+    }
+    jsonPath = value;
     index += 1;
     continue;
   }
   if (arg === "--artifact-dir") {
-    artifactDirectory = args[index + 1] ?? null;
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) {
+      throw new Error("missing path for --artifact-dir");
+    }
+    artifactDirectory = value;
     index += 1;
     continue;
   }
@@ -27,7 +35,7 @@ for (let index = 0; index < args.length; index += 1) {
 
 const result = await runReleaseReadiness({
   artifactDirectory: artifactDirectory ?? undefined,
-  ...(skipBuild ? { skipBuild: true } : {}),
+  skipBuild,
 });
 
 console.log(`Release readiness: ${result.status} (${result.passedChecks}/${result.totalChecks} checks passed)`);

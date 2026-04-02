@@ -143,7 +143,7 @@ const SCENARIOS: ScenarioParityAcceptanceScenarioDescriptor[] = [
   },
   {
     scenarioId: "real-world-browser-research-runbook",
-    area: "operator",
+    area: "browser",
     title: "real-world browser research runbook",
     summary:
       "验证真实浏览器研究任务在 recovery、prompt pressure、runtime waiting 和 triage 首页之间形成同场景的 operator runbook。",

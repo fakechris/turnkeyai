@@ -25,3 +25,11 @@ test("validation soak series runs multiple cycles with selected suites", () => {
   assert.ok(result.suiteAggregates.some((suite) => suite.suiteId === "realworld"));
 });
 
+test("validation soak series falls back to defaults when selectors only contain whitespace", () => {
+  const result = runValidationSoakSeries({
+    cycles: 1,
+    selectors: ["  ", "\n"],
+  });
+
+  assert.deepEqual(result.selectors, ["soak", "realworld", "acceptance"]);
+});

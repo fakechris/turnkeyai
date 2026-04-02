@@ -77,9 +77,11 @@ jobs:
         run: npm run release:verify -- --skip-build --artifact-dir .artifacts --json .artifacts/release-readiness.json
 
       - name: Upload CLI artifact
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: turnkeyai-cli-package
+          if-no-files-found: warn
           path: |
             .artifacts/*.tgz
             .artifacts/release-readiness.json

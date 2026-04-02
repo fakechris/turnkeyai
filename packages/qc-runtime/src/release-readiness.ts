@@ -67,6 +67,7 @@ export async function runReleaseReadiness(
   options: ReleaseReadinessOptions = {}
 ): Promise<ReleaseReadinessResult> {
   const workspaceRoot = path.resolve(options.workspaceRoot ?? process.cwd());
+  const sourcePackageJson = await readSourceCliPackageJson(workspaceRoot);
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-release-readiness-"));
   const extractDir = path.join(tempRoot, "extract");
   const packDir = options.artifactDirectory
@@ -132,14 +133,16 @@ export async function runReleaseReadiness(
       engines?: { node?: string };
     };
     const expectedPackageName = options.expectedPackageName ?? DEFAULT_PACKAGE_NAME;
-    const expectedPackageVersion = options.expectedPackageVersion ?? packageJson.version;
+    const expectedPackageVersion = options.expectedPackageVersion ?? sourcePackageJson.version;
 
     await recordCheck(checks, "package-metadata", "Validate packaged CLI metadata", async () => {
       const failures: string[] = [];
       if (packageJson.name !== expectedPackageName) {
         failures.push(`expected name ${expectedPackageName}, got ${packageJson.name ?? "missing"}`);
       }
-      if (expectedPackageVersion && packageJson.version !== expectedPackageVersion) {
+      if (!packageJson.version) {
+        failures.push("missing packaged version");
+      } else if (expectedPackageVersion && packageJson.version !== expectedPackageVersion) {
         failures.push(`expected version ${expectedPackageVersion}, got ${packageJson.version ?? "missing"}`);
       }
       if (packageJson.license !== "Apache-2.0") {
@@ -288,6 +291,11 @@ async function runPublishDryRun(workspaceRoot: string): Promise<string> {
     }
   );
   return `${stdout}\n${stderr}`;
+}
+
+async function readSourceCliPackageJson(workspaceRoot: string): Promise<{ version?: string }> {
+  const packageJsonPath = path.join(workspaceRoot, "packages/cli/package.json");
+  return JSON.parse(await readFile(packageJsonPath, "utf8")) as { version?: string };
 }
 
 async function runNodeCommand(args: string[], cwd: string): Promise<string> {

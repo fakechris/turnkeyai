@@ -1130,9 +1130,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/soak-series/run") {
       const body = await readJsonBody<{ cycles?: number; selectors?: string[] }>(req);
       const selectors = Array.isArray(body.selectors)
-        ? body.selectors.filter((value): value is string => typeof value === "string" && value.length > 0)
+        ? body.selectors
+            .filter((value): value is string => typeof value === "string")
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0)
         : undefined;
-      const cycles = Number.isFinite(body.cycles) ? Number(body.cycles) : undefined;
+      if (body.cycles !== undefined && (!Number.isInteger(body.cycles) || body.cycles <= 0)) {
+        return sendJson(res, 400, { error: "Invalid cycles: must be a positive integer" });
+      }
+      const cycles = body.cycles !== undefined ? Number(body.cycles) : undefined;
       try {
         return sendJson(
           res,

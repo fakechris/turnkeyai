@@ -706,6 +706,7 @@ test("replay console surfaces operator waiting-manual state alongside recovered 
   assert.equal(consoleReport.operatorCaseStateCounts.waiting_manual, 1);
   assert.equal(bundle?.workflowStatus, "recovered");
   assert.equal(bundle?.caseState, "resolved");
+  assert.equal(bundle?.nextAction, "inspect_then_resume");
   assert.equal(bundle?.operatorCaseState, "waiting_manual");
   assert.equal(bundle?.operatorGate, "waiting for external/manual follow-up");
   assert.deepEqual(bundle?.operatorAllowedActions, ["retry", "fallback", "resume", "reject"]);

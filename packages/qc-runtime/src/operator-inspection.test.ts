@@ -624,6 +624,101 @@ test("operator summary surfaces resolved case count from replay console", () => 
   assert.equal(summary.attentionOverview?.resolvedRecentCases?.[0]?.browserContinuityState, "recovered");
 });
 
+test("operator summary does not classify recovery-gated replay bundles as resolved recent cases", () => {
+  const records: ReplayRecord[] = [
+    {
+      replayId: "task-manual-resolved:worker:worker:browser:task:task-manual-resolved",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-manual-resolved",
+      roleId: "lead",
+      workerType: "browser",
+      summary: "browser detached",
+      failure: {
+        category: "stale_session",
+        layer: "worker",
+        retryable: true,
+        message: "browser detached",
+        recommendedAction: "resume",
+      },
+    },
+    {
+      replayId: "task-manual-resolved-follow:scheduled",
+      layer: "scheduled",
+      status: "completed",
+      recordedAt: 20,
+      threadId: "thread-1",
+      taskId: "task-manual-resolved-follow",
+      roleId: "lead",
+      summary: "recovery dispatch created",
+      metadata: {
+        recoveryContext: {
+          parentGroupId: "task-manual-resolved",
+          attemptId: "recovery:task-manual-resolved:attempt:1",
+          dispatchReplayId: "task-manual-resolved-follow:scheduled",
+        },
+      },
+    },
+    {
+      replayId: "task-manual-resolved-follow:worker:worker:browser:task:task-manual-resolved-follow",
+      layer: "worker",
+      status: "completed",
+      recordedAt: 30,
+      threadId: "thread-1",
+      taskId: "task-manual-resolved-follow",
+      roleId: "lead",
+      workerType: "browser",
+      summary: "browser continuity recovered; operator follow-up still pending",
+      metadata: {
+        recoveryContext: {
+          parentGroupId: "task-manual-resolved",
+          attemptId: "recovery:task-manual-resolved:attempt:1",
+          dispatchReplayId: "task-manual-resolved-follow:scheduled",
+        },
+      },
+    },
+  ];
+
+  const summary = buildOperatorSummaryReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: records,
+    recoveryRuns: [
+      {
+        recoveryRunId: buildRecoveryRunId("task-manual-resolved"),
+        threadId: "thread-1",
+        sourceGroupId: "task-manual-resolved",
+        latestStatus: "partial",
+        status: "waiting_external",
+        nextAction: "inspect_then_resume",
+        autoDispatchReady: false,
+        requiresManualIntervention: true,
+        latestSummary: "Recovered browser continuity; waiting on manual follow-up.",
+        waitingReason: "manual follow-up pending",
+        currentAttemptId: "attempt-1",
+        attempts: [
+          {
+            attemptId: "attempt-1",
+            action: "resume",
+            requestedAt: 20,
+            updatedAt: 30,
+            status: "waiting_external",
+            nextAction: "inspect_then_resume",
+            summary: "Recovered browser continuity; waiting on manual follow-up.",
+          },
+        ],
+        createdAt: 20,
+        updatedAt: 30,
+      },
+    ],
+  });
+
+  assert.equal(summary.attentionOverview?.resolvedRecentCases?.length ?? 0, 0);
+});
+
 test("operator inspection summarizes recovery run phases and browser outcomes", () => {
   const report = buildRecoveryConsoleReport([
     {
@@ -1008,6 +1103,38 @@ test("operator inspection counts cases from the full dataset before limiting ret
   assert.equal(report.caseStateCounts.waiting_manual, 12);
   assert.equal(report.severityCounts.critical, 13);
   assert.equal(report.severityCounts.warning, 12);
+});
+
+test("operator inspection counts replay cases from the full dataset before limiting returned items", () => {
+  const report = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: Array.from({ length: 25 }, (_, index) => ({
+      replayId: `task-replay-${index}:worker`,
+      layer: "worker" as const,
+      status: "failed" as const,
+      recordedAt: 100 + index,
+      threadId: "thread-1",
+      taskId: `task-replay-${index}`,
+      summary: `worker failed ${index}`,
+      failure: {
+        category: "transport_failed" as const,
+        layer: "worker" as const,
+        retryable: true,
+        message: `worker failed ${index}`,
+        recommendedAction: "fallback" as const,
+      },
+    })),
+    recoveryRuns: [],
+    limit: 1,
+  });
+
+  assert.equal(report.totalItems, 25);
+  assert.equal(report.returnedItems, 1);
+  assert.equal(report.uniqueCaseCount, 25);
+  assert.equal(report.caseStateCounts.open, 25);
+  assert.equal(report.severityCounts.warning, 25);
 });
 
 test("operator triage prioritizes compound incidents and surfaces runtime and prompt entry points", () => {

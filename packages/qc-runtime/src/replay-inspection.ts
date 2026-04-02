@@ -300,10 +300,21 @@ function buildReplayConsoleBundleEntry(
   bundle: ReplayIncidentBundle | null,
   recovery: ReplayRecoveryPlan | null
 ): ReplayConsoleReport["latestBundles"][number] {
+  const workflowNextAction = bundle?.recoveryWorkflow?.nextAction;
+  const operatorNextAction = bundle?.recoveryOperator?.nextAction;
+  const recoveryNextAction = recovery?.nextAction;
+  const nextAction =
+    workflowNextAction && workflowNextAction !== "none"
+      ? workflowNextAction
+      : recoveryNextAction
+        ? recoveryNextAction
+        : operatorNextAction && operatorNextAction !== "none"
+          ? operatorNextAction
+          : "none";
   return {
     groupId: bundle?.group.groupId ?? recovery?.groupId ?? "unknown",
     latestStatus: bundle?.group.latestStatus ?? recovery?.latestStatus ?? "failed",
-    nextAction: bundle?.recoveryWorkflow?.nextAction ?? recovery?.nextAction ?? "none",
+    nextAction,
     autoDispatchReady: recovery?.autoDispatchReady ?? false,
     ...(bundle?.caseState ? { caseState: bundle.caseState } : {}),
     ...(bundle?.recoveryWorkflow?.status ? { workflowStatus: bundle.recoveryWorkflow.status } : {}),

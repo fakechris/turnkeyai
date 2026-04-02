@@ -9,6 +9,7 @@ import {
 test("real-world suite lists built-in runbook scenarios", () => {
   const scenarios = listRealWorldScenarios();
 
+  assert.equal(scenarios.length, 7);
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "browser-research-recovery-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "parallel-governed-synthesis-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "continuation-pressure-runbook"));
@@ -32,4 +33,8 @@ test("real-world suite can run one selected runbook scenario", () => {
   assert.equal(result.totalScenarios, 1);
   assert.equal(result.scenarios[0]?.scenarioId, "browser-research-recovery-runbook");
   assert.equal(result.scenarios[0]?.status, "passed");
+});
+
+test("real-world suite rejects unknown scenario ids", () => {
+  assert.throws(() => runRealWorldSuite(["not-a-real-scenario"]), /unknown real-world scenario ids/);
 });

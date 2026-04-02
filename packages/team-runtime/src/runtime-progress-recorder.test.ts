@@ -33,6 +33,7 @@ async function waitForCondition(predicate: () => boolean, timeoutMs = 2_000): Pr
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+  throw new Error(`waitForCondition timed out after ${timeoutMs}ms`);
 }
 
 test("runtime progress recorder emits an audit event when progress persistence fails permanently", async () => {
