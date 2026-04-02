@@ -428,6 +428,7 @@ export function attachRecoveryRunToReplayIncidentBundle(input: {
   input.bundle.recoveryProgress = progress;
   input.bundle.recoveryTimeline = buildRecoveryRunTimeline(input.run, input.records, input.events ?? []);
   input.bundle.recoveryOperator = {
+    caseState: deriveRecoveryRunOperatorCaseState(input.run),
     currentGate: describeRecoveryRunGate(input.run.status),
     allowedActions: listAllowedRecoveryRunActions(input.run.status).filter((action) => action !== "dispatch"),
     nextAction: input.run.nextAction,
@@ -437,6 +438,28 @@ export function attachRecoveryRunToReplayIncidentBundle(input: {
     ...(latestBrowserOutcome ? { latestBrowserOutcome } : {}),
   };
   return input.bundle;
+}
+
+function deriveRecoveryRunOperatorCaseState(run: RecoveryRun): NonNullable<ReplayIncidentBundle["caseState"]> {
+  switch (run.status) {
+    case "waiting_approval":
+    case "waiting_external":
+      return "waiting_manual";
+    case "running":
+    case "retrying":
+    case "fallback_running":
+    case "resumed":
+    case "superseded":
+      return "recovering";
+    case "recovered":
+      return "resolved";
+    case "failed":
+    case "aborted":
+      return "blocked";
+    case "planned":
+    default:
+      return "open";
+  }
 }
 
 function buildBundleCaseHeadline(

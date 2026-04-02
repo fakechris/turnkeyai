@@ -905,6 +905,7 @@ test("replay incident bundle can expose recovery operator gate and allowed actio
   });
 
   assert.equal(enriched.recoveryOperator?.currentGate, "waiting for approval");
+  assert.equal(enriched.recoveryOperator?.caseState, "waiting_manual");
   assert.deepEqual(enriched.recoveryOperator?.allowedActions, ["approve", "reject"]);
   assert.equal(enriched.recoveryOperator?.nextAction, "request_approval");
   assert.equal(enriched.recoveryOperator?.phase, "awaiting_approval");

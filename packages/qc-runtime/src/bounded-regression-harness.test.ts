@@ -20,6 +20,7 @@ test("bounded regression harness lists built-in cases", () => {
   assert.ok(cases.some((item) => item.caseId === "recovery-retry-escalation"));
   assert.ok(cases.some((item) => item.caseId === "recovery-browser-detached-target"));
   assert.ok(cases.some((item) => item.caseId === "browser-recovery-cold-reopen-outcome"));
+  assert.ok(cases.some((item) => item.caseId === "browser-recovery-recovered-but-waiting-manual-stays-visible"));
   assert.ok(cases.some((item) => item.caseId === "replay-console-browser-continuity-counts"));
   assert.ok(cases.some((item) => item.caseId === "parallel-three-shard-success-ready-to-merge"));
   assert.ok(cases.some((item) => item.caseId === "parallel-flow-summary-highlights-shard-issues"));

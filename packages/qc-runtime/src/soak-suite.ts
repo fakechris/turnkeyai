@@ -49,6 +49,7 @@ const SCENARIOS: SoakScenarioDescriptor[] = [
     caseIds: [
       "browser-recovery-cold-reopen-outcome",
       "browser-recovery-multi-attempt-chain-stays-aligned",
+      "browser-recovery-recovered-but-waiting-manual-stays-visible",
       "replay-console-browser-continuity-counts",
       "runtime-summary-keeps-browser-recovered-chain-active",
     ],

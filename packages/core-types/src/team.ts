@@ -1341,6 +1341,7 @@ export interface ReplayIncidentBundle {
   recoveryTimeline?: RecoveryRunTimelineEntry[];
   recoveryProgress?: RecoveryRunProgress;
   recoveryOperator?: {
+    caseState: OperatorCaseState;
     currentGate: string;
     allowedActions: RecoveryRunAction[];
     nextAction: RecoveryRun["nextAction"];

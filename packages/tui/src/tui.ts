@@ -2447,7 +2447,7 @@ function printReplayBundle(bundle: ReplayIncidentBundle): void {
   }
   if (bundle.recoveryOperator) {
     console.log(
-      `  operator gate: ${bundle.recoveryOperator.currentGate}  next=${describeRecoveryAction(bundle.recoveryOperator.nextAction)}  phase=${bundle.recoveryOperator.phase}`
+      `  operator gate: ${bundle.recoveryOperator.currentGate}  case=${bundle.recoveryOperator.caseState}  next=${describeRecoveryAction(bundle.recoveryOperator.nextAction)}  phase=${bundle.recoveryOperator.phase}`
     );
     console.log(`  operator summary: ${bundle.recoveryOperator.phaseSummary}`);
     console.log(

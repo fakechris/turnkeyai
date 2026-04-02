@@ -3494,6 +3494,152 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
   {
+    caseId: "browser-recovery-recovered-but-waiting-manual-stays-visible",
+    title: "Browser recovery stays visible after continuity is recovered but manual follow-up remains",
+    area: "browser",
+    summary:
+      "When browser continuity recovers but the recovery run still waits on manual verification, the replay bundle should preserve recovered workflow state plus waiting-manual operator state.",
+    run() {
+      const records = [
+        {
+          replayId: "task-browser-manual:worker:worker:browser:task:task-browser-manual",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 10,
+          threadId: "thread-1",
+          taskId: "task-browser-manual",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "browser target detached during operator flow",
+          failure: {
+            category: "stale_session",
+            layer: "worker",
+            retryable: true,
+            message: "browser target detached",
+            recommendedAction: "resume",
+          },
+        },
+        {
+          replayId: "task-browser-manual-follow:scheduled",
+          layer: "scheduled",
+          status: "completed",
+          recordedAt: 20,
+          threadId: "thread-1",
+          taskId: "task-browser-manual-follow",
+          roleId: "role-operator",
+          summary: "browser recovery dispatch created",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-browser-manual",
+              attemptId: "recovery:task-browser-manual:attempt:1",
+              dispatchReplayId: "task-browser-manual-follow:scheduled",
+            },
+          },
+        },
+        {
+          replayId: "task-browser-manual-follow:worker:worker:browser:task:task-browser-manual-follow",
+          layer: "worker",
+          status: "completed",
+          recordedAt: 30,
+          threadId: "thread-1",
+          taskId: "task-browser-manual-follow",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "browser continuity recovered; waiting on operator verification",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-browser-manual",
+              attemptId: "recovery:task-browser-manual:attempt:1",
+              dispatchReplayId: "task-browser-manual-follow:scheduled",
+            },
+            payload: {
+              sessionId: "browser-session-manual",
+              targetId: "target-manual",
+              resumeMode: "warm",
+              targetResolution: "reconnect",
+            },
+          },
+        },
+      ] satisfies ReplayRecord[];
+
+      const bundle = buildReplayIncidentBundle(records, "task-browser-manual");
+      if (!bundle) {
+        return buildResult(this, false, ["bundle=missing"]);
+      }
+      const enriched = attachRecoveryRunToReplayIncidentBundle({
+        bundle,
+        run: {
+          recoveryRunId: buildRecoveryRunId("task-browser-manual"),
+          threadId: "thread-1",
+          sourceGroupId: "task-browser-manual",
+          taskId: "task-browser-manual",
+          roleId: "role-operator",
+          targetLayer: "worker",
+          targetWorker: "browser",
+          latestStatus: "partial",
+          status: "waiting_external",
+          nextAction: "inspect_then_resume",
+          autoDispatchReady: false,
+          requiresManualIntervention: true,
+          latestSummary: "Browser continuity recovered; waiting on operator verification.",
+          waitingReason: "waiting on operator verification",
+          browserSession: {
+            sessionId: "browser-session-manual",
+            targetId: "target-manual",
+            resumeMode: "warm",
+          },
+          currentAttemptId: "recovery:task-browser-manual:attempt:1",
+          attempts: [
+            {
+              attemptId: "recovery:task-browser-manual:attempt:1",
+              action: "resume",
+              requestedAt: 20,
+              updatedAt: 30,
+              status: "waiting_external",
+              nextAction: "inspect_then_resume",
+              summary: "Detached target recovered; waiting on operator verification.",
+              browserOutcome: "detached_target_recovered",
+              dispatchedTaskId: "task-browser-manual-follow",
+              targetLayer: "worker",
+              targetWorker: "browser",
+            },
+          ],
+          createdAt: 20,
+          updatedAt: 30,
+        },
+        records,
+      });
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: records,
+        recoveryRuns: [enriched.recoveryRun!],
+        limit: 10,
+      });
+      const details = [
+        `workflow=${enriched.recoveryWorkflow?.status ?? "-"}`,
+        `bundleCase=${enriched.caseState ?? "-"}`,
+        `operatorCase=${enriched.recoveryOperator?.caseState ?? "-"}`,
+        `gate=${enriched.recoveryOperator?.currentGate ?? "-"}`,
+        `allowed=${enriched.recoveryOperator?.allowedActions.join(",") ?? "-"}`,
+        `summaryCase=${operatorSummary.attentionOverview?.activeCases?.[0]?.caseState ?? "-"}`,
+        `browser=${enriched.browserContinuity?.state ?? "-"}`,
+      ];
+      const passed =
+        enriched.recoveryWorkflow?.status === "recovered" &&
+        enriched.caseState === "resolved" &&
+        enriched.recoveryOperator?.caseState === "waiting_manual" &&
+        enriched.recoveryOperator?.currentGate === "waiting for external/manual follow-up" &&
+        enriched.recoveryOperator?.allowedActions.join(",") === "retry,fallback,resume,reject" &&
+        enriched.recoveryOperator?.latestBrowserOutcome === "detached_target_recovered" &&
+        operatorSummary.attentionOverview?.activeCases?.[0]?.caseState === "waiting_manual" &&
+        operatorSummary.recovery.browserOutcomeCounts.detached_target_recovered === 1 &&
+        enriched.browserContinuity?.state === "recovered";
+      return buildResult(this, passed, details);
+    },
+  },
+  {
     caseId: "browser-continuity-attention-summary",
     title: "Replay bundle surfaces browser continuity state",
     area: "browser",
