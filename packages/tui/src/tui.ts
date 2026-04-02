@@ -2656,6 +2656,13 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
         .join(", ")}`
     );
   }
+  if (Object.keys(payload.operatorCaseStateCounts).length > 0) {
+    console.log(
+      `  operator case state: ${Object.entries(payload.operatorCaseStateCounts)
+        .map(([state, count]) => `${state}=${count}`)
+        .join(", ")}`
+    );
+  }
   if (Object.keys(payload.browserContinuityCounts).length > 0) {
     console.log(
       `  browser continuity: ${Object.entries(payload.browserContinuityCounts)
@@ -2681,6 +2688,9 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       if (bundle.browserContinuityState) {
         parts.push(`browser=${bundle.browserContinuityState}`);
       }
+      if (bundle.operatorCaseState) {
+        parts.push(`operator=${bundle.operatorCaseState}`);
+      }
       if (bundle.targetLayer || bundle.targetWorker) {
         parts.push(`target=${bundle.targetLayer ?? "main"}${bundle.targetWorker ? `/${bundle.targetWorker}` : ""}`);
       }
@@ -2690,6 +2700,16 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       }
       if (bundle.workflowSummary) {
         console.log(`      ${bundle.workflowSummary}`);
+      }
+      if (bundle.operatorGate || (bundle.operatorAllowedActions && bundle.operatorAllowedActions.length > 0)) {
+        const operatorParts: string[] = [];
+        if (bundle.operatorGate) {
+          operatorParts.push(`gate=${bundle.operatorGate}`);
+        }
+        if (bundle.operatorAllowedActions && bundle.operatorAllowedActions.length > 0) {
+          operatorParts.push(`allowed=${bundle.operatorAllowedActions.map(describeAttemptAction).join("/")}`);
+        }
+        console.log(`      operator: ${operatorParts.join("  ")}`);
       }
     }
   }
@@ -2711,12 +2731,25 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       if (bundle.browserContinuityState) {
         parts.push(`browser=${bundle.browserContinuityState}`);
       }
+      if (bundle.operatorCaseState) {
+        parts.push(`operator=${bundle.operatorCaseState}`);
+      }
       console.log(`    - ${parts.join("  ")}`);
       if (bundle.caseHeadline) {
         console.log(`      ${bundle.caseHeadline}`);
       }
       if (bundle.workflowSummary) {
         console.log(`      ${bundle.workflowSummary}`);
+      }
+      if (bundle.operatorGate || (bundle.operatorAllowedActions && bundle.operatorAllowedActions.length > 0)) {
+        const operatorParts: string[] = [];
+        if (bundle.operatorGate) {
+          operatorParts.push(`gate=${bundle.operatorGate}`);
+        }
+        if (bundle.operatorAllowedActions && bundle.operatorAllowedActions.length > 0) {
+          operatorParts.push(`allowed=${bundle.operatorAllowedActions.map(describeAttemptAction).join("/")}`);
+        }
+        console.log(`      operator: ${operatorParts.join("  ")}`);
       }
     }
   }

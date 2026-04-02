@@ -923,12 +923,15 @@ const server = http.createServer(async (req, res) => {
       if (limit == null) {
         return sendJson(res, 400, { error: "limit must be a positive integer" });
       }
+      if (threadId) {
+        const synced = await loadRecoveryRuntime(threadId);
+        return sendJson(res, 200, buildReplayConsoleReport(synced.records, limit, synced.runs));
+      }
       return sendJson(
         res,
         200,
         buildReplayConsoleReport(
           await replayRecorder.list({
-            ...(threadId ? { threadId } : {}),
             limit: Math.max(limit, 200),
           }),
           limit

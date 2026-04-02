@@ -241,13 +241,13 @@ export function buildOperatorSummaryReport(input: {
 }): OperatorSummaryReport {
   const limit = input.limit ?? 10;
   const flow = buildFlowConsoleReport(input.flows, limit);
-  const replay = buildReplayConsoleReport(input.replays, limit);
+  const replay = buildReplayConsoleReport(input.replays, limit, input.recoveryRuns);
   const governance = buildGovernanceConsoleReport(input.permissionRecords, input.events, limit);
   const recovery = buildRecoveryConsoleReport(input.recoveryRuns, limit);
   const prompt = buildPromptConsoleReport(input.progressEvents ?? [], limit);
   const attention = buildOperatorAttentionReport({ ...input, limit: Number.MAX_SAFE_INTEGER });
   const promptAttentionCount = attention.sourceCounts.prompt ?? 0;
-  const resolvedRecentCases = buildResolvedRecentCaseSummaries(input.replays, Math.min(limit, 5));
+  const resolvedRecentCases = buildResolvedRecentCaseSummaries(input.replays, input.recoveryRuns, Math.min(limit, 5));
   const activeCases = attention.cases
     .slice()
     .sort(compareOperatorAttentionCases)
@@ -305,7 +305,7 @@ export function buildOperatorAttentionReport(input: {
   const limit = input.limit ?? 20;
   const fullReportLimit = Number.MAX_SAFE_INTEGER;
   const flow = buildFlowConsoleReport(input.flows, fullReportLimit);
-  const replay = buildReplayConsoleReport(input.replays, fullReportLimit);
+  const replay = buildReplayConsoleReport(input.replays, fullReportLimit, input.recoveryRuns);
   const replayInspection = buildReplayInspectionReport(input.replays);
   const replayIncidents = listActionableReplayIncidents(input.replays, replayInspection);
   const governance = buildGovernanceConsoleReport(input.permissionRecords, input.events, fullReportLimit);
@@ -746,6 +746,7 @@ function buildAttentionCaseSummary(
 
 function buildResolvedRecentCaseSummaries(
   records: ReplayRecord[],
+  recoveryRuns: RecoveryRun[],
   limit: number
 ): Array<{
   caseKey: string;
@@ -759,7 +760,7 @@ function buildResolvedRecentCaseSummaries(
   latestUpdate: string;
   nextStep: string;
 }> {
-  const consoleReport = buildReplayConsoleReport(records, Math.max(limit, 20));
+  const consoleReport = buildReplayConsoleReport(records, Math.max(limit, 20), recoveryRuns);
   const report = buildReplayInspectionReport(records);
   const actionable = new Set(listActionableReplayIncidents(records, report).map((item) => item.groupId));
   const replayParentByGroupId = buildReplayParentByGroupId(records);

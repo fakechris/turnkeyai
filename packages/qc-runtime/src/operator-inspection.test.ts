@@ -421,6 +421,7 @@ test("operator inspection builds one operator summary from flow, replay, and gov
   assert.equal(summary.prompt.totalBoundaries, 1);
   assert.equal(summary.promptAttentionCount, 1);
   assert.equal(summary.totalAttentionCount, 5);
+  assert.equal(summary.replay.operatorCaseStateCounts.waiting_manual, 1);
   assert.equal(summary.attentionOverview?.uniqueCaseCount, 4);
   assert.equal(summary.attentionOverview?.caseStateCounts.open, 1);
   assert.equal(summary.attentionOverview?.caseStateCounts.recovering, 1);
@@ -457,6 +458,9 @@ test("operator inspection builds one operator summary from flow, replay, and gov
   assert.deepEqual(activeCasesByKey["incident:task-op"]?.allowedActions, ["approve", "reject"]);
   assert.match(activeCasesByKey["incident:task-op"]?.reasonPreview ?? "", /\S+/);
   assert.equal(activeCasesByKey["incident:task-op"]?.browserContinuityState, "recovered");
+  assert.equal(summary.replay.latestBundles[0]?.operatorCaseState, "waiting_manual");
+  assert.equal(summary.replay.latestBundles[0]?.operatorGate, "waiting for approval");
+  assert.deepEqual(summary.replay.latestBundles[0]?.operatorAllowedActions, ["approve", "reject"]);
   assert.equal(summary.attentionOverview?.topCases?.[0]?.caseKey, "prompt:task-op");
 });
 

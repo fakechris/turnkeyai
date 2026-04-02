@@ -36,6 +36,7 @@ test("bounded regression harness lists built-in cases", () => {
   assert.ok(cases.some((item) => item.caseId === "replay-bundle-exposes-recovery-operator-gate"));
   assert.ok(cases.some((item) => item.caseId === "parallel-follow-up-summary-stays-open"));
   assert.ok(cases.some((item) => item.caseId === "recovery-approval-fallback-chain"));
+  assert.ok(cases.some((item) => item.caseId === "recovery-reject-aborts-chain"));
   assert.ok(cases.some((item) => item.caseId === "replay-console-attention-stays-aligned"));
   assert.ok(cases.some((item) => item.caseId === "replay-console-surfaces-workflow-state"));
   assert.ok(cases.some((item) => item.caseId === "parallel-follow-up-summary-closes-after-recovery"));
@@ -98,11 +99,12 @@ test("bounded regression harness can run extended parallel and recovery chain ca
     "parallel-follow-up-summary-stays-open",
     "parallel-follow-up-summary-closes-after-recovery",
     "recovery-approval-fallback-chain",
+    "recovery-reject-aborts-chain",
     "recovery-bundle-closes-after-approved-fallback",
     "replay-console-attention-stays-aligned",
     "replay-console-surfaces-workflow-state",
   ]);
-  assert.equal(result.totalCases, 7);
+  assert.equal(result.totalCases, 8);
   assert.equal(result.failedCases, 0);
 });
 

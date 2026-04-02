@@ -164,7 +164,7 @@ npx @turnkeyai/cli tui
 - `soak-cases`
 - `soak-run [scenarioId ...]`
 
-`replay-console` 会同时显示仍需处理的 `latest bundles`，以及最近已收敛的 `latest resolved bundles`，便于把当前告警和刚恢复的 case 分开看。
+`replay-console` 会同时显示仍需处理的 `latest bundles`，以及最近已收敛的 `latest resolved bundles`，便于把当前告警和刚恢复的 case 分开看；同时也会把 recovery operator 的 `case state`、`gate` 和 `allowed actions` 一起带出来，避免 workflow 已 recovered 但 operator 仍在 `waiting_manual` 时被首页级视图误判为彻底收口。
 `replay-bundle` 现在会直接带出 recovery operator 语义，包括当前 `gate`、允许动作、phase summary 和最近一次 browser outcome，便于不翻源码直接判断这个 case 还卡在哪一步。
 `operator-summary` / `operator-attention` 现在会把 recovery case 的 `allowed actions` 一起打出来，避免只看到 `next action` 却不知道当前 run 还允许哪些手动操作。
 `prompt-console` 现在会额外汇总 recent-turn / retrieved-memory / worker-evidence 的实际打包数量，以及 pending / waiting / open-question / decision-or-constraint 的 carry-forward 情况，方便直接看高压上下文下哪些信息被保住了。

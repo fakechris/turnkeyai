@@ -52,6 +52,7 @@ const SCENARIOS: FailureInjectionScenarioDescriptor[] = [
       "recovery-fallback-downgrade",
       "recovery-approval-resume-chain",
       "recovery-approval-fallback-chain",
+      "recovery-reject-aborts-chain",
     ],
   },
   {

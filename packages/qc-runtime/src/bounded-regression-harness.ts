@@ -24,6 +24,7 @@ import {
   buildFlowConsoleReport,
   buildGovernanceConsoleReport,
   buildOperatorAttentionReport,
+  buildRecoveryConsoleReport,
   buildOperatorSummaryReport,
 } from "./operator-inspection";
 import {
@@ -2817,6 +2818,136 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
   {
+    caseId: "recovery-reject-aborts-chain",
+    title: "Recovery reject aborts the case and freezes further actions",
+    area: "recovery",
+    summary:
+      "A waiting-approval recovery that is manually rejected should surface as aborted/blocked across replay console, recovery console, and operator summary without further allowed actions.",
+    run() {
+      const records = [
+        {
+          replayId: "task-reject:worker:worker:browser:task:task-reject",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 20,
+          threadId: "thread-1",
+          taskId: "task-reject",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "approval required before continuing",
+          failure: {
+            category: "permission_denied",
+            layer: "worker",
+            retryable: false,
+            message: "approval required before continuing",
+            recommendedAction: "request_approval",
+          },
+        },
+      ] satisfies ReplayRecord[];
+
+      const existingRuns: RecoveryRun[] = [
+        {
+          recoveryRunId: buildRecoveryRunId("task-reject"),
+          threadId: "thread-1",
+          sourceGroupId: "task-reject",
+          taskId: "task-reject",
+          roleId: "role-operator",
+          targetLayer: "worker",
+          targetWorker: "browser",
+          latestStatus: "failed",
+          status: "aborted",
+          nextAction: "none",
+          autoDispatchReady: false,
+          requiresManualIntervention: true,
+          latestSummary: "Recovery was rejected and aborted.",
+          waitingReason: "operator rejected the recovery action",
+          currentAttemptId: "recovery:task-reject:attempt:2",
+          attempts: [
+            {
+              attemptId: "recovery:task-reject:attempt:1",
+              action: "resume",
+              requestedAt: 11,
+              updatedAt: 20,
+              status: "waiting_approval",
+              nextAction: "request_approval",
+              summary: "approval required before continuing",
+              completedAt: 20,
+            },
+            {
+              attemptId: "recovery:task-reject:attempt:2",
+              action: "reject",
+              requestedAt: 21,
+              updatedAt: 21,
+              status: "aborted",
+              nextAction: "none",
+              summary: "Recovery was rejected and aborted.",
+              triggeredByAttemptId: "recovery:task-reject:attempt:1",
+              transitionReason: "manual_reject",
+              completedAt: 21,
+            },
+          ],
+          createdAt: 10,
+          updatedAt: 21,
+        },
+      ];
+
+      const run = buildRecoveryRuns(records, existingRuns, 100)[0];
+      if (!run) {
+        return buildResult(this, false, ["run=missing"]);
+      }
+      const bundle = buildReplayIncidentBundle(records, "task-reject");
+      if (!bundle) {
+        return buildResult(this, false, ["bundle=missing"]);
+      }
+      const enriched = attachRecoveryRunToReplayIncidentBundle({
+        bundle,
+        run,
+        records,
+      });
+      const replayConsole = buildReplayConsoleReport(records, 10, [run]);
+      const consoleBundle = replayConsole.latestBundles.find((entry) => entry.groupId === "task-reject");
+      const recoveryConsole = buildRecoveryConsoleReport([run], 10);
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: records,
+        recoveryRuns: [run],
+        limit: 10,
+      });
+      const operatorCase = operatorSummary.attentionOverview?.activeCases?.find((item) => item.caseKey === "incident:task-reject");
+      const details = [
+        `status=${run.status}`,
+        `gate=${enriched.recoveryOperator?.currentGate ?? "-"}`,
+        `allowed=${enriched.recoveryOperator?.allowedActions.join(",") || "none"}`,
+        `consoleOperator=${consoleBundle?.operatorCaseState ?? "-"}`,
+        `consoleGate=${consoleBundle?.operatorGate ?? "-"}`,
+        `recoveryAborted=${recoveryConsole.statusCounts.aborted ?? 0}`,
+        `operatorLifecycle=${operatorCase?.lifecycle ?? "-"}`,
+      ];
+      const passed =
+        run.status === "aborted" &&
+        run.attempts[1]?.triggeredByAttemptId === "recovery:task-reject:attempt:1" &&
+        run.attempts[1]?.transitionReason === "manual_reject" &&
+        enriched.recoveryOperator?.caseState === "blocked" &&
+        enriched.recoveryOperator?.currentGate === "aborted" &&
+        enriched.recoveryOperator?.allowedActions.length === 0 &&
+        replayConsole.operatorCaseStateCounts.blocked === 1 &&
+        consoleBundle?.operatorCaseState === "blocked" &&
+        consoleBundle?.operatorGate === "aborted" &&
+        (consoleBundle?.operatorAllowedActions?.length ?? 0) === 0 &&
+        recoveryConsole.attentionCount === 1 &&
+        recoveryConsole.statusCounts.aborted === 1 &&
+        recoveryConsole.gateCounts.aborted === 1 &&
+        operatorSummary.recovery.statusCounts.aborted === 1 &&
+        operatorSummary.replay.operatorCaseStateCounts.blocked === 1 &&
+        operatorCase?.caseState === "blocked" &&
+        operatorCase?.gate === "aborted" &&
+        (operatorCase?.allowedActions?.length ?? 0) === 0;
+      return buildResult(this, passed, details);
+    },
+  },
+  {
     caseId: "replay-console-surfaces-workflow-state",
     title: "Replay console surfaces workflow and case-state summaries",
     area: "recovery",
@@ -3617,12 +3748,16 @@ const BUILT_IN_CASES: RegressionCase[] = [
         recoveryRuns: [enriched.recoveryRun!],
         limit: 10,
       });
+      const replayConsole = buildReplayConsoleReport(records, 10, [enriched.recoveryRun!]);
+      const consoleBundle = replayConsole.latestResolvedBundles.find((entry) => entry.groupId === "task-browser-manual");
       const details = [
         `workflow=${enriched.recoveryWorkflow?.status ?? "-"}`,
         `bundleCase=${enriched.caseState ?? "-"}`,
         `operatorCase=${enriched.recoveryOperator?.caseState ?? "-"}`,
         `gate=${enriched.recoveryOperator?.currentGate ?? "-"}`,
         `allowed=${enriched.recoveryOperator?.allowedActions.join(",") ?? "-"}`,
+        `consoleOperator=${consoleBundle?.operatorCaseState ?? "-"}`,
+        `consoleGate=${consoleBundle?.operatorGate ?? "-"}`,
         `summaryCase=${operatorSummary.attentionOverview?.activeCases?.[0]?.caseState ?? "-"}`,
         `browser=${enriched.browserContinuity?.state ?? "-"}`,
       ];
@@ -3632,6 +3767,11 @@ const BUILT_IN_CASES: RegressionCase[] = [
         enriched.recoveryOperator?.caseState === "waiting_manual" &&
         enriched.recoveryOperator?.currentGate === "waiting for external/manual follow-up" &&
         enriched.recoveryOperator?.allowedActions.join(",") === "retry,fallback,resume,reject" &&
+        replayConsole.caseStateCounts.resolved === 1 &&
+        replayConsole.operatorCaseStateCounts.waiting_manual === 1 &&
+        consoleBundle?.operatorCaseState === "waiting_manual" &&
+        consoleBundle?.operatorGate === "waiting for external/manual follow-up" &&
+        consoleBundle?.operatorAllowedActions?.join(",") === "retry,fallback,resume,reject" &&
         enriched.recoveryOperator?.latestBrowserOutcome === "detached_target_recovered" &&
         operatorSummary.attentionOverview?.activeCases?.[0]?.caseState === "waiting_manual" &&
         operatorSummary.recovery.browserOutcomeCounts.detached_target_recovered === 1 &&

@@ -1271,6 +1271,7 @@ export interface ReplayConsoleReport {
   actionCounts: Partial<Record<ReplayRecoveryPlan["nextAction"], number>>;
   workflowStatusCounts: Partial<Record<NonNullable<ReplayIncidentBundle["recoveryWorkflow"]>["status"], number>>;
   caseStateCounts: Partial<Record<OperatorCaseState, number>>;
+  operatorCaseStateCounts: Partial<Record<OperatorCaseState, number>>;
   browserContinuityCounts: Partial<Record<ReplayBrowserContinuitySummary["state"], number>>;
   layerCounts: Partial<Record<ReplayLayer, number>>;
   failureCounts: Partial<Record<FailureCategory, number>>;
@@ -1287,6 +1288,9 @@ export interface ReplayConsoleReport {
     browserContinuityState?: ReplayBrowserContinuitySummary["state"];
     targetLayer?: ReplayRecoveryPlan["targetLayer"];
     targetWorker?: ReplayRecoveryPlan["targetWorker"];
+    operatorCaseState?: OperatorCaseState;
+    operatorGate?: string;
+    operatorAllowedActions?: RecoveryRunAction[];
   }>;
   latestResolvedBundles: Array<{
     groupId: string;
@@ -1300,6 +1304,9 @@ export interface ReplayConsoleReport {
     browserContinuityState?: ReplayBrowserContinuitySummary["state"];
     targetLayer?: ReplayRecoveryPlan["targetLayer"];
     targetWorker?: ReplayRecoveryPlan["targetWorker"];
+    operatorCaseState?: OperatorCaseState;
+    operatorGate?: string;
+    operatorAllowedActions?: RecoveryRunAction[];
   }>;
   latestGroups: ReplayTaskSummary[];
 }

@@ -77,6 +77,7 @@ const SCENARIOS: SoakScenarioDescriptor[] = [
       "recovery-causality-chain",
       "recovery-retry-escalation",
       "recovery-fallback-downgrade",
+      "recovery-reject-aborts-chain",
       "replay-console-surfaces-workflow-state",
       "operator-summary-clears-recovery-attention-after-recovery",
     ],
