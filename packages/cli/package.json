@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "turnkeyai": "./bin/turnkeyai.js"
+    "turnkeyai": "bin/turnkeyai.js"
   },
   "files": [
     "bin",

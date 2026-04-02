@@ -97,6 +97,7 @@ import {
   listRealWorldScenarios,
   runRealWorldSuite,
 } from "@turnkeyai/qc-runtime/real-world-suite";
+import { runReleaseReadiness } from "@turnkeyai/qc-runtime/release-readiness";
 import {
   listScenarioParityAcceptanceScenarios,
   runScenarioParityAcceptanceSuite,
@@ -106,6 +107,7 @@ import {
   runValidationSuites,
   ValidationSelectorError,
 } from "@turnkeyai/qc-runtime/validation-suite";
+import { runValidationSoakSeries } from "@turnkeyai/qc-runtime/validation-soak-series";
 import { CoordinationEngine } from "@turnkeyai/team-runtime/coordination-engine";
 import { DefaultContextStateMaintainer } from "@turnkeyai/team-runtime/context-state-maintainer";
 import { FileBackedTeamRouteMap } from "@turnkeyai/team-runtime/file-backed-team-route-map";
@@ -1123,6 +1125,33 @@ const server = http.createServer(async (req, res) => {
         }
         throw error;
       }
+    }
+
+    if (req.method === "POST" && url.pathname === "/soak-series/run") {
+      const body = await readJsonBody<{ cycles?: number; selectors?: string[] }>(req);
+      const selectors = Array.isArray(body.selectors)
+        ? body.selectors.filter((value): value is string => typeof value === "string" && value.length > 0)
+        : undefined;
+      const cycles = Number.isFinite(body.cycles) ? Number(body.cycles) : undefined;
+      try {
+        return sendJson(
+          res,
+          200,
+          runValidationSoakSeries({
+            ...(cycles !== undefined ? { cycles } : {}),
+            ...(selectors !== undefined ? { selectors } : {}),
+          })
+        );
+      } catch (error) {
+        if (error instanceof ValidationSelectorError) {
+          return sendJson(res, 400, { error: error.message });
+        }
+        throw error;
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/release-readiness/run") {
+      return sendJson(res, 200, await runReleaseReadiness());
     }
 
     if (req.method === "GET" && url.pathname === "/replay-incidents") {

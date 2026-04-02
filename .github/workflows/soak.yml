@@ -1,0 +1,51 @@
+name: Long Soak
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      cycles:
+        description: "Validation soak cycle count"
+        required: false
+        default: "10"
+      selectors:
+        description: "Comma-separated validation selectors"
+        required: false
+        default: "soak,realworld,acceptance"
+  schedule:
+    - cron: "0 18 * * *"
+
+jobs:
+  soak:
+    name: soak
+    if: github.event_name != 'schedule' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run validation soak series
+        run: |
+          mkdir -p .artifacts
+          npm run soak:long -- --cycles "${SOAK_CYCLES}" --selectors "${SOAK_SELECTORS}" --json .artifacts/validation-soak-series.json
+        env:
+          SOAK_CYCLES: ${{ github.event.inputs.cycles || '10' }}
+          SOAK_SELECTORS: ${{ github.event.inputs.selectors || 'soak,realworld,acceptance' }}
+
+      - name: Upload soak summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-soak-series
+          path: .artifacts/validation-soak-series.json

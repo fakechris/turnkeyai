@@ -481,6 +481,16 @@ while (true) {
       continue;
     }
 
+    if (command === "soak-series") {
+      await handleSoakSeriesCommand(args);
+      continue;
+    }
+
+    if (command === "release-verify") {
+      await handleReleaseVerifyCommand();
+      continue;
+    }
+
     if (command === "validation-cases") {
       await handleValidationCasesCommand();
       continue;
@@ -661,6 +671,8 @@ function printHelp(): void {
   console.log("  acceptance-run [scenarioId ...]       run scenario parity acceptance harness");
   console.log("  realworld-cases                       list real-world runbook scenarios");
   console.log("  realworld-run [scenarioId ...]        run real-world runbook validation suite");
+  console.log("  soak-series [cycles] [suite[:item] ...]  run multi-cycle validation soak across selected suites");
+  console.log("  release-verify                        verify packaged CLI and npm publish dry-run readiness");
   console.log("  validation-cases                      list unified validation suites and items");
   console.log("  validation-run [suite[:item] ...]     run unified validation suites or individual items");
   console.log("  replay-incidents [limit] [action]     show replay incidents for current thread");
@@ -2143,6 +2155,91 @@ async function handleValidationRunCommand(raw: string): Promise<void> {
   }
 }
 
+async function handleSoakSeriesCommand(raw: string): Promise<void> {
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  let cycles = 5;
+  let selectors = tokens;
+  if (tokens.length > 0 && /^\d+$/.test(tokens[0]!)) {
+    cycles = Number(tokens[0]);
+    selectors = tokens.slice(1);
+  }
+
+  try {
+    const payload = await postJson("/soak-series/run", { cycles, selectors });
+    printValidationSoakSeriesResult(
+      payload as {
+        status: "passed" | "failed";
+        selectors: string[];
+        totalCycles: number;
+        passedCycles: number;
+        failedCycles: number;
+        totalSuites: number;
+        failedSuites: number;
+        totalItems: number;
+        failedItems: number;
+        totalCases: number;
+        failedCases: number;
+        durationMs: number;
+        cycles: Array<{
+          cycleNumber: number;
+          status: "passed" | "failed";
+          durationMs: number;
+          totalSuites: number;
+          failedSuites: number;
+          totalItems: number;
+          failedItems: number;
+          totalCases: number;
+          failedCases: number;
+          suites: Array<{
+            suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
+            status: "passed" | "failed";
+            totalItems: number;
+            failedItems: number;
+            totalCases: number;
+            failedCases: number;
+          }>;
+        }>;
+        suiteAggregates: Array<{
+          suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
+          cycles: number;
+          failedCycles: number;
+          totalItems: number;
+          failedItems: number;
+          totalCases: number;
+          failedCases: number;
+        }>;
+      }
+    );
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleReleaseVerifyCommand(): Promise<void> {
+  printReleaseReadinessResult(
+    (await postJson("/release-readiness/run", {})) as {
+      status: "passed" | "failed";
+      totalChecks: number;
+      passedChecks: number;
+      failedChecks: number;
+      artifact: {
+        filename: string;
+        packageSize?: number;
+        unpackedSize?: number;
+        shasum?: string;
+        integrity?: string;
+        totalFiles?: number;
+      } | null;
+      checks: Array<{
+        checkId: string;
+        title: string;
+        status: "passed" | "failed";
+        details: string[];
+      }>;
+    }
+  );
+}
+
 async function handleReplayIncidentsCommand(raw: string): Promise<void> {
   const [first, second] = raw.split(" ").filter(Boolean);
   const params = new URLSearchParams();
@@ -3338,6 +3435,104 @@ function printValidationRunResult(payload: {
           console.log(`      ${detail}`);
         }
       }
+    }
+  }
+}
+
+function printValidationSoakSeriesResult(payload: {
+  status: "passed" | "failed";
+  selectors: string[];
+  totalCycles: number;
+  passedCycles: number;
+  failedCycles: number;
+  totalSuites: number;
+  failedSuites: number;
+  totalItems: number;
+  failedItems: number;
+  totalCases: number;
+  failedCases: number;
+  durationMs: number;
+  cycles: Array<{
+    cycleNumber: number;
+    status: "passed" | "failed";
+    durationMs: number;
+    totalSuites: number;
+    failedSuites: number;
+    totalItems: number;
+    failedItems: number;
+    totalCases: number;
+    failedCases: number;
+    suites: Array<{
+      suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
+      status: "passed" | "failed";
+      totalItems: number;
+      failedItems: number;
+      totalCases: number;
+      failedCases: number;
+    }>;
+  }>;
+  suiteAggregates: Array<{
+    suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
+    cycles: number;
+    failedCycles: number;
+    totalItems: number;
+    failedItems: number;
+    totalCases: number;
+    failedCases: number;
+  }>;
+}): void {
+  console.log(
+    `Validation soak series: status=${payload.status} cycles=${payload.passedCycles}/${payload.totalCycles} cases=${payload.totalCases - payload.failedCases}/${payload.totalCases} durationMs=${payload.durationMs}`
+  );
+  console.log(`selectors: ${payload.selectors.join(", ")}`);
+  for (const cycle of payload.cycles) {
+    console.log(
+      `- cycle=${cycle.cycleNumber} status=${cycle.status} suites=${cycle.totalSuites} items=${cycle.totalItems} cases=${cycle.totalCases} failedCases=${cycle.failedCases} durationMs=${cycle.durationMs}`
+    );
+    for (const suite of cycle.suites) {
+      console.log(
+        `  ${suite.suiteId}  status=${suite.status}  items=${suite.totalItems} failedItems=${suite.failedItems}  cases=${suite.totalCases} failedCases=${suite.failedCases}`
+      );
+    }
+  }
+  console.log("Suite aggregates:");
+  for (const suite of payload.suiteAggregates) {
+    console.log(
+      `- ${suite.suiteId}  cycles=${suite.cycles} failedCycles=${suite.failedCycles} items=${suite.totalItems} failedItems=${suite.failedItems} cases=${suite.totalCases} failedCases=${suite.failedCases}`
+    );
+  }
+}
+
+function printReleaseReadinessResult(payload: {
+  status: "passed" | "failed";
+  totalChecks: number;
+  passedChecks: number;
+  failedChecks: number;
+  artifact: {
+    filename: string;
+    packageSize?: number;
+    unpackedSize?: number;
+    shasum?: string;
+    integrity?: string;
+    totalFiles?: number;
+  } | null;
+  checks: Array<{
+    checkId: string;
+    title: string;
+    status: "passed" | "failed";
+    details: string[];
+  }>;
+}): void {
+  console.log(`Release readiness: ${payload.status} checks=${payload.passedChecks}/${payload.totalChecks}`);
+  if (payload.artifact) {
+    console.log(
+      `Artifact: ${payload.artifact.filename} files=${payload.artifact.totalFiles ?? 0} packageSize=${payload.artifact.packageSize ?? 0} unpackedSize=${payload.artifact.unpackedSize ?? 0}`
+    );
+  }
+  for (const check of payload.checks) {
+    console.log(`- ${check.checkId}  ${check.title}  status=${check.status}`);
+    for (const detail of check.details) {
+      console.log(`  ${detail}`);
     }
   }
 }
