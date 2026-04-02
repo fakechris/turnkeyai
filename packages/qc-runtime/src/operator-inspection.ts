@@ -510,10 +510,12 @@ export function buildOperatorTriageReport(input: {
       severity: "critical",
       headline: `runtime stale chains=${input.runtime.staleCount}`,
       reason:
-        stale?.staleReason ??
-        stale?.currentWaitingPoint ??
-        stale?.headline ??
-        "Runtime has stale chains that need inspection.",
+        stale
+          ? stale.staleReason ??
+            stale.currentWaitingPoint ??
+            stale.headline ??
+            "Runtime has stale chains that need inspection."
+          : "Runtime reports stale chains but no chain details are available.",
       nextStep: "inspect_stale_runtime",
       commandHint: "runtime-stale 10",
       ...(stale?.chainId ? { caseKey: stale.chainId } : {}),

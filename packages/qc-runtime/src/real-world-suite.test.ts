@@ -38,3 +38,15 @@ test("real-world suite can run one selected runbook scenario", () => {
 test("real-world suite rejects unknown scenario ids", () => {
   assert.throws(() => runRealWorldSuite(["not-a-real-scenario"]), /unknown real-world scenario ids/);
 });
+
+test("real-world suite preserves caller-provided scenario order", () => {
+  const result = runRealWorldSuite([
+    "runtime-observability-reentry-runbook",
+    "browser-research-recovery-runbook",
+  ]);
+
+  assert.deepEqual(
+    result.scenarios.map((scenario) => scenario.scenarioId),
+    ["runtime-observability-reentry-runbook", "browser-research-recovery-runbook"]
+  );
+});

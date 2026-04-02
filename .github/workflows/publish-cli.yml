@@ -35,6 +35,7 @@ jobs:
         run: npm run build
 
       - name: Run release readiness verification
+        if: ${{ always() }}
         run: npm run release:verify -- --skip-build --artifact-dir .artifacts --json .artifacts/release-readiness.json
 
       - name: Publish @turnkeyai/cli to npm
@@ -53,7 +54,15 @@ jobs:
             .artifacts/release-readiness.json
 
       - name: Upload tarball to GitHub release
-        if: github.event_name == 'release'
-        run: gh release upload "${{ github.event.release.tag_name }}" .artifacts/*.tgz .artifacts/release-readiness.json --clobber
+        if: ${{ always() && github.event_name == 'release' }}
+        run: |
+          shopt -s nullglob
+          files=(.artifacts/*.tgz)
+          if [ -f .artifacts/release-readiness.json ]; then
+            files+=(.artifacts/release-readiness.json)
+          fi
+          if ((${#files[@]})); then
+            gh release upload "${{ github.event.release.tag_name }}" "${files[@]}" --clobber
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1221,6 +1221,53 @@ test("operator triage prioritizes compound incidents and surfaces runtime and pr
   assert.ok(report.focusAreas.some((area) => area.commandHint === "prompt-console 10"));
 });
 
+test("operator triage uses a safe stale runtime fallback when chain details are missing", () => {
+  const summary = buildOperatorSummaryReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [],
+    limit: 10,
+  });
+  const attention = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [],
+    limit: 10,
+  });
+  const report = buildOperatorTriageReport({
+    summary,
+    attention,
+    runtime: {
+      totalChains: 0,
+      activeCount: 0,
+      waitingCount: 0,
+      failedCount: 0,
+      resolvedCount: 0,
+      staleCount: 1,
+      attentionCount: 0,
+      stateCounts: {},
+      continuityCounts: {},
+      caseStateCounts: {},
+      attentionChains: [],
+      activeChains: [],
+      waitingChains: [],
+      staleChains: [],
+      failedChains: [],
+      recentlyResolved: [],
+    },
+    limit: 5,
+  });
+
+  const staleFocus = report.focusAreas.find((area) => area.label === "runtime-stale");
+  assert.equal(staleFocus?.reason, "Runtime reports stale chains but no chain details are available.");
+  assert.equal(staleFocus?.caseKey, undefined);
+  assert.equal(staleFocus?.state, undefined);
+});
+
 function buildPromptBoundary(input: {
   progressId: string;
   recordedAt: number;

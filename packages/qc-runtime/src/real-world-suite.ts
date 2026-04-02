@@ -151,15 +151,16 @@ export function listRealWorldScenarios(): RealWorldScenarioDescriptor[] {
 }
 
 export function runRealWorldSuite(scenarioIds?: string[]): RealWorldSuiteResult {
+  const scenarioById = new Map(SCENARIOS.map((scenario) => [scenario.scenarioId, scenario] as const));
   if (scenarioIds?.length) {
-    const validScenarioIds = new Set(SCENARIOS.map((scenario) => scenario.scenarioId));
+    const validScenarioIds = new Set(scenarioById.keys());
     const unknownScenarioIds = scenarioIds.filter((scenarioId) => !validScenarioIds.has(scenarioId));
     if (unknownScenarioIds.length > 0) {
       throw new Error(`unknown real-world scenario ids: ${unknownScenarioIds.join(", ")}`);
     }
   }
   const selected = scenarioIds?.length
-    ? SCENARIOS.filter((scenario) => scenarioIds.includes(scenario.scenarioId))
+    ? scenarioIds.map((scenarioId) => scenarioById.get(scenarioId)).filter((scenario): scenario is RealWorldScenarioDescriptor => scenario != null)
     : SCENARIOS;
   const scenarios = selected.map(runScenario);
   return {

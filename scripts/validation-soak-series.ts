@@ -14,15 +14,23 @@ let selectors: string[] = [];
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
   if (arg === "--cycles") {
-    const rawValue = Number(args[index + 1] ?? "");
-    if (Number.isInteger(rawValue) && rawValue > 0) {
-      cycles = rawValue;
+    const value = args[index + 1];
+    if (!value || value.startsWith("-")) {
+      throw new Error("missing value for --cycles");
     }
+    const rawValue = Number(value);
+    if (!Number.isInteger(rawValue) || rawValue <= 0) {
+      throw new Error("--cycles must be a positive integer");
+    }
+    cycles = rawValue;
     index += 1;
     continue;
   }
   if (arg === "--selectors") {
-    const raw = args[index + 1] ?? "";
+    const raw = args[index + 1];
+    if (!raw || raw.startsWith("-")) {
+      throw new Error("missing value for --selectors");
+    }
     selectors = raw
       .split(",")
       .map((selector) => selector.trim())
@@ -31,7 +39,11 @@ for (let index = 0; index < args.length; index += 1) {
     continue;
   }
   if (arg === "--json") {
-    jsonPath = args[index + 1] ?? null;
+    const value = args[index + 1];
+    if (!value || value.startsWith("-")) {
+      throw new Error("missing path for --json");
+    }
+    jsonPath = value;
     index += 1;
     continue;
   }

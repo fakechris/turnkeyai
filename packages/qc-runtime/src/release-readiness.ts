@@ -120,18 +120,36 @@ export async function runReleaseReadiness(
       ...(packed.metadata.entryCount !== undefined ? { totalFiles: packed.metadata.entryCount } : {}),
     };
 
-    await extractPackedArtifact(packed.metadata.path, extractDir);
-    const extractedPackageDir = path.join(extractDir, "package");
-    const packageJsonPath = path.join(extractedPackageDir, "package.json");
-    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
-      name?: string;
-      version?: string;
-      license?: string;
-      bin?: Record<string, string>;
-      files?: string[];
-      publishConfig?: { access?: string };
-      engines?: { node?: string };
-    };
+    const extracted = await recordCheck(checks, "extract-package", "Extract packed CLI artifact", async () => {
+      await extractPackedArtifact(packed.metadata.path, extractDir);
+      const extractedPackageDir = path.join(extractDir, "package");
+      const packageJsonPath = path.join(extractedPackageDir, "package.json");
+      const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
+        name?: string;
+        version?: string;
+        license?: string;
+        bin?: Record<string, string>;
+        files?: string[];
+        publishConfig?: { access?: string };
+        engines?: { node?: string };
+      };
+      return {
+        status: "passed" as const,
+        details: [
+          `artifact=${packed.metadata.filename}`,
+          `packageJson=${path.relative(workspaceRoot, packageJsonPath)}`,
+        ],
+        metadata: {
+          extractedPackageDir,
+          packageJson,
+        },
+      };
+    });
+    if (!extracted?.metadata) {
+      return finalizeReleaseReadinessResult(checks, artifact);
+    }
+
+    const { extractedPackageDir, packageJson } = extracted.metadata;
     const expectedPackageName = options.expectedPackageName ?? DEFAULT_PACKAGE_NAME;
     const expectedPackageVersion = options.expectedPackageVersion ?? sourcePackageJson.version;
 
