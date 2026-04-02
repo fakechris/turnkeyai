@@ -60,10 +60,12 @@ import {
   buildFlowConsoleReport,
   buildGovernanceConsoleReport,
   buildOperatorSummaryReport,
+  buildOperatorTriageReport,
   buildRecoveryConsoleReport,
 } from "@turnkeyai/qc-runtime/operator-inspection";
 import { buildPromptConsoleReport } from "@turnkeyai/qc-runtime/prompt-inspection";
 import {
+  attachRecoveryRunToReplayIncidentBundle,
   buildReplayConsoleReport,
   buildReplayIncidentBundle,
   buildReplayInspectionReport,
@@ -92,6 +94,11 @@ import {
   runSoakSuite,
 } from "@turnkeyai/qc-runtime/soak-suite";
 import {
+  listRealWorldScenarios,
+  runRealWorldSuite,
+} from "@turnkeyai/qc-runtime/real-world-suite";
+import { runReleaseReadiness } from "@turnkeyai/qc-runtime/release-readiness";
+import {
   listScenarioParityAcceptanceScenarios,
   runScenarioParityAcceptanceSuite,
 } from "@turnkeyai/qc-runtime/scenario-parity-acceptance";
@@ -100,6 +107,7 @@ import {
   runValidationSuites,
   ValidationSelectorError,
 } from "@turnkeyai/qc-runtime/validation-suite";
+import { runValidationSoakSeries } from "@turnkeyai/qc-runtime/validation-soak-series";
 import { CoordinationEngine } from "@turnkeyai/team-runtime/coordination-engine";
 import { DefaultContextStateMaintainer } from "@turnkeyai/team-runtime/context-state-maintainer";
 import { FileBackedTeamRouteMap } from "@turnkeyai/team-runtime/file-backed-team-route-map";
@@ -791,11 +799,12 @@ const server = http.createServer(async (req, res) => {
       if (limit == null) {
         return sendJson(res, 400, { error: "limit must be a positive integer" });
       }
-      const [flows, permissionRecords, events, synced] = await Promise.all([
+      const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
         flowLedgerStore.listByThread(threadId),
         permissionCacheStore.listByThread(threadId),
         teamEventBus.listRecent(threadId, Math.max(limit, 200)),
         loadRecoveryRuntime(threadId),
+        runtimeProgressStore.listByThread(threadId),
       ]);
       return sendJson(
         res,
@@ -806,6 +815,7 @@ const server = http.createServer(async (req, res) => {
           events,
           replays: synced.records,
           recoveryRuns: synced.runs,
+          progressEvents,
           limit,
         })
       );
@@ -820,11 +830,12 @@ const server = http.createServer(async (req, res) => {
       if (limit == null) {
         return sendJson(res, 400, { error: "limit must be a positive integer" });
       }
-      const [flows, permissionRecords, events, synced] = await Promise.all([
+      const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
         flowLedgerStore.listByThread(threadId),
         permissionCacheStore.listByThread(threadId),
         teamEventBus.listRecent(threadId, Math.max(limit, 200)),
         loadRecoveryRuntime(threadId),
+        runtimeProgressStore.listByThread(threadId),
       ]);
       return sendJson(
         res,
@@ -835,6 +846,54 @@ const server = http.createServer(async (req, res) => {
           events,
           replays: synced.records,
           recoveryRuns: synced.runs,
+          progressEvents,
+          limit,
+        })
+      );
+    }
+
+    if (req.method === "GET" && url.pathname === "/operator-triage") {
+      const threadId = url.searchParams.get("threadId");
+      if (!threadId) {
+        return sendJson(res, 400, { error: "threadId is required" });
+      }
+      const limit = parsePositiveLimit(url.searchParams.get("limit"));
+      if (limit == null) {
+        return sendJson(res, 400, { error: "limit must be a positive integer" });
+      }
+      const [flows, permissionRecords, events, synced, progressEvents, runtimeSummary] = await Promise.all([
+        flowLedgerStore.listByThread(threadId),
+        permissionCacheStore.listByThread(threadId),
+        teamEventBus.listRecent(threadId, Math.max(limit, 200)),
+        loadRecoveryRuntime(threadId),
+        runtimeProgressStore.listByThread(threadId),
+        loadRuntimeSummary(threadId, Math.max(limit, 10)),
+      ]);
+      const operatorSummary = buildOperatorSummaryReport({
+        flows,
+        permissionRecords,
+        events,
+        replays: synced.records,
+        recoveryRuns: synced.runs,
+        progressEvents,
+        limit,
+      });
+      const operatorAttention = buildOperatorAttentionReport({
+        flows,
+        permissionRecords,
+        events,
+        replays: synced.records,
+        recoveryRuns: synced.runs,
+        progressEvents,
+        limit: Math.max(limit, 10),
+      });
+      return sendJson(
+        res,
+        200,
+        buildOperatorTriageReport({
+          summary: operatorSummary,
+          attention: operatorAttention,
+          runtime: runtimeSummary,
           limit,
         })
       );
@@ -918,12 +977,15 @@ const server = http.createServer(async (req, res) => {
       if (limit == null) {
         return sendJson(res, 400, { error: "limit must be a positive integer" });
       }
+      if (threadId) {
+        const synced = await loadRecoveryRuntime(threadId);
+        return sendJson(res, 200, buildReplayConsoleReport(synced.records, limit, synced.runs));
+      }
       return sendJson(
         res,
         200,
         buildReplayConsoleReport(
           await replayRecorder.list({
-            ...(threadId ? { threadId } : {}),
             limit: Math.max(limit, 200),
           }),
           limit
@@ -1015,6 +1077,32 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, runScenarioParityAcceptanceSuite(scenarioIds));
     }
 
+    if (req.method === "GET" && url.pathname === "/realworld-cases") {
+      const scenarios = listRealWorldScenarios();
+      return sendJson(res, 200, {
+        totalScenarios: scenarios.length,
+        scenarios,
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/realworld-cases/run") {
+      const body = await readJsonBody<{ scenarioIds?: string[] }>(req);
+      const scenarioIds = Array.isArray(body.scenarioIds)
+        ? body.scenarioIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+        : undefined;
+      if (scenarioIds && scenarioIds.length > 0) {
+        const validScenarioIds = new Set(listRealWorldScenarios().map((scenario) => scenario.scenarioId));
+        const invalidScenarioIds = scenarioIds.filter((scenarioId) => !validScenarioIds.has(scenarioId));
+        if (invalidScenarioIds.length > 0) {
+          return sendJson(res, 400, {
+            error: "unknown scenario ids",
+            invalidScenarioIds,
+          });
+        }
+      }
+      return sendJson(res, 200, runRealWorldSuite(scenarioIds));
+    }
+
     if (req.method === "GET" && url.pathname === "/validation-cases") {
       const suites = listValidationSuites();
       return sendJson(res, 200, {
@@ -1037,6 +1125,39 @@ const server = http.createServer(async (req, res) => {
         }
         throw error;
       }
+    }
+
+    if (req.method === "POST" && url.pathname === "/soak-series/run") {
+      const body = await readJsonBody<{ cycles?: number; selectors?: string[] }>(req);
+      const selectors = Array.isArray(body.selectors)
+        ? body.selectors
+            .filter((value): value is string => typeof value === "string")
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0)
+        : undefined;
+      if (body.cycles !== undefined && (!Number.isInteger(body.cycles) || body.cycles <= 0)) {
+        return sendJson(res, 400, { error: "Invalid cycles: must be a positive integer" });
+      }
+      const cycles = body.cycles !== undefined ? Number(body.cycles) : undefined;
+      try {
+        return sendJson(
+          res,
+          200,
+          runValidationSoakSeries({
+            ...(cycles !== undefined ? { cycles } : {}),
+            ...(selectors !== undefined ? { selectors } : {}),
+          })
+        );
+      } catch (error) {
+        if (error instanceof ValidationSelectorError) {
+          return sendJson(res, 400, { error: error.message });
+        }
+        throw error;
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/release-readiness/run") {
+      return sendJson(res, 200, await runReleaseReadiness());
     }
 
     if (req.method === "GET" && url.pathname === "/replay-incidents") {
@@ -1119,13 +1240,12 @@ const server = http.createServer(async (req, res) => {
       }
       const recoveryRun = synced.runs.find((run) => run.sourceGroupId === bundle.group.groupId);
       if (recoveryRun) {
-        bundle.recoveryRun = recoveryRun;
-        bundle.recoveryProgress = buildRecoveryRunProgress(recoveryRun);
-        bundle.recoveryTimeline = buildRecoveryRunTimeline(
-          recoveryRun,
-          synced.records,
-          await recoveryRunEventStore.listByRecoveryRun(recoveryRun.recoveryRunId)
-        );
+        attachRecoveryRunToReplayIncidentBundle({
+          bundle,
+          run: recoveryRun,
+          records: synced.records,
+          events: await recoveryRunEventStore.listByRecoveryRun(recoveryRun.recoveryRunId),
+        });
       }
       return sendJson(res, 200, bundle);
     }

@@ -15,6 +15,7 @@ test("failure injection suite lists built-in scenarios", () => {
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "governance-denial-fallback-and-approval"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "runtime-stale-waiting-and-manual-attention"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "context-budget-pressure-and-reentry"));
+  assert.ok(scenarios.some((scenario) => scenario.scenarioId === "operator-triage-compound-incident"));
 });
 
 test("failure injection suite passes all built-in scenarios", () => {

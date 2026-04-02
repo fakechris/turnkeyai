@@ -92,13 +92,17 @@ const SCENARIOS: ScenarioParityAcceptanceScenarioDescriptor[] = [
   {
     scenarioId: "context-evidence-heavy-and-reentry",
     area: "context",
-    title: "evidence-heavy 与 re-entry continuity",
-    summary: "验证高压预算和 re-entry 下，pending work / open questions / decisions 仍稳定。",
+    title: "context pressure / re-entry / runtime visibility",
+    summary:
+      "验证高压预算和 re-entry 下，pending work / open questions / decisions 仍稳定，且 prompt/runtime 诊断对等待点与 carry-forward 的判断一致。",
     caseIds: [
       "context-evidence-heavy-keeps-pending-work",
       "context-reentry-preserves-active-tasks-and-open-questions",
       "context-continuity-keeps-decisions-and-constraints-under-budget",
       "context-continuity-keeps-journal-notes-under-budget",
+      "runtime-prompt-console-summarizes-boundaries",
+      "context-runtime-pressure-keeps-carry-forward-and-waiting-visible",
+      "runtime-chain-query-answers-root-active-and-waiting-point",
     ],
   },
   {
@@ -122,6 +126,62 @@ const SCENARIOS: ScenarioParityAcceptanceScenarioDescriptor[] = [
       "operator-attention-aligns-with-summary",
       "operator-surfaces-track-recovery-lifecycle",
       "operator-case-cards-preserve-order-and-metadata",
+    ],
+  },
+  {
+    scenarioId: "operator-triage-compound-incident",
+    area: "operator",
+    title: "compound incident triage",
+    summary:
+      "验证 operator triage 会把 browser manual follow-up incident、runtime waiting 和 prompt pressure 聚成一条可执行排障路径。",
+    caseIds: [
+      "browser-recovery-recovered-but-waiting-manual-stays-visible",
+      "runtime-summary-aligns-browser-recovered-manual-follow-up",
+      "context-runtime-pressure-keeps-carry-forward-and-waiting-visible",
+      "operator-triage-prioritizes-compound-incident",
+    ],
+  },
+  {
+    scenarioId: "real-world-browser-research-runbook",
+    area: "browser",
+    title: "real-world browser research runbook",
+    summary:
+      "验证真实浏览器研究任务在 recovery、prompt pressure、runtime waiting 和 triage 首页之间形成同场景的 operator runbook。",
+    caseIds: [
+      "browser-recovery-multi-attempt-chain-stays-aligned",
+      "browser-recovery-recovered-but-waiting-manual-stays-visible",
+      "context-runtime-pressure-keeps-carry-forward-and-waiting-visible",
+      "operator-triage-prioritizes-compound-incident",
+      "runtime-chain-query-answers-root-active-and-waiting-point",
+    ],
+  },
+  {
+    scenarioId: "real-world-governed-publish-runbook",
+    area: "governance",
+    title: "real-world governed publish runbook",
+    summary:
+      "验证真实发布任务从 official API 决策、approval gate、browser fallback 到 recovery closure 的同场景 operator 语义。",
+    caseIds: [
+      "governance-summary-highlights-browser-fallback",
+      "governance-approval-required-side-effect-blocks",
+      "replay-bundle-exposes-recovery-operator-gate",
+      "recovery-approval-fallback-chain",
+      "recovery-bundle-closes-after-approved-fallback",
+      "operator-summary-aligns-attention-across-surfaces",
+    ],
+  },
+  {
+    scenarioId: "real-world-parallel-follow-up-runbook",
+    area: "parallel",
+    title: "real-world parallel follow-up runbook",
+    summary:
+      "验证真实多 shard 任务在冲突、follow-up、retry 和最终 closure 下的 operator-facing merge 语义。",
+    caseIds: [
+      "parallel-flow-summary-highlights-shard-issues",
+      "parallel-follow-up-summary-stays-open",
+      "parallel-flow-summary-clears-attention-after-retry",
+      "parallel-follow-up-summary-closes-after-recovery",
+      "operator-summary-aligns-attention-across-surfaces",
     ],
   },
   {

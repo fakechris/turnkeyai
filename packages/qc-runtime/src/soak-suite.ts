@@ -49,6 +49,7 @@ const SCENARIOS: SoakScenarioDescriptor[] = [
     caseIds: [
       "browser-recovery-cold-reopen-outcome",
       "browser-recovery-multi-attempt-chain-stays-aligned",
+      "browser-recovery-recovered-but-waiting-manual-stays-visible",
       "replay-console-browser-continuity-counts",
       "runtime-summary-keeps-browser-recovered-chain-active",
     ],
@@ -76,6 +77,7 @@ const SCENARIOS: SoakScenarioDescriptor[] = [
       "recovery-causality-chain",
       "recovery-retry-escalation",
       "recovery-fallback-downgrade",
+      "recovery-reject-aborts-chain",
       "replay-console-surfaces-workflow-state",
       "operator-summary-clears-recovery-attention-after-recovery",
     ],
@@ -85,14 +87,45 @@ const SCENARIOS: SoakScenarioDescriptor[] = [
     area: "context",
     title: "Context pressure / re-entry / runtime visibility",
     summary:
-      "验证高压上下文、re-entry continuity 与 runtime waiting-point 可见性在长任务里同时成立。",
+      "验证高压上下文、re-entry continuity、prompt compaction 诊断与 runtime waiting-point 可见性在长任务里同时成立。",
     caseIds: [
       "context-evidence-heavy-keeps-pending-work",
       "context-reentry-preserves-active-tasks-and-open-questions",
       "context-continuity-keeps-decisions-and-constraints-under-budget",
+      "context-continuity-keeps-journal-notes-under-budget",
       "runtime-prompt-console-summarizes-boundaries",
+      "context-runtime-pressure-keeps-carry-forward-and-waiting-visible",
       "runtime-summary-surfaces-stale-waiting-point-and-child-span",
       "runtime-chain-query-answers-root-active-and-waiting-point",
+    ],
+  },
+  {
+    scenarioId: "operator-compound-incident-runbook",
+    area: "operator",
+    title: "Compound incident runbook",
+    summary:
+      "验证 browser recovery、manual follow-up、runtime waiting 和 prompt pressure 会在 operator triage / replay / runtime 三面形成稳定排障路径。",
+    caseIds: [
+      "browser-recovery-recovered-but-waiting-manual-stays-visible",
+      "runtime-summary-aligns-browser-recovered-manual-follow-up",
+      "context-runtime-pressure-keeps-carry-forward-and-waiting-visible",
+      "operator-triage-prioritizes-compound-incident",
+      "replay-console-surfaces-workflow-state",
+    ],
+  },
+  {
+    scenarioId: "governance-approval-fallback-closure",
+    area: "governance",
+    title: "Governance approval -> fallback -> closure",
+    summary:
+      "验证 approval-required side effect 在 browser fallback、approved recovery 与 bundle closure 后的 operator 收口保持一致。",
+    caseIds: [
+      "governance-summary-highlights-browser-fallback",
+      "governance-approval-required-side-effect-blocks",
+      "replay-bundle-exposes-recovery-operator-gate",
+      "recovery-approval-fallback-chain",
+      "recovery-bundle-closes-after-approved-fallback",
+      "operator-summary-aligns-attention-across-surfaces",
     ],
   },
 ];

@@ -30,8 +30,16 @@ import {
   listScenarioParityAcceptanceScenarios,
   runScenarioParityAcceptanceSuite,
 } from "./scenario-parity-acceptance";
+import type {
+  RealWorldScenarioDescriptor,
+  RealWorldScenarioResult,
+} from "./real-world-suite";
+import {
+  listRealWorldScenarios,
+  runRealWorldSuite,
+} from "./real-world-suite";
 
-export type ValidationSuiteId = "regression" | "soak" | "failure" | "acceptance";
+export type ValidationSuiteId = "regression" | "soak" | "failure" | "acceptance" | "realworld";
 
 export interface ValidationCatalogItemDescriptor {
   suiteId: ValidationSuiteId;
@@ -118,6 +126,10 @@ const SUITE_METADATA: Record<ValidationSuiteId, { title: string; summary: string
     title: "Scenario Parity Acceptance",
     summary: "按 operator-facing 场景编排的 acceptance 套件，验证主链体验与跨面一致性。",
   },
+  realworld: {
+    title: "Real-World Runbooks",
+    summary: "按真实任务 runbook 编排的验证套件，聚焦 browser/recovery/context/operator 的同场景排障与收敛。",
+  },
 };
 
 export function listValidationSuites(): ValidationSuiteDescriptor[] {
@@ -125,12 +137,14 @@ export function listValidationSuites(): ValidationSuiteDescriptor[] {
   const soakItems = listSoakScenarios().map(mapSoakDescriptor);
   const failureItems = listFailureInjectionScenarios().map(mapFailureDescriptor);
   const acceptanceItems = listScenarioParityAcceptanceScenarios().map(mapAcceptanceDescriptor);
+  const realWorldItems = listRealWorldScenarios().map(mapRealWorldDescriptor);
 
   return [
     buildSuiteDescriptor("regression", regressionItems),
     buildSuiteDescriptor("soak", soakItems),
     buildSuiteDescriptor("failure", failureItems),
     buildSuiteDescriptor("acceptance", acceptanceItems),
+    buildSuiteDescriptor("realworld", realWorldItems),
   ];
 }
 
@@ -153,10 +167,10 @@ export function runValidationSuites(selectors?: string[]): ValidationRunResult {
 
 function buildValidationSuiteRunResults(selectors?: ValidationSelector[]): ValidationRunSuiteResult[] {
   const suiteIds = selectors?.length
-    ? (["regression", "soak", "failure", "acceptance"] as ValidationSuiteId[]).filter((suiteId) =>
+    ? (["regression", "soak", "failure", "acceptance", "realworld"] as ValidationSuiteId[]).filter((suiteId) =>
         selectors.some((selector) => selector.suiteId === suiteId)
       )
-    : (["regression", "soak", "failure", "acceptance"] as ValidationSuiteId[]);
+    : (["regression", "soak", "failure", "acceptance", "realworld"] as ValidationSuiteId[]);
 
   return suiteIds.map((suiteId) => {
     const suiteSelectors = selectors?.filter((selector) => selector.suiteId === suiteId) ?? [];
@@ -169,6 +183,8 @@ function buildValidationSuiteRunResults(selectors?: ValidationSelector[]): Valid
         return buildFailureSuiteRunResult(suiteSelectors);
       case "acceptance":
         return buildAcceptanceSuiteRunResult(suiteSelectors);
+      case "realworld":
+        return buildRealWorldSuiteRunResult(suiteSelectors);
     }
   });
 }
@@ -222,6 +238,16 @@ function buildAcceptanceSuiteRunResult(selectors: ValidationSelector[]): Validat
   });
   const result = runScenarioParityAcceptanceSuite(selectedScenarioIds);
   return finalizeRunSuite("acceptance", result.scenarios.map(mapAcceptanceRunItem));
+}
+
+function buildRealWorldSuiteRunResult(selectors: ValidationSelector[]): ValidationRunSuiteResult {
+  const selectedScenarioIds = resolveSelectedItemIds({
+    selectors,
+    validItemIds: listRealWorldScenarios().map((item) => item.scenarioId),
+    suiteLabel: "realworld",
+  });
+  const result = runRealWorldSuite(selectedScenarioIds);
+  return finalizeRunSuite("realworld", result.scenarios.map(mapRealWorldRunItem));
 }
 
 function finalizeRunSuite(
@@ -304,7 +330,7 @@ function dedupeSelectors(selectors: ValidationSelector[]): ValidationSelector[] 
 }
 
 function isValidationSuiteId(value: string): value is ValidationSuiteId {
-  return value === "regression" || value === "soak" || value === "failure" || value === "acceptance";
+  return value === "regression" || value === "soak" || value === "failure" || value === "acceptance" || value === "realworld";
 }
 
 function buildSuiteDescriptor(
@@ -366,6 +392,17 @@ function mapAcceptanceDescriptor(
   };
 }
 
+function mapRealWorldDescriptor(descriptor: RealWorldScenarioDescriptor): ValidationCatalogItemDescriptor {
+  return {
+    suiteId: "realworld",
+    itemId: descriptor.scenarioId,
+    area: descriptor.area,
+    title: descriptor.title,
+    summary: descriptor.summary,
+    caseIds: [...descriptor.caseIds],
+  };
+}
+
 function mapRegressionRunItem(result: BoundedRegressionCaseResult): ValidationRunItemResult {
   return {
     suiteId: "regression",
@@ -414,6 +451,21 @@ function mapSoakRunItem(result: SoakScenarioResult): ValidationRunItemResult {
 function mapAcceptanceRunItem(result: ScenarioParityAcceptanceScenarioResult): ValidationRunItemResult {
   return {
     suiteId: "acceptance",
+    itemId: result.scenarioId,
+    area: result.area,
+    title: result.title,
+    summary: result.summary,
+    status: result.status,
+    totalCases: result.totalCases,
+    passedCases: result.passedCases,
+    failedCases: result.failedCases,
+    caseResults: result.caseResults,
+  };
+}
+
+function mapRealWorldRunItem(result: RealWorldScenarioResult): ValidationRunItemResult {
+  return {
+    suiteId: "realworld",
     itemId: result.scenarioId,
     area: result.area,
     title: result.title,

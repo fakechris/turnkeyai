@@ -1271,6 +1271,7 @@ export interface ReplayConsoleReport {
   actionCounts: Partial<Record<ReplayRecoveryPlan["nextAction"], number>>;
   workflowStatusCounts: Partial<Record<NonNullable<ReplayIncidentBundle["recoveryWorkflow"]>["status"], number>>;
   caseStateCounts: Partial<Record<OperatorCaseState, number>>;
+  operatorCaseStateCounts: Partial<Record<OperatorCaseState, number>>;
   browserContinuityCounts: Partial<Record<ReplayBrowserContinuitySummary["state"], number>>;
   layerCounts: Partial<Record<ReplayLayer, number>>;
   failureCounts: Partial<Record<FailureCategory, number>>;
@@ -1287,6 +1288,9 @@ export interface ReplayConsoleReport {
     browserContinuityState?: ReplayBrowserContinuitySummary["state"];
     targetLayer?: ReplayRecoveryPlan["targetLayer"];
     targetWorker?: ReplayRecoveryPlan["targetWorker"];
+    operatorCaseState?: OperatorCaseState;
+    operatorGate?: string;
+    operatorAllowedActions?: RecoveryRunAction[];
   }>;
   latestResolvedBundles: Array<{
     groupId: string;
@@ -1300,6 +1304,9 @@ export interface ReplayConsoleReport {
     browserContinuityState?: ReplayBrowserContinuitySummary["state"];
     targetLayer?: ReplayRecoveryPlan["targetLayer"];
     targetWorker?: ReplayRecoveryPlan["targetWorker"];
+    operatorCaseState?: OperatorCaseState;
+    operatorGate?: string;
+    operatorAllowedActions?: RecoveryRunAction[];
   }>;
   latestGroups: ReplayTaskSummary[];
 }
@@ -1340,6 +1347,16 @@ export interface ReplayIncidentBundle {
   followUpTimeline: ReplayTimelineEntry[];
   recoveryTimeline?: RecoveryRunTimelineEntry[];
   recoveryProgress?: RecoveryRunProgress;
+  recoveryOperator?: {
+    caseState: OperatorCaseState;
+    currentGate: string;
+    allowedActions: RecoveryRunAction[];
+    nextAction: RecoveryRun["nextAction"];
+    phase: RecoveryRunProgress["phase"];
+    phaseSummary: string;
+    latestSummary: string;
+    latestBrowserOutcome?: RecoveryBrowserOutcome;
+  };
   recoveryWorkflow?: {
     status: "not_started" | "running" | "recovered" | "recovery_failed" | "manual_follow_up";
     nextAction: ReplayRecoveryPlan["nextAction"] | "none";
@@ -1512,6 +1529,8 @@ export interface OperatorSummaryReport {
   replay: ReplayConsoleReport;
   governance: GovernanceConsoleReport;
   recovery: RecoveryConsoleReport;
+  prompt: PromptConsoleReport;
+  promptAttentionCount: number;
   totalAttentionCount: number;
   attentionOverview?: {
     uniqueCaseCount: number;
@@ -1526,6 +1545,7 @@ export interface OperatorSummaryReport {
       lifecycle: OperatorAttentionItem["lifecycle"];
       gate?: string;
       action?: string;
+      allowedActions?: RecoveryRunAction[];
       browserContinuityState?: ReplayBrowserContinuitySummary["state"];
       reasonPreview?: string;
       latestUpdate: string;
@@ -1559,8 +1579,38 @@ export interface OperatorSummaryReport {
   };
 }
 
+export interface OperatorTriageFocusArea {
+  area: "case" | "runtime" | "prompt";
+  label: string;
+  severity: "warning" | "critical";
+  headline: string;
+  reason: string;
+  nextStep: string;
+  commandHint: string;
+  caseKey?: string;
+  source?: OperatorAttentionItem["source"];
+  state?: string;
+  gate?: string;
+  browserContinuityState?: ReplayBrowserContinuitySummary["state"];
+}
+
+export interface OperatorTriageReport {
+  totalAttentionCount: number;
+  uniqueCaseCount: number;
+  blockedCaseCount: number;
+  waitingManualCaseCount: number;
+  recoveringCaseCount: number;
+  runtimeWaitingCount: number;
+  runtimeStaleCount: number;
+  runtimeFailedCount: number;
+  promptReductionCount: number;
+  promptAttentionCount: number;
+  recommendedEntryPoint?: string;
+  focusAreas: OperatorTriageFocusArea[];
+}
+
 export interface OperatorAttentionItem {
-  source: "flow" | "replay" | "governance" | "recovery";
+  source: "flow" | "replay" | "governance" | "recovery" | "prompt";
   key: string;
   caseKey: string;
   headline: string;
@@ -1573,6 +1623,7 @@ export interface OperatorAttentionItem {
   reasons?: string[];
   browserContinuityState?: ReplayBrowserContinuitySummary["state"];
   action?: string;
+  allowedActions?: RecoveryRunAction[];
 }
 
 export interface OperatorAttentionCaseSummary {
@@ -1588,6 +1639,7 @@ export interface OperatorAttentionCaseSummary {
   sources: OperatorAttentionItem["source"][];
   gate?: string;
   action?: string;
+  allowedActions?: RecoveryRunAction[];
   browserContinuityState?: ReplayBrowserContinuitySummary["state"];
   reasons?: string[];
 }

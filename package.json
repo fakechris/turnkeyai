@@ -9,6 +9,9 @@
   "scripts": {
     "build": "npm run build --workspace @turnkeyai/cli",
     "pack:cli": "npm pack --workspace @turnkeyai/cli --dry-run",
+    "release:verify": "tsx scripts/release-readiness.ts",
+    "soak:long": "tsx scripts/validation-soak-series.ts",
+    "soak:ci": "tsx scripts/validation-soak-series.ts --cycles 10 --selectors soak,realworld,acceptance",
     "test": "tsx --test packages/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "daemon": "tsx packages/app-gateway/src/daemon.ts",

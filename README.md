@@ -27,6 +27,7 @@
 - governance surface: permission cache / audit / replay 查询
 - flow / governance operator summary 与更可读的 TUI 视图
 - operator summary / operator attention / replay bundle 的统一 case 语义与首页级摘要
+- operator triage 首页级入口，可直接汇总 case / runtime / prompt 的排障优先级
 - replay summary / incident / grouped inspection / recovery dispatch / console / workflow-log surface
 - recovery-linked incident bundles 与 recovery workflow 状态汇总
 - replay console 现同时暴露 actionable bundles 与 recent resolved bundles
@@ -42,6 +43,8 @@
 - retrieval ranking / recall trigger / budget-aware prompt packing / tool-result pruning / long-running compression 第一版
 - prompt assembly compact-before-drop 与 `compactedSegments` 元数据
 - browser continuity matrix：lease reclaim / wrong-owner denial / reopen/new-target 长链验证
+- target-local snapshot/ref history 已覆盖同 URL 多 target 下的隔离与 reopen 后连续性验证
+- browser eviction 边界已覆盖旧 session history/ref 保留与新 replacement session ref 隔离
 - recovery timeline / bundle / TUI 工单视图与 phase/gate 对齐
 - context carry-forward：pending/waiting recall 优先级与 unresolved question memory carry-forward
 - browser continuity 已进入 replay bundle / console / TUI 视图
@@ -50,6 +53,10 @@
 - operator-facing case cards：`active / resolved recent`、`headline / latestUpdate / nextStep`
 - cross-surface operator attention：`caseState / severity / lifecycle / caseKey / browser continuity`
 - context runtime tuning：approval / merge / continuation 的语义 recall 与 salience compaction
+- context/runtime acceptance 已覆盖高压 compaction 下的 carry-forward、waiting-point 与 prompt-console 对齐
+- failure/acceptance 现已覆盖 compound incident triage：browser manual follow-up、runtime waiting、prompt pressure 同页收敛
+- real-world runbook suite 第一版已接入，覆盖 browser research、governed publish、parallel follow-up、runtime observability 等真实任务组合样本
+- release readiness 已进入主线，可验证 packed CLI、bin smoke、dry-run publish 和 release artifact 元数据
 
 还没有具备：
 
@@ -158,14 +165,23 @@ npx @turnkeyai/cli tui
 - scenario parity acceptance harness
 - failure injection harness
 - unified validation catalog: `validation-cases` / `validation-run [suite[:item] ...]`
+- real-world runbook harness: `realworld-cases` / `realworld-run [scenarioId ...]`
+- release readiness: `release-verify`
+- multi-cycle soak series: `soak-series [cycles] [suite[:item] ...]`
 
 对应命令包括：
 
 - `soak-cases`
 - `soak-run [scenarioId ...]`
+- `soak-series 10 soak realworld acceptance`
+- `release-verify`
 
-`replay-console` 会同时显示仍需处理的 `latest bundles`，以及最近已收敛的 `latest resolved bundles`，便于把当前告警和刚恢复的 case 分开看。
-`prompt-console` 现在会额外汇总 recent-turn / retrieved-memory / worker-evidence 的实际打包数量，以及 pending / waiting / open-question / decision-or-constraint 的 carry-forward 情况，方便直接看高压上下文下哪些信息被保住了。
+`replay-console` 会同时显示仍需处理的 `latest bundles`，以及最近已收敛的 `latest resolved bundles`，便于把当前告警和刚恢复的 case 分开看；同时也会把 recovery operator 的 `case state`、`gate` 和 `allowed actions` 一起带出来，避免 workflow 已 recovered 但 operator 仍在 `waiting_manual` 时被首页级视图误判为彻底收口。
+`replay-bundle` 现在会直接带出 recovery operator 语义，包括当前 `gate`、允许动作、phase summary 和最近一次 browser outcome，便于不翻源码直接判断这个 case 还卡在哪一步。
+`operator-summary` / `operator-attention` 现在会把 recovery case 的 `allowed actions` 一起打出来，避免只看到 `next action` 却不知道当前 run 还允许哪些手动操作。
+`operator-triage` 会把当前最该看的 incident、runtime waiting/stale 和 prompt pressure 聚到一页里，并给出对应的 console 命令入口。
+`prompt-console` 现在会额外汇总 recent-turn / retrieved-memory / worker-evidence 的实际打包数量，以及 pending / waiting / open-question / decision-or-constraint 的 carry-forward 情况；acceptance / soak 也已把这些计数和 runtime waiting-point 一起编进长链验证，方便直接看高压上下文下哪些信息被保住了。
+`release-verify` 会对将要公开发布的 CLI 走一遍 `npm pack`、解包、bin/dist help smoke 和 `npm publish --dry-run`，避免 package metadata 在真正发版时才暴露问题；`soak-series` 和单独的 `Long Soak` workflow 会把 `soak / realworld / acceptance` 做多轮聚合运行，用来承接高成本、非 PR required 的长周期稳态验证。
 
 模型配置默认会按这个顺序查找：
 

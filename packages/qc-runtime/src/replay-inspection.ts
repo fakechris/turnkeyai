@@ -19,6 +19,7 @@ import type {
   ReplayTaskSummary,
   ReplayTimelineEntry,
 } from "@turnkeyai/core-types/team";
+import { describeRecoveryRunGate, listAllowedRecoveryRunActions } from "@turnkeyai/core-types/recovery-operator-semantics";
 
 const REPLAY_LAYER_ORDER: ReplayLayer[] = ["scheduled", "role", "worker", "browser"];
 const MAX_RETRY_ATTEMPTS_BEFORE_ESCALATION = 2;
@@ -186,28 +187,31 @@ export function findReplayRecoveryPlan(
   return buildReplayRecoveryPlan(summary);
 }
 
-export function buildReplayConsoleReport(records: ReplayRecord[], limit = 10): ReplayConsoleReport {
+export function buildReplayConsoleReport(
+  records: ReplayRecord[],
+  limit = 10,
+  recoveryRuns: RecoveryRun[] = []
+): ReplayConsoleReport {
   const report = buildReplayInspectionReport(records);
   const incidentGroups = listActionableReplayIncidents(records, report);
   const recoveries = incidentGroups.map((group) => buildReplayRecoveryPlan(group));
+  const recoveryRunByGroupId = new Map(recoveryRuns.map((run) => [run.sourceGroupId, run]));
   const bundleByGroupId = new Map(
-    incidentGroups.map((group) => [group.groupId, buildReplayIncidentBundle(records, group.groupId)])
+    incidentGroups.map((group) => [group.groupId, buildReplayConsoleBundle(records, group.groupId, recoveryRunByGroupId)])
   );
   const actionableGroupIds = new Set(incidentGroups.map((group) => group.groupId));
   const replayParentByGroupId = buildReplayParentByGroupId(records);
   const actionCounts: ReplayConsoleReport["actionCounts"] = {};
   const workflowStatusCounts: ReplayConsoleReport["workflowStatusCounts"] = {};
   const caseStateCounts: ReplayConsoleReport["caseStateCounts"] = {};
+  const operatorCaseStateCounts: ReplayConsoleReport["operatorCaseStateCounts"] = {};
   const browserContinuityCounts: ReplayConsoleReport["browserContinuityCounts"] = {};
   const resolvedRootGroupIds = new Set<string>();
   const resolvedBundles: ReplayIncidentBundle[] = [];
 
-  for (const recovery of recoveries) {
-    actionCounts[recovery.nextAction] = (actionCounts[recovery.nextAction] ?? 0) + 1;
-  }
-  for (const bundle of bundleByGroupId.values()) {
+  const countBundleStates = (bundle: ReplayIncidentBundle | null) => {
     if (!bundle) {
-      continue;
+      return;
     }
     if (bundle.recoveryWorkflow?.status) {
       workflowStatusCounts[bundle.recoveryWorkflow.status] = (workflowStatusCounts[bundle.recoveryWorkflow.status] ?? 0) + 1;
@@ -215,6 +219,17 @@ export function buildReplayConsoleReport(records: ReplayRecord[], limit = 10): R
     if (bundle.caseState) {
       caseStateCounts[bundle.caseState] = (caseStateCounts[bundle.caseState] ?? 0) + 1;
     }
+    if (bundle.recoveryOperator?.caseState) {
+      operatorCaseStateCounts[bundle.recoveryOperator.caseState] =
+        (operatorCaseStateCounts[bundle.recoveryOperator.caseState] ?? 0) + 1;
+    }
+  };
+
+  for (const recovery of recoveries) {
+    actionCounts[recovery.nextAction] = (actionCounts[recovery.nextAction] ?? 0) + 1;
+  }
+  for (const bundle of bundleByGroupId.values()) {
+    countBundleStates(bundle);
   }
   for (const group of report.groups) {
     if (group.browserContinuity) {
@@ -225,10 +240,11 @@ export function buildReplayConsoleReport(records: ReplayRecord[], limit = 10): R
     if (rootGroupId !== group.groupId || actionableGroupIds.has(rootGroupId)) {
       continue;
     }
-    const bundle = buildReplayIncidentBundle(records, rootGroupId);
+    const bundle = buildReplayConsoleBundle(records, rootGroupId, recoveryRunByGroupId);
     if (bundle?.caseState === "resolved") {
       resolvedRootGroupIds.add(rootGroupId);
       resolvedBundles.push(bundle);
+      countBundleStates(bundle);
     }
   }
 
@@ -247,6 +263,7 @@ export function buildReplayConsoleReport(records: ReplayRecord[], limit = 10): R
     actionCounts,
     workflowStatusCounts,
     caseStateCounts,
+    operatorCaseStateCounts,
     browserContinuityCounts,
     layerCounts: report.layerCounts,
     failureCounts: report.failureCounts,
@@ -259,14 +276,45 @@ export function buildReplayConsoleReport(records: ReplayRecord[], limit = 10): R
   };
 }
 
+function buildReplayConsoleBundle(
+  records: ReplayRecord[],
+  groupId: string,
+  recoveryRunByGroupId: ReadonlyMap<string, RecoveryRun>
+): ReplayIncidentBundle | null {
+  const bundle = buildReplayIncidentBundle(records, groupId);
+  if (!bundle) {
+    return null;
+  }
+  const recoveryRun = recoveryRunByGroupId.get(groupId);
+  if (recoveryRun) {
+    attachRecoveryRunToReplayIncidentBundle({
+      bundle,
+      run: recoveryRun,
+      records,
+    });
+  }
+  return bundle;
+}
+
 function buildReplayConsoleBundleEntry(
   bundle: ReplayIncidentBundle | null,
   recovery: ReplayRecoveryPlan | null
 ): ReplayConsoleReport["latestBundles"][number] {
+  const workflowNextAction = bundle?.recoveryWorkflow?.nextAction;
+  const operatorNextAction = bundle?.recoveryOperator?.nextAction;
+  const recoveryNextAction = recovery?.nextAction;
+  const nextAction =
+    workflowNextAction && workflowNextAction !== "none"
+      ? workflowNextAction
+      : recoveryNextAction
+        ? recoveryNextAction
+        : operatorNextAction && operatorNextAction !== "none"
+          ? operatorNextAction
+          : "none";
   return {
     groupId: bundle?.group.groupId ?? recovery?.groupId ?? "unknown",
     latestStatus: bundle?.group.latestStatus ?? recovery?.latestStatus ?? "failed",
-    nextAction: bundle?.recoveryWorkflow?.nextAction ?? recovery?.nextAction ?? "none",
+    nextAction,
     autoDispatchReady: recovery?.autoDispatchReady ?? false,
     ...(bundle?.caseState ? { caseState: bundle.caseState } : {}),
     ...(bundle?.recoveryWorkflow?.status ? { workflowStatus: bundle.recoveryWorkflow.status } : {}),
@@ -275,6 +323,11 @@ function buildReplayConsoleBundleEntry(
     ...(bundle?.browserContinuity?.state ? { browserContinuityState: bundle.browserContinuity.state } : {}),
     ...(recovery?.targetLayer ? { targetLayer: recovery.targetLayer } : {}),
     ...(recovery?.targetWorker ? { targetWorker: recovery.targetWorker } : {}),
+    ...(bundle?.recoveryOperator?.caseState ? { operatorCaseState: bundle.recoveryOperator.caseState } : {}),
+    ...(bundle?.recoveryOperator?.currentGate ? { operatorGate: bundle.recoveryOperator.currentGate } : {}),
+    ...(bundle?.recoveryOperator?.allowedActions?.length
+      ? { operatorAllowedActions: bundle.recoveryOperator.allowedActions }
+      : {}),
   };
 }
 
@@ -411,6 +464,54 @@ export function buildReplayIncidentBundle(records: ReplayRecord[], groupId: stri
     ...(followUpSummary ? { followUpSummary } : {}),
     ...(recoveryWorkflow ? { recoveryWorkflow } : {}),
   };
+}
+
+export function attachRecoveryRunToReplayIncidentBundle(input: {
+  bundle: ReplayIncidentBundle;
+  run: RecoveryRun;
+  records: ReplayRecord[];
+  events?: RecoveryRunEvent[];
+}): ReplayIncidentBundle {
+  const progress = buildRecoveryRunProgress(input.run);
+  const latestBrowserOutcome = [...input.run.attempts]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .find((attempt) => attempt.browserOutcome)?.browserOutcome;
+  input.bundle.recoveryRun = input.run;
+  input.bundle.recoveryProgress = progress;
+  input.bundle.recoveryTimeline = buildRecoveryRunTimeline(input.run, input.records, input.events ?? []);
+  input.bundle.recoveryOperator = {
+    caseState: deriveRecoveryRunOperatorCaseState(input.run),
+    currentGate: describeRecoveryRunGate(input.run.status),
+    allowedActions: listAllowedRecoveryRunActions(input.run.status).filter((action) => action !== "dispatch"),
+    nextAction: input.run.nextAction,
+    phase: progress.phase,
+    phaseSummary: progress.phaseSummary,
+    latestSummary: input.run.latestSummary,
+    ...(latestBrowserOutcome ? { latestBrowserOutcome } : {}),
+  };
+  return input.bundle;
+}
+
+function deriveRecoveryRunOperatorCaseState(run: RecoveryRun): NonNullable<ReplayIncidentBundle["caseState"]> {
+  switch (run.status) {
+    case "waiting_approval":
+    case "waiting_external":
+      return "waiting_manual";
+    case "running":
+    case "retrying":
+    case "fallback_running":
+    case "resumed":
+    case "superseded":
+      return "recovering";
+    case "recovered":
+      return "resolved";
+    case "failed":
+    case "aborted":
+      return "blocked";
+    case "planned":
+    default:
+      return "open";
+  }
 }
 
 function buildBundleCaseHeadline(

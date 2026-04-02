@@ -26,6 +26,16 @@ export type {
   ScenarioParityAcceptanceScenarioResult,
   ScenarioParityAcceptanceSuiteResult,
 } from "./scenario-parity-acceptance";
+export {
+  listRealWorldScenarios,
+  runRealWorldSuite,
+} from "./real-world-suite";
+export type {
+  RealWorldScenarioDescriptor,
+  RealWorldScenarioResult,
+  RealWorldSuiteResult,
+} from "./real-world-suite";
+export * from "./release-readiness";
 export * from "./auth-and-scope-diagnosis-policy";
 export * from "./bounded-regression-harness";
 export * from "./browser-result-verifier";
@@ -40,3 +50,4 @@ export * from "./prompt-admission-policy";
 export * from "./replay-inspection";
 export * from "./runtime-chain-inspection";
 export * from "./validation-suite";
+export * from "./validation-soak-series";

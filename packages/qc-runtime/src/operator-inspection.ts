@@ -7,23 +7,31 @@ import type {
   OperatorAttentionCaseSummary,
   OperatorCaseState,
   OperatorSummaryReport,
+  OperatorTriageFocusArea,
+  OperatorTriageReport,
   PermissionCacheRecord,
+  PromptBoundaryEntry,
+  PromptConsoleReport,
   RecoveryConsoleReport,
   RecoveryRun,
   ReplayRecord,
   RoleId,
+  RuntimeProgressEvent,
+  RuntimeSummaryReport,
   ShardResultRecord,
   TeamEvent,
 } from "@turnkeyai/core-types/team";
-import { describeRecoveryRunGate } from "@turnkeyai/core-types/recovery-operator-semantics";
+import { describeRecoveryRunGate, listAllowedRecoveryRunActions } from "@turnkeyai/core-types/recovery-operator-semantics";
 import { detectConflictRoleIds, detectDuplicateRoleIds } from "@turnkeyai/core-types/shard-result-analysis";
 import {
+  attachRecoveryRunToReplayIncidentBundle,
   buildRecoveryRunProgress,
   buildReplayConsoleReport,
   buildReplayIncidentBundle,
   buildReplayInspectionReport,
   listActionableReplayIncidents,
 } from "./replay-inspection";
+import { buildPromptConsoleReport } from "./prompt-inspection";
 
 export function buildFlowConsoleReport(flows: FlowLedger[], limit = 10): FlowConsoleReport {
   const statusCounts: FlowConsoleReport["statusCounts"] = {};
@@ -232,15 +240,18 @@ export function buildOperatorSummaryReport(input: {
   events: TeamEvent[];
   replays: ReplayRecord[];
   recoveryRuns: RecoveryRun[];
+  progressEvents?: RuntimeProgressEvent[];
   limit?: number;
 }): OperatorSummaryReport {
   const limit = input.limit ?? 10;
   const flow = buildFlowConsoleReport(input.flows, limit);
-  const replay = buildReplayConsoleReport(input.replays, limit);
+  const replay = buildReplayConsoleReport(input.replays, limit, input.recoveryRuns);
   const governance = buildGovernanceConsoleReport(input.permissionRecords, input.events, limit);
   const recovery = buildRecoveryConsoleReport(input.recoveryRuns, limit);
+  const prompt = buildPromptConsoleReport(input.progressEvents ?? [], limit);
   const attention = buildOperatorAttentionReport({ ...input, limit: Number.MAX_SAFE_INTEGER });
-  const resolvedRecentCases = buildResolvedRecentCaseSummaries(input.replays, Math.min(limit, 5));
+  const promptAttentionCount = attention.sourceCounts.prompt ?? 0;
+  const resolvedRecentCases = buildResolvedRecentCaseSummaries(input.replays, input.recoveryRuns, Math.min(limit, 5));
   const activeCases = attention.cases
     .slice()
     .sort(compareOperatorAttentionCases)
@@ -253,6 +264,7 @@ export function buildOperatorSummaryReport(input: {
       lifecycle: entry.lifecycle,
       ...(entry.gate ? { gate: entry.gate } : {}),
       ...(entry.action ? { action: entry.action } : {}),
+      ...(entry.allowedActions && entry.allowedActions.length > 0 ? { allowedActions: entry.allowedActions } : {}),
       ...(entry.browserContinuityState ? { browserContinuityState: entry.browserContinuityState } : {}),
       ...(entry.reasons && entry.reasons.length > 0 ? { reasonPreview: entry.reasons[0] } : {}),
       latestUpdate: entry.latestUpdate,
@@ -263,7 +275,10 @@ export function buildOperatorSummaryReport(input: {
     replay,
     governance,
     recovery,
-    totalAttentionCount: flow.attentionCount + replay.attentionCount + governance.attentionCount + recovery.attentionCount,
+    prompt,
+    promptAttentionCount,
+    totalAttentionCount:
+      flow.attentionCount + replay.attentionCount + governance.attentionCount + recovery.attentionCount + promptAttentionCount,
     attentionOverview: {
       uniqueCaseCount: attention.uniqueCaseCount,
       caseStateCounts: {
@@ -288,16 +303,18 @@ export function buildOperatorAttentionReport(input: {
   events: TeamEvent[];
   replays: ReplayRecord[];
   recoveryRuns: RecoveryRun[];
+  progressEvents?: RuntimeProgressEvent[];
   limit?: number;
 }): OperatorAttentionReport {
   const limit = input.limit ?? 20;
   const fullReportLimit = Number.MAX_SAFE_INTEGER;
   const flow = buildFlowConsoleReport(input.flows, fullReportLimit);
-  const replay = buildReplayConsoleReport(input.replays, fullReportLimit);
+  const replay = buildReplayConsoleReport(input.replays, fullReportLimit, input.recoveryRuns);
   const replayInspection = buildReplayInspectionReport(input.replays);
   const replayIncidents = listActionableReplayIncidents(input.replays, replayInspection);
   const governance = buildGovernanceConsoleReport(input.permissionRecords, input.events, fullReportLimit);
   const recovery = buildRecoveryConsoleReport(input.recoveryRuns, fullReportLimit);
+  const prompt = buildPromptConsoleReport(input.progressEvents ?? [], fullReportLimit);
   const bundleByGroupId = new Map(
     replayIncidents.map((incident) => [incident.groupId, buildReplayIncidentBundle(input.replays, incident.groupId)])
   );
@@ -333,7 +350,7 @@ export function buildOperatorAttentionReport(input: {
       summary: `Flow ${group.flowId} shard ${group.groupId} needs attention: ${group.reasons.join(", ")}.`,
       action: group.status === "ready_to_merge" ? "merge" : "inspect_shard_group",
     })),
-    ...replayIncidents.slice(0, Math.max(limit, 20)).map((incident) => {
+    ...replayIncidents.map((incident) => {
       const bundle = bundleByGroupId.get(incident.groupId) ?? null;
       const lifecycle = deriveReplayAttentionLifecycle(bundle);
       return {
@@ -410,6 +427,7 @@ export function buildOperatorAttentionReport(input: {
         run.status,
         ...(run.waitingReason ? [run.waitingReason] : []),
       ],
+      allowedActions: listAllowedRecoveryRunActions(run.status).filter((candidate) => candidate !== "dispatch"),
       ...(run.browserSession?.resumeMode === "hot"
         ? { browserContinuityState: "stable" as const }
         : run.browserSession?.resumeMode
@@ -418,7 +436,9 @@ export function buildOperatorAttentionReport(input: {
       summary: run.latestSummary,
       ...(run.nextAction !== "none" ? { action: run.nextAction } : {}),
     })),
+    ...buildPromptAttentionItems(prompt),
   ].sort(compareOperatorAttentionItems);
+  const promptAttentionCount = allItems.filter((item) => item.source === "prompt").length;
 
   const groupedByCase = new Map<string, OperatorAttentionItem[]>();
   for (const item of allItems) {
@@ -447,7 +467,12 @@ export function buildOperatorAttentionReport(input: {
   const cases = allCases.slice(0, limit);
 
   return {
-    totalItems: flow.attentionCount + replay.attentionCount + governance.attentionCount + recovery.attentionCount,
+    totalItems:
+      flow.attentionCount +
+      replay.attentionCount +
+      governance.attentionCount +
+      recovery.attentionCount +
+      promptAttentionCount,
     returnedItems: items.length,
     uniqueCaseCount: new Set(allItems.map((item) => item.caseKey)).size,
     sourceCounts: {
@@ -455,6 +480,7 @@ export function buildOperatorAttentionReport(input: {
       replay: replay.attentionCount,
       governance: governance.attentionCount,
       recovery: recovery.attentionCount,
+      prompt: promptAttentionCount,
     },
     caseStateCounts,
     severityCounts,
@@ -463,6 +489,159 @@ export function buildOperatorAttentionReport(input: {
     cases,
     items,
   };
+}
+
+export function buildOperatorTriageReport(input: {
+  summary: OperatorSummaryReport;
+  attention: OperatorAttentionReport;
+  runtime: RuntimeSummaryReport;
+  limit?: number;
+}): OperatorTriageReport {
+  const limit = input.limit ?? 5;
+  const focusAreas: OperatorTriageFocusArea[] = [
+    ...input.attention.cases.map((entry) => mapAttentionCaseToTriageFocus(entry)),
+  ];
+
+  if (input.runtime.staleCount > 0) {
+    const stale = input.runtime.staleChains[0];
+    focusAreas.push({
+      area: "runtime",
+      label: "runtime-stale",
+      severity: "critical",
+      headline: `runtime stale chains=${input.runtime.staleCount}`,
+      reason:
+        stale
+          ? stale.staleReason ??
+            stale.currentWaitingPoint ??
+            stale.headline ??
+            "Runtime has stale chains that need inspection."
+          : "Runtime reports stale chains but no chain details are available.",
+      nextStep: "inspect_stale_runtime",
+      commandHint: "runtime-stale 10",
+      ...(stale?.chainId ? { caseKey: stale.chainId } : {}),
+      ...(stale?.canonicalState ? { state: stale.canonicalState } : {}),
+    });
+  } else if (input.runtime.waitingCount > 0) {
+    const waiting = input.runtime.waitingChains[0];
+    focusAreas.push({
+      area: "runtime",
+      label: "runtime-waiting",
+      severity: "warning",
+      headline: `runtime waiting chains=${input.runtime.waitingCount}`,
+      reason:
+        waiting?.currentWaitingPoint ??
+        waiting?.waitingReason ??
+        waiting?.headline ??
+        "Runtime still has active waiting chains.",
+      nextStep: "inspect_waiting_runtime",
+      commandHint: "runtime-waiting 10",
+      ...(waiting?.chainId ? { caseKey: waiting.chainId } : {}),
+      ...(waiting?.canonicalState ? { state: waiting.canonicalState } : {}),
+    });
+  }
+
+  const promptPrimary = input.summary.prompt.latestBoundaries[0];
+  const hasPromptCase = input.attention.cases.some((entry) => entry.sources.includes("prompt"));
+  if (!hasPromptCase && (input.summary.prompt.reductionCount > 0 || input.summary.promptAttentionCount > 0)) {
+    focusAreas.push({
+      area: "prompt",
+      label: "prompt-pressure",
+      severity: input.summary.prompt.reductionCount > 0 ? "critical" : "warning",
+      headline: `prompt pressure boundaries=${input.summary.prompt.totalBoundaries}`,
+      reason:
+        promptPrimary?.summary ??
+        "Prompt pressure reduced or compacted the request envelope.",
+      nextStep: "inspect_prompt_boundary",
+      commandHint: "prompt-console 10",
+      ...(promptPrimary?.progressId ? { caseKey: `prompt:${promptPrimary.progressId}` } : {}),
+      ...(promptPrimary?.boundaryKind ? { state: promptPrimary.boundaryKind } : {}),
+    });
+  }
+
+  const orderedFocusAreas = focusAreas
+    .sort(compareOperatorTriageFocusAreas)
+    .slice(0, limit);
+
+  return {
+    totalAttentionCount: input.summary.totalAttentionCount,
+    uniqueCaseCount: input.attention.uniqueCaseCount,
+    blockedCaseCount: input.attention.caseStateCounts.blocked ?? 0,
+    waitingManualCaseCount: input.attention.caseStateCounts.waiting_manual ?? 0,
+    recoveringCaseCount: input.attention.caseStateCounts.recovering ?? 0,
+    runtimeWaitingCount: input.runtime.waitingCount,
+    runtimeStaleCount: input.runtime.staleCount,
+    runtimeFailedCount: input.runtime.failedCount,
+    promptReductionCount: input.summary.prompt.reductionCount,
+    promptAttentionCount: input.summary.promptAttentionCount,
+    ...(orderedFocusAreas[0]?.commandHint ? { recommendedEntryPoint: orderedFocusAreas[0].commandHint } : {}),
+    focusAreas: orderedFocusAreas,
+  };
+}
+
+function buildPromptAttentionItems(prompt: PromptConsoleReport): OperatorAttentionItem[] {
+  return prompt.latestBoundaries
+    .filter((boundary) => boundary.boundaryKind === "request_envelope_reduction" || shouldEscalatePromptCompaction(boundary))
+    .map((boundary) => ({
+      source: "prompt" as const,
+      key: boundary.progressId,
+      caseKey: buildPromptCaseKey(boundary),
+      headline: "",
+      recordedAt: boundary.recordedAt,
+      severity: boundary.boundaryKind === "request_envelope_reduction" ? "critical" : "warning",
+      lifecycle: boundary.boundaryKind === "request_envelope_reduction" ? "blocked" : "open",
+      status: boundary.boundaryKind,
+      gate: boundary.boundaryKind === "request_envelope_reduction" ? "request_envelope_reduction" : "prompt_compaction",
+      reasons: compactPromptReasons(boundary),
+      summary: boundary.summary,
+      action: "inspect_prompt_boundary",
+    }));
+}
+
+function buildPromptCaseKey(boundary: PromptBoundaryEntry): string {
+  if (boundary.taskId) {
+    return `prompt:${boundary.taskId}`;
+  }
+  if (boundary.flowId) {
+    return `prompt:${boundary.flowId}`;
+  }
+  return `prompt:${boundary.progressId}`;
+}
+
+function shouldEscalatePromptCompaction(boundary: PromptBoundaryEntry): boolean {
+  if (boundary.boundaryKind !== "prompt_compaction") {
+    return false;
+  }
+  const diagnostics = boundary.contextDiagnostics;
+  if (!diagnostics) {
+    return (boundary.compactedSegments?.length ?? 0) >= 2;
+  }
+  return (
+    diagnostics.recentTurns.packedCount < diagnostics.recentTurns.selectedCount ||
+    diagnostics.retrievedMemory.packedCount < diagnostics.retrievedMemory.selectedCount ||
+    diagnostics.workerEvidence.packedCount < diagnostics.workerEvidence.selectedCount
+  );
+}
+
+function compactPromptReasons(boundary: PromptBoundaryEntry): string[] {
+  const reasons: string[] = [];
+  if (boundary.reductionLevel) {
+    reasons.push(boundary.reductionLevel);
+  }
+  if ((boundary.compactedSegments?.length ?? 0) > 0) {
+    reasons.push(...(boundary.compactedSegments ?? []).slice(0, 3));
+  }
+  if (boundary.contextDiagnostics) {
+    if (boundary.contextDiagnostics.continuity.carriesPendingWork) {
+      reasons.push("pending");
+    }
+    if (boundary.contextDiagnostics.continuity.carriesWaitingOn) {
+      reasons.push("waiting");
+    }
+    if (boundary.contextDiagnostics.continuity.carriesOpenQuestions) {
+      reasons.push("open_questions");
+    }
+  }
+  return [...new Set(reasons)];
 }
 
 function deriveReplayAttentionLifecycle(
@@ -650,6 +829,7 @@ function buildAttentionCaseSummary(
     sources: unique(ordered.map((item) => item.source)),
     ...(primary.gate ? { gate: primary.gate } : {}),
     ...(primary.action ? { action: primary.action } : {}),
+    ...(primary.allowedActions && primary.allowedActions.length > 0 ? { allowedActions: primary.allowedActions } : {}),
     ...(primary.browserContinuityState ? { browserContinuityState: primary.browserContinuityState } : {}),
     ...(primary.reasons && primary.reasons.length > 0 ? { reasons: primary.reasons } : {}),
   };
@@ -657,6 +837,7 @@ function buildAttentionCaseSummary(
 
 function buildResolvedRecentCaseSummaries(
   records: ReplayRecord[],
+  recoveryRuns: RecoveryRun[],
   limit: number
 ): Array<{
   caseKey: string;
@@ -670,15 +851,33 @@ function buildResolvedRecentCaseSummaries(
   latestUpdate: string;
   nextStep: string;
 }> {
-  const consoleReport = buildReplayConsoleReport(records, Math.max(limit, 20));
+  const consoleReport = buildReplayConsoleReport(records, Math.max(limit, 20), recoveryRuns);
   const report = buildReplayInspectionReport(records);
   const actionable = new Set(listActionableReplayIncidents(records, report).map((item) => item.groupId));
   const replayParentByGroupId = buildReplayParentByGroupId(records);
   return report.groups
     .filter((group) => resolveReplayRootGroupId(group.groupId, replayParentByGroupId) === group.groupId)
     .filter((group) => !actionable.has(group.groupId))
-    .map((group) => buildReplayIncidentBundle(records, group.groupId))
-    .filter((bundle): bundle is NonNullable<typeof bundle> => bundle != null && bundle.caseState === "resolved")
+    .map((group) => {
+      const bundle = buildReplayIncidentBundle(records, group.groupId);
+      if (!bundle) {
+        return null;
+      }
+      const run = recoveryRuns.find((item) => item.sourceGroupId === group.groupId) ?? null;
+      return run
+        ? attachRecoveryRunToReplayIncidentBundle({
+            bundle,
+            run,
+            records,
+          })
+        : bundle;
+    })
+    .filter(
+      (bundle): bundle is NonNullable<typeof bundle> =>
+        bundle != null &&
+        bundle.caseState === "resolved" &&
+        (bundle.recoveryOperator?.caseState ?? "resolved") === "resolved"
+    )
     .sort((left, right) => {
       const leftRecordedAt = Math.max(
         left.group.latestRecordedAt,
@@ -764,6 +963,90 @@ function deriveAttentionNextStep(item: OperatorAttentionItem): string {
     case "open":
     default:
       return "inspect_case";
+  }
+}
+
+function mapAttentionCaseToTriageFocus(entry: OperatorAttentionCaseSummary): OperatorTriageFocusArea {
+  const primarySource = entry.sources[0] ?? "replay";
+  return {
+    area: "case",
+    label: primarySource,
+    severity: entry.severity,
+    headline: entry.headline,
+    reason: entry.latestUpdate,
+    nextStep: entry.nextStep,
+    commandHint: deriveTriageCommandHint(entry),
+    caseKey: entry.caseKey,
+    source: primarySource,
+    ...(entry.gate ? { gate: entry.gate } : {}),
+    ...(entry.caseState ? { state: entry.caseState } : {}),
+    ...(entry.browserContinuityState ? { browserContinuityState: entry.browserContinuityState } : {}),
+  };
+}
+
+function deriveTriageCommandHint(entry: OperatorAttentionCaseSummary): string {
+  if (entry.caseKey.startsWith("incident:")) {
+    return `replay-bundle ${entry.caseKey.slice("incident:".length)}`;
+  }
+  if (entry.sources.includes("recovery")) {
+    return "recovery-summary 10";
+  }
+  if (entry.sources.includes("flow")) {
+    return "flows-summary";
+  }
+  if (entry.sources.includes("governance")) {
+    return "governance workers 20";
+  }
+  if (entry.sources.includes("prompt")) {
+    return "prompt-console 10";
+  }
+  return "operator-attention 10";
+}
+
+function compareOperatorTriageFocusAreas(left: OperatorTriageFocusArea, right: OperatorTriageFocusArea): number {
+  const areaDelta = triageAreaRank(right.area) - triageAreaRank(left.area);
+  if (areaDelta !== 0) {
+    return areaDelta;
+  }
+  const sourceDelta = triageSourceRank(right.source) - triageSourceRank(left.source);
+  if (sourceDelta !== 0) {
+    return sourceDelta;
+  }
+  const severityDelta = severityRank(right.severity) - severityRank(left.severity);
+  if (severityDelta !== 0) {
+    return severityDelta;
+  }
+  const leftCase = left.caseKey ?? left.label;
+  const rightCase = right.caseKey ?? right.label;
+  return leftCase.localeCompare(rightCase);
+}
+
+function triageAreaRank(area: OperatorTriageFocusArea["area"]): number {
+  switch (area) {
+    case "case":
+      return 3;
+    case "runtime":
+      return 2;
+    case "prompt":
+    default:
+      return 1;
+  }
+}
+
+function triageSourceRank(source: OperatorTriageFocusArea["source"] | undefined): number {
+  switch (source) {
+    case "replay":
+      return 5;
+    case "recovery":
+      return 4;
+    case "flow":
+      return 3;
+    case "governance":
+      return 2;
+    case "prompt":
+      return 1;
+    default:
+      return 0;
   }
 }
 

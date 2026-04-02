@@ -7,6 +7,7 @@ import type {
   GovernanceConsoleReport,
   OperatorAttentionReport,
   OperatorSummaryReport,
+  OperatorTriageReport,
   PermissionCacheRecord,
   PromptConsoleReport,
   RuntimeChain,
@@ -372,6 +373,11 @@ while (true) {
       continue;
     }
 
+    if (command === "operator-triage") {
+      await handleOperatorTriageCommand(args);
+      continue;
+    }
+
     if (command === "prompt-console") {
       await handlePromptConsoleCommand(args);
       continue;
@@ -462,6 +468,26 @@ while (true) {
 
     if (command === "acceptance-run") {
       await handleAcceptanceRunCommand(args);
+      continue;
+    }
+
+    if (command === "realworld-cases") {
+      await handleRealWorldCasesCommand();
+      continue;
+    }
+
+    if (command === "realworld-run") {
+      await handleRealWorldRunCommand(args);
+      continue;
+    }
+
+    if (command === "soak-series") {
+      await handleSoakSeriesCommand(args);
+      continue;
+    }
+
+    if (command === "release-verify") {
+      await handleReleaseVerifyCommand();
       continue;
     }
 
@@ -612,6 +638,7 @@ function printHelp(): void {
   console.log("  runtime-chain-progress <chainId> [limit] show recent runtime progress for one chain");
   console.log("  operator-summary     show current thread operator summary");
   console.log("  operator-attention [limit]           show cross-surface attention items for current thread");
+  console.log("  operator-triage [limit]              show prioritized triage entry points for current thread");
   console.log("  prompt-console [limit]               show recent prompt boundary diagnostics for current thread");
   console.log("  runs                 show current thread role runs");
   console.log("  session-memory       show current thread session memory");
@@ -642,6 +669,10 @@ function printHelp(): void {
   console.log("  soak-run [scenarioId ...]             run long-chain stability soak suite");
   console.log("  acceptance-cases                      list scenario parity acceptance suites");
   console.log("  acceptance-run [scenarioId ...]       run scenario parity acceptance harness");
+  console.log("  realworld-cases                       list real-world runbook scenarios");
+  console.log("  realworld-run [scenarioId ...]        run real-world runbook validation suite");
+  console.log("  soak-series [cycles] [suite[:item] ...]  run multi-cycle validation soak across selected suites");
+  console.log("  release-verify                        verify packaged CLI and npm publish dry-run readiness");
   console.log("  validation-cases                      list unified validation suites and items");
   console.log("  validation-run [suite[:item] ...]     run unified validation suites or individual items");
   console.log("  replay-incidents [limit] [action]     show replay incidents for current thread");
@@ -1205,8 +1236,13 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
   console.log("Operator Summary");
   console.log(`  total attention: ${report.totalAttentionCount}`);
   console.log(
-    `  flow=${report.flow.attentionCount}  replay=${report.replay.attentionCount}  governance=${report.governance.attentionCount}  recovery=${report.recovery.attentionCount}`
+    `  flow=${report.flow.attentionCount}  replay=${report.replay.attentionCount}  governance=${report.governance.attentionCount}  recovery=${report.recovery.attentionCount}  prompt=${report.promptAttentionCount}`
   );
+  if (report.prompt.totalBoundaries > 0) {
+    console.log(
+      `  prompt pressure: boundaries=${report.prompt.totalBoundaries}  compactions=${report.prompt.compactionCount}  reductions=${report.prompt.reductionCount}  memory=${report.prompt.totalRetrievedMemoryPacked}/${report.prompt.totalRetrievedMemoryCandidates}  evidence=${report.prompt.totalWorkerEvidencePacked}/${report.prompt.totalWorkerEvidenceCandidates}`
+    );
+  }
   if (report.attentionOverview) {
     console.log(
       `  unique cases=${report.attentionOverview.uniqueCaseCount}  case-state=${formatCountMap(report.attentionOverview.caseStateCounts)}  severity=${formatCountMap(report.attentionOverview.severityCounts)}  lifecycle=${formatCountMap(report.attentionOverview.lifecycleCounts)}`
@@ -1225,6 +1261,9 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
         }
         if (entry.action) {
           parts.push(`action=${entry.action}`);
+        }
+        if (entry.allowedActions && entry.allowedActions.length > 0) {
+          parts.push(`allowed=${entry.allowedActions.map(describeAttemptAction).join("/")}`);
         }
         if (entry.browserContinuityState) {
           parts.push(`browser=${entry.browserContinuityState}`);
@@ -1316,6 +1355,9 @@ function printOperatorAttention(report: OperatorAttentionReport): void {
       if (entry.action) {
         parts.push(`action=${entry.action}`);
       }
+      if (entry.allowedActions && entry.allowedActions.length > 0) {
+        parts.push(`allowed=${entry.allowedActions.map(describeAttemptAction).join("/")}`);
+      }
       if (entry.browserContinuityState) {
         parts.push(`browser=${entry.browserContinuityState}`);
       }
@@ -1342,6 +1384,9 @@ function printOperatorAttention(report: OperatorAttentionReport): void {
     if (item.action) {
       parts.push(`action=${item.action}`);
     }
+    if (item.allowedActions && item.allowedActions.length > 0) {
+      parts.push(`allowed=${item.allowedActions.map(describeAttemptAction).join("/")}`);
+    }
     if (item.browserContinuityState) {
       parts.push(`browser=${item.browserContinuityState}`);
     }
@@ -1350,6 +1395,50 @@ function printOperatorAttention(report: OperatorAttentionReport): void {
     console.log(`    ${item.summary}`);
     if (item.reasons && item.reasons.length > 0) {
       console.log(`    reasons: ${item.reasons.join(" | ")}`);
+    }
+  }
+}
+
+function printOperatorTriage(report: OperatorTriageReport): void {
+  console.log("Operator Triage");
+  console.log(`  total attention: ${report.totalAttentionCount}`);
+  console.log(`  unique cases: ${report.uniqueCaseCount}`);
+  console.log(
+    `  blocked=${report.blockedCaseCount}  waiting_manual=${report.waitingManualCaseCount}  recovering=${report.recoveringCaseCount}`
+  );
+  console.log(
+    `  runtime waiting=${report.runtimeWaitingCount}  stale=${report.runtimeStaleCount}  failed=${report.runtimeFailedCount}`
+  );
+  console.log(
+    `  prompt reductions=${report.promptReductionCount}  prompt attention=${report.promptAttentionCount}`
+  );
+  if (report.recommendedEntryPoint) {
+    console.log(`  recommended entry: ${report.recommendedEntryPoint}`);
+  }
+  if (report.focusAreas.length > 0) {
+    console.log("  focus areas:");
+    for (const area of report.focusAreas) {
+      const parts = [
+        area.label,
+        `area=${area.area}`,
+        `severity=${area.severity}`,
+      ];
+      if (area.state) {
+        parts.push(`state=${area.state}`);
+      }
+      if (area.source) {
+        parts.push(`source=${area.source}`);
+      }
+      if (area.gate) {
+        parts.push(`gate=${area.gate}`);
+      }
+      if (area.browserContinuityState) {
+        parts.push(`browser=${area.browserContinuityState}`);
+      }
+      console.log(`    - ${parts.join("  ")}`);
+      console.log(`      ${area.headline}`);
+      console.log(`      next=${area.nextStep}  cmd=${area.commandHint}`);
+      console.log(`      reason=${area.reason}`);
     }
   }
 }
@@ -1705,6 +1794,23 @@ async function handleOperatorAttentionCommand(raw: string): Promise<void> {
   );
 }
 
+async function handleOperatorTriageCommand(raw: string): Promise<void> {
+  if (!currentThreadId) {
+    console.log("no active thread; run `bootstrap` or `use <threadId>` first");
+    return;
+  }
+  const params = new URLSearchParams({
+    threadId: currentThreadId,
+  });
+  const limit = Number(raw.trim() || "5");
+  if (Number.isFinite(limit) && limit > 0) {
+    params.set("limit", String(limit));
+  }
+  printOperatorTriage(
+    (await getJson(`/operator-triage?${params.toString()}`)) as OperatorTriageReport
+  );
+}
+
 async function handleReplayConsoleCommand(raw: string): Promise<void> {
   const params = new URLSearchParams();
   if (currentThreadId) {
@@ -1722,7 +1828,7 @@ async function handleRegressionCasesCommand(): Promise<void> {
     (await getJson("/regression-cases")) as Array<{
       caseId: string;
       title: string;
-      area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+      area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
       summary: string;
     }>
   );
@@ -1738,7 +1844,7 @@ async function handleRegressionRunCommand(raw: string): Promise<void> {
       results: Array<{
         caseId: string;
         title: string;
-        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
         summary: string;
         status: "passed" | "failed";
         details: string[];
@@ -1753,7 +1859,7 @@ async function handleFailureCasesCommand(): Promise<void> {
       totalScenarios: number;
       scenarios: Array<{
         scenarioId: string;
-        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
         title: string;
         summary: string;
         caseIds: string[];
@@ -1774,7 +1880,7 @@ async function handleFailureRunCommand(raw: string): Promise<void> {
       failedCases: number;
       scenarios: Array<{
         scenarioId: string;
-        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
         title: string;
         summary: string;
         caseIds: string[];
@@ -1785,7 +1891,7 @@ async function handleFailureRunCommand(raw: string): Promise<void> {
         caseResults: Array<{
           caseId: string;
           title: string;
-          area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+          area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
           summary: string;
           status: "passed" | "failed";
           details: string[];
@@ -1851,7 +1957,7 @@ async function handleSoakRunCommand(raw: string): Promise<void> {
         caseResults: Array<{
           caseId: string;
           title: string;
-          area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+          area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
           summary: string;
           status: "passed" | "failed";
           details: string[];
@@ -1915,7 +2021,55 @@ async function handleAcceptanceRunCommand(raw: string): Promise<void> {
         caseResults: Array<{
           caseId: string;
           title: string;
-          area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+          area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
+          summary: string;
+          status: "passed" | "failed";
+          details: string[];
+        }>;
+      }>;
+    }
+  );
+}
+
+async function handleRealWorldCasesCommand(): Promise<void> {
+  printRealWorldScenarioList(
+    (await getJson("/realworld-cases")) as {
+      totalScenarios: number;
+      scenarios: Array<{
+        scenarioId: string;
+        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
+        title: string;
+        summary: string;
+        caseIds: string[];
+      }>;
+    }
+  );
+}
+
+async function handleRealWorldRunCommand(raw: string): Promise<void> {
+  const scenarioIds = raw.split(/\s+/).filter(Boolean);
+  printRealWorldRunResult(
+    (await postJson("/realworld-cases/run", scenarioIds.length > 0 ? { scenarioIds } : {})) as {
+      totalScenarios: number;
+      passedScenarios: number;
+      failedScenarios: number;
+      totalCases: number;
+      passedCases: number;
+      failedCases: number;
+      scenarios: Array<{
+        scenarioId: string;
+        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
+        title: string;
+        summary: string;
+        caseIds: string[];
+        status: "passed" | "failed";
+        totalCases: number;
+        passedCases: number;
+        failedCases: number;
+        caseResults: Array<{
+          caseId: string;
+          title: string;
+          area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
           summary: string;
           status: "passed" | "failed";
           details: string[];
@@ -1931,12 +2085,12 @@ async function handleValidationCasesCommand(): Promise<void> {
       totalSuites: number;
       totalItems: number;
       suites: Array<{
-        suiteId: "regression" | "soak" | "failure" | "acceptance";
+        suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
         title: string;
         summary: string;
         totalItems: number;
         items: Array<{
-          suiteId: "regression" | "soak" | "failure" | "acceptance";
+          suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
           itemId: string;
           area: string;
           title: string;
@@ -1964,7 +2118,7 @@ async function handleValidationRunCommand(raw: string): Promise<void> {
         passedCases: number;
         failedCases: number;
         suites: Array<{
-          suiteId: "regression" | "soak" | "failure" | "acceptance";
+          suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
           title: string;
           summary: string;
           totalItems: number;
@@ -1974,7 +2128,7 @@ async function handleValidationRunCommand(raw: string): Promise<void> {
           passedCases: number;
           failedCases: number;
           items: Array<{
-            suiteId: "regression" | "soak" | "failure" | "acceptance";
+            suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
             itemId: string;
             area: string;
             title: string;
@@ -1986,7 +2140,7 @@ async function handleValidationRunCommand(raw: string): Promise<void> {
             caseResults: Array<{
               caseId: string;
               title: string;
-              area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+              area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
               summary: string;
               status: "passed" | "failed";
               details: string[];
@@ -1999,6 +2153,91 @@ async function handleValidationRunCommand(raw: string): Promise<void> {
     console.log(`validation run failed: ${error instanceof Error ? error.message : String(error)}`);
     return;
   }
+}
+
+async function handleSoakSeriesCommand(raw: string): Promise<void> {
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  let cycles = 5;
+  let selectors = tokens;
+  if (tokens.length > 0 && /^\d+$/.test(tokens[0]!)) {
+    cycles = Number(tokens[0]);
+    selectors = tokens.slice(1);
+  }
+
+  try {
+    const payload = await postJson("/soak-series/run", { cycles, selectors });
+    printValidationSoakSeriesResult(
+      payload as {
+        status: "passed" | "failed";
+        selectors: string[];
+        totalCycles: number;
+        passedCycles: number;
+        failedCycles: number;
+        totalSuites: number;
+        failedSuites: number;
+        totalItems: number;
+        failedItems: number;
+        totalCases: number;
+        failedCases: number;
+        durationMs: number;
+        cycles: Array<{
+          cycleNumber: number;
+          status: "passed" | "failed";
+          durationMs: number;
+          totalSuites: number;
+          failedSuites: number;
+          totalItems: number;
+          failedItems: number;
+          totalCases: number;
+          failedCases: number;
+          suites: Array<{
+            suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
+            status: "passed" | "failed";
+            totalItems: number;
+            failedItems: number;
+            totalCases: number;
+            failedCases: number;
+          }>;
+        }>;
+        suiteAggregates: Array<{
+          suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
+          cycles: number;
+          failedCycles: number;
+          totalItems: number;
+          failedItems: number;
+          totalCases: number;
+          failedCases: number;
+        }>;
+      }
+    );
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleReleaseVerifyCommand(): Promise<void> {
+  printReleaseReadinessResult(
+    (await postJson("/release-readiness/run", {})) as {
+      status: "passed" | "failed";
+      totalChecks: number;
+      passedChecks: number;
+      failedChecks: number;
+      artifact: {
+        filename: string;
+        packageSize?: number;
+        unpackedSize?: number;
+        shasum?: string;
+        integrity?: string;
+        totalFiles?: number;
+      } | null;
+      checks: Array<{
+        checkId: string;
+        title: string;
+        status: "passed" | "failed";
+        details: string[];
+      }>;
+    }
+  );
 }
 
 async function handleReplayIncidentsCommand(raw: string): Promise<void> {
@@ -2431,6 +2670,22 @@ function printReplayBundle(bundle: ReplayIncidentBundle): void {
       `  workflow: ${bundle.recoveryWorkflow.status}  next=${describeRecoveryAction(bundle.recoveryWorkflow.nextAction)}  summary=${bundle.recoveryWorkflow.summary}`
     );
   }
+  if (bundle.recoveryOperator) {
+    console.log(
+      `  operator gate: ${bundle.recoveryOperator.currentGate}  case=${bundle.recoveryOperator.caseState}  next=${describeRecoveryAction(bundle.recoveryOperator.nextAction)}  phase=${bundle.recoveryOperator.phase}`
+    );
+    console.log(`  operator summary: ${bundle.recoveryOperator.phaseSummary}`);
+    console.log(
+      `  allowed actions: ${
+        bundle.recoveryOperator.allowedActions.length > 0
+          ? bundle.recoveryOperator.allowedActions.map(describeAttemptAction).join(", ")
+          : "none"
+      }`
+    );
+    if (bundle.recoveryOperator.latestBrowserOutcome) {
+      console.log(`  latest browser outcome: ${bundle.recoveryOperator.latestBrowserOutcome}`);
+    }
+  }
   if (bundle.recoveryProgress) {
     console.log(
       `  recovery phase: ${bundle.recoveryProgress.phase}  active=${bundle.recoveryProgress.activeAttemptId ?? "-"}  settled=${bundle.recoveryProgress.settledAttempts}/${bundle.recoveryProgress.totalAttempts}`
@@ -2626,6 +2881,13 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
         .join(", ")}`
     );
   }
+  if (Object.keys(payload.operatorCaseStateCounts).length > 0) {
+    console.log(
+      `  operator case state: ${Object.entries(payload.operatorCaseStateCounts)
+        .map(([state, count]) => `${state}=${count}`)
+        .join(", ")}`
+    );
+  }
   if (Object.keys(payload.browserContinuityCounts).length > 0) {
     console.log(
       `  browser continuity: ${Object.entries(payload.browserContinuityCounts)
@@ -2651,6 +2913,9 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       if (bundle.browserContinuityState) {
         parts.push(`browser=${bundle.browserContinuityState}`);
       }
+      if (bundle.operatorCaseState) {
+        parts.push(`operator=${bundle.operatorCaseState}`);
+      }
       if (bundle.targetLayer || bundle.targetWorker) {
         parts.push(`target=${bundle.targetLayer ?? "main"}${bundle.targetWorker ? `/${bundle.targetWorker}` : ""}`);
       }
@@ -2660,6 +2925,16 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       }
       if (bundle.workflowSummary) {
         console.log(`      ${bundle.workflowSummary}`);
+      }
+      if (bundle.operatorGate || (bundle.operatorAllowedActions && bundle.operatorAllowedActions.length > 0)) {
+        const operatorParts: string[] = [];
+        if (bundle.operatorGate) {
+          operatorParts.push(`gate=${bundle.operatorGate}`);
+        }
+        if (bundle.operatorAllowedActions && bundle.operatorAllowedActions.length > 0) {
+          operatorParts.push(`allowed=${bundle.operatorAllowedActions.map(describeAttemptAction).join("/")}`);
+        }
+        console.log(`      operator: ${operatorParts.join("  ")}`);
       }
     }
   }
@@ -2681,12 +2956,25 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       if (bundle.browserContinuityState) {
         parts.push(`browser=${bundle.browserContinuityState}`);
       }
+      if (bundle.operatorCaseState) {
+        parts.push(`operator=${bundle.operatorCaseState}`);
+      }
       console.log(`    - ${parts.join("  ")}`);
       if (bundle.caseHeadline) {
         console.log(`      ${bundle.caseHeadline}`);
       }
       if (bundle.workflowSummary) {
         console.log(`      ${bundle.workflowSummary}`);
+      }
+      if (bundle.operatorGate || (bundle.operatorAllowedActions && bundle.operatorAllowedActions.length > 0)) {
+        const operatorParts: string[] = [];
+        if (bundle.operatorGate) {
+          operatorParts.push(`gate=${bundle.operatorGate}`);
+        }
+        if (bundle.operatorAllowedActions && bundle.operatorAllowedActions.length > 0) {
+          operatorParts.push(`allowed=${bundle.operatorAllowedActions.map(describeAttemptAction).join("/")}`);
+        }
+        console.log(`      operator: ${operatorParts.join("  ")}`);
       }
     }
   }
@@ -2724,7 +3012,7 @@ function printRegressionCaseList(
   cases: Array<{
     caseId: string;
     title: string;
-    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
     summary: string;
   }>
 ): void {
@@ -2742,7 +3030,7 @@ function printRegressionRunResult(payload: {
   results: Array<{
     caseId: string;
     title: string;
-    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
     summary: string;
     status: "passed" | "failed";
     details: string[];
@@ -2764,7 +3052,7 @@ function printFailureInjectionScenarioList(payload: {
   totalScenarios: number;
   scenarios: Array<{
     scenarioId: string;
-    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
     title: string;
     summary: string;
     caseIds: string[];
@@ -2787,7 +3075,7 @@ function printFailureInjectionRunResult(payload: {
   failedCases: number;
   scenarios: Array<{
     scenarioId: string;
-    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
     title: string;
     summary: string;
     caseIds: string[];
@@ -2798,7 +3086,7 @@ function printFailureInjectionRunResult(payload: {
     caseResults: Array<{
       caseId: string;
       title: string;
-      area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+      area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
       summary: string;
       status: "passed" | "failed";
       details: string[];
@@ -2881,7 +3169,7 @@ function printSoakRunResult(payload: {
     caseResults: Array<{
       caseId: string;
       title: string;
-      area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+      area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
       summary: string;
       status: "passed" | "failed";
       details: string[];
@@ -2962,7 +3250,7 @@ function printAcceptanceRunResult(payload: {
     caseResults: Array<{
       caseId: string;
       title: string;
-      area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+      area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
       summary: string;
       status: "passed" | "failed";
       details: string[];
@@ -2989,16 +3277,81 @@ function printAcceptanceRunResult(payload: {
   }
 }
 
+function printRealWorldScenarioList(payload: {
+  totalScenarios: number;
+  scenarios: Array<{
+    scenarioId: string;
+    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
+    title: string;
+    summary: string;
+    caseIds: string[];
+  }>;
+}): void {
+  console.log(`Real-World Scenarios: ${payload.totalScenarios}`);
+  for (const scenario of payload.scenarios) {
+    console.log(`- ${scenario.scenarioId}  [${scenario.area}] ${scenario.title}`);
+    console.log(`  ${scenario.summary}`);
+    console.log(`  cases: ${scenario.caseIds.join(", ")}`);
+  }
+}
+
+function printRealWorldRunResult(payload: {
+  totalScenarios: number;
+  passedScenarios: number;
+  failedScenarios: number;
+  totalCases: number;
+  passedCases: number;
+  failedCases: number;
+  scenarios: Array<{
+    scenarioId: string;
+    area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
+    title: string;
+    summary: string;
+    caseIds: string[];
+    status: "passed" | "failed";
+    totalCases: number;
+    passedCases: number;
+    failedCases: number;
+    caseResults: Array<{
+      caseId: string;
+      title: string;
+      area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
+      summary: string;
+      status: "passed" | "failed";
+      details: string[];
+    }>;
+  }>;
+}): void {
+  console.log(
+    `Real-World: ${payload.passedScenarios}/${payload.totalScenarios} scenarios passed, ${payload.passedCases}/${payload.totalCases} cases passed`
+  );
+  for (const scenario of payload.scenarios) {
+    console.log(
+      `- ${scenario.scenarioId}  [${scenario.area}] ${scenario.title}  status=${scenario.status}  cases=${scenario.passedCases}/${scenario.totalCases}`
+    );
+    console.log(`  ${scenario.summary}`);
+    if (scenario.failedCases > 0) {
+      console.log(`  failed cases: ${scenario.failedCases}`);
+    }
+    for (const result of scenario.caseResults) {
+      console.log(`    - ${result.caseId}  status=${result.status}`);
+      for (const detail of result.details) {
+        console.log(`      ${detail}`);
+      }
+    }
+  }
+}
+
 function printValidationSuiteList(payload: {
   totalSuites: number;
   totalItems: number;
   suites: Array<{
-    suiteId: "regression" | "soak" | "failure" | "acceptance";
+    suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
     title: string;
     summary: string;
     totalItems: number;
     items: Array<{
-      suiteId: "regression" | "soak" | "failure" | "acceptance";
+      suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
       itemId: string;
       area: string;
       title: string;
@@ -3033,7 +3386,7 @@ function printValidationRunResult(payload: {
   passedCases: number;
   failedCases: number;
   suites: Array<{
-    suiteId: "regression" | "soak" | "failure" | "acceptance";
+    suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
     title: string;
     summary: string;
     totalItems: number;
@@ -3043,7 +3396,7 @@ function printValidationRunResult(payload: {
     passedCases: number;
     failedCases: number;
     items: Array<{
-      suiteId: "regression" | "soak" | "failure" | "acceptance";
+      suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
       itemId: string;
       area: string;
       title: string;
@@ -3055,7 +3408,7 @@ function printValidationRunResult(payload: {
       caseResults: Array<{
         caseId: string;
         title: string;
-        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+        area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
         summary: string;
         status: "passed" | "failed";
         details: string[];
@@ -3082,6 +3435,104 @@ function printValidationRunResult(payload: {
           console.log(`      ${detail}`);
         }
       }
+    }
+  }
+}
+
+function printValidationSoakSeriesResult(payload: {
+  status: "passed" | "failed";
+  selectors: string[];
+  totalCycles: number;
+  passedCycles: number;
+  failedCycles: number;
+  totalSuites: number;
+  failedSuites: number;
+  totalItems: number;
+  failedItems: number;
+  totalCases: number;
+  failedCases: number;
+  durationMs: number;
+  cycles: Array<{
+    cycleNumber: number;
+    status: "passed" | "failed";
+    durationMs: number;
+    totalSuites: number;
+    failedSuites: number;
+    totalItems: number;
+    failedItems: number;
+    totalCases: number;
+    failedCases: number;
+    suites: Array<{
+      suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
+      status: "passed" | "failed";
+      totalItems: number;
+      failedItems: number;
+      totalCases: number;
+      failedCases: number;
+    }>;
+  }>;
+  suiteAggregates: Array<{
+    suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
+    cycles: number;
+    failedCycles: number;
+    totalItems: number;
+    failedItems: number;
+    totalCases: number;
+    failedCases: number;
+  }>;
+}): void {
+  console.log(
+    `Validation soak series: status=${payload.status} cycles=${payload.passedCycles}/${payload.totalCycles} cases=${payload.totalCases - payload.failedCases}/${payload.totalCases} durationMs=${payload.durationMs}`
+  );
+  console.log(`selectors: ${payload.selectors.join(", ")}`);
+  for (const cycle of payload.cycles) {
+    console.log(
+      `- cycle=${cycle.cycleNumber} status=${cycle.status} suites=${cycle.totalSuites} items=${cycle.totalItems} cases=${cycle.totalCases} failedCases=${cycle.failedCases} durationMs=${cycle.durationMs}`
+    );
+    for (const suite of cycle.suites) {
+      console.log(
+        `  ${suite.suiteId}  status=${suite.status}  items=${suite.totalItems} failedItems=${suite.failedItems}  cases=${suite.totalCases} failedCases=${suite.failedCases}`
+      );
+    }
+  }
+  console.log("Suite aggregates:");
+  for (const suite of payload.suiteAggregates) {
+    console.log(
+      `- ${suite.suiteId}  cycles=${suite.cycles} failedCycles=${suite.failedCycles} items=${suite.totalItems} failedItems=${suite.failedItems} cases=${suite.totalCases} failedCases=${suite.failedCases}`
+    );
+  }
+}
+
+function printReleaseReadinessResult(payload: {
+  status: "passed" | "failed";
+  totalChecks: number;
+  passedChecks: number;
+  failedChecks: number;
+  artifact: {
+    filename: string;
+    packageSize?: number;
+    unpackedSize?: number;
+    shasum?: string;
+    integrity?: string;
+    totalFiles?: number;
+  } | null;
+  checks: Array<{
+    checkId: string;
+    title: string;
+    status: "passed" | "failed";
+    details: string[];
+  }>;
+}): void {
+  console.log(`Release readiness: ${payload.status} checks=${payload.passedChecks}/${payload.totalChecks}`);
+  if (payload.artifact) {
+    console.log(
+      `Artifact: ${payload.artifact.filename} files=${payload.artifact.totalFiles ?? 0} packageSize=${payload.artifact.packageSize ?? 0} unpackedSize=${payload.artifact.unpackedSize ?? 0}`
+    );
+  }
+  for (const check of payload.checks) {
+    console.log(`- ${check.checkId}  ${check.title}  status=${check.status}`);
+    for (const detail of check.details) {
+      console.log(`  ${detail}`);
     }
   }
 }

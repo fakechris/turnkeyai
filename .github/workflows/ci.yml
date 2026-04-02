@@ -73,20 +73,18 @@ jobs:
       - name: Build publishable CLI package
         run: npm run build
 
-      - name: Validate npm package contents
-        run: npm run pack:cli
-
-      - name: Pack CLI release artifact
-        run: |
-          mkdir -p .artifacts
-          npm pack --workspace @turnkeyai/cli --pack-destination .artifacts
+      - name: Run release readiness verification
+        run: npm run release:verify -- --skip-build --artifact-dir .artifacts --json .artifacts/release-readiness.json
 
       - name: Upload CLI artifact
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: turnkeyai-cli-package
+          if-no-files-found: warn
           path: |
             .artifacts/*.tgz
+            .artifacts/release-readiness.json
             packages/cli/bin
             packages/cli/dist
             packages/cli/LICENSE

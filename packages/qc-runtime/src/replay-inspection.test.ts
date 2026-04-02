@@ -4,6 +4,7 @@ import test from "node:test";
 import type { RecoveryRun } from "@turnkeyai/core-types/team";
 
 import {
+  attachRecoveryRunToReplayIncidentBundle,
   buildRecoveryRunTimeline,
   buildRecoveryRunProgress,
   buildRecoveryRunId,
@@ -84,7 +85,7 @@ test("replay inspection can resolve one grouped replay summary", () => {
       taskId: "task-9",
       summary: "partial worker output",
     },
-  ] as const;
+  ] as Parameters<typeof buildReplayInspectionReport>[0];
 
   const summary = findReplayTaskSummary(records as unknown as Parameters<typeof buildReplayInspectionReport>[0], "task-9");
   assert.ok(summary);
@@ -593,6 +594,124 @@ test("replay console suppresses superseded failed follow-up groups once the root
   assert.equal(consoleReport.latestResolvedBundles[0]?.browserContinuityState, "recovered");
 });
 
+test("replay console surfaces operator waiting-manual state alongside recovered workflow state", () => {
+  const records = [
+    {
+      replayId: "task-manual-root:worker:worker:browser:task:task-manual-root",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-manual-root",
+      roleId: "role-operator",
+      workerType: "browser",
+      summary: "browser target detached",
+      failure: {
+        category: "stale_session",
+        layer: "worker",
+        retryable: true,
+        message: "browser target detached",
+        recommendedAction: "resume",
+      },
+    },
+    {
+      replayId: "task-manual-follow:scheduled",
+      layer: "scheduled",
+      status: "completed",
+      recordedAt: 20,
+      threadId: "thread-1",
+      taskId: "task-manual-follow",
+      roleId: "role-operator",
+      summary: "recovery dispatched",
+      metadata: {
+        recoveryContext: {
+          parentGroupId: "task-manual-root",
+          attemptId: "recovery:task-manual-root:attempt:1",
+          dispatchReplayId: "task-manual-follow:scheduled",
+        },
+      },
+    },
+    {
+      replayId: "task-manual-follow:worker:worker:browser:task:task-manual-follow",
+      layer: "worker",
+      status: "completed",
+      recordedAt: 30,
+      threadId: "thread-1",
+      taskId: "task-manual-follow",
+      roleId: "role-operator",
+      workerType: "browser",
+      summary: "browser continuity recovered; waiting on operator verification",
+      metadata: {
+        recoveryContext: {
+          parentGroupId: "task-manual-root",
+          attemptId: "recovery:task-manual-root:attempt:1",
+          dispatchReplayId: "task-manual-follow:scheduled",
+        },
+        payload: {
+          sessionId: "browser-session-manual",
+          targetId: "target-manual",
+          resumeMode: "warm",
+          targetResolution: "reconnect",
+        },
+      },
+    },
+  ] as Parameters<typeof buildReplayInspectionReport>[0];
+
+  const recoveryRuns: RecoveryRun[] = [
+    {
+      recoveryRunId: buildRecoveryRunId("task-manual-root"),
+      threadId: "thread-1",
+      sourceGroupId: "task-manual-root",
+      taskId: "task-manual-root",
+      roleId: "role-operator",
+      targetLayer: "worker",
+      targetWorker: "browser",
+      latestStatus: "partial",
+      status: "waiting_external",
+      nextAction: "inspect_then_resume",
+      autoDispatchReady: false,
+      requiresManualIntervention: true,
+      latestSummary: "Browser continuity recovered; waiting on operator verification.",
+      waitingReason: "waiting on operator verification",
+      browserSession: {
+        sessionId: "browser-session-manual",
+        targetId: "target-manual",
+        resumeMode: "warm",
+      },
+      currentAttemptId: "recovery:task-manual-root:attempt:1",
+      attempts: [
+        {
+          attemptId: "recovery:task-manual-root:attempt:1",
+          action: "resume",
+          requestedAt: 20,
+          updatedAt: 30,
+          status: "waiting_external",
+          nextAction: "inspect_then_resume",
+          summary: "Detached target recovered; waiting on operator verification.",
+          browserOutcome: "detached_target_recovered",
+          dispatchedTaskId: "task-manual-follow",
+          targetLayer: "worker",
+          targetWorker: "browser",
+        },
+      ],
+      createdAt: 20,
+      updatedAt: 30,
+    },
+  ];
+
+  const consoleReport = buildReplayConsoleReport(records, 10, recoveryRuns);
+  const bundle = consoleReport.latestResolvedBundles.find((entry) => entry.groupId === "task-manual-root");
+  assert.equal(consoleReport.recoveredGroups, 1);
+  assert.equal(consoleReport.caseStateCounts.resolved, 1);
+  assert.equal(consoleReport.operatorCaseStateCounts.waiting_manual, 1);
+  assert.equal(bundle?.workflowStatus, "recovered");
+  assert.equal(bundle?.caseState, "resolved");
+  assert.equal(bundle?.nextAction, "inspect_then_resume");
+  assert.equal(bundle?.operatorCaseState, "waiting_manual");
+  assert.equal(bundle?.operatorGate, "waiting for external/manual follow-up");
+  assert.deepEqual(bundle?.operatorAllowedActions, ["retry", "fallback", "resume", "reject"]);
+});
+
 test("recovery run timeline merges events and replay follow-up entries", () => {
   const records = [
     {
@@ -839,6 +958,79 @@ test("replay inspection materializes waiting approval recovery runs", () => {
   assert.equal(runs[0]?.status, "waiting_approval");
   assert.equal(runs[0]?.nextAction, "request_approval");
   assert.equal(runs[0]?.requiresManualIntervention, true);
+});
+
+test("replay incident bundle can expose recovery operator gate and allowed actions", () => {
+  const records = [
+    {
+      replayId: "task-operator:worker:worker:browser:task:task-operator",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-operator",
+      roleId: "role-operator",
+      workerType: "browser",
+      summary: "approval required before resume",
+      failure: {
+        category: "permission_denied",
+        layer: "worker",
+        retryable: false,
+        message: "approval required before continuing",
+        recommendedAction: "request_approval",
+      },
+    },
+  ] satisfies Parameters<typeof buildReplayInspectionReport>[0];
+
+  const bundle = buildReplayIncidentBundle(records, "task-operator");
+  assert.ok(bundle);
+
+  const enriched = attachRecoveryRunToReplayIncidentBundle({
+    bundle: bundle!,
+    run: {
+      recoveryRunId: buildRecoveryRunId("task-operator"),
+      threadId: "thread-1",
+      sourceGroupId: "task-operator",
+      latestStatus: "failed",
+      status: "waiting_approval",
+      nextAction: "request_approval",
+      autoDispatchReady: false,
+      requiresManualIntervention: true,
+      latestSummary: "Approval required before browser resume.",
+      waitingReason: "Operator approval required.",
+      currentAttemptId: "attempt-operator",
+      browserSession: {
+        sessionId: "browser-1",
+        targetId: "target-1",
+        resumeMode: "warm",
+      },
+      attempts: [
+        {
+          attemptId: "attempt-operator",
+          action: "approve",
+          requestedAt: 10,
+          updatedAt: 11,
+          status: "waiting_approval",
+          nextAction: "request_approval",
+          summary: "Approval pending.",
+          browserOutcome: "warm_attach",
+        },
+      ],
+      createdAt: 10,
+      updatedAt: 11,
+    },
+    records,
+  });
+
+  assert.equal(enriched.recoveryOperator?.currentGate, "waiting for approval");
+  assert.equal(enriched.recoveryOperator?.caseState, "waiting_manual");
+  assert.deepEqual(enriched.recoveryOperator?.allowedActions, ["approve", "reject"]);
+  assert.equal(enriched.recoveryOperator?.nextAction, "request_approval");
+  assert.equal(enriched.recoveryOperator?.phase, "awaiting_approval");
+  assert.match(enriched.recoveryOperator?.phaseSummary ?? "", /approval/i);
+  assert.equal(enriched.recoveryOperator?.latestBrowserOutcome, "warm_attach");
+  assert.equal(enriched.recoveryProgress?.phase, "awaiting_approval");
+  assert.ok((enriched.recoveryTimeline?.length ?? 0) >= 1);
 });
 
 test("replay inspection projects recovery attempts into recovered run state", () => {

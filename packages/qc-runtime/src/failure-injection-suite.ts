@@ -6,7 +6,7 @@ import { runBoundedRegressionSuite } from "./bounded-regression-harness";
 
 export interface FailureInjectionScenarioDescriptor {
   scenarioId: string;
-  area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime";
+  area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
   title: string;
   summary: string;
   caseIds: string[];
@@ -52,6 +52,7 @@ const SCENARIOS: FailureInjectionScenarioDescriptor[] = [
       "recovery-fallback-downgrade",
       "recovery-approval-resume-chain",
       "recovery-approval-fallback-chain",
+      "recovery-reject-aborts-chain",
     ],
   },
   {
@@ -97,6 +98,19 @@ const SCENARIOS: FailureInjectionScenarioDescriptor[] = [
       "context-reentry-preserves-active-tasks-and-open-questions",
       "context-continuity-keeps-decisions-and-constraints-under-budget",
       "context-continuity-keeps-journal-notes-under-budget",
+    ],
+  },
+  {
+    scenarioId: "operator-triage-compound-incident",
+    area: "operator",
+    title: "Recovered browser incident + prompt pressure + runtime waiting",
+    summary:
+      "验证复合 incident 下 operator triage 会优先暴露 browser/recovery case，同时保留 runtime waiting 与 prompt pressure 的排障入口。",
+    caseIds: [
+      "browser-recovery-recovered-but-waiting-manual-stays-visible",
+      "runtime-summary-aligns-browser-recovered-manual-follow-up",
+      "context-runtime-pressure-keeps-carry-forward-and-waiting-visible",
+      "operator-triage-prioritizes-compound-incident",
     ],
   },
 ];

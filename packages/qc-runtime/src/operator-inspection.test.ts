@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { FlowLedger, PermissionCacheRecord, ReplayRecord, TeamEvent } from "@turnkeyai/core-types/team";
+import type { FlowLedger, PermissionCacheRecord, RecoveryRun, ReplayRecord, RuntimeProgressEvent, TeamEvent } from "@turnkeyai/core-types/team";
 
 import {
   buildOperatorAttentionReport,
   buildFlowConsoleReport,
   buildGovernanceConsoleReport,
   buildOperatorSummaryReport,
+  buildOperatorTriageReport,
   buildRecoveryConsoleReport,
 } from "./operator-inspection";
 import { buildRecoveryRunId } from "./replay-inspection";
+import { buildDerivedRecoveryRuntimeChain, buildRuntimeSummaryReport } from "./runtime-chain-inspection";
 
 test("operator inspection summarizes flow shard issues", () => {
   const flows: FlowLedger[] = [
@@ -402,31 +404,50 @@ test("operator inspection builds one operator summary from flow, replay, and gov
         updatedAt: 11,
       },
     ],
+    progressEvents: [
+      buildPromptBoundary({
+        progressId: "progress:prompt-op",
+        recordedAt: 12,
+        boundaryKind: "request_envelope_reduction",
+        taskId: "task-op",
+        summary: "Prompt request envelope reduced to reference-only.",
+        reductionLevel: "reference-only",
+      }),
+    ],
   });
 
   assert.equal(summary.flow.attentionCount, 1);
   assert.equal(summary.replay.attentionCount, 1);
   assert.equal(summary.governance.attentionCount, 1);
   assert.equal(summary.recovery.attentionCount, 1);
-  assert.equal(summary.totalAttentionCount, 4);
-  assert.equal(summary.attentionOverview?.uniqueCaseCount, 3);
+  assert.equal(summary.prompt.totalBoundaries, 1);
+  assert.equal(summary.promptAttentionCount, 1);
+  assert.equal(summary.totalAttentionCount, 5);
+  assert.equal(summary.replay.operatorCaseStateCounts.waiting_manual, 1);
+  assert.equal(summary.attentionOverview?.uniqueCaseCount, 4);
   assert.equal(summary.attentionOverview?.caseStateCounts.open, 1);
   assert.equal(summary.attentionOverview?.caseStateCounts.recovering, 1);
-  assert.equal(summary.attentionOverview?.caseStateCounts.blocked, 1);
+  assert.equal(summary.attentionOverview?.caseStateCounts.blocked, 2);
   assert.equal(summary.attentionOverview?.caseStateCounts.waiting_manual, 1);
   assert.equal(summary.attentionOverview?.caseStateCounts.resolved, 0);
-  assert.equal(summary.attentionOverview?.severityCounts.critical, 2);
+  assert.equal(summary.attentionOverview?.severityCounts.critical, 3);
   assert.equal(summary.attentionOverview?.severityCounts.warning, 2);
   assert.equal(summary.attentionOverview?.lifecycleCounts.open, 1);
   assert.equal(summary.attentionOverview?.lifecycleCounts.recovering, 1);
-  assert.equal(summary.attentionOverview?.lifecycleCounts.blocked, 1);
+  assert.equal(summary.attentionOverview?.lifecycleCounts.blocked, 2);
   assert.equal(summary.attentionOverview?.lifecycleCounts.waiting_manual, 1);
-  assert.equal(summary.attentionOverview?.activeCases?.length, 3);
+  assert.equal(summary.attentionOverview?.activeCases?.length, 4);
   assert.deepEqual(
     (summary.attentionOverview?.activeCases ?? []).map((entry) => entry.caseKey),
-    ["governance:evt-op", "flow:flow-op:group-op", "incident:task-op"]
+    ["prompt:task-op", "governance:evt-op", "flow:flow-op:group-op", "incident:task-op"]
   );
   const activeCasesByKey = Object.fromEntries((summary.attentionOverview?.activeCases ?? []).map((entry) => [entry.caseKey, entry]));
+  assert.match(activeCasesByKey["prompt:task-op"]?.headline ?? "", /prompt:task-op blocked via prompt/);
+  assert.equal(activeCasesByKey["prompt:task-op"]?.gate, "request_envelope_reduction");
+  assert.equal(activeCasesByKey["prompt:task-op"]?.action, "inspect_prompt_boundary");
+  assert.equal(activeCasesByKey["prompt:task-op"]?.reasonPreview, "reference-only");
+  assert.equal(activeCasesByKey["prompt:task-op"]?.nextStep, "inspect_prompt_boundary");
+  assert.match(activeCasesByKey["prompt:task-op"]?.latestUpdate ?? "", /reference-only/);
   assert.match(activeCasesByKey["governance:evt-op"]?.headline ?? "", /governance:evt-op blocked via governance/);
   assert.match(activeCasesByKey["flow:flow-op:group-op"]?.headline ?? "", /flow:flow-op:group-op recovering via flow/);
   assert.equal(activeCasesByKey["governance:evt-op"]?.gate, "fallback_browser");
@@ -436,9 +457,13 @@ test("operator inspection builds one operator summary from flow, replay, and gov
   assert.match(activeCasesByKey["governance:evt-op"]?.latestUpdate ?? "", /requires attention/);
   assert.equal(activeCasesByKey["incident:task-op"]?.gate, "waiting for approval");
   assert.equal(activeCasesByKey["incident:task-op"]?.action, "request_approval");
+  assert.deepEqual(activeCasesByKey["incident:task-op"]?.allowedActions, ["approve", "reject"]);
   assert.match(activeCasesByKey["incident:task-op"]?.reasonPreview ?? "", /\S+/);
   assert.equal(activeCasesByKey["incident:task-op"]?.browserContinuityState, "recovered");
-  assert.equal(summary.attentionOverview?.topCases?.[0]?.caseKey, "governance:evt-op");
+  assert.equal(summary.replay.latestBundles[0]?.operatorCaseState, "waiting_manual");
+  assert.equal(summary.replay.latestBundles[0]?.operatorGate, "waiting for approval");
+  assert.deepEqual(summary.replay.latestBundles[0]?.operatorAllowedActions, ["approve", "reject"]);
+  assert.equal(summary.attentionOverview?.topCases?.[0]?.caseKey, "prompt:task-op");
 });
 
 test("operator summary surfaces resolved case count from replay console", () => {
@@ -597,6 +622,101 @@ test("operator summary surfaces resolved case count from replay console", () => 
   assert.equal(summary.attentionOverview?.resolvedRecentCases?.[0]?.source, "replay");
   assert.equal(summary.attentionOverview?.resolvedRecentCases?.[0]?.gate, "recovered");
   assert.equal(summary.attentionOverview?.resolvedRecentCases?.[0]?.browserContinuityState, "recovered");
+});
+
+test("operator summary does not classify recovery-gated replay bundles as resolved recent cases", () => {
+  const records: ReplayRecord[] = [
+    {
+      replayId: "task-manual-resolved:worker:worker:browser:task:task-manual-resolved",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-manual-resolved",
+      roleId: "lead",
+      workerType: "browser",
+      summary: "browser detached",
+      failure: {
+        category: "stale_session",
+        layer: "worker",
+        retryable: true,
+        message: "browser detached",
+        recommendedAction: "resume",
+      },
+    },
+    {
+      replayId: "task-manual-resolved-follow:scheduled",
+      layer: "scheduled",
+      status: "completed",
+      recordedAt: 20,
+      threadId: "thread-1",
+      taskId: "task-manual-resolved-follow",
+      roleId: "lead",
+      summary: "recovery dispatch created",
+      metadata: {
+        recoveryContext: {
+          parentGroupId: "task-manual-resolved",
+          attemptId: "recovery:task-manual-resolved:attempt:1",
+          dispatchReplayId: "task-manual-resolved-follow:scheduled",
+        },
+      },
+    },
+    {
+      replayId: "task-manual-resolved-follow:worker:worker:browser:task:task-manual-resolved-follow",
+      layer: "worker",
+      status: "completed",
+      recordedAt: 30,
+      threadId: "thread-1",
+      taskId: "task-manual-resolved-follow",
+      roleId: "lead",
+      workerType: "browser",
+      summary: "browser continuity recovered; operator follow-up still pending",
+      metadata: {
+        recoveryContext: {
+          parentGroupId: "task-manual-resolved",
+          attemptId: "recovery:task-manual-resolved:attempt:1",
+          dispatchReplayId: "task-manual-resolved-follow:scheduled",
+        },
+      },
+    },
+  ];
+
+  const summary = buildOperatorSummaryReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: records,
+    recoveryRuns: [
+      {
+        recoveryRunId: buildRecoveryRunId("task-manual-resolved"),
+        threadId: "thread-1",
+        sourceGroupId: "task-manual-resolved",
+        latestStatus: "partial",
+        status: "waiting_external",
+        nextAction: "inspect_then_resume",
+        autoDispatchReady: false,
+        requiresManualIntervention: true,
+        latestSummary: "Recovered browser continuity; waiting on manual follow-up.",
+        waitingReason: "manual follow-up pending",
+        currentAttemptId: "attempt-1",
+        attempts: [
+          {
+            attemptId: "attempt-1",
+            action: "resume",
+            requestedAt: 20,
+            updatedAt: 30,
+            status: "waiting_external",
+            nextAction: "inspect_then_resume",
+            summary: "Recovered browser continuity; waiting on manual follow-up.",
+          },
+        ],
+        createdAt: 20,
+        updatedAt: 30,
+      },
+    ],
+  });
+
+  assert.equal(summary.attentionOverview?.resolvedRecentCases?.length ?? 0, 0);
 });
 
 test("operator inspection summarizes recovery run phases and browser outcomes", () => {
@@ -800,28 +920,43 @@ test("operator inspection flattens cross-surface attention items", () => {
         updatedAt: 22,
       },
     ],
+    progressEvents: [
+      buildPromptBoundary({
+        progressId: "progress:prompt-task-1",
+        recordedAt: 40,
+        boundaryKind: "request_envelope_reduction",
+        taskId: "task-1",
+        summary: "Prompt request envelope reduced to reference-only.",
+        reductionLevel: "reference-only",
+      }),
+    ],
     limit: 10,
   });
 
-  assert.equal(report.totalItems, 4);
-  assert.equal(report.returnedItems, 4);
-  assert.equal(report.uniqueCaseCount, 3);
-  assert.equal(report.returnedCases, 3);
+  assert.equal(report.totalItems, 5);
+  assert.equal(report.returnedItems, 5);
+  assert.equal(report.uniqueCaseCount, 4);
+  assert.equal(report.returnedCases, 4);
   assert.equal(report.sourceCounts.flow, 1);
   assert.equal(report.sourceCounts.replay, 1);
   assert.equal(report.sourceCounts.governance, 1);
   assert.equal(report.sourceCounts.recovery, 1);
+  assert.equal(report.sourceCounts.prompt, 1);
   assert.equal(report.caseStateCounts.open, 1);
   assert.equal(report.caseStateCounts.recovering, 1);
-  assert.equal(report.caseStateCounts.blocked, 1);
+  assert.equal(report.caseStateCounts.blocked, 2);
   assert.equal(report.caseStateCounts.waiting_manual, 1);
-  assert.equal(report.severityCounts.critical, 2);
+  assert.equal(report.severityCounts.critical, 3);
   assert.equal(report.severityCounts.warning, 2);
   assert.equal(report.lifecycleCounts.waiting_manual, 1);
-  assert.equal(report.lifecycleCounts.blocked, 1);
+  assert.equal(report.lifecycleCounts.blocked, 2);
   assert.equal(report.lifecycleCounts.recovering, 1);
   assert.equal(report.lifecycleCounts.open, 1);
   const casesByKey = Object.fromEntries(report.cases.map((entry) => [entry.caseKey, entry]));
+  assert.equal(casesByKey["prompt:task-1"]?.caseState, "blocked");
+  assert.equal(casesByKey["prompt:task-1"]?.itemCount, 1);
+  assert.deepEqual(casesByKey["prompt:task-1"]?.sources, ["prompt"]);
+  assert.equal(casesByKey["prompt:task-1"]?.nextStep, "inspect_prompt_boundary");
   assert.equal(casesByKey["flow:flow-1:group-1"]?.caseState, "recovering");
   assert.equal(casesByKey["flow:flow-1:group-1"]?.itemCount, 1);
   assert.deepEqual(casesByKey["flow:flow-1:group-1"]?.sources, ["flow"]);
@@ -831,6 +966,7 @@ test("operator inspection flattens cross-surface attention items", () => {
   assert.deepEqual(casesByKey["incident:task-1"]?.sources, ["recovery", "replay"]);
   assert.match(casesByKey["incident:task-1"]?.headline ?? "", /incident:task-1 open via replay\+recovery/);
   assert.equal(casesByKey["incident:task-1"]?.nextStep, "request_approval");
+  assert.deepEqual(casesByKey["incident:task-1"]?.allowedActions, ["approve", "reject"]);
   assert.match(casesByKey["incident:task-1"]?.latestUpdate ?? "", /Approval required/);
   const bySource = Object.fromEntries(report.items.map((item) => [item.source, item]));
   assert.equal(bySource.governance?.severity, "critical");
@@ -852,6 +988,14 @@ test("operator inspection flattens cross-surface attention items", () => {
   assert.equal(bySource.recovery?.headline, bySource.replay?.headline);
   assert.equal(bySource.recovery?.gate, "waiting for approval");
   assert.deepEqual(bySource.recovery?.reasons, ["waiting_approval", "Approval required."]);
+  assert.deepEqual(bySource.recovery?.allowedActions, ["approve", "reject"]);
+  assert.equal(bySource.prompt?.severity, "critical");
+  assert.equal(bySource.prompt?.lifecycle, "blocked");
+  assert.equal(bySource.prompt?.gate, "request_envelope_reduction");
+  assert.equal(bySource.prompt?.action, "inspect_prompt_boundary");
+  assert.equal(bySource.prompt?.caseKey, "prompt:task-1");
+  assert.match(bySource.prompt?.headline ?? "", /prompt:task-1 blocked via prompt/);
+  assert.deepEqual(bySource.prompt?.reasons, ["reference-only", "recent-turns", "pending", "waiting"]);
 });
 
 test("operator inspection keeps attention overview stable when item list is limited", () => {
@@ -960,3 +1104,239 @@ test("operator inspection counts cases from the full dataset before limiting ret
   assert.equal(report.severityCounts.critical, 13);
   assert.equal(report.severityCounts.warning, 12);
 });
+
+test("operator inspection counts replay cases from the full dataset before limiting returned items", () => {
+  const report = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: Array.from({ length: 25 }, (_, index) => ({
+      replayId: `task-replay-${index}:worker`,
+      layer: "worker" as const,
+      status: "failed" as const,
+      recordedAt: 100 + index,
+      threadId: "thread-1",
+      taskId: `task-replay-${index}`,
+      summary: `worker failed ${index}`,
+      failure: {
+        category: "transport_failed" as const,
+        layer: "worker" as const,
+        retryable: true,
+        message: `worker failed ${index}`,
+        recommendedAction: "fallback" as const,
+      },
+    })),
+    recoveryRuns: [],
+    limit: 1,
+  });
+
+  assert.equal(report.totalItems, 25);
+  assert.equal(report.returnedItems, 1);
+  assert.equal(report.uniqueCaseCount, 25);
+  assert.equal(report.caseStateCounts.open, 25);
+  assert.equal(report.severityCounts.warning, 25);
+});
+
+test("operator triage prioritizes compound incidents and surfaces runtime and prompt entry points", () => {
+  const now = 50;
+  const recoveryRun: RecoveryRun = {
+    recoveryRunId: buildRecoveryRunId("task-operator-triage"),
+    threadId: "thread-1",
+    sourceGroupId: "task-operator-triage",
+    latestStatus: "partial",
+    status: "waiting_external",
+    nextAction: "inspect_then_resume",
+    autoDispatchReady: false,
+    requiresManualIntervention: true,
+    latestSummary: "Browser continuity recovered; waiting on operator verification.",
+    waitingReason: "waiting on operator verification",
+    browserSession: {
+      sessionId: "browser-triage",
+      targetId: "target-triage",
+      resumeMode: "warm",
+    },
+    attempts: [
+      {
+        attemptId: "attempt-triage",
+        action: "resume",
+        requestedAt: now - 10,
+        updatedAt: now,
+        status: "waiting_external",
+        nextAction: "inspect_then_resume",
+        summary: "Detached target recovered; waiting on manual verification.",
+        browserOutcome: "detached_target_recovered",
+      },
+    ],
+    createdAt: now - 20,
+    updatedAt: now,
+  };
+  const progressEvents = [
+    buildPromptBoundary({
+      progressId: "progress-triage-reduction",
+      recordedAt: now,
+      boundaryKind: "request_envelope_reduction",
+      reductionLevel: "minimal",
+      taskId: "task-operator-triage",
+      summary: "Envelope reduction kept the browser verification blocker visible.",
+    }),
+  ];
+  const summary = buildOperatorSummaryReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [recoveryRun],
+    progressEvents,
+    limit: 10,
+  });
+  const attention = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [recoveryRun],
+    progressEvents,
+    limit: 10,
+  });
+  const runtime = buildRuntimeSummaryReport({
+    entries: [buildDerivedRecoveryRuntimeChain(recoveryRun)],
+    limit: 10,
+    now,
+  });
+
+  const report = buildOperatorTriageReport({
+    summary,
+    attention,
+    runtime,
+    limit: 5,
+  });
+
+  assert.equal(report.waitingManualCaseCount, 1);
+  assert.equal(report.runtimeWaitingCount, 1);
+  assert.equal(report.promptReductionCount, 1);
+  assert.equal(report.recommendedEntryPoint, "replay-bundle task-operator-triage");
+  assert.equal(report.focusAreas[0]?.area, "case");
+  assert.equal(report.focusAreas[0]?.commandHint, "replay-bundle task-operator-triage");
+  assert.ok(report.focusAreas.some((area) => area.area === "runtime"));
+  assert.ok(report.focusAreas.some((area) => area.commandHint === "prompt-console 10"));
+});
+
+test("operator triage uses a safe stale runtime fallback when chain details are missing", () => {
+  const summary = buildOperatorSummaryReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [],
+    limit: 10,
+  });
+  const attention = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [],
+    limit: 10,
+  });
+  const report = buildOperatorTriageReport({
+    summary,
+    attention,
+    runtime: {
+      totalChains: 0,
+      activeCount: 0,
+      waitingCount: 0,
+      failedCount: 0,
+      resolvedCount: 0,
+      staleCount: 1,
+      attentionCount: 0,
+      stateCounts: {},
+      continuityCounts: {},
+      caseStateCounts: {},
+      attentionChains: [],
+      activeChains: [],
+      waitingChains: [],
+      staleChains: [],
+      failedChains: [],
+      recentlyResolved: [],
+    },
+    limit: 5,
+  });
+
+  const staleFocus = report.focusAreas.find((area) => area.label === "runtime-stale");
+  assert.equal(staleFocus?.reason, "Runtime reports stale chains but no chain details are available.");
+  assert.equal(staleFocus?.caseKey, undefined);
+  assert.equal(staleFocus?.state, undefined);
+});
+
+function buildPromptBoundary(input: {
+  progressId: string;
+  recordedAt: number;
+  boundaryKind: "prompt_compaction" | "request_envelope_reduction";
+  taskId: string;
+  summary: string;
+  reductionLevel?: "compact" | "minimal" | "reference-only";
+}): RuntimeProgressEvent {
+  return {
+    progressId: input.progressId,
+    threadId: "thread-1",
+    subjectKind: "role_run",
+    subjectId: "role:lead",
+    phase: "degraded",
+    progressKind: "boundary",
+    summary: input.summary,
+    recordedAt: input.recordedAt,
+    flowId: "flow-op",
+    taskId: input.taskId,
+    roleId: "lead",
+    metadata: {
+      boundaryKind: input.boundaryKind,
+      modelId: "gpt-5",
+      modelChainId: "reasoning_primary",
+      assemblyFingerprint: `${input.taskId}:${input.progressId}`,
+      compactedSegments: ["recent-turns"],
+      ...(input.reductionLevel ? { reductionLevel: input.reductionLevel } : {}),
+      contextDiagnostics: {
+        continuity: {
+          hasThreadSummary: true,
+          hasSessionMemory: true,
+          hasRoleScratchpad: true,
+          hasContinuationContext: true,
+          carriesPendingWork: true,
+          carriesWaitingOn: true,
+          carriesOpenQuestions: false,
+          carriesDecisionOrConstraint: true,
+        },
+        recentTurns: {
+          availableCount: 8,
+          selectedCount: 5,
+          packedCount: 2,
+          salientEarlierCount: 1,
+          compacted: true,
+        },
+        retrievedMemory: {
+          availableCount: 4,
+          selectedCount: 2,
+          packedCount: 1,
+          compacted: true,
+          userPreferenceCount: 1,
+          threadMemoryCount: 1,
+          sessionMemoryCount: 1,
+          knowledgeNoteCount: 1,
+          journalNoteCount: 0,
+        },
+        workerEvidence: {
+          totalCount: 3,
+          admittedCount: 2,
+          selectedCount: 2,
+          packedCount: 1,
+          compacted: true,
+          promotableCount: 1,
+          observationalCount: 1,
+          fullCount: 1,
+          summaryOnlyCount: 1,
+          continuationRelevantCount: 1,
+        },
+      },
+    },
+  };
+}

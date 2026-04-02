@@ -25,6 +25,17 @@ async function waitForOutboxItems<T>(
   return outbox.listDue(32, Date.now() + 1_000);
 }
 
+async function waitForCondition(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`waitForCondition timed out after ${timeoutMs}ms`);
+}
+
 test("runtime progress recorder emits an audit event when progress persistence fails permanently", async () => {
   const events: TeamEvent[] = [];
   const eventBus: TeamEventBus = {
@@ -222,19 +233,15 @@ test("runtime progress recorder retries remote delivery through the durable outb
       summary: "Worker is still active.",
       recordedAt: 1,
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForCondition(() => attempts >= 1);
     assert.equal(attempts, 1);
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    await waitForCondition(() => attempts >= 2 && delivered.length === 1);
     await recorder.flush();
 
     const outbox = new FileBatchOutbox<unknown>({
       rootDir: tempDir,
     });
-    let remaining = await outbox.listDue();
-    for (let attempt = 0; remaining.length > 0 && attempt < 10; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      remaining = await outbox.listDue();
-    }
+    const remaining = await waitForOutboxItems(outbox, 0, (items) => items.length === 0);
 
     assert.equal(attempts, 2);
     assert.deepEqual(stored, ["progress-outbox-1"]);

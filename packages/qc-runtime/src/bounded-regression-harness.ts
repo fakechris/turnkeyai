@@ -12,6 +12,7 @@ import type {
 } from "@turnkeyai/core-types/team";
 
 import {
+  attachRecoveryRunToReplayIncidentBundle,
   buildRecoveryRuns,
   buildReplayConsoleReport,
   buildReplayIncidentBundle,
@@ -23,7 +24,9 @@ import {
   buildFlowConsoleReport,
   buildGovernanceConsoleReport,
   buildOperatorAttentionReport,
+  buildRecoveryConsoleReport,
   buildOperatorSummaryReport,
+  buildOperatorTriageReport,
 } from "./operator-inspection";
 import {
   buildAugmentedFlowRuntimeChainDetail,
@@ -359,6 +362,156 @@ const BUILT_IN_CASES: RegressionCase[] = [
         runtimeSummary.activeChains[0]?.continuityState === "waiting" &&
         operatorSummary.attentionOverview?.caseStateCounts.waiting_manual === 1 &&
         operatorSummary.recovery.browserOutcomeCounts.detached_target_recovered === 1;
+      return buildResult(this, passed, details);
+    },
+  },
+  {
+    caseId: "operator-triage-prioritizes-compound-incident",
+    title: "Operator triage prioritizes compound browser/runtime/prompt incident",
+    area: "runtime",
+    summary:
+      "Operator triage should put a recovered-browser manual follow-up incident ahead of raw runtime/prompt signals while still surfacing waiting and prompt entry points.",
+    run() {
+      const now = Date.now();
+      const recoveryRun: RecoveryRun = {
+        recoveryRunId: buildRecoveryRunId("task-operator-triage"),
+        threadId: "thread-1",
+        sourceGroupId: "task-operator-triage",
+        latestStatus: "partial",
+        status: "waiting_external",
+        nextAction: "inspect_then_resume",
+        autoDispatchReady: false,
+        requiresManualIntervention: true,
+        latestSummary: "Browser continuity recovered; waiting on operator verification.",
+        waitingReason: "waiting on operator verification",
+        browserSession: {
+          sessionId: "browser-operator-triage",
+          targetId: "target-operator-triage",
+          resumeMode: "warm",
+        },
+        attempts: [
+          {
+            attemptId: "attempt-operator-triage",
+            action: "resume",
+            requestedAt: now - 10,
+            updatedAt: now,
+            status: "waiting_external",
+            nextAction: "inspect_then_resume",
+            summary: "Detached target recovered; waiting on manual verification.",
+            browserOutcome: "detached_target_recovered",
+          },
+        ],
+        createdAt: now - 20,
+        updatedAt: now,
+      };
+      const progressEvents: RuntimeProgressEvent[] = [
+        {
+          progressId: "progress:operator-triage:reduction",
+          threadId: "thread-1",
+          chainId: "recovery:task-operator-triage",
+          spanId: "recovery:task-operator-triage",
+          subjectKind: "recovery_run",
+          subjectId: buildRecoveryRunId("task-operator-triage"),
+          phase: "waiting",
+          progressKind: "boundary",
+          summary: "Envelope reduction kept the browser verification blocker visible.",
+          recordedAt: now,
+          taskId: "task-operator-triage",
+          metadata: {
+            boundaryKind: "request_envelope_reduction",
+            modelId: "gpt-5",
+            modelChainId: "acceptance_chain",
+            assemblyFingerprint: "fp-operator-triage",
+            reductionLevel: "minimal",
+            compactedSegments: ["recent-turns", "worker-evidence"],
+            contextDiagnostics: {
+              continuity: {
+                hasThreadSummary: true,
+                hasSessionMemory: true,
+                hasRoleScratchpad: true,
+                hasContinuationContext: true,
+                carriesPendingWork: true,
+                carriesWaitingOn: true,
+                carriesOpenQuestions: true,
+                carriesDecisionOrConstraint: true,
+              },
+              recentTurns: {
+                availableCount: 8,
+                selectedCount: 5,
+                packedCount: 2,
+                salientEarlierCount: 1,
+                compacted: true,
+              },
+              retrievedMemory: {
+                availableCount: 4,
+                selectedCount: 2,
+                packedCount: 1,
+                compacted: true,
+                userPreferenceCount: 1,
+                threadMemoryCount: 1,
+                sessionMemoryCount: 1,
+                knowledgeNoteCount: 1,
+                journalNoteCount: 0,
+              },
+              workerEvidence: {
+                totalCount: 3,
+                admittedCount: 2,
+                selectedCount: 2,
+                packedCount: 1,
+                compacted: true,
+                promotableCount: 1,
+                observationalCount: 1,
+                fullCount: 1,
+                summaryOnlyCount: 1,
+                continuationRelevantCount: 1,
+              },
+            },
+          },
+        },
+      ];
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: [],
+        recoveryRuns: [recoveryRun],
+        progressEvents,
+        limit: 10,
+      });
+      const operatorAttention = buildOperatorAttentionReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: [],
+        recoveryRuns: [recoveryRun],
+        progressEvents,
+        limit: 10,
+      });
+      const triage = buildOperatorTriageReport({
+        summary: operatorSummary,
+        attention: operatorAttention,
+        runtime: buildRuntimeSummaryReport({
+          entries: [buildDerivedRecoveryRuntimeChain(recoveryRun)],
+          limit: 10,
+          now,
+        }),
+        limit: 5,
+      });
+      const details = [
+        `entry=${triage.recommendedEntryPoint ?? "-"}`,
+        `focus0=${triage.focusAreas[0]?.commandHint ?? "-"}`,
+        `waiting=${triage.runtimeWaitingCount}`,
+        `prompt=${triage.promptReductionCount}`,
+        `manual=${triage.waitingManualCaseCount}`,
+      ];
+      const passed =
+        triage.waitingManualCaseCount === 1 &&
+        triage.runtimeWaitingCount === 1 &&
+        triage.promptReductionCount === 1 &&
+        triage.recommendedEntryPoint === "replay-bundle task-operator-triage" &&
+        triage.focusAreas[0]?.commandHint === "replay-bundle task-operator-triage" &&
+        triage.focusAreas.some((area) => area.commandHint === "runtime-waiting 10") &&
+        triage.focusAreas.some((area) => area.commandHint === "prompt-console 10");
       return buildResult(this, passed, details);
     },
   },
@@ -1059,6 +1212,210 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
   {
+    caseId: "context-runtime-pressure-keeps-carry-forward-and-waiting-visible",
+    title: "Context/runtime pressure keeps carry-forward and waiting visible",
+    area: "runtime",
+    summary:
+      "Under tight prompt pressure, prompt diagnostics and runtime summary should still agree on pending work, unresolved questions, and the active waiting point.",
+    run() {
+      const progressEvents: RuntimeProgressEvent[] = [
+        {
+          progressId: "progress:context-pressure:compaction",
+          threadId: "thread-1",
+          chainId: "flow:flow-context-pressure",
+          spanId: "worker:browser:task-context-pressure",
+          subjectKind: "role_run",
+          subjectId: "role:role-lead",
+          phase: "degraded",
+          progressKind: "boundary",
+          summary: "Context compaction preserved pending browser verification and unresolved pricing question.",
+          recordedAt: 30,
+          flowId: "flow-context-pressure",
+          taskId: "task-context-pressure",
+          roleId: "role-lead",
+          metadata: {
+            boundaryKind: "prompt_compaction",
+            modelId: "gpt-5",
+            modelChainId: "acceptance_chain",
+            assemblyFingerprint: "fp-context-pressure",
+            compactedSegments: ["recent-turns", "retrieved-memory", "worker-evidence"],
+            contextDiagnostics: {
+              continuity: {
+                hasThreadSummary: true,
+                hasSessionMemory: true,
+                hasRoleScratchpad: true,
+                hasContinuationContext: true,
+                carriesPendingWork: true,
+                carriesWaitingOn: true,
+                carriesOpenQuestions: true,
+                carriesDecisionOrConstraint: true,
+              },
+              recentTurns: {
+                availableCount: 8,
+                selectedCount: 5,
+                packedCount: 3,
+                salientEarlierCount: 2,
+                compacted: true,
+              },
+              retrievedMemory: {
+                availableCount: 6,
+                selectedCount: 4,
+                packedCount: 2,
+                compacted: true,
+                userPreferenceCount: 1,
+                threadMemoryCount: 1,
+                sessionMemoryCount: 2,
+                knowledgeNoteCount: 1,
+                journalNoteCount: 1,
+              },
+              workerEvidence: {
+                totalCount: 4,
+                admittedCount: 3,
+                selectedCount: 3,
+                packedCount: 1,
+                compacted: true,
+                promotableCount: 2,
+                observationalCount: 1,
+                fullCount: 1,
+                summaryOnlyCount: 2,
+                continuationRelevantCount: 2,
+              },
+            },
+          },
+        },
+        {
+          progressId: "progress:context-pressure:reduction",
+          threadId: "thread-1",
+          chainId: "flow:flow-context-pressure",
+          spanId: "worker:browser:task-context-pressure",
+          subjectKind: "role_run",
+          subjectId: "role:role-lead",
+          phase: "waiting",
+          progressKind: "boundary",
+          summary: "Envelope reduction kept the browser verification blocker and pricing question visible.",
+          recordedAt: 35,
+          flowId: "flow-context-pressure",
+          taskId: "task-context-pressure",
+          roleId: "role-lead",
+          metadata: {
+            boundaryKind: "request_envelope_reduction",
+            modelId: "gpt-5",
+            modelChainId: "acceptance_chain",
+            assemblyFingerprint: "fp-context-pressure",
+            reductionLevel: "minimal",
+            compactedSegments: ["recent-turns", "worker-evidence"],
+            omittedSections: ["knowledge-notes"],
+            contextDiagnostics: {
+              continuity: {
+                hasThreadSummary: true,
+                hasSessionMemory: true,
+                hasRoleScratchpad: true,
+                hasContinuationContext: true,
+                carriesPendingWork: true,
+                carriesWaitingOn: true,
+                carriesOpenQuestions: true,
+                carriesDecisionOrConstraint: true,
+              },
+              recentTurns: {
+                availableCount: 8,
+                selectedCount: 5,
+                packedCount: 2,
+                salientEarlierCount: 2,
+                compacted: true,
+              },
+              retrievedMemory: {
+                availableCount: 6,
+                selectedCount: 4,
+                packedCount: 1,
+                compacted: true,
+                userPreferenceCount: 1,
+                threadMemoryCount: 1,
+                sessionMemoryCount: 2,
+                knowledgeNoteCount: 1,
+                journalNoteCount: 1,
+              },
+              workerEvidence: {
+                totalCount: 4,
+                admittedCount: 3,
+                selectedCount: 2,
+                packedCount: 1,
+                compacted: true,
+                promotableCount: 2,
+                observationalCount: 1,
+                fullCount: 1,
+                summaryOnlyCount: 2,
+                continuationRelevantCount: 2,
+              },
+            },
+          },
+        },
+      ];
+      const promptReport = buildPromptConsoleReport(progressEvents);
+      const chain: RuntimeChain = {
+        chainId: "flow:flow-context-pressure",
+        threadId: "thread-1",
+        rootKind: "flow",
+        rootId: "flow-context-pressure",
+        flowId: "flow-context-pressure",
+        createdAt: 10,
+        updatedAt: 35,
+      };
+      const status: RuntimeChainStatus = {
+        chainId: chain.chainId,
+        threadId: chain.threadId,
+        activeSpanId: "worker:browser:task-context-pressure",
+        activeSubjectKind: "browser_session",
+        activeSubjectId: "browser-session-context-pressure",
+        phase: "waiting",
+        continuityState: "waiting",
+        waitingReason: "waiting on browser pricing verification",
+        currentWaitingPoint: "Await pricing diff verification and enterprise-tier confirmation before merge.",
+        latestSummary: "Compaction preserved the browser blocker and unresolved pricing question.",
+        attention: true,
+        updatedAt: 35,
+      };
+      const runtimeSummary = buildRuntimeSummaryReport({
+        entries: [{ chain, status }],
+        limit: 5,
+        now: 35,
+      });
+      const details = [
+        `boundaries=${promptReport.totalBoundaries}`,
+        `pending=${promptReport.continuityCarryForwardCounts.pendingWork}`,
+        `waiting=${promptReport.continuityCarryForwardCounts.waitingOn}`,
+        `questions=${promptReport.continuityCarryForwardCounts.openQuestions}`,
+        `decisions=${promptReport.continuityCarryForwardCounts.decisionsOrConstraints}`,
+        `recent=${promptReport.totalRecentTurnsPacked}/${promptReport.totalRecentTurnsSelected}`,
+        `memory=${promptReport.totalRetrievedMemoryPacked}/${promptReport.totalRetrievedMemoryCandidates}`,
+        `evidence=${promptReport.totalWorkerEvidencePacked}/${promptReport.totalWorkerEvidenceCandidates}`,
+        `runtime=${runtimeSummary.activeChains[0]?.canonicalState ?? "-"}`,
+        `continuity=${runtimeSummary.activeChains[0]?.continuityState ?? "-"}`,
+        `waitingPoint=${runtimeSummary.activeChains[0]?.currentWaitingPoint ?? "-"}`,
+      ];
+      const passed =
+        promptReport.totalBoundaries === 2 &&
+        promptReport.modelChainCounts.acceptance_chain === 2 &&
+        promptReport.continuityCarryForwardCounts.pendingWork === 2 &&
+        promptReport.continuityCarryForwardCounts.waitingOn === 2 &&
+        promptReport.continuityCarryForwardCounts.openQuestions === 2 &&
+        promptReport.continuityCarryForwardCounts.decisionsOrConstraints === 2 &&
+        promptReport.totalRecentTurnsSelected === 10 &&
+        promptReport.totalRecentTurnsPacked === 5 &&
+        promptReport.totalRetrievedMemoryCandidates === 8 &&
+        promptReport.totalRetrievedMemoryPacked === 3 &&
+        promptReport.totalWorkerEvidenceCandidates === 5 &&
+        promptReport.totalWorkerEvidencePacked === 2 &&
+        runtimeSummary.waitingCount === 1 &&
+        runtimeSummary.attentionCount === 1 &&
+        runtimeSummary.activeChains[0]?.canonicalState === "waiting" &&
+        runtimeSummary.activeChains[0]?.continuityState === "waiting" &&
+        runtimeSummary.activeChains[0]?.activeSubjectKind === "browser_session" &&
+        runtimeSummary.activeChains[0]?.currentWaitingPoint ===
+          "Await pricing diff verification and enterprise-tier confirmation before merge.";
+      return buildResult(this, passed, details);
+    },
+  },
+  {
     caseId: "parallel-three-shard-success-ready-to-merge",
     title: "Parallel shard success reaches merge-ready state",
     area: "parallel",
@@ -1684,6 +2041,7 @@ const BUILT_IN_CASES: RegressionCase[] = [
         `governance=${report.governance.attentionCount}`,
         `recovery=${report.recovery.attentionCount}`,
         `recoveryGate=${report.recovery.gateCounts["waiting for approval"] ?? 0}`,
+        `allowed=${report.attentionOverview?.activeCases?.find((item) => item.caseKey === "incident:task-op")?.allowedActions?.join(",") ?? "none"}`,
       ];
       const passed =
         report.totalAttentionCount === 4 &&
@@ -1691,7 +2049,9 @@ const BUILT_IN_CASES: RegressionCase[] = [
         report.replay.attentionCount === 1 &&
         report.governance.attentionCount === 1 &&
         report.recovery.attentionCount === 1 &&
-        report.recovery.gateCounts["waiting for approval"] === 1;
+        report.recovery.gateCounts["waiting for approval"] === 1 &&
+        (report.attentionOverview?.activeCases?.find((item) => item.caseKey === "incident:task-op")?.allowedActions?.join(",") ?? "") ===
+          "approve,reject";
       return buildResult(this, passed, details);
     },
   },
@@ -2277,6 +2637,90 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
   {
+    caseId: "replay-bundle-exposes-recovery-operator-gate",
+    title: "Replay bundle exposes recovery operator gate and allowed actions",
+    area: "recovery",
+    summary: "Replay bundles should expose the current recovery gate, allowed actions, and latest browser outcome once a recovery run is attached.",
+    run() {
+      const records = [
+        {
+          replayId: "task-bundle-op:worker:worker:browser:task:task-bundle-op",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 10,
+          threadId: "thread-1",
+          taskId: "task-bundle-op",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "approval required before resume",
+          failure: {
+            category: "permission_denied",
+            layer: "worker",
+            retryable: false,
+            message: "approval required before continuing",
+            recommendedAction: "request_approval",
+          },
+        },
+      ] satisfies ReplayRecord[];
+
+      const bundle = buildReplayIncidentBundle(records, "task-bundle-op");
+      if (!bundle) {
+        return buildResult(this, false, ["bundle=missing"]);
+      }
+      const enriched = attachRecoveryRunToReplayIncidentBundle({
+        bundle,
+        run: {
+          recoveryRunId: buildRecoveryRunId("task-bundle-op"),
+          threadId: "thread-1",
+          sourceGroupId: "task-bundle-op",
+          latestStatus: "failed",
+          status: "waiting_approval",
+          nextAction: "request_approval",
+          autoDispatchReady: false,
+          requiresManualIntervention: true,
+          latestSummary: "Approval required before browser resume.",
+          waitingReason: "Operator approval required.",
+          currentAttemptId: "attempt-bundle-op",
+          browserSession: {
+            sessionId: "browser-1",
+            targetId: "target-1",
+            resumeMode: "warm",
+          },
+          attempts: [
+            {
+              attemptId: "attempt-bundle-op",
+              action: "approve",
+              requestedAt: 10,
+              updatedAt: 11,
+              status: "waiting_approval",
+              nextAction: "request_approval",
+              summary: "Approval pending.",
+              browserOutcome: "warm_attach",
+            },
+          ],
+          createdAt: 10,
+          updatedAt: 11,
+        },
+        records,
+      });
+
+      const details = [
+        `gate=${enriched.recoveryOperator?.currentGate ?? "-"}`,
+        `allowed=${enriched.recoveryOperator?.allowedActions.join(",") ?? "-"}`,
+        `next=${enriched.recoveryOperator?.nextAction ?? "-"}`,
+        `phase=${enriched.recoveryOperator?.phase ?? "-"}`,
+        `browser=${enriched.recoveryOperator?.latestBrowserOutcome ?? "-"}`,
+      ];
+      const passed =
+        enriched.recoveryOperator?.currentGate === "waiting for approval" &&
+        enriched.recoveryOperator?.allowedActions.join(",") === "approve,reject" &&
+        enriched.recoveryOperator?.nextAction === "request_approval" &&
+        enriched.recoveryOperator?.phase === "awaiting_approval" &&
+        enriched.recoveryOperator?.latestBrowserOutcome === "warm_attach";
+      return buildResult(this, passed, details);
+    },
+  },
+  {
     caseId: "parallel-follow-up-summary-stays-open",
     title: "Parallel follow-up summary stays open until missing shards are resolved",
     area: "parallel",
@@ -2726,6 +3170,136 @@ const BUILT_IN_CASES: RegressionCase[] = [
         run.attempts[1]?.triggeredByAttemptId === "recovery:task-z:attempt:1" &&
         run.attempts[1]?.browserOutcome === "cold_reopen";
       return buildResult(this, Boolean(passed), details);
+    },
+  },
+  {
+    caseId: "recovery-reject-aborts-chain",
+    title: "Recovery reject aborts the case and freezes further actions",
+    area: "recovery",
+    summary:
+      "A waiting-approval recovery that is manually rejected should surface as aborted/blocked across replay console, recovery console, and operator summary without further allowed actions.",
+    run() {
+      const records = [
+        {
+          replayId: "task-reject:worker:worker:browser:task:task-reject",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 20,
+          threadId: "thread-1",
+          taskId: "task-reject",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "approval required before continuing",
+          failure: {
+            category: "permission_denied",
+            layer: "worker",
+            retryable: false,
+            message: "approval required before continuing",
+            recommendedAction: "request_approval",
+          },
+        },
+      ] satisfies ReplayRecord[];
+
+      const existingRuns: RecoveryRun[] = [
+        {
+          recoveryRunId: buildRecoveryRunId("task-reject"),
+          threadId: "thread-1",
+          sourceGroupId: "task-reject",
+          taskId: "task-reject",
+          roleId: "role-operator",
+          targetLayer: "worker",
+          targetWorker: "browser",
+          latestStatus: "failed",
+          status: "aborted",
+          nextAction: "none",
+          autoDispatchReady: false,
+          requiresManualIntervention: true,
+          latestSummary: "Recovery was rejected and aborted.",
+          waitingReason: "operator rejected the recovery action",
+          currentAttemptId: "recovery:task-reject:attempt:2",
+          attempts: [
+            {
+              attemptId: "recovery:task-reject:attempt:1",
+              action: "resume",
+              requestedAt: 11,
+              updatedAt: 20,
+              status: "waiting_approval",
+              nextAction: "request_approval",
+              summary: "approval required before continuing",
+              completedAt: 20,
+            },
+            {
+              attemptId: "recovery:task-reject:attempt:2",
+              action: "reject",
+              requestedAt: 21,
+              updatedAt: 21,
+              status: "aborted",
+              nextAction: "none",
+              summary: "Recovery was rejected and aborted.",
+              triggeredByAttemptId: "recovery:task-reject:attempt:1",
+              transitionReason: "manual_reject",
+              completedAt: 21,
+            },
+          ],
+          createdAt: 10,
+          updatedAt: 21,
+        },
+      ];
+
+      const run = buildRecoveryRuns(records, existingRuns, 100)[0];
+      if (!run) {
+        return buildResult(this, false, ["run=missing"]);
+      }
+      const bundle = buildReplayIncidentBundle(records, "task-reject");
+      if (!bundle) {
+        return buildResult(this, false, ["bundle=missing"]);
+      }
+      const enriched = attachRecoveryRunToReplayIncidentBundle({
+        bundle,
+        run,
+        records,
+      });
+      const replayConsole = buildReplayConsoleReport(records, 10, [run]);
+      const consoleBundle = replayConsole.latestBundles.find((entry) => entry.groupId === "task-reject");
+      const recoveryConsole = buildRecoveryConsoleReport([run], 10);
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: records,
+        recoveryRuns: [run],
+        limit: 10,
+      });
+      const operatorCase = operatorSummary.attentionOverview?.activeCases?.find((item) => item.caseKey === "incident:task-reject");
+      const details = [
+        `status=${run.status}`,
+        `gate=${enriched.recoveryOperator?.currentGate ?? "-"}`,
+        `allowed=${enriched.recoveryOperator?.allowedActions.join(",") || "none"}`,
+        `consoleOperator=${consoleBundle?.operatorCaseState ?? "-"}`,
+        `consoleGate=${consoleBundle?.operatorGate ?? "-"}`,
+        `recoveryAborted=${recoveryConsole.statusCounts.aborted ?? 0}`,
+        `operatorLifecycle=${operatorCase?.lifecycle ?? "-"}`,
+      ];
+      const passed =
+        run.status === "aborted" &&
+        run.attempts[1]?.triggeredByAttemptId === "recovery:task-reject:attempt:1" &&
+        run.attempts[1]?.transitionReason === "manual_reject" &&
+        enriched.recoveryOperator?.caseState === "blocked" &&
+        enriched.recoveryOperator?.currentGate === "aborted" &&
+        enriched.recoveryOperator?.allowedActions.length === 0 &&
+        replayConsole.operatorCaseStateCounts.blocked === 1 &&
+        consoleBundle?.operatorCaseState === "blocked" &&
+        consoleBundle?.operatorGate === "aborted" &&
+        (consoleBundle?.operatorAllowedActions?.length ?? 0) === 0 &&
+        recoveryConsole.attentionCount === 1 &&
+        recoveryConsole.statusCounts.aborted === 1 &&
+        recoveryConsole.gateCounts.aborted === 1 &&
+        operatorSummary.recovery.statusCounts.aborted === 1 &&
+        operatorSummary.replay.operatorCaseStateCounts.blocked === 1 &&
+        operatorCase?.caseState === "blocked" &&
+        operatorCase?.gate === "aborted" &&
+        (operatorCase?.allowedActions?.length ?? 0) === 0;
+      return buildResult(this, passed, details);
     },
   },
   {
@@ -3403,6 +3977,161 @@ const BUILT_IN_CASES: RegressionCase[] = [
           activeAttempt.transitionReason === "manual_fallback",
         details
       );
+    },
+  },
+  {
+    caseId: "browser-recovery-recovered-but-waiting-manual-stays-visible",
+    title: "Browser recovery stays visible after continuity is recovered but manual follow-up remains",
+    area: "browser",
+    summary:
+      "When browser continuity recovers but the recovery run still waits on manual verification, the replay bundle should preserve recovered workflow state plus waiting-manual operator state.",
+    run() {
+      const records = [
+        {
+          replayId: "task-browser-manual:worker:worker:browser:task:task-browser-manual",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 10,
+          threadId: "thread-1",
+          taskId: "task-browser-manual",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "browser target detached during operator flow",
+          failure: {
+            category: "stale_session",
+            layer: "worker",
+            retryable: true,
+            message: "browser target detached",
+            recommendedAction: "resume",
+          },
+        },
+        {
+          replayId: "task-browser-manual-follow:scheduled",
+          layer: "scheduled",
+          status: "completed",
+          recordedAt: 20,
+          threadId: "thread-1",
+          taskId: "task-browser-manual-follow",
+          roleId: "role-operator",
+          summary: "browser recovery dispatch created",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-browser-manual",
+              attemptId: "recovery:task-browser-manual:attempt:1",
+              dispatchReplayId: "task-browser-manual-follow:scheduled",
+            },
+          },
+        },
+        {
+          replayId: "task-browser-manual-follow:worker:worker:browser:task:task-browser-manual-follow",
+          layer: "worker",
+          status: "completed",
+          recordedAt: 30,
+          threadId: "thread-1",
+          taskId: "task-browser-manual-follow",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "browser continuity recovered; waiting on operator verification",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-browser-manual",
+              attemptId: "recovery:task-browser-manual:attempt:1",
+              dispatchReplayId: "task-browser-manual-follow:scheduled",
+            },
+            payload: {
+              sessionId: "browser-session-manual",
+              targetId: "target-manual",
+              resumeMode: "warm",
+              targetResolution: "reconnect",
+            },
+          },
+        },
+      ] satisfies ReplayRecord[];
+
+      const bundle = buildReplayIncidentBundle(records, "task-browser-manual");
+      if (!bundle) {
+        return buildResult(this, false, ["bundle=missing"]);
+      }
+      const enriched = attachRecoveryRunToReplayIncidentBundle({
+        bundle,
+        run: {
+          recoveryRunId: buildRecoveryRunId("task-browser-manual"),
+          threadId: "thread-1",
+          sourceGroupId: "task-browser-manual",
+          taskId: "task-browser-manual",
+          roleId: "role-operator",
+          targetLayer: "worker",
+          targetWorker: "browser",
+          latestStatus: "partial",
+          status: "waiting_external",
+          nextAction: "inspect_then_resume",
+          autoDispatchReady: false,
+          requiresManualIntervention: true,
+          latestSummary: "Browser continuity recovered; waiting on operator verification.",
+          waitingReason: "waiting on operator verification",
+          browserSession: {
+            sessionId: "browser-session-manual",
+            targetId: "target-manual",
+            resumeMode: "warm",
+          },
+          currentAttemptId: "recovery:task-browser-manual:attempt:1",
+          attempts: [
+            {
+              attemptId: "recovery:task-browser-manual:attempt:1",
+              action: "resume",
+              requestedAt: 20,
+              updatedAt: 30,
+              status: "waiting_external",
+              nextAction: "inspect_then_resume",
+              summary: "Detached target recovered; waiting on operator verification.",
+              browserOutcome: "detached_target_recovered",
+              dispatchedTaskId: "task-browser-manual-follow",
+              targetLayer: "worker",
+              targetWorker: "browser",
+            },
+          ],
+          createdAt: 20,
+          updatedAt: 30,
+        },
+        records,
+      });
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: records,
+        recoveryRuns: [enriched.recoveryRun!],
+        limit: 10,
+      });
+      const replayConsole = buildReplayConsoleReport(records, 10, [enriched.recoveryRun!]);
+      const consoleBundle = replayConsole.latestResolvedBundles.find((entry) => entry.groupId === "task-browser-manual");
+      const details = [
+        `workflow=${enriched.recoveryWorkflow?.status ?? "-"}`,
+        `bundleCase=${enriched.caseState ?? "-"}`,
+        `operatorCase=${enriched.recoveryOperator?.caseState ?? "-"}`,
+        `gate=${enriched.recoveryOperator?.currentGate ?? "-"}`,
+        `allowed=${enriched.recoveryOperator?.allowedActions.join(",") ?? "-"}`,
+        `consoleOperator=${consoleBundle?.operatorCaseState ?? "-"}`,
+        `consoleGate=${consoleBundle?.operatorGate ?? "-"}`,
+        `summaryCase=${operatorSummary.attentionOverview?.activeCases?.[0]?.caseState ?? "-"}`,
+        `browser=${enriched.browserContinuity?.state ?? "-"}`,
+      ];
+      const passed =
+        enriched.recoveryWorkflow?.status === "recovered" &&
+        enriched.caseState === "resolved" &&
+        enriched.recoveryOperator?.caseState === "waiting_manual" &&
+        enriched.recoveryOperator?.currentGate === "waiting for external/manual follow-up" &&
+        enriched.recoveryOperator?.allowedActions.join(",") === "retry,fallback,resume,reject" &&
+        replayConsole.caseStateCounts.resolved === 1 &&
+        replayConsole.operatorCaseStateCounts.waiting_manual === 1 &&
+        consoleBundle?.operatorCaseState === "waiting_manual" &&
+        consoleBundle?.operatorGate === "waiting for external/manual follow-up" &&
+        consoleBundle?.operatorAllowedActions?.join(",") === "retry,fallback,resume,reject" &&
+        enriched.recoveryOperator?.latestBrowserOutcome === "detached_target_recovered" &&
+        operatorSummary.attentionOverview?.activeCases?.[0]?.caseState === "waiting_manual" &&
+        operatorSummary.recovery.browserOutcomeCounts.detached_target_recovered === 1 &&
+        enriched.browserContinuity?.state === "recovered";
+      return buildResult(this, passed, details);
     },
   },
   {
