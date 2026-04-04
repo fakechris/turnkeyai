@@ -910,6 +910,8 @@ test("operator inspection flattens cross-surface attention items", () => {
             sessionId: "browser-session-1",
             targetId: "target-1",
             transportLabel: "chrome-relay",
+            transportPeerId: "peer-1",
+            transportTargetId: "chrome-tab:1",
             resumeMode: "warm",
             targetResolution: "reconnect",
           },
@@ -954,6 +956,17 @@ test("operator inspection flattens cross-surface attention items", () => {
         reductionLevel: "reference-only",
       }),
     ],
+    relayDiagnostics: {
+      peers: [
+        {
+          peerId: "peer-1",
+          transportLabel: "chrome-relay",
+          lastSeenAt: 50,
+          status: "stale",
+        },
+      ],
+      targets: [],
+    },
     limit: 10,
   });
 
@@ -989,7 +1002,8 @@ test("operator inspection flattens cross-surface attention items", () => {
   assert.equal(casesByKey["incident:task-1"]?.itemCount, 2);
   assert.deepEqual(casesByKey["incident:task-1"]?.sources, ["recovery", "replay"]);
   assert.equal(casesByKey["incident:task-1"]?.browserTransportLabel, "chrome-relay");
-  assert.match(casesByKey["incident:task-1"]?.headline ?? "", /incident:task-1 open via replay\+recovery .*transport=chrome-relay/);
+  assert.equal(casesByKey["incident:task-1"]?.relayDiagnosticBucket, "peer_stale");
+  assert.match(casesByKey["incident:task-1"]?.headline ?? "", /incident:task-1 open via replay\+recovery .*transport=chrome-relay .*relay=peer_stale/);
   assert.equal(casesByKey["incident:task-1"]?.nextStep, "request_approval");
   assert.deepEqual(casesByKey["incident:task-1"]?.allowedActions, ["approve", "reject"]);
   assert.match(casesByKey["incident:task-1"]?.latestUpdate ?? "", /Approval required/);
@@ -1007,7 +1021,8 @@ test("operator inspection flattens cross-surface attention items", () => {
   assert.equal(bySource.replay?.gate, "follow_up_required");
   assert.equal(bySource.replay?.browserContinuityState, "attention");
   assert.equal(bySource.replay?.browserTransportLabel, "chrome-relay");
-  assert.match(bySource.replay?.headline ?? "", /incident:task-1 open via replay\+recovery .*transport=chrome-relay/);
+  assert.equal(bySource.replay?.relayDiagnosticBucket, "peer_stale");
+  assert.match(bySource.replay?.headline ?? "", /incident:task-1 open via replay\+recovery .*transport=chrome-relay .*relay=peer_stale/);
   assert.equal(bySource.recovery?.severity, "warning");
   assert.equal(bySource.recovery?.lifecycle, "waiting_manual");
   assert.equal(bySource.recovery?.caseKey, bySource.replay?.caseKey);

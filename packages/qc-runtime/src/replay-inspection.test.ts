@@ -249,6 +249,64 @@ test("replay inspection builds replay console and incident bundle views", () => 
   assert.equal(bundle?.browserContinuity?.transportTargetId, "chrome-tab:5");
 });
 
+test("replay inspection enriches relay browser continuity with peer and target diagnostics", () => {
+  const records = [
+    {
+      replayId: "task-relay:worker",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-relay",
+      workerType: "browser",
+      summary: "relay browser worker failed",
+      failure: {
+        category: "transport_failed",
+        layer: "worker",
+        retryable: true,
+        message: "relay action request timed out: relay-action-1",
+        recommendedAction: "retry",
+      },
+      metadata: {
+        payload: {
+          sessionId: "browser-session-relay",
+          targetId: "target-relay",
+          transportMode: "relay",
+          transportLabel: "chrome-relay",
+          transportPeerId: "peer-relay",
+          transportTargetId: "chrome-tab:99",
+          resumeMode: "warm",
+          targetResolution: "reconnect",
+        },
+      },
+    },
+  ] as Parameters<typeof buildReplayInspectionReport>[0];
+
+  const relayDiagnostics = {
+    peers: [
+      {
+        peerId: "peer-relay",
+        transportLabel: "chrome-relay",
+        lastSeenAt: 20,
+        status: "stale" as const,
+      },
+    ],
+    targets: [],
+  };
+
+  const consoleReport = buildReplayConsoleReport(records, 5, [], relayDiagnostics);
+  const bundle = buildReplayIncidentBundle(records, "task-relay", relayDiagnostics);
+
+  assert.equal(consoleReport.latestBundles[0]?.relayDiagnosticBucket, "peer_stale");
+  assert.ok(bundle?.browserContinuity);
+  assert.equal(bundle?.browserContinuity?.transportPeerId, "peer-relay");
+  assert.equal(bundle?.browserContinuity?.relayPeerStatus, "stale");
+  assert.equal(bundle?.browserContinuity?.relayTargetStatus, "missing");
+  assert.equal(bundle?.browserContinuity?.relayDiagnosticBucket, "peer_stale");
+  assert.match(bundle?.browserContinuity?.relayDiagnosticSummary ?? "", /stale/i);
+  assert.match(bundle?.caseHeadline ?? "", /relay=peer_stale/);
+});
+
 test("replay console surfaces recovery workflow states from actionable bundles", () => {
   const records = [
     {

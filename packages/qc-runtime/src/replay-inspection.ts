@@ -25,6 +25,24 @@ const REPLAY_LAYER_ORDER: ReplayLayer[] = ["scheduled", "role", "worker", "brows
 const MAX_RETRY_ATTEMPTS_BEFORE_ESCALATION = 2;
 const MAX_FALLBACK_ATTEMPTS_BEFORE_INSPECTION = 2;
 
+export interface RelayDiagnosticsSnapshot {
+  peers: Array<{
+    peerId: string;
+    label?: string;
+    transportLabel?: string;
+    lastSeenAt: number;
+    status: "online" | "stale";
+  }>;
+  targets: Array<{
+    relayTargetId: string;
+    peerId: string;
+    url: string;
+    title?: string;
+    status?: "open" | "attached" | "detached" | "closed";
+    lastSeenAt: number;
+  }>;
+}
+
 export function buildReplayInspectionReport(records: ReplayRecord[]): ReplayInspectionReport {
   const layerCounts: Partial<Record<ReplayLayer, number>> = {};
   const failureCounts: Partial<Record<FailureCategory, number>> = {};
@@ -191,14 +209,18 @@ export function findReplayRecoveryPlan(
 export function buildReplayConsoleReport(
   records: ReplayRecord[],
   limit = 10,
-  recoveryRuns: RecoveryRun[] = []
+  recoveryRuns: RecoveryRun[] = [],
+  relayDiagnostics?: RelayDiagnosticsSnapshot
 ): ReplayConsoleReport {
   const report = buildReplayInspectionReport(records);
   const incidentGroups = listActionableReplayIncidents(records, report);
   const recoveries = incidentGroups.map((group) => buildReplayRecoveryPlan(group));
   const recoveryRunByGroupId = new Map(recoveryRuns.map((run) => [run.sourceGroupId, run]));
   const bundleByGroupId = new Map(
-    incidentGroups.map((group) => [group.groupId, buildReplayConsoleBundle(records, group.groupId, recoveryRunByGroupId)])
+    incidentGroups.map((group) => [
+      group.groupId,
+      buildReplayConsoleBundle(records, group.groupId, recoveryRunByGroupId, relayDiagnostics),
+    ])
   );
   const actionableGroupIds = new Set(incidentGroups.map((group) => group.groupId));
   const replayParentByGroupId = buildReplayParentByGroupId(records);
@@ -241,7 +263,7 @@ export function buildReplayConsoleReport(
     if (rootGroupId !== group.groupId || actionableGroupIds.has(rootGroupId)) {
       continue;
     }
-    const bundle = buildReplayConsoleBundle(records, rootGroupId, recoveryRunByGroupId);
+    const bundle = buildReplayConsoleBundle(records, rootGroupId, recoveryRunByGroupId, relayDiagnostics);
     if (bundle?.caseState === "resolved") {
       resolvedRootGroupIds.add(rootGroupId);
       resolvedBundles.push(bundle);
@@ -280,9 +302,10 @@ export function buildReplayConsoleReport(
 function buildReplayConsoleBundle(
   records: ReplayRecord[],
   groupId: string,
-  recoveryRunByGroupId: ReadonlyMap<string, RecoveryRun>
+  recoveryRunByGroupId: ReadonlyMap<string, RecoveryRun>,
+  relayDiagnostics?: RelayDiagnosticsSnapshot
 ): ReplayIncidentBundle | null {
-  const bundle = buildReplayIncidentBundle(records, groupId);
+  const bundle = buildReplayIncidentBundle(records, groupId, relayDiagnostics);
   if (!bundle) {
     return null;
   }
@@ -323,6 +346,9 @@ function buildReplayConsoleBundleEntry(
     ...(bundle?.caseHeadline ? { caseHeadline: bundle.caseHeadline } : {}),
     ...(bundle?.browserContinuity?.state ? { browserContinuityState: bundle.browserContinuity.state } : {}),
     ...(bundle?.browserContinuity?.transportLabel ? { browserTransportLabel: bundle.browserContinuity.transportLabel } : {}),
+    ...(bundle?.browserContinuity?.relayDiagnosticBucket
+      ? { relayDiagnosticBucket: bundle.browserContinuity.relayDiagnosticBucket }
+      : {}),
     ...(recovery?.targetLayer ? { targetLayer: recovery.targetLayer } : {}),
     ...(recovery?.targetWorker ? { targetWorker: recovery.targetWorker } : {}),
     ...(bundle?.recoveryOperator?.caseState ? { operatorCaseState: bundle.recoveryOperator.caseState } : {}),
@@ -404,7 +430,11 @@ export function findRecoveryRun(
   return buildRecoveryRuns(records, existingRuns, now).find((run) => run.recoveryRunId === recoveryRunId) ?? null;
 }
 
-export function buildReplayIncidentBundle(records: ReplayRecord[], groupId: string): ReplayIncidentBundle | null {
+export function buildReplayIncidentBundle(
+  records: ReplayRecord[],
+  groupId: string,
+  relayDiagnostics?: RelayDiagnosticsSnapshot
+): ReplayIncidentBundle | null {
   const report = buildReplayInspectionReport(records);
   const group = findReplayTaskSummary(records, groupId, report);
   if (!group) {
@@ -449,15 +479,16 @@ export function buildReplayIncidentBundle(records: ReplayRecord[], groupId: stri
       (item): item is ReplayBrowserContinuitySummary => Boolean(item)
     )
   );
+  const enrichedBrowserContinuity = enrichRelayBrowserContinuity(browserContinuity, group, relayDiagnostics);
 
-  const caseState = deriveBundleCaseState(group, recoveryWorkflow, browserContinuity);
-  const caseHeadline = buildBundleCaseHeadline(groupId, caseState, recoveryWorkflow, browserContinuity, group);
+  const caseState = deriveBundleCaseState(group, recoveryWorkflow, enrichedBrowserContinuity);
+  const caseHeadline = buildBundleCaseHeadline(groupId, caseState, recoveryWorkflow, enrichedBrowserContinuity, group);
 
   return {
     group,
     ...(caseState ? { caseState } : {}),
     ...(caseHeadline ? { caseHeadline } : {}),
-    ...(browserContinuity ? { browserContinuity } : {}),
+    ...(enrichedBrowserContinuity ? { browserContinuity: enrichedBrowserContinuity } : {}),
     ...(group.requiresFollowUp ? { recovery: buildReplayRecoveryPlan(group) } : {}),
     timeline: relatedReplays.map((record) => buildReplayTimelineEntry(record)),
     relatedReplays,
@@ -530,13 +561,17 @@ function buildBundleCaseHeadline(
   }
   const action = workflow?.nextAction && workflow.nextAction !== "none" ? ` next=${workflow.nextAction}` : "";
   const browser = browserContinuity ? ` browser=${browserContinuity.state}` : "";
+  const relay =
+    browserContinuity?.transportMode === "relay" && browserContinuity.relayDiagnosticBucket
+      ? ` relay=${browserContinuity.relayDiagnosticBucket}`
+      : "";
   const reason =
     workflow?.latestFailure?.category
       ? ` reason=${workflow.latestFailure.category}`
       : group.rootFailureCategory
         ? ` reason=${group.rootFailureCategory}`
         : "";
-  return `${groupId} ${caseState}${action}${browser}${reason}`;
+  return `${groupId} ${caseState}${action}${browser}${relay}${reason}`;
 }
 
 export function buildRecoveryRunProgress(run: RecoveryRun): RecoveryRunProgress {
@@ -1209,11 +1244,139 @@ function mergeBrowserContinuity(
     ...(current.targetId ? {} : fallback?.targetId ? { targetId: fallback.targetId } : {}),
     ...(current.transportMode ? {} : fallback?.transportMode ? { transportMode: fallback.transportMode } : {}),
     ...(current.transportLabel ? {} : fallback?.transportLabel ? { transportLabel: fallback.transportLabel } : {}),
+    ...(current.transportPeerId ? {} : fallback?.transportPeerId ? { transportPeerId: fallback.transportPeerId } : {}),
     ...(current.transportTargetId ? {} : fallback?.transportTargetId ? { transportTargetId: fallback.transportTargetId } : {}),
     ...(current.resumeMode ? {} : fallback?.resumeMode ? { resumeMode: fallback.resumeMode } : {}),
     ...(current.targetResolution ? {} : fallback?.targetResolution ? { targetResolution: fallback.targetResolution } : {}),
     ...(current.outcome ? {} : fallback?.outcome ? { outcome: fallback.outcome } : {}),
+    ...(current.relayPeerStatus ? {} : fallback?.relayPeerStatus ? { relayPeerStatus: fallback.relayPeerStatus } : {}),
+    ...(current.relayTargetStatus ? {} : fallback?.relayTargetStatus ? { relayTargetStatus: fallback.relayTargetStatus } : {}),
+    ...(current.relayDiagnosticBucket
+      ? {}
+      : fallback?.relayDiagnosticBucket
+        ? { relayDiagnosticBucket: fallback.relayDiagnosticBucket }
+        : {}),
+    ...(current.relayDiagnosticSummary
+      ? {}
+      : fallback?.relayDiagnosticSummary
+        ? { relayDiagnosticSummary: fallback.relayDiagnosticSummary }
+        : {}),
   };
+}
+
+function enrichRelayBrowserContinuity(
+  continuity: ReplayBrowserContinuitySummary | undefined,
+  group: ReplayTaskSummary,
+  relayDiagnostics?: RelayDiagnosticsSnapshot
+): ReplayBrowserContinuitySummary | undefined {
+  if (!continuity || !isRelayContinuity(continuity) || !relayDiagnostics) {
+    return continuity;
+  }
+
+  const target =
+    continuity.transportTargetId != null
+      ? relayDiagnostics.targets.find((item) => item.relayTargetId === continuity.transportTargetId) ?? null
+      : null;
+  const peerId = continuity.transportPeerId ?? target?.peerId;
+  const peer = peerId != null ? relayDiagnostics.peers.find((item) => item.peerId === peerId) ?? null : null;
+  const relayPeerStatus: ReplayBrowserContinuitySummary["relayPeerStatus"] =
+    peerId == null ? undefined : peer?.status ?? "missing";
+  const relayTargetStatus: ReplayBrowserContinuitySummary["relayTargetStatus"] =
+    continuity.transportTargetId == null ? undefined : target?.status ?? "missing";
+  const relayDiagnostic = deriveRelayDiagnostic(group, continuity, relayPeerStatus, relayTargetStatus);
+
+  return {
+    ...continuity,
+    ...(peerId ? { transportPeerId: peerId } : {}),
+    ...(relayPeerStatus ? { relayPeerStatus } : {}),
+    ...(relayTargetStatus ? { relayTargetStatus } : {}),
+    ...(relayDiagnostic?.bucket ? { relayDiagnosticBucket: relayDiagnostic.bucket } : {}),
+    ...(relayDiagnostic?.summary ? { relayDiagnosticSummary: relayDiagnostic.summary } : {}),
+  };
+}
+
+function isRelayContinuity(continuity: ReplayBrowserContinuitySummary): boolean {
+  return (
+    continuity.transportMode === "relay" ||
+    continuity.transportLabel === "chrome-relay" ||
+    continuity.transportPeerId != null ||
+    continuity.transportTargetId != null
+  );
+}
+
+function deriveRelayDiagnostic(
+  group: ReplayTaskSummary,
+  continuity: ReplayBrowserContinuitySummary,
+  relayPeerStatus: ReplayBrowserContinuitySummary["relayPeerStatus"],
+  relayTargetStatus: ReplayBrowserContinuitySummary["relayTargetStatus"]
+):
+  | {
+      bucket: NonNullable<ReplayBrowserContinuitySummary["relayDiagnosticBucket"]>;
+      summary: string;
+    }
+  | undefined {
+  if (relayPeerStatus === "missing") {
+    return {
+      bucket: "peer_missing",
+      summary: continuity.transportPeerId
+        ? `Relay peer ${continuity.transportPeerId} is no longer registered.`
+        : "Relay peer is no longer registered.",
+    };
+  }
+  if (relayPeerStatus === "stale") {
+    return {
+      bucket: "peer_stale",
+      summary: continuity.transportPeerId
+        ? `Relay peer ${continuity.transportPeerId} is stale and may need to reconnect.`
+        : "Relay peer is stale and may need to reconnect.",
+    };
+  }
+  if (relayTargetStatus === "missing") {
+    return {
+      bucket: "target_missing",
+      summary: continuity.transportTargetId
+        ? `Relay target ${continuity.transportTargetId} is no longer reported by the active peer.`
+        : "Relay target is no longer reported by the active peer.",
+    };
+  }
+  if (relayTargetStatus === "detached") {
+    return {
+      bucket: "target_detached",
+      summary: continuity.transportTargetId
+        ? `Relay target ${continuity.transportTargetId} is detached and needs recovery.`
+        : "Relay target is detached and needs recovery.",
+    };
+  }
+  if (relayTargetStatus === "closed") {
+    return {
+      bucket: "target_closed",
+      summary: continuity.transportTargetId
+        ? `Relay target ${continuity.transportTargetId} is closed and cannot be reused.`
+        : "Relay target is closed and cannot be reused.",
+    };
+  }
+
+  const failureMessage = group.latestFailure?.message ?? continuity.summary;
+  if (/receiving end does not exist|content script unavailable|message port closed|frame with id .* was removed|cannot access contents of url/i.test(failureMessage)) {
+    return {
+      bucket: "content_script_unavailable",
+      summary: "Relay content script is unavailable for the current tab and needs reinjection or reload.",
+    };
+  }
+  if (/timed out|timeout/i.test(failureMessage)) {
+    return {
+      bucket: "action_timeout",
+      summary: "Relay action execution timed out before the peer returned a result.",
+    };
+  }
+  if (group.latestFailure?.category === "transport_failed") {
+    return {
+      bucket: "action_failed",
+      summary: group.latestFailure.message,
+    };
+  }
+
+  return undefined;
 }
 
 function buildFollowUpSummary(
@@ -1303,6 +1466,7 @@ function extractReplayBrowserContinuity(record: ReplayRecord): ReplayBrowserCont
       ...(payload?.targetId ? { targetId: payload.targetId } : {}),
       ...(payload?.transportMode ? { transportMode: payload.transportMode } : {}),
       ...(payload?.transportLabel ? { transportLabel: payload.transportLabel } : {}),
+      ...(payload?.transportPeerId ? { transportPeerId: payload.transportPeerId } : {}),
       ...(payload?.transportTargetId ? { transportTargetId: payload.transportTargetId } : {}),
       ...(payload?.resumeMode ? { resumeMode: payload.resumeMode } : {}),
       ...(payload?.targetResolution ? { targetResolution: payload.targetResolution } : {}),
@@ -1318,6 +1482,7 @@ function extractReplayBrowserContinuity(record: ReplayRecord): ReplayBrowserCont
       ...(payload?.targetId ? { targetId: payload.targetId } : {}),
       ...(payload?.transportMode ? { transportMode: payload.transportMode } : {}),
       ...(payload?.transportLabel ? { transportLabel: payload.transportLabel } : {}),
+      ...(payload?.transportPeerId ? { transportPeerId: payload.transportPeerId } : {}),
       ...(payload?.transportTargetId ? { transportTargetId: payload.transportTargetId } : {}),
       ...(payload?.resumeMode ? { resumeMode: payload.resumeMode } : {}),
       ...(payload?.targetResolution ? { targetResolution: payload.targetResolution } : {}),
@@ -1337,6 +1502,7 @@ function extractReplayBrowserContinuity(record: ReplayRecord): ReplayBrowserCont
     ...(payload.targetId ? { targetId: payload.targetId } : {}),
     ...(payload.transportMode ? { transportMode: payload.transportMode } : {}),
     ...(payload.transportLabel ? { transportLabel: payload.transportLabel } : {}),
+    ...(payload.transportPeerId ? { transportPeerId: payload.transportPeerId } : {}),
     ...(payload.transportTargetId ? { transportTargetId: payload.transportTargetId } : {}),
     ...(payload.resumeMode ? { resumeMode: payload.resumeMode } : {}),
     ...(payload.targetResolution ? { targetResolution: payload.targetResolution } : {}),
@@ -1483,6 +1649,7 @@ function extractBrowserPayload(
       targetId?: string;
       transportMode?: ReplayBrowserContinuitySummary["transportMode"];
       transportLabel?: string;
+      transportPeerId?: string;
       transportTargetId?: string;
       resumeMode?: ReplayBrowserContinuitySummary["resumeMode"];
       targetResolution?: ReplayBrowserContinuitySummary["targetResolution"];
@@ -1508,6 +1675,7 @@ function extractBrowserPayload(
     ...(typeof browserPayload.targetId === "string" ? { targetId: browserPayload.targetId } : {}),
     ...(isBrowserTransportMode(browserPayload.transportMode) ? { transportMode: browserPayload.transportMode } : {}),
     ...(typeof browserPayload.transportLabel === "string" ? { transportLabel: browserPayload.transportLabel } : {}),
+    ...(typeof browserPayload.transportPeerId === "string" ? { transportPeerId: browserPayload.transportPeerId } : {}),
     ...(typeof browserPayload.transportTargetId === "string"
       ? { transportTargetId: browserPayload.transportTargetId }
       : {}),

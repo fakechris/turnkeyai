@@ -828,6 +828,7 @@ export interface BrowserTaskResult {
   targetId?: string;
   transportMode?: BrowserTransportMode;
   transportLabel?: string;
+  transportPeerId?: string;
   transportTargetId?: string;
   historyEntryId?: string;
   dispatchMode?: BrowserSessionDispatchMode;
@@ -940,6 +941,7 @@ export interface BrowserSessionHistoryEntry {
   targetId?: string;
   transportMode?: BrowserTransportMode;
   transportLabel?: string;
+  transportPeerId?: string;
   transportTargetId?: string;
   historyCursor: number;
   startedAt: number;
@@ -1265,10 +1267,23 @@ export interface ReplayBrowserContinuitySummary {
   targetId?: string;
   transportMode?: BrowserTransportMode;
   transportLabel?: string;
+  transportPeerId?: string;
   transportTargetId?: string;
   resumeMode?: BrowserResumeMode;
   targetResolution?: BrowserTaskResult["targetResolution"];
   outcome?: RecoveryBrowserOutcome;
+  relayPeerStatus?: "online" | "stale" | "missing";
+  relayTargetStatus?: BrowserTargetStatus | "missing";
+  relayDiagnosticBucket?:
+    | "peer_missing"
+    | "peer_stale"
+    | "target_missing"
+    | "target_detached"
+    | "target_closed"
+    | "content_script_unavailable"
+    | "action_timeout"
+    | "action_failed";
+  relayDiagnosticSummary?: string;
 }
 
 export interface ReplayConsoleReport {
@@ -1296,6 +1311,7 @@ export interface ReplayConsoleReport {
     caseHeadline?: string;
     browserContinuityState?: ReplayBrowserContinuitySummary["state"];
     browserTransportLabel?: string;
+    relayDiagnosticBucket?: ReplayBrowserContinuitySummary["relayDiagnosticBucket"];
     targetLayer?: ReplayRecoveryPlan["targetLayer"];
     targetWorker?: ReplayRecoveryPlan["targetWorker"];
     operatorCaseState?: OperatorCaseState;
@@ -1313,6 +1329,7 @@ export interface ReplayConsoleReport {
     caseHeadline?: string;
     browserContinuityState?: ReplayBrowserContinuitySummary["state"];
     browserTransportLabel?: string;
+    relayDiagnosticBucket?: ReplayBrowserContinuitySummary["relayDiagnosticBucket"];
     targetLayer?: ReplayRecoveryPlan["targetLayer"];
     targetWorker?: ReplayRecoveryPlan["targetWorker"];
     operatorCaseState?: OperatorCaseState;
@@ -1559,6 +1576,7 @@ export interface OperatorSummaryReport {
       allowedActions?: RecoveryRunAction[];
       browserContinuityState?: ReplayBrowserContinuitySummary["state"];
       browserTransportLabel?: string;
+      relayDiagnosticBucket?: ReplayBrowserContinuitySummary["relayDiagnosticBucket"];
       reasonPreview?: string;
       latestUpdate: string;
       nextStep: string;
@@ -1572,6 +1590,7 @@ export interface OperatorSummaryReport {
       action?: string;
       browserContinuityState?: ReplayBrowserContinuitySummary["state"];
       browserTransportLabel?: string;
+      relayDiagnosticBucket?: ReplayBrowserContinuitySummary["relayDiagnosticBucket"];
       reasonPreview?: string;
       latestUpdate: string;
       nextStep: string;
@@ -1586,6 +1605,7 @@ export interface OperatorSummaryReport {
       action?: string;
       browserContinuityState?: ReplayBrowserContinuitySummary["state"];
       browserTransportLabel?: string;
+      relayDiagnosticBucket?: ReplayBrowserContinuitySummary["relayDiagnosticBucket"];
       reasonPreview?: string;
       latestUpdate: string;
       nextStep: string;
@@ -1607,6 +1627,7 @@ export interface OperatorTriageFocusArea {
   gate?: string;
   browserContinuityState?: ReplayBrowserContinuitySummary["state"];
   browserTransportLabel?: string;
+  relayDiagnosticBucket?: ReplayBrowserContinuitySummary["relayDiagnosticBucket"];
 }
 
 export interface OperatorTriageReport {
@@ -1638,6 +1659,7 @@ export interface OperatorAttentionItem {
   reasons?: string[];
   browserContinuityState?: ReplayBrowserContinuitySummary["state"];
   browserTransportLabel?: string;
+  relayDiagnosticBucket?: ReplayBrowserContinuitySummary["relayDiagnosticBucket"];
   action?: string;
   allowedActions?: RecoveryRunAction[];
 }
@@ -1658,6 +1680,7 @@ export interface OperatorAttentionCaseSummary {
   allowedActions?: RecoveryRunAction[];
   browserContinuityState?: ReplayBrowserContinuitySummary["state"];
   browserTransportLabel?: string;
+  relayDiagnosticBucket?: ReplayBrowserContinuitySummary["relayDiagnosticBucket"];
   reasons?: string[];
 }
 

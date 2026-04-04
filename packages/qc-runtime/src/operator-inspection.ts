@@ -30,6 +30,7 @@ import {
   buildReplayIncidentBundle,
   buildReplayInspectionReport,
   listActionableReplayIncidents,
+  type RelayDiagnosticsSnapshot,
 } from "./replay-inspection";
 import { buildPromptConsoleReport } from "./prompt-inspection";
 
@@ -241,17 +242,23 @@ export function buildOperatorSummaryReport(input: {
   replays: ReplayRecord[];
   recoveryRuns: RecoveryRun[];
   progressEvents?: RuntimeProgressEvent[];
+  relayDiagnostics?: RelayDiagnosticsSnapshot;
   limit?: number;
 }): OperatorSummaryReport {
   const limit = input.limit ?? 10;
   const flow = buildFlowConsoleReport(input.flows, limit);
-  const replay = buildReplayConsoleReport(input.replays, limit, input.recoveryRuns);
+  const replay = buildReplayConsoleReport(input.replays, limit, input.recoveryRuns, input.relayDiagnostics);
   const governance = buildGovernanceConsoleReport(input.permissionRecords, input.events, limit);
   const recovery = buildRecoveryConsoleReport(input.recoveryRuns, limit);
   const prompt = buildPromptConsoleReport(input.progressEvents ?? [], limit);
   const attention = buildOperatorAttentionReport({ ...input, limit: Number.MAX_SAFE_INTEGER });
   const promptAttentionCount = attention.sourceCounts.prompt ?? 0;
-  const resolvedRecentCases = buildResolvedRecentCaseSummaries(input.replays, input.recoveryRuns, Math.min(limit, 5));
+  const resolvedRecentCases = buildResolvedRecentCaseSummaries(
+    input.replays,
+    input.recoveryRuns,
+    Math.min(limit, 5),
+    input.relayDiagnostics
+  );
   const activeCases = attention.cases
     .slice()
     .sort(compareOperatorAttentionCases)
@@ -267,6 +274,7 @@ export function buildOperatorSummaryReport(input: {
       ...(entry.allowedActions && entry.allowedActions.length > 0 ? { allowedActions: entry.allowedActions } : {}),
       ...(entry.browserContinuityState ? { browserContinuityState: entry.browserContinuityState } : {}),
       ...(entry.browserTransportLabel ? { browserTransportLabel: entry.browserTransportLabel } : {}),
+      ...(entry.relayDiagnosticBucket ? { relayDiagnosticBucket: entry.relayDiagnosticBucket } : {}),
       ...(entry.reasons && entry.reasons.length > 0 ? { reasonPreview: entry.reasons[0] } : {}),
       latestUpdate: entry.latestUpdate,
       nextStep: entry.nextStep,
@@ -305,19 +313,23 @@ export function buildOperatorAttentionReport(input: {
   replays: ReplayRecord[];
   recoveryRuns: RecoveryRun[];
   progressEvents?: RuntimeProgressEvent[];
+  relayDiagnostics?: RelayDiagnosticsSnapshot;
   limit?: number;
 }): OperatorAttentionReport {
   const limit = input.limit ?? 20;
   const fullReportLimit = Number.MAX_SAFE_INTEGER;
   const flow = buildFlowConsoleReport(input.flows, fullReportLimit);
-  const replay = buildReplayConsoleReport(input.replays, fullReportLimit, input.recoveryRuns);
+  const replay = buildReplayConsoleReport(input.replays, fullReportLimit, input.recoveryRuns, input.relayDiagnostics);
   const replayInspection = buildReplayInspectionReport(input.replays);
   const replayIncidents = listActionableReplayIncidents(input.replays, replayInspection);
   const governance = buildGovernanceConsoleReport(input.permissionRecords, input.events, fullReportLimit);
   const recovery = buildRecoveryConsoleReport(input.recoveryRuns, fullReportLimit);
   const prompt = buildPromptConsoleReport(input.progressEvents ?? [], fullReportLimit);
   const bundleByGroupId = new Map(
-    replayIncidents.map((incident) => [incident.groupId, buildReplayIncidentBundle(input.replays, incident.groupId)])
+    replayIncidents.map((incident) => [
+      incident.groupId,
+      buildReplayIncidentBundle(input.replays, incident.groupId, input.relayDiagnostics),
+    ])
   );
 
   const flowUpdatedAtById = new Map(input.flows.map((flow) => [flow.flowId, flow.updatedAt]));
@@ -354,6 +366,7 @@ export function buildOperatorAttentionReport(input: {
     ...replayIncidents.map((incident) => {
       const bundle = bundleByGroupId.get(incident.groupId) ?? null;
       const lifecycle = deriveReplayAttentionLifecycle(bundle);
+      const browserContinuity = bundle?.browserContinuity ?? incident.browserContinuity;
       return {
         source: "replay" as const,
         key: incident.groupId,
@@ -373,9 +386,13 @@ export function buildOperatorAttentionReport(input: {
           ...(incident.rootFailureCategory ? [incident.rootFailureCategory] : []),
           ...(incident.recoveryHint.action !== "none" ? [incident.recoveryHint.action] : []),
           ...(bundle?.recoveryWorkflow?.status ? [bundle.recoveryWorkflow.status] : []),
+          ...(browserContinuity?.relayDiagnosticBucket ? [browserContinuity.relayDiagnosticBucket] : []),
         ],
-        ...(incident.browserContinuity ? { browserContinuityState: incident.browserContinuity.state } : {}),
-        ...(incident.browserContinuity?.transportLabel ? { browserTransportLabel: incident.browserContinuity.transportLabel } : {}),
+        ...(browserContinuity ? { browserContinuityState: browserContinuity.state } : {}),
+        ...(browserContinuity?.transportLabel ? { browserTransportLabel: browserContinuity.transportLabel } : {}),
+        ...(browserContinuity?.relayDiagnosticBucket
+          ? { relayDiagnosticBucket: browserContinuity.relayDiagnosticBucket }
+          : {}),
         summary: incident.latestFailure?.message ?? incident.recoveryHint.reason,
         ...(incident.recoveryHint.action ? { action: incident.recoveryHint.action } : {}),
       };
@@ -792,15 +809,17 @@ function buildAttentionHeadline(items: OperatorAttentionItem[]): string {
   });
   const primary = ordered[0]!;
   const browserTransportLabel = ordered.find((item) => item.browserTransportLabel)?.browserTransportLabel;
+  const relayDiagnosticBucket = ordered.find((item) => item.relayDiagnosticBucket)?.relayDiagnosticBucket;
   const sources = unique(ordered.map((item) => item.source));
   const action = primary.action ? ` next=${primary.action}` : "";
   const browser = primary.browserContinuityState ? ` browser=${primary.browserContinuityState}` : "";
   const transport = browserTransportLabel ? ` transport=${browserTransportLabel}` : "";
+  const relay = relayDiagnosticBucket ? ` relay=${relayDiagnosticBucket}` : "";
   const reason =
     primary.reasons && primary.reasons.length > 0
       ? ` reason=${primary.reasons[0]}`
       : "";
-  return `${primary.caseKey} ${primary.lifecycle} via ${sources.join("+")}${action}${browser}${transport}${reason}`;
+  return `${primary.caseKey} ${primary.lifecycle} via ${sources.join("+")}${action}${browser}${transport}${relay}${reason}`;
 }
 
 function buildAttentionCaseSummary(
@@ -821,6 +840,7 @@ function buildAttentionCaseSummary(
   const primary = ordered[0]!;
   const lifecycle = primary.lifecycle;
   const browserTransportLabel = ordered.find((item) => item.browserTransportLabel)?.browserTransportLabel;
+  const relayDiagnosticBucket = ordered.find((item) => item.relayDiagnosticBucket)?.relayDiagnosticBucket;
   return {
     caseKey,
     headline: primary.headline,
@@ -837,6 +857,7 @@ function buildAttentionCaseSummary(
     ...(primary.allowedActions && primary.allowedActions.length > 0 ? { allowedActions: primary.allowedActions } : {}),
     ...(primary.browserContinuityState ? { browserContinuityState: primary.browserContinuityState } : {}),
     ...(browserTransportLabel ? { browserTransportLabel } : {}),
+    ...(relayDiagnosticBucket ? { relayDiagnosticBucket } : {}),
     ...(primary.reasons && primary.reasons.length > 0 ? { reasons: primary.reasons } : {}),
   };
 }
@@ -844,7 +865,8 @@ function buildAttentionCaseSummary(
 function buildResolvedRecentCaseSummaries(
   records: ReplayRecord[],
   recoveryRuns: RecoveryRun[],
-  limit: number
+  limit: number,
+  relayDiagnostics?: RelayDiagnosticsSnapshot
 ): Array<{
   caseKey: string;
   headline: string;
@@ -853,11 +875,13 @@ function buildResolvedRecentCaseSummaries(
   gate?: string;
   action?: string;
   browserContinuityState?: "stable" | "recovered" | "attention";
+  browserTransportLabel?: string;
+  relayDiagnosticBucket?: "peer_missing" | "peer_stale" | "target_missing" | "target_detached" | "target_closed" | "content_script_unavailable" | "action_timeout" | "action_failed";
   reasonPreview?: string;
   latestUpdate: string;
   nextStep: string;
 }> {
-  const consoleReport = buildReplayConsoleReport(records, Math.max(limit, 20), recoveryRuns);
+  const consoleReport = buildReplayConsoleReport(records, Math.max(limit, 20), recoveryRuns, relayDiagnostics);
   const report = buildReplayInspectionReport(records);
   const actionable = new Set(listActionableReplayIncidents(records, report).map((item) => item.groupId));
   const replayParentByGroupId = buildReplayParentByGroupId(records);
@@ -865,7 +889,7 @@ function buildResolvedRecentCaseSummaries(
     .filter((group) => resolveReplayRootGroupId(group.groupId, replayParentByGroupId) === group.groupId)
     .filter((group) => !actionable.has(group.groupId))
     .map((group) => {
-      const bundle = buildReplayIncidentBundle(records, group.groupId);
+      const bundle = buildReplayIncidentBundle(records, group.groupId, relayDiagnostics);
       if (!bundle) {
         return null;
       }
@@ -915,6 +939,9 @@ function buildResolvedRecentCaseSummaries(
           : {}),
         ...(bundle.browserContinuity?.state ? { browserContinuityState: bundle.browserContinuity.state } : {}),
         ...(bundle.browserContinuity?.transportLabel ? { browserTransportLabel: bundle.browserContinuity.transportLabel } : {}),
+        ...(bundle.browserContinuity?.relayDiagnosticBucket
+          ? { relayDiagnosticBucket: bundle.browserContinuity.relayDiagnosticBucket }
+          : {}),
         ...(reasonPreview ? { reasonPreview } : {}),
         latestUpdate:
           bundle.recoveryWorkflow?.summary ??
@@ -989,6 +1016,7 @@ function mapAttentionCaseToTriageFocus(entry: OperatorAttentionCaseSummary): Ope
     ...(entry.caseState ? { state: entry.caseState } : {}),
     ...(entry.browserContinuityState ? { browserContinuityState: entry.browserContinuityState } : {}),
     ...(entry.browserTransportLabel ? { browserTransportLabel: entry.browserTransportLabel } : {}),
+    ...(entry.relayDiagnosticBucket ? { relayDiagnosticBucket: entry.relayDiagnosticBucket } : {}),
   };
 }
 

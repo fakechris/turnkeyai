@@ -355,6 +355,14 @@ const browserBridge = createBrowserBridge({
   },
 });
 const relayGateway = maybeGetRelayGateway(browserBridge);
+function getRelayDiagnosticsSnapshot() {
+  return relayGateway
+    ? {
+        peers: relayGateway.listPeers(),
+        targets: relayGateway.listTargets(),
+      }
+    : undefined;
+}
 const replayRecorder = new FileReplayRecorder({
   rootDir: path.join(DATA_DIR, "replays"),
 });
@@ -828,18 +836,30 @@ const server = http.createServer(async (req, res) => {
         loadRecoveryRuntime(threadId),
         runtimeProgressStore.listByThread(threadId),
       ]);
+      const relayDiagnostics = getRelayDiagnosticsSnapshot();
       return sendJson(
         res,
         200,
-        buildOperatorSummaryReport({
-          flows,
-          permissionRecords,
-          events,
-          replays: synced.records,
-          recoveryRuns: synced.runs,
-          progressEvents,
-          limit,
-        })
+        relayDiagnostics
+          ? buildOperatorSummaryReport({
+              flows,
+              permissionRecords,
+              events,
+              replays: synced.records,
+              recoveryRuns: synced.runs,
+              progressEvents,
+              relayDiagnostics,
+              limit,
+            })
+          : buildOperatorSummaryReport({
+              flows,
+              permissionRecords,
+              events,
+              replays: synced.records,
+              recoveryRuns: synced.runs,
+              progressEvents,
+              limit,
+            })
       );
     }
 
@@ -859,18 +879,30 @@ const server = http.createServer(async (req, res) => {
         loadRecoveryRuntime(threadId),
         runtimeProgressStore.listByThread(threadId),
       ]);
+      const relayDiagnostics = getRelayDiagnosticsSnapshot();
       return sendJson(
         res,
         200,
-        buildOperatorAttentionReport({
-          flows,
-          permissionRecords,
-          events,
-          replays: synced.records,
-          recoveryRuns: synced.runs,
-          progressEvents,
-          limit,
-        })
+        relayDiagnostics
+          ? buildOperatorAttentionReport({
+              flows,
+              permissionRecords,
+              events,
+              replays: synced.records,
+              recoveryRuns: synced.runs,
+              progressEvents,
+              relayDiagnostics,
+              limit,
+            })
+          : buildOperatorAttentionReport({
+              flows,
+              permissionRecords,
+              events,
+              replays: synced.records,
+              recoveryRuns: synced.runs,
+              progressEvents,
+              limit,
+            })
       );
     }
 
@@ -891,24 +923,47 @@ const server = http.createServer(async (req, res) => {
         runtimeProgressStore.listByThread(threadId),
         loadRuntimeSummary(threadId, Math.max(limit, 10)),
       ]);
-      const operatorSummary = buildOperatorSummaryReport({
-        flows,
-        permissionRecords,
-        events,
-        replays: synced.records,
-        recoveryRuns: synced.runs,
-        progressEvents,
-        limit,
-      });
-      const operatorAttention = buildOperatorAttentionReport({
-        flows,
-        permissionRecords,
-        events,
-        replays: synced.records,
-        recoveryRuns: synced.runs,
-        progressEvents,
-        limit: Math.max(limit, 10),
-      });
+      const relayDiagnostics = getRelayDiagnosticsSnapshot();
+      const operatorSummary = relayDiagnostics
+        ? buildOperatorSummaryReport({
+            flows,
+            permissionRecords,
+            events,
+            replays: synced.records,
+            recoveryRuns: synced.runs,
+            progressEvents,
+            relayDiagnostics,
+            limit,
+          })
+        : buildOperatorSummaryReport({
+            flows,
+            permissionRecords,
+            events,
+            replays: synced.records,
+            recoveryRuns: synced.runs,
+            progressEvents,
+            limit,
+          });
+      const operatorAttention = relayDiagnostics
+        ? buildOperatorAttentionReport({
+            flows,
+            permissionRecords,
+            events,
+            replays: synced.records,
+            recoveryRuns: synced.runs,
+            progressEvents,
+            relayDiagnostics,
+            limit: Math.max(limit, 10),
+          })
+        : buildOperatorAttentionReport({
+            flows,
+            permissionRecords,
+            events,
+            replays: synced.records,
+            recoveryRuns: synced.runs,
+            progressEvents,
+            limit: Math.max(limit, 10),
+          });
       return sendJson(
         res,
         200,
@@ -1001,7 +1056,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (threadId) {
         const synced = await loadRecoveryRuntime(threadId);
-        return sendJson(res, 200, buildReplayConsoleReport(synced.records, limit, synced.runs));
+        return sendJson(res, 200, buildReplayConsoleReport(synced.records, limit, synced.runs, getRelayDiagnosticsSnapshot()));
       }
       return sendJson(
         res,
@@ -1010,7 +1065,9 @@ const server = http.createServer(async (req, res) => {
           await replayRecorder.list({
             limit: Math.max(limit, 200),
           }),
-          limit
+          limit,
+          [],
+          getRelayDiagnosticsSnapshot()
         )
       );
     }
@@ -1273,7 +1330,11 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: "threadId is required" });
       }
       const synced = await loadRecoveryRuntime(threadId);
-      const bundle = buildReplayIncidentBundle(synced.records, decodeURIComponent(replayBundleMatch[1]!));
+      const bundle = buildReplayIncidentBundle(
+        synced.records,
+        decodeURIComponent(replayBundleMatch[1]!),
+        getRelayDiagnosticsSnapshot()
+      );
       if (!bundle) {
         return sendJson(res, 404, { error: "replay bundle not found" });
       }

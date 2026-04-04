@@ -1369,6 +1369,9 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
         if (entry.browserTransportLabel) {
           parts.push(`transport=${entry.browserTransportLabel}`);
         }
+        if (entry.relayDiagnosticBucket) {
+          parts.push(`relay=${entry.relayDiagnosticBucket}`);
+        }
         if (entry.reasonPreview) {
           parts.push(`reason=${entry.reasonPreview}`);
         }
@@ -1392,6 +1395,9 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
         }
         if (entry.browserTransportLabel) {
           parts.push(`transport=${entry.browserTransportLabel}`);
+        }
+        if (entry.relayDiagnosticBucket) {
+          parts.push(`relay=${entry.relayDiagnosticBucket}`);
         }
         if (entry.reasonPreview) {
           parts.push(`reason=${entry.reasonPreview}`);
@@ -1468,6 +1474,9 @@ function printOperatorAttention(report: OperatorAttentionReport): void {
       if (entry.browserTransportLabel) {
         parts.push(`transport=${entry.browserTransportLabel}`);
       }
+      if (entry.relayDiagnosticBucket) {
+        parts.push(`relay=${entry.relayDiagnosticBucket}`);
+      }
       console.log(`    - ${parts.join("  ")}`);
       console.log(`      ${entry.headline}`);
       console.log(`      next=${entry.nextStep}  latest=${entry.latestUpdate}`);
@@ -1499,6 +1508,9 @@ function printOperatorAttention(report: OperatorAttentionReport): void {
     }
     if (item.browserTransportLabel) {
       parts.push(`transport=${item.browserTransportLabel}`);
+    }
+    if (item.relayDiagnosticBucket) {
+      parts.push(`relay=${item.relayDiagnosticBucket}`);
     }
     console.log(`  - ${parts.join("  ")}`);
     console.log(`    headline: ${item.headline}`);
@@ -1547,6 +1559,9 @@ function printOperatorTriage(report: OperatorTriageReport): void {
       }
       if (area.browserTransportLabel) {
         parts.push(`transport=${area.browserTransportLabel}`);
+      }
+      if (area.relayDiagnosticBucket) {
+        parts.push(`relay=${area.relayDiagnosticBucket}`);
       }
       console.log(`    - ${parts.join("  ")}`);
       console.log(`      ${area.headline}`);
@@ -2789,8 +2804,20 @@ function printReplayBundle(bundle: ReplayIncidentBundle): void {
     }
     if (bundle.browserContinuity.transportMode || bundle.browserContinuity.transportLabel || bundle.browserContinuity.transportTargetId) {
       console.log(
-        `  browser transport: ${bundle.browserContinuity.transportLabel ?? bundle.browserContinuity.transportMode ?? "-"}  transport target=${bundle.browserContinuity.transportTargetId ?? "-"}`
+        `  browser transport: ${bundle.browserContinuity.transportLabel ?? bundle.browserContinuity.transportMode ?? "-"}  peer=${bundle.browserContinuity.transportPeerId ?? "-"}  transport target=${bundle.browserContinuity.transportTargetId ?? "-"}`
       );
+    }
+    if (
+      bundle.browserContinuity.relayPeerStatus ||
+      bundle.browserContinuity.relayTargetStatus ||
+      bundle.browserContinuity.relayDiagnosticBucket
+    ) {
+      console.log(
+        `  relay diagnostics: peer=${bundle.browserContinuity.relayPeerStatus ?? "-"}  target=${bundle.browserContinuity.relayTargetStatus ?? "-"}  bucket=${bundle.browserContinuity.relayDiagnosticBucket ?? "-"}`
+      );
+      if (bundle.browserContinuity.relayDiagnosticSummary) {
+        console.log(`  relay summary: ${bundle.browserContinuity.relayDiagnosticSummary}`);
+      }
     }
     if (bundle.browserContinuity.resumeMode || bundle.browserContinuity.targetResolution) {
       console.log(
@@ -3052,6 +3079,9 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       if (bundle.browserTransportLabel) {
         parts.push(`transport=${bundle.browserTransportLabel}`);
       }
+      if (bundle.relayDiagnosticBucket) {
+        parts.push(`relay=${bundle.relayDiagnosticBucket}`);
+      }
       if (bundle.operatorCaseState) {
         parts.push(`operator=${bundle.operatorCaseState}`);
       }
@@ -3097,6 +3127,9 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       }
       if (bundle.browserTransportLabel) {
         parts.push(`transport=${bundle.browserTransportLabel}`);
+      }
+      if (bundle.relayDiagnosticBucket) {
+        parts.push(`relay=${bundle.relayDiagnosticBucket}`);
       }
       if (bundle.operatorCaseState) {
         parts.push(`operator=${bundle.operatorCaseState}`);
