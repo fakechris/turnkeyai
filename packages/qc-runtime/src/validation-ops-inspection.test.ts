@@ -40,11 +40,13 @@ test("validation ops inspection derives operator-facing records and report count
       includeReleaseReadiness: true,
       soakSeriesCycles: 3,
       soakSeriesSelectors: ["soak", "realworld", "acceptance"],
+      transportSoakCycles: 1,
+      transportSoakTargets: ["relay", "direct-cdp"],
       status: "failed",
       durationMs: 30,
-      totalStages: 3,
+      totalStages: 4,
       passedStages: 1,
-      failedStages: 2,
+      failedStages: 3,
       issues: [
         {
           issueId: "validation-run:realworld:browser-research-recovery-runbook",
@@ -147,4 +149,5 @@ test("validation ops inspection derives operator-facing records and report count
   assert.ok(report.activeIssues.some((issue) => issue.kind === "validation-item" && issue.commandHint === "validation-profile-run nightly"));
   assert.ok(report.activeIssues.some((issue) => issue.kind === "transport-target" && issue.commandHint === "transport-soak 3 relay"));
   assert.equal(report.latestRuns[0]?.artifactPath, ".daemon-data/validation-artifacts/transport-soak/transport-1.json");
+  assert.deepEqual(report.latestRuns.find((run) => run.runType === "validation-profile")?.targets, ["relay", "direct-cdp"]);
 });

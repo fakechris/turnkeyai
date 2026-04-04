@@ -2,6 +2,11 @@ import type {
   ReleaseReadinessOptions,
   ReleaseReadinessResult,
 } from "./release-readiness";
+import type {
+  BrowserTransportSoakOptions,
+  BrowserTransportSoakResult,
+  BrowserTransportSoakTarget,
+} from "./browser-transport-soak";
 import { runReleaseReadiness } from "./release-readiness";
 import type {
   ValidationSuiteId,
@@ -14,8 +19,16 @@ import type {
 } from "./validation-soak-series";
 
 export type ValidationProfileId = "smoke" | "nightly" | "prerelease" | "weekly";
-export type ValidationProfileStageId = "validation-run" | "release-readiness" | "soak-series";
-export type ValidationProfileIssueKind = "validation-item" | "release-check" | "soak-suite";
+export type ValidationProfileStageId =
+  | "validation-run"
+  | "release-readiness"
+  | "soak-series"
+  | "transport-soak";
+export type ValidationProfileIssueKind =
+  | "validation-item"
+  | "release-check"
+  | "soak-suite"
+  | "transport-target";
 
 export interface ValidationProfileDescriptor {
   profileId: ValidationProfileId;
@@ -26,6 +39,8 @@ export interface ValidationProfileDescriptor {
   includeReleaseReadiness: boolean;
   soakSeriesCycles?: number;
   soakSeriesSelectors?: string[];
+  transportSoakCycles?: number;
+  transportSoakTargets?: BrowserTransportSoakTarget[];
 }
 
 export interface ValidationProfileIssue {
@@ -63,10 +78,21 @@ export interface ValidationProfileSoakStageResult {
   result: ValidationSoakSeriesResult;
 }
 
+export interface ValidationProfileTransportSoakStageResult {
+  stageId: "transport-soak";
+  title: string;
+  status: "passed" | "failed";
+  durationMs: number;
+  cycles: number;
+  targets: BrowserTransportSoakTarget[];
+  result: BrowserTransportSoakResult;
+}
+
 export type ValidationProfileStageResult =
   | ValidationProfileValidationStageResult
   | ValidationProfileReleaseStageResult
-  | ValidationProfileSoakStageResult;
+  | ValidationProfileSoakStageResult
+  | ValidationProfileTransportSoakStageResult;
 
 export interface ValidationProfileRunResult extends ValidationProfileDescriptor {
   status: "passed" | "failed";
@@ -81,14 +107,17 @@ export interface ValidationProfileRunResult extends ValidationProfileDescriptor 
 export interface ValidationProfileRunOptions {
   releaseReadiness?: ReleaseReadinessOptions;
   soakSeries?: Omit<ValidationSoakSeriesOptions, "cycles" | "selectors">;
+  transportSoak?: Omit<BrowserTransportSoakOptions, "cycles" | "targets">;
 }
 
 interface ValidationProfileDeps {
   releaseReadinessRunner: (options?: ReleaseReadinessOptions) => Promise<ReleaseReadinessResult>;
   validationRunner: (selectors?: string[]) => ValidationRunResult;
+  transportSoakRunner?: (options: BrowserTransportSoakOptions) => Promise<BrowserTransportSoakResult>;
 }
 
 const DEFAULT_SOAK_PROFILE_SELECTORS = ["soak", "realworld", "acceptance"] as const;
+const DEFAULT_TRANSPORT_SOAK_TARGETS: BrowserTransportSoakTarget[] = ["relay", "direct-cdp"];
 const VALIDATION_SUITE_ORDER: ValidationSuiteId[] = [
   "regression",
   "soak",
@@ -124,6 +153,8 @@ const PROFILE_DESCRIPTORS: Record<ValidationProfileId, ValidationProfileDescript
     includeReleaseReadiness: true,
     soakSeriesCycles: 3,
     soakSeriesSelectors: [...DEFAULT_SOAK_PROFILE_SELECTORS],
+    transportSoakCycles: 1,
+    transportSoakTargets: [...DEFAULT_TRANSPORT_SOAK_TARGETS],
   },
   prerelease: {
     profileId: "prerelease",
@@ -135,6 +166,8 @@ const PROFILE_DESCRIPTORS: Record<ValidationProfileId, ValidationProfileDescript
     includeReleaseReadiness: true,
     soakSeriesCycles: 5,
     soakSeriesSelectors: [...DEFAULT_SOAK_PROFILE_SELECTORS],
+    transportSoakCycles: 2,
+    transportSoakTargets: [...DEFAULT_TRANSPORT_SOAK_TARGETS],
   },
   weekly: {
     profileId: "weekly",
@@ -146,6 +179,8 @@ const PROFILE_DESCRIPTORS: Record<ValidationProfileId, ValidationProfileDescript
     includeReleaseReadiness: true,
     soakSeriesCycles: 10,
     soakSeriesSelectors: [...DEFAULT_SOAK_PROFILE_SELECTORS],
+    transportSoakCycles: 3,
+    transportSoakTargets: [...DEFAULT_TRANSPORT_SOAK_TARGETS],
   },
 };
 
@@ -161,6 +196,9 @@ export function listValidationProfiles(): ValidationProfileDescriptor[] {
     validationSelectors: [...PROFILE_DESCRIPTORS[profileId].validationSelectors],
     ...(PROFILE_DESCRIPTORS[profileId].soakSeriesSelectors
       ? { soakSeriesSelectors: [...PROFILE_DESCRIPTORS[profileId].soakSeriesSelectors] }
+      : {}),
+    ...(PROFILE_DESCRIPTORS[profileId].transportSoakTargets
+      ? { transportSoakTargets: [...PROFILE_DESCRIPTORS[profileId].transportSoakTargets] }
       : {}),
   }));
 }
@@ -224,12 +262,35 @@ export async function runValidationProfile(
     });
   }
 
+  if (profile.transportSoakCycles && profile.transportSoakCycles > 0) {
+    if (!deps.transportSoakRunner) {
+      throw new Error(`Transport soak runner is not configured for validation profile ${profile.profileId}`);
+    }
+    const transportStartedAt = Date.now();
+    const transportTargets = profile.transportSoakTargets ?? [...DEFAULT_TRANSPORT_SOAK_TARGETS];
+    const transportResult = await deps.transportSoakRunner({
+      ...options.transportSoak,
+      cycles: profile.transportSoakCycles,
+      targets: transportTargets,
+    });
+    stages.push({
+      stageId: "transport-soak",
+      title: "Browser transport soak",
+      status: transportResult.status,
+      durationMs: Date.now() - transportStartedAt,
+      cycles: profile.transportSoakCycles,
+      targets: [...transportTargets],
+      result: transportResult,
+    });
+  }
+
   const issues = collectProfileIssues(stages);
   return {
     ...profile,
     focusAreas: [...profile.focusAreas],
     validationSelectors: [...profile.validationSelectors],
     ...(profile.soakSeriesSelectors ? { soakSeriesSelectors: [...profile.soakSeriesSelectors] } : {}),
+    ...(profile.transportSoakTargets ? { transportSoakTargets: [...profile.transportSoakTargets] } : {}),
     status: stages.every((stage) => stage.status === "passed") ? "passed" : "failed",
     durationMs: Date.now() - startedAt,
     totalStages: stages.length,
@@ -278,16 +339,32 @@ function collectProfileIssues(stages: ValidationProfileStageResult[]): Validatio
       continue;
     }
 
-    for (const aggregate of stage.result.suiteAggregates) {
+    if (stage.stageId === "soak-series") {
+      for (const aggregate of stage.result.suiteAggregates) {
+        if (aggregate.failedCycles === 0) {
+          continue;
+        }
+        issues.push({
+          issueId: `${stage.stageId}:${aggregate.suiteId}`,
+          kind: "soak-suite",
+          stageId: stage.stageId,
+          scope: aggregate.suiteId,
+          summary: `${aggregate.suiteId} failed ${aggregate.failedCycles}/${aggregate.cycles} soak cycles`,
+        });
+      }
+      continue;
+    }
+
+    for (const aggregate of stage.result.targetAggregates) {
       if (aggregate.failedCycles === 0) {
         continue;
       }
       issues.push({
-        issueId: `${stage.stageId}:${aggregate.suiteId}`,
-        kind: "soak-suite",
+        issueId: `${stage.stageId}:${aggregate.target}`,
+        kind: "transport-target",
         stageId: stage.stageId,
-        scope: aggregate.suiteId,
-        summary: `${aggregate.suiteId} failed ${aggregate.failedCycles}/${aggregate.cycles} soak cycles`,
+        scope: aggregate.target,
+        summary: `${aggregate.target} failed ${aggregate.failedCycles}/${aggregate.cycles} transport soak cycles`,
       });
     }
   }
@@ -459,7 +536,10 @@ export function summarizeValidationStage(
   if (stage.stageId === "release-readiness") {
     return `checks=${stage.result.passedChecks}/${stage.result.totalChecks}`;
   }
-  return `cycles=${stage.result.passedCycles}/${stage.result.totalCycles} cases=${stage.result.totalCases - stage.result.failedCases}/${stage.result.totalCases}`;
+  if (stage.stageId === "soak-series") {
+    return `cycles=${stage.result.passedCycles}/${stage.result.totalCycles} cases=${stage.result.totalCases - stage.result.failedCases}/${stage.result.totalCases}`;
+  }
+  return `cycles=${stage.result.passedCycles}/${stage.result.totalCycles} targetRuns=${stage.result.totalTargetRuns - stage.result.failedTargetRuns}/${stage.result.totalTargetRuns}`;
 }
 
 export function summarizeValidationProfileResult(
@@ -475,5 +555,6 @@ export function getValidationProfile(profileId: ValidationProfileId): Validation
     focusAreas: [...descriptor.focusAreas],
     validationSelectors: [...descriptor.validationSelectors],
     ...(descriptor.soakSeriesSelectors ? { soakSeriesSelectors: [...descriptor.soakSeriesSelectors] } : {}),
+    ...(descriptor.transportSoakTargets ? { transportSoakTargets: [...descriptor.transportSoakTargets] } : {}),
   };
 }

@@ -55,6 +55,10 @@ import {
 } from "@turnkeyai/qc-runtime/bounded-regression-harness";
 import { BrowserResultVerifier } from "@turnkeyai/qc-runtime/browser-result-verifier";
 import { BrowserStepVerifier } from "@turnkeyai/qc-runtime/browser-step-verifier";
+import type {
+  BrowserTransportSoakOptions,
+  BrowserTransportSoakResult,
+} from "@turnkeyai/qc-runtime/browser-transport-soak";
 import { runBrowserTransportSoak } from "@turnkeyai/qc-runtime/browser-transport-soak";
 import { DefaultEvidenceTrustPolicy } from "@turnkeyai/qc-runtime/evidence-trust-policy";
 import {
@@ -1254,7 +1258,11 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: "Unknown validation profile" });
       }
       const startedAt = Date.now();
-      const result = await runValidationProfile(profileId);
+      const result = await runValidationProfile(profileId, {}, {
+        releaseReadinessRunner: runReleaseReadiness,
+        validationRunner: runValidationSuites,
+        transportSoakRunner: (options) => runBrowserTransportSoakViaCli(options),
+      });
       const completedAt = Date.now();
       await validationOpsRunStore.put(
         buildValidationOpsRecordFromValidationProfile({
@@ -1342,40 +1350,7 @@ const server = http.createServer(async (req, res) => {
           ...(body.verifyWorkflowLog !== undefined ? { verifyWorkflowLog: body.verifyWorkflowLog } : {}),
           ...(targets && targets.length > 0 ? { targets } : {}),
         },
-        {
-          runner: async (input) => {
-            const commandArgs =
-              input.target === "relay"
-                ? buildRelayTransportSoakArgs(input.timeoutMs, input.relayPeerCount, input.verifyReconnect, input.verifyWorkflowLog)
-                : buildDirectCdpTransportSoakArgs(input.timeoutMs, input.verifyReconnect, input.verifyWorkflowLog);
-            const runStartedAt = Date.now();
-            try {
-              const { stdout, stderr } = await execFile("npm", commandArgs, {
-                cwd: process.cwd(),
-                maxBuffer: 16 * 1024 * 1024,
-              });
-              return {
-                exitCode: 0,
-                stdout,
-                stderr,
-                durationMs: Date.now() - runStartedAt,
-              };
-            } catch (error) {
-              const failure = error as {
-                code?: string | number;
-                stdout?: string;
-                stderr?: string;
-                message?: string;
-              };
-              return {
-                exitCode: typeof failure.code === "number" ? failure.code : 1,
-                stdout: failure.stdout ?? "",
-                stderr: failure.stderr ?? failure.message ?? String(error),
-                durationMs: Date.now() - runStartedAt,
-              };
-            }
-          },
-        }
+        { runner: runBrowserTransportSoakSmokeCommand }
       );
       const completedAt = Date.now();
       const runId = createValidationOpsRunId("transport-soak");
@@ -2114,6 +2089,63 @@ async function writeValidationArtifact(kind: string, runId: string, payload: unk
   const artifactPath = path.join(VALIDATION_ARTIFACT_DIR, kind, `${encodeURIComponent(runId)}.json`);
   await writeJsonFileAtomic(artifactPath, payload);
   return path.relative(process.cwd(), artifactPath);
+}
+
+async function runBrowserTransportSoakViaCli(
+  options: BrowserTransportSoakOptions = {}
+): Promise<BrowserTransportSoakResult> {
+  return runBrowserTransportSoak(options, {
+    runner: runBrowserTransportSoakSmokeCommand,
+  });
+}
+
+async function runBrowserTransportSoakSmokeCommand(input: {
+  target: "relay" | "direct-cdp";
+  timeoutMs: number;
+  relayPeerCount: number;
+  verifyReconnect: boolean;
+  verifyWorkflowLog: boolean;
+}): Promise<{
+  exitCode: number;
+  stdout: string;
+  stderr?: string;
+  durationMs?: number;
+}> {
+  const commandArgs =
+    input.target === "relay"
+      ? buildRelayTransportSoakArgs(
+          input.timeoutMs,
+          input.relayPeerCount,
+          input.verifyReconnect,
+          input.verifyWorkflowLog
+        )
+      : buildDirectCdpTransportSoakArgs(input.timeoutMs, input.verifyReconnect, input.verifyWorkflowLog);
+  const runStartedAt = Date.now();
+  try {
+    const { stdout, stderr } = await execFile("npm", commandArgs, {
+      cwd: process.cwd(),
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return {
+      exitCode: 0,
+      stdout,
+      stderr,
+      durationMs: Date.now() - runStartedAt,
+    };
+  } catch (error) {
+    const failure = error as {
+      code?: string | number;
+      stdout?: string;
+      stderr?: string;
+      message?: string;
+    };
+    return {
+      exitCode: typeof failure.code === "number" ? failure.code : 1,
+      stdout: failure.stdout ?? "",
+      stderr: failure.stderr ?? failure.message ?? String(error),
+      durationMs: Date.now() - runStartedAt,
+    };
+  }
 }
 
 function buildRelayTransportSoakArgs(

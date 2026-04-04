@@ -279,7 +279,7 @@ npx @turnkeyai/cli tui
 `release-verify` 会对将要公开发布的 CLI 走一遍 `npm pack`、解包、bin/dist help smoke 和 `npm publish --dry-run`，避免 package metadata 在真正发版时才暴露问题；`soak-series` 和单独的 `Long Soak` workflow 会把 `soak / realworld / acceptance` 做多轮聚合运行，用来承接高成本、非 PR required 的长周期稳态验证。
 `validation-ops` 会把最近的 `validation-profile-run`、`release-verify` 和 `soak-series` 结果收成 operator-facing 读数，统一展示失败 bucket、推荐动作和重跑命令，避免验证失败只留在一次性 stdout 里。
 `transport-soak` 现在也会进入同一套 `validation-ops` 记录，并带上 artifact 路径，方便值班时直接回看 relay/direct-cdp 的多 cycle 诊断结果。
-`validation-profiles` / `validation-profile-run` 会把现有 `validation-run`、`release-verify` 和 `soak-series` 收成固定 hardening 档位：`smoke` 适合本地快速回归，`nightly` / `prerelease` / `weekly` 适合持续稳定性和值班/发版前信心检查。
+`validation-profiles` / `validation-profile-run` 会把现有 `validation-run`、`release-verify`、`soak-series` 和 `transport-soak` 收成固定 hardening 档位：`smoke` 适合本地快速回归，`nightly` / `prerelease` / `weekly` 会把 transport 连通性和多 cycle 稳定性也一起压过一遍，适合持续稳定性和值班/发版前信心检查。
 `relay-peers` / `relay-targets [peerId]` 可以直接查看本地 daemon 当前看到的 relay 扩展连接和浏览器 tab 发现结果，便于做 extension smoke 和 transport 排障。
 `relay:install-smoke` 会走一遍“build relay extension -> 启动本地 Chromium + unpacked extension -> 等 daemon 看见 peer/target”的真机安装连通链，适合快速确认本地浏览器端 bridge 没坏。
 `transport:soak` 会重复跑 relay / direct-cdp 的真实 smoke，并把失败按 `peer-timeout / cdp-unreachable / reconnect-failure / workflow-log-failure / content-script-unavailable` 这类稳定 bucket 汇总，便于做 transport 值班读数和周级稳定性回归。

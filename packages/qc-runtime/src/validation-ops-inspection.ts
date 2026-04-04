@@ -69,6 +69,7 @@ export function buildValidationOpsRecordFromValidationProfile(input: {
     profileId: input.result.profileId,
     selectors: [...input.result.validationSelectors],
     ...(input.result.soakSeriesCycles ? { cycles: input.result.soakSeriesCycles } : {}),
+    ...(input.result.transportSoakTargets ? { targets: [...input.result.transportSoakTargets] } : {}),
     issues,
   };
 }

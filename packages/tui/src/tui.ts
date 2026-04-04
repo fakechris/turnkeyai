@@ -2408,6 +2408,8 @@ async function handleValidationProfilesCommand(): Promise<void> {
         includeReleaseReadiness: boolean;
         soakSeriesCycles?: number;
         soakSeriesSelectors?: string[];
+        transportSoakCycles?: number;
+        transportSoakTargets?: Array<"relay" | "direct-cdp">;
       }>;
     }
   );
@@ -3768,6 +3770,8 @@ async function handleValidationProfileRunCommand(raw: string): Promise<void> {
         includeReleaseReadiness: boolean;
         soakSeriesCycles?: number;
         soakSeriesSelectors?: string[];
+        transportSoakCycles?: number;
+        transportSoakTargets?: Array<"relay" | "direct-cdp">;
         status: "passed" | "failed";
         durationMs: number;
         totalStages: number;
@@ -3775,8 +3779,8 @@ async function handleValidationProfileRunCommand(raw: string): Promise<void> {
         failedStages: number;
         issues: Array<{
           issueId: string;
-          kind: "validation-item" | "release-check" | "soak-suite";
-          stageId: "validation-run" | "release-readiness" | "soak-series";
+          kind: "validation-item" | "release-check" | "soak-suite" | "transport-target";
+          stageId: "validation-run" | "release-readiness" | "soak-series" | "transport-soak";
           scope: string;
           summary: string;
         }>;
@@ -3823,6 +3827,21 @@ async function handleValidationProfileRunCommand(raw: string): Promise<void> {
                 failedCycles: number;
                 totalCases: number;
                 failedCases: number;
+              };
+            }
+          | {
+              stageId: "transport-soak";
+              title: string;
+              status: "passed" | "failed";
+              durationMs: number;
+              cycles: number;
+              targets: Array<"relay" | "direct-cdp">;
+              result: {
+                totalCycles: number;
+                passedCycles: number;
+                failedCycles: number;
+                totalTargetRuns: number;
+                failedTargetRuns: number;
               };
             }
         >;
@@ -3877,6 +3896,8 @@ function printValidationProfileList(payload: {
     includeReleaseReadiness: boolean;
     soakSeriesCycles?: number;
     soakSeriesSelectors?: string[];
+    transportSoakCycles?: number;
+    transportSoakTargets?: Array<"relay" | "direct-cdp">;
   }>;
 }): void {
   console.log(`Validation Profiles: ${payload.totalProfiles}`);
@@ -3889,6 +3910,11 @@ function printValidationProfileList(payload: {
     if (profile.soakSeriesCycles && profile.soakSeriesCycles > 0) {
       console.log(
         `  soak series: cycles=${profile.soakSeriesCycles} selectors=${(profile.soakSeriesSelectors ?? []).join(", ")}`
+      );
+    }
+    if (profile.transportSoakCycles && profile.transportSoakCycles > 0) {
+      console.log(
+        `  transport soak: cycles=${profile.transportSoakCycles} targets=${(profile.transportSoakTargets ?? []).join(", ")}`
       );
     }
   }
@@ -3967,6 +3993,8 @@ function printValidationProfileRunResult(payload: {
   includeReleaseReadiness: boolean;
   soakSeriesCycles?: number;
   soakSeriesSelectors?: string[];
+  transportSoakCycles?: number;
+  transportSoakTargets?: Array<"relay" | "direct-cdp">;
   status: "passed" | "failed";
   durationMs: number;
   totalStages: number;
@@ -3974,8 +4002,8 @@ function printValidationProfileRunResult(payload: {
   failedStages: number;
   issues: Array<{
     issueId: string;
-    kind: "validation-item" | "release-check" | "soak-suite";
-    stageId: "validation-run" | "release-readiness" | "soak-series";
+    kind: "validation-item" | "release-check" | "soak-suite" | "transport-target";
+    stageId: "validation-run" | "release-readiness" | "soak-series" | "transport-soak";
     scope: string;
     summary: string;
   }>;
@@ -4024,6 +4052,21 @@ function printValidationProfileRunResult(payload: {
           failedCases: number;
         };
       }
+    | {
+        stageId: "transport-soak";
+        title: string;
+        status: "passed" | "failed";
+        durationMs: number;
+        cycles: number;
+        targets: Array<"relay" | "direct-cdp">;
+        result: {
+          totalCycles: number;
+          passedCycles: number;
+          failedCycles: number;
+          totalTargetRuns: number;
+          failedTargetRuns: number;
+        };
+      }
   >;
 }): void {
   console.log(
@@ -4046,10 +4089,17 @@ function printValidationProfileRunResult(payload: {
       );
       continue;
     }
+    if (stage.stageId === "soak-series") {
+      console.log(
+        `- soak-series  status=${stage.status}  cycles=${stage.result.passedCycles}/${stage.result.totalCycles}  cases=${stage.result.totalCases - stage.result.failedCases}/${stage.result.totalCases}  durationMs=${stage.durationMs}`
+      );
+      console.log(`  selectors: ${stage.selectors.join(", ")}`);
+      continue;
+    }
     console.log(
-      `- soak-series  status=${stage.status}  cycles=${stage.result.passedCycles}/${stage.result.totalCycles}  cases=${stage.result.totalCases - stage.result.failedCases}/${stage.result.totalCases}  durationMs=${stage.durationMs}`
+      `- transport-soak  status=${stage.status}  cycles=${stage.result.passedCycles}/${stage.result.totalCycles}  targetRuns=${stage.result.totalTargetRuns - stage.result.failedTargetRuns}/${stage.result.totalTargetRuns}  durationMs=${stage.durationMs}`
     );
-    console.log(`  selectors: ${stage.selectors.join(", ")}`);
+    console.log(`  targets: ${stage.targets.join(", ")}`);
   }
   if (payload.issues.length > 0) {
     console.log("Issues:");

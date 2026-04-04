@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { BrowserTransportSoakResult } from "./browser-transport-soak";
 import type { ReleaseReadinessResult } from "./release-readiness";
 import type { ValidationRunResult, ValidationSuiteId } from "./validation-suite";
 import {
@@ -22,6 +23,11 @@ test("validation profiles list built-in hardening profiles", () => {
   assert.deepEqual(
     profiles.find((profile) => profile.profileId === "weekly")?.soakSeriesSelectors,
     ["soak", "realworld", "acceptance"]
+  );
+  assert.equal(profiles.find((profile) => profile.profileId === "nightly")?.transportSoakCycles, 1);
+  assert.deepEqual(
+    profiles.find((profile) => profile.profileId === "prerelease")?.transportSoakTargets,
+    ["relay", "direct-cdp"]
   );
 });
 
@@ -48,6 +54,7 @@ test("smoke validation profile only runs validation catalog stage", async () => 
         validationCalls.push([...(selectors ?? [])]);
         return makeSuiteScopedValidationRunResult(selectors);
       },
+      transportSoakRunner: async () => makeTransportSoakResult(),
     }
   );
 
@@ -67,6 +74,7 @@ test("smoke validation profile only runs validation catalog stage", async () => 
 test("nightly validation profile aggregates validation, release, and soak failures", async () => {
   let validationStageCalls = 0;
   const validationCalls: string[][] = [];
+  const transportSoakCalls: Array<{ cycles?: number; targets?: string[] }> = [];
   const result = await runValidationProfile(
     "nightly",
     {},
@@ -94,12 +102,41 @@ test("nightly validation profile aggregates validation, release, and soak failur
         }
         return makeSuiteScopedValidationRunResult(selectors, { suiteId });
       },
+      transportSoakRunner: async (options) => {
+        transportSoakCalls.push({
+          ...(options.cycles !== undefined ? { cycles: options.cycles } : {}),
+          ...(options.targets ? { targets: options.targets } : {}),
+        });
+        return makeTransportSoakResult({
+          status: "failed",
+          passedCycles: 0,
+          failedCycles: 1,
+          totalTargetRuns: 2,
+          failedTargetRuns: 1,
+          targetAggregates: [
+            {
+              target: "relay",
+              cycles: 1,
+              passedCycles: 0,
+              failedCycles: 1,
+              failureBuckets: [{ bucket: "peer-timeout", count: 1 }],
+            },
+            {
+              target: "direct-cdp",
+              cycles: 1,
+              passedCycles: 1,
+              failedCycles: 0,
+              failureBuckets: [{ bucket: "none", count: 1 }],
+            },
+          ],
+        });
+      },
     }
   );
 
   assert.equal(result.status, "failed");
-  assert.equal(result.totalStages, 3);
-  assert.equal(result.issues.length, 3);
+  assert.equal(result.totalStages, 4);
+  assert.equal(result.issues.length, 4);
   assert.deepEqual(validationCalls.slice(0, 4), [
     ["failure"],
     ["acceptance"],
@@ -111,9 +148,11 @@ test("nightly validation profile aggregates validation, release, and soak failur
     ["realworld"],
     ["acceptance"],
   ]);
+  assert.deepEqual(transportSoakCalls, [{ cycles: 1, targets: ["relay", "direct-cdp"] }]);
   assert.ok(result.issues.some((issue) => issue.kind === "validation-item" && issue.scope === "acceptance:browser-ownership-reclaim-isolation"));
   assert.ok(result.issues.some((issue) => issue.kind === "release-check" && issue.scope === "publish-dry-run"));
   assert.ok(result.issues.some((issue) => issue.kind === "soak-suite" && issue.scope === "soak"));
+  assert.ok(result.issues.some((issue) => issue.kind === "transport-target" && issue.scope === "relay"));
 });
 
 function makeSuiteScopedValidationRunResult(
@@ -194,6 +233,63 @@ function makeReleaseReadinessResult(
     checks: [
       { checkId: "pack-cli", title: "Pack CLI", status: "passed", details: [] },
       { checkId: "publish-dry-run", title: "Publish dry-run", status: "passed", details: [] },
+    ],
+    ...overrides,
+  };
+}
+
+function makeTransportSoakResult(
+  overrides: Partial<BrowserTransportSoakResult> = {}
+): BrowserTransportSoakResult {
+  return {
+    status: "passed",
+    totalCycles: 1,
+    passedCycles: 1,
+    failedCycles: 0,
+    totalTargetRuns: 2,
+    failedTargetRuns: 0,
+    durationMs: 25,
+    targets: ["relay", "direct-cdp"],
+    cycleResults: [
+      {
+        cycleNumber: 1,
+        status: "passed",
+        durationMs: 25,
+        targets: [
+          {
+            target: "relay",
+            status: "passed",
+            durationMs: 10,
+            failureBucket: "none",
+            summary: "relay passed",
+            output: "",
+          },
+          {
+            target: "direct-cdp",
+            status: "passed",
+            durationMs: 15,
+            failureBucket: "none",
+            summary: "direct-cdp passed",
+            output: "",
+          },
+        ],
+      },
+    ],
+    targetAggregates: [
+      {
+        target: "relay",
+        cycles: 1,
+        passedCycles: 1,
+        failedCycles: 0,
+        failureBuckets: [{ bucket: "none", count: 1 }],
+      },
+      {
+        target: "direct-cdp",
+        cycles: 1,
+        passedCycles: 1,
+        failedCycles: 0,
+        failureBuckets: [{ bucket: "none", count: 1 }],
+      },
     ],
     ...overrides,
   };
