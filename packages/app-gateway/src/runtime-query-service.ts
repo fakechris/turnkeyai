@@ -60,6 +60,7 @@ export interface RuntimeQueryService {
 export function createRuntimeQueryService(input: {
   clock: Clock;
   workerRuntime: WorkerRuntime;
+  getWorkerStartupReconcileResult?: () => { totalSessions: number; downgradedRunningSessions: number } | undefined;
   teamThreadStore: FileTeamThreadStore;
   flowLedgerStore: FileFlowLedgerStore;
   roleRunStore: FileRoleRunStore;
@@ -75,6 +76,7 @@ export function createRuntimeQueryService(input: {
   const {
     clock,
     workerRuntime,
+    getWorkerStartupReconcileResult,
     teamThreadStore,
     flowLedgerStore,
     roleRunStore,
@@ -233,11 +235,18 @@ export function createRuntimeQueryService(input: {
     },
 
     async loadRuntimeSummary(threadId: string | null, limit: number): Promise<RuntimeSummaryReport> {
-      return buildRuntimeSummaryReport({
+      const report = buildRuntimeSummaryReport({
         entries: await loadRuntimeChainEntriesForScope(threadId),
         limit,
         now: clock.now(),
       });
+      const workerStartupReconcile = getWorkerStartupReconcileResult?.();
+      return workerStartupReconcile
+        ? {
+            ...report,
+            workerStartupReconcile,
+          }
+        : report;
     },
 
     async listStaleRuntimeChainEntries(limit: number, threadId?: string | null): Promise<RuntimeChainEntry[]> {

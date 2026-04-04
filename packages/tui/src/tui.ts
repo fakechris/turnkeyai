@@ -976,6 +976,11 @@ function printRuntimeSummary(report: RuntimeSummaryReport): void {
   if (Object.keys(report.caseStateCounts).length > 0) {
     console.log(`  case-state mix: ${formatCountMap(report.caseStateCounts)}`);
   }
+  if (report.workerStartupReconcile) {
+    console.log(
+      `  worker startup reconcile: total=${report.workerStartupReconcile.totalSessions} downgraded-running=${report.workerStartupReconcile.downgradedRunningSessions}`
+    );
+  }
   printRuntimeSummaryEntries("  attention chains:", report.attentionChains);
   printRuntimeSummaryEntries("  active chains:", report.activeChains);
   printRuntimeSummaryEntries("  waiting chains:", report.waitingChains);

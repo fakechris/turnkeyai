@@ -559,6 +559,7 @@ const recoveryActionService = createRecoveryActionService({
 const runtimeQueryService = createRuntimeQueryService({
   clock,
   workerRuntime,
+  getWorkerStartupReconcileResult: () => workerStartupReconcileResult,
   teamThreadStore,
   flowLedgerStore,
   roleRunStore,

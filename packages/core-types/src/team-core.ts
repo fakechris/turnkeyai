@@ -273,6 +273,10 @@ export interface RuntimeSummaryReport {
   staleChains: RuntimeSummaryEntry[];
   failedChains: RuntimeSummaryEntry[];
   recentlyResolved: RuntimeSummaryEntry[];
+  workerStartupReconcile?: {
+    totalSessions: number;
+    downgradedRunningSessions: number;
+  };
 }
 
 export interface RuntimeProgressEvent {
