@@ -53,6 +53,20 @@ const SCENARIOS: RealWorldScenarioDescriptor[] = [
     ],
   },
   {
+    scenarioId: "browser-research-transport-reconnect-runbook",
+    area: "browser",
+    title: "Browser research transport reconnect runbook",
+    summary:
+      "模拟真实浏览器研究任务在 relay/direct-cdp reconnect、workflow-log 诊断和 operator triage 之间的连续排障路径。",
+    caseIds: [
+      "relay-recovery-workflow-log-surfaces-peer-diagnostics",
+      "direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics",
+      "browser-recovery-multi-attempt-chain-stays-aligned",
+      "replay-console-browser-continuity-counts",
+      "operator-triage-prioritizes-compound-incident",
+    ],
+  },
+  {
     scenarioId: "parallel-governed-synthesis-runbook",
     area: "parallel",
     title: "Parallel governed synthesis runbook",
@@ -98,6 +112,20 @@ const SCENARIOS: RealWorldScenarioDescriptor[] = [
     ],
   },
   {
+    scenarioId: "operator-escalation-compound-incident-runbook",
+    area: "operator",
+    title: "Operator escalation compound incident runbook",
+    summary:
+      "模拟值班 operator 同时处理 browser manual follow-up、runtime waiting、prompt pressure 与 recovery lifecycle 的复合排障路径。",
+    caseIds: [
+      "browser-recovery-recovered-but-waiting-manual-stays-visible",
+      "runtime-summary-aligns-browser-recovered-manual-follow-up",
+      "context-runtime-pressure-keeps-carry-forward-and-waiting-visible",
+      "operator-triage-prioritizes-compound-incident",
+      "operator-surfaces-track-recovery-lifecycle",
+    ],
+  },
+  {
     scenarioId: "governed-publish-approval-runbook",
     area: "governance",
     title: "Governed publish approval runbook",
@@ -110,6 +138,20 @@ const SCENARIOS: RealWorldScenarioDescriptor[] = [
       "replay-bundle-exposes-recovery-operator-gate",
       "recovery-approval-fallback-chain",
       "recovery-bundle-closes-after-approved-fallback",
+      "operator-summary-aligns-attention-across-surfaces",
+    ],
+  },
+  {
+    scenarioId: "governed-publish-approval-reject-runbook",
+    area: "governance",
+    title: "Governed publish approval reject runbook",
+    summary:
+      "模拟真实发布任务在 approval gate 被拒绝后，replay bundle、recovery gate 与 operator summary 一致收口到 aborted/blocked。",
+    caseIds: [
+      "governance-summary-highlights-browser-fallback",
+      "governance-approval-required-side-effect-blocks",
+      "replay-bundle-exposes-recovery-operator-gate",
+      "recovery-reject-aborts-chain",
       "operator-summary-aligns-attention-across-surfaces",
     ],
   },
@@ -158,6 +200,21 @@ const SCENARIOS: RealWorldScenarioDescriptor[] = [
       "runtime-summary-surfaces-stale-waiting-point-and-child-span",
       "runtime-prompt-console-summarizes-boundaries",
       "runtime-chain-query-answers-root-active-and-waiting-point",
+    ],
+  },
+  {
+    scenarioId: "long-continuation-under-pressure-runbook",
+    area: "context",
+    title: "Long continuation under pressure runbook",
+    summary:
+      "模拟长任务在 follow-up、re-entry、重压 compaction 与 runtime waiting-point 并存时，carry-forward 和记忆打包仍保持稳定。",
+    caseIds: [
+      "session-follow-up-reuses-existing-chain",
+      "session-scheduled-reentry-preserves-existing-continuity",
+      "context-evidence-heavy-keeps-pending-work",
+      "context-reentry-preserves-active-tasks-and-open-questions",
+      "context-continuity-keeps-decisions-and-constraints-under-budget",
+      "context-runtime-pressure-keeps-carry-forward-and-waiting-visible",
     ],
   },
 ];

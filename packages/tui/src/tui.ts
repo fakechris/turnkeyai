@@ -25,6 +25,7 @@ import type {
   RecoveryRunTimelineEntry,
   TeamEvent,
   ThreadSessionMemoryRecord,
+  ValidationOpsReport,
 } from "@turnkeyai/core-types/team";
 import {
   describeRecoveryRunGate,
@@ -36,6 +37,10 @@ import {
 } from "@turnkeyai/qc-runtime/operator-inspection";
 
 const baseUrl = process.env.TURNKEYAI_DAEMON_URL ?? "http://127.0.0.1:4100";
+
+if (wantsProcessHelp(process.argv.slice(2))) {
+  printTuiUsage(0);
+}
 
 const rl = readline.createInterface({ input, output });
 let currentThreadId: string | null = null;
@@ -496,8 +501,18 @@ while (true) {
       continue;
     }
 
+    if (command === "transport-soak") {
+      await handleTransportSoakCommand(args);
+      continue;
+    }
+
     if (command === "release-verify") {
       await handleReleaseVerifyCommand();
+      continue;
+    }
+
+    if (command === "validation-ops") {
+      await handleValidationOpsCommand(args);
       continue;
     }
 
@@ -625,6 +640,29 @@ while (true) {
 
 await rl.close();
 
+function wantsProcessHelp(args: string[]): boolean {
+  return args.includes("--help") || args.includes("-h") || args.includes("help");
+}
+
+function printTuiUsage(exitCode: number): never {
+  const lines = [
+    "TurnkeyAI TUI",
+    "",
+    "Usage:",
+    "  turnkeyai tui",
+    "  turnkeyai tui --help",
+    "",
+    "Environment:",
+    "  TURNKEYAI_DAEMON_URL  Override the daemon base URL",
+    "  TURNKEYAI_DAEMON_TOKEN  Send bearer auth for daemon requests",
+    "",
+    "Run without flags to enter interactive mode.",
+  ];
+  const output = exitCode === 0 ? console.log : console.error;
+  output(lines.join("\n"));
+  process.exit(exitCode);
+}
+
 function printBanner(): void {
   console.log("Runtime Lab TUI");
   console.log(`daemon: ${baseUrl}`);
@@ -694,7 +732,9 @@ function printHelp(): void {
   console.log("  realworld-cases                       list real-world runbook scenarios");
   console.log("  realworld-run [scenarioId ...]        run real-world runbook validation suite");
   console.log("  soak-series [cycles] [suite[:item] ...]  run multi-cycle validation soak across selected suites");
+  console.log("  transport-soak [cycles] [transport ...] run multi-cycle relay/direct-cdp transport soak");
   console.log("  release-verify                        verify packaged CLI and npm publish dry-run readiness");
+  console.log("  validation-ops [limit]               show operator-facing validation/release/soak run summary");
   console.log("  validation-cases                      list unified validation suites and items");
   console.log("  validation-profiles                   list fixed validation hardening profiles");
   console.log("  validation-run [suite[:item] ...]     run unified validation suites or individual items");
@@ -1579,6 +1619,123 @@ function printOperatorTriage(report: OperatorTriageReport): void {
   }
 }
 
+function printValidationOpsReport(report: ValidationOpsReport): void {
+  console.log("Validation Ops");
+  console.log(
+    `  runs=${report.totalRuns}  failed=${report.failedRuns}  passed=${report.passedRuns}  attention=${report.attentionCount}`
+  );
+  if (Object.keys(report.runTypeCounts).length > 0) {
+    console.log(`  run types: ${formatCountMap(report.runTypeCounts)}`);
+  }
+  if (Object.keys(report.bucketCounts).length > 0) {
+    console.log(`  buckets: ${formatCountMap(report.bucketCounts)}`);
+  }
+  if (Object.keys(report.severityCounts).length > 0) {
+    console.log(`  severity: ${formatCountMap(report.severityCounts)}`);
+  }
+  if (Object.keys(report.recommendedActionCounts).length > 0) {
+    console.log(`  actions: ${formatCountMap(report.recommendedActionCounts)}`);
+  }
+  if (report.latestRuns.length > 0) {
+    console.log("  latest runs:");
+    for (const run of report.latestRuns) {
+      const parts = [
+        run.runId,
+        `type=${run.runType}`,
+        `status=${run.status}`,
+        `issues=${run.issueCount}`,
+        `durationMs=${run.durationMs}`,
+      ];
+      if (run.profileId) {
+        parts.push(`profile=${run.profileId}`);
+      }
+      if (run.cycles) {
+        parts.push(`cycles=${run.cycles}`);
+      }
+      if (run.targets?.length) {
+        parts.push(`targets=${run.targets.join(",")}`);
+      }
+      console.log(`    - ${parts.join("  ")}`);
+      console.log(`      ${run.title}`);
+      if (run.artifactPath) {
+        console.log(`      artifact=${run.artifactPath}`);
+      }
+    }
+  }
+  if (report.activeIssues.length > 0) {
+    console.log("  active issues:");
+    for (const issue of report.activeIssues) {
+      console.log(
+        `    - ${issue.runType}  ${issue.issueId}  severity=${issue.severity}  bucket=${issue.bucket}  action=${issue.recommendedAction}`
+      );
+      console.log(`      ${issue.summary}`);
+      console.log(`      cmd=${issue.commandHint}`);
+    }
+  }
+}
+
+function printBrowserTransportSoakResult(result: {
+  status: "passed" | "failed";
+  totalCycles: number;
+  passedCycles: number;
+  failedCycles: number;
+  totalTargetRuns: number;
+  failedTargetRuns: number;
+  durationMs: number;
+  targets: Array<"relay" | "direct-cdp">;
+  artifactPath?: string;
+  cycleResults: Array<{
+    cycleNumber: number;
+    status: "passed" | "failed";
+    durationMs: number;
+    targets: Array<{
+      target: "relay" | "direct-cdp";
+      status: "passed" | "failed";
+      durationMs: number;
+      failureBucket: string;
+      summary: string;
+    }>;
+  }>;
+  targetAggregates: Array<{
+    target: "relay" | "direct-cdp";
+    cycles: number;
+    passedCycles: number;
+    failedCycles: number;
+    failureBuckets: Array<{
+      bucket: string;
+      count: number;
+    }>;
+  }>;
+}): void {
+  console.log("Browser Transport Soak");
+  console.log(
+    `  status=${result.status}  cycles=${result.passedCycles}/${result.totalCycles}  targetRuns=${result.totalTargetRuns - result.failedTargetRuns}/${result.totalTargetRuns}  durationMs=${result.durationMs}`
+  );
+  console.log(`  targets: ${result.targets.join(", ")}`);
+  if (result.artifactPath) {
+    console.log(`  artifact: ${result.artifactPath}`);
+  }
+  for (const cycle of result.cycleResults) {
+    console.log(`  cycle ${cycle.cycleNumber}: status=${cycle.status}  durationMs=${cycle.durationMs}`);
+    for (const target of cycle.targets) {
+      console.log(
+        `    - ${target.target}  status=${target.status}  bucket=${target.failureBucket}  durationMs=${target.durationMs}`
+      );
+      console.log(`      ${target.summary}`);
+    }
+  }
+  for (const aggregate of result.targetAggregates) {
+    console.log(
+      `  aggregate ${aggregate.target}: passed=${aggregate.passedCycles}/${aggregate.cycles}  failed=${aggregate.failedCycles}`
+    );
+    if (aggregate.failureBuckets.length > 0) {
+      console.log(
+        `    buckets: ${aggregate.failureBuckets.map((bucket) => `${bucket.bucket}=${bucket.count}`).join(", ")}`
+      );
+    }
+  }
+}
+
 async function printInspect(threadId: string): Promise<void> {
   const [messages, flows, runs] = await Promise.all([
     getJson(`/messages?threadId=${encodeURIComponent(threadId)}`),
@@ -2251,6 +2408,8 @@ async function handleValidationProfilesCommand(): Promise<void> {
         includeReleaseReadiness: boolean;
         soakSeriesCycles?: number;
         soakSeriesSelectors?: string[];
+        transportSoakCycles?: number;
+        transportSoakTargets?: Array<"relay" | "direct-cdp">;
       }>;
     }
   );
@@ -2369,6 +2528,57 @@ async function handleSoakSeriesCommand(raw: string): Promise<void> {
   }
 }
 
+async function handleTransportSoakCommand(raw: string): Promise<void> {
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  let cycles = 3;
+  let targets = tokens;
+  if (tokens.length > 0 && /^\d+$/.test(tokens[0]!)) {
+    cycles = Number(tokens[0]);
+    targets = tokens.slice(1);
+  }
+
+  try {
+    const payload = await postJson("/transport-soak/run", { cycles, targets });
+    printBrowserTransportSoakResult(
+      payload as {
+        status: "passed" | "failed";
+        totalCycles: number;
+        passedCycles: number;
+        failedCycles: number;
+        totalTargetRuns: number;
+        failedTargetRuns: number;
+        durationMs: number;
+        targets: Array<"relay" | "direct-cdp">;
+        artifactPath?: string;
+        cycleResults: Array<{
+          cycleNumber: number;
+          status: "passed" | "failed";
+          durationMs: number;
+          targets: Array<{
+            target: "relay" | "direct-cdp";
+            status: "passed" | "failed";
+            durationMs: number;
+            failureBucket: string;
+            summary: string;
+          }>;
+        }>;
+        targetAggregates: Array<{
+          target: "relay" | "direct-cdp";
+          cycles: number;
+          passedCycles: number;
+          failedCycles: number;
+          failureBuckets: Array<{
+            bucket: string;
+            count: number;
+          }>;
+        }>;
+      }
+    );
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function handleReleaseVerifyCommand(): Promise<void> {
   printReleaseReadinessResult(
     (await postJson("/release-readiness/run", {})) as {
@@ -2392,6 +2602,13 @@ async function handleReleaseVerifyCommand(): Promise<void> {
       }>;
     }
   );
+}
+
+async function handleValidationOpsCommand(raw: string): Promise<void> {
+  const requestedLimit = Number(raw.trim() || "10");
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.floor(requestedLimit) : 10;
+  const params = new URLSearchParams({ limit: String(limit) });
+  printValidationOpsReport((await getJson(`/validation-ops?${params.toString()}`)) as ValidationOpsReport);
 }
 
 async function handleReplayIncidentsCommand(raw: string): Promise<void> {
@@ -3553,6 +3770,8 @@ async function handleValidationProfileRunCommand(raw: string): Promise<void> {
         includeReleaseReadiness: boolean;
         soakSeriesCycles?: number;
         soakSeriesSelectors?: string[];
+        transportSoakCycles?: number;
+        transportSoakTargets?: Array<"relay" | "direct-cdp">;
         status: "passed" | "failed";
         durationMs: number;
         totalStages: number;
@@ -3560,8 +3779,8 @@ async function handleValidationProfileRunCommand(raw: string): Promise<void> {
         failedStages: number;
         issues: Array<{
           issueId: string;
-          kind: "validation-item" | "release-check" | "soak-suite";
-          stageId: "validation-run" | "release-readiness" | "soak-series";
+          kind: "validation-item" | "release-check" | "soak-suite" | "transport-target";
+          stageId: "validation-run" | "release-readiness" | "soak-series" | "transport-soak";
           scope: string;
           summary: string;
         }>;
@@ -3608,6 +3827,21 @@ async function handleValidationProfileRunCommand(raw: string): Promise<void> {
                 failedCycles: number;
                 totalCases: number;
                 failedCases: number;
+              };
+            }
+          | {
+              stageId: "transport-soak";
+              title: string;
+              status: "passed" | "failed";
+              durationMs: number;
+              cycles: number;
+              targets: Array<"relay" | "direct-cdp">;
+              result: {
+                totalCycles: number;
+                passedCycles: number;
+                failedCycles: number;
+                totalTargetRuns: number;
+                failedTargetRuns: number;
               };
             }
         >;
@@ -3662,6 +3896,8 @@ function printValidationProfileList(payload: {
     includeReleaseReadiness: boolean;
     soakSeriesCycles?: number;
     soakSeriesSelectors?: string[];
+    transportSoakCycles?: number;
+    transportSoakTargets?: Array<"relay" | "direct-cdp">;
   }>;
 }): void {
   console.log(`Validation Profiles: ${payload.totalProfiles}`);
@@ -3674,6 +3910,11 @@ function printValidationProfileList(payload: {
     if (profile.soakSeriesCycles && profile.soakSeriesCycles > 0) {
       console.log(
         `  soak series: cycles=${profile.soakSeriesCycles} selectors=${(profile.soakSeriesSelectors ?? []).join(", ")}`
+      );
+    }
+    if (profile.transportSoakCycles && profile.transportSoakCycles > 0) {
+      console.log(
+        `  transport soak: cycles=${profile.transportSoakCycles} targets=${(profile.transportSoakTargets ?? []).join(", ")}`
       );
     }
   }
@@ -3752,6 +3993,8 @@ function printValidationProfileRunResult(payload: {
   includeReleaseReadiness: boolean;
   soakSeriesCycles?: number;
   soakSeriesSelectors?: string[];
+  transportSoakCycles?: number;
+  transportSoakTargets?: Array<"relay" | "direct-cdp">;
   status: "passed" | "failed";
   durationMs: number;
   totalStages: number;
@@ -3759,8 +4002,8 @@ function printValidationProfileRunResult(payload: {
   failedStages: number;
   issues: Array<{
     issueId: string;
-    kind: "validation-item" | "release-check" | "soak-suite";
-    stageId: "validation-run" | "release-readiness" | "soak-series";
+    kind: "validation-item" | "release-check" | "soak-suite" | "transport-target";
+    stageId: "validation-run" | "release-readiness" | "soak-series" | "transport-soak";
     scope: string;
     summary: string;
   }>;
@@ -3809,6 +4052,21 @@ function printValidationProfileRunResult(payload: {
           failedCases: number;
         };
       }
+    | {
+        stageId: "transport-soak";
+        title: string;
+        status: "passed" | "failed";
+        durationMs: number;
+        cycles: number;
+        targets: Array<"relay" | "direct-cdp">;
+        result: {
+          totalCycles: number;
+          passedCycles: number;
+          failedCycles: number;
+          totalTargetRuns: number;
+          failedTargetRuns: number;
+        };
+      }
   >;
 }): void {
   console.log(
@@ -3831,10 +4089,17 @@ function printValidationProfileRunResult(payload: {
       );
       continue;
     }
+    if (stage.stageId === "soak-series") {
+      console.log(
+        `- soak-series  status=${stage.status}  cycles=${stage.result.passedCycles}/${stage.result.totalCycles}  cases=${stage.result.totalCases - stage.result.failedCases}/${stage.result.totalCases}  durationMs=${stage.durationMs}`
+      );
+      console.log(`  selectors: ${stage.selectors.join(", ")}`);
+      continue;
+    }
     console.log(
-      `- soak-series  status=${stage.status}  cycles=${stage.result.passedCycles}/${stage.result.totalCycles}  cases=${stage.result.totalCases - stage.result.failedCases}/${stage.result.totalCases}  durationMs=${stage.durationMs}`
+      `- transport-soak  status=${stage.status}  cycles=${stage.result.passedCycles}/${stage.result.totalCycles}  targetRuns=${stage.result.totalTargetRuns - stage.result.failedTargetRuns}/${stage.result.totalTargetRuns}  durationMs=${stage.durationMs}`
     );
-    console.log(`  selectors: ${stage.selectors.join(", ")}`);
+    console.log(`  targets: ${stage.targets.join(", ")}`);
   }
   if (payload.issues.length > 0) {
     console.log("Issues:");

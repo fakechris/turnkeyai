@@ -1,6 +1,8 @@
 import http from "node:http";
+import { execFile as execFileCallback } from "node:child_process";
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import type {
   BrowserContinuationHint,
@@ -53,6 +55,11 @@ import {
 } from "@turnkeyai/qc-runtime/bounded-regression-harness";
 import { BrowserResultVerifier } from "@turnkeyai/qc-runtime/browser-result-verifier";
 import { BrowserStepVerifier } from "@turnkeyai/qc-runtime/browser-step-verifier";
+import type {
+  BrowserTransportSoakOptions,
+  BrowserTransportSoakResult,
+} from "@turnkeyai/qc-runtime/browser-transport-soak";
+import { runBrowserTransportSoak } from "@turnkeyai/qc-runtime/browser-transport-soak";
 import { DefaultEvidenceTrustPolicy } from "@turnkeyai/qc-runtime/evidence-trust-policy";
 import {
   listFailureInjectionScenarios,
@@ -118,6 +125,14 @@ import {
   listValidationProfiles,
   runValidationProfile,
 } from "@turnkeyai/qc-runtime/validation-profile";
+import {
+  buildValidationOpsRecordFromTransportSoak,
+  buildValidationOpsRecordFromReleaseReadiness,
+  buildValidationOpsRecordFromSoakSeries,
+  buildValidationOpsRecordFromValidationProfile,
+  buildValidationOpsReport,
+} from "@turnkeyai/qc-runtime/validation-ops-inspection";
+import { writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
 import { CoordinationEngine } from "@turnkeyai/team-runtime/coordination-engine";
 import { DefaultContextStateMaintainer } from "@turnkeyai/team-runtime/context-state-maintainer";
 import { FileBackedTeamRouteMap } from "@turnkeyai/team-runtime/file-backed-team-route-map";
@@ -158,6 +173,7 @@ import { FileSessionMemoryRefreshJobStore } from "@turnkeyai/team-store/context/
 import { FileTeamMessageStore } from "@turnkeyai/team-store/file-team-message-store";
 import { FileTeamThreadStore } from "@turnkeyai/team-store/file-team-thread-store";
 import { FilePermissionCacheStore } from "@turnkeyai/team-store/governance/file-permission-cache-store";
+import { FileValidationOpsRunStore } from "@turnkeyai/team-store/ops/file-validation-ops-run-store";
 import { FileRecoveryRunStore } from "@turnkeyai/team-store/recovery/file-recovery-run-store";
 import { FileRecoveryRunEventStore } from "@turnkeyai/team-store/recovery/file-recovery-run-event-store";
 import { FileScheduledTaskStore } from "@turnkeyai/team-store/scheduled/file-scheduled-task-store";
@@ -170,8 +186,14 @@ import { DefaultWorkerRegistry } from "@turnkeyai/worker-runtime/worker-registry
 
 import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
 
+if (wantsProcessHelp(process.argv.slice(2))) {
+  printDaemonHelp(0);
+}
+
 const PORT = Number(process.env.TURNKEYAI_DAEMON_PORT ?? 4100);
 const DATA_DIR = path.resolve(process.cwd(), ".daemon-data");
+const VALIDATION_ARTIFACT_DIR = path.join(DATA_DIR, "validation-artifacts");
+const execFile = promisify(execFileCallback);
 const DAEMON_TOKEN = process.env.TURNKEYAI_DAEMON_TOKEN?.trim() || null;
 const RECOVERY_RUN_STALE_AFTER_MS = 5 * 60 * 1000;
 
@@ -255,6 +277,9 @@ const recoveryRunEventStore = new FileRecoveryRunEventStore({
 });
 const scheduledTaskStore = new FileScheduledTaskStore({
   rootDir: path.join(DATA_DIR, "scheduled-tasks"),
+});
+const validationOpsRunStore = new FileValidationOpsRunStore({
+  rootDir: path.join(DATA_DIR, "validation-ops-runs"),
 });
 
 const summaryBuilder: SummaryBuilder = {
@@ -1219,13 +1244,35 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "GET" && url.pathname === "/validation-ops") {
+      const requestedLimit = Number(url.searchParams.get("limit") ?? "10");
+      const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.floor(requestedLimit) : 10;
+      const records = await validationOpsRunStore.list(limit);
+      return sendJson(res, 200, buildValidationOpsReport(records, limit));
+    }
+
     if (req.method === "POST" && url.pathname === "/validation-profiles/run") {
       const body = await readJsonBody<{ profileId?: string }>(req);
       const profileId = typeof body.profileId === "string" ? body.profileId.trim() : undefined;
       if (!profileId || !isValidationProfileId(profileId)) {
         return sendJson(res, 400, { error: "Unknown validation profile" });
       }
-      return sendJson(res, 200, await runValidationProfile(profileId));
+      const startedAt = Date.now();
+      const result = await runValidationProfile(profileId, {}, {
+        releaseReadinessRunner: runReleaseReadiness,
+        validationRunner: runValidationSuites,
+        transportSoakRunner: (options) => runBrowserTransportSoakViaCli(options),
+      });
+      const completedAt = Date.now();
+      await validationOpsRunStore.put(
+        buildValidationOpsRecordFromValidationProfile({
+          runId: createValidationOpsRunId("validation-profile"),
+          startedAt,
+          completedAt,
+          result,
+        })
+      );
+      return sendJson(res, 200, result);
     }
 
     if (req.method === "POST" && url.pathname === "/soak-series/run") {
@@ -1241,13 +1288,25 @@ const server = http.createServer(async (req, res) => {
       }
       const cycles = body.cycles !== undefined ? Number(body.cycles) : undefined;
       try {
+        const startedAt = Date.now();
+        const result = runValidationSoakSeries({
+          ...(cycles !== undefined ? { cycles } : {}),
+          ...(selectors !== undefined ? { selectors } : {}),
+        });
+        const completedAt = Date.now();
+        await validationOpsRunStore.put(
+          buildValidationOpsRecordFromSoakSeries({
+            runId: createValidationOpsRunId("soak-series"),
+            startedAt,
+            completedAt,
+            selectors: result.selectors,
+            result,
+          })
+        );
         return sendJson(
           res,
           200,
-          runValidationSoakSeries({
-            ...(cycles !== undefined ? { cycles } : {}),
-            ...(selectors !== undefined ? { selectors } : {}),
-          })
+          result
         );
       } catch (error) {
         if (error instanceof ValidationSelectorError) {
@@ -1257,8 +1316,79 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    if (req.method === "POST" && url.pathname === "/transport-soak/run") {
+      const body = await readJsonBody<{
+        cycles?: number;
+        timeoutMs?: number;
+        relayPeerCount?: number;
+        verifyReconnect?: boolean;
+        verifyWorkflowLog?: boolean;
+        targets?: string[];
+      }>(req);
+      if (body.cycles !== undefined && (!Number.isInteger(body.cycles) || body.cycles <= 0)) {
+        return sendJson(res, 400, { error: "Invalid cycles: must be a positive integer" });
+      }
+      if (body.timeoutMs !== undefined && (!Number.isFinite(body.timeoutMs) || body.timeoutMs <= 0)) {
+        return sendJson(res, 400, { error: "Invalid timeoutMs: must be a positive number" });
+      }
+      if (body.relayPeerCount !== undefined && (!Number.isInteger(body.relayPeerCount) || body.relayPeerCount <= 0)) {
+        return sendJson(res, 400, { error: "Invalid relayPeerCount: must be a positive integer" });
+      }
+      if (body.verifyReconnect !== undefined && typeof body.verifyReconnect !== "boolean") {
+        return sendJson(res, 400, { error: "Invalid verifyReconnect: must be a boolean" });
+      }
+      if (body.verifyWorkflowLog !== undefined && typeof body.verifyWorkflowLog !== "boolean") {
+        return sendJson(res, 400, { error: "Invalid verifyWorkflowLog: must be a boolean" });
+      }
+      const targets = Array.isArray(body.targets)
+        ? body.targets
+            .filter((value): value is string => typeof value === "string")
+            .map((value) => value.trim())
+            .filter((value): value is "relay" | "direct-cdp" => value === "relay" || value === "direct-cdp")
+        : undefined;
+      const startedAt = Date.now();
+      const result = await runBrowserTransportSoak(
+        {
+          ...(body.cycles !== undefined ? { cycles: Number(body.cycles) } : {}),
+          ...(body.timeoutMs !== undefined ? { timeoutMs: Math.trunc(body.timeoutMs) } : {}),
+          ...(body.relayPeerCount !== undefined ? { relayPeerCount: Number(body.relayPeerCount) } : {}),
+          ...(body.verifyReconnect !== undefined ? { verifyReconnect: body.verifyReconnect } : {}),
+          ...(body.verifyWorkflowLog !== undefined ? { verifyWorkflowLog: body.verifyWorkflowLog } : {}),
+          ...(targets && targets.length > 0 ? { targets } : {}),
+        },
+        { runner: runBrowserTransportSoakSmokeCommand }
+      );
+      const completedAt = Date.now();
+      const runId = createValidationOpsRunId("transport-soak");
+      const artifactPath = await writeValidationArtifact("transport-soak", runId, result);
+      await validationOpsRunStore.put(
+        buildValidationOpsRecordFromTransportSoak({
+          runId,
+          startedAt,
+          completedAt,
+          artifactPath,
+          result,
+        })
+      );
+      return sendJson(res, 200, {
+        ...result,
+        artifactPath,
+      });
+    }
+
     if (req.method === "POST" && url.pathname === "/release-readiness/run") {
-      return sendJson(res, 200, await runReleaseReadiness());
+      const startedAt = Date.now();
+      const result = await runReleaseReadiness();
+      const completedAt = Date.now();
+      await validationOpsRunStore.put(
+        buildValidationOpsRecordFromReleaseReadiness({
+          runId: createValidationOpsRunId("release-readiness"),
+          startedAt,
+          completedAt,
+          result,
+        })
+      );
+      return sendJson(res, 200, result);
     }
 
     if (req.method === "GET" && url.pathname === "/replay-incidents") {
@@ -1955,6 +2085,104 @@ function createIdGenerator(): IdGenerator {
     messageId: () => next("MSG"),
     taskId: () => next("TASK"),
   };
+}
+
+function createValidationOpsRunId(kind: "release-readiness" | "validation-profile" | "soak-series" | "transport-soak"): string {
+  return `validation-ops:${kind}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function writeValidationArtifact(kind: string, runId: string, payload: unknown): Promise<string> {
+  const artifactPath = path.join(VALIDATION_ARTIFACT_DIR, kind, `${encodeURIComponent(runId)}.json`);
+  await writeJsonFileAtomic(artifactPath, payload);
+  return path.relative(process.cwd(), artifactPath);
+}
+
+async function runBrowserTransportSoakViaCli(
+  options: BrowserTransportSoakOptions = {}
+): Promise<BrowserTransportSoakResult> {
+  return runBrowserTransportSoak(options, {
+    runner: runBrowserTransportSoakSmokeCommand,
+  });
+}
+
+async function runBrowserTransportSoakSmokeCommand(input: {
+  target: "relay" | "direct-cdp";
+  timeoutMs: number;
+  relayPeerCount: number;
+  verifyReconnect: boolean;
+  verifyWorkflowLog: boolean;
+}): Promise<{
+  exitCode: number;
+  stdout: string;
+  stderr?: string;
+  durationMs?: number;
+}> {
+  const commandArgs =
+    input.target === "relay"
+      ? buildRelayTransportSoakArgs(
+          input.timeoutMs,
+          input.relayPeerCount,
+          input.verifyReconnect,
+          input.verifyWorkflowLog
+        )
+      : buildDirectCdpTransportSoakArgs(input.timeoutMs, input.verifyReconnect, input.verifyWorkflowLog);
+  const runStartedAt = Date.now();
+  try {
+    const { stdout, stderr } = await execFile("npm", commandArgs, {
+      cwd: process.cwd(),
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return {
+      exitCode: 0,
+      stdout,
+      stderr,
+      durationMs: Date.now() - runStartedAt,
+    };
+  } catch (error) {
+    const failure = error as {
+      code?: string | number;
+      stdout?: string;
+      stderr?: string;
+      message?: string;
+    };
+    return {
+      exitCode: typeof failure.code === "number" ? failure.code : 1,
+      stdout: failure.stdout ?? "",
+      stderr: failure.stderr ?? failure.message ?? String(error),
+      durationMs: Date.now() - runStartedAt,
+    };
+  }
+}
+
+function buildRelayTransportSoakArgs(
+  timeoutMs: number,
+  relayPeerCount: number,
+  verifyReconnect: boolean,
+  verifyWorkflowLog: boolean
+): string[] {
+  const args = ["run", "relay:smoke", "--", "--timeout-ms", String(timeoutMs), "--peer-count", String(relayPeerCount)];
+  if (verifyReconnect) {
+    args.push("--verify-reconnect");
+  }
+  if (verifyWorkflowLog) {
+    args.push("--verify-workflow-log");
+  }
+  return args;
+}
+
+function buildDirectCdpTransportSoakArgs(
+  timeoutMs: number,
+  verifyReconnect: boolean,
+  verifyWorkflowLog: boolean
+): string[] {
+  const args = ["run", "cdp:smoke", "--", "--timeout-ms", String(timeoutMs)];
+  if (verifyReconnect) {
+    args.push("--verify-reconnect");
+  }
+  if (verifyWorkflowLog) {
+    args.push("--verify-workflow-log");
+  }
+  return args;
 }
 
 function buildDemoRoles(variant: string) {
@@ -3449,4 +3677,28 @@ function extractBrowserSessionHintFromReplay(
 
 function normalizeBrowserOwnerType(value: unknown): BrowserContinuationHint["ownerType"] | undefined {
   return value === "user" || value === "thread" || value === "role" || value === "worker" ? value : undefined;
+}
+
+function wantsProcessHelp(args: string[]): boolean {
+  return args.includes("--help") || args.includes("-h") || args.includes("help");
+}
+
+function printDaemonHelp(exitCode: number): never {
+  const lines = [
+    "TurnkeyAI Daemon",
+    "",
+    "Usage:",
+    "  turnkeyai daemon",
+    "  turnkeyai daemon --help",
+    "",
+    "Environment:",
+    "  TURNKEYAI_DAEMON_PORT       Override the daemon listen port",
+    "  TURNKEYAI_DAEMON_TOKEN      Require bearer auth for daemon requests",
+    "  TURNKEYAI_BROWSER_TRANSPORT Select browser transport: local | relay | direct-cdp",
+    "  TURNKEYAI_BROWSER_CDP_ENDPOINT  CDP endpoint for direct-cdp transport",
+    "  TURNKEYAI_BROWSER_CHROME_EXECUTABLE Optional browser executable override",
+  ];
+  const output = exitCode === 0 ? console.log : console.error;
+  output(lines.join("\n"));
+  process.exit(exitCode);
 }

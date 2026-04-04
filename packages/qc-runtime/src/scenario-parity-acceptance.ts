@@ -184,6 +184,20 @@ const SCENARIOS: ScenarioParityAcceptanceScenarioDescriptor[] = [
     ],
   },
   {
+    scenarioId: "real-world-governed-publish-approval-reject-runbook",
+    area: "governance",
+    title: "real-world governed publish approval reject runbook",
+    summary:
+      "验证真实发布任务在 approval gate 被 operator 拒绝后，会跨 replay/recovery/operator 一致进入 blocked closure，而不是残留可执行动作。",
+    caseIds: [
+      "governance-summary-highlights-browser-fallback",
+      "governance-approval-required-side-effect-blocks",
+      "replay-bundle-exposes-recovery-operator-gate",
+      "recovery-reject-aborts-chain",
+      "operator-summary-aligns-attention-across-surfaces",
+    ],
+  },
+  {
     scenarioId: "real-world-parallel-follow-up-runbook",
     area: "parallel",
     title: "real-world parallel follow-up runbook",
@@ -195,6 +209,18 @@ const SCENARIOS: ScenarioParityAcceptanceScenarioDescriptor[] = [
       "parallel-flow-summary-clears-attention-after-retry",
       "parallel-follow-up-summary-closes-after-recovery",
       "operator-summary-aligns-attention-across-surfaces",
+    ],
+  },
+  {
+    scenarioId: "browser-transport-reconnect-workflow",
+    area: "browser",
+    title: "browser transport reconnect workflow",
+    summary:
+      "验证 relay/direct-cdp transport 在 reconnect 后，workflow-log、replay console 与 operator next-step 保持同一条恢复语义。",
+    caseIds: [
+      "relay-recovery-workflow-log-surfaces-peer-diagnostics",
+      "direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics",
+      "browser-recovery-multi-attempt-chain-stays-aligned",
     ],
   },
   {

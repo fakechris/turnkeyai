@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -233,9 +233,10 @@ export async function runReleaseReadiness(
     });
 
     await recordCheck(checks, "publish-dry-run", "Run npm publish dry-run", async () => {
-      const combinedOutput = await runPublishDryRun(workspaceRoot);
+      const dryRunVersion = createDryRunVersion(packageJson.version ?? expectedPackageVersion ?? "0.0.0");
+      const combinedOutput = await runPublishDryRun(extractedPackageDir, packageJson, dryRunVersion);
       const failedReasons: string[] = [];
-      if (!combinedOutput.includes("@turnkeyai/cli@")) {
+      if (!combinedOutput.includes(`${expectedPackageName}@${dryRunVersion}`)) {
         failedReasons.push("dry-run output did not include package coordinates");
       }
       if (combinedOutput.includes("auto-corrected")) {
@@ -248,7 +249,10 @@ export async function runReleaseReadiness(
         status: failedReasons.length === 0 ? "passed" : "failed",
         details: failedReasons.length > 0
           ? failedReasons
-          : ["npm publish --dry-run completed without metadata correction warnings"],
+          : [
+              "npm publish --dry-run completed without metadata correction warnings",
+              `dryRunVersion=${dryRunVersion}`,
+            ],
       };
     });
 
@@ -299,16 +303,44 @@ async function extractPackedArtifact(tarballPath: string, extractDir: string): P
   });
 }
 
-async function runPublishDryRun(workspaceRoot: string): Promise<string> {
+async function runPublishDryRun(
+  extractedPackageDir: string,
+  packageJson: {
+    name?: string;
+    version?: string;
+    license?: string;
+    bin?: Record<string, string>;
+    files?: string[];
+    publishConfig?: { access?: string };
+    engines?: { node?: string };
+  },
+  dryRunVersion: string
+): Promise<string> {
+  const packageJsonPath = path.join(extractedPackageDir, "package.json");
+  const dryRunPackageJson = {
+    ...packageJson,
+    version: dryRunVersion,
+  };
+  await writeFile(packageJsonPath, `${JSON.stringify(dryRunPackageJson, null, 2)}\n`, "utf8");
   const { stdout, stderr } = await execFile(
     "npm",
-    ["publish", "--workspace", "@turnkeyai/cli", "--access", "public", "--dry-run"],
+    ["publish", "--access", "public", "--dry-run", "--ignore-scripts", "--tag", "dryrun"],
     {
-      cwd: workspaceRoot,
+      cwd: extractedPackageDir,
       maxBuffer: 8 * 1024 * 1024,
+      timeout: 120_000,
+      killSignal: "SIGTERM",
     }
   );
   return `${stdout}\n${stderr}`;
+}
+
+function createDryRunVersion(version: string): string {
+  const sanitizedVersion = version.split("+")[0] ?? version;
+  const suffix = `${Date.now()}${process.pid}`;
+  return sanitizedVersion.includes("-")
+    ? `${sanitizedVersion}.dryrun.${suffix}`
+    : `${sanitizedVersion}-dryrun.${suffix}`;
 }
 
 async function readSourceCliPackageJson(workspaceRoot: string): Promise<{ version?: string }> {

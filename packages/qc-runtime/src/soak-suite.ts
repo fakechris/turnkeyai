@@ -142,6 +142,19 @@ const SCENARIOS: SoakScenarioDescriptor[] = [
       "operator-summary-aligns-attention-across-surfaces",
     ],
   },
+  {
+    scenarioId: "browser-transport-reconnect-diagnostics",
+    area: "browser",
+    title: "Browser transport reconnect diagnostics",
+    summary:
+      "验证 relay/direct-cdp reconnect、workflow-log 诊断与 browser continuity 在长链稳定性里持续一致，并且 local 主链不被 transport 扩展回归。",
+    caseIds: [
+      "relay-recovery-workflow-log-surfaces-peer-diagnostics",
+      "direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics",
+      "browser-recovery-cold-reopen-outcome",
+      "replay-console-browser-continuity-counts",
+    ],
+  },
 ];
 
 export function listSoakScenarios(): SoakScenarioDescriptor[] {

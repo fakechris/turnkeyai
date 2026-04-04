@@ -185,6 +185,19 @@ npm run relay:smoke
 npm run relay:smoke -- --url https://example.com
 ```
 
+如果只想验证“未打包扩展已安装、service worker 已唤醒、peer/target 已连回 daemon”，可以直接跑：
+
+```bash
+npm run relay:install-smoke
+```
+
+如果要把 relay / direct-cdp 的 reconnect 与 workflow-log 诊断做成持续 soak：
+
+```bash
+npm run transport:soak -- --cycles 3
+npm run transport:soak -- --cycles 1 --targets relay
+```
+
 配合本地 daemon 走 relay transport 时，可以显式设置：
 
 ```bash
@@ -239,9 +252,11 @@ npx @turnkeyai/cli tui
 - failure injection harness
 - unified validation catalog: `validation-cases` / `validation-run [suite[:item] ...]`
 - fixed validation profiles: `validation-profiles` / `validation-profile-run <profileId>`
+- operator-facing validation ops summary: `validation-ops [limit]`
 - real-world runbook harness: `realworld-cases` / `realworld-run [scenarioId ...]`
 - release readiness: `release-verify`
 - multi-cycle soak series: `soak-series [cycles] [suite[:item] ...]`
+- browser transport soak: `transport-soak [cycles] [relay|direct-cdp ...]`
 
 对应命令包括：
 
@@ -249,6 +264,10 @@ npx @turnkeyai/cli tui
 - `soak-run [scenarioId ...]`
 - `soak-series 10 soak realworld acceptance`
 - `release-verify`
+- `transport-soak 3 relay direct-cdp`
+- `npm run relay:install-smoke`
+- `npm run transport:soak -- --cycles 3`
+- `validation-ops`
 - `validation-profiles`
 - `validation-profile-run smoke`
 
@@ -258,8 +277,12 @@ npx @turnkeyai/cli tui
 `operator-triage` 会把当前最该看的 incident、runtime waiting/stale 和 prompt pressure 聚到一页里，并给出对应的 console 命令入口。
 `prompt-console` 现在会额外汇总 recent-turn / retrieved-memory / worker-evidence 的实际打包数量，以及 pending / waiting / open-question / decision-or-constraint 的 carry-forward 情况；acceptance / soak 也已把这些计数和 runtime waiting-point 一起编进长链验证，方便直接看高压上下文下哪些信息被保住了。
 `release-verify` 会对将要公开发布的 CLI 走一遍 `npm pack`、解包、bin/dist help smoke 和 `npm publish --dry-run`，避免 package metadata 在真正发版时才暴露问题；`soak-series` 和单独的 `Long Soak` workflow 会把 `soak / realworld / acceptance` 做多轮聚合运行，用来承接高成本、非 PR required 的长周期稳态验证。
-`validation-profiles` / `validation-profile-run` 会把现有 `validation-run`、`release-verify` 和 `soak-series` 收成固定 hardening 档位：`smoke` 适合本地快速回归，`nightly` / `prerelease` / `weekly` 适合持续稳定性和值班/发版前信心检查。
+`validation-ops` 会把最近的 `validation-profile-run`、`release-verify` 和 `soak-series` 结果收成 operator-facing 读数，统一展示失败 bucket、推荐动作和重跑命令，避免验证失败只留在一次性 stdout 里。
+`transport-soak` 现在也会进入同一套 `validation-ops` 记录，并带上 artifact 路径，方便值班时直接回看 relay/direct-cdp 的多 cycle 诊断结果。
+`validation-profiles` / `validation-profile-run` 会把现有 `validation-run`、`release-verify`、`soak-series` 和 `transport-soak` 收成固定 hardening 档位：`smoke` 适合本地快速回归，`nightly` / `prerelease` / `weekly` 会把 transport 连通性和多 cycle 稳定性也一起压过一遍，适合持续稳定性和值班/发版前信心检查。
 `relay-peers` / `relay-targets [peerId]` 可以直接查看本地 daemon 当前看到的 relay 扩展连接和浏览器 tab 发现结果，便于做 extension smoke 和 transport 排障。
+`relay:install-smoke` 会走一遍“build relay extension -> 启动本地 Chromium + unpacked extension -> 等 daemon 看见 peer/target”的真机安装连通链，适合快速确认本地浏览器端 bridge 没坏。
+`transport:soak` 会重复跑 relay / direct-cdp 的真实 smoke，并把失败按 `peer-timeout / cdp-unreachable / reconnect-failure / workflow-log-failure / content-script-unavailable` 这类稳定 bucket 汇总，便于做 transport 值班读数和周级稳定性回归。
 `direct-cdp` 当前也已经有本地 launch / wait / smoke 链路，适合验证“接管一个已启用 CDP 的真实 Chromium 浏览器”这条 transport；`cdp:smoke` 现在还支持 `--verify-reconnect` 和 `--verify-workflow-log`，可以把浏览器重启后的 session 恢复和 replay/operator workflow-log 读数一起压过一遍。
 
 模型配置默认会按这个顺序查找：

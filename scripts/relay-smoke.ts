@@ -590,20 +590,15 @@ async function runRelayReconnectSmoke(input: {
   historyLength: number;
   finalUrl: string;
 }> {
-  input.browserChild.kill("SIGTERM");
-  await waitForRelayPeerStatus({
-    daemonUrl: input.daemonUrl,
-    peerId: input.peerId,
-    timeoutMs: input.timeoutMs,
-    status: "stale",
-  });
+  const previousPeer = await getRelayPeerRecord(input.daemonUrl, input.peerId);
+  await terminateChildProcess(input.browserChild);
 
   const relaunched = input.relaunch();
-  await waitForRelayPeerStatus({
+  await waitForRelayPeerHeartbeatAdvance({
     daemonUrl: input.daemonUrl,
     peerId: input.peerId,
     timeoutMs: input.timeoutMs,
-    status: "online",
+    lastSeenAfter: previousPeer?.lastSeenAt ?? 0,
   });
   if (input.requireTarget) {
     const targets = (await getJson(
@@ -642,25 +637,74 @@ async function runRelayReconnectSmoke(input: {
   };
 }
 
-async function waitForRelayPeerStatus(input: {
+async function waitForRelayPeerHeartbeatAdvance(input: {
   daemonUrl: string;
   peerId: string;
   timeoutMs: number;
-  status: "online" | "stale";
+  lastSeenAfter: number;
 }): Promise<void> {
   const deadline = Date.now() + input.timeoutMs;
+  let lastObservedSeenAt = 0;
   while (Date.now() < deadline) {
-    const peers = (await getJson(`${input.daemonUrl}/relay/peers`)) as Array<{
-      peerId: string;
-      status: "online" | "stale";
-    }>;
-    if (peers.some((peer) => peer.peerId === input.peerId && peer.status === input.status)) {
+    const peer = await getRelayPeerRecord(input.daemonUrl, input.peerId);
+    lastObservedSeenAt = peer?.lastSeenAt ?? 0;
+    if (peer && peer.status === "online" && peer.lastSeenAt > input.lastSeenAfter) {
       return;
     }
     await sleep(300);
   }
 
-  throw new Error(`timed out waiting for relay peer ${input.peerId} to become ${input.status}`);
+  throw new Error(
+    `timed out waiting for relay peer ${input.peerId} heartbeat to advance (last seen at: ${lastObservedSeenAt})`
+  );
+}
+
+async function getRelayPeerRecord(
+  daemonUrl: string,
+  peerId: string
+): Promise<{ peerId: string; status: "online" | "stale"; lastSeenAt: number } | null> {
+  const peers = (await getJson(`${daemonUrl}/relay/peers`)) as Array<{
+    peerId: string;
+    status: "online" | "stale";
+    lastSeenAt: number;
+  }>;
+  return peers.find((peer) => peer.peerId === peerId) ?? null;
+}
+
+async function terminateChildProcess(child: ChildProcess, graceMs = 5_000): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  child.kill("SIGTERM");
+  const exitedGracefully = await waitForChildExit(child, graceMs);
+  if (exitedGracefully) {
+    return;
+  }
+  child.kill("SIGKILL");
+  await waitForChildExit(child, 2_000);
+}
+
+async function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return true;
+  }
+  return await new Promise<boolean>((resolve) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve(false);
+    }, timeoutMs);
+    const onExit = () => {
+      cleanup();
+      resolve(true);
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.off("exit", onExit);
+      child.off("error", onExit);
+    };
+    child.once("exit", onExit);
+    child.once("error", onExit);
+  });
 }
 
 async function registerSyntheticRelayPeers(input: {

@@ -9,15 +9,19 @@ import {
 test("real-world suite lists built-in runbook scenarios", () => {
   const scenarios = listRealWorldScenarios();
 
-  assert.equal(scenarios.length, 8);
+  assert.equal(scenarios.length, 12);
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "browser-research-recovery-runbook"));
+  assert.ok(scenarios.some((scenario) => scenario.scenarioId === "browser-research-transport-reconnect-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "parallel-governed-synthesis-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "continuation-pressure-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "operator-escalation-runbook"));
+  assert.ok(scenarios.some((scenario) => scenario.scenarioId === "operator-escalation-compound-incident-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "governed-publish-approval-runbook"));
+  assert.ok(scenarios.some((scenario) => scenario.scenarioId === "governed-publish-approval-reject-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "governed-publish-readback-verification"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "parallel-follow-up-merge-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "runtime-observability-reentry-runbook"));
+  assert.ok(scenarios.some((scenario) => scenario.scenarioId === "long-continuation-under-pressure-runbook"));
 });
 
 test("real-world suite passes all built-in runbook scenarios", () => {
@@ -25,7 +29,7 @@ test("real-world suite passes all built-in runbook scenarios", () => {
 
   assert.equal(result.failedScenarios, 0);
   assert.equal(result.passedScenarios, result.totalScenarios);
-  assert.equal(result.totalScenarios, 8);
+  assert.equal(result.totalScenarios, 12);
 });
 
 test("real-world suite can run one selected runbook scenario", () => {

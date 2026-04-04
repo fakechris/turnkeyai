@@ -16,4 +16,5 @@ export * from "./context/file-thread-journal-store";
 export * from "./context/file-worker-evidence-digest-store";
 export * from "./recovery/file-recovery-run-event-store";
 export * from "./recovery/file-recovery-run-store";
+export * from "./ops/file-validation-ops-run-store";
 export * from "./scheduled/file-scheduled-task-store";

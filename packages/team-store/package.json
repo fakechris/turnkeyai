@@ -20,6 +20,7 @@
     "./context/file-thread-journal-store": "./src/context/file-thread-journal-store.ts",
     "./context/file-worker-evidence-digest-store": "./src/context/file-worker-evidence-digest-store.ts",
     "./governance/file-permission-cache-store": "./src/governance/file-permission-cache-store.ts",
+    "./ops/file-validation-ops-run-store": "./src/ops/file-validation-ops-run-store.ts",
     "./recovery/file-recovery-run-event-store": "./src/recovery/file-recovery-run-event-store.ts",
     "./recovery/file-recovery-run-store": "./src/recovery/file-recovery-run-store.ts",
     "./scheduled/file-scheduled-task-store": "./src/scheduled/file-scheduled-task-store.ts"
