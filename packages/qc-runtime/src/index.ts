@@ -39,6 +39,7 @@ export * from "./release-readiness";
 export * from "./auth-and-scope-diagnosis-policy";
 export * from "./bounded-regression-harness";
 export * from "./browser-result-verifier";
+export * from "./browser-transport-soak";
 export * from "./browser-step-verifier";
 export * from "./evidence-trust-policy";
 export * from "./failure-taxonomy";

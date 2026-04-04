@@ -185,6 +185,19 @@ npm run relay:smoke
 npm run relay:smoke -- --url https://example.com
 ```
 
+如果只想验证“未打包扩展已安装、service worker 已唤醒、peer/target 已连回 daemon”，可以直接跑：
+
+```bash
+npm run relay:install-smoke
+```
+
+如果要把 relay / direct-cdp 的 reconnect 与 workflow-log 诊断做成持续 soak：
+
+```bash
+npm run transport:soak -- --cycles 3
+npm run transport:soak -- --cycles 1 --targets relay
+```
+
 配合本地 daemon 走 relay transport 时，可以显式设置：
 
 ```bash
@@ -243,6 +256,7 @@ npx @turnkeyai/cli tui
 - real-world runbook harness: `realworld-cases` / `realworld-run [scenarioId ...]`
 - release readiness: `release-verify`
 - multi-cycle soak series: `soak-series [cycles] [suite[:item] ...]`
+- browser transport soak: `transport:soak -- --cycles N [--targets relay,direct-cdp]`
 
 对应命令包括：
 
@@ -250,6 +264,8 @@ npx @turnkeyai/cli tui
 - `soak-run [scenarioId ...]`
 - `soak-series 10 soak realworld acceptance`
 - `release-verify`
+- `npm run relay:install-smoke`
+- `npm run transport:soak -- --cycles 3`
 - `validation-ops`
 - `validation-profiles`
 - `validation-profile-run smoke`
@@ -263,6 +279,8 @@ npx @turnkeyai/cli tui
 `validation-ops` 会把最近的 `validation-profile-run`、`release-verify` 和 `soak-series` 结果收成 operator-facing 读数，统一展示失败 bucket、推荐动作和重跑命令，避免验证失败只留在一次性 stdout 里。
 `validation-profiles` / `validation-profile-run` 会把现有 `validation-run`、`release-verify` 和 `soak-series` 收成固定 hardening 档位：`smoke` 适合本地快速回归，`nightly` / `prerelease` / `weekly` 适合持续稳定性和值班/发版前信心检查。
 `relay-peers` / `relay-targets [peerId]` 可以直接查看本地 daemon 当前看到的 relay 扩展连接和浏览器 tab 发现结果，便于做 extension smoke 和 transport 排障。
+`relay:install-smoke` 会走一遍“build relay extension -> 启动本地 Chromium + unpacked extension -> 等 daemon 看见 peer/target”的真机安装连通链，适合快速确认本地浏览器端 bridge 没坏。
+`transport:soak` 会重复跑 relay / direct-cdp 的真实 smoke，并把失败按 `peer-timeout / cdp-unreachable / reconnect-failure / workflow-log-failure / content-script-unavailable` 这类稳定 bucket 汇总，便于做 transport 值班读数和周级稳定性回归。
 `direct-cdp` 当前也已经有本地 launch / wait / smoke 链路，适合验证“接管一个已启用 CDP 的真实 Chromium 浏览器”这条 transport；`cdp:smoke` 现在还支持 `--verify-reconnect` 和 `--verify-workflow-log`，可以把浏览器重启后的 session 恢复和 replay/operator workflow-log 读数一起压过一遍。
 
 模型配置默认会按这个顺序查找：

@@ -16,6 +16,7 @@
     "./auth-and-scope-diagnosis-policy": "./src/auth-and-scope-diagnosis-policy.ts",
     "./bounded-regression-harness": "./src/bounded-regression-harness.ts",
     "./browser-result-verifier": "./src/browser-result-verifier.ts",
+    "./browser-transport-soak": "./src/browser-transport-soak.ts",
     "./browser-step-verifier": "./src/browser-step-verifier.ts",
     "./evidence-trust-policy": "./src/evidence-trust-policy.ts",
     "./failure-taxonomy": "./src/failure-taxonomy.ts",
