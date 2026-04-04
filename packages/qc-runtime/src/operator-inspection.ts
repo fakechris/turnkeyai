@@ -266,6 +266,7 @@ export function buildOperatorSummaryReport(input: {
       ...(entry.action ? { action: entry.action } : {}),
       ...(entry.allowedActions && entry.allowedActions.length > 0 ? { allowedActions: entry.allowedActions } : {}),
       ...(entry.browserContinuityState ? { browserContinuityState: entry.browserContinuityState } : {}),
+      ...(entry.browserTransportLabel ? { browserTransportLabel: entry.browserTransportLabel } : {}),
       ...(entry.reasons && entry.reasons.length > 0 ? { reasonPreview: entry.reasons[0] } : {}),
       latestUpdate: entry.latestUpdate,
       nextStep: entry.nextStep,
@@ -374,6 +375,7 @@ export function buildOperatorAttentionReport(input: {
           ...(bundle?.recoveryWorkflow?.status ? [bundle.recoveryWorkflow.status] : []),
         ],
         ...(incident.browserContinuity ? { browserContinuityState: incident.browserContinuity.state } : {}),
+        ...(incident.browserContinuity?.transportLabel ? { browserTransportLabel: incident.browserContinuity.transportLabel } : {}),
         summary: incident.latestFailure?.message ?? incident.recoveryHint.reason,
         ...(incident.recoveryHint.action ? { action: incident.recoveryHint.action } : {}),
       };
@@ -789,14 +791,16 @@ function buildAttentionHeadline(items: OperatorAttentionItem[]): string {
     return right.recordedAt - left.recordedAt;
   });
   const primary = ordered[0]!;
+  const browserTransportLabel = ordered.find((item) => item.browserTransportLabel)?.browserTransportLabel;
   const sources = unique(ordered.map((item) => item.source));
   const action = primary.action ? ` next=${primary.action}` : "";
   const browser = primary.browserContinuityState ? ` browser=${primary.browserContinuityState}` : "";
+  const transport = browserTransportLabel ? ` transport=${browserTransportLabel}` : "";
   const reason =
     primary.reasons && primary.reasons.length > 0
       ? ` reason=${primary.reasons[0]}`
       : "";
-  return `${primary.caseKey} ${primary.lifecycle} via ${sources.join("+")}${action}${browser}${reason}`;
+  return `${primary.caseKey} ${primary.lifecycle} via ${sources.join("+")}${action}${browser}${transport}${reason}`;
 }
 
 function buildAttentionCaseSummary(
@@ -816,6 +820,7 @@ function buildAttentionCaseSummary(
   });
   const primary = ordered[0]!;
   const lifecycle = primary.lifecycle;
+  const browserTransportLabel = ordered.find((item) => item.browserTransportLabel)?.browserTransportLabel;
   return {
     caseKey,
     headline: primary.headline,
@@ -831,6 +836,7 @@ function buildAttentionCaseSummary(
     ...(primary.action ? { action: primary.action } : {}),
     ...(primary.allowedActions && primary.allowedActions.length > 0 ? { allowedActions: primary.allowedActions } : {}),
     ...(primary.browserContinuityState ? { browserContinuityState: primary.browserContinuityState } : {}),
+    ...(browserTransportLabel ? { browserTransportLabel } : {}),
     ...(primary.reasons && primary.reasons.length > 0 ? { reasons: primary.reasons } : {}),
   };
 }
@@ -908,6 +914,7 @@ function buildResolvedRecentCaseSummaries(
           ? { action: bundle.recoveryWorkflow.nextAction }
           : {}),
         ...(bundle.browserContinuity?.state ? { browserContinuityState: bundle.browserContinuity.state } : {}),
+        ...(bundle.browserContinuity?.transportLabel ? { browserTransportLabel: bundle.browserContinuity.transportLabel } : {}),
         ...(reasonPreview ? { reasonPreview } : {}),
         latestUpdate:
           bundle.recoveryWorkflow?.summary ??
@@ -981,6 +988,7 @@ function mapAttentionCaseToTriageFocus(entry: OperatorAttentionCaseSummary): Ope
     ...(entry.gate ? { gate: entry.gate } : {}),
     ...(entry.caseState ? { state: entry.caseState } : {}),
     ...(entry.browserContinuityState ? { browserContinuityState: entry.browserContinuityState } : {}),
+    ...(entry.browserTransportLabel ? { browserTransportLabel: entry.browserTransportLabel } : {}),
   };
 }
 

@@ -314,6 +314,9 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
       const result: BrowserTaskResult = {
         sessionId,
         targetId: target.targetId,
+        transportMode: this.transportMode,
+        transportLabel: this.transportLabel,
+        transportTargetId: relayResult.relayTargetId,
         dispatchMode,
         resumeMode,
         targetResolution,
@@ -499,6 +502,9 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
       ownerType: input.ownerType,
       ownerId: input.ownerId,
       ...(input.result?.targetId ? { targetId: input.result.targetId } : {}),
+      ...(input.result?.transportMode ? { transportMode: input.result.transportMode } : {}),
+      ...(input.result?.transportLabel ? { transportLabel: input.result.transportLabel } : {}),
+      ...(input.result?.transportTargetId ? { transportTargetId: input.result.transportTargetId } : {}),
       historyCursor: input.startedAt,
       startedAt: input.startedAt,
       completedAt: Date.now(),
@@ -577,6 +583,8 @@ function summarizeBrowserHistorySuccess(
     `Final URL: ${result.page.finalUrl || "n/a"}.`,
     result.page.title ? `Title: ${result.page.title}.` : null,
     result.targetId ? `Target: ${result.targetId}.` : null,
+    result.transportLabel ? `Transport: ${result.transportLabel}.` : result.transportMode ? `Transport: ${result.transportMode}.` : null,
+    result.transportTargetId ? `Transport target: ${result.transportTargetId}.` : null,
     result.resumeMode ? `Resume mode: ${result.resumeMode}.` : null,
   ]
     .filter((line): line is string => Boolean(line))

@@ -123,11 +123,12 @@ export function buildReplayInspectionReport(records: ReplayRecord[]): ReplayInsp
     }
 
     const browserContinuity = extractReplayBrowserContinuity(record);
-    if (
-      browserContinuity &&
-      (!existing.browserContinuity || existing.browserContinuity.latestRecordedAt <= browserContinuity.latestRecordedAt)
-    ) {
-      existing.browserContinuity = browserContinuity;
+    if (browserContinuity) {
+      if (!existing.browserContinuity || existing.browserContinuity.latestRecordedAt <= browserContinuity.latestRecordedAt) {
+        existing.browserContinuity = mergeBrowserContinuity(existing.browserContinuity, browserContinuity);
+      } else {
+        existing.browserContinuity = mergeBrowserContinuity(browserContinuity, existing.browserContinuity);
+      }
     }
 
     existing.requiresFollowUp =
@@ -321,6 +322,7 @@ function buildReplayConsoleBundleEntry(
     ...(bundle?.recoveryWorkflow?.summary ? { workflowSummary: bundle.recoveryWorkflow.summary } : {}),
     ...(bundle?.caseHeadline ? { caseHeadline: bundle.caseHeadline } : {}),
     ...(bundle?.browserContinuity?.state ? { browserContinuityState: bundle.browserContinuity.state } : {}),
+    ...(bundle?.browserContinuity?.transportLabel ? { browserTransportLabel: bundle.browserContinuity.transportLabel } : {}),
     ...(recovery?.targetLayer ? { targetLayer: recovery.targetLayer } : {}),
     ...(recovery?.targetWorker ? { targetWorker: recovery.targetWorker } : {}),
     ...(bundle?.recoveryOperator?.caseState ? { operatorCaseState: bundle.recoveryOperator.caseState } : {}),
@@ -442,9 +444,11 @@ export function buildReplayIncidentBundle(records: ReplayRecord[], groupId: stri
     followUpGroups,
   });
   const followUpSummary = buildFollowUpSummary(followUpGroups);
-  const browserContinuity = [group.browserContinuity, ...followUpGroups.map((item) => item.browserContinuity)]
-    .filter((item): item is ReplayBrowserContinuitySummary => Boolean(item))
-    .sort((left, right) => right.latestRecordedAt - left.latestRecordedAt)[0];
+  const browserContinuity = mergeLatestBrowserContinuity(
+    [group.browserContinuity, ...followUpGroups.map((item) => item.browserContinuity)].filter(
+      (item): item is ReplayBrowserContinuitySummary => Boolean(item)
+    )
+  );
 
   const caseState = deriveBundleCaseState(group, recoveryWorkflow, browserContinuity);
   const caseHeadline = buildBundleCaseHeadline(groupId, caseState, recoveryWorkflow, browserContinuity, group);
@@ -1181,6 +1185,37 @@ function deriveBundleCaseState(
   }
 }
 
+function mergeLatestBrowserContinuity(
+  items: ReplayBrowserContinuitySummary[]
+): ReplayBrowserContinuitySummary | undefined {
+  if (items.length === 0) {
+    return undefined;
+  }
+  const ordered = [...items].sort((left, right) => right.latestRecordedAt - left.latestRecordedAt);
+  const latest = ordered[0]!;
+  return ordered.slice(1).reduce(
+    (current, candidate) => mergeBrowserContinuity(candidate, current),
+    latest
+  );
+}
+
+function mergeBrowserContinuity(
+  fallback: ReplayBrowserContinuitySummary | undefined,
+  current: ReplayBrowserContinuitySummary
+): ReplayBrowserContinuitySummary {
+  return {
+    ...current,
+    ...(current.sessionId ? {} : fallback?.sessionId ? { sessionId: fallback.sessionId } : {}),
+    ...(current.targetId ? {} : fallback?.targetId ? { targetId: fallback.targetId } : {}),
+    ...(current.transportMode ? {} : fallback?.transportMode ? { transportMode: fallback.transportMode } : {}),
+    ...(current.transportLabel ? {} : fallback?.transportLabel ? { transportLabel: fallback.transportLabel } : {}),
+    ...(current.transportTargetId ? {} : fallback?.transportTargetId ? { transportTargetId: fallback.transportTargetId } : {}),
+    ...(current.resumeMode ? {} : fallback?.resumeMode ? { resumeMode: fallback.resumeMode } : {}),
+    ...(current.targetResolution ? {} : fallback?.targetResolution ? { targetResolution: fallback.targetResolution } : {}),
+    ...(current.outcome ? {} : fallback?.outcome ? { outcome: fallback.outcome } : {}),
+  };
+}
+
 function buildFollowUpSummary(
   followUpGroups: ReplayTaskSummary[]
 ): ReplayIncidentBundle["followUpSummary"] | undefined {
@@ -1266,6 +1301,9 @@ function extractReplayBrowserContinuity(record: ReplayRecord): ReplayBrowserCont
       summary: failure.message,
       ...(payload?.sessionId ? { sessionId: payload.sessionId } : {}),
       ...(payload?.targetId ? { targetId: payload.targetId } : {}),
+      ...(payload?.transportMode ? { transportMode: payload.transportMode } : {}),
+      ...(payload?.transportLabel ? { transportLabel: payload.transportLabel } : {}),
+      ...(payload?.transportTargetId ? { transportTargetId: payload.transportTargetId } : {}),
       ...(payload?.resumeMode ? { resumeMode: payload.resumeMode } : {}),
       ...(payload?.targetResolution ? { targetResolution: payload.targetResolution } : {}),
     };
@@ -1278,6 +1316,9 @@ function extractReplayBrowserContinuity(record: ReplayRecord): ReplayBrowserCont
       summary: outcome.summary,
       ...(payload?.sessionId ? { sessionId: payload.sessionId } : {}),
       ...(payload?.targetId ? { targetId: payload.targetId } : {}),
+      ...(payload?.transportMode ? { transportMode: payload.transportMode } : {}),
+      ...(payload?.transportLabel ? { transportLabel: payload.transportLabel } : {}),
+      ...(payload?.transportTargetId ? { transportTargetId: payload.transportTargetId } : {}),
       ...(payload?.resumeMode ? { resumeMode: payload.resumeMode } : {}),
       ...(payload?.targetResolution ? { targetResolution: payload.targetResolution } : {}),
       outcome: outcome.outcome,
@@ -1294,6 +1335,9 @@ function extractReplayBrowserContinuity(record: ReplayRecord): ReplayBrowserCont
     summary: "Browser continuity metadata observed on the latest execution.",
     ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
     ...(payload.targetId ? { targetId: payload.targetId } : {}),
+    ...(payload.transportMode ? { transportMode: payload.transportMode } : {}),
+    ...(payload.transportLabel ? { transportLabel: payload.transportLabel } : {}),
+    ...(payload.transportTargetId ? { transportTargetId: payload.transportTargetId } : {}),
     ...(payload.resumeMode ? { resumeMode: payload.resumeMode } : {}),
     ...(payload.targetResolution ? { targetResolution: payload.targetResolution } : {}),
   };
@@ -1437,6 +1481,9 @@ function extractBrowserPayload(
   | {
       sessionId?: string;
       targetId?: string;
+      transportMode?: ReplayBrowserContinuitySummary["transportMode"];
+      transportLabel?: string;
+      transportTargetId?: string;
       resumeMode?: ReplayBrowserContinuitySummary["resumeMode"];
       targetResolution?: ReplayBrowserContinuitySummary["targetResolution"];
     }
@@ -1459,11 +1506,20 @@ function extractBrowserPayload(
   return {
     ...(typeof browserPayload.sessionId === "string" ? { sessionId: browserPayload.sessionId } : {}),
     ...(typeof browserPayload.targetId === "string" ? { targetId: browserPayload.targetId } : {}),
+    ...(isBrowserTransportMode(browserPayload.transportMode) ? { transportMode: browserPayload.transportMode } : {}),
+    ...(typeof browserPayload.transportLabel === "string" ? { transportLabel: browserPayload.transportLabel } : {}),
+    ...(typeof browserPayload.transportTargetId === "string"
+      ? { transportTargetId: browserPayload.transportTargetId }
+      : {}),
     ...(isBrowserResumeMode(browserPayload.resumeMode) ? { resumeMode: browserPayload.resumeMode } : {}),
     ...(isBrowserTargetResolution(browserPayload.targetResolution)
       ? { targetResolution: browserPayload.targetResolution }
       : {}),
   };
+}
+
+function isBrowserTransportMode(value: unknown): value is ReplayBrowserContinuitySummary["transportMode"] {
+  return value === "relay" || value === "direct-cdp" || value === "local";
 }
 
 function isBrowserResumeMode(value: unknown): value is ReplayBrowserContinuitySummary["resumeMode"] {

@@ -826,6 +826,9 @@ export interface BrowserSessionResumeInput extends BrowserTaskRequest {
 export interface BrowserTaskResult {
   sessionId: string;
   targetId?: string;
+  transportMode?: BrowserTransportMode;
+  transportLabel?: string;
+  transportTargetId?: string;
   historyEntryId?: string;
   dispatchMode?: BrowserSessionDispatchMode;
   resumeMode?: BrowserResumeMode;
@@ -935,6 +938,9 @@ export interface BrowserSessionHistoryEntry {
   ownerType: BrowserOwnerType;
   ownerId: string;
   targetId?: string;
+  transportMode?: BrowserTransportMode;
+  transportLabel?: string;
+  transportTargetId?: string;
   historyCursor: number;
   startedAt: number;
   completedAt: number;
@@ -1257,6 +1263,9 @@ export interface ReplayBrowserContinuitySummary {
   summary: string;
   sessionId?: string;
   targetId?: string;
+  transportMode?: BrowserTransportMode;
+  transportLabel?: string;
+  transportTargetId?: string;
   resumeMode?: BrowserResumeMode;
   targetResolution?: BrowserTaskResult["targetResolution"];
   outcome?: RecoveryBrowserOutcome;
@@ -1286,6 +1295,7 @@ export interface ReplayConsoleReport {
     workflowSummary?: string;
     caseHeadline?: string;
     browserContinuityState?: ReplayBrowserContinuitySummary["state"];
+    browserTransportLabel?: string;
     targetLayer?: ReplayRecoveryPlan["targetLayer"];
     targetWorker?: ReplayRecoveryPlan["targetWorker"];
     operatorCaseState?: OperatorCaseState;
@@ -1302,6 +1312,7 @@ export interface ReplayConsoleReport {
     workflowSummary?: string;
     caseHeadline?: string;
     browserContinuityState?: ReplayBrowserContinuitySummary["state"];
+    browserTransportLabel?: string;
     targetLayer?: ReplayRecoveryPlan["targetLayer"];
     targetWorker?: ReplayRecoveryPlan["targetWorker"];
     operatorCaseState?: OperatorCaseState;
@@ -1547,6 +1558,7 @@ export interface OperatorSummaryReport {
       action?: string;
       allowedActions?: RecoveryRunAction[];
       browserContinuityState?: ReplayBrowserContinuitySummary["state"];
+      browserTransportLabel?: string;
       reasonPreview?: string;
       latestUpdate: string;
       nextStep: string;
@@ -1559,6 +1571,7 @@ export interface OperatorSummaryReport {
       gate?: string;
       action?: string;
       browserContinuityState?: ReplayBrowserContinuitySummary["state"];
+      browserTransportLabel?: string;
       reasonPreview?: string;
       latestUpdate: string;
       nextStep: string;
@@ -1572,6 +1585,7 @@ export interface OperatorSummaryReport {
       gate?: string;
       action?: string;
       browserContinuityState?: ReplayBrowserContinuitySummary["state"];
+      browserTransportLabel?: string;
       reasonPreview?: string;
       latestUpdate: string;
       nextStep: string;
@@ -1592,6 +1606,7 @@ export interface OperatorTriageFocusArea {
   state?: string;
   gate?: string;
   browserContinuityState?: ReplayBrowserContinuitySummary["state"];
+  browserTransportLabel?: string;
 }
 
 export interface OperatorTriageReport {
@@ -1622,6 +1637,7 @@ export interface OperatorAttentionItem {
   gate?: string;
   reasons?: string[];
   browserContinuityState?: ReplayBrowserContinuitySummary["state"];
+  browserTransportLabel?: string;
   action?: string;
   allowedActions?: RecoveryRunAction[];
 }
@@ -1641,6 +1657,7 @@ export interface OperatorAttentionCaseSummary {
   action?: string;
   allowedActions?: RecoveryRunAction[];
   browserContinuityState?: ReplayBrowserContinuitySummary["state"];
+  browserTransportLabel?: string;
   reasons?: string[];
 }
 

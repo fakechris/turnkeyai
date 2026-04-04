@@ -204,6 +204,9 @@ test("replay inspection builds replay console and incident bundle views", () => 
         payload: {
           sessionId: "browser-session-5",
           targetId: "target-5",
+          transportMode: "relay",
+          transportLabel: "chrome-relay",
+          transportTargetId: "chrome-tab:5",
           resumeMode: "warm",
           targetResolution: "reconnect",
         },
@@ -224,6 +227,7 @@ test("replay inspection builds replay console and incident bundle views", () => 
   assert.equal(consoleReport.latestBundles[0]?.caseState, "open");
   assert.equal(consoleReport.latestBundles[0]?.workflowStatus, "not_started");
   assert.equal(consoleReport.latestBundles[0]?.browserContinuityState, "attention");
+  assert.equal(consoleReport.latestBundles[0]?.browserTransportLabel, "chrome-relay");
   assert.match(consoleReport.latestBundles[0]?.workflowSummary ?? "", /not been dispatched yet/i);
   assert.equal(consoleReport.latestIncidents[0]?.groupId, "task-5");
   assert.equal(consoleReport.latestGroups[0]?.browserContinuity?.state, "attention");
@@ -240,6 +244,9 @@ test("replay inspection builds replay console and incident bundle views", () => 
   assert.equal(bundle?.followUpGroups.length, 0);
   assert.equal(bundle?.browserContinuity?.state, "attention");
   assert.equal(bundle?.browserContinuity?.sessionId, "browser-session-5");
+  assert.equal(bundle?.browserContinuity?.transportMode, "relay");
+  assert.equal(bundle?.browserContinuity?.transportLabel, "chrome-relay");
+  assert.equal(bundle?.browserContinuity?.transportTargetId, "chrome-tab:5");
 });
 
 test("replay console surfaces recovery workflow states from actionable bundles", () => {
@@ -577,6 +584,8 @@ test("replay console suppresses superseded failed follow-up groups once the root
         payload: {
           sessionId: "browser-root",
           targetId: "target-root",
+          transportMode: "local",
+          transportLabel: "local-automation",
           resumeMode: "cold",
           targetResolution: "reopen",
         },
@@ -592,6 +601,7 @@ test("replay console suppresses superseded failed follow-up groups once the root
   assert.equal(consoleReport.latestResolvedBundles[0]?.groupId, "task-root");
   assert.equal(consoleReport.latestResolvedBundles[0]?.workflowStatus, "recovered");
   assert.equal(consoleReport.latestResolvedBundles[0]?.browserContinuityState, "recovered");
+  assert.equal(consoleReport.latestResolvedBundles[0]?.browserTransportLabel, "local-automation");
 });
 
 test("replay console surfaces operator waiting-manual state alongside recovered workflow state", () => {

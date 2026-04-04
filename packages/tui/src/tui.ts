@@ -1366,6 +1366,9 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
         if (entry.browserContinuityState) {
           parts.push(`browser=${entry.browserContinuityState}`);
         }
+        if (entry.browserTransportLabel) {
+          parts.push(`transport=${entry.browserTransportLabel}`);
+        }
         if (entry.reasonPreview) {
           parts.push(`reason=${entry.reasonPreview}`);
         }
@@ -1386,6 +1389,9 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
         }
         if (entry.browserContinuityState) {
           parts.push(`browser=${entry.browserContinuityState}`);
+        }
+        if (entry.browserTransportLabel) {
+          parts.push(`transport=${entry.browserTransportLabel}`);
         }
         if (entry.reasonPreview) {
           parts.push(`reason=${entry.reasonPreview}`);
@@ -1459,6 +1465,9 @@ function printOperatorAttention(report: OperatorAttentionReport): void {
       if (entry.browserContinuityState) {
         parts.push(`browser=${entry.browserContinuityState}`);
       }
+      if (entry.browserTransportLabel) {
+        parts.push(`transport=${entry.browserTransportLabel}`);
+      }
       console.log(`    - ${parts.join("  ")}`);
       console.log(`      ${entry.headline}`);
       console.log(`      next=${entry.nextStep}  latest=${entry.latestUpdate}`);
@@ -1487,6 +1496,9 @@ function printOperatorAttention(report: OperatorAttentionReport): void {
     }
     if (item.browserContinuityState) {
       parts.push(`browser=${item.browserContinuityState}`);
+    }
+    if (item.browserTransportLabel) {
+      parts.push(`transport=${item.browserTransportLabel}`);
     }
     console.log(`  - ${parts.join("  ")}`);
     console.log(`    headline: ${item.headline}`);
@@ -1532,6 +1544,9 @@ function printOperatorTriage(report: OperatorTriageReport): void {
       }
       if (area.browserContinuityState) {
         parts.push(`browser=${area.browserContinuityState}`);
+      }
+      if (area.browserTransportLabel) {
+        parts.push(`transport=${area.browserTransportLabel}`);
       }
       console.log(`    - ${parts.join("  ")}`);
       console.log(`      ${area.headline}`);
@@ -2772,6 +2787,11 @@ function printReplayBundle(bundle: ReplayIncidentBundle): void {
         `  browser session: ${bundle.browserContinuity.sessionId ?? "-"}  target=${bundle.browserContinuity.targetId ?? "-"}`
       );
     }
+    if (bundle.browserContinuity.transportMode || bundle.browserContinuity.transportLabel || bundle.browserContinuity.transportTargetId) {
+      console.log(
+        `  browser transport: ${bundle.browserContinuity.transportLabel ?? bundle.browserContinuity.transportMode ?? "-"}  transport target=${bundle.browserContinuity.transportTargetId ?? "-"}`
+      );
+    }
     if (bundle.browserContinuity.resumeMode || bundle.browserContinuity.targetResolution) {
       console.log(
         `  browser resume: ${bundle.browserContinuity.resumeMode ?? "-"}  target resolution=${bundle.browserContinuity.targetResolution ?? "-"}`
@@ -3029,6 +3049,9 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       if (bundle.browserContinuityState) {
         parts.push(`browser=${bundle.browserContinuityState}`);
       }
+      if (bundle.browserTransportLabel) {
+        parts.push(`transport=${bundle.browserTransportLabel}`);
+      }
       if (bundle.operatorCaseState) {
         parts.push(`operator=${bundle.operatorCaseState}`);
       }
@@ -3071,6 +3094,9 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       }
       if (bundle.browserContinuityState) {
         parts.push(`browser=${bundle.browserContinuityState}`);
+      }
+      if (bundle.browserTransportLabel) {
+        parts.push(`transport=${bundle.browserTransportLabel}`);
       }
       if (bundle.operatorCaseState) {
         parts.push(`operator=${bundle.operatorCaseState}`);

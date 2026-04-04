@@ -351,6 +351,9 @@ export class ChromeSessionManager {
       const result: BrowserTaskResult = {
         sessionId,
         ...(currentTargetId ? { targetId: currentTargetId } : {}),
+        transportMode: "local",
+        transportLabel: "local-automation",
+        transportTargetId: this.getOrCreatePageHandle(page),
         dispatchMode,
         resumeMode,
         targetResolution,
@@ -428,6 +431,9 @@ export class ChromeSessionManager {
       ownerType: input.ownerType,
       ownerId: input.ownerId,
       ...(result?.targetId ? { targetId: result.targetId } : {}),
+      ...(result?.transportMode ? { transportMode: result.transportMode } : {}),
+      ...(result?.transportLabel ? { transportLabel: result.transportLabel } : {}),
+      ...(result?.transportTargetId ? { transportTargetId: result.transportTargetId } : {}),
       historyCursor: input.startedAt,
       startedAt: input.startedAt,
       completedAt: Date.now(),
@@ -1126,6 +1132,8 @@ function summarizeBrowserHistorySuccess(
     `Final URL: ${result.page.finalUrl || "n/a"}.`,
     result.page.title ? `Title: ${result.page.title}.` : null,
     result.targetId ? `Target: ${result.targetId}.` : null,
+    result.transportLabel ? `Transport: ${result.transportLabel}.` : result.transportMode ? `Transport: ${result.transportMode}.` : null,
+    result.transportTargetId ? `Transport target: ${result.transportTargetId}.` : null,
     result.resumeMode ? `Resume mode: ${result.resumeMode}.` : null,
   ]
     .filter((line): line is string => Boolean(line))
