@@ -1371,6 +1371,8 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
         }
         if (entry.relayDiagnosticBucket) {
           parts.push(`relay=${entry.relayDiagnosticBucket}`);
+        } else if (entry.browserDiagnosticBucket) {
+          parts.push(`diag=${entry.browserDiagnosticBucket}`);
         }
         if (entry.reasonPreview) {
           parts.push(`reason=${entry.reasonPreview}`);
@@ -1398,6 +1400,8 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
         }
         if (entry.relayDiagnosticBucket) {
           parts.push(`relay=${entry.relayDiagnosticBucket}`);
+        } else if (entry.browserDiagnosticBucket) {
+          parts.push(`diag=${entry.browserDiagnosticBucket}`);
         }
         if (entry.reasonPreview) {
           parts.push(`reason=${entry.reasonPreview}`);
@@ -1511,6 +1515,8 @@ function printOperatorAttention(report: OperatorAttentionReport): void {
     }
     if (item.relayDiagnosticBucket) {
       parts.push(`relay=${item.relayDiagnosticBucket}`);
+    } else if (item.browserDiagnosticBucket) {
+      parts.push(`diag=${item.browserDiagnosticBucket}`);
     }
     console.log(`  - ${parts.join("  ")}`);
     console.log(`    headline: ${item.headline}`);
@@ -1562,6 +1568,8 @@ function printOperatorTriage(report: OperatorTriageReport): void {
       }
       if (area.relayDiagnosticBucket) {
         parts.push(`relay=${area.relayDiagnosticBucket}`);
+      } else if (area.browserDiagnosticBucket) {
+        parts.push(`diag=${area.browserDiagnosticBucket}`);
       }
       console.log(`    - ${parts.join("  ")}`);
       console.log(`      ${area.headline}`);
@@ -2808,15 +2816,20 @@ function printReplayBundle(bundle: ReplayIncidentBundle): void {
       );
     }
     if (
+      bundle.browserContinuity.browserDiagnosticBucket ||
+      bundle.browserContinuity.browserDiagnosticSummary ||
       bundle.browserContinuity.relayPeerStatus ||
       bundle.browserContinuity.relayTargetStatus ||
       bundle.browserContinuity.relayDiagnosticBucket
     ) {
+      const label = bundle.browserContinuity.transportMode === "relay" || bundle.browserContinuity.relayDiagnosticBucket ? "relay diagnostics" : "browser diagnostics";
       console.log(
-        `  relay diagnostics: peer=${bundle.browserContinuity.relayPeerStatus ?? "-"}  target=${bundle.browserContinuity.relayTargetStatus ?? "-"}  bucket=${bundle.browserContinuity.relayDiagnosticBucket ?? "-"}`
+        `  ${label}: peer=${bundle.browserContinuity.relayPeerStatus ?? "-"}  target=${bundle.browserContinuity.relayTargetStatus ?? "-"}  bucket=${bundle.browserContinuity.relayDiagnosticBucket ?? bundle.browserContinuity.browserDiagnosticBucket ?? "-"}`
       );
       if (bundle.browserContinuity.relayDiagnosticSummary) {
         console.log(`  relay summary: ${bundle.browserContinuity.relayDiagnosticSummary}`);
+      } else if (bundle.browserContinuity.browserDiagnosticSummary) {
+        console.log(`  browser summary: ${bundle.browserContinuity.browserDiagnosticSummary}`);
       }
     }
     if (bundle.browserContinuity.resumeMode || bundle.browserContinuity.targetResolution) {
@@ -3081,6 +3094,8 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       }
       if (bundle.relayDiagnosticBucket) {
         parts.push(`relay=${bundle.relayDiagnosticBucket}`);
+      } else if (bundle.browserDiagnosticBucket) {
+        parts.push(`diag=${bundle.browserDiagnosticBucket}`);
       }
       if (bundle.operatorCaseState) {
         parts.push(`operator=${bundle.operatorCaseState}`);
@@ -3130,6 +3145,8 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       }
       if (bundle.relayDiagnosticBucket) {
         parts.push(`relay=${bundle.relayDiagnosticBucket}`);
+      } else if (bundle.browserDiagnosticBucket) {
+        parts.push(`diag=${bundle.browserDiagnosticBucket}`);
       }
       if (bundle.operatorCaseState) {
         parts.push(`operator=${bundle.operatorCaseState}`);

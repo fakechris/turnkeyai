@@ -14,6 +14,7 @@ import type {
   PromptConsoleReport,
   RecoveryConsoleReport,
   RecoveryRun,
+  ReplayBrowserContinuitySummary,
   ReplayRecord,
   RoleId,
   RuntimeProgressEvent,
@@ -386,10 +387,13 @@ export function buildOperatorAttentionReport(input: {
           ...(incident.rootFailureCategory ? [incident.rootFailureCategory] : []),
           ...(incident.recoveryHint.action !== "none" ? [incident.recoveryHint.action] : []),
           ...(bundle?.recoveryWorkflow?.status ? [bundle.recoveryWorkflow.status] : []),
-          ...(browserContinuity?.relayDiagnosticBucket ? [browserContinuity.relayDiagnosticBucket] : []),
+          ...(browserContinuity?.browserDiagnosticBucket ? [browserContinuity.browserDiagnosticBucket] : []),
         ],
         ...(browserContinuity ? { browserContinuityState: browserContinuity.state } : {}),
         ...(browserContinuity?.transportLabel ? { browserTransportLabel: browserContinuity.transportLabel } : {}),
+        ...(browserContinuity?.browserDiagnosticBucket
+          ? { browserDiagnosticBucket: browserContinuity.browserDiagnosticBucket }
+          : {}),
         ...(browserContinuity?.relayDiagnosticBucket
           ? { relayDiagnosticBucket: browserContinuity.relayDiagnosticBucket }
           : {}),
@@ -809,12 +813,13 @@ function buildAttentionHeadline(items: OperatorAttentionItem[]): string {
   });
   const primary = ordered[0]!;
   const browserTransportLabel = ordered.find((item) => item.browserTransportLabel)?.browserTransportLabel;
+  const browserDiagnosticBucket = ordered.find((item) => item.browserDiagnosticBucket)?.browserDiagnosticBucket;
   const relayDiagnosticBucket = ordered.find((item) => item.relayDiagnosticBucket)?.relayDiagnosticBucket;
   const sources = unique(ordered.map((item) => item.source));
   const action = primary.action ? ` next=${primary.action}` : "";
   const browser = primary.browserContinuityState ? ` browser=${primary.browserContinuityState}` : "";
   const transport = browserTransportLabel ? ` transport=${browserTransportLabel}` : "";
-  const relay = relayDiagnosticBucket ? ` relay=${relayDiagnosticBucket}` : "";
+  const relay = relayDiagnosticBucket ? ` relay=${relayDiagnosticBucket}` : browserDiagnosticBucket ? ` diag=${browserDiagnosticBucket}` : "";
   const reason =
     primary.reasons && primary.reasons.length > 0
       ? ` reason=${primary.reasons[0]}`
@@ -840,6 +845,7 @@ function buildAttentionCaseSummary(
   const primary = ordered[0]!;
   const lifecycle = primary.lifecycle;
   const browserTransportLabel = ordered.find((item) => item.browserTransportLabel)?.browserTransportLabel;
+  const browserDiagnosticBucket = ordered.find((item) => item.browserDiagnosticBucket)?.browserDiagnosticBucket;
   const relayDiagnosticBucket = ordered.find((item) => item.relayDiagnosticBucket)?.relayDiagnosticBucket;
   return {
     caseKey,
@@ -857,6 +863,7 @@ function buildAttentionCaseSummary(
     ...(primary.allowedActions && primary.allowedActions.length > 0 ? { allowedActions: primary.allowedActions } : {}),
     ...(primary.browserContinuityState ? { browserContinuityState: primary.browserContinuityState } : {}),
     ...(browserTransportLabel ? { browserTransportLabel } : {}),
+    ...(browserDiagnosticBucket ? { browserDiagnosticBucket } : {}),
     ...(relayDiagnosticBucket ? { relayDiagnosticBucket } : {}),
     ...(primary.reasons && primary.reasons.length > 0 ? { reasons: primary.reasons } : {}),
   };
@@ -876,6 +883,7 @@ function buildResolvedRecentCaseSummaries(
   action?: string;
   browserContinuityState?: "stable" | "recovered" | "attention";
   browserTransportLabel?: string;
+  browserDiagnosticBucket?: ReplayBrowserContinuitySummary["browserDiagnosticBucket"];
   relayDiagnosticBucket?: "peer_missing" | "peer_stale" | "target_missing" | "target_detached" | "target_closed" | "content_script_unavailable" | "action_timeout" | "action_failed";
   reasonPreview?: string;
   latestUpdate: string;
@@ -939,6 +947,9 @@ function buildResolvedRecentCaseSummaries(
           : {}),
         ...(bundle.browserContinuity?.state ? { browserContinuityState: bundle.browserContinuity.state } : {}),
         ...(bundle.browserContinuity?.transportLabel ? { browserTransportLabel: bundle.browserContinuity.transportLabel } : {}),
+        ...(bundle.browserContinuity?.browserDiagnosticBucket
+          ? { browserDiagnosticBucket: bundle.browserContinuity.browserDiagnosticBucket }
+          : {}),
         ...(bundle.browserContinuity?.relayDiagnosticBucket
           ? { relayDiagnosticBucket: bundle.browserContinuity.relayDiagnosticBucket }
           : {}),
@@ -1016,6 +1027,7 @@ function mapAttentionCaseToTriageFocus(entry: OperatorAttentionCaseSummary): Ope
     ...(entry.caseState ? { state: entry.caseState } : {}),
     ...(entry.browserContinuityState ? { browserContinuityState: entry.browserContinuityState } : {}),
     ...(entry.browserTransportLabel ? { browserTransportLabel: entry.browserTransportLabel } : {}),
+    ...(entry.browserDiagnosticBucket ? { browserDiagnosticBucket: entry.browserDiagnosticBucket } : {}),
     ...(entry.relayDiagnosticBucket ? { relayDiagnosticBucket: entry.relayDiagnosticBucket } : {}),
   };
 }

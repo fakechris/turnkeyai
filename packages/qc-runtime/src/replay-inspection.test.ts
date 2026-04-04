@@ -307,6 +307,49 @@ test("replay inspection enriches relay browser continuity with peer and target d
   assert.match(bundle?.caseHeadline ?? "", /relay=peer_stale/);
 });
 
+test("replay inspection enriches direct-cdp browser continuity with reconnect diagnostics", () => {
+  const records = [
+    {
+      replayId: "task-direct-cdp:worker",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-direct-cdp",
+      workerType: "browser",
+      summary: "direct-cdp browser reconnected but target needs confirmation before resume",
+      failure: {
+        category: "stale_session",
+        layer: "worker",
+        retryable: true,
+        message: "direct-cdp browser reconnected but target needs confirmation before resume",
+        recommendedAction: "inspect",
+      },
+      metadata: {
+        payload: {
+          sessionId: "browser-session-direct-cdp",
+          targetId: "target-direct-cdp",
+          transportMode: "direct-cdp",
+          transportLabel: "direct-cdp",
+          transportTargetId: "page:manager-1:1",
+          resumeMode: "warm",
+          targetResolution: "reconnect",
+        },
+      },
+    },
+  ] as Parameters<typeof buildReplayInspectionReport>[0];
+
+  const consoleReport = buildReplayConsoleReport(records, 5);
+  const bundle = buildReplayIncidentBundle(records, "task-direct-cdp");
+
+  assert.equal(consoleReport.latestBundles[0]?.browserDiagnosticBucket, "reconnect_required");
+  assert.ok(bundle?.browserContinuity);
+  assert.equal(bundle?.browserContinuity?.transportLabel, "direct-cdp");
+  assert.equal(bundle?.browserContinuity?.browserDiagnosticBucket, "reconnect_required");
+  assert.match(bundle?.browserContinuity?.browserDiagnosticSummary ?? "", /confirmation before resume/i);
+  assert.match(bundle?.caseHeadline ?? "", /diag=reconnect_required/);
+});
+
 test("replay console surfaces recovery workflow states from actionable bundles", () => {
   const records = [
     {

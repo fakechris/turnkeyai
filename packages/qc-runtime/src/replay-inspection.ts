@@ -346,6 +346,9 @@ function buildReplayConsoleBundleEntry(
     ...(bundle?.caseHeadline ? { caseHeadline: bundle.caseHeadline } : {}),
     ...(bundle?.browserContinuity?.state ? { browserContinuityState: bundle.browserContinuity.state } : {}),
     ...(bundle?.browserContinuity?.transportLabel ? { browserTransportLabel: bundle.browserContinuity.transportLabel } : {}),
+    ...(bundle?.browserContinuity?.browserDiagnosticBucket
+      ? { browserDiagnosticBucket: bundle.browserContinuity.browserDiagnosticBucket }
+      : {}),
     ...(bundle?.browserContinuity?.relayDiagnosticBucket
       ? { relayDiagnosticBucket: bundle.browserContinuity.relayDiagnosticBucket }
       : {}),
@@ -479,7 +482,7 @@ export function buildReplayIncidentBundle(
       (item): item is ReplayBrowserContinuitySummary => Boolean(item)
     )
   );
-  const enrichedBrowserContinuity = enrichRelayBrowserContinuity(browserContinuity, group, relayDiagnostics);
+  const enrichedBrowserContinuity = enrichBrowserContinuityDiagnostics(browserContinuity, group, relayDiagnostics);
 
   const caseState = deriveBundleCaseState(group, recoveryWorkflow, enrichedBrowserContinuity);
   const caseHeadline = buildBundleCaseHeadline(groupId, caseState, recoveryWorkflow, enrichedBrowserContinuity, group);
@@ -561,17 +564,19 @@ function buildBundleCaseHeadline(
   }
   const action = workflow?.nextAction && workflow.nextAction !== "none" ? ` next=${workflow.nextAction}` : "";
   const browser = browserContinuity ? ` browser=${browserContinuity.state}` : "";
-  const relay =
+  const diagnostic =
     browserContinuity?.transportMode === "relay" && browserContinuity.relayDiagnosticBucket
       ? ` relay=${browserContinuity.relayDiagnosticBucket}`
-      : "";
+      : browserContinuity?.browserDiagnosticBucket
+        ? ` diag=${browserContinuity.browserDiagnosticBucket}`
+        : "";
   const reason =
     workflow?.latestFailure?.category
       ? ` reason=${workflow.latestFailure.category}`
       : group.rootFailureCategory
         ? ` reason=${group.rootFailureCategory}`
         : "";
-  return `${groupId} ${caseState}${action}${browser}${relay}${reason}`;
+  return `${groupId} ${caseState}${action}${browser}${diagnostic}${reason}`;
 }
 
 export function buildRecoveryRunProgress(run: RecoveryRun): RecoveryRunProgress {
@@ -1246,6 +1251,16 @@ function mergeBrowserContinuity(
     ...(current.transportLabel ? {} : fallback?.transportLabel ? { transportLabel: fallback.transportLabel } : {}),
     ...(current.transportPeerId ? {} : fallback?.transportPeerId ? { transportPeerId: fallback.transportPeerId } : {}),
     ...(current.transportTargetId ? {} : fallback?.transportTargetId ? { transportTargetId: fallback.transportTargetId } : {}),
+    ...(current.browserDiagnosticBucket
+      ? {}
+      : fallback?.browserDiagnosticBucket
+        ? { browserDiagnosticBucket: fallback.browserDiagnosticBucket }
+        : {}),
+    ...(current.browserDiagnosticSummary
+      ? {}
+      : fallback?.browserDiagnosticSummary
+        ? { browserDiagnosticSummary: fallback.browserDiagnosticSummary }
+        : {}),
     ...(current.resumeMode ? {} : fallback?.resumeMode ? { resumeMode: fallback.resumeMode } : {}),
     ...(current.targetResolution ? {} : fallback?.targetResolution ? { targetResolution: fallback.targetResolution } : {}),
     ...(current.outcome ? {} : fallback?.outcome ? { outcome: fallback.outcome } : {}),
@@ -1264,34 +1279,46 @@ function mergeBrowserContinuity(
   };
 }
 
-function enrichRelayBrowserContinuity(
+function enrichBrowserContinuityDiagnostics(
   continuity: ReplayBrowserContinuitySummary | undefined,
   group: ReplayTaskSummary,
   relayDiagnostics?: RelayDiagnosticsSnapshot
 ): ReplayBrowserContinuitySummary | undefined {
-  if (!continuity || !isRelayContinuity(continuity) || !relayDiagnostics) {
+  if (!continuity) {
     return continuity;
   }
 
-  const target =
-    continuity.transportTargetId != null
-      ? relayDiagnostics.targets.find((item) => item.relayTargetId === continuity.transportTargetId) ?? null
-      : null;
-  const peerId = continuity.transportPeerId ?? target?.peerId;
-  const peer = peerId != null ? relayDiagnostics.peers.find((item) => item.peerId === peerId) ?? null : null;
-  const relayPeerStatus: ReplayBrowserContinuitySummary["relayPeerStatus"] =
-    peerId == null ? undefined : peer?.status ?? "missing";
-  const relayTargetStatus: ReplayBrowserContinuitySummary["relayTargetStatus"] =
-    continuity.transportTargetId == null ? undefined : target?.status ?? "missing";
-  const relayDiagnostic = deriveRelayDiagnostic(group, continuity, relayPeerStatus, relayTargetStatus);
+  if (isRelayContinuity(continuity) && relayDiagnostics) {
+    const target =
+      continuity.transportTargetId != null
+        ? relayDiagnostics.targets.find((item) => item.relayTargetId === continuity.transportTargetId) ?? null
+        : null;
+    const peerId = continuity.transportPeerId ?? target?.peerId;
+    const peer = peerId != null ? relayDiagnostics.peers.find((item) => item.peerId === peerId) ?? null : null;
+    const relayPeerStatus: ReplayBrowserContinuitySummary["relayPeerStatus"] =
+      peerId == null ? undefined : peer?.status ?? "missing";
+    const relayTargetStatus: ReplayBrowserContinuitySummary["relayTargetStatus"] =
+      continuity.transportTargetId == null ? undefined : target?.status ?? "missing";
+    const relayDiagnostic = deriveRelayDiagnostic(group, continuity, relayPeerStatus, relayTargetStatus);
+
+    return {
+      ...continuity,
+      ...(peerId ? { transportPeerId: peerId } : {}),
+      ...(relayPeerStatus ? { relayPeerStatus } : {}),
+      ...(relayTargetStatus ? { relayTargetStatus } : {}),
+      ...(relayDiagnostic?.bucket ? { browserDiagnosticBucket: relayDiagnostic.bucket } : {}),
+      ...(relayDiagnostic?.summary ? { browserDiagnosticSummary: relayDiagnostic.summary } : {}),
+      ...(relayDiagnostic?.bucket ? { relayDiagnosticBucket: relayDiagnostic.bucket } : {}),
+      ...(relayDiagnostic?.summary ? { relayDiagnosticSummary: relayDiagnostic.summary } : {}),
+    };
+  }
+
+  const transportDiagnostic = deriveTransportDiagnostic(group, continuity);
 
   return {
     ...continuity,
-    ...(peerId ? { transportPeerId: peerId } : {}),
-    ...(relayPeerStatus ? { relayPeerStatus } : {}),
-    ...(relayTargetStatus ? { relayTargetStatus } : {}),
-    ...(relayDiagnostic?.bucket ? { relayDiagnosticBucket: relayDiagnostic.bucket } : {}),
-    ...(relayDiagnostic?.summary ? { relayDiagnosticSummary: relayDiagnostic.summary } : {}),
+    ...(transportDiagnostic?.bucket ? { browserDiagnosticBucket: transportDiagnostic.bucket } : {}),
+    ...(transportDiagnostic?.summary ? { browserDiagnosticSummary: transportDiagnostic.summary } : {}),
   };
 }
 
@@ -1376,6 +1403,52 @@ function deriveRelayDiagnostic(
     };
   }
 
+  return undefined;
+}
+
+function deriveTransportDiagnostic(
+  group: ReplayTaskSummary,
+  continuity: ReplayBrowserContinuitySummary
+):
+  | {
+      bucket: NonNullable<ReplayBrowserContinuitySummary["browserDiagnosticBucket"]>;
+      summary: string;
+    }
+  | undefined {
+  if (continuity.transportMode !== "direct-cdp" && continuity.transportLabel !== "direct-cdp") {
+    return undefined;
+  }
+
+  const failureMessage = [continuity.summary, group.latestFailure?.message]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ");
+
+  if (/needs confirmation before resume|manual confirmation.*resume|inspect.*resume|target needs.*resume/i.test(failureMessage)) {
+    return {
+      bucket: "reconnect_required",
+      summary: continuity.transportTargetId
+        ? `Direct CDP target ${continuity.transportTargetId} needs confirmation before resume.`
+        : "Direct CDP target needs confirmation before resume.",
+    };
+  }
+  if (/timed out|timeout/i.test(failureMessage)) {
+    return {
+      bucket: "action_timeout",
+      summary: "Direct CDP action timed out and may need reconnect or manual confirmation.",
+    };
+  }
+  if (/disconnected|session dropped|connect over cdp|endpoint .*unreachable|failed to connect|browser disconnected/i.test(failureMessage)) {
+    return {
+      bucket: "endpoint_unreachable",
+      summary: "Direct CDP endpoint is unavailable or the browser disconnected.",
+    };
+  }
+  if (continuity.state === "attention" && continuity.targetResolution === "reconnect") {
+    return {
+      bucket: "reconnect_required",
+      summary: "Direct CDP recovery requires reconnect confirmation before resume.",
+    };
+  }
   return undefined;
 }
 

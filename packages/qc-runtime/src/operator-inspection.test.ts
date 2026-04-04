@@ -1112,6 +1112,86 @@ test("operator inspection keeps attention overview stable when item list is limi
   assert.equal(report.cases[0]?.caseKey, "governance:evt-limit");
 });
 
+test("operator inspection surfaces direct-cdp reconnect diagnostics in replay attention", () => {
+  const report = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [
+      {
+        replayId: "task-direct-cdp:worker:worker:browser:task:task-direct-cdp",
+        layer: "worker",
+        status: "failed",
+        recordedAt: 30,
+        threadId: "thread-1",
+        taskId: "task-direct-cdp",
+        summary: "direct-cdp browser reconnected but target needs confirmation before resume",
+        failure: {
+          category: "stale_session",
+          layer: "worker",
+          retryable: true,
+          message: "direct-cdp browser reconnected but target needs confirmation before resume",
+          recommendedAction: "inspect",
+        },
+        metadata: {
+          payload: {
+            sessionId: "browser-session-direct-cdp",
+            targetId: "target-direct-cdp",
+            transportMode: "direct-cdp",
+            transportLabel: "direct-cdp",
+            transportTargetId: "page:manager-1:1",
+            resumeMode: "warm",
+            targetResolution: "reconnect",
+          },
+        },
+      },
+    ],
+    recoveryRuns: [
+      {
+        recoveryRunId: buildRecoveryRunId("task-direct-cdp"),
+        threadId: "thread-1",
+        sourceGroupId: "task-direct-cdp",
+        latestStatus: "partial",
+        status: "waiting_external",
+        nextAction: "inspect_then_resume",
+        autoDispatchReady: false,
+        requiresManualIntervention: true,
+        latestSummary: "Direct CDP browser reconnected, but manual confirmation is required before resuming.",
+        waitingReason: "Direct CDP browser reconnected, but manual confirmation is required before resuming.",
+        currentAttemptId: "attempt-direct-cdp",
+        attempts: [
+          {
+            attemptId: "attempt-direct-cdp",
+            action: "resume",
+            requestedAt: 21,
+            updatedAt: 22,
+            status: "waiting_external",
+            nextAction: "inspect_then_resume",
+            summary: "Direct CDP target must be manually confirmed before resume.",
+          },
+        ],
+        createdAt: 21,
+        updatedAt: 22,
+      },
+    ],
+    progressEvents: [],
+    limit: 10,
+  });
+
+  const casesByKey = Object.fromEntries(report.cases.map((entry) => [entry.caseKey, entry]));
+  assert.equal(casesByKey["incident:task-direct-cdp"]?.browserTransportLabel, "direct-cdp");
+  assert.equal(casesByKey["incident:task-direct-cdp"]?.browserDiagnosticBucket, "reconnect_required");
+  assert.match(
+    casesByKey["incident:task-direct-cdp"]?.headline ?? "",
+    /incident:task-direct-cdp .*transport=direct-cdp .*diag=reconnect_required/
+  );
+
+  const bySource = Object.fromEntries(report.items.map((item) => [item.source, item]));
+  assert.equal(bySource.replay?.browserTransportLabel, "direct-cdp");
+  assert.equal(bySource.replay?.browserDiagnosticBucket, "reconnect_required");
+  assert.ok(bySource.replay?.reasons?.includes("reconnect_required"));
+});
+
 test("operator inspection counts cases from the full dataset before limiting returned items", () => {
   const report = buildOperatorAttentionReport({
     flows: [],
