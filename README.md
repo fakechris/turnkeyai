@@ -175,6 +175,7 @@ npm run cdp:wait -- --cdp-endpoint http://127.0.0.1:9222
 ```bash
 npm run cdp:smoke
 npm run cdp:smoke -- --url https://example.com
+npm run cdp:smoke -- --verify-reconnect --verify-workflow-log
 ```
 
 如果要一条命令跑完整本地 smoke：
@@ -259,7 +260,7 @@ npx @turnkeyai/cli tui
 `release-verify` 会对将要公开发布的 CLI 走一遍 `npm pack`、解包、bin/dist help smoke 和 `npm publish --dry-run`，避免 package metadata 在真正发版时才暴露问题；`soak-series` 和单独的 `Long Soak` workflow 会把 `soak / realworld / acceptance` 做多轮聚合运行，用来承接高成本、非 PR required 的长周期稳态验证。
 `validation-profiles` / `validation-profile-run` 会把现有 `validation-run`、`release-verify` 和 `soak-series` 收成固定 hardening 档位：`smoke` 适合本地快速回归，`nightly` / `prerelease` / `weekly` 适合持续稳定性和值班/发版前信心检查。
 `relay-peers` / `relay-targets [peerId]` 可以直接查看本地 daemon 当前看到的 relay 扩展连接和浏览器 tab 发现结果，便于做 extension smoke 和 transport 排障。
-`direct-cdp` 当前也已经有本地 launch / wait / smoke 链路，适合验证“接管一个已启用 CDP 的真实 Chromium 浏览器”这条 transport；对应脚本是 `cdp:launch`、`cdp:wait`、`cdp:smoke`。
+`direct-cdp` 当前也已经有本地 launch / wait / smoke 链路，适合验证“接管一个已启用 CDP 的真实 Chromium 浏览器”这条 transport；`cdp:smoke` 现在还支持 `--verify-reconnect` 和 `--verify-workflow-log`，可以把浏览器重启后的 session 恢复和 replay/operator workflow-log 读数一起压过一遍。
 
 模型配置默认会按这个顺序查找：
 

@@ -3670,6 +3670,188 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
   {
+    caseId: "direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics",
+    title: "Direct CDP recovery workflow log surfaces reconnect diagnostics",
+    area: "browser",
+    summary:
+      "Direct-CDP-backed recovery bundles should keep workflow status actionable while replay and operator surfaces preserve reconnect diagnostics.",
+    run() {
+      const records = [
+        {
+          replayId: "task-direct-cdp-workflow:worker:worker:browser:task:task-direct-cdp-workflow",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 10,
+          threadId: "thread-1",
+          taskId: "task-direct-cdp-workflow",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "direct-cdp snapshot timed out after the CDP browser disconnected",
+          failure: {
+            category: "transport_failed",
+            layer: "worker",
+            retryable: true,
+            message: "direct-cdp session dropped before snapshot completed",
+            recommendedAction: "resume",
+          },
+          metadata: {
+            payload: {
+              sessionId: "browser-session-direct-cdp-workflow",
+              targetId: "target-direct-cdp-workflow",
+              transportMode: "direct-cdp",
+              transportLabel: "direct-cdp",
+              transportTargetId: "page:manager-1:1",
+              resumeMode: "warm",
+              targetResolution: "reconnect",
+            },
+          },
+        },
+        {
+          replayId: "task-direct-cdp-workflow-follow:scheduled",
+          layer: "scheduled",
+          status: "completed",
+          recordedAt: 20,
+          threadId: "thread-1",
+          taskId: "task-direct-cdp-workflow-follow",
+          roleId: "role-operator",
+          summary: "direct-cdp reconnect recovery follow-up dispatched",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-direct-cdp-workflow",
+              attemptId: "recovery:task-direct-cdp-workflow:attempt:1",
+              dispatchReplayId: "task-direct-cdp-workflow-follow:scheduled",
+            },
+          },
+        },
+        {
+          replayId: "task-direct-cdp-workflow-follow:worker:worker:browser:task:task-direct-cdp-workflow-follow",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 30,
+          threadId: "thread-1",
+          taskId: "task-direct-cdp-workflow-follow",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "direct-cdp browser reconnected but target needs confirmation before resume",
+          failure: {
+            category: "stale_session",
+            layer: "worker",
+            retryable: true,
+            message: "direct-cdp browser reconnected but target needs confirmation before resume",
+            recommendedAction: "inspect",
+          },
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-direct-cdp-workflow",
+              attemptId: "recovery:task-direct-cdp-workflow:attempt:1",
+              dispatchReplayId: "task-direct-cdp-workflow-follow:scheduled",
+            },
+            payload: {
+              sessionId: "browser-session-direct-cdp-workflow",
+              targetId: "target-direct-cdp-workflow",
+              transportMode: "direct-cdp",
+              transportLabel: "direct-cdp",
+              transportTargetId: "page:manager-1:1",
+              resumeMode: "warm",
+              targetResolution: "reconnect",
+            },
+          },
+        },
+      ] satisfies ReplayRecord[];
+
+      const run: RecoveryRun = {
+        recoveryRunId: buildRecoveryRunId("task-direct-cdp-workflow"),
+        threadId: "thread-1",
+        sourceGroupId: "task-direct-cdp-workflow",
+        taskId: "task-direct-cdp-workflow",
+        roleId: "role-operator",
+        targetLayer: "worker",
+        targetWorker: "browser",
+        latestStatus: "partial",
+        status: "waiting_external",
+        nextAction: "inspect_then_resume",
+        autoDispatchReady: false,
+        requiresManualIntervention: true,
+        latestSummary: "Direct CDP browser reconnected, but manual confirmation is required before resuming.",
+        waitingReason: "Direct CDP browser reconnected, but manual confirmation is required before resuming.",
+        currentAttemptId: "recovery:task-direct-cdp-workflow:attempt:1",
+        attempts: [
+          {
+            attemptId: "recovery:task-direct-cdp-workflow:attempt:1",
+            action: "resume",
+            requestedAt: 18,
+            updatedAt: 30,
+            status: "waiting_external",
+            nextAction: "inspect_then_resume",
+            summary: "Direct CDP target must be manually confirmed before resume.",
+            dispatchedTaskId: "task-direct-cdp-workflow-follow",
+            targetLayer: "worker",
+            targetWorker: "browser",
+            browserOutcome: "resume_failed",
+            failure: {
+              category: "stale_session",
+              layer: "worker",
+              retryable: true,
+              message: "direct-cdp browser reconnected but target needs confirmation before resume",
+              recommendedAction: "inspect",
+            },
+          },
+        ],
+        createdAt: 18,
+        updatedAt: 30,
+      };
+
+      const bundle = buildReplayIncidentBundle(records, "task-direct-cdp-workflow");
+      if (!bundle) {
+        return buildResult(this, false, ["bundle=missing"]);
+      }
+      const enriched = attachRecoveryRunToReplayIncidentBundle({
+        bundle,
+        run,
+        records,
+      });
+      const replayConsole = buildReplayConsoleReport(records, 10, [run]);
+      const consoleBundle = replayConsole.latestBundles.find((entry) => entry.groupId === "task-direct-cdp-workflow");
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: records,
+        recoveryRuns: [run],
+        limit: 10,
+      });
+      const operatorCase = operatorSummary.attentionOverview?.activeCases?.find(
+        (item) => item.caseKey === "incident:task-direct-cdp-workflow"
+      );
+      const details = [
+        `workflow=${enriched.recoveryWorkflow?.status ?? "-"}`,
+        `bundleTransport=${enriched.browserContinuity?.transportLabel ?? "-"}`,
+        `consoleWorkflow=${consoleBundle?.workflowStatus ?? "-"}`,
+        `consoleTransport=${consoleBundle?.browserTransportLabel ?? "-"}`,
+        `operatorState=${operatorCase?.caseState ?? "-"}`,
+        `operatorNext=${operatorCase?.nextStep ?? "-"}`,
+      ];
+      const passed =
+        enriched.recoveryWorkflow?.status === "manual_follow_up" &&
+        enriched.recoveryWorkflow?.nextAction === "inspect_then_resume" &&
+        enriched.browserContinuity?.transportMode === "direct-cdp" &&
+        enriched.browserContinuity?.transportLabel === "direct-cdp" &&
+        enriched.browserContinuity?.transportTargetId === "page:manager-1:1" &&
+        enriched.recoveryOperator?.caseState === "waiting_manual" &&
+        enriched.recoveryOperator?.nextAction === "inspect_then_resume" &&
+        replayConsole.workflowStatusCounts.manual_follow_up === 1 &&
+        replayConsole.operatorCaseStateCounts.waiting_manual === 1 &&
+        consoleBundle?.workflowStatus === "manual_follow_up" &&
+        consoleBundle?.operatorCaseState === "waiting_manual" &&
+        consoleBundle?.browserTransportLabel === "direct-cdp" &&
+        operatorSummary.replay.operatorCaseStateCounts.waiting_manual === 1 &&
+        operatorCase?.caseState === "waiting_manual" &&
+        operatorCase?.browserTransportLabel === "direct-cdp" &&
+        operatorCase?.nextStep === "inspect_then_resume";
+      return buildResult(this, Boolean(passed), details);
+    },
+  },
+  {
     caseId: "recovery-bundle-closes-after-approved-fallback",
     title: "Approved fallback closes recovery bundle follow-up",
     area: "recovery",

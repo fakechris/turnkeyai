@@ -16,6 +16,8 @@ let keepOpen = false;
 let skipLaunch = false;
 let daemonPort: number | null = null;
 let cdpPort: number | null = null;
+let verifyReconnect = false;
+let verifyWorkflowLog = false;
 
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
@@ -111,6 +113,14 @@ for (let index = 0; index < args.length; index += 1) {
     skipLaunch = true;
     continue;
   }
+  if (arg === "--verify-reconnect") {
+    verifyReconnect = true;
+    continue;
+  }
+  if (arg === "--verify-workflow-log") {
+    verifyWorkflowLog = true;
+    continue;
+  }
 }
 
 await main();
@@ -127,6 +137,8 @@ async function main(): Promise<void> {
     : `http://127.0.0.1:${resolvedCdpPort}`;
   const fixture = startUrl.trim() ? null : await startDirectCdpSmokeFixture();
   const effectiveStartUrl = startUrl.trim() || fixture!.url;
+  const resolvedChromePath =
+    skipLaunch ? null : await resolveChromePath(chromePath ?? process.env.TURNKEYAI_BROWSER_PATH);
 
   let daemonChild: ChildProcess | null = null;
   let chromeChild: ChildProcess | null = null;
@@ -135,9 +147,8 @@ async function main(): Promise<void> {
     await mkdir(resolvedProfileDir, { recursive: true });
 
     if (!skipLaunch) {
-      const resolvedChromePath = await resolveChromePath(chromePath ?? process.env.TURNKEYAI_BROWSER_PATH);
       chromeChild = launchChromeForDirectCdp({
-        chromePath: resolvedChromePath,
+        chromePath: resolvedChromePath!,
         profileDir: resolvedProfileDir,
         cdpPort: resolvedCdpPort ?? Number(new URL(resolvedCdpEndpoint).port || 9222),
         startUrl: effectiveStartUrl,
@@ -164,6 +175,32 @@ async function main(): Promise<void> {
       daemonUrl: resolvedDaemonUrl,
       startUrl: effectiveStartUrl,
     });
+    const reconnectSmoke =
+      verifyReconnect
+        ? await runDirectCdpReconnectSmoke({
+            daemonUrl: resolvedDaemonUrl,
+            timeoutMs,
+            cdpEndpoint: resolvedCdpEndpoint,
+            browserChild: chromeChild,
+            relaunch: () =>
+              launchChromeForDirectCdp({
+                chromePath: resolvedChromePath!,
+                profileDir: resolvedProfileDir,
+                cdpPort: resolvedCdpPort ?? Number(new URL(resolvedCdpEndpoint).port || 9222),
+                startUrl: effectiveStartUrl,
+              }),
+            browserSmoke: smoke,
+          })
+        : null;
+    if (reconnectSmoke) {
+      chromeChild = reconnectSmoke.browserChild;
+    }
+    const workflowLogSmoke =
+      verifyWorkflowLog
+        ? await runDirectCdpWorkflowLogSmoke({
+            daemonUrl: resolvedDaemonUrl,
+          })
+        : null;
 
     console.log("direct-cdp smoke passed");
     console.log(`daemon: ${resolvedDaemonUrl}`);
@@ -174,6 +211,14 @@ async function main(): Promise<void> {
     console.log(`browser-transport: ${smoke.transportLabel}`);
     if (smoke.resumeFinalUrl) {
       console.log(`browser-resume-final-url: ${smoke.resumeFinalUrl}`);
+    }
+    if (reconnectSmoke) {
+      console.log(`reconnect-history: ${reconnectSmoke.historyLength}`);
+      console.log(`reconnect-final-url: ${reconnectSmoke.finalUrl}`);
+    }
+    if (workflowLogSmoke) {
+      console.log(`workflow-log-case: ${workflowLogSmoke.caseId}`);
+      console.log(`workflow-log-status: ${workflowLogSmoke.status}`);
     }
     console.log(`profile: ${resolvedProfileDir}`);
     console.log(`url: ${effectiveStartUrl}`);
@@ -340,6 +385,19 @@ async function waitForCdpEndpoint(endpoint: string, timeoutMs: number): Promise<
   throw new Error(`timed out waiting for CDP endpoint ${endpoint} | last error: ${lastError ?? "unknown"}`);
 }
 
+async function waitForCdpEndpointUnavailable(endpoint: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await getJson(resolveVersionUrl(endpoint));
+    } catch {
+      return;
+    }
+    await sleep(300);
+  }
+  throw new Error(`timed out waiting for CDP endpoint ${endpoint} to go offline`);
+}
+
 function resolveVersionUrl(endpoint: string): string {
   const normalized = endpoint.replace(/\/+$/, "");
   return normalized.endsWith("/json/version") ? normalized : `${normalized}/json/version`;
@@ -368,6 +426,99 @@ async function getSessionHistory(
   return (await getJson(
     `${daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/history?threadId=${encodeURIComponent(threadId)}&limit=10`
   )) as Array<{ dispatchMode?: unknown; transportLabel?: unknown }>;
+}
+
+async function runDirectCdpReconnectSmoke(input: {
+  daemonUrl: string;
+  timeoutMs: number;
+  cdpEndpoint: string;
+  browserChild: ChildProcess | null;
+  relaunch: () => ChildProcess;
+  browserSmoke: Awaited<ReturnType<typeof runDirectCdpBrowserSessionSmoke>>;
+}): Promise<{
+  browserChild: ChildProcess;
+  historyLength: number;
+  finalUrl: string;
+}> {
+  if (!input.browserChild) {
+    throw new Error("direct-cdp reconnect smoke requires a locally launched browser; do not combine --verify-reconnect with --skip-launch");
+  }
+
+  input.browserChild.kill("SIGTERM");
+  await waitForCdpEndpointUnavailable(input.cdpEndpoint, input.timeoutMs);
+
+  const relaunched = input.relaunch();
+  await waitForCdpEndpoint(input.cdpEndpoint, input.timeoutMs);
+
+  const resumeResponse = (await postJson(
+    `${input.daemonUrl}/browser-sessions/${encodeURIComponent(input.browserSmoke.sessionId)}/resume`,
+    {
+      threadId: input.browserSmoke.threadId,
+      instructions: "Resume after direct-cdp reconnect and confirm the form state still holds.",
+      actions: [
+        { kind: "console", probe: "page-metadata" },
+        { kind: "snapshot", note: "post-cdp-reconnect" },
+      ],
+    }
+  )) as BrowserSmokeResponse;
+  const finalUrl = requireString(resumeResponse.page?.finalUrl, "direct-cdp reconnect final page URL");
+  if (!finalUrl.includes("#submitted")) {
+    throw new Error(`direct-cdp reconnect smoke lost page state after browser restart: ${finalUrl}`);
+  }
+  if (resumeResponse.dispatchMode !== "resume") {
+    throw new Error(`direct-cdp reconnect smoke returned unexpected dispatch mode: ${String(resumeResponse.dispatchMode ?? "unknown")}`);
+  }
+  if (resumeResponse.transportLabel !== "direct-cdp") {
+    throw new Error(`direct-cdp reconnect smoke returned unexpected transport label: ${String(resumeResponse.transportLabel ?? "unknown")}`);
+  }
+  const metadataTrace = resumeResponse.trace?.find((entry) => entry.kind === "console");
+  const metadataResult =
+    metadataTrace?.output && typeof metadataTrace.output === "object"
+      ? (metadataTrace.output as { result?: { title?: unknown; href?: unknown } }).result
+      : null;
+  if (!metadataResult || typeof metadataResult.href !== "string" || !metadataResult.href.includes("#submitted")) {
+    throw new Error("direct-cdp reconnect smoke console probe did not observe the submitted hash URL");
+  }
+
+  const history = await getSessionHistory(
+    input.daemonUrl,
+    input.browserSmoke.threadId,
+    input.browserSmoke.sessionId
+  );
+  const dispatchSequence = history.map((entry) => entry.dispatchMode).join(",");
+  if (dispatchSequence !== "spawn,send,resume,resume") {
+    throw new Error(`direct-cdp reconnect smoke recorded unexpected dispatch sequence: ${dispatchSequence}`);
+  }
+  if (!history.every((entry) => entry.transportLabel === "direct-cdp")) {
+    throw new Error("direct-cdp reconnect smoke history is missing direct-cdp transport labels");
+  }
+
+  return {
+    browserChild: relaunched,
+    historyLength: history.length,
+    finalUrl,
+  };
+}
+
+async function runDirectCdpWorkflowLogSmoke(input: {
+  daemonUrl: string;
+}): Promise<{ caseId: string; status: string }> {
+  const caseId = "direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics";
+  const result = (await postJson(`${input.daemonUrl}/regression-cases/run`, {
+    caseIds: [caseId],
+  })) as {
+    totalCases?: number;
+    failedCases?: number;
+    results?: Array<{ caseId?: string; status?: string }>;
+  };
+  const entry = result.results?.[0];
+  if (!entry || entry.caseId !== caseId || entry.status !== "passed" || result.failedCases !== 0) {
+    throw new Error(`direct-cdp workflow log smoke failed: ${JSON.stringify(entry ?? result)}`);
+  }
+  return {
+    caseId,
+    status: entry.status,
+  };
 }
 
 function requireString(value: unknown, label: string): string {
