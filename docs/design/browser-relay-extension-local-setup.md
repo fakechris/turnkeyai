@@ -53,6 +53,24 @@ http://127.0.0.1:4100
 
 当前扩展默认也会连这个地址。
 
+也可以用仓库脚本直接启动一个带扩展的本地 Chrome：
+
+```bash
+npm run relay:launch -- --url https://example.com
+```
+
+默认会：
+
+1. 使用 `packages/browser-relay-peer/dist/extension`
+2. 创建独立的临时 Chrome profile
+3. 启动本地 Chrome 并加载该扩展
+
+随后可以等待扩展真正注册到 daemon：
+
+```bash
+npm run relay:wait -- --require-target
+```
+
 ## 4. 安装到 Chrome
 
 1. 打开 `chrome://extensions`
@@ -68,6 +86,7 @@ http://127.0.0.1:4100
 2. service worker 能启动
 3. 扩展可以向本地 daemon register peer
 4. relay transport 的最小动作面具备 `open / snapshot / click / type`
+5. 当前还支持 `scroll / console / screenshot`
 
 ## 6. 当前限制
 

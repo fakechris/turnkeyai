@@ -144,6 +144,18 @@ packages/browser-relay-peer/dist/extension
 - `service-worker.js`
 - `content-script.js`
 
+如果要直接启动一个带扩展的本地 Chrome 做 smoke：
+
+```bash
+npm run relay:launch -- --url https://example.com
+```
+
+如果 daemon 已经以 relay 模式启动，可以等待扩展 peer 真正注册上来：
+
+```bash
+npm run relay:wait -- --require-target
+```
+
 配合本地 daemon 走 relay transport 时，可以显式设置：
 
 ```bash
@@ -210,6 +222,7 @@ npx @turnkeyai/cli tui
 `prompt-console` 现在会额外汇总 recent-turn / retrieved-memory / worker-evidence 的实际打包数量，以及 pending / waiting / open-question / decision-or-constraint 的 carry-forward 情况；acceptance / soak 也已把这些计数和 runtime waiting-point 一起编进长链验证，方便直接看高压上下文下哪些信息被保住了。
 `release-verify` 会对将要公开发布的 CLI 走一遍 `npm pack`、解包、bin/dist help smoke 和 `npm publish --dry-run`，避免 package metadata 在真正发版时才暴露问题；`soak-series` 和单独的 `Long Soak` workflow 会把 `soak / realworld / acceptance` 做多轮聚合运行，用来承接高成本、非 PR required 的长周期稳态验证。
 `validation-profiles` / `validation-profile-run` 会把现有 `validation-run`、`release-verify` 和 `soak-series` 收成固定 hardening 档位：`smoke` 适合本地快速回归，`nightly` / `prerelease` / `weekly` 适合持续稳定性和值班/发版前信心检查。
+`relay-peers` / `relay-targets [peerId]` 可以直接查看本地 daemon 当前看到的 relay 扩展连接和浏览器 tab 发现结果，便于做 extension smoke 和 transport 排障。
 
 模型配置默认会按这个顺序查找：
 
