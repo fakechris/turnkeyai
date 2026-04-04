@@ -114,6 +114,22 @@ const SCENARIOS: RealWorldScenarioDescriptor[] = [
     ],
   },
   {
+    scenarioId: "governed-publish-readback-verification",
+    area: "governance",
+    title: "Governed publish readback verification",
+    summary:
+      "模拟真实发布任务在 approval gate、browser fallback 和 publish readback verification 后，operator attention 与 governance closure 一致收口。",
+    caseIds: [
+      "governance-summary-highlights-browser-fallback",
+      "governance-approval-required-side-effect-blocks",
+      "governance-publish-readback-verifies-closure",
+      "replay-bundle-exposes-recovery-operator-gate",
+      "recovery-approval-fallback-chain",
+      "recovery-bundle-closes-after-approved-fallback",
+      "operator-summary-aligns-attention-across-surfaces",
+    ],
+  },
+  {
     scenarioId: "parallel-follow-up-merge-runbook",
     area: "parallel",
     title: "Parallel follow-up merge runbook",

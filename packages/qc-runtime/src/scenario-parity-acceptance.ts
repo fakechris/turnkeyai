@@ -78,6 +78,19 @@ const SCENARIOS: ScenarioParityAcceptanceScenarioDescriptor[] = [
     ],
   },
   {
+    scenarioId: "browser-ownership-reclaim-isolation",
+    area: "browser",
+    title: "browser ownership reclaim isolation",
+    summary:
+      "验证 wrong-owner deny、ownership reclaim 与 cold reopen 后，只保留一条 recovered continuity，且旧 owner 不会污染新的 browser continuity 视图。",
+    caseIds: [
+      "browser-ownership-reclaim-keeps-single-recovered-case",
+      "browser-recovery-multi-attempt-chain-stays-aligned",
+      "browser-recovery-cold-reopen-outcome",
+      "replay-console-browser-continuity-counts",
+    ],
+  },
+  {
     scenarioId: "recovery-fallback-and-approval",
     area: "recovery",
     title: "retry / fallback / approval / resume",

@@ -5,7 +5,7 @@ import { listBoundedRegressionCases, runBoundedRegressionSuite } from "./bounded
 
 test("bounded regression harness lists built-in cases", () => {
   const cases = listBoundedRegressionCases();
-  assert.ok(cases.length >= 34);
+  assert.ok(cases.length >= 36);
   assert.ok(cases.some((item) => item.caseId === "runtime-summary-aligns-manual-recovery-and-operator-attention"));
   assert.ok(cases.some((item) => item.caseId === "runtime-summary-keeps-browser-recovered-chain-active"));
   assert.ok(cases.some((item) => item.caseId === "runtime-summary-preserves-reconnect-window-before-stale"));
@@ -30,6 +30,7 @@ test("bounded regression harness lists built-in cases", () => {
   assert.ok(cases.some((item) => item.caseId === "governance-official-api-success-high-trust"));
   assert.ok(cases.some((item) => item.caseId === "governance-summary-highlights-browser-fallback"));
   assert.ok(cases.some((item) => item.caseId === "governance-approval-required-side-effect-blocks"));
+  assert.ok(cases.some((item) => item.caseId === "governance-publish-readback-verifies-closure"));
   assert.ok(cases.some((item) => item.caseId === "operator-summary-aligns-attention-across-surfaces"));
   assert.ok(cases.some((item) => item.caseId === "operator-summary-clears-recovery-attention-after-recovery"));
   assert.ok(cases.some((item) => item.caseId === "operator-attention-aligns-with-summary"));
@@ -43,6 +44,7 @@ test("bounded regression harness lists built-in cases", () => {
   assert.ok(cases.some((item) => item.caseId === "replay-console-surfaces-workflow-state"));
   assert.ok(cases.some((item) => item.caseId === "parallel-follow-up-summary-closes-after-recovery"));
   assert.ok(cases.some((item) => item.caseId === "recovery-bundle-closes-after-approved-fallback"));
+  assert.ok(cases.some((item) => item.caseId === "browser-ownership-reclaim-keeps-single-recovered-case"));
   assert.ok(cases.some((item) => item.caseId === "context-evidence-heavy-keeps-pending-work"));
   assert.ok(cases.some((item) => item.caseId === "context-reentry-preserves-active-tasks-and-open-questions"));
   assert.ok(cases.some((item) => item.caseId === "context-continuity-keeps-decisions-and-constraints-under-budget"));
@@ -85,13 +87,14 @@ test("bounded regression harness can run governance and parallel operator cases"
     "parallel-flow-summary-highlights-shard-issues",
     "parallel-flow-summary-clears-attention-after-retry",
     "governance-summary-highlights-browser-fallback",
+    "governance-publish-readback-verifies-closure",
     "operator-summary-aligns-attention-across-surfaces",
     "operator-summary-clears-recovery-attention-after-recovery",
     "operator-attention-aligns-with-summary",
     "operator-case-cards-preserve-order-and-metadata",
     "operator-surfaces-track-recovery-lifecycle",
   ]);
-  assert.equal(result.totalCases, 8);
+  assert.equal(result.totalCases, 9);
   assert.equal(result.failedCases, 0);
 });
 
@@ -142,7 +145,9 @@ test("bounded regression harness can run scenario-parity governance and parallel
     "governance-official-api-success-high-trust",
     "governance-summary-highlights-browser-fallback",
     "governance-approval-required-side-effect-blocks",
+    "governance-publish-readback-verifies-closure",
+    "browser-ownership-reclaim-keeps-single-recovered-case",
   ]);
-  assert.equal(result.totalCases, 6);
+  assert.equal(result.totalCases, 8);
   assert.equal(result.failedCases, 0);
 });

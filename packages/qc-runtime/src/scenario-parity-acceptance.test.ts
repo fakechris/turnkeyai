@@ -13,6 +13,7 @@ test("scenario parity acceptance suite lists scenario families", () => {
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "dispatch-scheduled-reentry-existing-session"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "parallel-three-shard-success"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "browser-spawn-send-resume"));
+  assert.ok(scenarios.some((scenario) => scenario.scenarioId === "browser-ownership-reclaim-isolation"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "recovery-fallback-and-approval"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "context-evidence-heavy-and-reentry"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "governance-success-fallback-approval"));
@@ -31,6 +32,11 @@ test("scenario parity acceptance suite lists scenario families", () => {
     scenarios
       .find((scenario) => scenario.scenarioId === "browser-spawn-send-resume")
       ?.caseIds.includes("browser-recovery-multi-attempt-chain-stays-aligned")
+  );
+  assert.ok(
+    scenarios
+      .find((scenario) => scenario.scenarioId === "browser-ownership-reclaim-isolation")
+      ?.caseIds.includes("browser-ownership-reclaim-keeps-single-recovered-case")
   );
 });
 

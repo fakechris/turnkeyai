@@ -128,6 +128,20 @@ const SCENARIOS: SoakScenarioDescriptor[] = [
       "operator-summary-aligns-attention-across-surfaces",
     ],
   },
+  {
+    scenarioId: "parallel-retry-and-merge-closure",
+    area: "parallel",
+    title: "Parallel retry -> merge closure",
+    summary:
+      "验证多 shard 任务在 timeout、follow-up、retry 和最终 merge closure 下的 operator-facing 合流语义持续一致。",
+    caseIds: [
+      "parallel-flow-summary-highlights-shard-issues",
+      "parallel-follow-up-summary-stays-open",
+      "parallel-flow-summary-clears-attention-after-retry",
+      "parallel-follow-up-summary-closes-after-recovery",
+      "operator-summary-aligns-attention-across-surfaces",
+    ],
+  },
 ];
 
 export function listSoakScenarios(): SoakScenarioDescriptor[] {

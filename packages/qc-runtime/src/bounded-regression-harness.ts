@@ -1894,6 +1894,83 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
   {
+    caseId: "governance-publish-readback-verifies-closure",
+    title: "Governed publish read-back verification closes the path",
+    area: "governance",
+    summary:
+      "A governed publish path should stay actionable until a read-back verification succeeds, and only then collapse to a non-attention closure state.",
+    run() {
+      const permissionRecords: PermissionCacheRecord[] = [
+        {
+          cacheKey: "perm-readback",
+          threadId: "thread-1",
+          workerType: "explore",
+          requirement: {
+            level: "approval",
+            scope: "publish",
+            rationale: "publishing requires approval",
+            cacheKey: "perm-readback",
+          },
+          decision: "prompt_required",
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      ];
+      const provisional = buildGovernanceConsoleReport(permissionRecords, [
+        {
+          eventId: "evt-readback-provisional",
+          threadId: "thread-1",
+          kind: "audit.logged",
+          createdAt: 10,
+          payload: {
+            workerType: "explore",
+            status: "partial",
+            transport: "browser",
+            trustLevel: "observational",
+            admissionMode: "summary_only",
+            permission: {
+              recommendedAction: "fallback_browser",
+            },
+          },
+        },
+      ]);
+      const verified = buildGovernanceConsoleReport([], [
+        {
+          eventId: "evt-readback-verified",
+          threadId: "thread-1",
+          kind: "audit.logged",
+          createdAt: 20,
+          payload: {
+            workerType: "explore",
+            status: "completed",
+            transport: "official_api",
+            trustLevel: "promotable",
+            admissionMode: "full",
+            permission: {
+              recommendedAction: "proceed",
+            },
+          },
+        },
+      ]);
+
+      const details = [
+        `provisionalAttention=${provisional.attentionCount}`,
+        `provisionalAction=${provisional.recommendedActionCounts.fallback_browser ?? 0}`,
+        `verifiedAttention=${verified.attentionCount}`,
+        `verifiedTransport=${verified.transportCounts.official_api ?? 0}`,
+        `verifiedTrust=${verified.trustCounts.promotable ?? 0}`,
+      ];
+      const passed =
+        provisional.attentionCount === 1 &&
+        provisional.recommendedActionCounts.fallback_browser === 1 &&
+        verified.attentionCount === 0 &&
+        verified.transportCounts.official_api === 1 &&
+        verified.trustCounts.promotable === 1 &&
+        verified.recommendedActionCounts.proceed === 1;
+      return buildResult(this, passed, details);
+    },
+  },
+  {
     caseId: "operator-summary-aligns-attention-across-surfaces",
     title: "Operator summary aligns attention across flow, replay, governance, and recovery",
     area: "governance",
@@ -4476,6 +4553,215 @@ const BUILT_IN_CASES: RegressionCase[] = [
           consoleReport.browserContinuityCounts.attention === 1,
         details
       );
+    },
+  },
+  {
+    caseId: "browser-ownership-reclaim-keeps-single-recovered-case",
+    title: "Browser ownership reclaim keeps a single recovered case",
+    area: "browser",
+    summary:
+      "An owner-mismatch denial followed by reclaim and cold reopen should still collapse back into one recovered incident instead of duplicating browser continuity cases.",
+    run() {
+      const records = [
+        {
+          replayId: "task-own-0:worker:worker:browser:task:task-own-0",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 10,
+          threadId: "thread-1",
+          taskId: "task-own-0",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "browser continuity blocked after ownership mismatch",
+          failure: {
+            category: "stale_session",
+            layer: "worker",
+            retryable: true,
+            message: "ownership mismatch blocked hot attach",
+            recommendedAction: "resume",
+          },
+          metadata: {
+            payload: {
+              sessionId: "browser-session-own",
+              targetId: "target-own",
+              resumeMode: "warm",
+              targetResolution: "reconnect",
+            },
+          },
+        },
+        {
+          replayId: "task-own-1:scheduled",
+          layer: "scheduled",
+          status: "completed",
+          recordedAt: 15,
+          threadId: "thread-1",
+          taskId: "task-own-1",
+          roleId: "role-operator",
+          summary: "ownership reclaim recovery dispatched",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-own-0",
+              attemptId: "recovery:task-own-0:attempt:1",
+              dispatchReplayId: "task-own-1:scheduled",
+            },
+          },
+        },
+        {
+          replayId: "task-own-1:worker:worker:browser:task:task-own-1",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 20,
+          threadId: "thread-1",
+          taskId: "task-own-1",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "wrong owner denial forced a fresh reopen path",
+          failure: {
+            category: "stale_session",
+            layer: "worker",
+            retryable: true,
+            message: "wrong owner denied hot reuse of the browser target",
+            recommendedAction: "fallback",
+          },
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-own-0",
+              attemptId: "recovery:task-own-0:attempt:1",
+              dispatchReplayId: "task-own-1:scheduled",
+            },
+          },
+        },
+        {
+          replayId: "task-own-2:scheduled",
+          layer: "scheduled",
+          status: "completed",
+          recordedAt: 25,
+          threadId: "thread-1",
+          taskId: "task-own-2",
+          roleId: "role-operator",
+          summary: "cold reopen reclaim dispatched",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-own-0",
+              attemptId: "recovery:task-own-0:attempt:2",
+              dispatchReplayId: "task-own-2:scheduled",
+            },
+          },
+        },
+        {
+          replayId: "task-own-2:worker:worker:browser:task:task-own-2",
+          layer: "worker",
+          status: "completed",
+          recordedAt: 35,
+          threadId: "thread-1",
+          taskId: "task-own-2",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "cold reopen reclaimed the browser target without cross-owner leakage",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-own-0",
+              attemptId: "recovery:task-own-0:attempt:2",
+              dispatchReplayId: "task-own-2:scheduled",
+            },
+            payload: {
+              sessionId: "browser-session-own",
+              targetId: "target-own",
+              resumeMode: "cold",
+              targetResolution: "reopen",
+            },
+          },
+        },
+      ] satisfies ReplayRecord[];
+
+      const existingRuns: RecoveryRun[] = [
+        {
+          recoveryRunId: buildRecoveryRunId("task-own-0"),
+          threadId: "thread-1",
+          sourceGroupId: "task-own-0",
+          taskId: "task-own-0",
+          roleId: "role-operator",
+          targetLayer: "worker",
+          targetWorker: "browser",
+          latestStatus: "failed",
+          status: "fallback_running",
+          nextAction: "fallback_transport",
+          autoDispatchReady: true,
+          requiresManualIntervention: false,
+          latestSummary: "cold reopen reclaim dispatched",
+          currentAttemptId: "recovery:task-own-0:attempt:2",
+          attempts: [
+            {
+              attemptId: "recovery:task-own-0:attempt:1",
+              action: "resume",
+              requestedAt: 15,
+              updatedAt: 20,
+              status: "failed",
+              nextAction: "fallback_transport",
+              summary: "wrong owner denied hot reuse of the browser target",
+              completedAt: 20,
+              dispatchedTaskId: "task-own-1",
+              targetLayer: "worker",
+              targetWorker: "browser",
+              failure: {
+                category: "stale_session",
+                layer: "worker",
+                retryable: true,
+                message: "wrong owner denied hot reuse of the browser target",
+                recommendedAction: "fallback",
+              },
+            },
+            {
+              attemptId: "recovery:task-own-0:attempt:2",
+              action: "fallback",
+              requestedAt: 25,
+              updatedAt: 26,
+              status: "fallback_running",
+              nextAction: "fallback_transport",
+              summary: "cold reopen reclaim dispatched",
+              dispatchedTaskId: "task-own-2",
+              targetLayer: "worker",
+              targetWorker: "browser",
+            },
+          ],
+          createdAt: 15,
+          updatedAt: 26,
+        },
+      ];
+
+      const recoveryRuns = buildRecoveryRuns(records, existingRuns, 100);
+      const run = recoveryRuns.find((entry) => entry.sourceGroupId === "task-own-0");
+      const bundle = buildReplayIncidentBundle(records, "task-own-0");
+      const replayConsole = buildReplayConsoleReport(records, 10);
+      const resolvedBundles = replayConsole.latestResolvedBundles.filter((entry) => entry.groupId === "task-own-0");
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: records,
+        recoveryRuns,
+      });
+      const details = [
+        `run=${run?.status ?? "-"}`,
+        `attempt1=${run?.attempts[0]?.status ?? "-"}`,
+        `attempt2=${run?.attempts[1]?.browserOutcome ?? "-"}`,
+        `resolvedBundles=${resolvedBundles.length}`,
+        `open=${replayConsole.openIncidents}`,
+        `followUpClosed=${bundle?.followUpSummary?.closedGroups ?? "-"}`,
+        `continuity=${resolvedBundles[0]?.browserContinuityState ?? "-"}`,
+        `activeCases=${operatorSummary.attentionOverview?.activeCases?.length ?? 0}`,
+      ];
+      const passed =
+        run?.status === "recovered" &&
+        run.attempts[0]?.status === "failed" &&
+        run.attempts[1]?.browserOutcome === "cold_reopen" &&
+        resolvedBundles.length === 1 &&
+        replayConsole.openIncidents === 0 &&
+        bundle?.followUpSummary?.closedGroups === 1 &&
+        bundle.followUpSummary?.browserContinuityCounts.recovered === 1 &&
+        resolvedBundles[0]?.browserContinuityState === "recovered" &&
+        (operatorSummary.attentionOverview?.activeCases?.length ?? 0) === 0;
+      return buildResult(this, Boolean(passed), details);
     },
   },
 ];
