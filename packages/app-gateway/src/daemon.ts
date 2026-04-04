@@ -165,6 +165,7 @@ import { FileValidationOpsRunStore } from "@turnkeyai/team-store/ops/file-valida
 import { FileRecoveryRunStore } from "@turnkeyai/team-store/recovery/file-recovery-run-store";
 import { FileRecoveryRunEventStore } from "@turnkeyai/team-store/recovery/file-recovery-run-event-store";
 import { FileScheduledTaskStore } from "@turnkeyai/team-store/scheduled/file-scheduled-task-store";
+import { FileWorkerSessionStore } from "@turnkeyai/team-store/worker/file-worker-session-store";
 import { BrowserWorkerHandler } from "@turnkeyai/worker-runtime/browser-worker-handler";
 import { DefaultCapabilityDiscoveryService } from "@turnkeyai/worker-runtime/capability-discovery-service";
 import { ExploreWorkerHandler } from "@turnkeyai/worker-runtime/explore-worker-handler";
@@ -283,6 +284,9 @@ const scheduledTaskStore = new FileScheduledTaskStore({
 });
 const validationOpsRunStore = new FileValidationOpsRunStore({
   rootDir: path.join(DATA_DIR, "validation-ops-runs"),
+});
+const workerSessionStore = new FileWorkerSessionStore({
+  rootDir: path.join(DATA_DIR, "worker-sessions"),
 });
 
 const summaryBuilder: SummaryBuilder = {
@@ -424,6 +428,7 @@ const workerRegistry = new DefaultWorkerRegistry(workerHandlers);
 const workerRuntime: WorkerRuntime = new LocalWorkerRuntime({
   workerRegistry,
   runtimeProgressRecorder,
+  sessionStore: workerSessionStore,
 });
 const heuristicResponseGenerator = new DeterministicRoleResponseGenerator({
   modelAdapter: new HeuristicModelAdapter(),

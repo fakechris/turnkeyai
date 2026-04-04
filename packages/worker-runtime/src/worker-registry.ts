@@ -29,4 +29,8 @@ export class DefaultWorkerRegistry implements WorkerRegistry {
 
     return null;
   }
+
+  getHandler(kind: WorkerHandler["kind"]): WorkerHandler | null {
+    return this.handlers.find((handler) => handler.kind === kind) ?? null;
+  }
 }

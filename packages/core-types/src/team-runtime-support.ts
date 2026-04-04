@@ -439,6 +439,7 @@ export interface WorkerHandler {
 
 export interface WorkerRegistry {
   selectHandler(input: WorkerInvocationInput): Promise<WorkerHandler | null>;
+  getHandler?(kind: WorkerKind): WorkerHandler | null | Promise<WorkerHandler | null>;
 }
 
 export interface WorkerExecutionResult {
@@ -462,6 +463,21 @@ export interface WorkerSessionState {
     summary: string;
     createdAt: number;
   };
+}
+
+export interface WorkerSessionContextRecord {
+  threadId: ThreadId;
+  flowId: FlowId;
+  taskId: TaskId;
+  roleId: RoleId;
+  parentSpanId: string;
+}
+
+export interface WorkerSessionRecord {
+  workerRunKey: RunKey;
+  state: WorkerSessionState;
+  executionToken: number;
+  context?: WorkerSessionContextRecord;
 }
 
 export interface WorkerMessageInput {
@@ -538,6 +554,12 @@ export interface WorkerRuntime {
   cancel(input: WorkerCancelInput): Promise<WorkerSessionState | null>;
   getState(workerRunKey: RunKey): Promise<WorkerSessionState | null>;
   maybeRunForRole(input: WorkerInvocationInput): Promise<WorkerExecutionResult | null>;
+}
+
+export interface WorkerSessionStore {
+  get(workerRunKey: RunKey): Promise<WorkerSessionRecord | null>;
+  put(record: WorkerSessionRecord): Promise<void>;
+  list(limit?: number): Promise<WorkerSessionRecord[]>;
 }
 
 export interface SupervisorUserMessageInput {

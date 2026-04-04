@@ -23,6 +23,7 @@
     "./ops/file-validation-ops-run-store": "./src/ops/file-validation-ops-run-store.ts",
     "./recovery/file-recovery-run-event-store": "./src/recovery/file-recovery-run-event-store.ts",
     "./recovery/file-recovery-run-store": "./src/recovery/file-recovery-run-store.ts",
-    "./scheduled/file-scheduled-task-store": "./src/scheduled/file-scheduled-task-store.ts"
+    "./scheduled/file-scheduled-task-store": "./src/scheduled/file-scheduled-task-store.ts",
+    "./worker/file-worker-session-store": "./src/worker/file-worker-session-store.ts"
   }
 }
