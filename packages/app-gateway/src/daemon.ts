@@ -430,6 +430,10 @@ const workerRuntime: WorkerRuntime = new LocalWorkerRuntime({
   runtimeProgressRecorder,
   sessionStore: workerSessionStore,
 });
+const workerStartupReconcileResult = await workerRuntime.reconcileStartup?.();
+if (workerStartupReconcileResult && workerStartupReconcileResult.totalSessions > 0) {
+  console.info("worker runtime startup reconcile completed", workerStartupReconcileResult);
+}
 const heuristicResponseGenerator = new DeterministicRoleResponseGenerator({
   modelAdapter: new HeuristicModelAdapter(),
   roleProfileRegistry,

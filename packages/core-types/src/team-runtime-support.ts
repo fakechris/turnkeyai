@@ -554,12 +554,18 @@ export interface WorkerRuntime {
   cancel(input: WorkerCancelInput): Promise<WorkerSessionState | null>;
   getState(workerRunKey: RunKey): Promise<WorkerSessionState | null>;
   maybeRunForRole(input: WorkerInvocationInput): Promise<WorkerExecutionResult | null>;
+  reconcileStartup?(): Promise<WorkerStartupReconcileResult>;
 }
 
 export interface WorkerSessionStore {
   get(workerRunKey: RunKey): Promise<WorkerSessionRecord | null>;
   put(record: WorkerSessionRecord): Promise<void>;
   list(limit?: number): Promise<WorkerSessionRecord[]>;
+}
+
+export interface WorkerStartupReconcileResult {
+  totalSessions: number;
+  downgradedRunningSessions: number;
 }
 
 export interface SupervisorUserMessageInput {

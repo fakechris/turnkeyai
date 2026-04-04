@@ -6,6 +6,7 @@ import type {
   WorkerHandler,
   WorkerInvocationInput,
   WorkerRegistry,
+  WorkerSessionRecord,
   WorkerSessionStore,
 } from "@turnkeyai/core-types/team";
 
@@ -658,6 +659,90 @@ test("in-memory worker runtime persists sessions and rehydrates running work as 
   });
   assert.equal(resumed?.status, "completed");
   assert.equal((await restartedRuntime.getState(spawned.workerRunKey))?.status, "done");
+});
+
+test("in-memory worker runtime exposes startup reconcile summary after hydration", async () => {
+  const stored = new Map<string, WorkerSessionRecord>([
+    [
+      "worker:browser:task:task-running",
+      {
+        workerRunKey: "worker:browser:task:task-running",
+        executionToken: 3,
+        state: {
+          workerRunKey: "worker:browser:task:task-running",
+          workerType: "browser",
+          status: "running",
+          createdAt: 10,
+          updatedAt: 20,
+          currentTaskId: "task-running",
+        },
+      },
+    ],
+    [
+      "worker:finance:task:task-done",
+      {
+        workerRunKey: "worker:finance:task:task-done",
+        executionToken: 1,
+        state: {
+          workerRunKey: "worker:finance:task:task-done",
+          workerType: "finance",
+          status: "done",
+          createdAt: 30,
+          updatedAt: 40,
+        },
+      },
+    ],
+  ]);
+  const sessionStore: WorkerSessionStore = {
+    async get(workerRunKey) {
+      return stored.get(workerRunKey) ?? null;
+    },
+    async put(record) {
+      stored.set(record.workerRunKey, record);
+    },
+    async list() {
+      return Array.from(stored.values());
+    },
+  };
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return {
+          kind: "browser",
+          async canHandle() {
+            return true;
+          },
+          async run() {
+            return null;
+          },
+        };
+      },
+      async getHandler(kind) {
+        if (kind !== "browser") {
+          return null;
+        }
+        return {
+          kind: "browser",
+          async canHandle() {
+            return true;
+          },
+          async run() {
+            return null;
+          },
+        };
+      },
+    },
+    sessionStore,
+    now: () => 500,
+  });
+
+  const result = await runtime.reconcileStartup();
+
+  assert.deepEqual(result, {
+    totalSessions: 2,
+    downgradedRunningSessions: 1,
+  });
+  assert.equal(stored.get("worker:browser:task:task-running")?.state.status, "resumable");
 });
 
 function buildWorkerInvocationInput(): WorkerInvocationInput {

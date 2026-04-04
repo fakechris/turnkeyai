@@ -12,6 +12,7 @@ import type {
   WorkerRegistry,
   WorkerSessionRecord,
   WorkerSessionStore,
+  WorkerStartupReconcileResult,
   WorkerRuntime,
   WorkerSessionState,
 } from "@turnkeyai/core-types/team";
@@ -44,6 +45,10 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
   private readonly sessionStore: WorkerSessionStore | undefined;
   private readonly sessions = new Map<string, WorkerSessionEntry>();
   private hydratePromise: Promise<void> | null = null;
+  private startupReconcileResult: WorkerStartupReconcileResult = {
+    totalSessions: 0,
+    downgradedRunningSessions: 0,
+  };
 
   constructor(options: InMemoryWorkerRuntimeOptions) {
     this.workerRegistry = options.workerRegistry;
@@ -69,6 +74,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     }
     const records = await this.sessionStore.list();
     const now = this.now();
+    let downgradedRunningSessions = 0;
     for (const record of records) {
       const nextRecord =
         record.state.status === "running"
@@ -91,6 +97,9 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
               },
             }
           : record;
+      if (nextRecord !== record) {
+        downgradedRunningSessions += 1;
+      }
       this.sessions.set(nextRecord.workerRunKey, {
         state: nextRecord.state,
         executionToken: nextRecord.executionToken,
@@ -100,6 +109,10 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         await this.sessionStore.put(nextRecord);
       }
     }
+    this.startupReconcileResult = {
+      totalSessions: records.length,
+      downgradedRunningSessions,
+    };
   }
 
   private async persistSession(workerRunKey: string): Promise<void> {
@@ -422,6 +435,11 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       activation: input.activation,
       packet: input.packet,
     });
+  }
+
+  async reconcileStartup(): Promise<WorkerStartupReconcileResult> {
+    await this.ensureHydrated();
+    return this.startupReconcileResult;
   }
 
   private shouldCommitCompletion(workerRunKey: string, executionToken: number): boolean {
