@@ -243,6 +243,7 @@ export function buildOperatorSummaryReport(input: {
   replays: ReplayRecord[];
   recoveryRuns: RecoveryRun[];
   progressEvents?: RuntimeProgressEvent[];
+  runtimeSummary?: RuntimeSummaryReport;
   relayDiagnostics?: RelayDiagnosticsSnapshot;
   limit?: number;
 }): OperatorSummaryReport {
@@ -286,6 +287,9 @@ export function buildOperatorSummaryReport(input: {
     governance,
     recovery,
     prompt,
+    ...(input.runtimeSummary?.workerStartupReconcile
+      ? { workerStartupReconcile: input.runtimeSummary.workerStartupReconcile }
+      : {}),
     promptAttentionCount,
     totalAttentionCount:
       flow.attentionCount + replay.attentionCount + governance.attentionCount + recovery.attentionCount + promptAttentionCount,

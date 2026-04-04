@@ -543,6 +543,7 @@ export interface OperatorSummaryReport {
   governance: GovernanceConsoleReport;
   recovery: RecoveryConsoleReport;
   prompt: PromptConsoleReport;
+  workerStartupReconcile?: RuntimeSummaryReport["workerStartupReconcile"];
   promptAttentionCount: number;
   totalAttentionCount: number;
   attentionOverview?: {

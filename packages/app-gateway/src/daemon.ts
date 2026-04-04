@@ -681,12 +681,13 @@ const server = http.createServer(async (req, res) => {
             return buildPromptConsoleReport(progressEvents, limit);
           },
           buildOperatorSummary: async (threadId, limit) => {
-            const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
+            const [flows, permissionRecords, events, synced, progressEvents, runtimeSummary] = await Promise.all([
               flowLedgerStore.listByThread(threadId),
               permissionCacheStore.listByThread(threadId),
               teamEventBus.listRecent(threadId, Math.max(limit, 200)),
               recoveryActionService.loadRecoveryRuntime(threadId),
               runtimeProgressStore.listByThread(threadId),
+              runtimeQueryService.loadRuntimeSummary(threadId, Math.max(limit, 10)),
             ]);
             const relayDiagnostics = getRelayDiagnosticsSnapshot();
             return relayDiagnostics
@@ -697,6 +698,7 @@ const server = http.createServer(async (req, res) => {
                   replays: synced.records,
                   recoveryRuns: synced.runs,
                   progressEvents,
+                  runtimeSummary,
                   relayDiagnostics,
                   limit,
                 })
@@ -707,6 +709,7 @@ const server = http.createServer(async (req, res) => {
                   replays: synced.records,
                   recoveryRuns: synced.runs,
                   progressEvents,
+                  runtimeSummary,
                   limit,
                 });
           },
@@ -743,12 +746,13 @@ const server = http.createServer(async (req, res) => {
           buildOperatorTriage: async (threadId, limit) => {
             const [summary, attention, runtime] = await Promise.all([
               (async () => {
-                const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
+                const [flows, permissionRecords, events, synced, progressEvents, runtimeSummary] = await Promise.all([
                   flowLedgerStore.listByThread(threadId),
                   permissionCacheStore.listByThread(threadId),
                   teamEventBus.listRecent(threadId, Math.max(limit, 200)),
                   recoveryActionService.loadRecoveryRuntime(threadId),
                   runtimeProgressStore.listByThread(threadId),
+                  runtimeQueryService.loadRuntimeSummary(threadId, Math.max(limit, 10)),
                 ]);
                 const relayDiagnostics = getRelayDiagnosticsSnapshot();
                 return relayDiagnostics
@@ -759,6 +763,7 @@ const server = http.createServer(async (req, res) => {
                       replays: synced.records,
                       recoveryRuns: synced.runs,
                       progressEvents,
+                      runtimeSummary,
                       relayDiagnostics,
                       limit,
                     })
@@ -769,6 +774,7 @@ const server = http.createServer(async (req, res) => {
                       replays: synced.records,
                       recoveryRuns: synced.runs,
                       progressEvents,
+                      runtimeSummary,
                       limit,
                     });
               })(),

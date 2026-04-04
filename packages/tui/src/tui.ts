@@ -1378,6 +1378,11 @@ function formatCountMap(counts: Record<string, number | undefined>): string {
 function printOperatorSummary(report: OperatorSummaryReport): void {
   console.log("Operator Summary");
   console.log(`  total attention: ${report.totalAttentionCount}`);
+  if (report.workerStartupReconcile) {
+    console.log(
+      `  worker startup reconcile: total=${report.workerStartupReconcile.totalSessions} downgraded-running=${report.workerStartupReconcile.downgradedRunningSessions}`
+    );
+  }
   console.log(
     `  flow=${report.flow.attentionCount}  replay=${report.replay.attentionCount}  governance=${report.governance.attentionCount}  recovery=${report.recovery.attentionCount}  prompt=${report.promptAttentionCount}`
   );
