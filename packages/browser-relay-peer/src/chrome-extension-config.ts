@@ -1,3 +1,5 @@
+declare const __TURNKEYAI_RELAY_DAEMON_URL__: string | undefined;
+
 export interface ChromeRelayExtensionRuntimeConfig {
   daemonBaseUrl: string;
   daemonToken?: string;
@@ -18,12 +20,13 @@ interface ChromeStorageLocalLike {
 }
 
 const STORAGE_KEY = "turnkeyaiRelayConfig";
+const DEFAULT_DAEMON_BASE_URL = resolveDefaultDaemonBaseUrl();
 
 const DEFAULT_RUNTIME_CONFIG: ChromeRelayExtensionRuntimeConfig = {
-  daemonBaseUrl: "http://127.0.0.1:4100",
+  daemonBaseUrl: DEFAULT_DAEMON_BASE_URL,
   peerId: "turnkeyai-relay-peer",
   peerLabel: "TurnkeyAI Chrome Relay",
-  capabilities: ["open", "snapshot", "click", "type"],
+  capabilities: ["open", "snapshot", "click", "type", "scroll", "console", "screenshot"],
   transportLabel: "chrome-extension-relay",
   activeDelayMs: 25,
   idleDelayMs: 500,
@@ -91,4 +94,10 @@ function normalizePositiveInteger(value: unknown, fallback: number): number {
 
 function normalizeUrl(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function resolveDefaultDaemonBaseUrl(): string {
+  const injectedValue =
+    typeof __TURNKEYAI_RELAY_DAEMON_URL__ !== "undefined" ? __TURNKEYAI_RELAY_DAEMON_URL__ : undefined;
+  return normalizeUrl(injectedValue || "http://127.0.0.1:4100");
 }

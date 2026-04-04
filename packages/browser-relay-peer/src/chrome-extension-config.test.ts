@@ -11,9 +11,9 @@ test("chrome relay extension config falls back to default loopback daemon settin
 
   try {
     const config = await loadChromeRelayExtensionRuntimeConfig();
-    assert.equal(config.daemonBaseUrl, "http://127.0.0.1:4100");
+    assert.equal(config.daemonBaseUrl.startsWith("http://127.0.0.1:"), true);
     assert.equal(config.peerId, "turnkeyai-relay-peer:ext-123");
-    assert.deepEqual(config.capabilities, ["open", "snapshot", "click", "type"]);
+    assert.deepEqual(config.capabilities, ["open", "snapshot", "click", "type", "scroll", "console", "screenshot"]);
   } finally {
     (globalThis as Record<string, unknown>).chrome = previousChrome;
   }

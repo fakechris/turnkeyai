@@ -15,4 +15,7 @@ export default defineConfig({
   clean: true,
   dts: false,
   minify: false,
+  define: {
+    __TURNKEYAI_RELAY_DAEMON_URL__: JSON.stringify(process.env.TURNKEYAI_RELAY_DAEMON_URL ?? ""),
+  },
 });

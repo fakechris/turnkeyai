@@ -71,6 +71,19 @@ npm run relay:launch -- --url https://example.com
 npm run relay:wait -- --require-target
 ```
 
+如果要一条命令编排：
+
+1. 构建 extension
+2. 启动 relay daemon
+3. 启动带扩展的 Chrome
+4. 等待 peer/target 注册
+
+可以直接执行：
+
+```bash
+npm run relay:smoke -- --url https://example.com
+```
+
 ## 4. 安装到 Chrome
 
 1. 打开 `chrome://extensions`

@@ -12,6 +12,7 @@
     "verify:relay-extension": "tsx packages/browser-relay-peer/scripts/verify-extension-dist.ts",
     "relay:launch": "tsx scripts/launch-relay-chrome.ts",
     "relay:wait": "tsx scripts/wait-for-relay-peer.ts",
+    "relay:smoke": "tsx scripts/relay-smoke.ts",
     "pack:cli": "npm pack --workspace @turnkeyai/cli --dry-run",
     "release:verify": "tsx scripts/release-readiness.ts",
     "soak:long": "tsx scripts/validation-soak-series.ts",

@@ -156,6 +156,12 @@ npm run relay:launch -- --url https://example.com
 npm run relay:wait -- --require-target
 ```
 
+如果要一条命令跑完整本地 smoke：
+
+```bash
+npm run relay:smoke -- --url https://example.com
+```
+
 配合本地 daemon 走 relay transport 时，可以显式设置：
 
 ```bash
