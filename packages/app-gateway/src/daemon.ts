@@ -1097,7 +1097,8 @@ server.listen(PORT, "127.0.0.1", () => {
       console.log("auth access levels: read / operator / admin");
       console.log("  TURNKEYAI_DAEMON_READ_TOKEN       Read-only inspection and replay routes");
       console.log("  TURNKEYAI_DAEMON_OPERATOR_TOKEN   Operator and browser action routes");
-      console.log("  TURNKEYAI_DAEMON_ADMIN_TOKEN      Validation, relay, and admin-only routes");
+      console.log("  TURNKEYAI_BROWSER_RELAY_TOKEN     Relay peer mutation routes");
+      console.log("  TURNKEYAI_DAEMON_ADMIN_TOKEN      Validation, relay query, and admin-only routes");
     }
   } else {
     console.log("auth: disabled (set TURNKEYAI_DAEMON_TOKEN to enable)");
@@ -1492,6 +1493,7 @@ function printDaemonHelp(exitCode: number): never {
     "  TURNKEYAI_DAEMON_TOKEN      Require bearer auth for daemon requests",
     "  TURNKEYAI_DAEMON_READ_TOKEN Optional read-only daemon token",
     "  TURNKEYAI_DAEMON_OPERATOR_TOKEN Optional operator-scoped daemon token",
+    "  TURNKEYAI_BROWSER_RELAY_TOKEN Optional relay-peer-scoped daemon token",
     "  TURNKEYAI_DAEMON_ADMIN_TOKEN Optional admin-scoped daemon token",
     "  TURNKEYAI_BROWSER_TRANSPORT Select browser transport: local | relay | direct-cdp",
     "  TURNKEYAI_BROWSER_CDP_ENDPOINT  CDP endpoint for direct-cdp transport",
