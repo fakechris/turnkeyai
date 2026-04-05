@@ -1,6 +1,6 @@
 import type { DispatchContinuity } from "./team-dispatch";
 import type { RoleId, SessionTarget, WorkerKind } from "./team-core";
-import type { ScheduledTaskRecord } from "./team-runtime-support";
+import type { ScheduledTaskRecord } from "./team-scheduling";
 
 export function getScheduledTargetRoleId(task: ScheduledTaskRecord): RoleId {
   return task.dispatch?.targetRoleId ?? task.targetRoleId!;
