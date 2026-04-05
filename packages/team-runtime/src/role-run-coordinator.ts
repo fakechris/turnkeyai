@@ -1,4 +1,5 @@
 import {
+  normalizeRelayPayload,
   buildRunKey,
   type RunKey,
   type RoleId,
@@ -63,10 +64,14 @@ export class DefaultRoleRunCoordinator implements RoleRunCoordinator {
       if (current.inbox.length >= this.runtimeLimits.maxQueuedHandoffsPerRole) {
         throw new Error(`handoff inbox full for ${runKey}`);
       }
+      const normalizedHandoff: HandoffEnvelope = {
+        ...handoff,
+        payload: normalizeRelayPayload(handoff.payload),
+      };
 
       return {
         ...current,
-        inbox: [...current.inbox, handoff],
+        inbox: [...current.inbox, normalizedHandoff],
         status: current.status === "running" ? "running" : "queued",
         lastActiveAt: this.now(),
       };

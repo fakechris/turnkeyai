@@ -6,6 +6,7 @@ import type {
   RoleRunStore,
   TeamThreadStore,
 } from "@turnkeyai/core-types/team";
+import { normalizeRelayPayload } from "@turnkeyai/core-types/team";
 
 export async function recoverRoleRunsOnStartup(input: {
   teamThreadStore: TeamThreadStore;
@@ -45,6 +46,7 @@ export async function recoverRoleRunsOnStartup(input: {
     const nextInbox = [];
     let mutated = false;
     for (const handoff of run.inbox) {
+      const normalizedPayload = normalizeRelayPayload(handoff.payload);
       const cachedFlow =
         flowCache.get(handoff.flowId) ??
         (await input.flowLedgerStore.get(handoff.flowId).then((flow) => {
@@ -56,7 +58,13 @@ export async function recoverRoleRunsOnStartup(input: {
         mutated = true;
         continue;
       }
-      nextInbox.push(handoff);
+      if (JSON.stringify(normalizedPayload) !== JSON.stringify(handoff.payload)) {
+        mutated = true;
+      }
+      nextInbox.push({
+        ...handoff,
+        payload: normalizedPayload,
+      });
     }
     let nextRun = mutated ? { ...run, inbox: nextInbox } : run;
     if (nextRun.status === "queued" && nextRun.inbox.length === 0) {

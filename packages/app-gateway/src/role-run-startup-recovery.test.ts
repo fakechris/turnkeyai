@@ -252,6 +252,10 @@ test("role run startup recovery restarts queued running and resuming role runs",
   });
   assert.deepEqual(restartedRunKeys, ["run:queued", "run:running", "run:resuming"]);
   assert.deepEqual(persistedRuns.get("run:queued")?.inbox.map((handoff) => handoff.taskId), ["task-queued-valid"]);
+  assert.equal(
+    persistedRuns.get("run:queued")?.inbox[0]?.payload.intent?.relayBrief,
+    "valid"
+  );
   assert.deepEqual(persistedRuns.get("run:waiting")?.inbox, []);
   assert.equal(persistedRuns.get("run:queued-empty")?.status, "idle");
   assert.deepEqual(persistedRuns.get("run:queued-empty")?.inbox, []);
