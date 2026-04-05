@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -80,6 +80,13 @@ test("file scheduled task store backfills version for legacy records", async () 
 
     assert.equal(task?.version, 1);
     assert.equal(task?.dispatch?.targetRoleId, "role-operator");
+
+    const persisted = JSON.parse(
+      await readFile(path.join(rootDir, `${encodeURIComponent("TASK-legacy")}.json`), "utf8")
+    ) as { version?: number; dispatch?: { targetRoleId?: string }; targetRoleId?: string };
+    assert.equal(persisted.version, 1);
+    assert.equal(persisted.dispatch?.targetRoleId, "role-operator");
+    assert.equal(persisted.targetRoleId, "role-operator");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

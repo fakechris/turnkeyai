@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import type { RoleRunState, RoleRunStore, RunKey, ThreadId } from "@turnkeyai/core-types/team";
+import { normalizeRelayPayload, type RoleRunState, type RoleRunStore, type RunKey, type ThreadId } from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { listJsonFiles, readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
@@ -20,7 +20,15 @@ export class FileRoleRunStore implements RoleRunStore {
   async get(runKey: RunKey): Promise<RoleRunState | null> {
     return this.runMutex.run(runKey, async () => {
       const runState = await readJsonFile<RoleRunState>(this.filePath(runKey));
-      return runState ? normalizeRoleRunStateVersion(runState) : null;
+      if (!runState) {
+        return null;
+      }
+
+      const normalized = normalizeRoleRunState(runState);
+      if (!isSameRoleRunStateShape(runState, normalized)) {
+        await writeJsonFileAtomic(this.filePath(runKey), normalized);
+      }
+      return normalized;
     });
   }
 
@@ -34,7 +42,7 @@ export class FileRoleRunStore implements RoleRunStore {
           `role run version conflict for ${runState.runKey}: expected ${options.expectedVersion}, found ${existingVersion}`
         );
       }
-      await writeJsonFileAtomic(filePath, normalizeRoleRunStateVersion({
+      await writeJsonFileAtomic(filePath, normalizeRoleRunState({
         ...runState,
         version: existingVersion + 1,
       }));
@@ -57,7 +65,7 @@ export class FileRoleRunStore implements RoleRunStore {
 
     return runs
       .filter((runState): runState is RoleRunState => runState !== null)
-      .map((runState) => normalizeRoleRunStateVersion(runState));
+      .map((runState) => normalizeRoleRunState(runState));
   }
 
   private filePath(runKey: RunKey): string {
@@ -65,9 +73,17 @@ export class FileRoleRunStore implements RoleRunStore {
   }
 }
 
-function normalizeRoleRunStateVersion(runState: RoleRunState): RoleRunState {
+function normalizeRoleRunState(runState: RoleRunState): RoleRunState {
   return {
     ...runState,
+    inbox: runState.inbox.map((handoff) => ({
+      ...handoff,
+      payload: normalizeRelayPayload(handoff.payload),
+    })),
     version: runState.version && runState.version > 0 ? runState.version : 1,
   };
+}
+
+function isSameRoleRunStateShape(left: RoleRunState, right: RoleRunState): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
