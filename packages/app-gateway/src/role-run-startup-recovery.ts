@@ -1,4 +1,5 @@
 import type {
+  FlowLedgerStore,
   RoleLoopRunner,
   RoleRunState,
   RoleRunStartupRecoveryResult,
@@ -8,6 +9,7 @@ import type {
 
 export async function recoverRoleRunsOnStartup(input: {
   teamThreadStore: TeamThreadStore;
+  flowLedgerStore: FlowLedgerStore;
   roleRunStore: RoleRunStore;
   roleLoopRunner: RoleLoopRunner;
 }): Promise<RoleRunStartupRecoveryResult> {
@@ -19,6 +21,9 @@ export async function recoverRoleRunsOnStartup(input: {
 
   const orphanedThreadRuns = roleRuns.filter((run) => !threadIds.has(run.threadId));
   const failedRunKeys: string[] = [];
+  const flowCache = new Map<string, Awaited<ReturnType<FlowLedgerStore["get"]>>>();
+  let clearedInvalidHandoffs = 0;
+  let queuedRunsIdled = 0;
   for (const run of orphanedThreadRuns) {
     if (isTerminalRoleRun(run)) {
       continue;
@@ -31,7 +36,44 @@ export async function recoverRoleRunsOnStartup(input: {
     failedRunKeys.push(run.runKey);
   }
 
-  const restartableRuns = roleRuns.filter(
+  const reconciledRuns: RoleRunState[] = [];
+  for (const run of roleRuns) {
+    if (!threadIds.has(run.threadId)) {
+      reconciledRuns.push(run);
+      continue;
+    }
+    const nextInbox = [];
+    let mutated = false;
+    for (const handoff of run.inbox) {
+      const cachedFlow =
+        flowCache.get(handoff.flowId) ??
+        (await input.flowLedgerStore.get(handoff.flowId).then((flow) => {
+          flowCache.set(handoff.flowId, flow);
+          return flow;
+        }));
+      if (handoff.threadId !== run.threadId || !cachedFlow || cachedFlow.threadId !== run.threadId) {
+        clearedInvalidHandoffs += 1;
+        mutated = true;
+        continue;
+      }
+      nextInbox.push(handoff);
+    }
+    let nextRun = mutated ? { ...run, inbox: nextInbox } : run;
+    if (nextRun.status === "queued" && nextRun.inbox.length === 0) {
+      nextRun = {
+        ...nextRun,
+        status: "idle",
+      };
+      queuedRunsIdled += 1;
+      mutated = true;
+    }
+    if (mutated) {
+      await input.roleRunStore.put(nextRun);
+    }
+    reconciledRuns.push(nextRun);
+  }
+
+  const restartableRuns = reconciledRuns.filter(
     (run) => threadIds.has(run.threadId) && (run.status === "queued" || run.status === "running" || run.status === "resuming")
   );
 
@@ -46,6 +88,8 @@ export async function recoverRoleRunsOnStartup(input: {
     orphanedThreadRuns: orphanedThreadRuns.length,
     failedOrphanedRuns: failedRunKeys.length,
     failedRunKeys,
+    clearedInvalidHandoffs,
+    queuedRunsIdled,
   };
 }
 

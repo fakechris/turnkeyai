@@ -549,6 +549,7 @@ coordinationEngine = new CoordinationEngine({
 });
 const roleRunStartupRecoveryResult = await recoverRoleRunsOnStartup({
   teamThreadStore,
+  flowLedgerStore,
   roleRunStore,
   roleLoopRunner,
 });

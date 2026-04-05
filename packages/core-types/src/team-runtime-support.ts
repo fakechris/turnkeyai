@@ -589,6 +589,8 @@ export interface RoleRunStartupRecoveryResult {
   orphanedThreadRuns: number;
   failedOrphanedRuns: number;
   failedRunKeys: RunKey[];
+  clearedInvalidHandoffs: number;
+  queuedRunsIdled: number;
 }
 
 export interface SupervisorUserMessageInput {

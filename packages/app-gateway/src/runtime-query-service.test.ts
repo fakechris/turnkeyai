@@ -522,6 +522,8 @@ test("runtime query service attaches role run startup recovery summary when avai
       orphanedThreadRuns: 1,
       failedOrphanedRuns: 1,
       failedRunKeys: ["run:orphaned"],
+      clearedInvalidHandoffs: 2,
+      queuedRunsIdled: 1,
     }),
     teamThreadStore: {
       async list() {
@@ -606,5 +608,7 @@ test("runtime query service attaches role run startup recovery summary when avai
     orphanedThreadRuns: 1,
     failedOrphanedRuns: 1,
     failedRunKeys: ["run:orphaned"],
+    clearedInvalidHandoffs: 2,
+    queuedRunsIdled: 1,
   });
 });

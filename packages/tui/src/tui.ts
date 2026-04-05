@@ -995,6 +995,9 @@ function printRuntimeSummary(report: RuntimeSummaryReport): void {
     console.log(
       `  role run startup recovery: total=${report.roleRunStartupRecovery.totalRoleRuns} restarted-queued=${report.roleRunStartupRecovery.restartedQueuedRuns} restarted-running=${report.roleRunStartupRecovery.restartedRunningRuns} restarted-resuming=${report.roleRunStartupRecovery.restartedResumingRuns} orphaned=${report.roleRunStartupRecovery.orphanedThreadRuns} failed-orphaned=${report.roleRunStartupRecovery.failedOrphanedRuns}`
     );
+    console.log(
+      `    cleared-invalid-handoffs=${report.roleRunStartupRecovery.clearedInvalidHandoffs} queued-idled=${report.roleRunStartupRecovery.queuedRunsIdled}`
+    );
   }
   printRuntimeSummaryEntries("  attention chains:", report.attentionChains);
   printRuntimeSummaryEntries("  active chains:", report.activeChains);
@@ -1411,6 +1414,9 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
   if (report.roleRunStartupRecovery) {
     console.log(
       `  role run startup recovery: total=${report.roleRunStartupRecovery.totalRoleRuns} restarted-queued=${report.roleRunStartupRecovery.restartedQueuedRuns} restarted-running=${report.roleRunStartupRecovery.restartedRunningRuns} restarted-resuming=${report.roleRunStartupRecovery.restartedResumingRuns} orphaned=${report.roleRunStartupRecovery.orphanedThreadRuns} failed-orphaned=${report.roleRunStartupRecovery.failedOrphanedRuns}`
+    );
+    console.log(
+      `  startup handoff cleanup: cleared-invalid-handoffs=${report.roleRunStartupRecovery.clearedInvalidHandoffs} queued-idled=${report.roleRunStartupRecovery.queuedRunsIdled}`
     );
   }
   console.log(

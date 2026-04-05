@@ -88,6 +88,8 @@ export function createRuntimeQueryService(input: {
         orphanedThreadRuns: number;
         failedOrphanedRuns: number;
         failedRunKeys: string[];
+        clearedInvalidHandoffs: number;
+        queuedRunsIdled: number;
       }
     | undefined;
   teamThreadStore: FileTeamThreadStore;

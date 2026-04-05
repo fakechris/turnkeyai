@@ -617,7 +617,7 @@ export function buildOperatorTriageReport(input: {
         `role run startup recovery restarted=` +
         `${(input.summary.roleRunStartupRecovery?.restartedQueuedRuns ?? 0) + (input.summary.roleRunStartupRecovery?.restartedRunningRuns ?? 0) + (input.summary.roleRunStartupRecovery?.restartedResumingRuns ?? 0)}`,
       reason:
-        `Startup recovery restarted queued=${input.summary.roleRunStartupRecovery?.restartedQueuedRuns ?? 0}, running=${input.summary.roleRunStartupRecovery?.restartedRunningRuns ?? 0}, resuming=${input.summary.roleRunStartupRecovery?.restartedResumingRuns ?? 0}, orphaned=${input.summary.roleRunStartupRecovery?.orphanedThreadRuns ?? 0}, failed-orphaned=${input.summary.roleRunStartupRecovery?.failedOrphanedRuns ?? 0} role runs.`,
+        `Startup recovery restarted queued=${input.summary.roleRunStartupRecovery?.restartedQueuedRuns ?? 0}, running=${input.summary.roleRunStartupRecovery?.restartedRunningRuns ?? 0}, resuming=${input.summary.roleRunStartupRecovery?.restartedResumingRuns ?? 0}, orphaned=${input.summary.roleRunStartupRecovery?.orphanedThreadRuns ?? 0}, failed-orphaned=${input.summary.roleRunStartupRecovery?.failedOrphanedRuns ?? 0}, cleared-handoffs=${input.summary.roleRunStartupRecovery?.clearedInvalidHandoffs ?? 0}, queued-idled=${input.summary.roleRunStartupRecovery?.queuedRunsIdled ?? 0} role runs.`,
       nextStep: "inspect_runtime_role_runs",
       commandHint: "runtime-summary 10",
       state: "role_run_startup_recovery",

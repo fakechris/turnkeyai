@@ -302,6 +302,8 @@ export interface RuntimeSummaryReport {
     orphanedThreadRuns: number;
     failedOrphanedRuns: number;
     failedRunKeys: RunKey[];
+    clearedInvalidHandoffs: number;
+    queuedRunsIdled: number;
   };
 }
 
