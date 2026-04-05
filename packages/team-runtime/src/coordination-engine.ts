@@ -37,6 +37,7 @@ import {
   getContinuationContext,
   getDispatchPolicy,
   getMergeContext,
+  normalizeRelayPayload,
   getParallelContext,
   getScheduledContinuity,
   getScheduledPreferredWorkerKinds,
@@ -213,25 +214,28 @@ export class CoordinationEngine {
       handoff.sourceRoleId = input.fromRoleId;
     }
 
-    if (flow.nextExpectedRoleId) {
-      handoff.payload.constraints!.dispatchPolicy.expectedNextRoleIds = [flow.nextExpectedRoleId];
-      handoff.payload.dispatchPolicy = handoff.payload.constraints!.dispatchPolicy;
-    }
-
-    if (input.instructions) {
-      handoff.payload.intent!.instructions = input.instructions;
-      handoff.payload.instructions = input.instructions;
-    }
-
-    handoff.payload.intent!.relayBrief = this.deps.relayBriefBuilder.build({
-      thread: input.thread,
-      sourceMessage: input.sourceMessage,
-      targetRoleId: input.toRoleId,
-      recentMessages,
-      flow,
-      ...(input.instructions ? { instructions: input.instructions } : {}),
+    handoff.payload = normalizeRelayPayload({
+      ...handoff.payload,
+      intent: {
+        ...handoff.payload.intent!,
+        ...(input.instructions ? { instructions: input.instructions } : {}),
+        relayBrief: this.deps.relayBriefBuilder.build({
+          thread: input.thread,
+          sourceMessage: input.sourceMessage,
+          targetRoleId: input.toRoleId,
+          recentMessages,
+          flow,
+          ...(input.instructions ? { instructions: input.instructions } : {}),
+        }),
+      },
+      constraints: {
+        ...handoff.payload.constraints!,
+        dispatchPolicy: {
+          ...handoff.payload.constraints!.dispatchPolicy,
+          ...(flow.nextExpectedRoleId ? { expectedNextRoleIds: [flow.nextExpectedRoleId] } : {}),
+        },
+      },
     });
-    handoff.payload.relayBrief = handoff.payload.intent!.relayBrief;
 
     const edgeId = await this.recordHandoff(flow.flowId, handoff);
     if (!edgeId) {

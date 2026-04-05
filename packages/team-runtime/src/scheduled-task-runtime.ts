@@ -59,10 +59,6 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
           ? { constraints: { preferredWorkerKinds: input.preferredWorkerKinds } }
           : {}),
       },
-      targetRoleId: input.targetRoleId,
-      ...(input.targetWorker ? { targetWorker: input.targetWorker } : {}),
-      sessionTarget: input.sessionTarget ?? "main",
-      ...(input.continuity?.context?.recovery ? { recoveryContext: input.continuity.context.recovery } : {}),
       capsule: input.capsule,
       schedule: {
         ...input.schedule,
