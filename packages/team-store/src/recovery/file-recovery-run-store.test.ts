@@ -49,10 +49,12 @@ test("file recovery run store reads and lists runs by thread", async () => {
     const run = await store.get("recovery:task-1");
     assert.ok(run);
     assert.equal(run?.threadId, "thread-1");
+    assert.equal(run?.version, 1);
 
     const runs = await store.listByThread("thread-1");
     assert.equal(runs.length, 1);
     assert.equal(runs[0]?.recoveryRunId, "recovery:task-1");
+    assert.equal(runs[0]?.version, 1);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -168,6 +170,48 @@ test("file recovery run store merges legacy attempts with newer journal attempts
     assert.equal(stored?.attempts.length, 2);
     assert.equal(stored?.attempts[0]?.summary, "retrying again");
     assert.equal(stored?.attempts[1]?.attemptId, "recovery:task-1:attempt:2");
+    assert.equal(stored?.version, 2);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file recovery run store increments projection versions on overwrite", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-version-store-"));
+  try {
+    const store = new FileRecoveryRunStore({
+      rootDir,
+    });
+
+    await store.put({
+      recoveryRunId: "recovery:task-1",
+      threadId: "thread-1",
+      sourceGroupId: "task-1",
+      latestStatus: "failed",
+      status: "waiting_approval",
+      nextAction: "request_approval",
+      autoDispatchReady: false,
+      requiresManualIntervention: true,
+      latestSummary: "approval required",
+      attempts: [],
+      createdAt: 10,
+      updatedAt: 20,
+    });
+    const created = await store.get("recovery:task-1");
+    assert.equal(created?.version, 1);
+
+    await store.put({
+      ...created!,
+      latestStatus: "partial",
+      status: "resumed",
+      nextAction: "auto_resume",
+      autoDispatchReady: true,
+      requiresManualIntervention: false,
+      updatedAt: 30,
+    });
+
+    const updated = await store.get("recovery:task-1");
+    assert.equal(updated?.version, 2);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

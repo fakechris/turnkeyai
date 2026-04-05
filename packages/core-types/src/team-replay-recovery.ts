@@ -821,6 +821,7 @@ export interface RecoveryRun {
   currentAttemptId?: string;
   browserSession?: BrowserContinuationHint;
   attempts: RecoveryRunAttempt[];
+  version?: number;
   createdAt: number;
   updatedAt: number;
 }

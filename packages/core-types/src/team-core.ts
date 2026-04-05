@@ -95,6 +95,7 @@ export interface FlowLedger {
   maxHops: number;
   edges: HandoffEdge[];
   shardGroups?: ShardGroupRecord[];
+  version?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -417,6 +418,7 @@ export interface RoleRunState {
   lastActiveAt: number;
   lastUserTouchAt?: number;
   workerSessions?: Partial<Record<WorkerKind, RunKey>>;
+  version?: number;
 }
 
 export type RoleRunStatus =
