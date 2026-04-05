@@ -370,7 +370,10 @@ export async function handleValidationRoutes(input: {
 
 function filterNonEmptyStrings(values: string[] | undefined): string[] | undefined {
   return Array.isArray(values)
-    ? values.filter((value): value is string => typeof value === "string" && value.length > 0)
+    ? values
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
     : undefined;
 }
 

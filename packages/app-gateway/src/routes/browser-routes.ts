@@ -9,7 +9,13 @@ import type {
   IdGenerator,
 } from "@turnkeyai/core-types/team";
 
-import { parsePositiveLimit, readJsonBody, readOptionalJsonBody, sendJson } from "../http-helpers";
+import {
+  parsePositiveLimit,
+  parseRequiredNonEmptyString,
+  readJsonBody,
+  readOptionalJsonBody,
+  sendJson,
+} from "../http-helpers";
 
 export interface BrowserTaskRouteBody {
   threadId?: string;
@@ -179,6 +185,11 @@ export async function handleBrowserRoutes(input: {
       url: string;
       threadId?: string;
     }>(req);
+    const urlValue = parseRequiredNonEmptyString(body.url);
+    if (!urlValue) {
+      sendJson(res, 400, { error: "url is required" });
+      return true;
+    }
     const access = await deps.requireBrowserSessionAccess({
       browserSessionId: decodeURIComponent(browserSessionTargetsMatch[1]!),
       threadId: body.threadId,
@@ -190,7 +201,7 @@ export async function handleBrowserRoutes(input: {
     sendJson(
       res,
       201,
-      await deps.browserBridge.openTarget(access.sessionId, body.url, {
+      await deps.browserBridge.openTarget(access.sessionId, urlValue, {
         ownerType: access.ownerType,
         ownerId: access.ownerId,
       })
@@ -260,6 +271,11 @@ export async function handleBrowserRoutes(input: {
       targetId: string;
       threadId?: string;
     }>(req);
+    const targetId = parseRequiredNonEmptyString(body.targetId);
+    if (!targetId) {
+      sendJson(res, 400, { error: "targetId is required" });
+      return true;
+    }
     const access = await deps.requireBrowserSessionAccess({
       browserSessionId: decodeURIComponent(browserSessionActivateMatch[1]!),
       threadId: body.threadId,
@@ -271,7 +287,7 @@ export async function handleBrowserRoutes(input: {
     sendJson(
       res,
       200,
-      await deps.browserBridge.activateTarget(access.sessionId, body.targetId, {
+      await deps.browserBridge.activateTarget(access.sessionId, targetId, {
         ownerType: access.ownerType,
         ownerId: access.ownerId,
       })
@@ -285,6 +301,11 @@ export async function handleBrowserRoutes(input: {
       targetId: string;
       threadId?: string;
     }>(req);
+    const targetId = parseRequiredNonEmptyString(body.targetId);
+    if (!targetId) {
+      sendJson(res, 400, { error: "targetId is required" });
+      return true;
+    }
     const access = await deps.requireBrowserSessionAccess({
       browserSessionId: decodeURIComponent(browserSessionCloseTargetMatch[1]!),
       threadId: body.threadId,
@@ -296,7 +317,7 @@ export async function handleBrowserRoutes(input: {
     sendJson(
       res,
       200,
-      await deps.browserBridge.closeTarget(access.sessionId, body.targetId, {
+      await deps.browserBridge.closeTarget(access.sessionId, targetId, {
         ownerType: access.ownerType,
         ownerId: access.ownerId,
       })
