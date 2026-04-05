@@ -26,6 +26,7 @@ import type {
   TeamEvent,
   ThreadSessionMemoryRecord,
   ValidationOpsReport,
+  WorkerSessionRecord,
 } from "@turnkeyai/core-types/team";
 import {
   describeRecoveryRunGate,
@@ -214,6 +215,21 @@ while (true) {
         params.set("limit", String(limit));
       }
       printRuntimeSummary((await getJson(`/runtime-summary?${params.toString()}`)) as RuntimeSummaryReport);
+      continue;
+    }
+
+    if (command === "runtime-worker-sessions") {
+      const limit = Number(args || "10");
+      const params = new URLSearchParams();
+      if (currentThreadId) {
+        params.set("threadId", currentThreadId);
+      }
+      if (Number.isFinite(limit) && limit > 0) {
+        params.set("limit", String(limit));
+      }
+      printWorkerSessions(
+        (await getJson(`/runtime-worker-sessions?${params.toString()}`)) as WorkerSessionRecord[]
+      );
       continue;
     }
 
@@ -686,6 +702,7 @@ function printHelp(): void {
   console.log("  runtime-chains [limit]              show runtime chains for current thread");
   console.log("  runtime-active [limit]              show active runtime chains for current thread or all");
   console.log("  runtime-summary [limit]             show runtime chain summary for current thread or all");
+  console.log("  runtime-worker-sessions [limit]     show worker sessions for current thread or all");
   console.log("  runtime-waiting [limit]             show waiting runtime chains for current thread or all");
   console.log("  runtime-failed [limit]              show failed runtime chains for current thread or all");
   console.log("  runtime-stale [limit]               show stale runtime chains for current thread or all");
@@ -976,12 +993,71 @@ function printRuntimeSummary(report: RuntimeSummaryReport): void {
   if (Object.keys(report.caseStateCounts).length > 0) {
     console.log(`  case-state mix: ${formatCountMap(report.caseStateCounts)}`);
   }
+  if (report.workerStartupReconcile) {
+    console.log(
+      `  worker startup reconcile: total=${report.workerStartupReconcile.totalSessions} downgraded-running=${report.workerStartupReconcile.downgradedRunningSessions}`
+    );
+  }
+  if (report.workerSessionHealth) {
+    console.log(
+      `  worker sessions: total=${report.workerSessionHealth.totalSessions} active=${report.workerSessionHealth.activeSessions} orphaned=${report.workerSessionHealth.orphanedSessions} missing-context=${report.workerSessionHealth.missingContextSessions}`
+    );
+  }
+  if (report.workerBindingReconcile) {
+    console.log(
+      `  worker binding reconcile: role-runs=${report.workerBindingReconcile.totalRoleRuns} bindings=${report.workerBindingReconcile.totalBindings} cleared-missing=${report.workerBindingReconcile.clearedMissingBindings} cleared-terminal=${report.workerBindingReconcile.clearedTerminalBindings} cleared-cross-thread=${report.workerBindingReconcile.clearedCrossThreadBindings} attention=${report.workerBindingReconcile.roleRunsNeedingAttention} requeued=${report.workerBindingReconcile.roleRunsRequeued} failed=${report.workerBindingReconcile.roleRunsFailed}`
+    );
+  }
+  if (report.roleRunStartupRecovery) {
+    console.log(
+      `  role run startup recovery: total=${report.roleRunStartupRecovery.totalRoleRuns} restarted-queued=${report.roleRunStartupRecovery.restartedQueuedRuns} restarted-running=${report.roleRunStartupRecovery.restartedRunningRuns} restarted-resuming=${report.roleRunStartupRecovery.restartedResumingRuns} orphaned=${report.roleRunStartupRecovery.orphanedThreadRuns} failed-orphaned=${report.roleRunStartupRecovery.failedOrphanedRuns}`
+    );
+    console.log(
+      `    cleared-invalid-handoffs=${report.roleRunStartupRecovery.clearedInvalidHandoffs} queued-idled=${report.roleRunStartupRecovery.queuedRunsIdled}`
+    );
+  }
+  if (report.flowRecoveryStartupReconcile) {
+    console.log(
+      `  flow/recovery startup reconcile: orphaned-flows=${report.flowRecoveryStartupReconcile.orphanedFlows} aborted-orphaned-flows=${report.flowRecoveryStartupReconcile.abortedOrphanedFlows} orphaned-recovery-runs=${report.flowRecoveryStartupReconcile.orphanedRecoveryRuns} missing-flow-recovery-runs=${report.flowRecoveryStartupReconcile.missingFlowRecoveryRuns} cross-thread-flow-recovery-runs=${report.flowRecoveryStartupReconcile.crossThreadFlowRecoveryRuns} failed-recovery-runs=${report.flowRecoveryStartupReconcile.failedRecoveryRuns}`
+    );
+  }
+  if (report.runtimeChainStartupReconcile) {
+    console.log(
+      `  runtime chain startup reconcile: orphaned-thread-chains=${report.runtimeChainStartupReconcile.orphanedThreadChains} missing-flow-chains=${report.runtimeChainStartupReconcile.missingFlowChains} cross-thread-flow-chains=${report.runtimeChainStartupReconcile.crossThreadFlowChains} affected=${report.runtimeChainStartupReconcile.affectedChainIds.length}`
+    );
+  }
+  if (report.runtimeChainArtifactStartupReconcile) {
+    console.log(
+      `  runtime chain artifact startup reconcile: orphaned-statuses=${report.runtimeChainArtifactStartupReconcile.orphanedStatuses} cross-thread-statuses=${report.runtimeChainArtifactStartupReconcile.crossThreadStatuses} orphaned-spans=${report.runtimeChainArtifactStartupReconcile.orphanedSpans} cross-thread-spans=${report.runtimeChainArtifactStartupReconcile.crossThreadSpans} cross-flow-spans=${report.runtimeChainArtifactStartupReconcile.crossFlowSpans} orphaned-events=${report.runtimeChainArtifactStartupReconcile.orphanedEvents} missing-span-events=${report.runtimeChainArtifactStartupReconcile.missingSpanEvents} cross-thread-events=${report.runtimeChainArtifactStartupReconcile.crossThreadEvents} cross-chain-events=${report.runtimeChainArtifactStartupReconcile.crossChainEvents} affected=${report.runtimeChainArtifactStartupReconcile.affectedChainIds.length}`
+    );
+  }
   printRuntimeSummaryEntries("  attention chains:", report.attentionChains);
   printRuntimeSummaryEntries("  active chains:", report.activeChains);
   printRuntimeSummaryEntries("  waiting chains:", report.waitingChains);
   printRuntimeSummaryEntries("  stale chains:", report.staleChains);
   printRuntimeSummaryEntries("  failed chains:", report.failedChains);
   printRuntimeSummaryEntries("  recently resolved:", report.recentlyResolved);
+}
+
+function printWorkerSessions(records: WorkerSessionRecord[]): void {
+  if (records.length === 0) {
+    console.log("no worker sessions");
+    return;
+  }
+  for (const record of records) {
+    console.log(
+      [
+        `- ${record.workerRunKey}`,
+        `type=${record.state.workerType}`,
+        `status=${record.state.status}`,
+        `updated=${new Date(record.state.updatedAt).toISOString()}`,
+        record.context?.threadId ? `thread=${record.context.threadId}` : "thread=-",
+        record.context?.flowId ? `flow=${record.context.flowId}` : "flow=-",
+        record.context?.roleId ? `role=${record.context.roleId}` : "role=-",
+        record.context?.taskId ? `task=${record.context.taskId}` : "task=-",
+      ].join(" ")
+    );
+  }
 }
 
 function printRuntimeSummaryEntries(
@@ -1373,6 +1449,44 @@ function formatCountMap(counts: Record<string, number | undefined>): string {
 function printOperatorSummary(report: OperatorSummaryReport): void {
   console.log("Operator Summary");
   console.log(`  total attention: ${report.totalAttentionCount}`);
+  if (report.workerStartupReconcile) {
+    console.log(
+      `  worker startup reconcile: total=${report.workerStartupReconcile.totalSessions} downgraded-running=${report.workerStartupReconcile.downgradedRunningSessions}`
+    );
+  }
+  if (report.workerSessionHealth) {
+    console.log(
+      `  worker sessions: total=${report.workerSessionHealth.totalSessions} active=${report.workerSessionHealth.activeSessions} orphaned=${report.workerSessionHealth.orphanedSessions} missing-context=${report.workerSessionHealth.missingContextSessions}`
+    );
+  }
+  if (report.workerBindingReconcile) {
+    console.log(
+      `  worker binding reconcile: role-runs=${report.workerBindingReconcile.totalRoleRuns} bindings=${report.workerBindingReconcile.totalBindings} cleared-missing=${report.workerBindingReconcile.clearedMissingBindings} cleared-terminal=${report.workerBindingReconcile.clearedTerminalBindings} cleared-cross-thread=${report.workerBindingReconcile.clearedCrossThreadBindings} attention=${report.workerBindingReconcile.roleRunsNeedingAttention} requeued=${report.workerBindingReconcile.roleRunsRequeued} failed=${report.workerBindingReconcile.roleRunsFailed}`
+    );
+  }
+  if (report.roleRunStartupRecovery) {
+    console.log(
+      `  role run startup recovery: total=${report.roleRunStartupRecovery.totalRoleRuns} restarted-queued=${report.roleRunStartupRecovery.restartedQueuedRuns} restarted-running=${report.roleRunStartupRecovery.restartedRunningRuns} restarted-resuming=${report.roleRunStartupRecovery.restartedResumingRuns} orphaned=${report.roleRunStartupRecovery.orphanedThreadRuns} failed-orphaned=${report.roleRunStartupRecovery.failedOrphanedRuns}`
+    );
+    console.log(
+      `  startup handoff cleanup: cleared-invalid-handoffs=${report.roleRunStartupRecovery.clearedInvalidHandoffs} queued-idled=${report.roleRunStartupRecovery.queuedRunsIdled}`
+    );
+  }
+  if (report.flowRecoveryStartupReconcile) {
+    console.log(
+      `  flow/recovery startup reconcile: orphaned-flows=${report.flowRecoveryStartupReconcile.orphanedFlows} aborted-orphaned-flows=${report.flowRecoveryStartupReconcile.abortedOrphanedFlows} orphaned-recovery-runs=${report.flowRecoveryStartupReconcile.orphanedRecoveryRuns} missing-flow-recovery-runs=${report.flowRecoveryStartupReconcile.missingFlowRecoveryRuns} cross-thread-flow-recovery-runs=${report.flowRecoveryStartupReconcile.crossThreadFlowRecoveryRuns} failed-recovery-runs=${report.flowRecoveryStartupReconcile.failedRecoveryRuns}`
+    );
+  }
+  if (report.runtimeChainStartupReconcile) {
+    console.log(
+      `  runtime chain startup reconcile: orphaned-thread-chains=${report.runtimeChainStartupReconcile.orphanedThreadChains} missing-flow-chains=${report.runtimeChainStartupReconcile.missingFlowChains} cross-thread-flow-chains=${report.runtimeChainStartupReconcile.crossThreadFlowChains} affected=${report.runtimeChainStartupReconcile.affectedChainIds.length}`
+    );
+  }
+  if (report.runtimeChainArtifactStartupReconcile) {
+    console.log(
+      `  runtime chain artifact startup reconcile: orphaned-statuses=${report.runtimeChainArtifactStartupReconcile.orphanedStatuses} cross-thread-statuses=${report.runtimeChainArtifactStartupReconcile.crossThreadStatuses} orphaned-spans=${report.runtimeChainArtifactStartupReconcile.orphanedSpans} cross-thread-spans=${report.runtimeChainArtifactStartupReconcile.crossThreadSpans} cross-flow-spans=${report.runtimeChainArtifactStartupReconcile.crossFlowSpans} orphaned-events=${report.runtimeChainArtifactStartupReconcile.orphanedEvents} missing-span-events=${report.runtimeChainArtifactStartupReconcile.missingSpanEvents} cross-thread-events=${report.runtimeChainArtifactStartupReconcile.crossThreadEvents} cross-chain-events=${report.runtimeChainArtifactStartupReconcile.crossChainEvents} affected=${report.runtimeChainArtifactStartupReconcile.affectedChainIds.length}`
+    );
+  }
   console.log(
     `  flow=${report.flow.attentionCount}  replay=${report.replay.attentionCount}  governance=${report.governance.attentionCount}  recovery=${report.recovery.attentionCount}  prompt=${report.promptAttentionCount}`
   );
@@ -1576,6 +1690,9 @@ function printOperatorTriage(report: OperatorTriageReport): void {
   );
   console.log(
     `  runtime waiting=${report.runtimeWaitingCount}  stale=${report.runtimeStaleCount}  failed=${report.runtimeFailedCount}`
+  );
+  console.log(
+    `  worker orphaned=${report.workerSessionOrphanCount}  missing_context=${report.workerSessionMissingContextCount}`
   );
   console.log(
     `  prompt reductions=${report.promptReductionCount}  prompt attention=${report.promptAttentionCount}`

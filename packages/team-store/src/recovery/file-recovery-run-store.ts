@@ -1,8 +1,8 @@
 import path from "node:path";
 
-import { KeyedAsyncMutex } from "@turnkeyai/core-types/async-mutex";
-import { listJsonFiles, readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
-import type { RecoveryRun, RecoveryRunStore } from "@turnkeyai/core-types/team";
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
+import { listJsonFiles, readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
+import type { RecoveryRun, RecoveryRunAttempt, RecoveryRunStore } from "@turnkeyai/core-types/team";
 
 interface FileRecoveryRunStoreOptions {
   rootDir: string;
@@ -18,10 +18,7 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
 
   async get(recoveryRunId: string): Promise<RecoveryRun | null> {
     return this.runMutex.run(recoveryRunId, async () => {
-      return (
-        (await readJsonFile<RecoveryRun>(this.byIdFilePath(recoveryRunId))) ??
-        (await readJsonFile<RecoveryRun>(this.legacyFlatFilePath(recoveryRunId)))
-      );
+      return this.readRecoveryRun(recoveryRunId);
     });
   }
 
@@ -29,9 +26,11 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
     await this.runMutex.run(run.recoveryRunId, async () => {
       const byIdPath = this.byIdFilePath(run.recoveryRunId);
       const threadPath = this.threadFilePath(run.threadId, run.recoveryRunId);
-      await writeJsonFileAtomic(byIdPath, run);
+      const storedRun = stripAttempts(run);
+      await writeJsonFileAtomic(byIdPath, storedRun);
       try {
-        await writeJsonFileAtomic(threadPath, run);
+        await writeJsonFileAtomic(threadPath, storedRun);
+        await Promise.all(run.attempts.map((attempt) => writeJsonFileAtomic(this.attemptFilePath(run.recoveryRunId, attempt.attemptId), attempt)));
       } catch (error) {
         await removeFileIfExists(byIdPath);
         throw error;
@@ -42,16 +41,82 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
   async listByThread(threadId: string): Promise<RecoveryRun[]> {
     const threadFilePaths = await listJsonFiles(this.threadDir(threadId));
     const records = await Promise.all(threadFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath)));
-    const threadScoped = records.filter((record): record is RecoveryRun => record !== null);
+    const threadScoped = await Promise.all(
+      records
+        .filter((record): record is RecoveryRun => record !== null)
+        .map((record) => this.hydrateAttempts(record))
+    );
     if (threadScoped.length > 0) {
       return threadScoped.sort((left, right) => right.updatedAt - left.updatedAt);
     }
 
     const legacyFilePaths = await listJsonFiles(this.rootDir);
     const legacyRecords = await Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath)));
-    return legacyRecords
-      .filter((record): record is RecoveryRun => record !== null && record.threadId === threadId)
+    const hydratedLegacy = await Promise.all(
+      legacyRecords
+        .filter((record): record is RecoveryRun => record !== null && record.threadId === threadId)
+        .map((record) => this.hydrateAttempts(record))
+    );
+    return hydratedLegacy
       .sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  async listAll(): Promise<RecoveryRun[]> {
+    const byIdFilePaths = await listJsonFiles(path.join(this.rootDir, "by-id"));
+    if (byIdFilePaths.length > 0) {
+      const records = await Promise.all(byIdFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath)));
+      const hydrated = await Promise.all(
+        records
+          .filter((record): record is RecoveryRun => record !== null)
+          .map((record) => this.hydrateAttempts(record))
+      );
+      return hydrated
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+    }
+
+    const legacyFilePaths = await listJsonFiles(this.rootDir);
+    const records = await Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath)));
+    const hydrated = await Promise.all(
+      records
+        .filter((record): record is RecoveryRun => record !== null)
+        .map((record) => this.hydrateAttempts(record))
+    );
+    return hydrated
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  private async readRecoveryRun(recoveryRunId: string): Promise<RecoveryRun | null> {
+    const run =
+      (await readJsonFile<RecoveryRun>(this.byIdFilePath(recoveryRunId))) ??
+      (await readJsonFile<RecoveryRun>(this.legacyFlatFilePath(recoveryRunId)));
+    if (!run) {
+      return null;
+    }
+    return this.hydrateAttempts(run);
+  }
+
+  private async hydrateAttempts(run: RecoveryRun): Promise<RecoveryRun> {
+    const attemptPaths = await listJsonFiles(this.attemptDir(run.recoveryRunId));
+    if (attemptPaths.length === 0) {
+      return {
+        ...run,
+        attempts: [...run.attempts].sort(compareRecoveryAttempts),
+      };
+    }
+    const journalAttempts = (
+      await Promise.all(attemptPaths.map((filePath) => readJsonFile<RecoveryRunAttempt>(filePath)))
+    ).filter((attempt): attempt is RecoveryRunAttempt => attempt !== null);
+    const mergedAttempts = new Map<string, RecoveryRunAttempt>();
+    for (const attempt of [...run.attempts, ...journalAttempts]) {
+      const existing = mergedAttempts.get(attempt.attemptId);
+      if (!existing || attempt.updatedAt >= existing.updatedAt) {
+        mergedAttempts.set(attempt.attemptId, attempt);
+      }
+    }
+    return {
+      ...run,
+      attempts: [...mergedAttempts.values()].sort(compareRecoveryAttempts),
+    };
   }
 
   private byIdFilePath(recoveryRunId: string): string {
@@ -69,4 +134,29 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
   private legacyFlatFilePath(recoveryRunId: string): string {
     return path.join(this.rootDir, `${encodeURIComponent(recoveryRunId)}.json`);
   }
+
+  private attemptDir(recoveryRunId: string): string {
+    return path.join(this.rootDir, "attempts", encodeURIComponent(recoveryRunId));
+  }
+
+  private attemptFilePath(recoveryRunId: string, attemptId: string): string {
+    return path.join(this.attemptDir(recoveryRunId), `${encodeURIComponent(attemptId)}.json`);
+  }
+}
+
+function stripAttempts(run: RecoveryRun): RecoveryRun {
+  return {
+    ...run,
+    attempts: [],
+  };
+}
+
+function compareRecoveryAttempts(left: RecoveryRunAttempt, right: RecoveryRunAttempt): number {
+  if (left.requestedAt !== right.requestedAt) {
+    return left.requestedAt - right.requestedAt;
+  }
+  if (left.updatedAt !== right.updatedAt) {
+    return left.updatedAt - right.updatedAt;
+  }
+  return left.attemptId.localeCompare(right.attemptId);
 }

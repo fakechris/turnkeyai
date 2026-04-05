@@ -1,0 +1,9 @@
+{
+  "name": "@turnkeyai/shared-utils",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./async-mutex": "./src/async-mutex.ts",
+    "./file-store-utils": "./src/file-store-utils.ts"
+  }
+}

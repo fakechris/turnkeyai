@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import type { RoleRunState, RoleRunStore, RunKey, ThreadId } from "@turnkeyai/core-types/team";
-import { listJsonFiles, readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { listJsonFiles, readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 interface FileRoleRunStoreOptions {
   rootDir: string;
@@ -32,7 +32,7 @@ export class FileRoleRunStore implements RoleRunStore {
     return all.filter((runState) => runState.threadId === threadId);
   }
 
-  private async listAll(): Promise<RoleRunState[]> {
+  async listAll(): Promise<RoleRunState[]> {
     await mkdir(this.rootDir, { recursive: true });
     const filePaths = await listJsonFiles(this.rootDir);
     const runs = await Promise.all(filePaths.map((filePath) => readJsonFile<RoleRunState>(filePath)));

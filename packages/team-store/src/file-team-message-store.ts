@@ -2,8 +2,8 @@ import { mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 
 import type { MessageId, TeamMessage, TeamMessageStore, ThreadId } from "@turnkeyai/core-types/team";
-import { KeyedAsyncMutex } from "@turnkeyai/core-types/async-mutex";
-import { readJsonFile, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
+import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 interface FileTeamMessageStoreOptions {
   rootDir: string;
@@ -19,9 +19,7 @@ export class FileTeamMessageStore implements TeamMessageStore {
 
   async append(message: TeamMessage): Promise<void> {
     await this.withThreadLock(message.threadId, async () => {
-      const messages = await this.readThreadMessages(message.threadId);
-      messages.push(message);
-      await this.writeThreadMessages(message.threadId, messages);
+      await writeJsonFileAtomic(this.entryFilePath(message.threadId, message), message);
     });
   }
 
@@ -47,10 +45,15 @@ export class FileTeamMessageStore implements TeamMessageStore {
 
   private async listThreadIds(): Promise<ThreadId[]> {
     await mkdir(this.rootDir, { recursive: true });
-    const entries = await readFileList(this.rootDir);
-    return entries
+    const legacyThreadIds = (await readFileList(this.rootDir))
       .filter((name) => name.endsWith(".json"))
       .map((name) => decodeURIComponent(name.replace(/\.json$/, "")));
+    const threadRoot = this.threadRootDir();
+    await mkdir(threadRoot, { recursive: true });
+    const journalThreadIds = (await readDirectoryList(threadRoot))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => decodeURIComponent(entry.name));
+    return [...new Set([...legacyThreadIds, ...journalThreadIds])];
   }
 
   private filePath(threadId: ThreadId): string {
@@ -58,19 +61,59 @@ export class FileTeamMessageStore implements TeamMessageStore {
   }
 
   private async readThreadMessages(threadId: ThreadId): Promise<TeamMessage[]> {
-    const filePath = this.filePath(threadId);
-    return (await readJsonFile<TeamMessage[]>(filePath)) ?? [];
-  }
-
-  private async writeThreadMessages(threadId: ThreadId, messages: TeamMessage[]): Promise<void> {
-    await writeJsonFileAtomic(this.filePath(threadId), messages);
+    const [legacyMessages, entryPaths] = await Promise.all([
+      readJsonFile<TeamMessage[]>(this.filePath(threadId)),
+      listJsonFiles(this.entryDir(threadId)),
+    ]);
+    const journalMessages = (
+      await Promise.all(entryPaths.map((filePath) => readJsonFile<TeamMessage>(filePath)))
+    ).filter((message): message is TeamMessage => message !== null);
+    const merged = new Map<MessageId, TeamMessage>();
+    for (const message of [...(legacyMessages ?? []), ...journalMessages]) {
+      const existing = merged.get(message.id);
+      if (!existing || message.updatedAt >= existing.updatedAt) {
+        merged.set(message.id, message);
+      }
+    }
+    return [...merged.values()].sort((left, right) => {
+      if (left.createdAt !== right.createdAt) {
+        return left.createdAt - right.createdAt;
+      }
+      if (left.updatedAt !== right.updatedAt) {
+        return left.updatedAt - right.updatedAt;
+      }
+      return left.id.localeCompare(right.id);
+    });
   }
 
   private async withThreadLock<T>(threadId: ThreadId, work: () => Promise<T>): Promise<T> {
     return this.threadMutex.run(threadId, work);
   }
+
+  private threadRootDir(): string {
+    return path.join(this.rootDir, "threads");
+  }
+
+  private threadDir(threadId: ThreadId): string {
+    return path.join(this.threadRootDir(), encodeURIComponent(threadId));
+  }
+
+  private entryDir(threadId: ThreadId): string {
+    return path.join(this.threadDir(threadId), "entries");
+  }
+
+  private entryFilePath(threadId: ThreadId, message: TeamMessage): string {
+    const createdAt = String(message.createdAt).padStart(16, "0");
+    const updatedAt = String(message.updatedAt).padStart(16, "0");
+    const messageId = encodeURIComponent(message.id);
+    return path.join(this.entryDir(threadId), `${createdAt}-${updatedAt}-${messageId}.json`);
+  }
 }
 
 async function readFileList(rootDir: string): Promise<string[]> {
   return readdir(rootDir);
+}
+
+async function readDirectoryList(rootDir: string) {
+  return readdir(rootDir, { withFileTypes: true });
 }

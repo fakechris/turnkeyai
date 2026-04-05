@@ -35,7 +35,7 @@ import {
   getScheduledTargetRoleId,
   getScheduledTargetWorker,
 } from "@turnkeyai/core-types/team";
-import { KeyedAsyncMutex } from "@turnkeyai/core-types/async-mutex";
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
 import {
   createBrowserBridge,
@@ -114,25 +114,13 @@ import {
   listScenarioParityAcceptanceScenarios,
   runScenarioParityAcceptanceSuite,
 } from "@turnkeyai/qc-runtime/scenario-parity-acceptance";
-import {
-  listValidationSuites,
-  runValidationSuites,
-  ValidationSelectorError,
-} from "@turnkeyai/qc-runtime/validation-suite";
+import { runValidationSuites } from "@turnkeyai/qc-runtime/validation-suite";
 import { runValidationSoakSeries } from "@turnkeyai/qc-runtime/validation-soak-series";
 import {
   isValidationProfileId,
-  listValidationProfiles,
   runValidationProfile,
 } from "@turnkeyai/qc-runtime/validation-profile";
-import {
-  buildValidationOpsRecordFromTransportSoak,
-  buildValidationOpsRecordFromReleaseReadiness,
-  buildValidationOpsRecordFromSoakSeries,
-  buildValidationOpsRecordFromValidationProfile,
-  buildValidationOpsReport,
-} from "@turnkeyai/qc-runtime/validation-ops-inspection";
-import { writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 import { CoordinationEngine } from "@turnkeyai/team-runtime/coordination-engine";
 import { DefaultContextStateMaintainer } from "@turnkeyai/team-runtime/context-state-maintainer";
 import { FileBackedTeamRouteMap } from "@turnkeyai/team-runtime/file-backed-team-route-map";
@@ -177,6 +165,7 @@ import { FileValidationOpsRunStore } from "@turnkeyai/team-store/ops/file-valida
 import { FileRecoveryRunStore } from "@turnkeyai/team-store/recovery/file-recovery-run-store";
 import { FileRecoveryRunEventStore } from "@turnkeyai/team-store/recovery/file-recovery-run-event-store";
 import { FileScheduledTaskStore } from "@turnkeyai/team-store/scheduled/file-scheduled-task-store";
+import { FileWorkerSessionStore } from "@turnkeyai/team-store/worker/file-worker-session-store";
 import { BrowserWorkerHandler } from "@turnkeyai/worker-runtime/browser-worker-handler";
 import { DefaultCapabilityDiscoveryService } from "@turnkeyai/worker-runtime/capability-discovery-service";
 import { ExploreWorkerHandler } from "@turnkeyai/worker-runtime/explore-worker-handler";
@@ -184,7 +173,28 @@ import { FinanceWorkerHandler } from "@turnkeyai/worker-runtime/finance-worker-h
 import { LocalWorkerRuntime } from "@turnkeyai/worker-runtime/local-worker-runtime";
 import { DefaultWorkerRegistry } from "@turnkeyai/worker-runtime/worker-registry";
 
+import {
+  parsePositiveInteger,
+  parsePositiveLimit,
+  readJsonBody,
+  readOptionalJsonBody,
+  sendJson,
+} from "./http-helpers";
+import { authorizeDaemonRequest, resolveDaemonAuthConfig } from "./daemon-auth";
+import { createRecoveryActionService } from "./recovery-action-service";
 import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
+import { createRuntimeQueryService } from "./runtime-query-service";
+import { recoverRoleRunsOnStartup } from "./role-run-startup-recovery";
+import { reconcileFlowRecoveryOnStartup } from "./flow-recovery-startup-reconcile";
+import { reconcileRuntimeChainsOnStartup } from "./runtime-chain-startup-reconcile";
+import { reconcileRuntimeChainArtifactsOnStartup } from "./runtime-chain-artifact-startup-reconcile";
+import { reconcileWorkerBindingsOnStartup } from "./worker-binding-startup-reconcile";
+import { handleBrowserRoutes, type BrowserTaskRouteBody } from "./routes/browser-routes";
+import { handleInspectionRoutes } from "./routes/inspection-routes";
+import { handleRecoveryRoutes } from "./routes/recovery-routes";
+import { handleRelayRoutes } from "./routes/relay-routes";
+import { handleValidationRoutes } from "./routes/validation-routes";
+import { handleWorkflowRoutes } from "./routes/workflow-routes";
 
 if (wantsProcessHelp(process.argv.slice(2))) {
   printDaemonHelp(0);
@@ -194,7 +204,7 @@ const PORT = Number(process.env.TURNKEYAI_DAEMON_PORT ?? 4100);
 const DATA_DIR = path.resolve(process.cwd(), ".daemon-data");
 const VALIDATION_ARTIFACT_DIR = path.join(DATA_DIR, "validation-artifacts");
 const execFile = promisify(execFileCallback);
-const DAEMON_TOKEN = process.env.TURNKEYAI_DAEMON_TOKEN?.trim() || null;
+const DAEMON_AUTH = resolveDaemonAuthConfig(process.env);
 const RECOVERY_RUN_STALE_AFTER_MS = 5 * 60 * 1000;
 
 const clock: Clock = {
@@ -280,6 +290,9 @@ const scheduledTaskStore = new FileScheduledTaskStore({
 });
 const validationOpsRunStore = new FileValidationOpsRunStore({
   rootDir: path.join(DATA_DIR, "validation-ops-runs"),
+});
+const workerSessionStore = new FileWorkerSessionStore({
+  rootDir: path.join(DATA_DIR, "worker-sessions"),
 });
 
 const summaryBuilder: SummaryBuilder = {
@@ -421,7 +434,20 @@ const workerRegistry = new DefaultWorkerRegistry(workerHandlers);
 const workerRuntime: WorkerRuntime = new LocalWorkerRuntime({
   workerRegistry,
   runtimeProgressRecorder,
+  sessionStore: workerSessionStore,
 });
+const workerStartupReconcileResult = await workerRuntime.reconcileStartup?.();
+if (workerStartupReconcileResult && workerStartupReconcileResult.totalSessions > 0) {
+  console.info("worker runtime startup reconcile completed", workerStartupReconcileResult);
+}
+const workerBindingReconcileResult = await reconcileWorkerBindingsOnStartup({
+  teamThreadStore,
+  roleRunStore,
+  workerRuntime,
+});
+if (workerBindingReconcileResult && workerBindingReconcileResult.totalBindings > 0) {
+  console.info("worker binding startup reconcile completed", workerBindingReconcileResult);
+}
 const heuristicResponseGenerator = new DeterministicRoleResponseGenerator({
   modelAdapter: new HeuristicModelAdapter(),
   roleProfileRegistry,
@@ -525,12 +551,89 @@ coordinationEngine = new CoordinationEngine({
   workerRuntime,
   runtimeChainRecorder,
 });
+const roleRunStartupRecoveryResult = await recoverRoleRunsOnStartup({
+  teamThreadStore,
+  flowLedgerStore,
+  roleRunStore,
+  roleLoopRunner,
+});
+const flowRecoveryStartupReconcileResult = await reconcileFlowRecoveryOnStartup({
+  clock,
+  teamThreadStore,
+  flowLedgerStore,
+  recoveryRunStore,
+});
+const runtimeChainStartupReconcileResult = await reconcileRuntimeChainsOnStartup({
+  teamThreadStore,
+  flowLedgerStore,
+  runtimeChainStore,
+});
+const runtimeChainArtifactStartupReconcileResult = await reconcileRuntimeChainArtifactsOnStartup({
+  teamThreadStore,
+  runtimeChainStore,
+  runtimeChainStatusStore,
+  runtimeChainSpanStore,
+  runtimeChainEventStore,
+});
+if (
+  roleRunStartupRecoveryResult.restartedQueuedRuns > 0 ||
+  roleRunStartupRecoveryResult.restartedRunningRuns > 0 ||
+  roleRunStartupRecoveryResult.restartedResumingRuns > 0
+) {
+  console.info("role run startup recovery completed", roleRunStartupRecoveryResult);
+}
+if (
+  flowRecoveryStartupReconcileResult.orphanedFlows > 0 ||
+  flowRecoveryStartupReconcileResult.orphanedRecoveryRuns > 0 ||
+  flowRecoveryStartupReconcileResult.failedRecoveryRuns > 0
+) {
+  console.info("flow/recovery startup reconcile completed", flowRecoveryStartupReconcileResult);
+}
+if (runtimeChainStartupReconcileResult.affectedChainIds.length > 0) {
+  console.info("runtime chain startup reconcile completed", runtimeChainStartupReconcileResult);
+}
+if (runtimeChainArtifactStartupReconcileResult.affectedChainIds.length > 0) {
+  console.info("runtime chain artifact startup reconcile completed", runtimeChainArtifactStartupReconcileResult);
+}
 const scheduledTaskRuntime = new DefaultScheduledTaskRuntime({
   scheduledTaskStore,
   coordinationEngine,
   clock,
   idGenerator,
   replayRecorder,
+});
+const recoveryActionService = createRecoveryActionService({
+  clock,
+  idGenerator,
+  recoveryRunActionMutex,
+  recoveryRunStaleAfterMs: RECOVERY_RUN_STALE_AFTER_MS,
+  coordinationEngine,
+  runtimeStateRecorder,
+  runtimeProgressRecorder,
+  replayRecorder,
+  recoveryRunStore,
+  recoveryRunEventStore,
+});
+const runtimeQueryService = createRuntimeQueryService({
+  clock,
+  workerRuntime,
+  getWorkerStartupReconcileResult: () => workerStartupReconcileResult,
+  getWorkerBindingReconcileResult: () => workerBindingReconcileResult,
+  getRoleRunStartupRecoveryResult: () => roleRunStartupRecoveryResult,
+  getFlowRecoveryStartupReconcileResult: () => flowRecoveryStartupReconcileResult,
+  getRuntimeChainStartupReconcileResult: () => runtimeChainStartupReconcileResult,
+  getRuntimeChainArtifactStartupReconcileResult: () => runtimeChainArtifactStartupReconcileResult,
+  teamThreadStore,
+  flowLedgerStore,
+  roleRunStore,
+  runtimeChainStore,
+  runtimeChainStatusStore,
+  runtimeChainSpanStore,
+  runtimeChainEventStore,
+  runtimeProgressStore,
+  recoveryRunStore,
+  recoveryRunEventStore,
+  loadRecoveryRuntime: (threadId) => recoveryActionService.loadRecoveryRuntime(threadId),
 });
 
 await mkdir(DATA_DIR, { recursive: true });
@@ -548,10 +651,12 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    if (!isAuthorizedRequest(req)) {
+    const authorization = authorizeDaemonRequest(req, url, DAEMON_AUTH);
+    if (!authorization.authorized) {
       return sendJson(res, 401, {
         error: "unauthorized",
-        authMode: DAEMON_TOKEN ? "token" : "disabled",
+        authMode: DAEMON_AUTH.authMode,
+        requiredAccess: authorization.requiredAccess,
       });
     }
 
@@ -577,1477 +682,401 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 201, thread);
     }
 
-    if (req.method === "GET" && url.pathname === "/threads") {
-      return sendJson(res, 200, await teamThreadStore.list());
-    }
-
-    if (req.method === "GET" && url.pathname === "/events") {
-      const threadId = url.searchParams.get("threadId") ?? undefined;
-      const limit = Number(url.searchParams.get("limit") ?? 50);
-      return sendJson(res, 200, await teamEventBus.listRecent(threadId, limit));
-    }
-
-    if (req.method === "GET" && url.pathname === "/routes/resolve") {
-      const channelId = url.searchParams.get("channelId");
-      const userId = url.searchParams.get("userId");
-      if (!channelId || !userId) {
-        return sendJson(res, 400, { error: "channelId and userId are required" });
-      }
-      return sendJson(res, 200, await teamRouteMap.findByExternalActor(channelId, userId));
-    }
-
-    if (req.method === "GET" && url.pathname === "/messages") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      return sendJson(res, 200, await teamMessageStore.list(threadId));
-    }
-
-    if (req.method === "GET" && url.pathname === "/flows") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const flows = await flowLedgerStore.listByThread(threadId);
-      return sendJson(res, 200, flows.slice(0, limit));
-    }
-
-    if (req.method === "GET" && url.pathname === "/flows-summary") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      return sendJson(res, 200, buildFlowConsoleReport(await flowLedgerStore.listByThread(threadId)));
-    }
-
-    if (req.method === "GET" && url.pathname === "/runtime-chains") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const entries = await listRuntimeChainEntriesByThread(threadId, limit);
-      return sendJson(
+    if (
+      await handleInspectionRoutes({
+        req,
         res,
-        200,
-        entries
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/runtime-active") {
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      return sendJson(res, 200, await listActiveRuntimeChainEntries(limit, url.searchParams.get("threadId")));
-    }
-
-    if (req.method === "GET" && url.pathname === "/runtime-summary") {
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      return sendJson(res, 200, await loadRuntimeSummary(url.searchParams.get("threadId"), limit));
-    }
-
-    if (req.method === "GET" && url.pathname === "/runtime-waiting") {
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      return sendJson(res, 200, await listRuntimeChainsByCanonicalState("waiting", limit, url.searchParams.get("threadId")));
-    }
-
-    if (req.method === "GET" && url.pathname === "/runtime-failed") {
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      return sendJson(res, 200, await listRuntimeChainsByCanonicalState("failed", limit, url.searchParams.get("threadId")));
-    }
-
-    if (req.method === "GET" && url.pathname === "/runtime-stale") {
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      return sendJson(res, 200, await listStaleRuntimeChainEntries(limit, url.searchParams.get("threadId")));
-    }
-
-    if (req.method === "GET" && url.pathname === "/runtime-attention") {
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const summary = await loadRuntimeSummary(url.searchParams.get("threadId"), limit);
-      return sendJson(res, 200, summary.attentionChains);
-    }
-
-    if (req.method === "GET" && url.pathname === "/runtime-progress") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      return sendJson(res, 200, await runtimeProgressStore.listByThread(threadId, limit));
-    }
-
-    const runtimeChainEventsMatch = req.method === "GET" ? url.pathname.match(/^\/runtime-chains\/([^/]+)\/events$/) : null;
-    if (runtimeChainEventsMatch) {
-      const chainId = decodeURIComponent(runtimeChainEventsMatch[1] ?? "");
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const detail = await loadRuntimeChainDetail(chainId, limit);
-      if (!detail) {
-        return sendJson(res, 404, { error: "runtime chain not found" });
-      }
-      return sendJson(res, 200, detail.events.slice(-limit));
-    }
-
-    const runtimeChainProgressMatch = req.method === "GET" ? url.pathname.match(/^\/runtime-chains\/([^/]+)\/progress$/) : null;
-    if (runtimeChainProgressMatch) {
-      const chainId = decodeURIComponent(runtimeChainProgressMatch[1] ?? "");
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      return sendJson(res, 200, await runtimeProgressStore.listByChain(chainId, limit));
-    }
-
-    const runtimeChainMatch = req.method === "GET" ? url.pathname.match(/^\/runtime-chains\/([^/]+)$/) : null;
-    if (runtimeChainMatch) {
-      const chainId = decodeURIComponent(runtimeChainMatch[1] ?? "");
-      const detail = await loadRuntimeChainDetail(chainId);
-      if (!detail) {
-        return sendJson(res, 404, { error: "runtime chain not found" });
-      }
-      return sendJson(res, 200, detail);
-    }
-
-    if (req.method === "GET" && url.pathname === "/runs") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      return sendJson(res, 200, await roleRunStore.listByThread(threadId));
-    }
-
-    if (req.method === "GET" && url.pathname === "/context/session-memory") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const record = await threadSessionMemoryStore.get(threadId);
-      if (!record) {
-        return sendJson(res, 404, { error: "session memory not found" });
-      }
-      return sendJson(res, 200, record);
-    }
-
-    if (req.method === "GET" && url.pathname === "/models") {
-      if (!llmGateway) {
-        return sendJson(res, 200, {
-          modelCatalogPath: null,
-          models: [],
-          adapterMode: "heuristic-only",
-        });
-      }
-
-      const models = await llmGateway.listModels();
-      return sendJson(res, 200, {
-        modelCatalogPath,
-        adapterMode: "llm+heuristic-fallback",
-        models: models.map((model) => ({
-          ...model,
-          configured: Boolean(process.env[model.apiKeyEnv]),
-        })),
-      });
-    }
-
-    if (req.method === "GET" && url.pathname === "/capabilities") {
-      const threadId = url.searchParams.get("threadId");
-      const roleId = url.searchParams.get("roleId");
-      if (!threadId || !roleId) {
-        return sendJson(res, 400, { error: "threadId and roleId are required" });
-      }
-
-      const requestedCapabilities = (url.searchParams.get("requestedCapabilities") ?? "")
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
-
-      return sendJson(
-        res,
-        200,
-        await capabilityDiscoveryService.inspect({
-          threadId,
-          roleId,
-          requestedCapabilities,
-        })
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/governance/permissions") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      return sendJson(res, 200, await permissionCacheStore.listByThread(threadId));
-    }
-
-    if (req.method === "GET" && url.pathname === "/governance/summary") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const [permissionRecords, events] = await Promise.all([
-        permissionCacheStore.listByThread(threadId),
-        teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-      ]);
-      return sendJson(res, 200, buildGovernanceConsoleReport(permissionRecords, events, limit));
-    }
-
-    if (req.method === "GET" && url.pathname === "/recovery-summary") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const synced = await loadRecoveryRuntime(threadId);
-      return sendJson(res, 200, buildRecoveryConsoleReport(synced.runs, limit));
-    }
-
-    if (req.method === "GET" && url.pathname === "/prompt-console") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const progressEvents = await runtimeProgressStore.listByThread(threadId);
-      return sendJson(res, 200, buildPromptConsoleReport(progressEvents, limit));
-    }
-
-    if (req.method === "GET" && url.pathname === "/operator-summary") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
-        flowLedgerStore.listByThread(threadId),
-        permissionCacheStore.listByThread(threadId),
-        teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-        loadRecoveryRuntime(threadId),
-        runtimeProgressStore.listByThread(threadId),
-      ]);
-      const relayDiagnostics = getRelayDiagnosticsSnapshot();
-      return sendJson(
-        res,
-        200,
-        relayDiagnostics
-          ? buildOperatorSummaryReport({
-              flows,
-              permissionRecords,
-              events,
-              replays: synced.records,
-              recoveryRuns: synced.runs,
-              progressEvents,
-              relayDiagnostics,
+        url,
+        deps: {
+          listThreads: () => teamThreadStore.list(),
+          listRecentEvents: (threadId, limit) => teamEventBus.listRecent(threadId, limit),
+          resolveExternalRoute: (channelId, userId) => teamRouteMap.findByExternalActor(channelId, userId),
+          listMessages: (threadId) => teamMessageStore.list(threadId),
+          listFlows: async (threadId, limit) => (await flowLedgerStore.listByThread(threadId)).slice(0, limit),
+          buildFlowSummary: async (threadId) => buildFlowConsoleReport(await flowLedgerStore.listByThread(threadId)),
+          listRuntimeChainsByThread: (threadId, limit) => runtimeQueryService.listRuntimeChainEntriesByThread(threadId, limit),
+          listActiveRuntimeChains: (limit, threadId) => runtimeQueryService.listActiveRuntimeChainEntries(limit, threadId),
+          loadRuntimeSummary: (threadId, limit) => runtimeQueryService.loadRuntimeSummary(threadId, limit),
+          listWorkerSessions: (limit, threadId) => runtimeQueryService.listWorkerSessions(limit, threadId),
+          listRuntimeChainsByCanonicalState: (state, limit, threadId) =>
+            runtimeQueryService.listRuntimeChainsByCanonicalState(state, limit, threadId),
+          listStaleRuntimeChains: (limit, threadId) => runtimeQueryService.listStaleRuntimeChainEntries(limit, threadId),
+          listRuntimeProgressByThread: (threadId, limit) => runtimeProgressStore.listByThread(threadId, limit),
+          loadRuntimeChainDetail: (chainId, limit) => runtimeQueryService.loadRuntimeChainDetail(chainId, limit),
+          listRuntimeProgressByChain: (chainId, limit) => runtimeProgressStore.listByChain(chainId, limit),
+          listRoleRuns: (threadId) => roleRunStore.listByThread(threadId),
+          getSessionMemory: (threadId) => threadSessionMemoryStore.get(threadId),
+          listModels: async () => {
+            if (!llmGateway) {
+              return {
+                modelCatalogPath: null,
+                models: [],
+                adapterMode: "heuristic-only",
+              };
+            }
+            const models = await llmGateway.listModels();
+            return {
+              modelCatalogPath,
+              adapterMode: "llm+heuristic-fallback",
+              models: models.map((model) => ({
+                ...model,
+                configured: Boolean(process.env[model.apiKeyEnv]),
+              })),
+            };
+          },
+          inspectCapabilities: (threadId, roleId, requestedCapabilities) =>
+            capabilityDiscoveryService.inspect({
+              threadId,
+              roleId,
+              requestedCapabilities,
+            }),
+          listGovernancePermissions: (threadId) => permissionCacheStore.listByThread(threadId),
+          buildGovernanceSummary: async (threadId, limit) => {
+            const [permissionRecords, events] = await Promise.all([
+              permissionCacheStore.listByThread(threadId),
+              teamEventBus.listRecent(threadId, Math.max(limit, 200)),
+            ]);
+            return buildGovernanceConsoleReport(permissionRecords, events, limit);
+          },
+          buildRecoverySummary: async (threadId, limit) => {
+            const synced = await recoveryActionService.loadRecoveryRuntime(threadId);
+            return buildRecoveryConsoleReport(synced.runs, limit);
+          },
+          buildPromptConsole: async (threadId, limit) => {
+            const progressEvents = await runtimeProgressStore.listByThread(threadId);
+            return buildPromptConsoleReport(progressEvents, limit);
+          },
+          buildOperatorSummary: async (threadId, limit) => {
+            const [flows, permissionRecords, events, synced, progressEvents, runtimeSummary] = await Promise.all([
+              flowLedgerStore.listByThread(threadId),
+              permissionCacheStore.listByThread(threadId),
+              teamEventBus.listRecent(threadId, Math.max(limit, 200)),
+              recoveryActionService.loadRecoveryRuntime(threadId),
+              runtimeProgressStore.listByThread(threadId),
+              runtimeQueryService.loadRuntimeSummary(threadId, Math.max(limit, 10)),
+            ]);
+            const relayDiagnostics = getRelayDiagnosticsSnapshot();
+            return relayDiagnostics
+              ? buildOperatorSummaryReport({
+                  flows,
+                  permissionRecords,
+                  events,
+                  replays: synced.records,
+                  recoveryRuns: synced.runs,
+                  progressEvents,
+                  runtimeSummary,
+                  relayDiagnostics,
+                  limit,
+                })
+              : buildOperatorSummaryReport({
+                  flows,
+                  permissionRecords,
+                  events,
+                  replays: synced.records,
+                  recoveryRuns: synced.runs,
+                  progressEvents,
+                  runtimeSummary,
+                  limit,
+                });
+          },
+          buildOperatorAttention: async (threadId, limit) => {
+            const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
+              flowLedgerStore.listByThread(threadId),
+              permissionCacheStore.listByThread(threadId),
+              teamEventBus.listRecent(threadId, Math.max(limit, 200)),
+              recoveryActionService.loadRecoveryRuntime(threadId),
+              runtimeProgressStore.listByThread(threadId),
+            ]);
+            const relayDiagnostics = getRelayDiagnosticsSnapshot();
+            return relayDiagnostics
+              ? buildOperatorAttentionReport({
+                  flows,
+                  permissionRecords,
+                  events,
+                  replays: synced.records,
+                  recoveryRuns: synced.runs,
+                  progressEvents,
+                  relayDiagnostics,
+                  limit,
+                })
+              : buildOperatorAttentionReport({
+                  flows,
+                  permissionRecords,
+                  events,
+                  replays: synced.records,
+                  recoveryRuns: synced.runs,
+                  progressEvents,
+                  limit,
+                });
+          },
+          buildOperatorTriage: async (threadId, limit) => {
+            const [summary, attention, runtime] = await Promise.all([
+              (async () => {
+                const [flows, permissionRecords, events, synced, progressEvents, runtimeSummary] = await Promise.all([
+                  flowLedgerStore.listByThread(threadId),
+                  permissionCacheStore.listByThread(threadId),
+                  teamEventBus.listRecent(threadId, Math.max(limit, 200)),
+                  recoveryActionService.loadRecoveryRuntime(threadId),
+                  runtimeProgressStore.listByThread(threadId),
+                  runtimeQueryService.loadRuntimeSummary(threadId, Math.max(limit, 10)),
+                ]);
+                const relayDiagnostics = getRelayDiagnosticsSnapshot();
+                return relayDiagnostics
+                  ? buildOperatorSummaryReport({
+                      flows,
+                      permissionRecords,
+                      events,
+                      replays: synced.records,
+                      recoveryRuns: synced.runs,
+                      progressEvents,
+                      runtimeSummary,
+                      relayDiagnostics,
+                      limit,
+                    })
+                  : buildOperatorSummaryReport({
+                      flows,
+                      permissionRecords,
+                      events,
+                      replays: synced.records,
+                      recoveryRuns: synced.runs,
+                      progressEvents,
+                      runtimeSummary,
+                      limit,
+                    });
+              })(),
+              (async () => {
+                const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
+                  flowLedgerStore.listByThread(threadId),
+                  permissionCacheStore.listByThread(threadId),
+                  teamEventBus.listRecent(threadId, Math.max(limit, 200)),
+                  recoveryActionService.loadRecoveryRuntime(threadId),
+                  runtimeProgressStore.listByThread(threadId),
+                ]);
+                const relayDiagnostics = getRelayDiagnosticsSnapshot();
+                return relayDiagnostics
+                  ? buildOperatorAttentionReport({
+                      flows,
+                      permissionRecords,
+                      events,
+                      replays: synced.records,
+                      recoveryRuns: synced.runs,
+                      progressEvents,
+                      relayDiagnostics,
+                      limit: Math.max(limit, 10),
+                    })
+                  : buildOperatorAttentionReport({
+                      flows,
+                      permissionRecords,
+                      events,
+                      replays: synced.records,
+                      recoveryRuns: synced.runs,
+                      progressEvents,
+                      limit: Math.max(limit, 10),
+                    });
+              })(),
+              runtimeQueryService.loadRuntimeSummary(threadId, Math.max(limit, 10)),
+            ]);
+            return buildOperatorTriageReport({
+              summary,
+              attention,
+              runtime,
               limit,
-            })
-          : buildOperatorSummaryReport({
-              flows,
-              permissionRecords,
-              events,
-              replays: synced.records,
-              recoveryRuns: synced.runs,
-              progressEvents,
+            });
+          },
+          listGovernanceAudits: async (threadId, limit) => {
+            const events = await teamEventBus.listRecent(threadId, limit);
+            return events.filter((event) => event.kind === "audit.logged");
+          },
+          listGovernanceWorkerAudits: async (threadId, limit) => {
+            const events = await teamEventBus.listRecent(threadId, limit);
+            return events.filter(
+              (event) =>
+                event.kind === "audit.logged" &&
+                typeof event.payload.scope === "string" &&
+                event.payload.scope === "worker_execution"
+            );
+          },
+          listReplays: ({ threadId, layer, limit }) =>
+            replayRecorder.list({
+              ...(threadId ? { threadId } : {}),
+              ...(layer && ["scheduled", "role", "worker", "browser"].includes(layer)
+                ? { layer: layer as "scheduled" | "role" | "worker" | "browser" }
+                : {}),
               limit,
-            })
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/operator-attention") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
-        flowLedgerStore.listByThread(threadId),
-        permissionCacheStore.listByThread(threadId),
-        teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-        loadRecoveryRuntime(threadId),
-        runtimeProgressStore.listByThread(threadId),
-      ]);
-      const relayDiagnostics = getRelayDiagnosticsSnapshot();
-      return sendJson(
-        res,
-        200,
-        relayDiagnostics
-          ? buildOperatorAttentionReport({
-              flows,
-              permissionRecords,
-              events,
-              replays: synced.records,
-              recoveryRuns: synced.runs,
-              progressEvents,
-              relayDiagnostics,
+            }),
+          buildReplaySummary: async (threadId, limit) =>
+            buildReplayInspectionReport(
+              await replayRecorder.list({
+                ...(threadId ? { threadId } : {}),
+                limit,
+              })
+            ),
+          buildReplayConsole: async (threadId, limit) => {
+            if (threadId) {
+              const synced = await recoveryActionService.loadRecoveryRuntime(threadId);
+              return buildReplayConsoleReport(synced.records, limit, synced.runs, getRelayDiagnosticsSnapshot());
+            }
+            return buildReplayConsoleReport(
+              await replayRecorder.list({
+                limit: Math.max(limit, 200),
+              }),
               limit,
-            })
-          : buildOperatorAttentionReport({
-              flows,
-              permissionRecords,
-              events,
-              replays: synced.records,
-              recoveryRuns: synced.runs,
-              progressEvents,
-              limit,
-            })
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/operator-triage") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const [flows, permissionRecords, events, synced, progressEvents, runtimeSummary] = await Promise.all([
-        flowLedgerStore.listByThread(threadId),
-        permissionCacheStore.listByThread(threadId),
-        teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-        loadRecoveryRuntime(threadId),
-        runtimeProgressStore.listByThread(threadId),
-        loadRuntimeSummary(threadId, Math.max(limit, 10)),
-      ]);
-      const relayDiagnostics = getRelayDiagnosticsSnapshot();
-      const operatorSummary = relayDiagnostics
-        ? buildOperatorSummaryReport({
-            flows,
-            permissionRecords,
-            events,
-            replays: synced.records,
-            recoveryRuns: synced.runs,
-            progressEvents,
-            relayDiagnostics,
-            limit,
-          })
-        : buildOperatorSummaryReport({
-            flows,
-            permissionRecords,
-            events,
-            replays: synced.records,
-            recoveryRuns: synced.runs,
-            progressEvents,
-            limit,
-          });
-      const operatorAttention = relayDiagnostics
-        ? buildOperatorAttentionReport({
-            flows,
-            permissionRecords,
-            events,
-            replays: synced.records,
-            recoveryRuns: synced.runs,
-            progressEvents,
-            relayDiagnostics,
-            limit: Math.max(limit, 10),
-          })
-        : buildOperatorAttentionReport({
-            flows,
-            permissionRecords,
-            events,
-            replays: synced.records,
-            recoveryRuns: synced.runs,
-            progressEvents,
-            limit: Math.max(limit, 10),
-          });
-      return sendJson(
-        res,
-        200,
-        buildOperatorTriageReport({
-          summary: operatorSummary,
-          attention: operatorAttention,
-          runtime: runtimeSummary,
-          limit,
-        })
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/governance/audits") {
-      const threadId = url.searchParams.get("threadId") ?? undefined;
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const events = await teamEventBus.listRecent(threadId, limit);
-      return sendJson(
-        res,
-        200,
-        events.filter((event) => event.kind === "audit.logged")
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/governance/workers") {
-      const threadId = url.searchParams.get("threadId") ?? undefined;
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const events = await teamEventBus.listRecent(threadId, limit);
-      return sendJson(
-        res,
-        200,
-        events.filter(
-          (event) =>
-            event.kind === "audit.logged" &&
-            typeof event.payload.scope === "string" &&
-            event.payload.scope === "worker_execution"
-        )
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/replays") {
-      const threadId = url.searchParams.get("threadId") ?? undefined;
-      const layer = url.searchParams.get("layer") ?? undefined;
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      return sendJson(
-        res,
-        200,
-        await replayRecorder.list({
-          ...(threadId ? { threadId } : {}),
-          ...(layer &&
-          ["scheduled", "role", "worker", "browser"].includes(layer)
-            ? { layer: layer as "scheduled" | "role" | "worker" | "browser" }
-            : {}),
-          limit,
-        })
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/replay-summary") {
-      const threadId = url.searchParams.get("threadId") ?? undefined;
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      return sendJson(
-        res,
-        200,
-        buildReplayInspectionReport(
-          await replayRecorder.list({
-            ...(threadId ? { threadId } : {}),
-            limit,
-          })
-        )
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/replay-console") {
-      const threadId = url.searchParams.get("threadId") ?? undefined;
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      if (threadId) {
-        const synced = await loadRecoveryRuntime(threadId);
-        return sendJson(res, 200, buildReplayConsoleReport(synced.records, limit, synced.runs, getRelayDiagnosticsSnapshot()));
-      }
-      return sendJson(
-        res,
-        200,
-        buildReplayConsoleReport(
-          await replayRecorder.list({
-            limit: Math.max(limit, 200),
-          }),
-          limit,
-          [],
-          getRelayDiagnosticsSnapshot()
-        )
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/regression-cases") {
-      const cases = listBoundedRegressionCases();
-      return sendJson(res, 200, {
-        totalCases: cases.length,
-        cases,
-      });
-    }
-
-    if (req.method === "POST" && url.pathname === "/regression-cases/run") {
-      const body = await readJsonBody<{ caseIds?: string[] }>(req);
-      const caseIds = Array.isArray(body.caseIds)
-        ? body.caseIds.filter((value): value is string => typeof value === "string" && value.length > 0)
-        : undefined;
-      return sendJson(res, 200, runBoundedRegressionSuite(caseIds));
-    }
-
-    if (req.method === "GET" && url.pathname === "/failure-cases") {
-      const scenarios = listFailureInjectionScenarios();
-      return sendJson(res, 200, {
-        totalScenarios: scenarios.length,
-        scenarios,
-      });
-    }
-
-    if (req.method === "POST" && url.pathname === "/failure-cases/run") {
-      const body = await readJsonBody<{ scenarioIds?: string[] }>(req);
-      const scenarioIds = Array.isArray(body.scenarioIds)
-        ? body.scenarioIds.filter((value): value is string => typeof value === "string" && value.length > 0)
-        : undefined;
-      return sendJson(res, 200, runFailureInjectionSuite(scenarioIds));
-    }
-
-    if (req.method === "GET" && url.pathname === "/soak-cases") {
-      const scenarios = listSoakScenarios();
-      return sendJson(res, 200, {
-        totalScenarios: scenarios.length,
-        scenarios,
-      });
-    }
-
-    if (req.method === "POST" && url.pathname === "/soak-cases/run") {
-      const body = await readJsonBody<{ scenarioIds?: string[] }>(req);
-      const scenarioIds = Array.isArray(body.scenarioIds)
-        ? body.scenarioIds.filter((value): value is string => typeof value === "string" && value.length > 0)
-        : undefined;
-      if (scenarioIds && scenarioIds.length > 0) {
-        const validScenarioIds = new Set(listSoakScenarios().map((scenario) => scenario.scenarioId));
-        const invalidScenarioIds = scenarioIds.filter((scenarioId) => !validScenarioIds.has(scenarioId));
-        if (invalidScenarioIds.length > 0) {
-          return sendJson(res, 400, {
-            error: "unknown scenario ids",
-            invalidScenarioIds,
-          });
-        }
-      }
-      return sendJson(res, 200, runSoakSuite(scenarioIds));
-    }
-
-    if (req.method === "GET" && url.pathname === "/acceptance-cases") {
-      const scenarios = listScenarioParityAcceptanceScenarios();
-      return sendJson(res, 200, {
-        totalScenarios: scenarios.length,
-        scenarios,
-      });
-    }
-
-    if (req.method === "POST" && url.pathname === "/acceptance-cases/run") {
-      const body = await readJsonBody<{ scenarioIds?: string[] }>(req);
-      const scenarioIds = Array.isArray(body.scenarioIds)
-        ? body.scenarioIds.filter((value): value is string => typeof value === "string" && value.length > 0)
-        : undefined;
-      if (scenarioIds && scenarioIds.length > 0) {
-        const validScenarioIds = new Set(listScenarioParityAcceptanceScenarios().map((scenario) => scenario.scenarioId));
-        const invalidScenarioIds = scenarioIds.filter((scenarioId) => !validScenarioIds.has(scenarioId));
-        if (invalidScenarioIds.length > 0) {
-          return sendJson(res, 400, {
-            error: "unknown scenario ids",
-            invalidScenarioIds,
-          });
-        }
-      }
-      return sendJson(res, 200, runScenarioParityAcceptanceSuite(scenarioIds));
-    }
-
-    if (req.method === "GET" && url.pathname === "/realworld-cases") {
-      const scenarios = listRealWorldScenarios();
-      return sendJson(res, 200, {
-        totalScenarios: scenarios.length,
-        scenarios,
-      });
-    }
-
-    if (req.method === "POST" && url.pathname === "/realworld-cases/run") {
-      const body = await readJsonBody<{ scenarioIds?: string[] }>(req);
-      const scenarioIds = Array.isArray(body.scenarioIds)
-        ? body.scenarioIds.filter((value): value is string => typeof value === "string" && value.length > 0)
-        : undefined;
-      if (scenarioIds && scenarioIds.length > 0) {
-        const validScenarioIds = new Set(listRealWorldScenarios().map((scenario) => scenario.scenarioId));
-        const invalidScenarioIds = scenarioIds.filter((scenarioId) => !validScenarioIds.has(scenarioId));
-        if (invalidScenarioIds.length > 0) {
-          return sendJson(res, 400, {
-            error: "unknown scenario ids",
-            invalidScenarioIds,
-          });
-        }
-      }
-      return sendJson(res, 200, runRealWorldSuite(scenarioIds));
-    }
-
-    if (req.method === "GET" && url.pathname === "/validation-cases") {
-      const suites = listValidationSuites();
-      return sendJson(res, 200, {
-        totalSuites: suites.length,
-        totalItems: suites.reduce((sum: number, suite) => sum + suite.totalItems, 0),
-        suites,
-      });
-    }
-
-    if (req.method === "POST" && url.pathname === "/validation-cases/run") {
-      const body = await readJsonBody<{ selectors?: string[] }>(req);
-      const selectors = Array.isArray(body.selectors)
-        ? body.selectors.filter((value): value is string => typeof value === "string" && value.length > 0)
-        : undefined;
-      try {
-        return sendJson(res, 200, runValidationSuites(selectors));
-      } catch (error) {
-        if (error instanceof ValidationSelectorError) {
-          return sendJson(res, 400, { error: error.message });
-        }
-        throw error;
-      }
-    }
-
-    if (req.method === "GET" && url.pathname === "/validation-profiles") {
-      const profiles = listValidationProfiles();
-      return sendJson(res, 200, {
-        totalProfiles: profiles.length,
-        profiles,
-      });
-    }
-
-    if (req.method === "GET" && url.pathname === "/validation-ops") {
-      const requestedLimit = Number(url.searchParams.get("limit") ?? "10");
-      const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.floor(requestedLimit) : 10;
-      const records = await validationOpsRunStore.list(limit);
-      return sendJson(res, 200, buildValidationOpsReport(records, limit));
-    }
-
-    if (req.method === "POST" && url.pathname === "/validation-profiles/run") {
-      const body = await readJsonBody<{ profileId?: string }>(req);
-      const profileId = typeof body.profileId === "string" ? body.profileId.trim() : undefined;
-      if (!profileId || !isValidationProfileId(profileId)) {
-        return sendJson(res, 400, { error: "Unknown validation profile" });
-      }
-      const startedAt = Date.now();
-      const result = await runValidationProfile(profileId, {}, {
-        releaseReadinessRunner: runReleaseReadiness,
-        validationRunner: runValidationSuites,
-        transportSoakRunner: (options) => runBrowserTransportSoakViaCli(options),
-      });
-      const completedAt = Date.now();
-      await validationOpsRunStore.put(
-        buildValidationOpsRecordFromValidationProfile({
-          runId: createValidationOpsRunId("validation-profile"),
-          startedAt,
-          completedAt,
-          result,
-        })
-      );
-      return sendJson(res, 200, result);
-    }
-
-    if (req.method === "POST" && url.pathname === "/soak-series/run") {
-      const body = await readJsonBody<{ cycles?: number; selectors?: string[] }>(req);
-      const selectors = Array.isArray(body.selectors)
-        ? body.selectors
-            .filter((value): value is string => typeof value === "string")
-            .map((value) => value.trim())
-            .filter((value) => value.length > 0)
-        : undefined;
-      if (body.cycles !== undefined && (!Number.isInteger(body.cycles) || body.cycles <= 0)) {
-        return sendJson(res, 400, { error: "Invalid cycles: must be a positive integer" });
-      }
-      const cycles = body.cycles !== undefined ? Number(body.cycles) : undefined;
-      try {
-        const startedAt = Date.now();
-        const result = runValidationSoakSeries({
-          ...(cycles !== undefined ? { cycles } : {}),
-          ...(selectors !== undefined ? { selectors } : {}),
-        });
-        const completedAt = Date.now();
-        await validationOpsRunStore.put(
-          buildValidationOpsRecordFromSoakSeries({
-            runId: createValidationOpsRunId("soak-series"),
-            startedAt,
-            completedAt,
-            selectors: result.selectors,
-            result,
-          })
-        );
-        return sendJson(
-          res,
-          200,
-          result
-        );
-      } catch (error) {
-        if (error instanceof ValidationSelectorError) {
-          return sendJson(res, 400, { error: error.message });
-        }
-        throw error;
-      }
-    }
-
-    if (req.method === "POST" && url.pathname === "/transport-soak/run") {
-      const body = await readJsonBody<{
-        cycles?: number;
-        timeoutMs?: number;
-        relayPeerCount?: number;
-        verifyReconnect?: boolean;
-        verifyWorkflowLog?: boolean;
-        targets?: string[];
-      }>(req);
-      if (body.cycles !== undefined && (!Number.isInteger(body.cycles) || body.cycles <= 0)) {
-        return sendJson(res, 400, { error: "Invalid cycles: must be a positive integer" });
-      }
-      if (body.timeoutMs !== undefined && (!Number.isFinite(body.timeoutMs) || body.timeoutMs <= 0)) {
-        return sendJson(res, 400, { error: "Invalid timeoutMs: must be a positive number" });
-      }
-      if (body.relayPeerCount !== undefined && (!Number.isInteger(body.relayPeerCount) || body.relayPeerCount <= 0)) {
-        return sendJson(res, 400, { error: "Invalid relayPeerCount: must be a positive integer" });
-      }
-      if (body.verifyReconnect !== undefined && typeof body.verifyReconnect !== "boolean") {
-        return sendJson(res, 400, { error: "Invalid verifyReconnect: must be a boolean" });
-      }
-      if (body.verifyWorkflowLog !== undefined && typeof body.verifyWorkflowLog !== "boolean") {
-        return sendJson(res, 400, { error: "Invalid verifyWorkflowLog: must be a boolean" });
-      }
-      const targets = Array.isArray(body.targets)
-        ? body.targets
-            .filter((value): value is string => typeof value === "string")
-            .map((value) => value.trim())
-            .filter((value): value is "relay" | "direct-cdp" => value === "relay" || value === "direct-cdp")
-        : undefined;
-      const startedAt = Date.now();
-      const result = await runBrowserTransportSoak(
-        {
-          ...(body.cycles !== undefined ? { cycles: Number(body.cycles) } : {}),
-          ...(body.timeoutMs !== undefined ? { timeoutMs: Math.trunc(body.timeoutMs) } : {}),
-          ...(body.relayPeerCount !== undefined ? { relayPeerCount: Number(body.relayPeerCount) } : {}),
-          ...(body.verifyReconnect !== undefined ? { verifyReconnect: body.verifyReconnect } : {}),
-          ...(body.verifyWorkflowLog !== undefined ? { verifyWorkflowLog: body.verifyWorkflowLog } : {}),
-          ...(targets && targets.length > 0 ? { targets } : {}),
+              [],
+              getRelayDiagnosticsSnapshot()
+            );
+          },
         },
-        { runner: runBrowserTransportSoakSmokeCommand }
-      );
-      const completedAt = Date.now();
-      const runId = createValidationOpsRunId("transport-soak");
-      const artifactPath = await writeValidationArtifact("transport-soak", runId, result);
-      await validationOpsRunStore.put(
-        buildValidationOpsRecordFromTransportSoak({
-          runId,
-          startedAt,
-          completedAt,
-          artifactPath,
-          result,
-        })
-      );
-      return sendJson(res, 200, {
-        ...result,
-        artifactPath,
-      });
+      })
+    ) {
+      return;
     }
 
-    if (req.method === "POST" && url.pathname === "/release-readiness/run") {
-      const startedAt = Date.now();
-      const result = await runReleaseReadiness();
-      const completedAt = Date.now();
-      await validationOpsRunStore.put(
-        buildValidationOpsRecordFromReleaseReadiness({
-          runId: createValidationOpsRunId("release-readiness"),
-          startedAt,
-          completedAt,
-          result,
-        })
-      );
-      return sendJson(res, 200, result);
-    }
-
-    if (req.method === "GET" && url.pathname === "/replay-incidents") {
-      const threadId = url.searchParams.get("threadId") ?? undefined;
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const action = url.searchParams.get("action") ?? undefined;
-      const category = url.searchParams.get("category") ?? undefined;
-      const report = buildReplayInspectionReport(
-        await replayRecorder.list({
-          ...(threadId ? { threadId } : {}),
-          limit,
-        })
-      );
-      return sendJson(res, 200, {
-        totalReplays: report.totalReplays,
-        totalGroups: report.totalGroups,
-        incidents: report.incidents.filter(
-          (incident) =>
-            (action ? incident.recoveryHint.action === action : true) &&
-            (category ? incident.rootFailureCategory === category : true)
-        ),
-      });
-    }
-
-    if (req.method === "GET" && url.pathname === "/replay-recoveries") {
-      const threadId = url.searchParams.get("threadId") ?? undefined;
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const action = url.searchParams.get("action") ?? undefined;
-      const plans = buildReplayRecoveryPlans(
-        await replayRecorder.list({
-          ...(threadId ? { threadId } : {}),
-          limit,
-        })
-      );
-      return sendJson(res, 200, {
-        totalRecoveries: plans.length,
-        recoveries: plans.filter((plan) =>
-          action ? plan.recoveryHint.action === action || plan.nextAction === action : true
-        ),
-      });
-    }
-
-    const replayGroupMatch = url.pathname.match(/^\/replay-groups\/([^/]+)$/);
-    if (req.method === "GET" && replayGroupMatch) {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const records = await replayRecorder.list({ threadId });
-      const report = buildReplayInspectionReport(records);
-      const group = findReplayTaskSummary(records, decodeURIComponent(replayGroupMatch[1]!), report);
-      if (!group) {
-        return sendJson(res, 404, { error: "replay group not found" });
-      }
-      const relatedReplays = records
-        .filter((record) => (record.taskId ?? record.replayId) === group.groupId)
-        .sort((left, right) => left.recordedAt - right.recordedAt);
-      return sendJson(res, 200, {
-        group,
-        replays: relatedReplays,
-      });
-    }
-
-    const replayBundleMatch = url.pathname.match(/^\/replay-bundles\/([^/]+)$/);
-    if (req.method === "GET" && replayBundleMatch) {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const synced = await loadRecoveryRuntime(threadId);
-      const bundle = buildReplayIncidentBundle(
-        synced.records,
-        decodeURIComponent(replayBundleMatch[1]!),
-        getRelayDiagnosticsSnapshot()
-      );
-      if (!bundle) {
-        return sendJson(res, 404, { error: "replay bundle not found" });
-      }
-      const recoveryRun = synced.runs.find((run) => run.sourceGroupId === bundle.group.groupId);
-      if (recoveryRun) {
-        attachRecoveryRunToReplayIncidentBundle({
-          bundle,
-          run: recoveryRun,
-          records: synced.records,
-          events: await recoveryRunEventStore.listByRecoveryRun(recoveryRun.recoveryRunId),
-        });
-      }
-      return sendJson(res, 200, bundle);
-    }
-
-    const replayRecoveryMatch = url.pathname.match(/^\/replay-recoveries\/([^/]+)$/);
-    if (req.method === "GET" && replayRecoveryMatch) {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const synced = await loadRecoveryRuntime(threadId);
-      const recovery = findReplayRecoveryPlan(
-        synced.records,
-        decodeURIComponent(replayRecoveryMatch[1]!),
-        synced.report
-      );
-      if (!recovery) {
-        return sendJson(res, 404, { error: "replay recovery not found" });
-      }
-      return sendJson(res, 200, recovery);
-    }
-
-    if (req.method === "GET" && url.pathname === "/recovery-runs") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const limit = parsePositiveInteger(url.searchParams.get("limit"));
-      if (url.searchParams.get("limit") && limit == null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      const synced = await loadRecoveryRuntime(threadId);
-      const runs = limit == null ? synced.runs : synced.runs.slice(0, limit);
-      return sendJson(res, 200, {
-        totalRuns: synced.runs.length,
-        runs,
-      });
-    }
-
-    const recoveryRunMatch = url.pathname.match(/^\/recovery-runs\/([^/]+)$/);
-    if (req.method === "GET" && recoveryRunMatch) {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const synced = await loadRecoveryRuntime(threadId);
-      const run = synced.runs.find((item) => item.recoveryRunId === decodeURIComponent(recoveryRunMatch[1]!)) ?? null;
-      if (!run) {
-        return sendJson(res, 404, { error: "recovery run not found" });
-      }
-      return sendJson(res, 200, run);
-    }
-
-    const recoveryTimelineMatch = url.pathname.match(/^\/recovery-runs\/([^/]+)\/timeline$/);
-    if (req.method === "GET" && recoveryTimelineMatch) {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const synced = await loadRecoveryRuntime(threadId);
-      const run = synced.runs.find((item) => item.recoveryRunId === decodeURIComponent(recoveryTimelineMatch[1]!)) ?? null;
-      if (!run) {
-        return sendJson(res, 404, { error: "recovery run not found" });
-      }
-      const events = await recoveryRunEventStore.listByRecoveryRun(run.recoveryRunId);
-      const timeline = buildRecoveryRunTimeline(run, synced.records, events);
-      return sendJson(res, 200, {
-        recoveryRun: run,
-        progress: buildRecoveryRunProgress(run),
-        totalEntries: timeline.length,
-        timeline,
-      });
-    }
-
-    const recoveryRunActionMatch = url.pathname.match(
-      /^\/recovery-runs\/([^/]+)\/(approve|reject|retry|fallback|resume)$/
-    );
-    if (req.method === "POST" && recoveryRunActionMatch) {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const action = recoveryRunActionMatch[2] as "approve" | "reject" | "retry" | "fallback" | "resume";
-      const synced = await syncRecoveryRuntime(threadId);
-      const run = synced.runs.find((item) => item.recoveryRunId === decodeURIComponent(recoveryRunActionMatch[1]!)) ?? null;
-      if (!run) {
-        return sendJson(res, 404, { error: "recovery run not found" });
-      }
-      const result = await executeRecoveryRunAction({
-        run,
-        action,
-        report: synced.report,
-        records: synced.records,
-      });
-      return sendJson(res, result.statusCode, result.body);
-    }
-
-    const replayRecoveryDispatchMatch = url.pathname.match(/^\/replay-recoveries\/([^/]+)\/dispatch$/);
-    if (req.method === "POST" && replayRecoveryDispatchMatch) {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      const synced = await syncRecoveryRuntime(threadId);
-      const recovery = findReplayRecoveryPlan(
-        synced.records,
-        decodeURIComponent(replayRecoveryDispatchMatch[1]!),
-        synced.report
-      );
-      if (!recovery) {
-        return sendJson(res, 404, { error: "replay recovery not found" });
-      }
-      if (!recovery.autoDispatchReady) {
-        return sendJson(res, 409, {
-          error: "recovery requires manual intervention",
-          recovery,
-        });
-      }
-
-      const run =
-        synced.runs.find((item) => item.sourceGroupId === recovery.groupId) ??
-        createRecoveryRunSkeleton(recovery, clock.now());
-      if (!(await recoveryRunStore.get(run.recoveryRunId))) {
-        await recoveryRunStore.put(run);
-      }
-      const result = await executeRecoveryRunAction({
-        run,
-        action: "dispatch",
-        report: synced.report,
-        records: synced.records,
-      });
-      return sendJson(res, result.statusCode, result.body);
-    }
-
-    const replayMatch = url.pathname.match(/^\/replays\/([^/]+)$/);
-    if (req.method === "GET" && replayMatch) {
-      const replay = await replayRecorder.get(decodeURIComponent(replayMatch[1]!));
-      if (!replay) {
-        return sendJson(res, 404, { error: "replay not found" });
-      }
-      return sendJson(res, 200, replay);
-    }
-
-    if (req.method === "POST" && url.pathname === "/browser-sessions/spawn") {
-      const body = await readJsonBody<BrowserTaskRouteBody>(req);
-      const owner = await resolveBrowserThreadOwner({
-        threadId: body.threadId,
-        ...(body.ownerType ? { ownerType: body.ownerType } : {}),
-        ...(body.ownerId ? { ownerId: body.ownerId } : {}),
-      });
-      if ("error" in owner) {
-        return sendJson(res, owner.statusCode, { error: owner.error });
-      }
-      const request = buildBrowserTaskRequest({
-        body,
-        idGenerator,
-        owner,
-      });
-      return sendJson(res, 201, await browserBridge.spawnSession(request));
-    }
-
-    if (req.method === "GET" && url.pathname === "/browser-sessions") {
-      const ownerType = url.searchParams.get("ownerType");
-      const ownerId = url.searchParams.get("ownerId");
-      const owner = await resolveBrowserThreadOwner({
-        threadId: url.searchParams.get("threadId"),
-        ...(ownerType ? { ownerType } : {}),
-        ...(ownerId ? { ownerId } : {}),
-      });
-      if ("error" in owner) {
-        return sendJson(res, owner.statusCode, { error: owner.error });
-      }
-      return sendJson(
+    if (
+      await handleValidationRoutes({
+        req,
         res,
-        200,
-        await browserBridge.listSessions({
-          ownerType: owner.ownerType,
-          ownerId: owner.ownerId,
-        })
-      );
-    }
-
-    const browserSessionHistoryMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/history$/);
-    if (req.method === "GET" && browserSessionHistoryMatch) {
-      const access = await requireBrowserSessionAccess({
-        browserSessionId: decodeURIComponent(browserSessionHistoryMatch[1]!),
-        threadId: url.searchParams.get("threadId"),
-      });
-      if ("error" in access) {
-        return sendJson(res, access.statusCode, { error: access.error });
-      }
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
-      if (limit === null) {
-        return sendJson(res, 400, { error: "limit must be a positive integer" });
-      }
-      return sendJson(
-        res,
-        200,
-        await browserBridge.getSessionHistory({
-          browserSessionId: access.sessionId,
-          limit,
-        })
-      );
-    }
-
-    const browserSessionTargetsMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/targets$/);
-    if (req.method === "GET" && browserSessionTargetsMatch) {
-      const access = await requireBrowserSessionAccess({
-        browserSessionId: decodeURIComponent(browserSessionTargetsMatch[1]!),
-        threadId: url.searchParams.get("threadId"),
-      });
-      if ("error" in access) {
-        return sendJson(res, access.statusCode, { error: access.error });
-      }
-      return sendJson(res, 200, await browserBridge.listTargets(access.sessionId));
-    }
-
-    if (req.method === "POST" && browserSessionTargetsMatch) {
-      const body = await readJsonBody<{
-        url: string;
-        threadId?: string;
-      }>(req);
-      const access = await requireBrowserSessionAccess({
-        browserSessionId: decodeURIComponent(browserSessionTargetsMatch[1]!),
-        threadId: body.threadId,
-      });
-      if ("error" in access) {
-        return sendJson(res, access.statusCode, { error: access.error });
-      }
-      return sendJson(
-        res,
-        201,
-        await browserBridge.openTarget(access.sessionId, body.url, {
-          ownerType: access.ownerType,
-          ownerId: access.ownerId,
-        })
-      );
-    }
-
-    const browserSessionSendMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/send$/);
-    if (req.method === "POST" && browserSessionSendMatch) {
-      const body = await readJsonBody<BrowserTaskRouteBody>(req);
-      const access = await requireBrowserSessionAccess({
-        browserSessionId: decodeURIComponent(browserSessionSendMatch[1]!),
-        threadId: body.threadId,
-      });
-      if ("error" in access) {
-        return sendJson(res, access.statusCode, { error: access.error });
-      }
-      const request = buildBrowserTaskRequest({
-        body,
-        idGenerator,
-        browserSessionId: access.sessionId,
-        owner: {
-          ownerType: access.ownerType,
-          ownerId: access.ownerId,
+        url,
+        deps: {
+          validationOpsRunStore,
+          createValidationOpsRunId,
+          writeValidationArtifact,
+          runBrowserTransportSoakViaCli,
         },
-      });
-      return sendJson(res, 200, await browserBridge.sendSession({ ...request, browserSessionId: request.browserSessionId! }));
+      })
+    ) {
+      return;
     }
 
-    const browserSessionResumeMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/resume$/);
-    if (req.method === "POST" && browserSessionResumeMatch) {
-      const body = await readJsonBody<BrowserTaskRouteBody>(req);
-      const access = await requireBrowserSessionAccess({
-        browserSessionId: decodeURIComponent(browserSessionResumeMatch[1]!),
-        threadId: body.threadId,
-      });
-      if ("error" in access) {
-        return sendJson(res, access.statusCode, { error: access.error });
-      }
-      const request = buildBrowserTaskRequest({
-        body,
-        idGenerator,
-        browserSessionId: access.sessionId,
-        owner: {
-          ownerType: access.ownerType,
-          ownerId: access.ownerId,
+    if (
+      await handleRecoveryRoutes({
+        req,
+        res,
+        url,
+        deps: {
+          buildReplayIncidents: async ({ threadId, limit, action, category }) => {
+            const report = buildReplayInspectionReport(
+              await replayRecorder.list({
+                ...(threadId ? { threadId } : {}),
+                limit,
+              })
+            );
+            return {
+              totalReplays: report.totalReplays,
+              totalGroups: report.totalGroups,
+              incidents: report.incidents.filter(
+                (incident) =>
+                  (action ? incident.recoveryHint.action === action : true) &&
+                  (category ? incident.rootFailureCategory === category : true)
+              ),
+            };
+          },
+          buildReplayRecoveries: async ({ threadId, limit, action }) => {
+            const plans = buildReplayRecoveryPlans(
+              await replayRecorder.list({
+                ...(threadId ? { threadId } : {}),
+                limit,
+              })
+            );
+            return {
+              totalRecoveries: plans.length,
+              recoveries: plans.filter((plan) =>
+                action ? plan.recoveryHint.action === action || plan.nextAction === action : true
+              ),
+            };
+          },
+          getReplayGroup: async (threadId, groupId) => {
+            const records = await replayRecorder.list({ threadId });
+            const report = buildReplayInspectionReport(records);
+            const group = findReplayTaskSummary(records, groupId, report);
+            if (!group) {
+              return null;
+            }
+            const replays = records
+              .filter((record) => (record.taskId ?? record.replayId) === group.groupId)
+              .sort((left, right) => left.recordedAt - right.recordedAt);
+            return { group, replays };
+          },
+          getReplayBundle: async (threadId, groupId) => {
+            const synced = await recoveryActionService.loadRecoveryRuntime(threadId);
+            const bundle = buildReplayIncidentBundle(
+              synced.records,
+              groupId,
+              getRelayDiagnosticsSnapshot()
+            );
+            if (!bundle) {
+              return null;
+            }
+            const recoveryRun = synced.runs.find((run) => run.sourceGroupId === bundle.group.groupId);
+            if (recoveryRun) {
+              attachRecoveryRunToReplayIncidentBundle({
+                bundle,
+                run: recoveryRun,
+                records: synced.records,
+                events: await recoveryRunEventStore.listByRecoveryRun(recoveryRun.recoveryRunId),
+              });
+            }
+            return bundle;
+          },
+          getReplayRecovery: (threadId, groupId) => recoveryActionService.getReplayRecovery(threadId, groupId),
+          listRecoveryRuns: (threadId) => recoveryActionService.listRecoveryRuns(threadId),
+          getRecoveryRun: (threadId, recoveryRunId) => recoveryActionService.getRecoveryRun(threadId, recoveryRunId),
+          getRecoveryTimeline: (threadId, recoveryRunId) =>
+            recoveryActionService.getRecoveryTimeline(threadId, recoveryRunId),
+          executeRecoveryRunAction: ({ threadId, recoveryRunId, action }) =>
+            recoveryActionService.executeRecoveryRunActionById({ threadId, recoveryRunId, action }),
+          dispatchReplayRecovery: ({ threadId, groupId }) =>
+            recoveryActionService.dispatchReplayRecovery({ threadId, groupId }),
+          getReplay: (replayId) => replayRecorder.get(replayId),
         },
-      });
-      return sendJson(
+      })
+    ) {
+      return;
+    }
+
+    if (
+      await handleBrowserRoutes({
+        req,
         res,
-        200,
-        await browserBridge.resumeSession({ ...request, browserSessionId: request.browserSessionId! })
-      );
-    }
-
-    const browserSessionActivateMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/activate-target$/);
-    if (req.method === "POST" && browserSessionActivateMatch) {
-      const body = await readJsonBody<{
-        targetId: string;
-        threadId?: string;
-      }>(req);
-      const access = await requireBrowserSessionAccess({
-        browserSessionId: decodeURIComponent(browserSessionActivateMatch[1]!),
-        threadId: body.threadId,
-      });
-      if ("error" in access) {
-        return sendJson(res, access.statusCode, { error: access.error });
-      }
-      return sendJson(
-        res,
-        200,
-        await browserBridge.activateTarget(access.sessionId, body.targetId, {
-          ownerType: access.ownerType,
-          ownerId: access.ownerId,
-        })
-      );
-    }
-
-    const browserSessionCloseTargetMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/close-target$/);
-    if (req.method === "POST" && browserSessionCloseTargetMatch) {
-      const body = await readJsonBody<{
-        targetId: string;
-        threadId?: string;
-      }>(req);
-      const access = await requireBrowserSessionAccess({
-        browserSessionId: decodeURIComponent(browserSessionCloseTargetMatch[1]!),
-        threadId: body.threadId,
-      });
-      if ("error" in access) {
-        return sendJson(res, access.statusCode, { error: access.error });
-      }
-      return sendJson(
-        res,
-        200,
-        await browserBridge.closeTarget(access.sessionId, body.targetId, {
-          ownerType: access.ownerType,
-          ownerId: access.ownerId,
-        })
-      );
-    }
-
-    if (req.method === "POST" && url.pathname === "/browser-sessions/evict-idle") {
-      const body = await readOptionalJsonBody<{ idleMs?: number; idleBefore?: number; reason?: string }>(req);
-      const idleBefore = body.idleBefore ?? clock.now() - (body.idleMs ?? 30 * 60 * 1000);
-      return sendJson(
-        res,
-        200,
-        await browserBridge.evictIdleSessions({
-          idleBefore,
-          ...(body.reason ? { reason: body.reason } : {}),
-        })
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/relay/peers") {
-      if (!relayGateway) {
-        return sendJson(res, 503, { error: "relay browser transport is not active" });
-      }
-      return sendJson(res, 200, relayGateway.listPeers());
-    }
-
-    if (req.method === "POST" && url.pathname === "/relay/peers/register") {
-      if (!relayGateway) {
-        return sendJson(res, 503, { error: "relay browser transport is not active" });
-      }
-      const body = await readJsonBody<{
-        peerId?: string;
-        label?: string;
-        capabilities?: string[];
-        transportLabel?: string;
-      }>(req);
-      if (!body.peerId?.trim()) {
-        return sendJson(res, 400, { error: "peerId is required" });
-      }
-      return sendJson(
-        res,
-        201,
-        relayGateway.registerPeer({
-          peerId: body.peerId,
-          ...(body.label?.trim() ? { label: body.label.trim() } : {}),
-          ...(Array.isArray(body.capabilities) ? { capabilities: body.capabilities } : {}),
-          ...(body.transportLabel?.trim() ? { transportLabel: body.transportLabel.trim() } : {}),
-        })
-      );
-    }
-
-    const relayPeerHeartbeatMatch = url.pathname.match(/^\/relay\/peers\/([^/]+)\/heartbeat$/);
-    if (req.method === "POST" && relayPeerHeartbeatMatch) {
-      if (!relayGateway) {
-        return sendJson(res, 503, { error: "relay browser transport is not active" });
-      }
-      return sendJson(res, 200, relayGateway.heartbeatPeer(decodeURIComponent(relayPeerHeartbeatMatch[1]!)));
-    }
-
-    const relayPeerTargetsMatch = url.pathname.match(/^\/relay\/peers\/([^/]+)\/targets\/report$/);
-    if (req.method === "POST" && relayPeerTargetsMatch) {
-      if (!relayGateway) {
-        return sendJson(res, 503, { error: "relay browser transport is not active" });
-      }
-      const body = await readJsonBody<{
-        targets?: Array<{
-          relayTargetId?: string;
-          url?: string;
-          title?: string;
-          status?: "open" | "attached" | "detached" | "closed";
-        }>;
-      }>(req);
-      if (!Array.isArray(body.targets)) {
-        return sendJson(res, 400, { error: "targets array is required" });
-      }
-      return sendJson(
-        res,
-        200,
-        relayGateway.reportTargets(
-          decodeURIComponent(relayPeerTargetsMatch[1]!),
-          body.targets.map((target) => ({
-            relayTargetId: target.relayTargetId?.trim() ?? "",
-            url: target.url ?? "",
-            ...(target.title ? { title: target.title } : {}),
-            ...(target.status ? { status: target.status } : {}),
-          }))
-        )
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/relay/targets") {
-      if (!relayGateway) {
-        return sendJson(res, 503, { error: "relay browser transport is not active" });
-      }
-      const peerId = url.searchParams.get("peerId");
-      return sendJson(
-        res,
-        200,
-        relayGateway.listTargets(peerId?.trim() ? { peerId: peerId.trim() } : undefined)
-      );
-    }
-
-    const relayPeerPullActionsMatch = url.pathname.match(/^\/relay\/peers\/([^/]+)\/pull-actions$/);
-    if (req.method === "POST" && relayPeerPullActionsMatch) {
-      if (!relayGateway) {
-        return sendJson(res, 503, { error: "relay browser transport is not active" });
-      }
-      return sendJson(
-        res,
-        200,
-        relayGateway.pullNextActionRequest(decodeURIComponent(relayPeerPullActionsMatch[1]!))
-      );
-    }
-
-    const relayPeerActionResultsMatch = url.pathname.match(/^\/relay\/peers\/([^/]+)\/action-results$/);
-    if (req.method === "POST" && relayPeerActionResultsMatch) {
-      if (!relayGateway) {
-        return sendJson(res, 503, { error: "relay browser transport is not active" });
-      }
-      const peerId = decodeURIComponent(relayPeerActionResultsMatch[1]!);
-      const body = await readJsonBody<{
-        actionRequestId?: string;
-        browserSessionId?: string;
-        taskId?: string;
-        relayTargetId?: string;
-        url?: string;
-        title?: string;
-        status?: "completed" | "failed";
-        page?: BrowserTaskResult["page"];
-        trace?: BrowserTaskResult["trace"];
-        screenshotPaths?: string[];
-        screenshotPayloads?: Array<{
-          label?: string;
-          mimeType?: string;
-          dataBase64?: string;
-        }>;
-        artifactIds?: string[];
-        errorMessage?: string;
-      }>(req);
-      if (!body.actionRequestId?.trim() || !body.browserSessionId?.trim() || !body.taskId?.trim() || !body.relayTargetId?.trim()) {
-        return sendJson(res, 400, {
-          error: "actionRequestId, browserSessionId, taskId, and relayTargetId are required",
-        });
-      }
-      if (!body.url?.trim()) {
-        return sendJson(res, 400, { error: "url is required" });
-      }
-      if (!body.status) {
-        return sendJson(res, 400, { error: "status is required" });
-      }
-      return sendJson(
-        res,
-        200,
-        relayGateway.submitActionResult({
-          actionRequestId: body.actionRequestId.trim(),
-          peerId,
-          browserSessionId: body.browserSessionId.trim(),
-          taskId: body.taskId.trim(),
-          relayTargetId: body.relayTargetId.trim(),
-          url: body.url.trim(),
-          ...(body.title ? { title: body.title } : {}),
-          status: body.status,
-          ...(body.page ? { page: body.page } : {}),
-          trace: Array.isArray(body.trace) ? body.trace : [],
-          screenshotPaths: Array.isArray(body.screenshotPaths) ? body.screenshotPaths : [],
-          screenshotPayloads: Array.isArray(body.screenshotPayloads)
-            ? body.screenshotPayloads
-                .filter(
-                  (payload): payload is { label?: string; mimeType: string; dataBase64: string } =>
-                    Boolean(payload) &&
-                    typeof payload === "object" &&
-                    typeof payload.mimeType === "string" &&
-                    typeof payload.dataBase64 === "string"
-                )
-                .map((payload) => ({
-                  ...(payload.label ? { label: payload.label } : {}),
-                  mimeType: payload.mimeType,
-                  dataBase64: payload.dataBase64,
-                }))
-            : [],
-          artifactIds: Array.isArray(body.artifactIds) ? body.artifactIds : [],
-          ...(body.errorMessage ? { errorMessage: body.errorMessage } : {}),
-        })
-      );
-    }
-
-    if (req.method === "GET" && url.pathname === "/scheduled-tasks") {
-      const threadId = url.searchParams.get("threadId");
-      if (!threadId) {
-        return sendJson(res, 400, { error: "threadId is required" });
-      }
-      return sendJson(res, 200, await scheduledTaskRuntime.listByThread(threadId));
-    }
-
-    if (req.method === "POST" && url.pathname === "/messages") {
-      const body = await readJsonBody<{ threadId: string; content: string }>(req);
-      await coordinationEngine.handleUserPost(body);
-      await teamEventBus.publish({
-        eventId: idGenerator.messageId(),
-        threadId: body.threadId,
-        kind: "message.posted",
-        createdAt: clock.now(),
-        payload: {
-          route: "user",
-          contentLength: body.content.length,
+        url,
+        deps: {
+          browserBridge,
+          idGenerator,
+          clock,
+          resolveBrowserThreadOwner,
+          requireBrowserSessionAccess,
+          buildBrowserTaskRequest,
         },
-      });
-      return sendJson(res, 202, { accepted: true, threadId: body.threadId });
+      })
+    ) {
+      return;
     }
 
-    if (req.method === "POST" && url.pathname === "/scheduled-tasks") {
-      const body = await readJsonBody<{
-        threadId: string;
-        targetRoleId: string;
-        capsule: {
-          title: string;
-          instructions: string;
-          artifactRefs?: string[];
-          dependencyRefs?: string[];
-          expectedOutput?: string;
-        };
-        schedule: {
-          kind: "cron";
-          expr: string;
-          tz: string;
-        };
-        sessionTarget?: "main" | "worker";
-        targetWorker?: "browser" | "coder" | "finance" | "explore" | "harness";
-      }>(req);
-      return sendJson(res, 201, await scheduledTaskRuntime.schedule(body));
+    if (
+      await handleRelayRoutes({
+        req,
+        res,
+        url,
+        relayGateway,
+      })
+    ) {
+      return;
     }
 
-    if (req.method === "POST" && url.pathname === "/scheduled-tasks/trigger-due") {
-      let body: { now?: number };
-      try {
-        body = await readOptionalJsonBody<{ now?: number }>(req);
-      } catch {
-        return sendJson(res, 400, { error: "Invalid JSON" });
-      }
-      return sendJson(res, 200, await scheduledTaskRuntime.triggerDue(body.now));
+    if (
+      await handleWorkflowRoutes({
+        req,
+        res,
+        url,
+        deps: {
+          coordinationEngine,
+          teamEventBus,
+          scheduledTaskRuntime,
+          idGenerator,
+          clock,
+        },
+      })
+    ) {
+      return;
     }
 
     return sendJson(res, 404, { error: "not found" });
@@ -2062,8 +1091,14 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`daemon listening on http://127.0.0.1:${PORT}`);
   console.log(`data dir: ${DATA_DIR}`);
   console.log(`model catalog: ${modelCatalogPath ?? "(none)"}`);
-  if (DAEMON_TOKEN) {
+  if (DAEMON_AUTH.authMode !== "disabled") {
     console.log("auth: token required via x-turnkeyai-token or Authorization: Bearer <token>");
+    if (DAEMON_AUTH.authMode === "token-layered") {
+      console.log("auth access levels: read / operator / admin");
+      console.log("  TURNKEYAI_DAEMON_READ_TOKEN       Read-only inspection and replay routes");
+      console.log("  TURNKEYAI_DAEMON_OPERATOR_TOKEN   Operator and browser action routes");
+      console.log("  TURNKEYAI_DAEMON_ADMIN_TOKEN      Validation, relay, and admin-only routes");
+    }
   } else {
     console.log("auth: disabled (set TURNKEYAI_DAEMON_TOKEN to enable)");
   }
@@ -2294,98 +1329,6 @@ async function resolveModelCatalogPath(): Promise<string | null> {
   return null;
 }
 
-function isAuthorizedRequest(req: http.IncomingMessage): boolean {
-  if (!DAEMON_TOKEN) {
-    return true;
-  }
-
-  const headerToken = req.headers["x-turnkeyai-token"];
-  if (typeof headerToken === "string" && headerToken === DAEMON_TOKEN) {
-    return true;
-  }
-
-  const authorization = req.headers.authorization;
-  if (typeof authorization === "string" && authorization.toLowerCase().startsWith("bearer ")) {
-    return authorization.slice("bearer ".length).trim() === DAEMON_TOKEN;
-  }
-
-  return false;
-}
-
-function sendJson(res: http.ServerResponse, statusCode: number, payload: unknown): void {
-  res.statusCode = statusCode;
-  res.setHeader("content-type", "application/json; charset=utf-8");
-  res.end(`${JSON.stringify(payload, null, 2)}\n`);
-}
-
-async function readJsonBody<T>(req: http.IncomingMessage): Promise<T> {
-  const raw = await readRawBody(req);
-  return JSON.parse(raw) as T;
-}
-
-async function readOptionalJsonBody<T>(req: http.IncomingMessage): Promise<T> {
-  const raw = await readRawBody(req);
-  if (raw.trim().length === 0) {
-    return {} as T;
-  }
-
-  return JSON.parse(raw) as T;
-}
-
-async function readRawBody(req: http.IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-function parsePositiveLimit(value: string | null): number | null {
-  if (value == null) {
-    return 100;
-  }
-
-  if (!/^\d+$/.test(value)) {
-    return null;
-  }
-
-  const limit = Number(value);
-  if (!Number.isSafeInteger(limit) || limit <= 0) {
-    return null;
-  }
-
-  return limit;
-}
-
-function parsePositiveInteger(value: string | null): number | null {
-  if (value == null) {
-    return null;
-  }
-
-  if (!/^\d+$/.test(value)) {
-    return null;
-  }
-
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-interface BrowserTaskRouteBody {
-  threadId?: string;
-  taskId?: string;
-  instructions?: string;
-  url?: string;
-  targetId?: string;
-  actions?: BrowserTaskAction[];
-  ownerType?: BrowserSessionOwnerType;
-  ownerId?: string;
-  profileOwnerType?: BrowserSessionOwnerType;
-  profileOwnerId?: string;
-  leaseHolderRunKey?: string;
-  leaseTtlMs?: number;
-}
-
 async function resolveBrowserThreadOwner(input: {
   threadId: string | null | undefined;
   ownerType?: string | null;
@@ -2532,1153 +1475,6 @@ function buildBrowserTaskActions(body: BrowserTaskRouteBody): BrowserTaskAction[
   return [{ kind: "snapshot", note: "resume-current-target" }];
 }
 
-async function loadRecoveryRuntime(threadId: string): Promise<{
-  records: Awaited<ReturnType<typeof replayRecorder.list>>;
-  report: ReturnType<typeof buildReplayInspectionReport>;
-  runs: RecoveryRun[];
-}> {
-  const records = await replayRecorder.list({ threadId });
-  const existingRuns = await recoveryRunStore.listByThread(threadId);
-  const stabilizedRuns = await reapStaleRecoveryRuns(records, existingRuns, clock.now());
-  const report = buildReplayInspectionReport(records);
-  const runs = buildRecoveryRuns(records, stabilizedRuns, clock.now());
-  return { records, report, runs };
-}
-
-async function listRuntimeChainEntriesByThread(
-  threadId: string,
-  limit: number
-): Promise<RuntimeChainEntry[]> {
-  const entries = await loadRuntimeChainEntriesForThread(threadId);
-  return entries.slice(0, limit);
-}
-
-async function loadRuntimeChainEntriesForThread(
-  threadId: string
-): Promise<RuntimeChainEntry[]> {
-  const [storedChains, storedStatuses, progressEvents, flows, roleRuns, recoveryRuntime] = await Promise.all([
-    runtimeChainStore.listByThread(threadId),
-    runtimeChainStatusStore.listByThread(threadId),
-    runtimeProgressStore.listByThread(threadId, 500),
-    flowLedgerStore.listByThread(threadId),
-    roleRunStore.listByThread(threadId),
-    loadRecoveryRuntime(threadId),
-  ]);
-  const workerStatesByRunKey = await loadWorkerStatesByRunKey(roleRuns);
-  const flowsById = new Map(flows.map((flow) => [flow.flowId, flow]));
-  const progressByChainId = new Map<string, typeof progressEvents>();
-  for (const event of progressEvents) {
-    if (!event.chainId) {
-      continue;
-    }
-    const current = progressByChainId.get(event.chainId) ?? [];
-    current.push(event);
-    progressByChainId.set(event.chainId, current);
-  }
-
-  const entries = [
-    ...storedChains.map((chain) => {
-      const chainProgressEvents = progressByChainId.get(chain.chainId);
-      const status =
-        storedStatuses.find((entry) => entry.chainId === chain.chainId) ??
-        buildFallbackRuntimeChainStatus(chain);
-      if (chain.rootKind !== "flow") {
-        const decorateInput: Parameters<typeof decorateRuntimeChainStatus>[0] = {
-          chain,
-          status,
-          records: recoveryRuntime.records,
-        };
-        if (chainProgressEvents) {
-          decorateInput.progressEvents = chainProgressEvents;
-        }
-        return {
-          chain,
-          status: decorateRuntimeChainStatus(decorateInput),
-        };
-      }
-      const augmented = buildAugmentedFlowRuntimeChainEntry({
-        chain,
-        status,
-        flow: flowsById.get(chain.rootId) ?? null,
-        records: recoveryRuntime.records,
-        roleRuns,
-        workerStatesByRunKey,
-      });
-      const decorateInput: Parameters<typeof decorateRuntimeChainStatus>[0] = {
-        chain: augmented.chain,
-        status: augmented.status,
-        flow: flowsById.get(chain.rootId) ?? null,
-        records: recoveryRuntime.records,
-      };
-      if (chainProgressEvents) {
-        decorateInput.progressEvents = chainProgressEvents;
-      }
-      return {
-        chain: augmented.chain,
-        status: decorateRuntimeChainStatus(decorateInput),
-      };
-    }),
-    ...recoveryRuntime.runs.map((run) => {
-      const derived = buildDerivedRecoveryRuntimeChain(run);
-      const chainProgressEvents = progressByChainId.get(derived.chain.chainId);
-      const decorateInput: Parameters<typeof decorateRuntimeChainStatus>[0] = {
-        chain: derived.chain,
-        status: derived.status,
-        recoveryRun: run,
-        records: recoveryRuntime.records,
-      };
-      if (chainProgressEvents) {
-        decorateInput.progressEvents = chainProgressEvents;
-      }
-      return {
-        chain: derived.chain,
-        status: decorateRuntimeChainStatus(decorateInput),
-      };
-    }),
-  ].sort((left, right) => right.status.updatedAt - left.status.updatedAt);
-
-  return entries;
-}
-
-async function listActiveRuntimeChainEntries(
-  limit: number,
-  threadId?: string | null
-): Promise<Array<{ chain: unknown; status: unknown }>> {
-  return (await loadRuntimeChainEntriesForScope(threadId))
-    .filter((entry) => !["resolved", "failed"].includes(entry.status.canonicalState ?? "open"))
-    .slice(0, limit);
-}
-
-async function listRuntimeChainsByCanonicalState(
-  state: RuntimeChainCanonicalState,
-  limit: number,
-  threadId?: string | null
-): Promise<Array<{ chain: unknown; status: unknown }>> {
-  return (await loadRuntimeChainEntriesForScope(threadId))
-    .filter((entry) => entry.status.canonicalState === state)
-    .slice(0, limit);
-}
-
-async function loadRuntimeSummary(threadId: string | null, limit: number): Promise<RuntimeSummaryReport> {
-  return buildRuntimeSummaryReport({
-    entries: await loadRuntimeChainEntriesForScope(threadId),
-    limit,
-    now: clock.now(),
-  });
-}
-
-async function listStaleRuntimeChainEntries(
-  limit: number,
-  threadId?: string | null
-): Promise<Array<{ chain: unknown; status: unknown }>> {
-  return (await loadRuntimeChainEntriesForScope(threadId))
-    .filter((entry) => Boolean(entry.status.stale))
-    .slice(0, limit);
-}
-
-async function loadRuntimeChainEntriesForScope(
-  threadId?: string | null
-): Promise<RuntimeChainEntry[]> {
-  if (threadId) {
-    return loadRuntimeChainEntriesForThread(threadId);
-  }
-  const threads = await teamThreadStore.list();
-  return (await Promise.all(threads.map((thread) => loadRuntimeChainEntriesForThread(thread.threadId))))
-    .flat()
-    .sort((left, right) => right.status.updatedAt - left.status.updatedAt);
-}
-
-async function loadRuntimeChainDetail(chainId: string, eventLimit = 50): Promise<{
-  chain: unknown;
-  status: unknown;
-  spans: unknown[];
-  events: unknown[];
-} | null> {
-  if (isRecoveryRuntimeChainId(chainId)) {
-    const run = await recoveryRunStore.get(chainId);
-    if (!run) {
-      return null;
-    }
-    const [records, events, progressEvents] = await Promise.all([
-      replayRecorder.list({ threadId: run.threadId }),
-      recoveryRunEventStore.listByRecoveryRun(run.recoveryRunId),
-      runtimeProgressStore.listByChain(chainId, 100),
-    ]);
-    const detail = buildDerivedRecoveryRuntimeChainDetail({
-      run,
-      records,
-      events,
-    });
-    return {
-      ...detail,
-      status: decorateRuntimeChainStatus({
-        chain: detail.chain,
-        status: detail.status,
-        recoveryRun: run,
-        records,
-        progressEvents,
-      }),
-    };
-  }
-
-  const [chain, status] = await Promise.all([
-    runtimeChainStore.get(chainId),
-    runtimeChainStatusStore.get(chainId),
-  ]);
-  if (!chain) {
-    return null;
-  }
-  const [spans, events, progressEvents] = await Promise.all([
-    runtimeChainSpanStore.listByChain(chainId),
-    runtimeChainEventStore.listByChain(chainId, eventLimit),
-    runtimeProgressStore.listByChain(chainId, 100),
-  ]);
-  if (chain.rootKind !== "flow") {
-    return {
-      chain,
-      status:
-        status == null
-          ? null
-          : decorateRuntimeChainStatus({
-              chain,
-              status,
-              progressEvents,
-            }),
-      spans,
-      events,
-    };
-  }
-
-  const [flow, roleRuns, records] = await Promise.all([
-    flowLedgerStore.get(chain.rootId),
-    roleRunStore.listByThread(chain.threadId),
-    replayRecorder.list({ threadId: chain.threadId }),
-  ]);
-  const workerStatesByRunKey = await loadWorkerStatesByRunKey(roleRuns);
-  return buildAugmentedFlowRuntimeChainDetail({
-    chain,
-    status: status ?? {
-      chainId: chain.chainId,
-      threadId: chain.threadId,
-      phase: "started",
-      latestSummary: "Flow chain created.",
-      attention: false,
-      updatedAt: chain.updatedAt,
-    },
-    spans,
-    events,
-    flow,
-    records,
-    roleRuns,
-    workerStatesByRunKey,
-    now: clock.now(),
-    progressEvents,
-  });
-}
-
-function buildFallbackRuntimeChainStatus(chain: {
-  chainId: string;
-  threadId: string;
-  updatedAt: number;
-}): RuntimeChainStatus {
-  return {
-    chainId: chain.chainId,
-    threadId: chain.threadId,
-    phase: "started",
-    latestSummary: "Runtime chain created.",
-    attention: false,
-    updatedAt: chain.updatedAt,
-  };
-}
-
-async function loadWorkerStatesByRunKey(roleRuns: RoleRunState[]): Promise<Map<string, WorkerSessionState>> {
-  const workerRunKeys = [
-    ...new Set(
-      roleRuns.flatMap((run) =>
-        Object.values(run.workerSessions ?? {}).filter((workerRunKey): workerRunKey is string => Boolean(workerRunKey))
-      )
-    ),
-  ];
-  const states = await Promise.all(workerRunKeys.map(async (workerRunKey) => [workerRunKey, await workerRuntime.getState(workerRunKey)] as const));
-  return new Map(states.filter((entry): entry is readonly [string, WorkerSessionState] => Boolean(entry[1])));
-}
-
-async function syncRecoveryRuntime(threadId: string): Promise<{
-  records: Awaited<ReturnType<typeof replayRecorder.list>>;
-  report: ReturnType<typeof buildReplayInspectionReport>;
-  runs: RecoveryRun[];
-}> {
-  const { records, report, runs } = await loadRecoveryRuntime(threadId);
-  const existingRuns = await recoveryRunStore.listByThread(threadId);
-  const existingByRunId = new Map(existingRuns.map((run) => [run.recoveryRunId, JSON.stringify(run)]));
-  const previousByRunId = new Map(existingRuns.map((run) => [run.recoveryRunId, run]));
-  const changedRuns = runs.filter((run) => existingByRunId.get(run.recoveryRunId) !== JSON.stringify(run));
-  await Promise.all(changedRuns.map((run) => recoveryRunStore.put(run)));
-  await Promise.all(
-    changedRuns.map((run) =>
-      appendDerivedRecoveryRunEvents({
-        previous: previousByRunId.get(run.recoveryRunId) ?? null,
-        next: run,
-      })
-    )
-  );
-  return { records, report, runs };
-}
-
-async function reapStaleRecoveryRuns(
-  records: ReplayRecord[],
-  existingRuns: RecoveryRun[],
-  now: number
-): Promise<RecoveryRun[]> {
-  const nextRuns = [...existingRuns];
-  for (let index = 0; index < nextRuns.length; index += 1) {
-    const run = nextRuns[index]!;
-    if (!isStaleInFlightRecoveryRun(run, records, now)) {
-      continue;
-    }
-    const failed = buildStaleRecoveryRunFailure(run, now);
-    nextRuns[index] = failed;
-    await recoveryRunStore.put(failed);
-    await recoveryRunEventStore.append({
-      eventId: idGenerator.messageId(),
-      recoveryRunId: failed.recoveryRunId,
-      threadId: failed.threadId,
-      sourceGroupId: failed.sourceGroupId,
-      kind: "action_failed",
-      status: "failed",
-      recordedAt: now,
-      summary: failed.latestSummary,
-      ...(failed.currentAttemptId ? { attemptId: failed.currentAttemptId } : {}),
-      ...(failed.latestFailure ? { failure: failed.latestFailure } : {}),
-      transitionReason: "manual_dispatch",
-    });
-  }
-  return nextRuns;
-}
-
-function isStaleInFlightRecoveryRun(run: RecoveryRun, records: ReplayRecord[], now: number): boolean {
-  if (!["running", "retrying", "fallback_running", "resumed", "superseded"].includes(run.status)) {
-    return false;
-  }
-  if (now - run.updatedAt < RECOVERY_RUN_STALE_AFTER_MS) {
-    return false;
-  }
-  return !records.some((record) => {
-    const groupId = record.taskId ?? record.replayId;
-    const parentGroupId = extractRecoveryParentGroupIdFromReplay(record);
-    return (groupId === run.sourceGroupId || parentGroupId === run.sourceGroupId) && record.recordedAt > run.updatedAt;
-  });
-}
-
-function buildStaleRecoveryRunFailure(run: RecoveryRun, now: number): RecoveryRun {
-  const failure = {
-    category: "timeout" as const,
-    layer: "scheduled" as const,
-    retryable: false,
-    message: "Recovery dispatch timed out before follow-up completed.",
-    recommendedAction: "inspect" as const,
-  };
-  const { waitingReason: _waitingReason, ...rest } = run;
-  return {
-    ...rest,
-    status: "failed",
-    nextAction: "inspect_then_resume",
-    autoDispatchReady: false,
-    requiresManualIntervention: true,
-    latestSummary: failure.message,
-    latestFailure: failure,
-    updatedAt: now,
-    attempts: run.attempts.map((attempt) =>
-      attempt.attemptId === run.currentAttemptId && attempt.completedAt == null
-        ? {
-            ...attempt,
-            status: "failed",
-            summary: failure.message,
-            failure,
-            updatedAt: now,
-            completedAt: now,
-          }
-        : attempt
-    ),
-  };
-}
-
-function extractRecoveryParentGroupIdFromReplay(record: ReplayRecord): string | undefined {
-  const metadata = record.metadata && typeof record.metadata === "object" ? (record.metadata as Record<string, unknown>) : null;
-  const recoveryContext =
-    metadata?.recoveryContext && typeof metadata.recoveryContext === "object"
-      ? (metadata.recoveryContext as Record<string, unknown>)
-      : null;
-  return typeof recoveryContext?.parentGroupId === "string" ? recoveryContext.parentGroupId : undefined;
-}
-
-async function appendDerivedRecoveryRunEvents(input: {
-  previous: RecoveryRun | null;
-  next: RecoveryRun;
-}): Promise<void> {
-  const previous = input.previous;
-  const next = input.next;
-  const currentAttempt =
-    next.currentAttemptId ? next.attempts.find((attempt) => attempt.attemptId === next.currentAttemptId) ?? null : null;
-
-  if (previous && previous.status === next.status && previous.updatedAt === next.updatedAt) {
-    return;
-  }
-
-  if (previous?.currentAttemptId && previous.currentAttemptId !== next.currentAttemptId) {
-    await recoveryRunEventStore.append({
-      eventId: idGenerator.messageId(),
-      recoveryRunId: next.recoveryRunId,
-      threadId: next.threadId,
-      sourceGroupId: next.sourceGroupId,
-      kind: "follow_up_observed",
-      status: next.status,
-      recordedAt: next.updatedAt,
-      summary: `Recovery follow-up observed for ${next.sourceGroupId}.`,
-      ...(next.currentAttemptId ? { attemptId: next.currentAttemptId } : {}),
-      ...(currentAttempt?.triggeredByAttemptId ? { triggeredByAttemptId: currentAttempt.triggeredByAttemptId } : {}),
-      ...(currentAttempt?.transitionReason ? { transitionReason: currentAttempt.transitionReason } : {}),
-      ...(next.browserSession ? { browserSession: next.browserSession } : {}),
-      ...(currentAttempt?.browserOutcome ? { browserOutcome: currentAttempt.browserOutcome } : {}),
-      ...(next.latestFailure ? { failure: next.latestFailure } : {}),
-    });
-    return;
-  }
-
-  if (previous?.status === next.status) {
-    return;
-  }
-
-  const derivedKind = mapRecoveryStatusToEventKind(next.status);
-  if (!derivedKind) {
-    return;
-  }
-
-  await recoveryRunEventStore.append({
-    eventId: idGenerator.messageId(),
-    recoveryRunId: next.recoveryRunId,
-    threadId: next.threadId,
-    sourceGroupId: next.sourceGroupId,
-    kind: derivedKind,
-    status: next.status,
-    recordedAt: next.updatedAt,
-    summary: next.latestSummary,
-    ...(next.currentAttemptId ? { attemptId: next.currentAttemptId } : {}),
-    ...(currentAttempt?.triggeredByAttemptId ? { triggeredByAttemptId: currentAttempt.triggeredByAttemptId } : {}),
-    ...(currentAttempt?.transitionReason ? { transitionReason: currentAttempt.transitionReason } : {}),
-    ...(next.browserSession ? { browserSession: next.browserSession } : {}),
-    ...(currentAttempt?.browserOutcome ? { browserOutcome: currentAttempt.browserOutcome } : {}),
-    ...(next.latestFailure ? { failure: next.latestFailure } : {}),
-  });
-}
-
-function mapRecoveryStatusToEventKind(status: RecoveryRun["status"]): RecoveryRunEvent["kind"] | null {
-  switch (status) {
-    case "waiting_approval":
-      return "waiting_approval";
-    case "waiting_external":
-      return "waiting_external";
-    case "recovered":
-      return "recovered";
-    case "aborted":
-      return "aborted";
-    default:
-      return null;
-  }
-}
-
-function createRecoveryRunSkeleton(recovery: ReplayRecoveryPlan, now: number): RecoveryRun {
-  return {
-    recoveryRunId: buildRecoveryRunId(recovery.groupId),
-    threadId: recovery.threadId,
-    sourceGroupId: recovery.groupId,
-    ...(recovery.taskId ? { taskId: recovery.taskId } : {}),
-    ...(recovery.flowId ? { flowId: recovery.flowId } : {}),
-    ...(recovery.roleId ? { roleId: recovery.roleId } : {}),
-    ...(recovery.targetLayer ? { targetLayer: recovery.targetLayer } : {}),
-    ...(recovery.targetWorker ? { targetWorker: recovery.targetWorker } : {}),
-    latestStatus: recovery.latestStatus,
-    status: recovery.requiresManualIntervention
-      ? recovery.nextAction === "request_approval"
-        ? "waiting_approval"
-        : "waiting_external"
-      : "planned",
-    nextAction: recovery.nextAction,
-    autoDispatchReady: recovery.autoDispatchReady,
-    requiresManualIntervention: recovery.requiresManualIntervention,
-    latestSummary: recovery.recoveryHint.reason,
-    ...(recovery.requiresManualIntervention ? { waitingReason: recovery.recoveryHint.reason } : {}),
-    ...(recovery.latestFailure ? { latestFailure: recovery.latestFailure } : {}),
-    attempts: [],
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-async function executeRecoveryRunAction(input: {
-  run: RecoveryRun;
-  action: RecoveryRunAction;
-  records: Awaited<ReturnType<typeof replayRecorder.list>>;
-  report: ReturnType<typeof buildReplayInspectionReport>;
-}): Promise<{ statusCode: number; body: unknown }> {
-  return recoveryRunActionMutex.run(input.run.threadId, async () => {
-    const now = clock.now();
-    const synced = await syncRecoveryRuntime(input.run.threadId);
-    const run = synced.runs.find((item) => item.recoveryRunId === input.run.recoveryRunId) ?? input.run;
-    const recoveryPlan = findReplayRecoveryPlan(synced.records, run.sourceGroupId, synced.report);
-    const syncedRun = findRecoveryRun(synced.records, run.recoveryRunId, [run], now) ?? run;
-
-    const actionGuardConflict = buildRecoveryRunActionConflict(syncedRun, input.action);
-    if (actionGuardConflict) {
-      return {
-        statusCode: 409,
-        body: actionGuardConflict,
-      };
-    }
-
-    if (input.action === "reject") {
-      const attemptId = `${run.recoveryRunId}:attempt:${run.attempts.length + 1}`;
-      const triggeredByAttemptId = syncedRun.currentAttemptId;
-      const rejectedRun: RecoveryRun = {
-        ...syncedRun,
-        status: "aborted",
-        nextAction: "stop",
-        latestSummary: "Recovery was rejected and aborted.",
-        currentAttemptId: attemptId,
-        updatedAt: now,
-        attempts: [
-          ...syncedRun.attempts,
-          {
-            attemptId,
-            action: "reject",
-            requestedAt: now,
-            updatedAt: now,
-            status: "aborted",
-            nextAction: "stop",
-            summary: "Recovery was rejected and aborted.",
-            ...(triggeredByAttemptId ? { triggeredByAttemptId } : {}),
-            transitionReason: "manual_reject",
-            completedAt: now,
-          },
-        ],
-      };
-      await recoveryRunStore.put(rejectedRun);
-      await publishRecoveryRuntimeState(rejectedRun);
-      await recoveryRunEventStore.append({
-        eventId: idGenerator.messageId(),
-        recoveryRunId: rejectedRun.recoveryRunId,
-        threadId: rejectedRun.threadId,
-        sourceGroupId: rejectedRun.sourceGroupId,
-        kind: "aborted",
-        status: "aborted",
-        recordedAt: now,
-        summary: "Recovery was rejected and aborted.",
-        action: "reject",
-        attemptId,
-        ...(triggeredByAttemptId ? { triggeredByAttemptId } : {}),
-        transitionReason: "manual_reject",
-      });
-      await recordRecoveryProgress(rejectedRun, {
-        phase: "cancelled",
-        summary: "Recovery was rejected and aborted.",
-        statusReason: "manual_reject",
-        heartbeatSource: "control_path",
-      });
-      return {
-        statusCode: 200,
-        body: {
-          accepted: true,
-          recoveryRun: rejectedRun,
-        },
-      };
-    }
-
-    if (!recoveryPlan && (input.action === "dispatch" || input.action === "retry" || input.action === "fallback" || input.action === "resume")) {
-      return {
-        statusCode: 409,
-        body: buildRecoveryRunActionConflict(
-          syncedRun,
-          input.action,
-          "recovery can no longer be resumed automatically"
-        )!,
-      };
-    }
-
-    if (!syncedRun.roleId) {
-      return {
-        statusCode: 409,
-        body: buildRecoveryRunActionConflict(syncedRun, input.action, "recovery run is missing target role")!,
-      };
-    }
-
-    const dispatchNextAction = mapRecoveryRunActionToNextAction(input.action, recoveryPlan, syncedRun);
-    if (!dispatchNextAction) {
-      return {
-        statusCode: 409,
-        body: buildRecoveryRunActionConflict(syncedRun, input.action, "recovery action is not dispatchable")!,
-      };
-    }
-
-    if ((dispatchNextAction === "retry_same_layer" || dispatchNextAction === "fallback_transport" || dispatchNextAction === "auto_resume") && syncedRun.targetLayer === "worker" && !syncedRun.targetWorker) {
-      return {
-        statusCode: 409,
-        body: buildRecoveryRunActionConflict(syncedRun, input.action, "recovery run is missing target worker")!,
-      };
-    }
-
-    const browserSession = deriveRecoveryBrowserSessionHint(synced.records, syncedRun);
-    const attemptId = `${syncedRun.recoveryRunId}:attempt:${syncedRun.attempts.length + 1}`;
-    const taskId = idGenerator.taskId();
-    const dispatchReplayId = `${taskId}:scheduled`;
-    const supersededAttemptId = syncedRun.currentAttemptId;
-    const transitionReason = transitionReasonForAction(input.action);
-    await recoveryRunEventStore.append({
-    eventId: idGenerator.messageId(),
-    recoveryRunId: syncedRun.recoveryRunId,
-    threadId: syncedRun.threadId,
-    sourceGroupId: syncedRun.sourceGroupId,
-    kind: "action_requested",
-    status: statusForRecoveryRunAction(input.action),
-    recordedAt: now,
-    summary: `Recovery ${input.action} requested.`,
-    action: input.action,
-    attemptId,
-    taskId,
-    ...(supersededAttemptId ? { triggeredByAttemptId: supersededAttemptId } : {}),
-    transitionReason,
-    ...(browserSession ? { browserSession } : {}),
-  });
-    const scheduledTask = buildRecoveryDispatchTask({
-    run: syncedRun,
-    ...(browserSession ? { browserSession } : {}),
-    nextAction: dispatchNextAction,
-    now,
-    taskId,
-    attemptId,
-    dispatchReplayId,
-  });
-    const supersededAttempts: RecoveryRun["attempts"] = syncedRun.attempts.map((attempt) =>
-    attempt.attemptId === supersededAttemptId &&
-    attempt.status !== "recovered" &&
-    attempt.status !== "aborted" &&
-    attempt.status !== "superseded"
-      ? {
-          ...attempt,
-          status: "superseded",
-          summary: `Superseded by recovery ${input.action}.`,
-          updatedAt: now,
-          completedAt: attempt.completedAt ?? now,
-          supersededAt: now,
-          supersededByAttemptId: attemptId,
-        }
-      : attempt
-  );
-    const inFlightRun: RecoveryRun = {
-    ...syncedRun,
-    status: statusForRecoveryRunAction(input.action),
-    nextAction: dispatchNextAction,
-    latestSummary: `Recovery ${input.action} dispatched.`,
-    currentAttemptId: attemptId,
-    updatedAt: now,
-    ...(browserSession ? { browserSession } : {}),
-    attempts: [
-      ...supersededAttempts,
-      {
-        attemptId,
-        action: input.action,
-        requestedAt: now,
-        updatedAt: now,
-        status: statusForRecoveryRunAction(input.action),
-        nextAction: dispatchNextAction,
-        summary: `Recovery ${input.action} dispatched.`,
-        ...(syncedRun.targetLayer ? { targetLayer: syncedRun.targetLayer } : {}),
-        ...(syncedRun.targetWorker ? { targetWorker: syncedRun.targetWorker } : {}),
-        dispatchReplayId,
-        dispatchedTaskId: taskId,
-        ...(supersededAttemptId ? { triggeredByAttemptId: supersededAttemptId } : {}),
-        transitionReason,
-        ...(browserSession ? { browserSession } : {}),
-      },
-    ],
-  };
-    await recoveryRunStore.put(inFlightRun);
-    await publishRecoveryRuntimeState(inFlightRun);
-    if (supersededAttemptId) {
-      await recoveryRunEventStore.append({
-      eventId: idGenerator.messageId(),
-      recoveryRunId: inFlightRun.recoveryRunId,
-      threadId: inFlightRun.threadId,
-      sourceGroupId: inFlightRun.sourceGroupId,
-      kind: "action_superseded",
-      status: "superseded",
-      recordedAt: now,
-      summary: `Recovery attempt ${supersededAttemptId} was superseded by ${attemptId}.`,
-      action: input.action,
-      attemptId: supersededAttemptId,
-      triggeredByAttemptId: attemptId,
-      transitionReason,
-      taskId,
-      ...(browserSession ? { browserSession } : {}),
-    });
-    }
-    await recordRecoveryProgress(inFlightRun, {
-      phase: buildDerivedRecoveryRuntimeChain(inFlightRun).status.phase,
-      summary: `Recovery ${input.action} dispatched for ${inFlightRun.sourceGroupId}.`,
-      statusReason: transitionReason,
-      heartbeatSource: "control_path",
-    });
-
-    const stopRecoveryHeartbeat = startRecoveryHeartbeat(inFlightRun, input.action);
-    try {
-      await coordinationEngine.handleScheduledTask(scheduledTask);
-    } catch (error) {
-    stopRecoveryHeartbeat();
-    const failure = classifyRuntimeError({
-      layer: "scheduled",
-      error,
-      fallbackMessage: "recovery dispatch failed",
-    });
-    const targetWorker = getScheduledTargetWorker(scheduledTask);
-    await replayRecorder.record({
-      replayId: dispatchReplayId,
-      layer: "scheduled",
-      status: "failed",
-      recordedAt: now,
-      threadId: scheduledTask.threadId,
-      taskId: scheduledTask.taskId,
-      roleId: getScheduledTargetRoleId(scheduledTask),
-      ...(targetWorker ? { workerType: targetWorker } : {}),
-      summary: failure.message,
-      failure,
-      metadata: {
-        sessionTarget: getScheduledSessionTarget(scheduledTask),
-        schedule: scheduledTask.schedule,
-        capsule: scheduledTask.capsule,
-        recoveryContext: getScheduledContinuity(scheduledTask)?.context?.recovery,
-      },
-    });
-    const failedRun: RecoveryRun = {
-      ...inFlightRun,
-      status: "failed",
-      latestSummary: failure.message,
-      latestFailure: failure,
-      updatedAt: now,
-      attempts: inFlightRun.attempts.map((attempt) =>
-        attempt.attemptId === attemptId
-          ? {
-              ...attempt,
-              status: "failed",
-              summary: failure.message,
-              failure,
-              updatedAt: now,
-              completedAt: now,
-            }
-          : attempt
-      ),
-    };
-    await recoveryRunStore.put(failedRun);
-    await publishRecoveryRuntimeState(failedRun);
-    await recoveryRunEventStore.append({
-      eventId: idGenerator.messageId(),
-      recoveryRunId: failedRun.recoveryRunId,
-      threadId: failedRun.threadId,
-      sourceGroupId: failedRun.sourceGroupId,
-      kind: "action_failed",
-      status: "failed",
-      recordedAt: now,
-      summary: failure.message,
-      action: input.action,
-      attemptId,
-      ...(supersededAttemptId ? { triggeredByAttemptId: supersededAttemptId } : {}),
-      transitionReason,
-      dispatchReplayId,
-      taskId,
-      ...(browserSession ? { browserSession } : {}),
-      failure,
-    });
-      await recordRecoveryProgress(failedRun, {
-        phase: "failed",
-        summary: failure.message,
-        statusReason: failure.message,
-        heartbeatSource: "control_path",
-      });
-      return {
-      statusCode: 500,
-      body: {
-        error: failure.message,
-        dispatchedTaskId: taskId,
-        dispatchReplayId,
-        failure,
-        recoveryRun: failedRun,
-      },
-    };
-    }
-    stopRecoveryHeartbeat();
-
-    const targetWorker = getScheduledTargetWorker(scheduledTask);
-    await replayRecorder.record({
-    replayId: dispatchReplayId,
-    layer: "scheduled",
-    status: "completed",
-    recordedAt: now,
-    threadId: scheduledTask.threadId,
-    taskId: scheduledTask.taskId,
-    roleId: getScheduledTargetRoleId(scheduledTask),
-    ...(targetWorker ? { workerType: targetWorker } : {}),
-    summary: `Recovery ${input.action} dispatched for ${syncedRun.sourceGroupId}.`,
-    metadata: {
-      sessionTarget: getScheduledSessionTarget(scheduledTask),
-      schedule: scheduledTask.schedule,
-      capsule: scheduledTask.capsule,
-      recoveryContext: getScheduledContinuity(scheduledTask)?.context?.recovery,
-    },
-  });
-    await recoveryRunEventStore.append({
-    eventId: idGenerator.messageId(),
-    recoveryRunId: inFlightRun.recoveryRunId,
-    threadId: inFlightRun.threadId,
-    sourceGroupId: inFlightRun.sourceGroupId,
-    kind: "action_dispatched",
-    status: inFlightRun.status,
-    recordedAt: now,
-    summary: `Recovery ${input.action} dispatched for ${inFlightRun.sourceGroupId}.`,
-    action: input.action,
-    attemptId,
-    ...(supersededAttemptId ? { triggeredByAttemptId: supersededAttemptId } : {}),
-    transitionReason,
-    dispatchReplayId,
-    taskId,
-    ...(browserSession ? { browserSession } : {}),
-  });
-
-    const refreshed = await syncRecoveryRuntime(syncedRun.threadId);
-    const latestRun = refreshed.runs.find((item) => item.recoveryRunId === syncedRun.recoveryRunId) ?? inFlightRun;
-    await publishRecoveryRuntimeState(latestRun);
-    return {
-      statusCode: 202,
-      body: {
-        accepted: true,
-        dispatchedTaskId: taskId,
-        dispatchReplayId,
-        recoveryRun: latestRun,
-      },
-    };
-  });
-}
-
-async function publishRecoveryRuntimeState(run: RecoveryRun): Promise<void> {
-  const derived = buildDerivedRecoveryRuntimeChain(run);
-  await runtimeStateRecorder.record(derived);
-}
-
-async function recordRecoveryProgress(
-  run: RecoveryRun,
-  input: {
-    phase: RuntimeChainStatus["phase"];
-    summary: string;
-    statusReason?: string;
-    heartbeatSource?: "phase_transition" | "activity_echo" | "control_path" | "reconnect_window" | "long_running_tick";
-  }
-): Promise<void> {
-  const derived = buildDerivedRecoveryRuntimeChain(run);
-  await runtimeProgressRecorder.record({
-    progressId: `progress:recovery:${run.recoveryRunId}:${input.phase}:${clock.now()}`,
-    threadId: run.threadId,
-    chainId: derived.chain.chainId,
-    spanId: `recovery:${run.recoveryRunId}`,
-    subjectKind: "recovery_run",
-    subjectId: run.recoveryRunId,
-    phase: input.phase === "resolved" ? "completed" : input.phase,
-    progressKind: input.phase === "waiting" || input.phase === "heartbeat" || run.status === "resumed" ? "heartbeat" : "transition",
-    heartbeatSource: input.heartbeatSource ?? (run.status === "resumed" ? "reconnect_window" : "phase_transition"),
-    ...(derived.status.continuityState ? { continuityState: derived.status.continuityState } : {}),
-    ...(derived.status.responseTimeoutAt ? { responseTimeoutAt: derived.status.responseTimeoutAt } : {}),
-    ...(derived.status.reconnectWindowUntil ? { reconnectWindowUntil: derived.status.reconnectWindowUntil } : {}),
-    ...(derived.status.closeKind ? { closeKind: derived.status.closeKind } : {}),
-    ...(input.statusReason ? { statusReason: input.statusReason } : {}),
-    summary: input.summary,
-    recordedAt: clock.now(),
-    ...(run.flowId ? { flowId: run.flowId } : {}),
-    ...(run.taskId ? { taskId: run.taskId } : {}),
-    ...(run.roleId ? { roleId: run.roleId } : {}),
-    artifacts: {
-      recoveryRunId: run.recoveryRunId,
-      ...(run.browserSession?.sessionId ? { browserSessionId: run.browserSession.sessionId } : {}),
-      ...(run.browserSession?.targetId ? { browserTargetId: run.browserSession.targetId } : {}),
-    },
-    metadata: {
-      sourceGroupId: run.sourceGroupId,
-      status: run.status,
-      nextAction: run.nextAction,
-    },
-  });
-}
-
-function startRecoveryHeartbeat(run: RecoveryRun, action: RecoveryRunAction): () => void {
-  const intervalMs = 15_000;
-  let stopped = false;
-  const timer = setInterval(() => {
-    void recordRecoveryProgress(run, {
-      phase: "heartbeat",
-      summary: `Recovery ${action} is still running for ${run.sourceGroupId}.`,
-      heartbeatSource: "long_running_tick",
-    }).catch(() => {});
-  }, intervalMs);
-  return () => {
-    if (stopped) {
-      return;
-    }
-    stopped = true;
-    clearInterval(timer);
-  };
-}
-
-function buildRecoveryDispatchTask(input: {
-  run: RecoveryRun;
-  browserSession?: BrowserContinuationHint;
-  nextAction: ReplayRecoveryPlan["nextAction"];
-  now: number;
-  taskId: string;
-  attemptId: string;
-  dispatchReplayId: string;
-}): ScheduledTaskRecord {
-  if (!input.run.roleId) {
-    throw new Error(`recovery run is missing target role: ${input.run.recoveryRunId}`);
-  }
-
-  const rawTz = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
-  const tz = rawTz.trim() ? rawTz : "UTC";
-
-  return {
-    taskId: input.taskId,
-    threadId: input.run.threadId,
-    targetRoleId: input.run.roleId,
-    ...(input.run.targetLayer === "worker" && input.run.targetWorker
-      ? { targetWorker: input.run.targetWorker }
-      : {}),
-    sessionTarget: input.run.targetLayer === "worker" ? "worker" : "main",
-    recoveryContext: {
-      parentGroupId: input.run.sourceGroupId,
-      action: input.nextAction,
-      dispatchReplayId: input.dispatchReplayId,
-      recoveryRunId: input.run.recoveryRunId,
-      attemptId: input.attemptId,
-    },
-    dispatch: {
-      targetRoleId: input.run.roleId,
-      ...(input.run.targetLayer === "worker" && input.run.targetWorker
-        ? { targetWorker: input.run.targetWorker }
-        : {}),
-      sessionTarget: input.run.targetLayer === "worker" ? "worker" : "main",
-      continuity: {
-        mode: input.run.targetLayer === "worker" ? "resume-existing" : "prefer-existing",
-        context: {
-          source: "recovery_dispatch",
-          ...(input.run.targetWorker ? { workerType: input.run.targetWorker } : {}),
-          recovery: {
-            parentGroupId: input.run.sourceGroupId,
-            action: input.nextAction,
-            dispatchReplayId: input.dispatchReplayId,
-            recoveryRunId: input.run.recoveryRunId,
-            attemptId: input.attemptId,
-          },
-          ...(input.run.targetWorker === "browser" && input.browserSession
-            ? { browserSession: input.browserSession }
-            : {}),
-        },
-      },
-      ...(input.run.targetLayer === "worker" && input.run.targetWorker
-        ? { constraints: { preferredWorkerKinds: [input.run.targetWorker] } }
-        : {}),
-    },
-    capsule: {
-      title: `Recovery dispatch for ${input.run.sourceGroupId}`,
-      instructions: buildRecoveryInstructions(input.run, input.nextAction),
-      expectedOutput:
-        "Continue from the latest safe checkpoint. If recovery is not possible, return a concise explanation and the next safest action.",
-    },
-    schedule: {
-      kind: "cron",
-      expr: "manual-recovery",
-      tz,
-      nextRunAt: input.now,
-    },
-    createdAt: input.now,
-    updatedAt: input.now,
-  };
-}
-
-function buildRecoveryInstructions(run: RecoveryRun, nextAction: ReplayRecoveryPlan["nextAction"]): string {
-  const header = `Recovery plan for ${run.sourceGroupId}. Latest status: ${run.latestStatus}.`;
-  const reason = `Reason: ${run.latestFailure?.message ?? run.waitingReason ?? run.latestSummary}`;
-  const target =
-    run.targetLayer === "worker"
-      ? `Resume target: worker${run.targetWorker ? ` (${run.targetWorker})` : ""}.`
-      : run.targetLayer
-        ? `Resume target: ${run.targetLayer}.`
-        : "Resume target: main role context.";
-
-  switch (nextAction) {
-    case "auto_resume":
-      return `${header} ${reason} ${target} Continue from the latest live continuation context and finish the interrupted work.`;
-    case "retry_same_layer":
-      return `${header} ${reason} ${target} Retry the previous execution on the same layer without resetting unrelated context.`;
-    case "fallback_transport":
-      return `${header} ${reason} ${target} Retry using the safest fallback transport or tool path that preserves task intent.`;
-    case "request_approval":
-      return `${header} ${reason} ${target} Wait for approval before resuming any side-effectful action.`;
-    default:
-      return `${header} ${reason} ${target} Inspect the latest failure and continue only if the context is still valid.`;
-  }
-}
-
-function mapRecoveryRunActionToNextAction(
-  action: RecoveryRunAction,
-  recovery: ReplayRecoveryPlan | null,
-  run: RecoveryRun
-): ReplayRecoveryPlan["nextAction"] | null {
-  const currentAttempt = run.currentAttemptId
-    ? run.attempts.find((attempt) => attempt.attemptId === run.currentAttemptId) ?? null
-    : null;
-
-  switch (action) {
-    case "dispatch":
-      return recovery?.nextAction ?? (run.nextAction === "none" ? null : run.nextAction);
-    case "retry":
-      return "retry_same_layer";
-    case "fallback":
-      return "fallback_transport";
-    case "resume":
-      return "auto_resume";
-    case "approve":
-      return isDispatchableRecoveryNextAction(currentAttempt?.nextAction)
-        ? currentAttempt!.nextAction
-        : run.targetLayer === "worker"
-          ? "retry_same_layer"
-          : "auto_resume";
-    case "reject":
-      return null;
-    default:
-      return null;
-  }
-}
-
-function isDispatchableRecoveryNextAction(
-  nextAction: RecoveryRun["nextAction"] | ReplayRecoveryPlan["nextAction"] | undefined
-): nextAction is "auto_resume" | "retry_same_layer" | "fallback_transport" {
-  return nextAction === "auto_resume" || nextAction === "retry_same_layer" || nextAction === "fallback_transport";
-}
-
-function transitionReasonForAction(action: RecoveryRunAction) {
-  switch (action) {
-    case "retry":
-      return "manual_retry" as const;
-    case "fallback":
-      return "manual_fallback" as const;
-    case "resume":
-      return "manual_resume" as const;
-    case "approve":
-      return "manual_approval" as const;
-    case "reject":
-      return "manual_reject" as const;
-    case "dispatch":
-    default:
-      return "manual_dispatch" as const;
-  }
-}
-
-function statusForRecoveryRunAction(action: RecoveryRunAction): RecoveryRun["status"] {
-  switch (action) {
-    case "retry":
-      return "retrying";
-    case "fallback":
-      return "fallback_running";
-    case "resume":
-    case "approve":
-      return "resumed";
-    case "reject":
-      return "aborted";
-    case "dispatch":
-    default:
-      return "running";
-  }
-}
-
-function deriveRecoveryBrowserSessionHint(
-  records: Awaited<ReturnType<typeof replayRecorder.list>>,
-  run: RecoveryRun
-): BrowserContinuationHint | undefined {
-  const candidateTaskIds = new Set<string>([
-    run.sourceGroupId,
-    ...run.attempts.flatMap((attempt) => [attempt.dispatchedTaskId, attempt.resultingGroupId]).filter((value): value is string => Boolean(value)),
-  ]);
-  const relatedRecords = records
-    .filter((record) => {
-      const groupId = record.taskId ?? record.replayId;
-      return candidateTaskIds.has(groupId);
-    })
-    .sort((left, right) => right.recordedAt - left.recordedAt);
-
-  for (const record of relatedRecords) {
-    const hint = extractBrowserSessionHintFromReplay(record);
-    if (hint) {
-      return hint;
-    }
-  }
-
-  const latestAttemptHint = [...run.attempts].reverse().find((attempt) => attempt.browserSession)?.browserSession;
-  return latestAttemptHint ?? run.browserSession;
-}
-
-function extractBrowserSessionHintFromReplay(
-  record: Awaited<ReturnType<typeof replayRecorder.list>>[number]
-): BrowserContinuationHint | undefined {
-  const metadata = record.metadata && typeof record.metadata === "object" ? (record.metadata as Record<string, unknown>) : null;
-  if (!metadata) {
-    return undefined;
-  }
-
-  if (record.layer === "browser") {
-    const request = metadata.request && typeof metadata.request === "object" ? (metadata.request as Record<string, unknown>) : null;
-    const result = metadata.result && typeof metadata.result === "object" ? metadata.result : null;
-    const decoded = decodeBrowserSessionPayload(result);
-    if (!decoded) {
-      return undefined;
-    }
-    const ownerType = normalizeBrowserOwnerType(request?.ownerType);
-    const ownerId = typeof request?.ownerId === "string" ? request.ownerId : record.threadId;
-    return {
-      sessionId: decoded.sessionId,
-      ...(decoded.targetId ? { targetId: decoded.targetId } : {}),
-      ...(decoded.resumeMode ? { resumeMode: decoded.resumeMode } : {}),
-      ...(ownerType ? { ownerType } : {}),
-      ...(ownerId ? { ownerId } : {}),
-    };
-  }
-
-  if (record.layer === "worker") {
-    const payload = metadata.payload;
-    const decoded = decodeBrowserSessionPayload(payload);
-    if (!decoded) {
-      return undefined;
-    }
-    return {
-      sessionId: decoded.sessionId,
-      ...(decoded.targetId ? { targetId: decoded.targetId } : {}),
-      ...(decoded.resumeMode ? { resumeMode: decoded.resumeMode } : {}),
-      ownerType: "thread",
-      ownerId: record.threadId,
-      ...(record.workerRunKey ? { leaseHolderRunKey: record.workerRunKey } : {}),
-    };
-  }
-
-  return undefined;
-}
-
-function normalizeBrowserOwnerType(value: unknown): BrowserContinuationHint["ownerType"] | undefined {
-  return value === "user" || value === "thread" || value === "role" || value === "worker" ? value : undefined;
-}
-
 function wantsProcessHelp(args: string[]): boolean {
   return args.includes("--help") || args.includes("-h") || args.includes("help");
 }
@@ -3694,6 +1490,9 @@ function printDaemonHelp(exitCode: number): never {
     "Environment:",
     "  TURNKEYAI_DAEMON_PORT       Override the daemon listen port",
     "  TURNKEYAI_DAEMON_TOKEN      Require bearer auth for daemon requests",
+    "  TURNKEYAI_DAEMON_READ_TOKEN Optional read-only daemon token",
+    "  TURNKEYAI_DAEMON_OPERATOR_TOKEN Optional operator-scoped daemon token",
+    "  TURNKEYAI_DAEMON_ADMIN_TOKEN Optional admin-scoped daemon token",
     "  TURNKEYAI_BROWSER_TRANSPORT Select browser transport: local | relay | direct-cdp",
     "  TURNKEYAI_BROWSER_CDP_ENDPOINT  CDP endpoint for direct-cdp transport",
     "  TURNKEYAI_BROWSER_CHROME_EXECUTABLE Optional browser executable override",

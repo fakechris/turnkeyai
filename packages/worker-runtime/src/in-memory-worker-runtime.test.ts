@@ -6,6 +6,8 @@ import type {
   WorkerHandler,
   WorkerInvocationInput,
   WorkerRegistry,
+  WorkerSessionRecord,
+  WorkerSessionStore,
 } from "@turnkeyai/core-types/team";
 
 import { InMemoryWorkerRuntime } from "./in-memory-worker-runtime";
@@ -550,6 +552,197 @@ test("in-memory worker runtime keeps continuity metadata when only currentTaskId
 
   assert.match(observedTaskPrompt, /Continuation context:/);
   assert.match(observedTaskPrompt, /Current task: task-1/);
+});
+
+test("in-memory worker runtime persists sessions and rehydrates running work as resumable", async () => {
+  const stored = new Map<string, Awaited<ReturnType<WorkerSessionStore["get"]>>>();
+  let callCount = 0;
+  const handler: WorkerHandler = {
+    kind: "browser",
+    async canHandle() {
+      return true;
+    },
+    async run(): Promise<WorkerExecutionResult | null> {
+      callCount += 1;
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: `Done ${callCount}.`,
+        payload: { callCount },
+      };
+    },
+  };
+
+  const sessionStore: WorkerSessionStore = {
+    async get(workerRunKey) {
+      return stored.get(workerRunKey) ?? null;
+    },
+    async put(record) {
+      stored.set(record.workerRunKey, {
+        ...record,
+        state: {
+          ...record.state,
+          ...(record.state.lastResult ? { lastResult: { ...record.state.lastResult } } : {}),
+          ...(record.state.lastError ? { lastError: { ...record.state.lastError } } : {}),
+          ...(record.state.continuationDigest ? { continuationDigest: { ...record.state.continuationDigest } } : {}),
+        },
+        ...(record.context ? { context: { ...record.context } } : {}),
+      });
+    },
+    async list() {
+      return [...stored.values()].filter((value): value is NonNullable<typeof value> => Boolean(value));
+    },
+  };
+
+  const initialRuntime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+      async getHandler(kind) {
+        return kind === "browser" ? handler : null;
+      },
+    },
+    sessionStore,
+    now: () => 1000,
+  });
+
+  const input = buildWorkerInvocationInput();
+  const spawned = await initialRuntime.spawn(input);
+  assert.ok(spawned);
+
+  const persistedBeforeRestart = stored.get(spawned.workerRunKey);
+  assert.equal(persistedBeforeRestart?.state.status, "idle");
+
+  stored.set(spawned.workerRunKey, {
+    workerRunKey: spawned.workerRunKey,
+    executionToken: 3,
+    state: {
+      workerRunKey: spawned.workerRunKey,
+      workerType: "browser",
+      status: "running",
+      createdAt: 1000,
+      updatedAt: 1005,
+      currentTaskId: "task-1",
+    },
+    context: {
+      threadId: "thread-1",
+      flowId: "flow-1",
+      taskId: "task-1",
+      roleId: "role-operator",
+      parentSpanId: "role:role:operator:thread:1",
+    },
+  });
+
+  const restartedRuntime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+      async getHandler(kind) {
+        return kind === "browser" ? handler : null;
+      },
+    },
+    sessionStore,
+    now: () => 2000,
+  });
+
+  const rehydrated = await restartedRuntime.getState(spawned.workerRunKey);
+  assert.equal(rehydrated?.status, "resumable");
+  assert.equal(rehydrated?.continuationDigest?.reason, "supervisor_retry");
+  assert.match(rehydrated?.continuationDigest?.summary ?? "", /runtime restarted/i);
+
+  const resumed = await restartedRuntime.resume({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+  });
+  assert.equal(resumed?.status, "completed");
+  assert.equal((await restartedRuntime.getState(spawned.workerRunKey))?.status, "done");
+});
+
+test("in-memory worker runtime exposes startup reconcile summary after hydration", async () => {
+  const stored = new Map<string, WorkerSessionRecord>([
+    [
+      "worker:browser:task:task-running",
+      {
+        workerRunKey: "worker:browser:task:task-running",
+        executionToken: 3,
+        state: {
+          workerRunKey: "worker:browser:task:task-running",
+          workerType: "browser",
+          status: "running",
+          createdAt: 10,
+          updatedAt: 20,
+          currentTaskId: "task-running",
+        },
+      },
+    ],
+    [
+      "worker:finance:task:task-done",
+      {
+        workerRunKey: "worker:finance:task:task-done",
+        executionToken: 1,
+        state: {
+          workerRunKey: "worker:finance:task:task-done",
+          workerType: "finance",
+          status: "done",
+          createdAt: 30,
+          updatedAt: 40,
+        },
+      },
+    ],
+  ]);
+  const sessionStore: WorkerSessionStore = {
+    async get(workerRunKey) {
+      return stored.get(workerRunKey) ?? null;
+    },
+    async put(record) {
+      stored.set(record.workerRunKey, record);
+    },
+    async list() {
+      return Array.from(stored.values());
+    },
+  };
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return {
+          kind: "browser",
+          async canHandle() {
+            return true;
+          },
+          async run() {
+            return null;
+          },
+        };
+      },
+      async getHandler(kind) {
+        if (kind !== "browser") {
+          return null;
+        }
+        return {
+          kind: "browser",
+          async canHandle() {
+            return true;
+          },
+          async run() {
+            return null;
+          },
+        };
+      },
+    },
+    sessionStore,
+    now: () => 500,
+  });
+
+  const result = await runtime.reconcileStartup();
+
+  assert.deepEqual(result, {
+    totalSessions: 2,
+    downgradedRunningSessions: 1,
+  });
+  assert.equal(stored.get("worker:browser:task:task-running")?.state.status, "resumable");
 });
 
 function buildWorkerInvocationInput(): WorkerInvocationInput {

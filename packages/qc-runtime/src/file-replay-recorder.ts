@@ -6,8 +6,8 @@ import {
   readJsonFile,
   removeFileIfExists,
   writeJsonFileAtomic,
-} from "@turnkeyai/core-types/file-store-utils";
-import { KeyedAsyncMutex } from "@turnkeyai/core-types/async-mutex";
+} from "@turnkeyai/shared-utils/file-store-utils";
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import type { BrowserTaskRequest, BrowserTaskResult, ReplayLayer, ReplayRecord, ReplayStore } from "@turnkeyai/core-types/team";
 
 import type { VerificationReport } from "./browser-step-verifier";

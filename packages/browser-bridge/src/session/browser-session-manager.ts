@@ -9,7 +9,7 @@ import type {
   BrowserTarget,
   BrowserTargetStore,
 } from "@turnkeyai/core-types/team";
-import { KeyedAsyncMutex } from "@turnkeyai/core-types/async-mutex";
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 
 interface BrowserSessionManagerOptions {
   browserProfileStore: BrowserProfileStore;

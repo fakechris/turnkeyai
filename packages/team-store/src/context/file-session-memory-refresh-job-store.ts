@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import type { SessionMemoryRefreshJobRecord, SessionMemoryRefreshJobStore } from "@turnkeyai/core-types/team";
-import { listJsonFiles, readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { listJsonFiles, readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 interface FileSessionMemoryRefreshJobStoreOptions {
   rootDir: string;

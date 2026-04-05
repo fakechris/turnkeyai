@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 import { FileRuntimeChainEventStore } from "./file-runtime-chain-event-store";
 import { FileRuntimeChainSpanStore } from "./file-runtime-chain-span-store";

@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import type { BrowserSnapshotArtifact, ResolvedRef, SnapshotRefStore } from "@turnkeyai/core-types/team";
-import { readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 interface FileSnapshotRefStoreOptions {
   rootDir: string;

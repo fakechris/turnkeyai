@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 import { FileRecoveryRunEventStore } from "./file-recovery-run-event-store";
 
@@ -93,6 +93,32 @@ test("file recovery run event store preserves legacy events on first migrated ap
     assert.equal(events.length, 2);
     assert.equal(events[0]?.eventId, "legacy-event-1");
     assert.equal(events[1]?.eventId, "event-2");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file recovery run event store reads legacy by-run array files", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-event-store-"));
+  try {
+    const store = new FileRecoveryRunEventStore({ rootDir });
+    const recoveryRunId = "recovery:task-by-run-legacy";
+    await writeJsonFileAtomic(path.join(rootDir, "by-run", `${encodeURIComponent(recoveryRunId)}.json`), [
+      {
+        eventId: "legacy-by-run-event-1",
+        recoveryRunId,
+        threadId: "thread-legacy",
+        sourceGroupId: "task-legacy",
+        kind: "action_requested",
+        status: "planned",
+        recordedAt: 10,
+        summary: "legacy by-run event",
+      },
+    ]);
+
+    const events = await store.listByRecoveryRun(recoveryRunId);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.eventId, "legacy-by-run-event-1");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

@@ -1,5 +1,5 @@
 import type { ParticipantLink, TeamRouteMap, TeamThread, TeamThreadStore, ThreadId } from "@turnkeyai/core-types/team";
-import { AsyncMutex } from "@turnkeyai/core-types/async-mutex";
+import { AsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 
 export class FileBackedTeamRouteMap implements TeamRouteMap {
   private readonly teamThreadStore: TeamThreadStore;

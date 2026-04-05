@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import type { RoleScratchpadRecord, RoleScratchpadStore } from "@turnkeyai/core-types/team";
-import { readJsonFile, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 interface FileRoleScratchpadStoreOptions {
   rootDir: string;

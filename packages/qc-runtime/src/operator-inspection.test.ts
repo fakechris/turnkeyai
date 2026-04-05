@@ -1329,7 +1329,7 @@ test("operator triage prioritizes compound incidents and surfaces runtime and pr
     summary,
     attention,
     runtime,
-    limit: 5,
+    limit: 10,
   });
 
   assert.equal(report.waitingManualCaseCount, 1);
@@ -1380,13 +1380,211 @@ test("operator triage uses a safe stale runtime fallback when chain details are 
       failedChains: [],
       recentlyResolved: [],
     },
-    limit: 5,
+    limit: 20,
   });
 
   const staleFocus = report.focusAreas.find((area) => area.label === "runtime-stale");
   assert.equal(staleFocus?.reason, "Runtime reports stale chains but no chain details are available.");
   assert.equal(staleFocus?.caseKey, undefined);
   assert.equal(staleFocus?.state, undefined);
+});
+
+test("operator triage surfaces worker session drift when runtime summary reports orphaned sessions", () => {
+  const summary = buildOperatorSummaryReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [],
+    runtimeSummary: {
+      totalChains: 0,
+      activeCount: 0,
+      waitingCount: 0,
+      failedCount: 0,
+      resolvedCount: 0,
+      staleCount: 0,
+      attentionCount: 0,
+      stateCounts: {},
+      continuityCounts: {},
+      caseStateCounts: {},
+      attentionChains: [],
+      activeChains: [],
+      waitingChains: [],
+      staleChains: [],
+      failedChains: [],
+      recentlyResolved: [],
+      workerSessionHealth: {
+        totalSessions: 3,
+        activeSessions: 2,
+        orphanedSessions: 1,
+        missingContextSessions: 1,
+      },
+      workerBindingReconcile: {
+        totalRoleRuns: 2,
+        totalBindings: 2,
+        clearedMissingBindings: 1,
+        clearedTerminalBindings: 0,
+        clearedCrossThreadBindings: 0,
+        roleRunsNeedingAttention: 1,
+        roleRunsRequeued: 0,
+        roleRunsFailed: 1,
+      },
+      roleRunStartupRecovery: {
+        totalRoleRuns: 3,
+        restartedQueuedRuns: 1,
+        restartedRunningRuns: 1,
+        restartedResumingRuns: 0,
+        restartedRunKeys: ["run:queued", "run:running"],
+        orphanedThreadRuns: 1,
+        failedOrphanedRuns: 1,
+        failedRunKeys: ["run:orphaned"],
+        clearedInvalidHandoffs: 2,
+        queuedRunsIdled: 1,
+      },
+      flowRecoveryStartupReconcile: {
+        orphanedFlows: 1,
+        abortedOrphanedFlows: 1,
+        orphanedRecoveryRuns: 1,
+        missingFlowRecoveryRuns: 1,
+        crossThreadFlowRecoveryRuns: 1,
+        failedRecoveryRuns: 2,
+        affectedFlowIds: ["flow:1"],
+        affectedRecoveryRunIds: ["recovery:1", "recovery:2"],
+      },
+      runtimeChainStartupReconcile: {
+        orphanedThreadChains: 1,
+        missingFlowChains: 1,
+        crossThreadFlowChains: 1,
+        affectedChainIds: ["chain:1", "chain:2"],
+      },
+      runtimeChainArtifactStartupReconcile: {
+        orphanedStatuses: 1,
+        crossThreadStatuses: 1,
+        orphanedSpans: 1,
+        crossThreadSpans: 1,
+        crossFlowSpans: 1,
+        orphanedEvents: 1,
+        missingSpanEvents: 1,
+        crossThreadEvents: 1,
+        crossChainEvents: 1,
+        affectedChainIds: ["chain:1", "chain:2"],
+      },
+    },
+    limit: 10,
+  });
+  const attention = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [],
+    limit: 10,
+  });
+  const report = buildOperatorTriageReport({
+    summary,
+    attention,
+    runtime: {
+      totalChains: 0,
+      activeCount: 0,
+      waitingCount: 0,
+      failedCount: 0,
+      resolvedCount: 0,
+      staleCount: 0,
+      attentionCount: 0,
+      stateCounts: {},
+      continuityCounts: {},
+      caseStateCounts: {},
+      attentionChains: [],
+      activeChains: [],
+      waitingChains: [],
+      staleChains: [],
+      failedChains: [],
+      recentlyResolved: [],
+      workerSessionHealth: {
+        totalSessions: 3,
+        activeSessions: 2,
+        orphanedSessions: 1,
+        missingContextSessions: 1,
+      },
+      workerBindingReconcile: {
+        totalRoleRuns: 2,
+        totalBindings: 2,
+        clearedMissingBindings: 1,
+        clearedTerminalBindings: 0,
+        clearedCrossThreadBindings: 0,
+        roleRunsNeedingAttention: 1,
+        roleRunsRequeued: 0,
+        roleRunsFailed: 1,
+      },
+      roleRunStartupRecovery: {
+        totalRoleRuns: 3,
+        restartedQueuedRuns: 1,
+        restartedRunningRuns: 1,
+        restartedResumingRuns: 0,
+        restartedRunKeys: ["run:queued", "run:running"],
+        orphanedThreadRuns: 1,
+        failedOrphanedRuns: 1,
+        failedRunKeys: ["run:orphaned"],
+        clearedInvalidHandoffs: 2,
+        queuedRunsIdled: 1,
+      },
+      flowRecoveryStartupReconcile: {
+        orphanedFlows: 1,
+        abortedOrphanedFlows: 1,
+        orphanedRecoveryRuns: 1,
+        missingFlowRecoveryRuns: 1,
+        crossThreadFlowRecoveryRuns: 1,
+        failedRecoveryRuns: 2,
+        affectedFlowIds: ["flow:1"],
+        affectedRecoveryRunIds: ["recovery:1", "recovery:2"],
+      },
+      runtimeChainStartupReconcile: {
+        orphanedThreadChains: 1,
+        missingFlowChains: 1,
+        crossThreadFlowChains: 1,
+        affectedChainIds: ["chain:1", "chain:2"],
+      },
+      runtimeChainArtifactStartupReconcile: {
+        orphanedStatuses: 1,
+        crossThreadStatuses: 1,
+        orphanedSpans: 1,
+        crossThreadSpans: 1,
+        crossFlowSpans: 1,
+        orphanedEvents: 1,
+        missingSpanEvents: 1,
+        crossThreadEvents: 1,
+        crossChainEvents: 1,
+        affectedChainIds: ["chain:1", "chain:2"],
+      },
+    },
+    limit: 20,
+  });
+
+  const driftFocus = report.focusAreas.find((area) => area.label === "worker-session-drift");
+  assert.equal(report.workerSessionOrphanCount, 1);
+  assert.equal(report.workerSessionMissingContextCount, 1);
+  assert.equal(driftFocus?.severity, "critical");
+  assert.equal(driftFocus?.commandHint, "runtime-worker-sessions 10");
+  const bindingFocus = report.focusAreas.find((area) => area.label === "worker-binding-reconcile");
+  assert.equal(bindingFocus?.commandHint, "runs");
+  assert.equal(bindingFocus?.state, "worker_binding_reconcile");
+  const startupRecoveryFocus = report.focusAreas.find((area) => area.label === "role-run-startup-recovery");
+  assert.equal(startupRecoveryFocus?.commandHint, "runs");
+  assert.equal(startupRecoveryFocus?.state, "role_run_startup_recovery");
+  const flowRecoveryFocus = report.focusAreas.find((area) => area.label === "flow-recovery-startup-reconcile");
+  assert.equal(flowRecoveryFocus?.commandHint, "recovery-run recovery:1");
+  assert.equal(flowRecoveryFocus?.caseKey, "recovery:1");
+  assert.equal(flowRecoveryFocus?.state, "flow_recovery_startup_reconcile");
+  const runtimeChainFocus = report.focusAreas.find((area) => area.label === "runtime-chain-startup-reconcile");
+  assert.equal(runtimeChainFocus?.commandHint, "runtime-chain chain:1");
+  assert.equal(runtimeChainFocus?.caseKey, "chain:1");
+  assert.equal(runtimeChainFocus?.state, "runtime_chain_startup_reconcile");
+  const runtimeChainArtifactFocus = report.focusAreas.find(
+    (area) => area.label === "runtime-chain-artifact-startup-reconcile"
+  );
+  assert.equal(runtimeChainArtifactFocus?.commandHint, "runtime-chain chain:1");
+  assert.equal(runtimeChainArtifactFocus?.caseKey, "chain:1");
+  assert.equal(runtimeChainArtifactFocus?.state, "runtime_chain_artifact_startup_reconcile");
 });
 
 function buildPromptBoundary(input: {

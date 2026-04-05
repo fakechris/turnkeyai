@@ -14,6 +14,7 @@ import {
   getScheduledSessionTarget,
   getScheduledTargetRoleId,
   getScheduledTargetWorker,
+  normalizeScheduledTaskRecord,
 } from "@turnkeyai/core-types/team";
 import { classifyRuntimeError } from "@turnkeyai/qc-runtime/failure-taxonomy";
 
@@ -46,7 +47,7 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
 
   async schedule(input: ScheduleTaskInput): Promise<ScheduledTaskRecord> {
     const now = this.clock.now();
-    const task: ScheduledTaskRecord = {
+    const task = normalizeScheduledTaskRecord({
       taskId: this.idGenerator.taskId(),
       threadId: input.threadId,
       dispatch: {
@@ -69,7 +70,7 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
       },
       createdAt: now,
       updatedAt: now,
-    };
+    });
     await this.scheduledTaskStore.put(task);
     return task;
   }
@@ -122,14 +123,14 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
       }
 
       const nextRunAt = computeNextRunAt(claimedTask.schedule.expr, claimedTask.schedule.tz, now);
-      const updatedTask: ScheduledTaskRecord = {
+      const updatedTask = normalizeScheduledTaskRecord({
         ...claimedTask,
         schedule: {
           ...claimedTask.schedule,
           nextRunAt,
         },
         updatedAt: now,
-      };
+      });
       await this.scheduledTaskStore.put(updatedTask);
       await this.recordReplay(updatedTask, now);
       dispatched.push({

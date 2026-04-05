@@ -1,7 +1,7 @@
 import path from "node:path";
 
-import { KeyedAsyncMutex } from "@turnkeyai/core-types/async-mutex";
-import { readJsonFile, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
+import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 import type { RuntimeChainEvent, RuntimeChainEventStore } from "@turnkeyai/core-types/team";
 
 interface FileRuntimeChainEventStoreOptions {
@@ -37,6 +37,22 @@ export class FileRuntimeChainEventStore implements RuntimeChainEventStore {
       return sorted.slice(-limit);
     }
     return sorted;
+  }
+
+  async listAll(): Promise<RuntimeChainEvent[]> {
+    const byChainFiles = await listJsonFiles(path.join(this.rootDir, "by-chain"));
+    if (byChainFiles.length > 0) {
+      const records = await Promise.all(byChainFiles.map((filePath) => readJsonFile<RuntimeChainEvent[]>(filePath)));
+      return records
+        .flatMap((record) => record ?? [])
+        .sort((left, right) => left.recordedAt - right.recordedAt);
+    }
+
+    const legacyFiles = await listJsonFiles(this.rootDir);
+    const records = await Promise.all(legacyFiles.map((filePath) => readJsonFile<RuntimeChainEvent[]>(filePath)));
+    return records
+      .flatMap((record) => record ?? [])
+      .sort((left, right) => left.recordedAt - right.recordedAt);
   }
 
   private chainFilePath(chainId: string): string {

@@ -243,6 +243,7 @@ export function buildOperatorSummaryReport(input: {
   replays: ReplayRecord[];
   recoveryRuns: RecoveryRun[];
   progressEvents?: RuntimeProgressEvent[];
+  runtimeSummary?: RuntimeSummaryReport;
   relayDiagnostics?: RelayDiagnosticsSnapshot;
   limit?: number;
 }): OperatorSummaryReport {
@@ -286,6 +287,27 @@ export function buildOperatorSummaryReport(input: {
     governance,
     recovery,
     prompt,
+    ...(input.runtimeSummary?.workerStartupReconcile
+      ? { workerStartupReconcile: input.runtimeSummary.workerStartupReconcile }
+      : {}),
+    ...(input.runtimeSummary?.workerSessionHealth
+      ? { workerSessionHealth: input.runtimeSummary.workerSessionHealth }
+      : {}),
+    ...(input.runtimeSummary?.workerBindingReconcile
+      ? { workerBindingReconcile: input.runtimeSummary.workerBindingReconcile }
+      : {}),
+    ...(input.runtimeSummary?.roleRunStartupRecovery
+      ? { roleRunStartupRecovery: input.runtimeSummary.roleRunStartupRecovery }
+      : {}),
+    ...(input.runtimeSummary?.flowRecoveryStartupReconcile
+      ? { flowRecoveryStartupReconcile: input.runtimeSummary.flowRecoveryStartupReconcile }
+      : {}),
+    ...(input.runtimeSummary?.runtimeChainStartupReconcile
+      ? { runtimeChainStartupReconcile: input.runtimeSummary.runtimeChainStartupReconcile }
+      : {}),
+    ...(input.runtimeSummary?.runtimeChainArtifactStartupReconcile
+      ? { runtimeChainArtifactStartupReconcile: input.runtimeSummary.runtimeChainArtifactStartupReconcile }
+      : {}),
     promptAttentionCount,
     totalAttentionCount:
       flow.attentionCount + replay.attentionCount + governance.attentionCount + recovery.attentionCount + promptAttentionCount,
@@ -563,6 +585,106 @@ export function buildOperatorTriageReport(input: {
     });
   }
 
+  if ((input.summary.workerSessionHealth?.orphanedSessions ?? 0) > 0) {
+    focusAreas.push({
+      area: "runtime",
+      label: "worker-session-drift",
+      severity: "critical",
+      headline: `worker session drift orphaned=${input.summary.workerSessionHealth?.orphanedSessions ?? 0}`,
+      reason:
+        (input.summary.workerSessionHealth?.missingContextSessions ?? 0) > 0
+          ? `Detected orphaned worker sessions and ${input.summary.workerSessionHealth?.missingContextSessions ?? 0} active session(s) without thread context.`
+          : "Detected active worker sessions that are no longer referenced by any role run.",
+      nextStep: "inspect_runtime_worker_sessions",
+      commandHint: "runtime-worker-sessions 10",
+      state: "worker_session_drift",
+    });
+  }
+  if ((input.summary.workerBindingReconcile?.roleRunsNeedingAttention ?? 0) > 0) {
+    focusAreas.push({
+      area: "runtime",
+      label: "worker-binding-reconcile",
+      severity: "warning",
+      headline: `worker binding reconcile attention=${input.summary.workerBindingReconcile?.roleRunsNeedingAttention ?? 0}`,
+      reason:
+        `Startup reconcile cleared missing=${input.summary.workerBindingReconcile?.clearedMissingBindings ?? 0}, terminal=${input.summary.workerBindingReconcile?.clearedTerminalBindings ?? 0}, cross-thread=${input.summary.workerBindingReconcile?.clearedCrossThreadBindings ?? 0}, requeued=${input.summary.workerBindingReconcile?.roleRunsRequeued ?? 0}, failed=${input.summary.workerBindingReconcile?.roleRunsFailed ?? 0} worker bindings.`,
+      nextStep: "inspect_role_runs_for_worker_bindings",
+      commandHint: "runs",
+      state: "worker_binding_reconcile",
+    });
+  }
+  if (
+    (input.summary.roleRunStartupRecovery?.restartedQueuedRuns ?? 0) > 0 ||
+    (input.summary.roleRunStartupRecovery?.restartedRunningRuns ?? 0) > 0 ||
+    (input.summary.roleRunStartupRecovery?.restartedResumingRuns ?? 0) > 0
+  ) {
+    focusAreas.push({
+      area: "runtime",
+      label: "role-run-startup-recovery",
+      severity: "warning",
+      headline:
+        `role run startup recovery restarted=` +
+        `${(input.summary.roleRunStartupRecovery?.restartedQueuedRuns ?? 0) + (input.summary.roleRunStartupRecovery?.restartedRunningRuns ?? 0) + (input.summary.roleRunStartupRecovery?.restartedResumingRuns ?? 0)}`,
+      reason:
+        `Startup recovery restarted queued=${input.summary.roleRunStartupRecovery?.restartedQueuedRuns ?? 0}, running=${input.summary.roleRunStartupRecovery?.restartedRunningRuns ?? 0}, resuming=${input.summary.roleRunStartupRecovery?.restartedResumingRuns ?? 0}, orphaned=${input.summary.roleRunStartupRecovery?.orphanedThreadRuns ?? 0}, failed-orphaned=${input.summary.roleRunStartupRecovery?.failedOrphanedRuns ?? 0}, cleared-handoffs=${input.summary.roleRunStartupRecovery?.clearedInvalidHandoffs ?? 0}, queued-idled=${input.summary.roleRunStartupRecovery?.queuedRunsIdled ?? 0} role runs.`,
+      nextStep: "inspect_startup_recovered_role_runs",
+      commandHint: "runs",
+      state: "role_run_startup_recovery",
+    });
+  }
+  if (
+    (input.summary.flowRecoveryStartupReconcile?.orphanedFlows ?? 0) > 0 ||
+    (input.summary.flowRecoveryStartupReconcile?.orphanedRecoveryRuns ?? 0) > 0 ||
+    (input.summary.flowRecoveryStartupReconcile?.failedRecoveryRuns ?? 0) > 0
+  ) {
+    const recoveryRunId = input.summary.flowRecoveryStartupReconcile?.affectedRecoveryRunIds[0];
+    focusAreas.push({
+      area: "runtime",
+      label: "flow-recovery-startup-reconcile",
+      severity: "warning",
+      headline:
+        `flow/recovery startup reconcile affected=${input.summary.flowRecoveryStartupReconcile?.failedRecoveryRuns ?? 0}`,
+      reason:
+        `Startup reconcile found orphaned-flows=${input.summary.flowRecoveryStartupReconcile?.orphanedFlows ?? 0}, aborted-orphaned-flows=${input.summary.flowRecoveryStartupReconcile?.abortedOrphanedFlows ?? 0}, orphaned-recovery-runs=${input.summary.flowRecoveryStartupReconcile?.orphanedRecoveryRuns ?? 0}, missing-flow-recovery-runs=${input.summary.flowRecoveryStartupReconcile?.missingFlowRecoveryRuns ?? 0}, cross-thread-flow-recovery-runs=${input.summary.flowRecoveryStartupReconcile?.crossThreadFlowRecoveryRuns ?? 0}.`,
+      nextStep: "inspect_startup_reconciled_flow_recovery",
+      commandHint: recoveryRunId ? `recovery-run ${recoveryRunId}` : "recovery-runs 10",
+      ...(recoveryRunId ? { caseKey: recoveryRunId } : {}),
+      state: "flow_recovery_startup_reconcile",
+    });
+  }
+  if ((input.summary.runtimeChainStartupReconcile?.affectedChainIds.length ?? 0) > 0) {
+    const chainId = input.summary.runtimeChainStartupReconcile?.affectedChainIds[0];
+    focusAreas.push({
+      area: "runtime",
+      label: "runtime-chain-startup-reconcile",
+      severity: "warning",
+      headline:
+        `runtime chain startup reconcile affected=${input.summary.runtimeChainStartupReconcile?.affectedChainIds.length ?? 0}`,
+      reason:
+        `Startup reconcile found orphaned-thread-chains=${input.summary.runtimeChainStartupReconcile?.orphanedThreadChains ?? 0}, missing-flow-chains=${input.summary.runtimeChainStartupReconcile?.missingFlowChains ?? 0}, cross-thread-flow-chains=${input.summary.runtimeChainStartupReconcile?.crossThreadFlowChains ?? 0}.`,
+      nextStep: "inspect_startup_reconciled_runtime_chain",
+      commandHint: chainId ? `runtime-chain ${chainId}` : "runtime-chains 10",
+      ...(chainId ? { caseKey: chainId } : {}),
+      state: "runtime_chain_startup_reconcile",
+    });
+  }
+  if ((input.summary.runtimeChainArtifactStartupReconcile?.affectedChainIds.length ?? 0) > 0) {
+    const chainId = input.summary.runtimeChainArtifactStartupReconcile?.affectedChainIds[0];
+    focusAreas.push({
+      area: "runtime",
+      label: "runtime-chain-artifact-startup-reconcile",
+      severity: "warning",
+      headline:
+        `runtime chain artifacts drift affected=${input.summary.runtimeChainArtifactStartupReconcile?.affectedChainIds.length ?? 0}`,
+      reason:
+        `Startup reconcile found orphaned-statuses=${input.summary.runtimeChainArtifactStartupReconcile?.orphanedStatuses ?? 0}, cross-thread-statuses=${input.summary.runtimeChainArtifactStartupReconcile?.crossThreadStatuses ?? 0}, orphaned-spans=${input.summary.runtimeChainArtifactStartupReconcile?.orphanedSpans ?? 0}, cross-thread-spans=${input.summary.runtimeChainArtifactStartupReconcile?.crossThreadSpans ?? 0}, cross-flow-spans=${input.summary.runtimeChainArtifactStartupReconcile?.crossFlowSpans ?? 0}, orphaned-events=${input.summary.runtimeChainArtifactStartupReconcile?.orphanedEvents ?? 0}, missing-span-events=${input.summary.runtimeChainArtifactStartupReconcile?.missingSpanEvents ?? 0}, cross-thread-events=${input.summary.runtimeChainArtifactStartupReconcile?.crossThreadEvents ?? 0}, cross-chain-events=${input.summary.runtimeChainArtifactStartupReconcile?.crossChainEvents ?? 0}.`,
+      nextStep: "inspect_startup_reconciled_runtime_chain_artifacts",
+      commandHint: chainId ? `runtime-chain ${chainId}` : "runtime-chains 10",
+      ...(chainId ? { caseKey: chainId } : {}),
+      state: "runtime_chain_artifact_startup_reconcile",
+    });
+  }
+
   const promptPrimary = input.summary.prompt.latestBoundaries[0];
   const hasPromptCase = input.attention.cases.some((entry) => entry.sources.includes("prompt"));
   if (!hasPromptCase && (input.summary.prompt.reductionCount > 0 || input.summary.promptAttentionCount > 0)) {
@@ -594,6 +716,8 @@ export function buildOperatorTriageReport(input: {
     runtimeWaitingCount: input.runtime.waitingCount,
     runtimeStaleCount: input.runtime.staleCount,
     runtimeFailedCount: input.runtime.failedCount,
+    workerSessionOrphanCount: input.summary.workerSessionHealth?.orphanedSessions ?? 0,
+    workerSessionMissingContextCount: input.summary.workerSessionHealth?.missingContextSessions ?? 0,
     promptReductionCount: input.summary.prompt.reductionCount,
     promptAttentionCount: input.summary.promptAttentionCount,
     ...(orderedFocusAreas[0]?.commandHint ? { recommendedEntryPoint: orderedFocusAreas[0].commandHint } : {}),

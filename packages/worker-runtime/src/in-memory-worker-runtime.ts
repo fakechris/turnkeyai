@@ -1,5 +1,6 @@
 import type {
   RuntimeProgressRecorder,
+  WorkerSessionContextRecord,
   WorkerCancelInput,
   SpawnedWorker,
   WorkerExecutionResult,
@@ -9,6 +10,9 @@ import type {
   WorkerMessageInput,
   WorkerResumeInput,
   WorkerRegistry,
+  WorkerSessionRecord,
+  WorkerSessionStore,
+  WorkerStartupReconcileResult,
   WorkerRuntime,
   WorkerSessionState,
 } from "@turnkeyai/core-types/team";
@@ -18,6 +22,7 @@ interface InMemoryWorkerRuntimeOptions {
   now?: () => number;
   runtimeProgressRecorder?: RuntimeProgressRecorder;
   heartbeatIntervalMs?: number;
+  sessionStore?: WorkerSessionStore;
 }
 
 const ACTIVE_RESPONSE_TIMEOUT_MS = 3 * 60 * 1000;
@@ -25,35 +30,131 @@ const WAITING_RESPONSE_TIMEOUT_MS = 15 * 60 * 1000;
 const TRANSIENT_RECONNECT_WINDOW_MS = 60 * 1000;
 const LONG_RUNNING_HEARTBEAT_MS = 15 * 1000;
 
+type WorkerSessionEntry = {
+  handler?: WorkerHandler;
+  state: WorkerSessionState;
+  executionToken: number;
+  context?: WorkerSessionContextRecord;
+};
+
 export class InMemoryWorkerRuntime implements WorkerRuntime {
   private readonly workerRegistry: WorkerRegistry;
   private readonly now: () => number;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
   private readonly heartbeatIntervalMs: number;
-  private readonly sessions = new Map<
-    string,
-    {
-      handler: WorkerHandler;
-      state: WorkerSessionState;
-      executionToken: number;
-      context?: {
-        threadId: string;
-        flowId: string;
-        taskId: string;
-        roleId: string;
-        parentSpanId: string;
-      };
-    }
-  >();
+  private readonly sessionStore: WorkerSessionStore | undefined;
+  private readonly sessions = new Map<string, WorkerSessionEntry>();
+  private hydratePromise: Promise<void> | null = null;
+  private startupReconcileResult: WorkerStartupReconcileResult = {
+    totalSessions: 0,
+    downgradedRunningSessions: 0,
+  };
 
   constructor(options: InMemoryWorkerRuntimeOptions) {
     this.workerRegistry = options.workerRegistry;
     this.now = options.now ?? (() => Date.now());
     this.runtimeProgressRecorder = options.runtimeProgressRecorder;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? LONG_RUNNING_HEARTBEAT_MS;
+    this.sessionStore = options.sessionStore;
+  }
+
+  private async ensureHydrated(): Promise<void> {
+    if (!this.sessionStore) {
+      return;
+    }
+    if (!this.hydratePromise) {
+      this.hydratePromise = this.hydrateSessions();
+    }
+    await this.hydratePromise;
+  }
+
+  private async hydrateSessions(): Promise<void> {
+    if (!this.sessionStore) {
+      return;
+    }
+    const records = await this.sessionStore.list();
+    const now = this.now();
+    let downgradedRunningSessions = 0;
+    for (const record of records) {
+      const nextRecord =
+        record.state.status === "running"
+          ? {
+              ...record,
+              state: {
+                ...record.state,
+                status: "resumable" as const,
+                updatedAt: now,
+                lastError: {
+                  code: "WORKER_TIMEOUT" as const,
+                  message: "Worker runtime restarted while execution was in progress.",
+                  retryable: true,
+                },
+                continuationDigest: {
+                  reason: "supervisor_retry" as const,
+                  summary: buildHydrationContinuationSummary(record.state),
+                  createdAt: now,
+                },
+              },
+            }
+          : record;
+      if (nextRecord !== record) {
+        downgradedRunningSessions += 1;
+      }
+      this.sessions.set(nextRecord.workerRunKey, {
+        state: nextRecord.state,
+        executionToken: nextRecord.executionToken,
+        ...(nextRecord.context ? { context: nextRecord.context } : {}),
+      });
+      if (nextRecord !== record) {
+        await this.sessionStore.put(nextRecord);
+      }
+    }
+    this.startupReconcileResult = {
+      totalSessions: records.length,
+      downgradedRunningSessions,
+    };
+  }
+
+  private async persistSession(workerRunKey: string): Promise<void> {
+    if (!this.sessionStore) {
+      return;
+    }
+    const entry = this.sessions.get(workerRunKey);
+    if (!entry) {
+      return;
+    }
+    const record: WorkerSessionRecord = {
+      workerRunKey,
+      state: entry.state,
+      executionToken: entry.executionToken,
+      ...(entry.context ? { context: entry.context } : {}),
+    };
+    await this.sessionStore.put(record);
+  }
+
+  private async resolveHandler(entry: WorkerSessionEntry, input: WorkerInvocationInput): Promise<WorkerHandler | null> {
+    if (entry.handler) {
+      return entry.handler;
+    }
+    const direct = this.workerRegistry.getHandler ? await this.workerRegistry.getHandler(entry.state.workerType) : null;
+    if (direct) {
+      entry.handler = direct;
+      return direct;
+    }
+    const selected = await this.workerRegistry.selectHandler({
+      activation: input.activation,
+      packet: input.packet,
+      sessionState: entry.state,
+    });
+    if (selected?.kind === entry.state.workerType) {
+      entry.handler = selected;
+      return selected;
+    }
+    return null;
   }
 
   async spawn(input: WorkerInvocationInput): Promise<SpawnedWorker | null> {
+    await this.ensureHydrated();
     const handler = await this.workerRegistry.selectHandler(input);
     if (!handler) {
       return null;
@@ -79,6 +180,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         parentSpanId: `role:${input.activation.runState.runKey}`,
       },
     });
+    await this.persistSession(workerRunKey);
 
     return {
       workerType: handler.kind,
@@ -87,8 +189,28 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
   }
 
   async send(input: WorkerMessageInput): Promise<WorkerExecutionResult | null> {
+    await this.ensureHydrated();
     const session = this.sessions.get(input.workerRunKey);
     if (!session) {
+      return null;
+    }
+    const handler = await this.resolveHandler(session, {
+      activation: input.activation,
+      packet: input.packet,
+    });
+    if (!handler) {
+      session.state = {
+        ...session.state,
+        status: "failed",
+        updatedAt: this.now(),
+        currentTaskId: input.activation.handoff.taskId,
+        lastError: {
+          code: "WORKER_FAILED",
+          message: `worker handler unavailable for ${session.state.workerType}`,
+          retryable: false,
+        },
+      };
+      await this.persistSession(input.workerRunKey);
       return null;
     }
     const executionToken = session.executionToken + 1;
@@ -108,6 +230,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       updatedAt: this.now(),
       currentTaskId: input.activation.handoff.taskId,
     };
+    await this.persistSession(input.workerRunKey);
     await this.recordProgress(input.workerRunKey, session, {
       phase: "started",
       summary: `Worker ${session.state.workerType} started task ${input.activation.handoff.taskId}`,
@@ -116,7 +239,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
 
     const stopHeartbeat = this.startWorkerHeartbeat(input.workerRunKey, session, executionToken);
     try {
-      const result = await session.handler.run({
+      const result = await handler.run({
         activation: input.activation,
         packet: input.packet,
         sessionState: preExecutionState,
@@ -142,6 +265,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
             }
           : {}),
       };
+      await this.persistSession(input.workerRunKey);
       await this.recordProgress(input.workerRunKey, session, {
         phase: mapWorkerResultPhase(result),
         summary: result?.summary ?? `Worker ${session.state.workerType} completed`,
@@ -171,6 +295,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
           retryable: true,
         },
       };
+      await this.persistSession(input.workerRunKey);
       await this.recordProgress(input.workerRunKey, session, {
         phase: "failed",
         summary: session.state.lastError?.message ?? "worker execution failed",
@@ -184,6 +309,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
   }
 
   async resume(input: WorkerResumeInput): Promise<WorkerExecutionResult | null> {
+    await this.ensureHydrated();
     const session = this.sessions.get(input.workerRunKey);
     if (!session) {
       return null;
@@ -204,6 +330,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
   }
 
   async interrupt(input: WorkerInterruptInput): Promise<WorkerSessionState | null> {
+    await this.ensureHydrated();
     const session = this.sessions.get(input.workerRunKey);
     if (!session) {
       return null;
@@ -244,6 +371,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         : {}),
       ...(nextContinuationDigest ? { continuationDigest: nextContinuationDigest } : {}),
     };
+    await this.persistSession(input.workerRunKey);
     await this.recordProgress(input.workerRunKey, session, {
       phase: input.reason ? "degraded" : "waiting",
       summary: input.reason
@@ -258,6 +386,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
   }
 
   async cancel(input: WorkerCancelInput): Promise<WorkerSessionState | null> {
+    await this.ensureHydrated();
     const session = this.sessions.get(input.workerRunKey);
     if (!session) {
       return null;
@@ -278,6 +407,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
           }
         : {}),
     };
+    await this.persistSession(input.workerRunKey);
     await this.recordProgress(input.workerRunKey, session, {
       phase: "cancelled",
       summary: `Worker ${session.state.workerType} cancelled`,
@@ -290,6 +420,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
   }
 
   async getState(workerRunKey: string): Promise<WorkerSessionState | null> {
+    await this.ensureHydrated();
     return this.sessions.get(workerRunKey)?.state ?? null;
   }
 
@@ -304,6 +435,23 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       activation: input.activation,
       packet: input.packet,
     });
+  }
+
+  async reconcileStartup(): Promise<WorkerStartupReconcileResult> {
+    await this.ensureHydrated();
+    return this.startupReconcileResult;
+  }
+
+  async listSessions(): Promise<WorkerSessionRecord[]> {
+    await this.ensureHydrated();
+    return [...this.sessions.entries()]
+      .map(([workerRunKey, entry]) => ({
+        workerRunKey,
+        state: entry.state,
+        executionToken: entry.executionToken,
+        ...(entry.context ? { context: entry.context } : {}),
+      }))
+      .sort((left, right) => right.state.updatedAt - left.state.updatedAt);
   }
 
   private shouldCommitCompletion(workerRunKey: string, executionToken: number): boolean {
@@ -504,4 +652,14 @@ function buildContinuationSummary(sessionState: WorkerSessionState, reason?: str
   }
 
   return "Resume the existing worker session from its previous state.";
+}
+
+function buildHydrationContinuationSummary(sessionState: WorkerSessionState): string {
+  if (sessionState.lastResult?.summary) {
+    return `${sessionState.lastResult.summary} Runtime restarted before the worker finished. Resume from the latest safe checkpoint.`;
+  }
+  if (sessionState.currentTaskId) {
+    return `Worker runtime restarted while task ${sessionState.currentTaskId} was still active. Resume from the latest safe checkpoint.`;
+  }
+  return "Worker runtime restarted while execution was in progress. Resume from the latest safe checkpoint.";
 }

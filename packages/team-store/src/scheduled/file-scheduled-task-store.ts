@@ -1,8 +1,8 @@
 import path from "node:path";
 
-import type { ScheduledTaskRecord, ScheduledTaskStore } from "@turnkeyai/core-types/team";
-import { KeyedAsyncMutex } from "@turnkeyai/core-types/async-mutex";
-import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { normalizeScheduledTaskRecord, type ScheduledTaskRecord, type ScheduledTaskStore } from "@turnkeyai/core-types/team";
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
+import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 interface FileScheduledTaskStoreOptions {
   rootDir: string;
@@ -17,12 +17,13 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
   }
 
   async get(taskId: string): Promise<ScheduledTaskRecord | null> {
-    return readJsonFile<ScheduledTaskRecord>(this.filePath(taskId));
+    const task = await readJsonFile<ScheduledTaskRecord>(this.filePath(taskId));
+    return task ? normalizeScheduledTaskRecord(task) : null;
   }
 
   async put(task: ScheduledTaskRecord): Promise<void> {
     await this.withTaskLock(task.taskId, async () => {
-      await writeJsonFileAtomic(this.filePath(task.taskId), task);
+      await writeJsonFileAtomic(this.filePath(task.taskId), normalizeScheduledTaskRecord(task));
     });
   }
 
@@ -43,14 +44,14 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
         return null;
       }
 
-      const claimedTask: ScheduledTaskRecord = {
+      const claimedTask = normalizeScheduledTaskRecord({
         ...current,
         schedule: {
           ...current.schedule,
           nextRunAt: leaseUntil,
         },
         updatedAt: leaseUntil,
-      };
+      });
       await writeJsonFileAtomic(this.filePath(taskId), claimedTask);
       return current;
     });
@@ -59,7 +60,7 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
   private async listAll(): Promise<ScheduledTaskRecord[]> {
     const filePaths = await listJsonFiles(this.rootDir);
     const tasks = await Promise.all(filePaths.map((filePath) => readJsonFile<ScheduledTaskRecord>(filePath)));
-    return tasks.filter((task): task is ScheduledTaskRecord => task !== null);
+    return tasks.filter((task): task is ScheduledTaskRecord => task !== null).map((task) => normalizeScheduledTaskRecord(task));
   }
 
   private filePath(taskId: string): string {

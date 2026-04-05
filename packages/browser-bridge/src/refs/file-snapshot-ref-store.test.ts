@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 import { FileSnapshotRefStore } from "./file-snapshot-ref-store";
 

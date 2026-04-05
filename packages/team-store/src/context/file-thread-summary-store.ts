@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import type { ThreadSummaryRecord, ThreadSummaryStore } from "@turnkeyai/core-types/team";
-import { readJsonFile, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 interface FileThreadSummaryStoreOptions {
   rootDir: string;

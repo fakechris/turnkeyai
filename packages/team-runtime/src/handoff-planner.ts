@@ -9,6 +9,7 @@ import type {
   TeamThread,
   ValidateMentionInput,
 } from "@turnkeyai/core-types/team";
+import { createRelayPayload } from "@turnkeyai/core-types/team";
 
 const MENTION_RE = /@\{(?<roleId>[^}]+)\}/g;
 
@@ -105,21 +106,13 @@ export class DefaultHandoffPlanner implements HandoffPlanner {
         targetRoleId,
         activationType: input.activationType,
         threadId: input.thread.threadId,
-        payload: {
+        payload: createRelayPayload({
           threadId: input.thread.threadId,
-          intent: {
-            relayBrief: "",
-            recentMessages: input.recentMessages,
-            ...(input.instructions ? { instructions: input.instructions } : {}),
-          },
           relayBrief: "",
           recentMessages: input.recentMessages,
           ...(input.instructions ? { instructions: input.instructions } : {}),
-          constraints: {
-            dispatchPolicy,
-          },
           dispatchPolicy,
-        },
+        }),
         createdAt: input.now,
       };
 

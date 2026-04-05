@@ -1,4 +1,4 @@
-import { KeyedAsyncMutex } from "@turnkeyai/core-types/async-mutex";
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import type {
   Clock,
   FlowLedger,

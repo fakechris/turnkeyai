@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import type { FlowLedger, FlowLedgerStore, FlowId, ThreadId } from "@turnkeyai/core-types/team";
-import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 interface FileFlowLedgerStoreOptions {
   rootDir: string;
@@ -28,7 +28,7 @@ export class FileFlowLedgerStore implements FlowLedgerStore {
     return all.filter((flow) => flow.threadId === threadId);
   }
 
-  private async listAll(): Promise<FlowLedger[]> {
+  async listAll(): Promise<FlowLedger[]> {
     await mkdir(this.rootDir, { recursive: true });
     const filePaths = await listJsonFiles(this.rootDir);
     const flows = await Promise.all(filePaths.map((filePath) => readJsonFile<FlowLedger>(filePath)));

@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 import type { ValidationOpsRunRecord, ValidationOpsRunStore } from "@turnkeyai/core-types/team";
 
 interface FileValidationOpsRunStoreOptions {

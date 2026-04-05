@@ -5,7 +5,7 @@ import type {
   BrowserSessionOwnerType,
   BrowserSessionStore,
 } from "@turnkeyai/core-types/team";
-import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 interface FileBrowserSessionStoreOptions {
   rootDir: string;

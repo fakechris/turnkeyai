@@ -1,7 +1,7 @@
 import path from "node:path";
 
-import { KeyedAsyncMutex } from "@turnkeyai/core-types/async-mutex";
-import { listJsonFiles, readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
+import { listJsonFiles, readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 import type { RuntimeChainStatus, RuntimeChainStatusStore, ThreadId } from "@turnkeyai/core-types/team";
 
 interface FileRuntimeChainStatusStoreOptions {
@@ -71,6 +71,22 @@ export class FileRuntimeChainStatusStore implements RuntimeChainStatusStore {
       return active.slice(0, limit);
     }
     return active;
+  }
+
+  async listAll(): Promise<RuntimeChainStatus[]> {
+    const byIdFiles = await listJsonFiles(path.join(this.rootDir, "by-id"));
+    if (byIdFiles.length > 0) {
+      const records = await Promise.all(byIdFiles.map((filePath) => readJsonFile<RuntimeChainStatus>(filePath)));
+      return records
+        .filter((record): record is RuntimeChainStatus => record !== null)
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+    }
+
+    const legacyFilePaths = await listJsonFiles(this.rootDir);
+    const records = await Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RuntimeChainStatus>(filePath)));
+    return records
+      .filter((record): record is RuntimeChainStatus => record !== null)
+      .sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
   private byIdFilePath(chainId: string): string {

@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import type { BrowserProfile, BrowserProfileOwnerType, BrowserProfileStore } from "@turnkeyai/core-types/team";
-import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/core-types/file-store-utils";
+import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 interface FileBrowserProfileStoreOptions {
   rootDir: string;
