@@ -50,6 +50,18 @@ export function parsePositiveInteger(value: string | null): number | null {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+export function parseRequiredNonEmptyString(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+export function parseOptionalNonEmptyString(value: string | null | undefined): string | undefined {
+  return parseRequiredNonEmptyString(value) ?? undefined;
+}
+
 async function readRawBody(req: http.IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {

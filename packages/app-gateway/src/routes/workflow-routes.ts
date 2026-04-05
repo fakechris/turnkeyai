@@ -2,7 +2,12 @@ import type http from "node:http";
 
 import type { Clock, IdGenerator } from "@turnkeyai/core-types/team";
 
-import { readJsonBody, readOptionalJsonBody, sendJson } from "../http-helpers";
+import {
+  parseRequiredNonEmptyString,
+  readJsonBody,
+  readOptionalJsonBody,
+  sendJson,
+} from "../http-helpers";
 
 interface CoordinationEngineDeps {
   handleUserPost(body: { threadId: string; content: string }): Promise<void>;
@@ -61,7 +66,7 @@ export async function handleWorkflowRoutes(input: {
   const { req, res, url, deps } = input;
 
   if (req.method === "GET" && url.pathname === "/scheduled-tasks") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -72,18 +77,28 @@ export async function handleWorkflowRoutes(input: {
 
   if (req.method === "POST" && url.pathname === "/messages") {
     const body = await readJsonBody<{ threadId: string; content: string }>(req);
-    await deps.coordinationEngine.handleUserPost(body);
+    const threadId = parseRequiredNonEmptyString(body.threadId);
+    const content = parseRequiredNonEmptyString(body.content);
+    if (!threadId) {
+      sendJson(res, 400, { error: "threadId is required" });
+      return true;
+    }
+    if (!content) {
+      sendJson(res, 400, { error: "content is required" });
+      return true;
+    }
+    await deps.coordinationEngine.handleUserPost({ ...body, threadId, content });
     await deps.teamEventBus.publish({
       eventId: deps.idGenerator.messageId(),
-      threadId: body.threadId,
+      threadId,
       kind: "message.posted",
       createdAt: deps.clock.now(),
       payload: {
         route: "user",
-        contentLength: body.content.length,
+        contentLength: content.length,
       },
     });
-    sendJson(res, 202, { accepted: true, threadId: body.threadId });
+    sendJson(res, 202, { accepted: true, threadId });
     return true;
   }
 
@@ -106,7 +121,55 @@ export async function handleWorkflowRoutes(input: {
       sessionTarget?: "main" | "worker";
       targetWorker?: "browser" | "coder" | "finance" | "explore" | "harness";
     }>(req);
-    sendJson(res, 201, await deps.scheduledTaskRuntime.schedule(body));
+    const threadId = parseRequiredNonEmptyString(body.threadId);
+    const targetRoleId = parseRequiredNonEmptyString(body.targetRoleId);
+    const title = parseRequiredNonEmptyString(body.capsule?.title);
+    const instructions = parseRequiredNonEmptyString(body.capsule?.instructions);
+    const expr = parseRequiredNonEmptyString(body.schedule?.expr);
+    const tz = parseRequiredNonEmptyString(body.schedule?.tz);
+    if (!threadId) {
+      sendJson(res, 400, { error: "threadId is required" });
+      return true;
+    }
+    if (!targetRoleId) {
+      sendJson(res, 400, { error: "targetRoleId is required" });
+      return true;
+    }
+    if (!title) {
+      sendJson(res, 400, { error: "capsule.title is required" });
+      return true;
+    }
+    if (!instructions) {
+      sendJson(res, 400, { error: "capsule.instructions is required" });
+      return true;
+    }
+    if (!expr) {
+      sendJson(res, 400, { error: "schedule.expr is required" });
+      return true;
+    }
+    if (!tz) {
+      sendJson(res, 400, { error: "schedule.tz is required" });
+      return true;
+    }
+    sendJson(
+      res,
+      201,
+      await deps.scheduledTaskRuntime.schedule({
+        ...body,
+        threadId,
+        targetRoleId,
+        capsule: {
+          ...body.capsule,
+          title,
+          instructions,
+        },
+        schedule: {
+          ...body.schedule,
+          expr,
+          tz,
+        },
+      })
+    );
     return true;
   }
 

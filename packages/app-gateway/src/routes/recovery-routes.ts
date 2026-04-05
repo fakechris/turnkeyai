@@ -1,6 +1,12 @@
 import type http from "node:http";
 
-import { parsePositiveInteger, parsePositiveLimit, sendJson } from "../http-helpers";
+import {
+  parseOptionalNonEmptyString,
+  parsePositiveInteger,
+  parsePositiveLimit,
+  parseRequiredNonEmptyString,
+  sendJson,
+} from "../http-helpers";
 
 export interface RecoveryRouteDeps {
   buildReplayIncidents(input: {
@@ -37,14 +43,14 @@ export async function handleRecoveryRoutes(input: {
   const { req, res, url, deps } = input;
 
   if (req.method === "GET" && url.pathname === "/replay-incidents") {
-    const threadId = url.searchParams.get("threadId") ?? undefined;
+    const threadId = parseOptionalNonEmptyString(url.searchParams.get("threadId"));
     const limit = parsePositiveLimit(url.searchParams.get("limit"));
     if (limit == null) {
       sendJson(res, 400, { error: "limit must be a positive integer" });
       return true;
     }
-    const action = url.searchParams.get("action") ?? undefined;
-    const category = url.searchParams.get("category") ?? undefined;
+    const action = parseOptionalNonEmptyString(url.searchParams.get("action"));
+    const category = parseOptionalNonEmptyString(url.searchParams.get("category"));
     sendJson(
       res,
       200,
@@ -59,13 +65,13 @@ export async function handleRecoveryRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/replay-recoveries") {
-    const threadId = url.searchParams.get("threadId") ?? undefined;
+    const threadId = parseOptionalNonEmptyString(url.searchParams.get("threadId"));
     const limit = parsePositiveLimit(url.searchParams.get("limit"));
     if (limit == null) {
       sendJson(res, 400, { error: "limit must be a positive integer" });
       return true;
     }
-    const action = url.searchParams.get("action") ?? undefined;
+    const action = parseOptionalNonEmptyString(url.searchParams.get("action"));
     sendJson(
       res,
       200,
@@ -80,7 +86,7 @@ export async function handleRecoveryRoutes(input: {
 
   const replayGroupMatch = url.pathname.match(/^\/replay-groups\/([^/]+)$/);
   if (req.method === "GET" && replayGroupMatch) {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -96,7 +102,7 @@ export async function handleRecoveryRoutes(input: {
 
   const replayBundleMatch = url.pathname.match(/^\/replay-bundles\/([^/]+)$/);
   if (req.method === "GET" && replayBundleMatch) {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -112,7 +118,7 @@ export async function handleRecoveryRoutes(input: {
 
   const replayRecoveryMatch = url.pathname.match(/^\/replay-recoveries\/([^/]+)$/);
   if (req.method === "GET" && replayRecoveryMatch) {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -127,7 +133,7 @@ export async function handleRecoveryRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/recovery-runs") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -147,7 +153,7 @@ export async function handleRecoveryRoutes(input: {
 
   const recoveryRunMatch = url.pathname.match(/^\/recovery-runs\/([^/]+)$/);
   if (req.method === "GET" && recoveryRunMatch) {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -163,7 +169,7 @@ export async function handleRecoveryRoutes(input: {
 
   const recoveryTimelineMatch = url.pathname.match(/^\/recovery-runs\/([^/]+)\/timeline$/);
   if (req.method === "GET" && recoveryTimelineMatch) {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -181,7 +187,7 @@ export async function handleRecoveryRoutes(input: {
     /^\/recovery-runs\/([^/]+)\/(approve|reject|retry|fallback|resume)$/
   );
   if (req.method === "POST" && recoveryRunActionMatch) {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -197,7 +203,7 @@ export async function handleRecoveryRoutes(input: {
 
   const replayRecoveryDispatchMatch = url.pathname.match(/^\/replay-recoveries\/([^/]+)\/dispatch$/);
   if (req.method === "POST" && replayRecoveryDispatchMatch) {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;

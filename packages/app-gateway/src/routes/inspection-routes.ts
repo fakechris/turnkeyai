@@ -1,6 +1,11 @@
 import type http from "node:http";
 
-import { parsePositiveLimit, sendJson } from "../http-helpers";
+import {
+  parseOptionalNonEmptyString,
+  parsePositiveLimit,
+  parseRequiredNonEmptyString,
+  sendJson,
+} from "../http-helpers";
 
 export interface InspectionRouteDeps {
   listThreads(): Promise<unknown>;
@@ -54,15 +59,15 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/events") {
-    const threadId = url.searchParams.get("threadId") ?? undefined;
+    const threadId = parseOptionalNonEmptyString(url.searchParams.get("threadId"));
     const limit = Number(url.searchParams.get("limit") ?? 50);
     sendJson(res, 200, await deps.listRecentEvents(threadId, limit));
     return true;
   }
 
   if (req.method === "GET" && url.pathname === "/routes/resolve") {
-    const channelId = url.searchParams.get("channelId");
-    const userId = url.searchParams.get("userId");
+    const channelId = parseRequiredNonEmptyString(url.searchParams.get("channelId"));
+    const userId = parseRequiredNonEmptyString(url.searchParams.get("userId"));
     if (!channelId || !userId) {
       sendJson(res, 400, { error: "channelId and userId are required" });
       return true;
@@ -72,7 +77,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/messages") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -82,7 +87,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/flows") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -97,7 +102,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/flows-summary") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -107,7 +112,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/runtime-chains") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -127,7 +132,7 @@ export async function handleInspectionRoutes(input: {
       sendJson(res, 400, { error: "limit must be a positive integer" });
       return true;
     }
-    sendJson(res, 200, await deps.listActiveRuntimeChains(limit, url.searchParams.get("threadId")));
+    sendJson(res, 200, await deps.listActiveRuntimeChains(limit, parseOptionalNonEmptyString(url.searchParams.get("threadId")) ?? null));
     return true;
   }
 
@@ -137,7 +142,7 @@ export async function handleInspectionRoutes(input: {
       sendJson(res, 400, { error: "limit must be a positive integer" });
       return true;
     }
-    sendJson(res, 200, await deps.loadRuntimeSummary(url.searchParams.get("threadId"), limit));
+    sendJson(res, 200, await deps.loadRuntimeSummary(parseOptionalNonEmptyString(url.searchParams.get("threadId")) ?? null, limit));
     return true;
   }
 
@@ -147,7 +152,7 @@ export async function handleInspectionRoutes(input: {
       sendJson(res, 400, { error: "limit must be a positive integer" });
       return true;
     }
-    sendJson(res, 200, await deps.listWorkerSessions(limit, url.searchParams.get("threadId")));
+    sendJson(res, 200, await deps.listWorkerSessions(limit, parseOptionalNonEmptyString(url.searchParams.get("threadId")) ?? null));
     return true;
   }
 
@@ -157,7 +162,15 @@ export async function handleInspectionRoutes(input: {
       sendJson(res, 400, { error: "limit must be a positive integer" });
       return true;
     }
-    sendJson(res, 200, await deps.listRuntimeChainsByCanonicalState("waiting", limit, url.searchParams.get("threadId")));
+    sendJson(
+      res,
+      200,
+      await deps.listRuntimeChainsByCanonicalState(
+        "waiting",
+        limit,
+        parseOptionalNonEmptyString(url.searchParams.get("threadId")) ?? null
+      )
+    );
     return true;
   }
 
@@ -167,7 +180,15 @@ export async function handleInspectionRoutes(input: {
       sendJson(res, 400, { error: "limit must be a positive integer" });
       return true;
     }
-    sendJson(res, 200, await deps.listRuntimeChainsByCanonicalState("failed", limit, url.searchParams.get("threadId")));
+    sendJson(
+      res,
+      200,
+      await deps.listRuntimeChainsByCanonicalState(
+        "failed",
+        limit,
+        parseOptionalNonEmptyString(url.searchParams.get("threadId")) ?? null
+      )
+    );
     return true;
   }
 
@@ -177,7 +198,7 @@ export async function handleInspectionRoutes(input: {
       sendJson(res, 400, { error: "limit must be a positive integer" });
       return true;
     }
-    sendJson(res, 200, await deps.listStaleRuntimeChains(limit, url.searchParams.get("threadId")));
+    sendJson(res, 200, await deps.listStaleRuntimeChains(limit, parseOptionalNonEmptyString(url.searchParams.get("threadId")) ?? null));
     return true;
   }
 
@@ -187,13 +208,13 @@ export async function handleInspectionRoutes(input: {
       sendJson(res, 400, { error: "limit must be a positive integer" });
       return true;
     }
-    const summary = await deps.loadRuntimeSummary(url.searchParams.get("threadId"), limit);
+    const summary = await deps.loadRuntimeSummary(parseOptionalNonEmptyString(url.searchParams.get("threadId")) ?? null, limit);
     sendJson(res, 200, summary.attentionChains);
     return true;
   }
 
   if (req.method === "GET" && url.pathname === "/runtime-progress") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -249,7 +270,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/runs") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -259,7 +280,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/context/session-memory") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -279,8 +300,8 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/capabilities") {
-    const threadId = url.searchParams.get("threadId");
-    const roleId = url.searchParams.get("roleId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
+    const roleId = parseRequiredNonEmptyString(url.searchParams.get("roleId"));
     if (!threadId || !roleId) {
       sendJson(res, 400, { error: "threadId and roleId are required" });
       return true;
@@ -294,7 +315,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/governance/permissions") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -304,7 +325,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/governance/summary") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -319,7 +340,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/recovery-summary") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -334,7 +355,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/prompt-console") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -349,7 +370,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/operator-summary") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -364,7 +385,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/operator-attention") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -379,7 +400,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/operator-triage") {
-    const threadId = url.searchParams.get("threadId");
+    const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
       return true;
@@ -394,7 +415,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/governance/audits") {
-    const threadId = url.searchParams.get("threadId") ?? undefined;
+    const threadId = parseOptionalNonEmptyString(url.searchParams.get("threadId"));
     const limit = parsePositiveLimit(url.searchParams.get("limit"));
     if (limit == null) {
       sendJson(res, 400, { error: "limit must be a positive integer" });
@@ -405,7 +426,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/governance/workers") {
-    const threadId = url.searchParams.get("threadId") ?? undefined;
+    const threadId = parseOptionalNonEmptyString(url.searchParams.get("threadId"));
     const limit = parsePositiveLimit(url.searchParams.get("limit"));
     if (limit == null) {
       sendJson(res, 400, { error: "limit must be a positive integer" });
@@ -416,8 +437,8 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/replays") {
-    const threadId = url.searchParams.get("threadId") ?? undefined;
-    const layer = url.searchParams.get("layer") ?? undefined;
+    const threadId = parseOptionalNonEmptyString(url.searchParams.get("threadId"));
+    const layer = parseOptionalNonEmptyString(url.searchParams.get("layer"));
     const limit = parsePositiveLimit(url.searchParams.get("limit"));
     if (limit == null) {
       sendJson(res, 400, { error: "limit must be a positive integer" });
@@ -436,7 +457,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/replay-summary") {
-    const threadId = url.searchParams.get("threadId") ?? undefined;
+    const threadId = parseOptionalNonEmptyString(url.searchParams.get("threadId"));
     const limit = parsePositiveLimit(url.searchParams.get("limit"));
     if (limit == null) {
       sendJson(res, 400, { error: "limit must be a positive integer" });
@@ -447,7 +468,7 @@ export async function handleInspectionRoutes(input: {
   }
 
   if (req.method === "GET" && url.pathname === "/replay-console") {
-    const threadId = url.searchParams.get("threadId") ?? undefined;
+    const threadId = parseOptionalNonEmptyString(url.searchParams.get("threadId"));
     const limit = parsePositiveLimit(url.searchParams.get("limit"));
     if (limit == null) {
       sendJson(res, 400, { error: "limit must be a positive integer" });
