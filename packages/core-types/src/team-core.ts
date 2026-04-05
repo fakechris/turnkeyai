@@ -315,6 +315,12 @@ export interface RuntimeSummaryReport {
     affectedFlowIds: RunKey[];
     affectedRecoveryRunIds: RunKey[];
   };
+  runtimeChainStartupReconcile?: {
+    orphanedThreadChains: number;
+    missingFlowChains: number;
+    crossThreadFlowChains: number;
+    affectedChainIds: RunKey[];
+  };
 }
 
 export interface RuntimeProgressEvent {
@@ -688,6 +694,7 @@ export interface RuntimeChainStore {
   get(chainId: string): Promise<RuntimeChain | null>;
   put(chain: RuntimeChain): Promise<void>;
   listByThread(threadId: ThreadId): Promise<RuntimeChain[]>;
+  listAll?(): Promise<RuntimeChain[]>;
 }
 
 export interface RuntimeChainSpanStore {

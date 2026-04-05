@@ -104,6 +104,14 @@ export function createRuntimeQueryService(input: {
         affectedRecoveryRunIds: string[];
       }
     | undefined;
+  getRuntimeChainStartupReconcileResult?: () =>
+    | {
+        orphanedThreadChains: number;
+        missingFlowChains: number;
+        crossThreadFlowChains: number;
+        affectedChainIds: string[];
+      }
+    | undefined;
   teamThreadStore: FileTeamThreadStore;
   flowLedgerStore: FileFlowLedgerStore;
   roleRunStore: FileRoleRunStore;
@@ -123,6 +131,7 @@ export function createRuntimeQueryService(input: {
     getWorkerBindingReconcileResult,
     getRoleRunStartupRecoveryResult,
     getFlowRecoveryStartupReconcileResult,
+    getRuntimeChainStartupReconcileResult,
     teamThreadStore,
     flowLedgerStore,
     roleRunStore,
@@ -333,6 +342,7 @@ export function createRuntimeQueryService(input: {
       const workerBindingReconcile = getWorkerBindingReconcileResult?.();
       const roleRunStartupRecovery = getRoleRunStartupRecoveryResult?.();
       const flowRecoveryStartupReconcile = getFlowRecoveryStartupReconcileResult?.();
+      const runtimeChainStartupReconcile = getRuntimeChainStartupReconcileResult?.();
       return workerStartupReconcile
         ? {
             ...report,
@@ -341,6 +351,7 @@ export function createRuntimeQueryService(input: {
             ...(workerBindingReconcile ? { workerBindingReconcile } : {}),
             ...(roleRunStartupRecovery ? { roleRunStartupRecovery } : {}),
             ...(flowRecoveryStartupReconcile ? { flowRecoveryStartupReconcile } : {}),
+            ...(runtimeChainStartupReconcile ? { runtimeChainStartupReconcile } : {}),
           }
         : workerSessionHealth
           ? {
@@ -349,6 +360,7 @@ export function createRuntimeQueryService(input: {
               ...(workerBindingReconcile ? { workerBindingReconcile } : {}),
               ...(roleRunStartupRecovery ? { roleRunStartupRecovery } : {}),
               ...(flowRecoveryStartupReconcile ? { flowRecoveryStartupReconcile } : {}),
+              ...(runtimeChainStartupReconcile ? { runtimeChainStartupReconcile } : {}),
             }
           : workerBindingReconcile
             ? {
@@ -356,19 +368,26 @@ export function createRuntimeQueryService(input: {
                 workerBindingReconcile,
                 ...(roleRunStartupRecovery ? { roleRunStartupRecovery } : {}),
                 ...(flowRecoveryStartupReconcile ? { flowRecoveryStartupReconcile } : {}),
+                ...(runtimeChainStartupReconcile ? { runtimeChainStartupReconcile } : {}),
               }
             : roleRunStartupRecovery
               ? {
                   ...report,
                   roleRunStartupRecovery,
                   ...(flowRecoveryStartupReconcile ? { flowRecoveryStartupReconcile } : {}),
+                  ...(runtimeChainStartupReconcile ? { runtimeChainStartupReconcile } : {}),
                 }
               : flowRecoveryStartupReconcile
                 ? {
                     ...report,
                     flowRecoveryStartupReconcile,
                   }
-              : report;
+                : runtimeChainStartupReconcile
+                  ? {
+                      ...report,
+                      runtimeChainStartupReconcile,
+                    }
+                : report;
     },
 
     async listStaleRuntimeChainEntries(limit: number, threadId?: string | null): Promise<RuntimeChainEntry[]> {

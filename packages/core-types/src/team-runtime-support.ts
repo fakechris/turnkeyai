@@ -604,6 +604,13 @@ export interface FlowRecoveryStartupReconcileResult {
   affectedRecoveryRunIds: RunKey[];
 }
 
+export interface RuntimeChainStartupReconcileResult {
+  orphanedThreadChains: number;
+  missingFlowChains: number;
+  crossThreadFlowChains: number;
+  affectedChainIds: RunKey[];
+}
+
 export interface SupervisorUserMessageInput {
   thread: TeamThread;
   flow: FlowLedger;

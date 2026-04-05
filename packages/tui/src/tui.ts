@@ -1004,6 +1004,11 @@ function printRuntimeSummary(report: RuntimeSummaryReport): void {
       `  flow/recovery startup reconcile: orphaned-flows=${report.flowRecoveryStartupReconcile.orphanedFlows} aborted-orphaned-flows=${report.flowRecoveryStartupReconcile.abortedOrphanedFlows} orphaned-recovery-runs=${report.flowRecoveryStartupReconcile.orphanedRecoveryRuns} missing-flow-recovery-runs=${report.flowRecoveryStartupReconcile.missingFlowRecoveryRuns} cross-thread-flow-recovery-runs=${report.flowRecoveryStartupReconcile.crossThreadFlowRecoveryRuns} failed-recovery-runs=${report.flowRecoveryStartupReconcile.failedRecoveryRuns}`
     );
   }
+  if (report.runtimeChainStartupReconcile) {
+    console.log(
+      `  runtime chain startup reconcile: orphaned-thread-chains=${report.runtimeChainStartupReconcile.orphanedThreadChains} missing-flow-chains=${report.runtimeChainStartupReconcile.missingFlowChains} cross-thread-flow-chains=${report.runtimeChainStartupReconcile.crossThreadFlowChains} affected=${report.runtimeChainStartupReconcile.affectedChainIds.length}`
+    );
+  }
   printRuntimeSummaryEntries("  attention chains:", report.attentionChains);
   printRuntimeSummaryEntries("  active chains:", report.activeChains);
   printRuntimeSummaryEntries("  waiting chains:", report.waitingChains);
@@ -1427,6 +1432,11 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
   if (report.flowRecoveryStartupReconcile) {
     console.log(
       `  flow/recovery startup reconcile: orphaned-flows=${report.flowRecoveryStartupReconcile.orphanedFlows} aborted-orphaned-flows=${report.flowRecoveryStartupReconcile.abortedOrphanedFlows} orphaned-recovery-runs=${report.flowRecoveryStartupReconcile.orphanedRecoveryRuns} missing-flow-recovery-runs=${report.flowRecoveryStartupReconcile.missingFlowRecoveryRuns} cross-thread-flow-recovery-runs=${report.flowRecoveryStartupReconcile.crossThreadFlowRecoveryRuns} failed-recovery-runs=${report.flowRecoveryStartupReconcile.failedRecoveryRuns}`
+    );
+  }
+  if (report.runtimeChainStartupReconcile) {
+    console.log(
+      `  runtime chain startup reconcile: orphaned-thread-chains=${report.runtimeChainStartupReconcile.orphanedThreadChains} missing-flow-chains=${report.runtimeChainStartupReconcile.missingFlowChains} cross-thread-flow-chains=${report.runtimeChainStartupReconcile.crossThreadFlowChains} affected=${report.runtimeChainStartupReconcile.affectedChainIds.length}`
     );
   }
   console.log(

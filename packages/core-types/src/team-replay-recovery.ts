@@ -548,6 +548,7 @@ export interface OperatorSummaryReport {
   workerBindingReconcile?: RuntimeSummaryReport["workerBindingReconcile"];
   roleRunStartupRecovery?: RuntimeSummaryReport["roleRunStartupRecovery"];
   flowRecoveryStartupReconcile?: RuntimeSummaryReport["flowRecoveryStartupReconcile"];
+  runtimeChainStartupReconcile?: RuntimeSummaryReport["runtimeChainStartupReconcile"];
   promptAttentionCount: number;
   totalAttentionCount: number;
   attentionOverview?: {

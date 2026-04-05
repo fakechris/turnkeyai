@@ -185,6 +185,7 @@ import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
 import { createRuntimeQueryService } from "./runtime-query-service";
 import { recoverRoleRunsOnStartup } from "./role-run-startup-recovery";
 import { reconcileFlowRecoveryOnStartup } from "./flow-recovery-startup-reconcile";
+import { reconcileRuntimeChainsOnStartup } from "./runtime-chain-startup-reconcile";
 import { reconcileWorkerBindingsOnStartup } from "./worker-binding-startup-reconcile";
 import { handleBrowserRoutes, type BrowserTaskRouteBody } from "./routes/browser-routes";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
@@ -560,6 +561,11 @@ const flowRecoveryStartupReconcileResult = await reconcileFlowRecoveryOnStartup(
   flowLedgerStore,
   recoveryRunStore,
 });
+const runtimeChainStartupReconcileResult = await reconcileRuntimeChainsOnStartup({
+  teamThreadStore,
+  flowLedgerStore,
+  runtimeChainStore,
+});
 if (
   roleRunStartupRecoveryResult.restartedQueuedRuns > 0 ||
   roleRunStartupRecoveryResult.restartedRunningRuns > 0 ||
@@ -573,6 +579,9 @@ if (
   flowRecoveryStartupReconcileResult.failedRecoveryRuns > 0
 ) {
   console.info("flow/recovery startup reconcile completed", flowRecoveryStartupReconcileResult);
+}
+if (runtimeChainStartupReconcileResult.affectedChainIds.length > 0) {
+  console.info("runtime chain startup reconcile completed", runtimeChainStartupReconcileResult);
 }
 const scheduledTaskRuntime = new DefaultScheduledTaskRuntime({
   scheduledTaskStore,
@@ -600,6 +609,7 @@ const runtimeQueryService = createRuntimeQueryService({
   getWorkerBindingReconcileResult: () => workerBindingReconcileResult,
   getRoleRunStartupRecoveryResult: () => roleRunStartupRecoveryResult,
   getFlowRecoveryStartupReconcileResult: () => flowRecoveryStartupReconcileResult,
+  getRuntimeChainStartupReconcileResult: () => runtimeChainStartupReconcileResult,
   teamThreadStore,
   flowLedgerStore,
   roleRunStore,

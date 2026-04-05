@@ -302,6 +302,9 @@ export function buildOperatorSummaryReport(input: {
     ...(input.runtimeSummary?.flowRecoveryStartupReconcile
       ? { flowRecoveryStartupReconcile: input.runtimeSummary.flowRecoveryStartupReconcile }
       : {}),
+    ...(input.runtimeSummary?.runtimeChainStartupReconcile
+      ? { runtimeChainStartupReconcile: input.runtimeSummary.runtimeChainStartupReconcile }
+      : {}),
     promptAttentionCount,
     totalAttentionCount:
       flow.attentionCount + replay.attentionCount + governance.attentionCount + recovery.attentionCount + promptAttentionCount,
@@ -642,6 +645,20 @@ export function buildOperatorTriageReport(input: {
       nextStep: "inspect_runtime_flow_recovery",
       commandHint: "runtime-summary 10",
       state: "flow_recovery_startup_reconcile",
+    });
+  }
+  if ((input.summary.runtimeChainStartupReconcile?.affectedChainIds.length ?? 0) > 0) {
+    focusAreas.push({
+      area: "runtime",
+      label: "runtime-chain-startup-reconcile",
+      severity: "warning",
+      headline:
+        `runtime chain startup reconcile affected=${input.summary.runtimeChainStartupReconcile?.affectedChainIds.length ?? 0}`,
+      reason:
+        `Startup reconcile found orphaned-thread-chains=${input.summary.runtimeChainStartupReconcile?.orphanedThreadChains ?? 0}, missing-flow-chains=${input.summary.runtimeChainStartupReconcile?.missingFlowChains ?? 0}, cross-thread-flow-chains=${input.summary.runtimeChainStartupReconcile?.crossThreadFlowChains ?? 0}.`,
+      nextStep: "inspect_runtime_chains",
+      commandHint: "runtime-summary 10",
+      state: "runtime_chain_startup_reconcile",
     });
   }
 

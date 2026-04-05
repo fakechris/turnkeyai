@@ -1451,6 +1451,12 @@ test("operator triage surfaces worker session drift when runtime summary reports
         affectedFlowIds: ["flow:1"],
         affectedRecoveryRunIds: ["recovery:1", "recovery:2"],
       },
+      runtimeChainStartupReconcile: {
+        orphanedThreadChains: 1,
+        missingFlowChains: 1,
+        crossThreadFlowChains: 1,
+        affectedChainIds: ["chain:1", "chain:2"],
+      },
     },
     limit: 10,
   });
@@ -1520,6 +1526,12 @@ test("operator triage surfaces worker session drift when runtime summary reports
         affectedFlowIds: ["flow:1"],
         affectedRecoveryRunIds: ["recovery:1", "recovery:2"],
       },
+      runtimeChainStartupReconcile: {
+        orphanedThreadChains: 1,
+        missingFlowChains: 1,
+        crossThreadFlowChains: 1,
+        affectedChainIds: ["chain:1", "chain:2"],
+      },
     },
     limit: 5,
   });
@@ -1535,6 +1547,8 @@ test("operator triage surfaces worker session drift when runtime summary reports
   assert.equal(startupRecoveryFocus?.state, "role_run_startup_recovery");
   const flowRecoveryFocus = report.focusAreas.find((area) => area.label === "flow-recovery-startup-reconcile");
   assert.equal(flowRecoveryFocus?.state, "flow_recovery_startup_reconcile");
+  const runtimeChainFocus = report.focusAreas.find((area) => area.label === "runtime-chain-startup-reconcile");
+  assert.equal(runtimeChainFocus?.state, "runtime_chain_startup_reconcile");
 });
 
 function buildPromptBoundary(input: {
