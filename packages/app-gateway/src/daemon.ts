@@ -180,6 +180,7 @@ import {
   readOptionalJsonBody,
   sendJson,
 } from "./http-helpers";
+import { authorizeDaemonRequest, resolveDaemonAuthConfig } from "./daemon-auth";
 import { createRecoveryActionService } from "./recovery-action-service";
 import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
 import { createRuntimeQueryService } from "./runtime-query-service";
@@ -203,7 +204,7 @@ const PORT = Number(process.env.TURNKEYAI_DAEMON_PORT ?? 4100);
 const DATA_DIR = path.resolve(process.cwd(), ".daemon-data");
 const VALIDATION_ARTIFACT_DIR = path.join(DATA_DIR, "validation-artifacts");
 const execFile = promisify(execFileCallback);
-const DAEMON_TOKEN = process.env.TURNKEYAI_DAEMON_TOKEN?.trim() || null;
+const DAEMON_AUTH = resolveDaemonAuthConfig(process.env);
 const RECOVERY_RUN_STALE_AFTER_MS = 5 * 60 * 1000;
 
 const clock: Clock = {
@@ -650,10 +651,12 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    if (!isAuthorizedRequest(req)) {
+    const authorization = authorizeDaemonRequest(req, url, DAEMON_AUTH);
+    if (!authorization.authorized) {
       return sendJson(res, 401, {
         error: "unauthorized",
-        authMode: DAEMON_TOKEN ? "token" : "disabled",
+        authMode: DAEMON_AUTH.authMode,
+        requiredAccess: authorization.requiredAccess,
       });
     }
 
@@ -1088,8 +1091,14 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`daemon listening on http://127.0.0.1:${PORT}`);
   console.log(`data dir: ${DATA_DIR}`);
   console.log(`model catalog: ${modelCatalogPath ?? "(none)"}`);
-  if (DAEMON_TOKEN) {
+  if (DAEMON_AUTH.authMode !== "disabled") {
     console.log("auth: token required via x-turnkeyai-token or Authorization: Bearer <token>");
+    if (DAEMON_AUTH.authMode === "token-layered") {
+      console.log("auth access levels: read / operator / admin");
+      console.log("  TURNKEYAI_DAEMON_READ_TOKEN       Read-only inspection and replay routes");
+      console.log("  TURNKEYAI_DAEMON_OPERATOR_TOKEN   Operator and browser action routes");
+      console.log("  TURNKEYAI_DAEMON_ADMIN_TOKEN      Validation, relay, and admin-only routes");
+    }
   } else {
     console.log("auth: disabled (set TURNKEYAI_DAEMON_TOKEN to enable)");
   }
@@ -1320,24 +1329,6 @@ async function resolveModelCatalogPath(): Promise<string | null> {
   return null;
 }
 
-function isAuthorizedRequest(req: http.IncomingMessage): boolean {
-  if (!DAEMON_TOKEN) {
-    return true;
-  }
-
-  const headerToken = req.headers["x-turnkeyai-token"];
-  if (typeof headerToken === "string" && headerToken === DAEMON_TOKEN) {
-    return true;
-  }
-
-  const authorization = req.headers.authorization;
-  if (typeof authorization === "string" && authorization.toLowerCase().startsWith("bearer ")) {
-    return authorization.slice("bearer ".length).trim() === DAEMON_TOKEN;
-  }
-
-  return false;
-}
-
 async function resolveBrowserThreadOwner(input: {
   threadId: string | null | undefined;
   ownerType?: string | null;
@@ -1499,6 +1490,9 @@ function printDaemonHelp(exitCode: number): never {
     "Environment:",
     "  TURNKEYAI_DAEMON_PORT       Override the daemon listen port",
     "  TURNKEYAI_DAEMON_TOKEN      Require bearer auth for daemon requests",
+    "  TURNKEYAI_DAEMON_READ_TOKEN Optional read-only daemon token",
+    "  TURNKEYAI_DAEMON_OPERATOR_TOKEN Optional operator-scoped daemon token",
+    "  TURNKEYAI_DAEMON_ADMIN_TOKEN Optional admin-scoped daemon token",
     "  TURNKEYAI_BROWSER_TRANSPORT Select browser transport: local | relay | direct-cdp",
     "  TURNKEYAI_BROWSER_CDP_ENDPOINT  CDP endpoint for direct-cdp transport",
     "  TURNKEYAI_BROWSER_CHROME_EXECUTABLE Optional browser executable override",
