@@ -101,7 +101,7 @@ export async function reconcileWorkerBindingsOnStartup(input: {
       changed = true;
     }
     if (changed) {
-      await input.roleRunStore.put(nextRun);
+      await input.roleRunStore.put(nextRun, { expectedVersion: run.version });
     }
   }
 

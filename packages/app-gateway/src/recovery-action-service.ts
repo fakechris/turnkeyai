@@ -308,7 +308,7 @@ export function createRecoveryActionService(input: {
       }
       const failed = buildStaleRecoveryRunFailure(run, now);
       nextRuns[index] = failed;
-      await recoveryRunStore.put(failed);
+      await recoveryRunStore.put(failed, { expectedVersion: run.version });
       await recoveryRunEventStore.append({
         eventId: idGenerator.messageId(),
         recoveryRunId: failed.recoveryRunId,
@@ -341,7 +341,13 @@ export function createRecoveryActionService(input: {
     const existingByRunId = new Map(existingRuns.map((run) => [run.recoveryRunId, JSON.stringify(run)]));
     const previousByRunId = new Map(existingRuns.map((run) => [run.recoveryRunId, run]));
     const changedRuns = runs.filter((run) => existingByRunId.get(run.recoveryRunId) !== JSON.stringify(run));
-    await Promise.all(changedRuns.map((run) => recoveryRunStore.put(run)));
+    await Promise.all(
+      changedRuns.map((run) =>
+        recoveryRunStore.put(run, {
+          expectedVersion: previousByRunId.get(run.recoveryRunId)?.version,
+        })
+      )
+    );
     await Promise.all(
       changedRuns.map((run) =>
         appendDerivedRecoveryRunEvents({
@@ -662,7 +668,7 @@ export function createRecoveryActionService(input: {
             },
           ],
         };
-        await recoveryRunStore.put(rejectedRun);
+        await recoveryRunStore.put(rejectedRun, { expectedVersion: syncedRun.version });
         await publishRecoveryRuntimeState(rejectedRun);
         await recoveryRunEventStore.append({
           eventId: idGenerator.messageId(),
@@ -813,8 +819,13 @@ export function createRecoveryActionService(input: {
           },
         ],
       };
-      await recoveryRunStore.put(inFlightRun);
-      await publishRecoveryRuntimeState(inFlightRun);
+      const persistedInFlightVersion = (syncedRun.version ?? 0) + 1;
+      const persistedInFlightRun: RecoveryRun = {
+        ...inFlightRun,
+        version: persistedInFlightVersion,
+      };
+      await recoveryRunStore.put(inFlightRun, { expectedVersion: syncedRun.version });
+      await publishRecoveryRuntimeState(persistedInFlightRun);
       if (supersededAttemptId) {
         await recoveryRunEventStore.append({
           eventId: idGenerator.messageId(),
@@ -833,14 +844,14 @@ export function createRecoveryActionService(input: {
           ...(browserSession ? { browserSession } : {}),
         });
       }
-      await recordRecoveryProgress(inFlightRun, {
-        phase: buildDerivedRecoveryRuntimeChain(inFlightRun).status.phase,
+      await recordRecoveryProgress(persistedInFlightRun, {
+        phase: buildDerivedRecoveryRuntimeChain(persistedInFlightRun).status.phase,
         summary: `Recovery ${actionInput.action} dispatched for ${inFlightRun.sourceGroupId}.`,
         statusReason: transitionReason,
         heartbeatSource: "control_path",
       });
 
-      const stopRecoveryHeartbeat = startRecoveryHeartbeat(inFlightRun, actionInput.action);
+      const stopRecoveryHeartbeat = startRecoveryHeartbeat(persistedInFlightRun, actionInput.action);
       try {
         await coordinationEngine.handleScheduledTask(scheduledTask);
       } catch (error) {
@@ -888,8 +899,12 @@ export function createRecoveryActionService(input: {
               : attempt
           ),
         };
-        await recoveryRunStore.put(failedRun);
-        await publishRecoveryRuntimeState(failedRun);
+        await recoveryRunStore.put(failedRun, { expectedVersion: persistedInFlightVersion });
+        const persistedFailedRun: RecoveryRun = {
+          ...failedRun,
+          version: persistedInFlightVersion + 1,
+        };
+        await publishRecoveryRuntimeState(persistedFailedRun);
         await recoveryRunEventStore.append({
           eventId: idGenerator.messageId(),
           recoveryRunId: failedRun.recoveryRunId,
@@ -908,7 +923,7 @@ export function createRecoveryActionService(input: {
           ...(browserSession ? { browserSession } : {}),
           failure,
         });
-        await recordRecoveryProgress(failedRun, {
+        await recordRecoveryProgress(persistedFailedRun, {
           phase: "failed",
           summary: failure.message,
           statusReason: failure.message,
@@ -1044,7 +1059,7 @@ export function createRecoveryActionService(input: {
       }
       const run = synced.runs.find((item) => item.sourceGroupId === recovery.groupId) ?? createRecoveryRunSkeleton(recovery, clock.now());
       if (!(await recoveryRunStore.get(run.recoveryRunId))) {
-        await recoveryRunStore.put(run);
+        await recoveryRunStore.put(run, { expectedVersion: run.version });
       }
       return executeRecoveryRunActionInner({
         run,

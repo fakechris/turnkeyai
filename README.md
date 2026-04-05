@@ -204,6 +204,12 @@ npm run transport:soak -- --cycles 1 --targets relay
 TURNKEYAI_BROWSER_TRANSPORT=relay npm run daemon
 ```
 
+如果启用了分层 daemon auth，推荐给 browser relay peer 单独配置：
+
+```bash
+TURNKEYAI_BROWSER_RELAY_TOKEN=... TURNKEYAI_BROWSER_TRANSPORT=relay npm run daemon
+```
+
 配合本地 daemon 走 direct-cdp transport 时，可以显式设置：
 
 ```bash

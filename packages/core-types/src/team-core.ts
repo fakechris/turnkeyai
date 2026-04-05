@@ -1,5 +1,5 @@
-import type { BrowserOwnerType, BrowserResumeMode } from "./browser";
-import type { OperatorCaseState, ReplayRecoveryPlan } from "./team-replay-recovery";
+import type { OperatorCaseState } from "./team-replay-recovery";
+import type { RelayPayload, ShardResultRecord } from "./team-dispatch";
 
 export type ThreadId = string;
 export type TeamId = string;
@@ -95,6 +95,7 @@ export interface FlowLedger {
   maxHops: number;
   edges: HandoffEdge[];
   shardGroups?: ShardGroupRecord[];
+  version?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -417,6 +418,7 @@ export interface RoleRunState {
   lastActiveAt: number;
   lastUserTouchAt?: number;
   workerSessions?: Partial<Record<WorkerKind, RunKey>>;
+  version?: number;
 }
 
 export type RoleRunStatus =
@@ -440,170 +442,6 @@ export interface HandoffEnvelope {
   createdAt: number;
 }
 
-export interface DispatchIntent {
-  relayBrief: string;
-  recentMessages: TeamMessageSummary[];
-  instructions?: string;
-}
-
-export interface DispatchRecoveryContext {
-  parentGroupId: string;
-  action: ReplayRecoveryPlan["nextAction"];
-  dispatchReplayId?: string;
-  recoveryRunId?: string;
-  attemptId?: string;
-}
-
-export interface BrowserContinuationHint {
-  sessionId: string;
-  targetId?: string;
-  resumeMode?: BrowserResumeMode;
-  ownerType?: BrowserOwnerType;
-  ownerId?: string;
-  leaseHolderRunKey?: RunKey;
-}
-
-export interface DispatchContinuationContext {
-  source: "scheduled_reentry" | "timeout_summary" | "follow_up" | "recovery_dispatch";
-  workerType?: WorkerKind;
-  workerRunKey?: RunKey;
-  summary?: string;
-  recovery?: DispatchRecoveryContext;
-  browserSession?: BrowserContinuationHint;
-}
-
-export interface DispatchContinuity {
-  mode?: ContinuityMode;
-  context?: DispatchContinuationContext;
-}
-
-export interface DispatchCoordination {
-  merge?: FanOutMergeContext;
-  parallel?: ParallelOrchestrationContext;
-}
-
-export interface DispatchConstraints {
-  dispatchPolicy: DispatchPolicy;
-  preferredWorkerKinds?: WorkerKind[];
-}
-
-export interface RelayPayload {
-  threadId: ThreadId;
-  intent?: DispatchIntent;
-  continuity?: DispatchContinuity;
-  coordination?: DispatchCoordination;
-  constraints?: DispatchConstraints;
-  relayBrief?: string;
-  recentMessages?: TeamMessageSummary[];
-  instructions?: string;
-  preferredWorkerKinds?: WorkerKind[];
-  sessionTarget?: SessionTarget;
-  continuationContext?: DispatchContinuationContext;
-  mergeContext?: FanOutMergeContext;
-  parallelContext?: ParallelOrchestrationContext;
-  dispatchPolicy?: DispatchPolicy;
-}
-
-export function normalizeRelayPayload(payload: RelayPayload): RelayPayload {
-  const relayBrief = payload.intent?.relayBrief ?? payload.relayBrief ?? "";
-  const recentMessages = payload.intent?.recentMessages ?? payload.recentMessages ?? [];
-  const instructions = payload.intent?.instructions ?? payload.instructions;
-  const preferredWorkerKinds = payload.constraints?.preferredWorkerKinds ?? payload.preferredWorkerKinds ?? [];
-  const dispatchPolicy = payload.constraints?.dispatchPolicy ?? payload.dispatchPolicy;
-  const continuity =
-    payload.continuity ??
-    (payload.continuationContext
-      ? {
-          context: payload.continuationContext,
-        }
-      : undefined);
-  const coordination =
-    payload.coordination ??
-    (payload.mergeContext || payload.parallelContext
-      ? {
-          ...(payload.mergeContext ? { merge: payload.mergeContext } : {}),
-          ...(payload.parallelContext ? { parallel: payload.parallelContext } : {}),
-        }
-      : undefined);
-
-  return {
-    threadId: payload.threadId,
-    intent: {
-      relayBrief,
-      recentMessages,
-      ...(instructions ? { instructions } : {}),
-    },
-    ...(continuity ? { continuity } : {}),
-    ...(coordination ? { coordination } : {}),
-    ...(dispatchPolicy
-      ? {
-          constraints: {
-            dispatchPolicy,
-            ...(preferredWorkerKinds.length > 0 ? { preferredWorkerKinds } : {}),
-          },
-        }
-      : preferredWorkerKinds.length > 0
-        ? {
-            preferredWorkerKinds,
-          }
-        : {}),
-    relayBrief,
-    recentMessages,
-    ...(instructions ? { instructions } : {}),
-    ...(preferredWorkerKinds.length > 0 ? { preferredWorkerKinds } : {}),
-    ...(payload.sessionTarget ? { sessionTarget: payload.sessionTarget } : {}),
-    ...(continuity?.context ? { continuationContext: continuity.context } : {}),
-    ...(coordination?.merge ? { mergeContext: coordination.merge } : {}),
-    ...(coordination?.parallel ? { parallelContext: coordination.parallel } : {}),
-    ...(dispatchPolicy ? { dispatchPolicy } : {}),
-  };
-}
-
-export function createRelayPayload(input: {
-  threadId: ThreadId;
-  relayBrief: string;
-  recentMessages: TeamMessageSummary[];
-  instructions?: string;
-  sessionTarget?: SessionTarget;
-  continuity?: DispatchContinuity;
-  preferredWorkerKinds?: WorkerKind[];
-  dispatchPolicy: DispatchPolicy;
-  coordination?: DispatchCoordination;
-}): RelayPayload {
-  return normalizeRelayPayload({
-    threadId: input.threadId,
-    intent: {
-      relayBrief: input.relayBrief,
-      recentMessages: input.recentMessages,
-      ...(input.instructions ? { instructions: input.instructions } : {}),
-    },
-    ...(input.continuity ? { continuity: input.continuity } : {}),
-    ...(input.coordination ? { coordination: input.coordination } : {}),
-    ...(input.sessionTarget ? { sessionTarget: input.sessionTarget } : {}),
-    constraints: {
-      dispatchPolicy: input.dispatchPolicy,
-      ...(input.preferredWorkerKinds?.length ? { preferredWorkerKinds: input.preferredWorkerKinds } : {}),
-    },
-  });
-}
-
-export interface FanOutMergeContext {
-  fanOutGroupId: string;
-  expectedRoleIds: RoleId[];
-  completedRoleIds: RoleId[];
-  failedRoleIds: RoleId[];
-  cancelledRoleIds: RoleId[];
-  missingRoleIds: RoleId[];
-  duplicateRoleIds?: RoleId[];
-  conflictRoleIds?: RoleId[];
-  shardSummaries?: Array<{
-    roleId: RoleId;
-    status: ShardResultRecord["status"];
-    summary: string;
-  }>;
-  followUpRequired: boolean;
-}
-
 export interface ShardGroupRecord {
   groupId: string;
   parentTaskId: TaskId;
@@ -620,67 +458,6 @@ export interface ShardGroupRecord {
   shardResults: ShardResultRecord[];
   createdAt: number;
   updatedAt: number;
-}
-
-export interface ShardResultRecord {
-  roleId: RoleId;
-  status: "completed" | "failed" | "cancelled";
-  summary: string;
-  summaryDigest: string;
-  messageId?: MessageId;
-  updatedAt: number;
-}
-
-export type ParallelOrchestrationContext =
-  | ResearchShardPacket
-  | MergeSynthesisPacket;
-
-export interface ResearchShardPacket {
-  kind: "research_shard";
-  fanOutGroupId: string;
-  shardRoleId: RoleId;
-  shardIndex: number;
-  shardCount: number;
-  expectedRoleIds: RoleId[];
-  mergeBackToRoleId: RoleId;
-  shardGoal: string;
-}
-
-export interface MergeSynthesisPacket {
-  kind: "merge_synthesis";
-  fanOutGroupId: string;
-  expectedRoleIds: RoleId[];
-  completedRoleIds: RoleId[];
-  failedRoleIds: RoleId[];
-  cancelledRoleIds: RoleId[];
-  missingRoleIds: RoleId[];
-  duplicateRoleIds: RoleId[];
-  conflictRoleIds: RoleId[];
-  followUpRequired: boolean;
-  shardSummaries: Array<{
-    roleId: RoleId;
-    status: ShardResultRecord["status"];
-    summary: string;
-  }>;
-}
-
-export interface TeamMessageSummary {
-  messageId: MessageId;
-  role: TeamMessageRole;
-  roleId?: RoleId;
-  name: string;
-  content: string;
-  createdAt: number;
-}
-
-export interface DispatchPolicy {
-  allowParallel: boolean;
-  allowReenter: boolean;
-  expectedNextRoleIds?: RoleId[];
-  fanOutGroupId?: string;
-  coverageTargetRoleIds?: RoleId[];
-  mergeBackToRoleId?: RoleId;
-  sourceFlowMode: DispatchMode;
 }
 
 export type RuntimeErrorCode =
@@ -723,37 +500,11 @@ export interface SendTeamMessageInput {
   metadata?: Record<string, unknown>;
 }
 
-export interface HandoffTarget {
-  raw: string;
-  roleId: RoleId;
-  offsetStart: number;
-  offsetEnd: number;
-}
-
 export interface ValidateMentionInput {
   flow: FlowLedger;
   sourceRoleId?: RoleId;
   messageId: MessageId;
   content: string;
-}
-
-export interface DispatchDecision {
-  allowed: boolean;
-  reason?: string;
-  mode: DispatchMode;
-  targetRoleIds: RoleId[];
-}
-
-export interface BuildHandoffsInput {
-  thread: TeamThread;
-  flow: FlowLedger;
-  sourceMessage: TeamMessage;
-  targetRoleIds: RoleId[];
-  recentMessages: TeamMessageSummary[];
-  activationType: ActivationType;
-  now: number;
-  fromRoleId?: RoleId;
-  instructions?: string;
 }
 
 export interface TeamThreadStore {
@@ -772,7 +523,7 @@ export interface TeamMessageStore {
 
 export interface RoleRunStore {
   get(runKey: RunKey): Promise<RoleRunState | null>;
-  put(runState: RoleRunState): Promise<void>;
+  put(runState: RoleRunState, options?: { expectedVersion?: number | undefined }): Promise<void>;
   delete(runKey: RunKey): Promise<void>;
   listByThread(threadId: ThreadId): Promise<RoleRunState[]>;
   listAll?(): Promise<RoleRunState[]>;
@@ -780,7 +531,7 @@ export interface RoleRunStore {
 
 export interface FlowLedgerStore {
   get(flowId: FlowId): Promise<FlowLedger | null>;
-  put(flow: FlowLedger): Promise<void>;
+  put(flow: FlowLedger, options?: { expectedVersion?: number | undefined }): Promise<void>;
   listByThread(threadId: ThreadId): Promise<FlowLedger[]>;
   listAll?(): Promise<FlowLedger[]>;
 }
@@ -869,12 +620,6 @@ export interface RuntimeStateRecorder {
   record(input: { chain: RuntimeChain; status: RuntimeChainStatus }): Promise<void>;
 }
 
-export interface HandoffPlanner {
-  parseMentions(content: string): HandoffTarget[];
-  validateMentionTargets(thread: TeamThread, input: ValidateMentionInput): Promise<DispatchDecision>;
-  buildHandoffs(input: BuildHandoffsInput): Promise<HandoffEnvelope[]>;
-}
-
 export interface RoleActivationInput {
   runState: RoleRunState;
   thread: TeamThread;
@@ -893,58 +638,4 @@ export function buildRunKey(threadId: ThreadId, roleId: RoleId): RunKey {
   return `role:${roleId}:thread:${threadId}`;
 }
 
-export function toMessageSummary(message: TeamMessage): TeamMessageSummary {
-  const summary: TeamMessageSummary = {
-    messageId: message.id,
-    role: message.role,
-    name: message.name,
-    content: message.content,
-    createdAt: message.createdAt,
-  };
-
-  if (message.roleId) {
-    summary.roleId = message.roleId;
-  }
-
-  return summary;
-}
-
-export function getDispatchPolicy(payload: RelayPayload): DispatchPolicy {
-  return payload.constraints?.dispatchPolicy ?? payload.dispatchPolicy!;
-}
-
-export function getRelayBrief(payload: RelayPayload): string {
-  return payload.intent?.relayBrief ?? payload.relayBrief ?? "";
-}
-
-export function getRecentMessages(payload: RelayPayload): TeamMessageSummary[] {
-  return payload.intent?.recentMessages ?? payload.recentMessages ?? [];
-}
-
-export function getInstructions(payload: RelayPayload): string | undefined {
-  return payload.intent?.instructions ?? payload.instructions;
-}
-
-export function getPreferredWorkerKinds(payload: RelayPayload): WorkerKind[] {
-  return payload.constraints?.preferredWorkerKinds ?? payload.preferredWorkerKinds ?? [];
-}
-
-export function getSessionTarget(payload: RelayPayload): SessionTarget | undefined {
-  return payload.sessionTarget ?? (payload.continuity?.context?.workerType ? "worker" : undefined);
-}
-
-export function getDispatchContinuityMode(payload: RelayPayload): ContinuityMode | undefined {
-  return payload.continuity?.mode;
-}
-
-export function getContinuationContext(payload: RelayPayload): DispatchContinuationContext | undefined {
-  return payload.continuity?.context ?? payload.continuationContext;
-}
-
-export function getMergeContext(payload: RelayPayload): DispatchCoordination["merge"] {
-  return payload.coordination?.merge ?? payload.mergeContext;
-}
-
-export function getParallelContext(payload: RelayPayload): DispatchCoordination["parallel"] {
-  return payload.coordination?.parallel ?? payload.parallelContext;
-}
+export * from "./team-dispatch";

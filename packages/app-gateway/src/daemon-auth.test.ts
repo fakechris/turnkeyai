@@ -11,6 +11,7 @@ test("resolveDaemonAuthConfig preserves legacy single-token compatibility", () =
   assert.deepEqual(config, {
     readToken: "legacy-token",
     operatorToken: "legacy-token",
+    relayPeerToken: "legacy-token",
     adminToken: "legacy-token",
     authMode: "token",
   });
@@ -20,12 +21,14 @@ test("resolveDaemonAuthConfig supports layered tokens", () => {
   const config = resolveDaemonAuthConfig({
     TURNKEYAI_DAEMON_READ_TOKEN: "read-token",
     TURNKEYAI_DAEMON_OPERATOR_TOKEN: "operator-token",
+    TURNKEYAI_BROWSER_RELAY_TOKEN: "relay-token",
     TURNKEYAI_DAEMON_ADMIN_TOKEN: "admin-token",
   });
 
   assert.deepEqual(config, {
     readToken: "read-token",
     operatorToken: "operator-token",
+    relayPeerToken: "relay-token",
     adminToken: "admin-token",
     authMode: "token-layered",
   });
@@ -47,7 +50,8 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "GET", pathname: "/validation-ops", expected: "admin" },
     { method: "POST", pathname: "/validation-profiles/run", expected: "admin" },
     { method: "POST", pathname: "/transport-soak/run", expected: "admin" },
-    { method: "POST", pathname: "/relay/peers/register", expected: "admin" },
+    { method: "POST", pathname: "/relay/peers/register", expected: "relay-peer" },
+    { method: "POST", pathname: "/relay/peers/peer-1/heartbeat", expected: "relay-peer" },
     { method: "GET", pathname: "/relay/targets", expected: "admin" },
   ] as const;
 
@@ -64,6 +68,7 @@ test("authorizeDaemonRequest enforces layered access while keeping health public
   const config = resolveDaemonAuthConfig({
     TURNKEYAI_DAEMON_READ_TOKEN: "read-token",
     TURNKEYAI_DAEMON_OPERATOR_TOKEN: "operator-token",
+    TURNKEYAI_BROWSER_RELAY_TOKEN: "relay-token",
     TURNKEYAI_DAEMON_ADMIN_TOKEN: "admin-token",
   });
 
@@ -120,12 +125,31 @@ test("authorizeDaemonRequest enforces layered access while keeping health public
   assert.equal(adminResult.authorized, true);
   assert.equal(adminResult.grantedAccess, "admin");
   assert.equal(adminResult.requiredAccess, "admin");
+
+  const relayPeerResult = authorizeDaemonRequest(
+    { method: "POST", headers: { authorization: "Bearer relay-token" } } as never,
+    new URL("http://127.0.0.1/relay/peers/register"),
+    config
+  );
+  assert.equal(relayPeerResult.authorized, true);
+  assert.equal(relayPeerResult.grantedAccess, "relay-peer");
+  assert.equal(relayPeerResult.requiredAccess, "relay-peer");
+
+  const relayPeerReadFailure = authorizeDaemonRequest(
+    { method: "GET", headers: { authorization: "Bearer relay-token" } } as never,
+    new URL("http://127.0.0.1/relay/peers"),
+    config
+  );
+  assert.equal(relayPeerReadFailure.authorized, false);
+  assert.equal(relayPeerReadFailure.grantedAccess, "relay-peer");
+  assert.equal(relayPeerReadFailure.requiredAccess, "admin");
 });
 
 test("authorizeDaemonRequest returns required access for layered failures", () => {
   const config = resolveDaemonAuthConfig({
     TURNKEYAI_DAEMON_READ_TOKEN: "read-token",
     TURNKEYAI_DAEMON_OPERATOR_TOKEN: "operator-token",
+    TURNKEYAI_BROWSER_RELAY_TOKEN: "relay-token",
     TURNKEYAI_DAEMON_ADMIN_TOKEN: "admin-token",
   });
 
@@ -144,6 +168,15 @@ test("authorizeDaemonRequest returns required access for layered failures", () =
     config
   );
   assert.equal(adminFailure.authorized, false);
-  assert.equal(adminFailure.requiredAccess, "admin");
+  assert.equal(adminFailure.requiredAccess, "relay-peer");
   assert.equal(adminFailure.grantedAccess, "operator");
+
+  const relayPeerFailure = authorizeDaemonRequest(
+    { method: "POST", headers: { authorization: "Bearer read-token" } } as never,
+    new URL("http://127.0.0.1/relay/peers/register"),
+    config
+  );
+  assert.equal(relayPeerFailure.authorized, false);
+  assert.equal(relayPeerFailure.requiredAccess, "relay-peer");
+  assert.equal(relayPeerFailure.grantedAccess, "read");
 });

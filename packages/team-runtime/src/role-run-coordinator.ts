@@ -1,4 +1,5 @@
 import {
+  normalizeRelayPayload,
   buildRunKey,
   type RunKey,
   type RoleId,
@@ -63,10 +64,14 @@ export class DefaultRoleRunCoordinator implements RoleRunCoordinator {
       if (current.inbox.length >= this.runtimeLimits.maxQueuedHandoffsPerRole) {
         throw new Error(`handoff inbox full for ${runKey}`);
       }
+      const normalizedHandoff: HandoffEnvelope = {
+        ...handoff,
+        payload: normalizeRelayPayload(handoff.payload),
+      };
 
       return {
         ...current,
-        inbox: [...current.inbox, handoff],
+        inbox: [...current.inbox, normalizedHandoff],
         status: current.status === "running" ? "running" : "queued",
         lastActiveAt: this.now(),
       };
@@ -89,7 +94,7 @@ export class DefaultRoleRunCoordinator implements RoleRunCoordinator {
         ...current,
         inbox: rest,
         lastActiveAt: this.now(),
-      });
+      }, { expectedVersion: current.version });
 
       return next;
     });
@@ -187,7 +192,7 @@ export class DefaultRoleRunCoordinator implements RoleRunCoordinator {
     return this.withRunLock(runKey, async () => {
       const current = await this.requireRun(runKey);
       const next = mutate(current);
-      await this.roleRunStore.put(next);
+      await this.roleRunStore.put(next, { expectedVersion: current.version });
       return next;
     });
   }

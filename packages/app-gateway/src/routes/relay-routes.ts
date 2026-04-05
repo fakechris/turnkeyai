@@ -1,7 +1,7 @@
 import type http from "node:http";
 
 import type { BrowserTaskResult } from "@turnkeyai/core-types/team";
-import type { RelayGateway } from "@turnkeyai/browser-bridge/transport/relay-gateway";
+import type { RelayControlPlane } from "@turnkeyai/browser-bridge/transport/transport-adapter";
 
 import { readJsonBodySafe, sendJson } from "../http-helpers";
 
@@ -9,7 +9,7 @@ export async function handleRelayRoutes(input: {
   req: http.IncomingMessage;
   res: http.ServerResponse;
   url: URL;
-  relayGateway: RelayGateway | null;
+  relayGateway: RelayControlPlane | null;
 }): Promise<boolean> {
   const { req, res, url, relayGateway } = input;
 

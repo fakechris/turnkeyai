@@ -393,6 +393,7 @@ async function waitForRelayPeers(input: {
 }): Promise<Array<{ peerId: string; targets: number | null }>> {
   const deadline = Date.now() + input.timeoutMs;
   let lastError: string | null = null;
+  let lastObservedState = "no relay peers observed";
 
   while (Date.now() < deadline) {
     try {
@@ -400,6 +401,10 @@ async function waitForRelayPeers(input: {
         peerId: string;
         status: "online" | "stale";
       }>).filter((item) => item.status === "online");
+      lastObservedState =
+        peers.length > 0
+          ? peers.map((peer) => `${peer.peerId}:${peer.status}`).join(", ")
+          : "no online relay peers";
       if (peers.length >= input.requiredCount) {
         const peerStates: Array<{ peerId: string; targets: number | null }> = [];
         let satisfied = true;
@@ -411,6 +416,7 @@ async function waitForRelayPeers(input: {
           const targets = (await getJson(
             `${input.daemonUrl}/relay/targets?peerId=${encodeURIComponent(peer.peerId)}`
           )) as Array<{ relayTargetId: string }>;
+          lastObservedState = `${peer.peerId}:targets=${targets.length}`;
           if (targets.length === 0) {
             satisfied = false;
             break;
@@ -428,7 +434,9 @@ async function waitForRelayPeers(input: {
     await sleep(500);
   }
 
-  throw new Error(`timed out waiting for relay peers | last error: ${lastError ?? "unknown"}`);
+  throw new Error(
+    `timed out waiting for relay peers | last state: ${lastObservedState} | last error: ${lastError ?? "unknown"}`
+  );
 }
 
 async function runBrowserSessionSmoke(input: {
@@ -594,30 +602,40 @@ async function runRelayReconnectSmoke(input: {
   await terminateChildProcess(input.browserChild);
 
   const relaunched = input.relaunch();
-  await waitForRelayPeerHeartbeatAdvance({
+  await waitForRelayPeerReady({
     daemonUrl: input.daemonUrl,
     peerId: input.peerId,
     timeoutMs: input.timeoutMs,
     lastSeenAfter: previousPeer?.lastSeenAt ?? 0,
+    requireTarget: input.requireTarget,
   });
-  if (input.requireTarget) {
-    const targets = (await getJson(
-      `${input.daemonUrl}/relay/targets?peerId=${encodeURIComponent(input.peerId)}`
-    )) as Array<{ relayTargetId: string }>;
-    if (targets.length === 0) {
-      throw new Error(`relay reconnect smoke did not restore targets for ${input.peerId}`);
-    }
-  }
 
-  const resumeResponse = (await postJson(
+  const resumeBody = {
+    threadId: input.browserSmoke.threadId,
+    instructions: "Resume after relay peer reconnect and confirm the form state still holds.",
+    actions: [
+      { kind: "console", probe: "page-metadata" },
+      { kind: "snapshot", note: "post-peer-reconnect" },
+    ],
+  };
+  const resumeResponse = (await postJsonWithRetry(
     `${input.daemonUrl}/browser-sessions/${encodeURIComponent(input.browserSmoke.sessionId)}/resume`,
+    resumeBody,
     {
-      threadId: input.browserSmoke.threadId,
-      instructions: "Resume after relay peer reconnect and confirm the form state still holds.",
-      actions: [
-        { kind: "console", probe: "page-metadata" },
-        { kind: "snapshot", note: "post-peer-reconnect" },
-      ],
+      retries: 1,
+      shouldRetry: (error) =>
+        error.message.includes("relay action request timed out") ||
+        error.message.includes("timed out waiting for relay peers"),
+      beforeRetry: async () => {
+        await waitForRelayPeerReady({
+          daemonUrl: input.daemonUrl,
+          peerId: input.peerId,
+          timeoutMs: input.timeoutMs,
+          lastSeenAfter: 0,
+          requireTarget: input.requireTarget,
+        });
+        await sleep(500);
+      },
     }
   )) as BrowserSmokeResponse;
   const finalUrl = requireString(resumeResponse.page?.finalUrl, "relay reconnect resume final page URL");
@@ -635,6 +653,37 @@ async function runRelayReconnectSmoke(input: {
     historyLength: history.length,
     finalUrl,
   };
+}
+
+async function waitForRelayPeerReady(input: {
+  daemonUrl: string;
+  peerId: string;
+  timeoutMs: number;
+  lastSeenAfter: number;
+  requireTarget: boolean;
+}): Promise<void> {
+  await waitForRelayPeerHeartbeatAdvance({
+    daemonUrl: input.daemonUrl,
+    peerId: input.peerId,
+    timeoutMs: input.timeoutMs,
+    lastSeenAfter: input.lastSeenAfter,
+  });
+  if (!input.requireTarget) {
+    return;
+  }
+  const deadline = Date.now() + input.timeoutMs;
+  let lastTargetCount = 0;
+  while (Date.now() < deadline) {
+    const targets = (await getJson(
+      `${input.daemonUrl}/relay/targets?peerId=${encodeURIComponent(input.peerId)}`
+    )) as Array<{ relayTargetId: string }>;
+    lastTargetCount = targets.length;
+    if (targets.length > 0) {
+      return;
+    }
+    await sleep(300);
+  }
+  throw new Error(`relay reconnect smoke did not restore targets for ${input.peerId} (last count: ${lastTargetCount})`);
 }
 
 async function waitForRelayPeerHeartbeatAdvance(input: {
@@ -889,6 +938,37 @@ async function postJson(url: string, body: unknown): Promise<unknown> {
     throw new Error((json as { error?: string }).error ?? `${response.status} ${response.statusText}`);
   }
   return json;
+}
+
+async function postJsonWithRetry(
+  url: string,
+  body: unknown,
+  input: {
+    retries: number;
+    shouldRetry(error: Error): boolean;
+    beforeRetry?: () => Promise<void>;
+  }
+): Promise<unknown> {
+  let attempt = 0;
+  let lastError: Error | null = null;
+  while (attempt <= input.retries) {
+    try {
+      return await postJson(url, body);
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      lastError = normalized;
+      if (attempt >= input.retries || !input.shouldRetry(normalized)) {
+        throw normalized;
+      }
+      if (input.beforeRetry) {
+        await input.beforeRetry();
+      } else {
+        await sleep(300);
+      }
+      attempt += 1;
+    }
+  }
+  throw lastError ?? new Error("postJsonWithRetry failed");
 }
 
 function sleep(ms: number): Promise<void> {

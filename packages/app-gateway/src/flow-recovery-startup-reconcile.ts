@@ -35,7 +35,7 @@ export async function reconcileFlowRecoveryOnStartup(input: {
       status: "aborted",
       activeRoleIds: [],
       updatedAt: input.clock.now(),
-    });
+    }, { expectedVersion: flow.version });
     affectedFlowIds.push(flow.flowId);
     abortedOrphanedFlows += 1;
   }
@@ -64,7 +64,7 @@ export async function reconcileFlowRecoveryOnStartup(input: {
       continue;
     }
 
-    await input.recoveryRunStore.put(failRecoveryRun(run, input.clock.now(), reason));
+    await input.recoveryRunStore.put(failRecoveryRun(run, input.clock.now(), reason), { expectedVersion: run.version });
     affectedRecoveryRunIds.push(run.recoveryRunId);
     failedRecoveryRuns += 1;
   }

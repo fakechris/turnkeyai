@@ -821,6 +821,7 @@ export interface RecoveryRun {
   currentAttemptId?: string;
   browserSession?: BrowserContinuationHint;
   attempts: RecoveryRunAttempt[];
+  version?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -853,7 +854,7 @@ export interface RecoveryRunProgress {
 
 export interface RecoveryRunStore {
   get(recoveryRunId: string): Promise<RecoveryRun | null>;
-  put(run: RecoveryRun): Promise<void>;
+  put(run: RecoveryRun, options?: { expectedVersion?: number | undefined }): Promise<void>;
   listByThread(threadId: ThreadId): Promise<RecoveryRun[]>;
   listAll?(): Promise<RecoveryRun[]>;
 }

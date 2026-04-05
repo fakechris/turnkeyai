@@ -1,10 +1,11 @@
 import type http from "node:http";
 
-export type DaemonAccessLevel = "read" | "operator" | "admin";
+export type DaemonAccessLevel = "read" | "operator" | "relay-peer" | "admin";
 
 export interface DaemonAuthConfig {
   readToken: string | null;
   operatorToken: string | null;
+  relayPeerToken: string | null;
   adminToken: string | null;
   authMode: "disabled" | "token" | "token-layered";
 }
@@ -23,23 +24,28 @@ export function resolveDaemonAuthConfig(
   const adminToken = normalizeToken(env.TURNKEYAI_DAEMON_ADMIN_TOKEN) ?? legacyToken;
   const operatorToken = normalizeToken(env.TURNKEYAI_DAEMON_OPERATOR_TOKEN) ?? adminToken;
   const readToken = normalizeToken(env.TURNKEYAI_DAEMON_READ_TOKEN) ?? operatorToken;
+  const relayPeerToken = normalizeToken(env.TURNKEYAI_BROWSER_RELAY_TOKEN) ?? adminToken;
 
-  if (!readToken && !operatorToken && !adminToken) {
+  if (!readToken && !operatorToken && !relayPeerToken && !adminToken) {
     return {
       readToken: null,
       operatorToken: null,
+      relayPeerToken: null,
       adminToken: null,
       authMode: "disabled",
     };
   }
 
   const distinctTokenCount = new Set(
-    [readToken, operatorToken, adminToken].filter((value): value is string => Boolean(value))
+    [readToken, operatorToken, relayPeerToken, adminToken].filter(
+      (value): value is string => Boolean(value)
+    )
   ).size;
 
   return {
     readToken,
     operatorToken,
+    relayPeerToken,
     adminToken,
     authMode: distinctTokenCount > 1 ? "token-layered" : "token",
   };
@@ -60,7 +66,14 @@ export function authorizeDaemonRequest(
   }
 
   const token = extractDaemonToken(req);
-  const grantedAccess = token ? resolveGrantedAccess(token, config) : undefined;
+  if (!token) {
+    return {
+      authorized: false,
+      requiredAccess,
+      authMode: config.authMode,
+    };
+  }
+  const grantedAccess = resolveGrantedAccess(token, config);
   if (!grantedAccess) {
     return {
       authorized: false,
@@ -70,7 +83,7 @@ export function authorizeDaemonRequest(
   }
 
   return {
-    authorized: accessCovers(grantedAccess, requiredAccess),
+    authorized: tokenGrantsAccess(token, requiredAccess, config),
     requiredAccess,
     grantedAccess,
     authMode: config.authMode,
@@ -85,8 +98,12 @@ export function resolveDaemonRequestAccess(
     return "public";
   }
 
-  if (url.pathname.startsWith("/relay/")) {
+  if (isRelayReadRoute(req.method, url.pathname)) {
     return "admin";
+  }
+
+  if (isRelayPeerMutationRoute(req.method, url.pathname)) {
+    return "relay-peer";
   }
 
   if (isValidationRoute(url.pathname)) {
@@ -110,6 +127,23 @@ export function resolveDaemonRequestAccess(
   }
 
   return "read";
+}
+
+function isRelayReadRoute(method: string | undefined, pathname: string): boolean {
+  return method === "GET" && (pathname === "/relay/peers" || pathname === "/relay/targets");
+}
+
+function isRelayPeerMutationRoute(method: string | undefined, pathname: string): boolean {
+  if (method !== "POST") {
+    return false;
+  }
+  return (
+    pathname === "/relay/peers/register" ||
+    /^\/relay\/peers\/[^/]+\/heartbeat$/.test(pathname) ||
+    /^\/relay\/peers\/[^/]+\/targets\/report$/.test(pathname) ||
+    /^\/relay\/peers\/[^/]+\/pull-actions$/.test(pathname) ||
+    /^\/relay\/peers\/[^/]+\/action-results$/.test(pathname)
+  );
 }
 
 function isValidationRoute(pathname: string): boolean {
@@ -172,16 +206,37 @@ function resolveGrantedAccess(token: string, config: DaemonAuthConfig): DaemonAc
   if (config.readToken && token === config.readToken) {
     return "read";
   }
+  if (config.relayPeerToken && token === config.relayPeerToken) {
+    return "relay-peer";
+  }
   return undefined;
 }
 
-function accessCovers(granted: DaemonAccessLevel, required: DaemonAccessLevel): boolean {
-  const rank: Record<DaemonAccessLevel, number> = {
-    read: 1,
-    operator: 2,
-    admin: 3,
-  };
-  return rank[granted] >= rank[required];
+function tokenGrantsAccess(
+  token: string,
+  required: DaemonAccessLevel,
+  config: DaemonAuthConfig
+): boolean {
+  switch (required) {
+    case "read":
+      return (
+        (config.readToken !== null && token === config.readToken) ||
+        (config.operatorToken !== null && token === config.operatorToken) ||
+        (config.adminToken !== null && token === config.adminToken)
+      );
+    case "operator":
+      return (
+        (config.operatorToken !== null && token === config.operatorToken) ||
+        (config.adminToken !== null && token === config.adminToken)
+      );
+    case "relay-peer":
+      return (
+        (config.relayPeerToken !== null && token === config.relayPeerToken) ||
+        (config.adminToken !== null && token === config.adminToken)
+      );
+    case "admin":
+      return config.adminToken !== null && token === config.adminToken;
+  }
 }
 
 function normalizeToken(value: string | undefined): string | null {

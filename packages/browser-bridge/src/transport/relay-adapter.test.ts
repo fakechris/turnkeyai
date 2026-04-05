@@ -20,7 +20,7 @@ test("relay browser adapter can attach to a reported target and execute snapshot
         relayPeerId: "peer-1",
       },
     });
-    const gateway = adapter.getRelayGateway();
+    const gateway = adapter.getRelayControlPlane();
     gateway.registerPeer({
       peerId: "peer-1",
       capabilities: ["open", "snapshot", "click", "type"],
@@ -114,7 +114,7 @@ test("relay browser adapter persists screenshot payloads returned by a relay pee
         relayPeerId: "peer-1",
       },
     });
-    const gateway = adapter.getRelayGateway();
+    const gateway = adapter.getRelayControlPlane();
     gateway.registerPeer({
       peerId: "peer-1",
       capabilities: ["snapshot", "screenshot"],
@@ -195,7 +195,7 @@ test("relay browser adapter chooses a peer whose capabilities satisfy open actio
       artifactRootDir: path.join(tempDir, "artifacts"),
       stateRootDir: path.join(tempDir, "state"),
     });
-    const gateway = adapter.getRelayGateway();
+    const gateway = adapter.getRelayControlPlane();
     gateway.registerPeer({
       peerId: "peer-snapshot-only",
       capabilities: ["snapshot"],
@@ -301,7 +301,7 @@ test("relay browser adapter reattaches when a stored relay target disappears aft
         relayPeerId: "peer-1",
       },
     });
-    const gateway = adapter.getRelayGateway();
+    const gateway = adapter.getRelayControlPlane();
     gateway.registerPeer({
       peerId: "peer-1",
       capabilities: ["snapshot", "console"],

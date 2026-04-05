@@ -46,6 +46,14 @@ relay transport 当前需要显式启用：
 TURNKEYAI_BROWSER_TRANSPORT=relay npm run daemon
 ```
 
+如果 daemon 开启了分层 token，推荐给 relay peer 单独分配：
+
+```bash
+TURNKEYAI_BROWSER_RELAY_TOKEN=relay-peer-secret \
+TURNKEYAI_BROWSER_TRANSPORT=relay \
+npm run daemon
+```
+
 默认 daemon relay control plane 走：
 
 ```text
@@ -53,6 +61,8 @@ http://127.0.0.1:4100
 ```
 
 当前扩展默认也会连这个地址。
+
+如果配置了 `TURNKEYAI_BROWSER_RELAY_TOKEN`，需要把同一个值写进扩展本地配置里的 `daemonToken`，这样 browser-side peer 只拿 relay peer 权限，不需要共用 admin token。
 
 也可以用仓库脚本直接启动一个带扩展的本地 Chromium 系浏览器：
 

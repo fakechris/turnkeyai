@@ -1,5 +1,6 @@
-import type { DispatchContinuity, DispatchContinuationContext, DispatchCoordination, DispatchPolicy, RoleId, SessionTarget, WorkerKind } from "./team-core";
-import type { ScheduledTaskRecord } from "./team-runtime-support";
+import type { DispatchContinuity } from "./team-dispatch";
+import type { RoleId, SessionTarget, WorkerKind } from "./team-core";
+import type { ScheduledTaskRecord } from "./team-scheduling";
 
 export function getScheduledTargetRoleId(task: ScheduledTaskRecord): RoleId {
   return task.dispatch?.targetRoleId ?? task.targetRoleId!;
@@ -40,9 +41,11 @@ export function normalizeScheduledTaskRecord(task: ScheduledTaskRecord): Schedul
   const continuity = getScheduledContinuity(task);
   const preferredWorkerKinds = getScheduledPreferredWorkerKinds(task);
   const recoveryContext = continuity?.context?.recovery;
+  const version = task.version ?? 1;
 
   return {
     ...task,
+    version,
     dispatch: {
       targetRoleId,
       sessionTarget,

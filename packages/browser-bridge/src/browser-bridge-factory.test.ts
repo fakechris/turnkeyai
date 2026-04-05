@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createBrowserBridge, resolveBrowserTransportMode } from "./browser-bridge-factory";
-import { maybeGetRelayGateway } from "./transport/relay-adapter";
+import { maybeGetRelayControlPlane } from "./transport/transport-adapter";
 
 test("browser bridge factory defaults to local automation transport", () => {
   const bridge = createBrowserBridge({
@@ -24,7 +24,7 @@ test("browser bridge factory can build relay transport skeleton", () => {
 
   assert.equal(bridge.transportMode, "relay");
   assert.equal(bridge.transportLabel, "chrome-relay");
-  assert.ok(maybeGetRelayGateway(bridge));
+  assert.ok(maybeGetRelayControlPlane(bridge));
 });
 
 test("browser bridge factory can build direct-cdp transport", () => {

@@ -22,11 +22,21 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
     });
   }
 
-  async put(run: RecoveryRun): Promise<void> {
+  async put(run: RecoveryRun, options?: { expectedVersion?: number | undefined }): Promise<void> {
     await this.runMutex.run(run.recoveryRunId, async () => {
       const byIdPath = this.byIdFilePath(run.recoveryRunId);
       const threadPath = this.threadFilePath(run.threadId, run.recoveryRunId);
-      const storedRun = stripAttempts(run);
+      const existing = await this.readRecoveryRun(run.recoveryRunId);
+      const existingVersion = existing?.version ?? 0;
+      if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
+        throw new Error(
+          `recovery run version conflict for ${run.recoveryRunId}: expected ${options.expectedVersion}, found ${existingVersion}`
+        );
+      }
+      const storedRun = stripAttempts({
+        ...run,
+        version: existingVersion + 1,
+      });
       await writeJsonFileAtomic(byIdPath, storedRun);
       try {
         await writeJsonFileAtomic(threadPath, storedRun);
@@ -98,10 +108,10 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
   private async hydrateAttempts(run: RecoveryRun): Promise<RecoveryRun> {
     const attemptPaths = await listJsonFiles(this.attemptDir(run.recoveryRunId));
     if (attemptPaths.length === 0) {
-      return {
+      return normalizeRecoveryRunVersion({
         ...run,
         attempts: [...run.attempts].sort(compareRecoveryAttempts),
-      };
+      });
     }
     const journalAttempts = (
       await Promise.all(attemptPaths.map((filePath) => readJsonFile<RecoveryRunAttempt>(filePath)))
@@ -113,10 +123,10 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
         mergedAttempts.set(attempt.attemptId, attempt);
       }
     }
-    return {
+    return normalizeRecoveryRunVersion({
       ...run,
       attempts: [...mergedAttempts.values()].sort(compareRecoveryAttempts),
-    };
+    });
   }
 
   private byIdFilePath(recoveryRunId: string): string {
@@ -148,6 +158,13 @@ function stripAttempts(run: RecoveryRun): RecoveryRun {
   return {
     ...run,
     attempts: [],
+  };
+}
+
+function normalizeRecoveryRunVersion(run: RecoveryRun): RecoveryRun {
+  return {
+    ...run,
+    version: run.version && run.version > 0 ? run.version : 1,
   };
 }
 

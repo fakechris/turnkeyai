@@ -17,8 +17,13 @@ test("scheduled task runtime persists tasks and dispatches due capsules", async 
     async get(taskId) {
       return tasks.get(taskId) ?? null;
     },
-    async put(task) {
-      tasks.set(task.taskId, task);
+    async put(task, options) {
+      const current = tasks.get(task.taskId);
+      const existingVersion = current?.version ?? 0;
+      if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
+        throw new Error("version conflict");
+      }
+      tasks.set(task.taskId, { ...task, version: existingVersion + 1 });
     },
     async listByThread(threadId) {
       return [...tasks.values()].filter((task) => task.threadId === threadId);
@@ -26,13 +31,14 @@ test("scheduled task runtime persists tasks and dispatches due capsules", async 
     async listDue(now) {
       return [...tasks.values()].filter((task) => task.schedule.nextRunAt <= now);
     },
-    async claimDue(taskId, expectedUpdatedAt, leaseUntil) {
+    async claimDue(taskId, expectedUpdatedAt, leaseUntil, options) {
       const task = tasks.get(taskId);
-      if (!task || task.updatedAt !== expectedUpdatedAt) {
+      if (!task || task.updatedAt !== expectedUpdatedAt || (options?.expectedVersion != null && (task.version ?? 0) !== options.expectedVersion)) {
         return null;
       }
       tasks.set(taskId, {
         ...task,
+        version: (task.version ?? 1) + 1,
         schedule: {
           ...task.schedule,
           nextRunAt: leaseUntil,
@@ -92,8 +98,13 @@ test("scheduled task runtime continues dispatching after one task throws", async
     async get(taskId) {
       return tasks.get(taskId) ?? null;
     },
-    async put(task) {
-      tasks.set(task.taskId, task);
+    async put(task, options) {
+      const current = tasks.get(task.taskId);
+      const existingVersion = current?.version ?? 0;
+      if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
+        throw new Error("version conflict");
+      }
+      tasks.set(task.taskId, { ...task, version: existingVersion + 1 });
     },
     async listByThread(threadId) {
       return [...tasks.values()].filter((task) => task.threadId === threadId);
@@ -101,13 +112,14 @@ test("scheduled task runtime continues dispatching after one task throws", async
     async listDue(now) {
       return [...tasks.values()].filter((task) => task.schedule.nextRunAt <= now);
     },
-    async claimDue(taskId, expectedUpdatedAt, leaseUntil) {
+    async claimDue(taskId, expectedUpdatedAt, leaseUntil, options) {
       const task = tasks.get(taskId);
-      if (!task || task.updatedAt !== expectedUpdatedAt) {
+      if (!task || task.updatedAt !== expectedUpdatedAt || (options?.expectedVersion != null && (task.version ?? 0) !== options.expectedVersion)) {
         return null;
       }
       tasks.set(taskId, {
         ...task,
+        version: (task.version ?? 1) + 1,
         schedule: {
           ...task.schedule,
           nextRunAt: leaseUntil,
@@ -135,6 +147,7 @@ test("scheduled task runtime continues dispatching after one task throws", async
     },
     createdAt: 1,
     updatedAt: 1,
+    version: 1,
   });
   tasks.set("TASK-2", {
     taskId: "TASK-2",
@@ -153,6 +166,7 @@ test("scheduled task runtime continues dispatching after one task throws", async
     },
     createdAt: 1,
     updatedAt: 1,
+    version: 1,
   });
 
   const runtime = new DefaultScheduledTaskRuntime({
@@ -191,8 +205,13 @@ test("scheduled task runtime records replay entries for dispatch", async () => {
     async get(taskId) {
       return tasks.get(taskId) ?? null;
     },
-    async put(task) {
-      tasks.set(task.taskId, task);
+    async put(task, options) {
+      const current = tasks.get(task.taskId);
+      const existingVersion = current?.version ?? 0;
+      if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
+        throw new Error("version conflict");
+      }
+      tasks.set(task.taskId, { ...task, version: existingVersion + 1 });
     },
     async listByThread(threadId) {
       return [...tasks.values()].filter((task) => task.threadId === threadId);
@@ -200,13 +219,14 @@ test("scheduled task runtime records replay entries for dispatch", async () => {
     async listDue(now) {
       return [...tasks.values()].filter((task) => task.schedule.nextRunAt <= now);
     },
-    async claimDue(taskId, expectedUpdatedAt, leaseUntil) {
+    async claimDue(taskId, expectedUpdatedAt, leaseUntil, options) {
       const task = tasks.get(taskId);
-      if (!task || task.updatedAt !== expectedUpdatedAt) {
+      if (!task || task.updatedAt !== expectedUpdatedAt || (options?.expectedVersion != null && (task.version ?? 0) !== options.expectedVersion)) {
         return null;
       }
       tasks.set(taskId, {
         ...task,
+        version: (task.version ?? 1) + 1,
         schedule: {
           ...task.schedule,
           nextRunAt: leaseUntil,
@@ -235,6 +255,7 @@ test("scheduled task runtime records replay entries for dispatch", async () => {
     },
     createdAt: 1,
     updatedAt: 1,
+    version: 1,
   });
 
   const replayRecorder = new FileReplayRecorder({

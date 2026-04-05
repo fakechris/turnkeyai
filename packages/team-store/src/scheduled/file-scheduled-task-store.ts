@@ -17,13 +17,27 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
   }
 
   async get(taskId: string): Promise<ScheduledTaskRecord | null> {
-    const task = await readJsonFile<ScheduledTaskRecord>(this.filePath(taskId));
-    return task ? normalizeScheduledTaskRecord(task) : null;
+    return this.readNormalizedTask(taskId);
   }
 
-  async put(task: ScheduledTaskRecord): Promise<void> {
+  async put(task: ScheduledTaskRecord, options?: { expectedVersion?: number | undefined }): Promise<void> {
     await this.withTaskLock(task.taskId, async () => {
-      await writeJsonFileAtomic(this.filePath(task.taskId), normalizeScheduledTaskRecord(task));
+      const raw = await readJsonFile<ScheduledTaskRecord>(this.filePath(task.taskId));
+      const current = raw ? normalizeScheduledTaskRecord(raw) : null;
+      const existingVersion = current?.version ?? 0;
+      if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
+        throw new Error(
+          `scheduled task version conflict for ${task.taskId}: expected ${options.expectedVersion}, found ${existingVersion}`
+        );
+      }
+
+      await writeJsonFileAtomic(
+        this.filePath(task.taskId),
+        normalizeScheduledTaskRecord({
+          ...task,
+          version: existingVersion + 1,
+        })
+      );
     });
   }
 
@@ -37,15 +51,26 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
     return tasks.filter((task) => task.schedule.nextRunAt <= now);
   }
 
-  async claimDue(taskId: string, expectedUpdatedAt: number, leaseUntil: number): Promise<ScheduledTaskRecord | null> {
+  async claimDue(
+    taskId: string,
+    expectedUpdatedAt: number,
+    leaseUntil: number,
+    options?: { expectedVersion?: number | undefined }
+  ): Promise<ScheduledTaskRecord | null> {
     return this.withTaskLock(taskId, async () => {
-      const current = await this.get(taskId);
-      if (!current || current.updatedAt !== expectedUpdatedAt) {
+      const raw = await readJsonFile<ScheduledTaskRecord>(this.filePath(taskId));
+      const current = raw ? normalizeScheduledTaskRecord(raw) : null;
+      if (
+        !current ||
+        current.updatedAt !== expectedUpdatedAt ||
+        (options?.expectedVersion != null && (current.version ?? 0) !== options.expectedVersion)
+      ) {
         return null;
       }
 
       const claimedTask = normalizeScheduledTaskRecord({
         ...current,
+        version: (current.version ?? 1) + 1,
         schedule: {
           ...current.schedule,
           nextRunAt: leaseUntil,
@@ -59,8 +84,9 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
 
   private async listAll(): Promise<ScheduledTaskRecord[]> {
     const filePaths = await listJsonFiles(this.rootDir);
-    const tasks = await Promise.all(filePaths.map((filePath) => readJsonFile<ScheduledTaskRecord>(filePath)));
-    return tasks.filter((task): task is ScheduledTaskRecord => task !== null).map((task) => normalizeScheduledTaskRecord(task));
+    const taskIds = filePaths.map((filePath) => path.basename(filePath, ".json")).map((basename) => decodeURIComponent(basename));
+    const tasks = await Promise.all(taskIds.map((taskId) => this.readNormalizedTask(taskId)));
+    return tasks.filter((task): task is ScheduledTaskRecord => task !== null);
   }
 
   private filePath(taskId: string): string {
@@ -70,4 +96,33 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
   private async withTaskLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
     return this.taskMutex.run(taskId, fn);
   }
+
+  private async readNormalizedTask(taskId: string): Promise<ScheduledTaskRecord | null> {
+    const raw = await readJsonFile<ScheduledTaskRecord>(this.filePath(taskId));
+    if (!raw) {
+      return null;
+    }
+
+    const normalized = normalizeScheduledTaskRecord(raw);
+    if (isSameScheduledTaskShape(raw, normalized)) {
+      return normalized;
+    }
+
+    return this.withTaskLock(taskId, async () => {
+      const current = await readJsonFile<ScheduledTaskRecord>(this.filePath(taskId));
+      if (!current) {
+        return null;
+      }
+
+      const migrated = normalizeScheduledTaskRecord(current);
+      if (!isSameScheduledTaskShape(current, migrated)) {
+        await writeJsonFileAtomic(this.filePath(taskId), migrated);
+      }
+      return migrated;
+    });
+  }
+}
+
+function isSameScheduledTaskShape(left: ScheduledTaskRecord, right: ScheduledTaskRecord): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
