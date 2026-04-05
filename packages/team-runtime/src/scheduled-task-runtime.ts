@@ -68,7 +68,7 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
       updatedAt: now,
     });
     await this.scheduledTaskStore.put(task);
-    return task;
+    return (await this.scheduledTaskStore.get(task.taskId)) ?? task;
   }
 
   async listByThread(threadId: string): Promise<ScheduledTaskRecord[]> {
@@ -81,7 +81,9 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
 
     for (const task of dueTasks) {
       const leaseUntil = now + CLAIM_LEASE_MS;
-      const claimedTask = await this.scheduledTaskStore.claimDue(task.taskId, task.updatedAt, leaseUntil);
+      const claimedTask = await this.scheduledTaskStore.claimDue(task.taskId, task.updatedAt, leaseUntil, {
+        expectedVersion: task.version,
+      });
       if (!claimedTask) {
         continue;
       }

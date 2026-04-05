@@ -21,9 +21,23 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
     return task ? normalizeScheduledTaskRecord(task) : null;
   }
 
-  async put(task: ScheduledTaskRecord): Promise<void> {
+  async put(task: ScheduledTaskRecord, options?: { expectedVersion?: number | undefined }): Promise<void> {
     await this.withTaskLock(task.taskId, async () => {
-      await writeJsonFileAtomic(this.filePath(task.taskId), normalizeScheduledTaskRecord(task));
+      const current = await this.get(task.taskId);
+      const existingVersion = current?.version ?? 0;
+      if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
+        throw new Error(
+          `scheduled task version conflict for ${task.taskId}: expected ${options.expectedVersion}, found ${existingVersion}`
+        );
+      }
+
+      await writeJsonFileAtomic(
+        this.filePath(task.taskId),
+        normalizeScheduledTaskRecord({
+          ...task,
+          version: existingVersion + 1,
+        })
+      );
     });
   }
 
@@ -37,15 +51,25 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
     return tasks.filter((task) => task.schedule.nextRunAt <= now);
   }
 
-  async claimDue(taskId: string, expectedUpdatedAt: number, leaseUntil: number): Promise<ScheduledTaskRecord | null> {
+  async claimDue(
+    taskId: string,
+    expectedUpdatedAt: number,
+    leaseUntil: number,
+    options?: { expectedVersion?: number | undefined }
+  ): Promise<ScheduledTaskRecord | null> {
     return this.withTaskLock(taskId, async () => {
       const current = await this.get(taskId);
-      if (!current || current.updatedAt !== expectedUpdatedAt) {
+      if (
+        !current ||
+        current.updatedAt !== expectedUpdatedAt ||
+        (options?.expectedVersion != null && (current.version ?? 0) !== options.expectedVersion)
+      ) {
         return null;
       }
 
       const claimedTask = normalizeScheduledTaskRecord({
         ...current,
+        version: (current.version ?? 1) + 1,
         schedule: {
           ...current.schedule,
           nextRunAt: leaseUntil,

@@ -41,9 +41,11 @@ export function normalizeScheduledTaskRecord(task: ScheduledTaskRecord): Schedul
   const continuity = getScheduledContinuity(task);
   const preferredWorkerKinds = getScheduledPreferredWorkerKinds(task);
   const recoveryContext = continuity?.context?.recovery;
+  const version = task.version ?? 1;
 
   return {
     ...task,
+    version,
     dispatch: {
       targetRoleId,
       sessionTarget,
