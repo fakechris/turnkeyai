@@ -999,6 +999,11 @@ function printRuntimeSummary(report: RuntimeSummaryReport): void {
       `    cleared-invalid-handoffs=${report.roleRunStartupRecovery.clearedInvalidHandoffs} queued-idled=${report.roleRunStartupRecovery.queuedRunsIdled}`
     );
   }
+  if (report.flowRecoveryStartupReconcile) {
+    console.log(
+      `  flow/recovery startup reconcile: orphaned-flows=${report.flowRecoveryStartupReconcile.orphanedFlows} orphaned-recovery-runs=${report.flowRecoveryStartupReconcile.orphanedRecoveryRuns} missing-flow-recovery-runs=${report.flowRecoveryStartupReconcile.missingFlowRecoveryRuns} cross-thread-flow-recovery-runs=${report.flowRecoveryStartupReconcile.crossThreadFlowRecoveryRuns} failed-recovery-runs=${report.flowRecoveryStartupReconcile.failedRecoveryRuns}`
+    );
+  }
   printRuntimeSummaryEntries("  attention chains:", report.attentionChains);
   printRuntimeSummaryEntries("  active chains:", report.activeChains);
   printRuntimeSummaryEntries("  waiting chains:", report.waitingChains);
@@ -1417,6 +1422,11 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
     );
     console.log(
       `  startup handoff cleanup: cleared-invalid-handoffs=${report.roleRunStartupRecovery.clearedInvalidHandoffs} queued-idled=${report.roleRunStartupRecovery.queuedRunsIdled}`
+    );
+  }
+  if (report.flowRecoveryStartupReconcile) {
+    console.log(
+      `  flow/recovery startup reconcile: orphaned-flows=${report.flowRecoveryStartupReconcile.orphanedFlows} orphaned-recovery-runs=${report.flowRecoveryStartupReconcile.orphanedRecoveryRuns} missing-flow-recovery-runs=${report.flowRecoveryStartupReconcile.missingFlowRecoveryRuns} cross-thread-flow-recovery-runs=${report.flowRecoveryStartupReconcile.crossThreadFlowRecoveryRuns} failed-recovery-runs=${report.flowRecoveryStartupReconcile.failedRecoveryRuns}`
     );
   }
   console.log(

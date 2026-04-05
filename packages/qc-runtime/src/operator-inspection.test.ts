@@ -1441,6 +1441,14 @@ test("operator triage surfaces worker session drift when runtime summary reports
         clearedInvalidHandoffs: 2,
         queuedRunsIdled: 1,
       },
+      flowRecoveryStartupReconcile: {
+        orphanedFlows: 1,
+        orphanedRecoveryRuns: 1,
+        missingFlowRecoveryRuns: 1,
+        crossThreadFlowRecoveryRuns: 1,
+        failedRecoveryRuns: 2,
+        affectedRecoveryRunIds: ["recovery:1", "recovery:2"],
+      },
     },
     limit: 10,
   });
@@ -1500,6 +1508,14 @@ test("operator triage surfaces worker session drift when runtime summary reports
         clearedInvalidHandoffs: 2,
         queuedRunsIdled: 1,
       },
+      flowRecoveryStartupReconcile: {
+        orphanedFlows: 1,
+        orphanedRecoveryRuns: 1,
+        missingFlowRecoveryRuns: 1,
+        crossThreadFlowRecoveryRuns: 1,
+        failedRecoveryRuns: 2,
+        affectedRecoveryRunIds: ["recovery:1", "recovery:2"],
+      },
     },
     limit: 5,
   });
@@ -1513,6 +1529,8 @@ test("operator triage surfaces worker session drift when runtime summary reports
   assert.equal(bindingFocus?.state, "worker_binding_reconcile");
   const startupRecoveryFocus = report.focusAreas.find((area) => area.label === "role-run-startup-recovery");
   assert.equal(startupRecoveryFocus?.state, "role_run_startup_recovery");
+  const flowRecoveryFocus = report.focusAreas.find((area) => area.label === "flow-recovery-startup-reconcile");
+  assert.equal(flowRecoveryFocus?.state, "flow_recovery_startup_reconcile");
 });
 
 function buildPromptBoundary(input: {

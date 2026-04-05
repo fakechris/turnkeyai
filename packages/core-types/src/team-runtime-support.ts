@@ -593,6 +593,15 @@ export interface RoleRunStartupRecoveryResult {
   queuedRunsIdled: number;
 }
 
+export interface FlowRecoveryStartupReconcileResult {
+  orphanedFlows: number;
+  orphanedRecoveryRuns: number;
+  missingFlowRecoveryRuns: number;
+  crossThreadFlowRecoveryRuns: number;
+  failedRecoveryRuns: number;
+  affectedRecoveryRunIds: RunKey[];
+}
+
 export interface SupervisorUserMessageInput {
   thread: TeamThread;
   flow: FlowLedger;

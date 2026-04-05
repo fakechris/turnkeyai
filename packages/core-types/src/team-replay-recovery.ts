@@ -547,6 +547,7 @@ export interface OperatorSummaryReport {
   workerSessionHealth?: RuntimeSummaryReport["workerSessionHealth"];
   workerBindingReconcile?: RuntimeSummaryReport["workerBindingReconcile"];
   roleRunStartupRecovery?: RuntimeSummaryReport["roleRunStartupRecovery"];
+  flowRecoveryStartupReconcile?: RuntimeSummaryReport["flowRecoveryStartupReconcile"];
   promptAttentionCount: number;
   totalAttentionCount: number;
   attentionOverview?: {
@@ -852,6 +853,7 @@ export interface RecoveryRunStore {
   get(recoveryRunId: string): Promise<RecoveryRun | null>;
   put(run: RecoveryRun): Promise<void>;
   listByThread(threadId: ThreadId): Promise<RecoveryRun[]>;
+  listAll?(): Promise<RecoveryRun[]>;
 }
 
 export interface RecoveryRunEventStore {

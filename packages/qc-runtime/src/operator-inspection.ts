@@ -299,6 +299,9 @@ export function buildOperatorSummaryReport(input: {
     ...(input.runtimeSummary?.roleRunStartupRecovery
       ? { roleRunStartupRecovery: input.runtimeSummary.roleRunStartupRecovery }
       : {}),
+    ...(input.runtimeSummary?.flowRecoveryStartupReconcile
+      ? { flowRecoveryStartupReconcile: input.runtimeSummary.flowRecoveryStartupReconcile }
+      : {}),
     promptAttentionCount,
     totalAttentionCount:
       flow.attentionCount + replay.attentionCount + governance.attentionCount + recovery.attentionCount + promptAttentionCount,
@@ -621,6 +624,24 @@ export function buildOperatorTriageReport(input: {
       nextStep: "inspect_runtime_role_runs",
       commandHint: "runtime-summary 10",
       state: "role_run_startup_recovery",
+    });
+  }
+  if (
+    (input.summary.flowRecoveryStartupReconcile?.orphanedFlows ?? 0) > 0 ||
+    (input.summary.flowRecoveryStartupReconcile?.orphanedRecoveryRuns ?? 0) > 0 ||
+    (input.summary.flowRecoveryStartupReconcile?.failedRecoveryRuns ?? 0) > 0
+  ) {
+    focusAreas.push({
+      area: "runtime",
+      label: "flow-recovery-startup-reconcile",
+      severity: "warning",
+      headline:
+        `flow/recovery startup reconcile affected=${input.summary.flowRecoveryStartupReconcile?.failedRecoveryRuns ?? 0}`,
+      reason:
+        `Startup reconcile found orphaned-flows=${input.summary.flowRecoveryStartupReconcile?.orphanedFlows ?? 0}, orphaned-recovery-runs=${input.summary.flowRecoveryStartupReconcile?.orphanedRecoveryRuns ?? 0}, missing-flow-recovery-runs=${input.summary.flowRecoveryStartupReconcile?.missingFlowRecoveryRuns ?? 0}, cross-thread-flow-recovery-runs=${input.summary.flowRecoveryStartupReconcile?.crossThreadFlowRecoveryRuns ?? 0}.`,
+      nextStep: "inspect_runtime_flow_recovery",
+      commandHint: "runtime-summary 10",
+      state: "flow_recovery_startup_reconcile",
     });
   }
 

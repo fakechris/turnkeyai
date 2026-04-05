@@ -54,6 +54,22 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
       .sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
+  async listAll(): Promise<RecoveryRun[]> {
+    const byIdFilePaths = await listJsonFiles(path.join(this.rootDir, "by-id"));
+    if (byIdFilePaths.length > 0) {
+      const records = await Promise.all(byIdFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath)));
+      return records
+        .filter((record): record is RecoveryRun => record !== null)
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+    }
+
+    const legacyFilePaths = await listJsonFiles(this.rootDir);
+    const records = await Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath)));
+    return records
+      .filter((record): record is RecoveryRun => record !== null)
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
   private byIdFilePath(recoveryRunId: string): string {
     return path.join(this.rootDir, "by-id", `${encodeURIComponent(recoveryRunId)}.json`);
   }

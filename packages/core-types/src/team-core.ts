@@ -305,6 +305,14 @@ export interface RuntimeSummaryReport {
     clearedInvalidHandoffs: number;
     queuedRunsIdled: number;
   };
+  flowRecoveryStartupReconcile?: {
+    orphanedFlows: number;
+    orphanedRecoveryRuns: number;
+    missingFlowRecoveryRuns: number;
+    crossThreadFlowRecoveryRuns: number;
+    failedRecoveryRuns: number;
+    affectedRecoveryRunIds: RunKey[];
+  };
 }
 
 export interface RuntimeProgressEvent {
@@ -671,6 +679,7 @@ export interface FlowLedgerStore {
   get(flowId: FlowId): Promise<FlowLedger | null>;
   put(flow: FlowLedger): Promise<void>;
   listByThread(threadId: ThreadId): Promise<FlowLedger[]>;
+  listAll?(): Promise<FlowLedger[]>;
 }
 
 export interface RuntimeChainStore {

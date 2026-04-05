@@ -92,6 +92,16 @@ export function createRuntimeQueryService(input: {
         queuedRunsIdled: number;
       }
     | undefined;
+  getFlowRecoveryStartupReconcileResult?: () =>
+    | {
+        orphanedFlows: number;
+        orphanedRecoveryRuns: number;
+        missingFlowRecoveryRuns: number;
+        crossThreadFlowRecoveryRuns: number;
+        failedRecoveryRuns: number;
+        affectedRecoveryRunIds: string[];
+      }
+    | undefined;
   teamThreadStore: FileTeamThreadStore;
   flowLedgerStore: FileFlowLedgerStore;
   roleRunStore: FileRoleRunStore;
@@ -110,6 +120,7 @@ export function createRuntimeQueryService(input: {
     getWorkerStartupReconcileResult,
     getWorkerBindingReconcileResult,
     getRoleRunStartupRecoveryResult,
+    getFlowRecoveryStartupReconcileResult,
     teamThreadStore,
     flowLedgerStore,
     roleRunStore,
@@ -319,6 +330,7 @@ export function createRuntimeQueryService(input: {
       const workerStartupReconcile = getWorkerStartupReconcileResult?.();
       const workerBindingReconcile = getWorkerBindingReconcileResult?.();
       const roleRunStartupRecovery = getRoleRunStartupRecoveryResult?.();
+      const flowRecoveryStartupReconcile = getFlowRecoveryStartupReconcileResult?.();
       return workerStartupReconcile
         ? {
             ...report,
@@ -326,6 +338,7 @@ export function createRuntimeQueryService(input: {
             ...(workerSessionHealth ? { workerSessionHealth } : {}),
             ...(workerBindingReconcile ? { workerBindingReconcile } : {}),
             ...(roleRunStartupRecovery ? { roleRunStartupRecovery } : {}),
+            ...(flowRecoveryStartupReconcile ? { flowRecoveryStartupReconcile } : {}),
           }
         : workerSessionHealth
           ? {
@@ -333,18 +346,26 @@ export function createRuntimeQueryService(input: {
               workerSessionHealth,
               ...(workerBindingReconcile ? { workerBindingReconcile } : {}),
               ...(roleRunStartupRecovery ? { roleRunStartupRecovery } : {}),
+              ...(flowRecoveryStartupReconcile ? { flowRecoveryStartupReconcile } : {}),
             }
           : workerBindingReconcile
             ? {
                 ...report,
                 workerBindingReconcile,
                 ...(roleRunStartupRecovery ? { roleRunStartupRecovery } : {}),
+                ...(flowRecoveryStartupReconcile ? { flowRecoveryStartupReconcile } : {}),
               }
             : roleRunStartupRecovery
               ? {
                   ...report,
                   roleRunStartupRecovery,
+                  ...(flowRecoveryStartupReconcile ? { flowRecoveryStartupReconcile } : {}),
                 }
+              : flowRecoveryStartupReconcile
+                ? {
+                    ...report,
+                    flowRecoveryStartupReconcile,
+                  }
               : report;
     },
 

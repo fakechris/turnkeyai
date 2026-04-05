@@ -612,3 +612,121 @@ test("runtime query service attaches role run startup recovery summary when avai
     queuedRunsIdled: 1,
   });
 });
+
+test("runtime query service attaches flow recovery startup reconcile summary when available", async () => {
+  const service = createRuntimeQueryService({
+    clock: { now: () => 1000 },
+    workerRuntime: {
+      async spawn() {
+        return null;
+      },
+      async send() {
+        return null;
+      },
+      async resume() {
+        return null;
+      },
+      async interrupt() {
+        return null;
+      },
+      async cancel() {
+        return null;
+      },
+      async getState() {
+        return null;
+      },
+      async maybeRunForRole() {
+        return null;
+      },
+    },
+    getFlowRecoveryStartupReconcileResult: () => ({
+      orphanedFlows: 1,
+      orphanedRecoveryRuns: 1,
+      missingFlowRecoveryRuns: 2,
+      crossThreadFlowRecoveryRuns: 1,
+      failedRecoveryRuns: 3,
+      affectedRecoveryRunIds: ["recovery:1", "recovery:2", "recovery:3"],
+    }),
+    teamThreadStore: {
+      async list() {
+        return [];
+      },
+    } as any,
+    flowLedgerStore: {
+      async listByThread() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    } as any,
+    roleRunStore: {
+      async listByThread() {
+        return [];
+      },
+    } as any,
+    runtimeChainStore: {
+      async listByThread() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    } as any,
+    runtimeChainStatusStore: {
+      async listByThread() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    } as any,
+    runtimeChainSpanStore: {
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    runtimeChainEventStore: {
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    runtimeProgressStore: {
+      async listByThread() {
+        return [];
+      },
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    recoveryRunStore: {
+      async get() {
+        return null;
+      },
+      async listByThread() {
+        return [];
+      },
+    } as any,
+    recoveryRunEventStore: {
+      async listByRecoveryRun() {
+        return [];
+      },
+    } as any,
+    loadRecoveryRuntime: async () => ({
+      records: [],
+      report: {} as never,
+      runs: [],
+    }),
+  });
+
+  const report = await service.loadRuntimeSummary(null, 10);
+
+  assert.deepEqual(report.flowRecoveryStartupReconcile, {
+    orphanedFlows: 1,
+    orphanedRecoveryRuns: 1,
+    missingFlowRecoveryRuns: 2,
+    crossThreadFlowRecoveryRuns: 1,
+    failedRecoveryRuns: 3,
+    affectedRecoveryRunIds: ["recovery:1", "recovery:2", "recovery:3"],
+  });
+});
