@@ -4,8 +4,8 @@ import type { Clock, IdGenerator } from "@turnkeyai/core-types/team";
 
 import {
   parseRequiredNonEmptyString,
-  readJsonBody,
-  readOptionalJsonBody,
+  readJsonBodySafe,
+  readOptionalJsonBodySafe,
   sendJson,
 } from "../http-helpers";
 
@@ -76,7 +76,12 @@ export async function handleWorkflowRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/messages") {
-    const body = await readJsonBody<{ threadId: string; content: string }>(req);
+    const bodyResult = await readJsonBodySafe<{ threadId: string; content: string }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const threadId = parseRequiredNonEmptyString(body.threadId);
     const content = parseRequiredNonEmptyString(body.content);
     if (!threadId) {
@@ -103,7 +108,7 @@ export async function handleWorkflowRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/scheduled-tasks") {
-    const body = await readJsonBody<{
+    const bodyResult = await readJsonBodySafe<{
       threadId: string;
       targetRoleId: string;
       capsule: {
@@ -121,6 +126,11 @@ export async function handleWorkflowRoutes(input: {
       sessionTarget?: "main" | "worker";
       targetWorker?: "browser" | "coder" | "finance" | "explore" | "harness";
     }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const threadId = parseRequiredNonEmptyString(body.threadId);
     const targetRoleId = parseRequiredNonEmptyString(body.targetRoleId);
     const title = parseRequiredNonEmptyString(body.capsule?.title);
@@ -174,13 +184,12 @@ export async function handleWorkflowRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/scheduled-tasks/trigger-due") {
-    let body: { now?: number };
-    try {
-      body = await readOptionalJsonBody<{ now?: number }>(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON" });
+    const bodyResult = await readOptionalJsonBodySafe<{ now?: number }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
       return true;
     }
+    const body = bodyResult.value;
     sendJson(res, 200, await deps.scheduledTaskRuntime.triggerDue(body.now));
     return true;
   }

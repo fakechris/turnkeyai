@@ -1007,6 +1007,46 @@ test("default role prompt policy honors structured worker resume hints", async (
   assert.match(packet.taskPrompt, /Continue the existing browser review from the partial findings/);
 });
 
+test("default role prompt policy resumes worker-targeted handoffs without explicit continuation context", async () => {
+  const policy = new DefaultRolePromptPolicy({
+    roleProfileRegistry: new DefaultRoleProfileRegistry(),
+  });
+
+  const packet = await policy.buildPacket({
+    ...buildFinanceActivationInput(),
+    thread: {
+      ...buildFinanceActivationInput().thread,
+      roles: [
+        buildFinanceActivationInput().thread.roles[0]!,
+        {
+          roleId: "role-operator",
+          name: "Operator",
+          seat: "member",
+          runtime: "local",
+          capabilities: ["browser", "explore"],
+        },
+      ],
+      leadRoleId: "role-lead",
+    },
+    runState: {
+      ...buildFinanceActivationInput().runState,
+      roleId: "role-operator",
+    },
+    handoff: {
+      ...buildFinanceActivationInput().handoff,
+      targetRoleId: "role-operator",
+      payload: {
+        ...buildFinanceActivationInput().handoff.payload,
+        sessionTarget: "worker",
+        instructions: "Check the pending browser follow-up.",
+      },
+    },
+  });
+
+  assert.equal(packet.resumeTarget, "worker");
+  assert.equal(packet.continuityMode, "resume-existing");
+});
+
 test("default role prompt policy infers continuity preference from continue-style instructions", async () => {
   const policy = new DefaultRolePromptPolicy({
     roleProfileRegistry: new DefaultRoleProfileRegistry(),

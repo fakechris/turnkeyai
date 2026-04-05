@@ -1573,6 +1573,198 @@ test("coordination engine preserves recovery context when worker continuation lo
       dispatchReplayId: "TASK-recovery-worker-fallback:scheduled",
     },
   });
+  assert.equal(enqueued[0]?.payload.continuity?.mode, undefined);
+});
+
+test("coordination engine keeps legacy dispatch policy aligned with expected next roles", async () => {
+  const thread: TeamThread = {
+    threadId: "thread-dispatch-policy",
+    teamId: "team-1",
+    teamName: "Demo",
+    leadRoleId: "lead",
+    roles: [
+      { roleId: "lead", name: "Lead", seat: "lead", runtime: "local" },
+      { roleId: "operator", name: "Operator", seat: "member", runtime: "local" },
+    ],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const sourceMessage: TeamMessage = {
+    id: "msg-dispatch-policy",
+    threadId: thread.threadId,
+    role: "user",
+    name: "User",
+    content: "Hello",
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  let storedFlow: FlowLedger = {
+    flowId: "flow-dispatch-policy",
+    threadId: thread.threadId,
+    rootMessageId: sourceMessage.id,
+    mode: "serial",
+    status: "running",
+    currentStageIndex: 0,
+    activeRoleIds: [],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    nextExpectedRoleId: "lead",
+    hopCount: 0,
+    maxHops: 4,
+    edges: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const enqueued: HandoffEnvelope[] = [];
+  const engine = new CoordinationEngine({
+    teamThreadStore: {
+      async get(threadId) {
+        return threadId === thread.threadId ? thread : null;
+      },
+      async list() {
+        return [thread];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore: {
+      async append() {},
+      async list() {
+        return [sourceMessage];
+      },
+      async get() {
+        return null;
+      },
+    },
+    flowLedgerStore: {
+      async get(flowId) {
+        return flowId === storedFlow.flowId ? storedFlow : null;
+      },
+      async put(flow) {
+        storedFlow = flow;
+      },
+      async listByThread(threadId) {
+        return threadId === storedFlow.threadId ? [storedFlow] : [];
+      },
+    },
+    roleRunCoordinator: {
+      async getOrCreate(): Promise<RoleRunState> {
+        return {
+          runKey: "role:operator:thread:thread-dispatch-policy",
+          threadId: thread.threadId,
+          roleId: "operator",
+          mode: "group",
+          status: "idle",
+          iterationCount: 0,
+          maxIterations: 5,
+          inbox: [],
+          lastActiveAt: 1,
+        };
+      },
+      async enqueue(runKey, handoff) {
+        enqueued.push(handoff);
+        return {
+          runKey,
+          threadId: thread.threadId,
+          roleId: "operator",
+          mode: "group",
+          status: "queued",
+          iterationCount: 0,
+          maxIterations: 5,
+          inbox: [handoff],
+          lastActiveAt: 2,
+        };
+      },
+      async dequeue() {
+        return null;
+      },
+      async ack() {},
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus() {},
+      async incrementIteration() {
+        return 0;
+      },
+      async fail() {},
+      async finish() {},
+    },
+    handoffPlanner: {
+      parseMentions() {
+        return [];
+      },
+      async validateMentionTargets() {
+        return { allowed: true, mode: "serial", targetRoleIds: [] };
+      },
+      async buildHandoffs() {
+        return [];
+      },
+    },
+    recoveryDirector: {
+      async onUserMessage() {
+        return { action: "complete" as const };
+      },
+      async onRoleReply() {
+        return { action: "complete" as const };
+      },
+      async onRoleFailure() {
+        return { action: "complete" as const };
+      },
+    },
+    roleLoopRunner: {
+      async ensureRunning() {},
+    },
+    summaryBuilder: {
+      async getRecentMessages() {
+        return [
+          {
+            messageId: sourceMessage.id,
+            role: sourceMessage.role,
+            name: sourceMessage.name,
+            content: sourceMessage.content,
+            createdAt: sourceMessage.createdAt,
+            ...(sourceMessage.roleId ? { roleId: sourceMessage.roleId } : {}),
+          },
+        ];
+      },
+    },
+    relayBriefBuilder: {
+      build() {
+        return "relay brief";
+      },
+    },
+    idGenerator: {
+      flowId: () => "flow-generated",
+      messageId: () => "msg-generated",
+      taskId: () => "task-dispatch-policy",
+    },
+    runtimeLimits: {
+      flowMaxHops: 4,
+    },
+    clock: {
+      now: () => 10,
+    },
+  });
+
+  await engine.dispatchToRole({
+    thread,
+    flow: storedFlow,
+    sourceMessage,
+    toRoleId: "operator",
+    activationType: "cascade",
+  });
+
+  assert.deepEqual(enqueued[0]?.payload.constraints?.dispatchPolicy?.expectedNextRoleIds, ["lead"]);
+  assert.deepEqual(enqueued[0]?.payload.dispatchPolicy?.expectedNextRoleIds, ["lead"]);
 });
 
 test("coordination engine fan-out waits for all shards before dispatching merge back to lead", async () => {

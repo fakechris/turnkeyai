@@ -126,6 +126,7 @@ export class CoordinationEngine {
       console.error("scheduled continuation lookup failed", { taskId: task.taskId, error });
     }
 
+    const scheduledContinuityMode = getScheduledContinuity(task)?.mode;
     await this.dispatchToRole({
       thread,
       flow,
@@ -135,6 +136,7 @@ export class CoordinationEngine {
       instructions: buildScheduledInstructions(task, continuationContext),
       preferredWorkerKinds: getScheduledPreferredWorkerKinds(task),
       sessionTarget: getScheduledSessionTarget(task),
+      ...(scheduledContinuityMode ? { continuityMode: scheduledContinuityMode } : {}),
       ...(continuationContext ? { continuationContext } : {}),
     });
   }
@@ -213,6 +215,7 @@ export class CoordinationEngine {
 
     if (flow.nextExpectedRoleId) {
       handoff.payload.constraints!.dispatchPolicy.expectedNextRoleIds = [flow.nextExpectedRoleId];
+      handoff.payload.dispatchPolicy = handoff.payload.constraints!.dispatchPolicy;
     }
 
     if (input.instructions) {

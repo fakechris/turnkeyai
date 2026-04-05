@@ -16,6 +16,7 @@ import type {
 } from "@turnkeyai/core-types/team";
 import {
   getContinuationContext,
+  getDispatchContinuityMode,
   getInstructions,
   getMergeContext,
   getParallelContext,
@@ -598,8 +599,17 @@ function buildMemoryQuery(input: RoleActivationInput): string {
 }
 
 function inferContinuityMode(input: RoleActivationInput): "fresh" | "prefer-existing" | "resume-existing" {
+  const explicitMode = getDispatchContinuityMode(input.handoff.payload);
+  if (explicitMode) {
+    return explicitMode;
+  }
+
   const continuationContext = getContinuationContext(input.handoff.payload);
   if (continuationContext) {
+    return "resume-existing";
+  }
+
+  if (getSessionTarget(input.handoff.payload) === "worker") {
     return "resume-existing";
   }
 

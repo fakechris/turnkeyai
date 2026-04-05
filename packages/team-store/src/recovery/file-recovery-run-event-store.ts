@@ -34,15 +34,16 @@ export class FileRecoveryRunEventStore implements RecoveryRunEventStore {
   }
 
   async listByRecoveryRun(recoveryRunId: string): Promise<RecoveryRunEvent[]> {
-    const [legacyEvents, eventPaths] = await Promise.all([
+    const [legacyEvents, byRunArrayEvents, eventPaths] = await Promise.all([
       readJsonFile<RecoveryRunEvent[]>(this.legacyFlatFilePath(recoveryRunId)),
+      readJsonFile<RecoveryRunEvent[]>(this.byRunArrayFilePath(recoveryRunId)),
       listJsonFiles(this.recoveryRunEventDir(recoveryRunId)),
     ]);
     const journalEvents = (
       await Promise.all(eventPaths.map((filePath) => readJsonFile<RecoveryRunEvent>(filePath)))
     ).filter((event): event is RecoveryRunEvent => event !== null);
     const merged = new Map<string, RecoveryRunEvent>();
-    for (const event of [...(legacyEvents ?? []), ...journalEvents]) {
+    for (const event of [...(legacyEvents ?? []), ...(byRunArrayEvents ?? []), ...journalEvents]) {
       const existing = merged.get(event.eventId);
       if (!existing || event.recordedAt >= existing.recordedAt) {
         merged.set(event.eventId, event);
@@ -71,6 +72,10 @@ export class FileRecoveryRunEventStore implements RecoveryRunEventStore {
 
   private recoveryRunDir(recoveryRunId: string): string {
     return path.join(this.rootDir, "by-run", encodeURIComponent(recoveryRunId));
+  }
+
+  private byRunArrayFilePath(recoveryRunId: string): string {
+    return path.join(this.rootDir, "by-run", `${encodeURIComponent(recoveryRunId)}.json`);
   }
 
   private recoveryRunEventDir(recoveryRunId: string): string {

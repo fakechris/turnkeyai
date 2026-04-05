@@ -81,6 +81,23 @@ test("workflow routes reject blank message content", async () => {
   assert.deepEqual(response.json, { error: "content is required" });
 });
 
+test("workflow routes return 400 for malformed message JSON", async () => {
+  const response = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      body: "{",
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "Invalid JSON" });
+});
+
 test("workflow routes trim message body before publishing", async () => {
   let postedBody: { threadId: string; content: string } | undefined;
   let publishedEvent: unknown;
@@ -204,4 +221,38 @@ test("workflow routes trim scheduled task fields before scheduling", async () =>
       tz: "Asia/Shanghai",
     },
   });
+});
+
+test("workflow routes return 400 for malformed scheduled task JSON", async () => {
+  const response = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/scheduled-tasks",
+      body: "{",
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/scheduled-tasks"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "Invalid JSON" });
+});
+
+test("workflow routes return 400 for malformed trigger-due JSON", async () => {
+  const response = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/scheduled-tasks/trigger-due",
+      body: "{",
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/scheduled-tasks/trigger-due"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "Invalid JSON" });
 });
