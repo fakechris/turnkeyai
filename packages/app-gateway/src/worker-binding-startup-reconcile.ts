@@ -40,15 +40,62 @@ export async function reconcileWorkerBindingsOnStartup(input: {
   let roleRunsFailed = 0;
 
   for (const run of roleRuns) {
-    const workerSessions = run.workerSessions ?? {};
+    const result = await reconcileRoleRunBindingsWithRetry(input.roleRunStore, sessionsByRunKey, run);
+    totalBindings += result.totalBindings;
+    clearedMissingBindings += result.clearedMissingBindings;
+    clearedTerminalBindings += result.clearedTerminalBindings;
+    clearedCrossThreadBindings += result.clearedCrossThreadBindings;
+    roleRunsNeedingAttention += result.roleRunsNeedingAttention;
+    roleRunsRequeued += result.roleRunsRequeued;
+    roleRunsFailed += result.roleRunsFailed;
+  }
+
+  return {
+    totalRoleRuns: roleRuns.length,
+    totalBindings,
+    clearedMissingBindings,
+    clearedTerminalBindings,
+    clearedCrossThreadBindings,
+    roleRunsNeedingAttention,
+    roleRunsRequeued,
+    roleRunsFailed,
+  };
+}
+
+async function reconcileRoleRunBindingsWithRetry(
+  roleRunStore: RoleRunStore,
+  sessionsByRunKey: Map<string, WorkerSessionRecord>,
+  initialRun: RoleRunState
+): Promise<{
+  totalBindings: number;
+  clearedMissingBindings: number;
+  clearedTerminalBindings: number;
+  clearedCrossThreadBindings: number;
+  roleRunsNeedingAttention: number;
+  roleRunsRequeued: number;
+  roleRunsFailed: number;
+}> {
+  let currentRun: RoleRunState | null = initialRun;
+  while (currentRun) {
+    const workerSessions = currentRun.workerSessions ?? {};
     const entries = Object.entries(workerSessions);
     if (entries.length === 0) {
-      continue;
+      return {
+        totalBindings: 0,
+        clearedMissingBindings: 0,
+        clearedTerminalBindings: 0,
+        clearedCrossThreadBindings: 0,
+        roleRunsNeedingAttention: 0,
+        roleRunsRequeued: 0,
+        roleRunsFailed: 0,
+      };
     }
 
-    totalBindings += entries.length;
     const nextWorkerSessions: Record<string, string> = {};
     let changed = false;
+    let clearedMissingBindings = 0;
+    let clearedTerminalBindings = 0;
+    let clearedCrossThreadBindings = 0;
 
     for (const [workerType, workerRunKey] of entries) {
       if (!workerRunKey) {
@@ -67,7 +114,7 @@ export async function reconcileWorkerBindingsOnStartup(input: {
         changed = true;
         continue;
       }
-      if (session.context?.threadId && session.context.threadId !== run.threadId) {
+      if (session.context?.threadId && session.context.threadId !== currentRun.threadId) {
         clearedCrossThreadBindings += 1;
         changed = true;
         continue;
@@ -76,16 +123,19 @@ export async function reconcileWorkerBindingsOnStartup(input: {
       nextWorkerSessions[workerType] = workerRunKey;
     }
 
+    let roleRunsNeedingAttention = 0;
+    let roleRunsRequeued = 0;
+    let roleRunsFailed = 0;
     const remainingBindings = Object.keys(nextWorkerSessions).length;
     let nextRun = changed
       ? {
-          ...run,
+          ...currentRun,
           workerSessions: nextWorkerSessions,
         }
-      : run;
-    if (isWorkerBoundRoleStatus(run.status) && remainingBindings === 0) {
+      : currentRun;
+    if (isWorkerBoundRoleStatus(currentRun.status) && remainingBindings === 0) {
       roleRunsNeedingAttention += 1;
-      if (run.inbox.length > 0) {
+      if (currentRun.inbox.length > 0) {
         nextRun = {
           ...nextRun,
           status: "queued",
@@ -100,19 +150,49 @@ export async function reconcileWorkerBindingsOnStartup(input: {
       }
       changed = true;
     }
-    if (changed) {
-      await input.roleRunStore.put(nextRun, { expectedVersion: run.version });
+
+    if (!changed) {
+      return {
+        totalBindings: entries.length,
+        clearedMissingBindings: 0,
+        clearedTerminalBindings: 0,
+        clearedCrossThreadBindings: 0,
+        roleRunsNeedingAttention: 0,
+        roleRunsRequeued: 0,
+        roleRunsFailed: 0,
+      };
+    }
+
+    try {
+      await roleRunStore.put(nextRun, { expectedVersion: currentRun.version });
+      return {
+        totalBindings: entries.length,
+        clearedMissingBindings,
+        clearedTerminalBindings,
+        clearedCrossThreadBindings,
+        roleRunsNeedingAttention,
+        roleRunsRequeued,
+        roleRunsFailed,
+      };
+    } catch (error) {
+      if (!isVersionConflictError(error)) {
+        throw error;
+      }
+      currentRun = await roleRunStore.get(currentRun.runKey);
     }
   }
 
   return {
-    totalRoleRuns: roleRuns.length,
-    totalBindings,
-    clearedMissingBindings,
-    clearedTerminalBindings,
-    clearedCrossThreadBindings,
-    roleRunsNeedingAttention,
-    roleRunsRequeued,
-    roleRunsFailed,
+    totalBindings: 0,
+    clearedMissingBindings: 0,
+    clearedTerminalBindings: 0,
+    clearedCrossThreadBindings: 0,
+    roleRunsNeedingAttention: 0,
+    roleRunsRequeued: 0,
+    roleRunsFailed: 0,
   };
+}
+
+function isVersionConflictError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("version conflict");
 }
