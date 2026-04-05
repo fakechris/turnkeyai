@@ -12,8 +12,8 @@ import type {
 import {
   parsePositiveLimit,
   parseRequiredNonEmptyString,
-  readJsonBody,
-  readOptionalJsonBody,
+  readJsonBodySafe,
+  readOptionalJsonBodySafe,
   sendJson,
 } from "../http-helpers";
 
@@ -98,7 +98,12 @@ export async function handleBrowserRoutes(input: {
   const { req, res, url, deps } = input;
 
   if (req.method === "POST" && url.pathname === "/browser-sessions/spawn") {
-    const body = await readJsonBody<BrowserTaskRouteBody>(req);
+    const bodyResult = await readJsonBodySafe<BrowserTaskRouteBody>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const owner = await deps.resolveBrowserThreadOwner({
       threadId: body.threadId,
       ...(body.ownerType ? { ownerType: body.ownerType } : {}),
@@ -181,10 +186,15 @@ export async function handleBrowserRoutes(input: {
   }
 
   if (req.method === "POST" && browserSessionTargetsMatch) {
-    const body = await readJsonBody<{
+    const bodyResult = await readJsonBodySafe<{
       url: string;
       threadId?: string;
     }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const urlValue = parseRequiredNonEmptyString(body.url);
     if (!urlValue) {
       sendJson(res, 400, { error: "url is required" });
@@ -211,7 +221,12 @@ export async function handleBrowserRoutes(input: {
 
   const browserSessionSendMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/send$/);
   if (req.method === "POST" && browserSessionSendMatch) {
-    const body = await readJsonBody<BrowserTaskRouteBody>(req);
+    const bodyResult = await readJsonBodySafe<BrowserTaskRouteBody>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const access = await deps.requireBrowserSessionAccess({
       browserSessionId: decodeURIComponent(browserSessionSendMatch[1]!),
       threadId: body.threadId,
@@ -239,7 +254,12 @@ export async function handleBrowserRoutes(input: {
 
   const browserSessionResumeMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/resume$/);
   if (req.method === "POST" && browserSessionResumeMatch) {
-    const body = await readJsonBody<BrowserTaskRouteBody>(req);
+    const bodyResult = await readJsonBodySafe<BrowserTaskRouteBody>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const access = await deps.requireBrowserSessionAccess({
       browserSessionId: decodeURIComponent(browserSessionResumeMatch[1]!),
       threadId: body.threadId,
@@ -267,10 +287,15 @@ export async function handleBrowserRoutes(input: {
 
   const browserSessionActivateMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/activate-target$/);
   if (req.method === "POST" && browserSessionActivateMatch) {
-    const body = await readJsonBody<{
+    const bodyResult = await readJsonBodySafe<{
       targetId: string;
       threadId?: string;
     }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const targetId = parseRequiredNonEmptyString(body.targetId);
     if (!targetId) {
       sendJson(res, 400, { error: "targetId is required" });
@@ -297,10 +322,15 @@ export async function handleBrowserRoutes(input: {
 
   const browserSessionCloseTargetMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/close-target$/);
   if (req.method === "POST" && browserSessionCloseTargetMatch) {
-    const body = await readJsonBody<{
+    const bodyResult = await readJsonBodySafe<{
       targetId: string;
       threadId?: string;
     }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const targetId = parseRequiredNonEmptyString(body.targetId);
     if (!targetId) {
       sendJson(res, 400, { error: "targetId is required" });
@@ -326,7 +356,12 @@ export async function handleBrowserRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/browser-sessions/evict-idle") {
-    const body = await readOptionalJsonBody<{ idleMs?: number; idleBefore?: number; reason?: string }>(req);
+    const bodyResult = await readOptionalJsonBodySafe<{ idleMs?: number; idleBefore?: number; reason?: string }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     if (body.idleMs !== undefined && (!Number.isFinite(body.idleMs) || body.idleMs <= 0)) {
       sendJson(res, 400, { error: "idleMs must be a positive number" });
       return true;

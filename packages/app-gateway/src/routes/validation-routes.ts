@@ -45,7 +45,7 @@ import {
   ValidationSelectorError,
 } from "@turnkeyai/qc-runtime/validation-suite";
 
-import { readJsonBody, sendJson } from "../http-helpers";
+import { readJsonBodySafe, sendJson } from "../http-helpers";
 
 export interface ValidationRouteDeps {
   validationOpsRunStore: ValidationOpsRunStore;
@@ -74,7 +74,12 @@ export async function handleValidationRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/regression-cases/run") {
-    const body = await readJsonBody<{ caseIds?: string[] }>(req);
+    const bodyResult = await readJsonBodySafe<{ caseIds?: string[] }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const caseIds = filterNonEmptyStrings(body.caseIds);
     sendJson(res, 200, runBoundedRegressionSuite(caseIds));
     return true;
@@ -90,7 +95,12 @@ export async function handleValidationRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/failure-cases/run") {
-    const body = await readJsonBody<{ scenarioIds?: string[] }>(req);
+    const bodyResult = await readJsonBodySafe<{ scenarioIds?: string[] }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const scenarioIds = filterNonEmptyStrings(body.scenarioIds);
     sendJson(res, 200, runFailureInjectionSuite(scenarioIds));
     return true;
@@ -106,7 +116,12 @@ export async function handleValidationRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/soak-cases/run") {
-    const body = await readJsonBody<{ scenarioIds?: string[] }>(req);
+    const bodyResult = await readJsonBodySafe<{ scenarioIds?: string[] }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const scenarioIds = filterNonEmptyStrings(body.scenarioIds);
     if (scenarioIds && scenarioIds.length > 0) {
       const invalidScenarioIds = findUnknownScenarioIds(
@@ -135,7 +150,12 @@ export async function handleValidationRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/acceptance-cases/run") {
-    const body = await readJsonBody<{ scenarioIds?: string[] }>(req);
+    const bodyResult = await readJsonBodySafe<{ scenarioIds?: string[] }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const scenarioIds = filterNonEmptyStrings(body.scenarioIds);
     if (scenarioIds && scenarioIds.length > 0) {
       const invalidScenarioIds = findUnknownScenarioIds(
@@ -164,7 +184,12 @@ export async function handleValidationRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/realworld-cases/run") {
-    const body = await readJsonBody<{ scenarioIds?: string[] }>(req);
+    const bodyResult = await readJsonBodySafe<{ scenarioIds?: string[] }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const scenarioIds = filterNonEmptyStrings(body.scenarioIds);
     if (scenarioIds && scenarioIds.length > 0) {
       const invalidScenarioIds = findUnknownScenarioIds(
@@ -194,7 +219,12 @@ export async function handleValidationRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/validation-cases/run") {
-    const body = await readJsonBody<{ selectors?: string[] }>(req);
+    const bodyResult = await readJsonBodySafe<{ selectors?: string[] }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const selectors = filterNonEmptyStrings(body.selectors);
     try {
       sendJson(res, 200, runValidationSuites(selectors));
@@ -226,7 +256,12 @@ export async function handleValidationRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/validation-profiles/run") {
-    const body = await readJsonBody<{ profileId?: string }>(req);
+    const bodyResult = await readJsonBodySafe<{ profileId?: string }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const profileId = typeof body.profileId === "string" ? body.profileId.trim() : undefined;
     if (!profileId || !isValidationProfileId(profileId)) {
       sendJson(res, 400, { error: "Unknown validation profile" });
@@ -252,7 +287,12 @@ export async function handleValidationRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/soak-series/run") {
-    const body = await readJsonBody<{ cycles?: number; selectors?: string[] }>(req);
+    const bodyResult = await readJsonBodySafe<{ cycles?: number; selectors?: string[] }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     const selectors = filterTrimmedStrings(body.selectors);
     if (body.cycles !== undefined && (!Number.isInteger(body.cycles) || body.cycles <= 0)) {
       sendJson(res, 400, { error: "Invalid cycles: must be a positive integer" });
@@ -287,7 +327,7 @@ export async function handleValidationRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/transport-soak/run") {
-    const body = await readJsonBody<{
+    const bodyResult = await readJsonBodySafe<{
       cycles?: number;
       timeoutMs?: number;
       relayPeerCount?: number;
@@ -295,6 +335,11 @@ export async function handleValidationRoutes(input: {
       verifyWorkflowLog?: boolean;
       targets?: string[];
     }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     if (body.cycles !== undefined && (!Number.isInteger(body.cycles) || body.cycles <= 0)) {
       sendJson(res, 400, { error: "Invalid cycles: must be a positive integer" });
       return true;

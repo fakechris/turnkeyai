@@ -3,7 +3,7 @@ import type http from "node:http";
 import type { BrowserTaskResult } from "@turnkeyai/core-types/team";
 import type { RelayGateway } from "@turnkeyai/browser-bridge/transport/relay-gateway";
 
-import { readJsonBody, sendJson } from "../http-helpers";
+import { readJsonBodySafe, sendJson } from "../http-helpers";
 
 export async function handleRelayRoutes(input: {
   req: http.IncomingMessage;
@@ -27,12 +27,17 @@ export async function handleRelayRoutes(input: {
       sendJson(res, 503, { error: "relay browser transport is not active" });
       return true;
     }
-    const body = await readJsonBody<{
+    const bodyResult = await readJsonBodySafe<{
       peerId?: string;
       label?: string;
       capabilities?: string[];
       transportLabel?: string;
     }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     if (!body.peerId?.trim()) {
       sendJson(res, 400, { error: "peerId is required" });
       return true;
@@ -73,7 +78,7 @@ export async function handleRelayRoutes(input: {
       sendJson(res, 503, { error: "relay browser transport is not active" });
       return true;
     }
-    const body = await readJsonBody<{
+    const bodyResult = await readJsonBodySafe<{
       targets?: Array<{
         relayTargetId?: string;
         url?: string;
@@ -81,6 +86,11 @@ export async function handleRelayRoutes(input: {
         status?: "open" | "attached" | "detached" | "closed";
       }>;
     }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     if (!Array.isArray(body.targets)) {
       sendJson(res, 400, { error: "targets array is required" });
       return true;
@@ -148,7 +158,7 @@ export async function handleRelayRoutes(input: {
       return true;
     }
     const peerId = decodeURIComponent(relayPeerActionResultsMatch[1]!);
-    const body = await readJsonBody<{
+    const bodyResult = await readJsonBodySafe<{
       actionRequestId?: string;
       browserSessionId?: string;
       taskId?: string;
@@ -167,6 +177,11 @@ export async function handleRelayRoutes(input: {
       artifactIds?: string[];
       errorMessage?: string;
     }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
     if (!body.actionRequestId?.trim() || !body.browserSessionId?.trim() || !body.taskId?.trim() || !body.relayTargetId?.trim()) {
       sendJson(res, 400, {
         error: "actionRequestId, browserSessionId, taskId, and relayTargetId are required",

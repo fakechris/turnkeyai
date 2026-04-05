@@ -199,3 +199,20 @@ test("browser routes trim activate target ids and reject invalid evict-idle valu
   assert.equal(invalidEvict.res.statusCode, 400);
   assert.deepEqual(invalidEvict.json, { error: "idleMs must be a positive number" });
 });
+
+test("browser routes return 400 for malformed JSON bodies", async () => {
+  const response = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: "{",
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "Invalid JSON" });
+});

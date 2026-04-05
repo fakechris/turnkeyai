@@ -1,5 +1,9 @@
 import type http from "node:http";
 
+export type JsonBodyParseResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: "Invalid JSON" };
+
 export function sendJson(res: http.ServerResponse, statusCode: number, payload: unknown): void {
   res.statusCode = statusCode;
   res.setHeader("content-type", "application/json; charset=utf-8");
@@ -18,6 +22,34 @@ export async function readOptionalJsonBody<T>(req: http.IncomingMessage): Promis
   }
 
   return JSON.parse(raw) as T;
+}
+
+export async function readJsonBodySafe<T>(req: http.IncomingMessage): Promise<JsonBodyParseResult<T>> {
+  try {
+    return {
+      ok: true,
+      value: await readJsonBody<T>(req),
+    };
+  } catch {
+    return {
+      ok: false,
+      error: "Invalid JSON",
+    };
+  }
+}
+
+export async function readOptionalJsonBodySafe<T>(req: http.IncomingMessage): Promise<JsonBodyParseResult<T>> {
+  try {
+    return {
+      ok: true,
+      value: await readOptionalJsonBody<T>(req),
+    };
+  } catch {
+    return {
+      ok: false,
+      error: "Invalid JSON",
+    };
+  }
 }
 
 export function parsePositiveLimit(value: string | null): number | null {

@@ -152,3 +152,20 @@ test("validation routes reject malformed transport-soak booleans and trim target
   assert.equal(valid.res.statusCode, 200);
   assert.deepEqual(valid.json.targets, ["relay", "direct-cdp"]);
 });
+
+test("validation routes return 400 for malformed JSON bodies", async () => {
+  const response = createResponse();
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/validation-cases/run",
+      body: "{",
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/validation-cases/run"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "Invalid JSON" });
+});

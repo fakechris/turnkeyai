@@ -205,3 +205,20 @@ test("relay routes reject malformed target reports and trim nested action result
     errorMessage: "timed out",
   });
 });
+
+test("relay routes return 400 for malformed JSON bodies", async () => {
+  const response = createResponse();
+  await handleRelayRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/relay/peers/register",
+      body: "{",
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/relay/peers/register"),
+    relayGateway: createRelayGateway(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "Invalid JSON" });
+});
