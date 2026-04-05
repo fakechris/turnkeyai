@@ -18,12 +18,7 @@ export class FileRecoveryRunEventStore implements RecoveryRunEventStore {
 
   async append(event: RecoveryRunEvent): Promise<void> {
     await this.mutex.run(event.recoveryRunId, async () => {
-      const filePath = this.byRecoveryRunFilePath(event.recoveryRunId);
-      const existing =
-        (await readJsonFile<RecoveryRunEvent[]>(filePath)) ??
-        (await readJsonFile<RecoveryRunEvent[]>(this.legacyFlatFilePath(event.recoveryRunId))) ??
-        [];
-      await writeJsonFileAtomic(filePath, [...existing, event]);
+      await writeJsonFileAtomic(this.recoveryRunEventFilePath(event.recoveryRunId, event.eventId), event);
       try {
         await writeJsonFileAtomic(this.threadEventFilePath(event.threadId, event.eventId), event);
       } catch (error) {
@@ -39,11 +34,21 @@ export class FileRecoveryRunEventStore implements RecoveryRunEventStore {
   }
 
   async listByRecoveryRun(recoveryRunId: string): Promise<RecoveryRunEvent[]> {
-    const events =
-      (await readJsonFile<RecoveryRunEvent[]>(this.byRecoveryRunFilePath(recoveryRunId))) ??
-      (await readJsonFile<RecoveryRunEvent[]>(this.legacyFlatFilePath(recoveryRunId))) ??
-      [];
-    return [...events].sort((left, right) => left.recordedAt - right.recordedAt);
+    const [legacyEvents, eventPaths] = await Promise.all([
+      readJsonFile<RecoveryRunEvent[]>(this.legacyFlatFilePath(recoveryRunId)),
+      listJsonFiles(this.recoveryRunEventDir(recoveryRunId)),
+    ]);
+    const journalEvents = (
+      await Promise.all(eventPaths.map((filePath) => readJsonFile<RecoveryRunEvent>(filePath)))
+    ).filter((event): event is RecoveryRunEvent => event !== null);
+    const merged = new Map<string, RecoveryRunEvent>();
+    for (const event of [...(legacyEvents ?? []), ...journalEvents]) {
+      const existing = merged.get(event.eventId);
+      if (!existing || event.recordedAt >= existing.recordedAt) {
+        merged.set(event.eventId, event);
+      }
+    }
+    return [...merged.values()].sort((left, right) => left.recordedAt - right.recordedAt);
   }
 
   async listByThread(threadId: string): Promise<RecoveryRunEvent[]> {
@@ -64,8 +69,16 @@ export class FileRecoveryRunEventStore implements RecoveryRunEventStore {
       .sort((left, right) => left.recordedAt - right.recordedAt);
   }
 
-  private byRecoveryRunFilePath(recoveryRunId: string): string {
-    return path.join(this.rootDir, "by-run", `${encodeURIComponent(recoveryRunId)}.json`);
+  private recoveryRunDir(recoveryRunId: string): string {
+    return path.join(this.rootDir, "by-run", encodeURIComponent(recoveryRunId));
+  }
+
+  private recoveryRunEventDir(recoveryRunId: string): string {
+    return path.join(this.recoveryRunDir(recoveryRunId), "events");
+  }
+
+  private recoveryRunEventFilePath(recoveryRunId: string, eventId: string): string {
+    return path.join(this.recoveryRunEventDir(recoveryRunId), `${encodeURIComponent(eventId)}.json`);
   }
 
   private threadDir(threadId: string): string {
