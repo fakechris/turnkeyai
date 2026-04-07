@@ -180,7 +180,11 @@ import {
   readOptionalJsonBody,
   sendJson,
 } from "./http-helpers";
-import { authorizeDaemonRequest, resolveDaemonAuthConfig } from "./daemon-auth";
+import {
+  authorizeDaemonRequest,
+  createRelayPeerIdentityBindingStore,
+  resolveDaemonAuthConfig,
+} from "./daemon-auth";
 import { createRecoveryActionService } from "./recovery-action-service";
 import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
 import { createRuntimeQueryService } from "./runtime-query-service";
@@ -210,6 +214,9 @@ const RECOVERY_RUN_STALE_AFTER_MS = 5 * 60 * 1000;
 const clock: Clock = {
   now: () => Date.now(),
 };
+const relayPeerBindingStore = createRelayPeerIdentityBindingStore({
+  now: clock.now,
+});
 
 const idGenerator = createIdGenerator();
 const recoveryRunActionMutex = new KeyedAsyncMutex<string>();
@@ -1058,6 +1065,8 @@ const server = http.createServer(async (req, res) => {
         res,
         url,
         relayGateway,
+        authorization,
+        relayPeerBindingStore,
       })
     ) {
       return;

@@ -32,6 +32,8 @@ export interface BrowserTaskRouteBody {
   leaseTtlMs?: number;
 }
 
+type BrowserTaskMutationRoute = "spawn" | "send" | "resume";
+
 interface BrowserBridgeDeps {
   spawnSession(input: BrowserTaskRequest): Promise<BrowserTaskResult>;
   listSessions(input?: { ownerType?: BrowserSessionOwnerType; ownerId?: string }): Promise<unknown[]>;
@@ -104,6 +106,11 @@ export async function handleBrowserRoutes(input: {
       return true;
     }
     const body = bodyResult.value;
+    const validationError = validateBrowserTaskRouteBody(body, "spawn");
+    if (validationError) {
+      sendJson(res, 400, { error: validationError });
+      return true;
+    }
     const owner = await deps.resolveBrowserThreadOwner({
       threadId: body.threadId,
       ...(body.ownerType ? { ownerType: body.ownerType } : {}),
@@ -111,6 +118,11 @@ export async function handleBrowserRoutes(input: {
     });
     if ("error" in owner) {
       sendJson(res, owner.statusCode, { error: owner.error });
+      return true;
+    }
+    const ownershipError = validateBrowserTaskRouteOwnership(body, owner);
+    if (ownershipError) {
+      sendJson(res, 400, { error: ownershipError });
       return true;
     }
     const request = deps.buildBrowserTaskRequest({
@@ -227,12 +239,22 @@ export async function handleBrowserRoutes(input: {
       return true;
     }
     const body = bodyResult.value;
+    const validationError = validateBrowserTaskRouteBody(body, "send");
+    if (validationError) {
+      sendJson(res, 400, { error: validationError });
+      return true;
+    }
     const access = await deps.requireBrowserSessionAccess({
       browserSessionId: decodeURIComponent(browserSessionSendMatch[1]!),
       threadId: body.threadId,
     });
     if ("error" in access) {
       sendJson(res, access.statusCode, { error: access.error });
+      return true;
+    }
+    const ownershipError = validateBrowserTaskRouteOwnership(body, access);
+    if (ownershipError) {
+      sendJson(res, 400, { error: ownershipError });
       return true;
     }
     const request = deps.buildBrowserTaskRequest({
@@ -260,12 +282,22 @@ export async function handleBrowserRoutes(input: {
       return true;
     }
     const body = bodyResult.value;
+    const validationError = validateBrowserTaskRouteBody(body, "resume");
+    if (validationError) {
+      sendJson(res, 400, { error: validationError });
+      return true;
+    }
     const access = await deps.requireBrowserSessionAccess({
       browserSessionId: decodeURIComponent(browserSessionResumeMatch[1]!),
       threadId: body.threadId,
     });
     if ("error" in access) {
       sendJson(res, access.statusCode, { error: access.error });
+      return true;
+    }
+    const ownershipError = validateBrowserTaskRouteOwnership(body, access);
+    if (ownershipError) {
+      sendJson(res, 400, { error: ownershipError });
       return true;
     }
     const request = deps.buildBrowserTaskRequest({
@@ -383,4 +415,209 @@ export async function handleBrowserRoutes(input: {
   }
 
   return false;
+}
+
+const EXTERNALLY_ADDRESSABLE_BROWSER_OWNER_TYPES = new Set<BrowserSessionOwnerType>(["thread", "role"]);
+const BROWSER_CONSOLE_PROBES = new Set<Extract<BrowserTaskAction, { kind: "console" }>["probe"]>([
+  "page-metadata",
+  "interactive-summary",
+]);
+const BROWSER_SCROLL_DIRECTIONS = new Set<Extract<BrowserTaskAction, { kind: "scroll" }>["direction"]>([
+  "up",
+  "down",
+]);
+
+function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: BrowserTaskMutationRoute): string | null {
+  if ((route === "send" || route === "resume") && (body.ownerType !== undefined || body.ownerId !== undefined)) {
+    return "ownerType and ownerId are not accepted for existing browser sessions";
+  }
+
+  if (body.ownerType !== undefined && !EXTERNALLY_ADDRESSABLE_BROWSER_OWNER_TYPES.has(body.ownerType)) {
+    return `unsupported browser ownerType: ${String(body.ownerType)}`;
+  }
+
+  if (body.profileOwnerType !== undefined && !EXTERNALLY_ADDRESSABLE_BROWSER_OWNER_TYPES.has(body.profileOwnerType)) {
+    return `unsupported browser profileOwnerType: ${String(body.profileOwnerType)}`;
+  }
+
+  const targetId = parseOptionalRouteString(body.targetId);
+  if (body.targetId !== undefined && !targetId) {
+    return "targetId must be a non-empty string";
+  }
+
+  if (route === "spawn" && targetId) {
+    return "targetId is not accepted when spawning a browser session";
+  }
+
+  const urlValue = parseOptionalRouteString(body.url);
+  if (body.url !== undefined && !urlValue) {
+    return "url must be a non-empty string";
+  }
+
+  if (body.actions !== undefined) {
+    if (!Array.isArray(body.actions) || body.actions.length === 0) {
+      return "actions must be a non-empty array";
+    }
+    const actionError = validateBrowserTaskActions(body.actions);
+    if (actionError) {
+      return actionError;
+    }
+    if (urlValue) {
+      return "url cannot be combined with explicit actions";
+    }
+    if (targetId && body.actions.some((action) => action.kind === "open")) {
+      return "targetId cannot be combined with open actions";
+    }
+  }
+
+  if (
+    body.leaseTtlMs !== undefined &&
+    (!Number.isInteger(body.leaseTtlMs) || body.leaseTtlMs <= 0)
+  ) {
+    return "leaseTtlMs must be a positive integer";
+  }
+
+  if ((body.profileOwnerType === undefined) !== (body.profileOwnerId === undefined)) {
+    return "profileOwnerType and profileOwnerId must be provided together";
+  }
+
+  return null;
+}
+
+function validateBrowserTaskRouteOwnership(
+  body: BrowserTaskRouteBody,
+  owner: { ownerType: BrowserSessionOwnerType; ownerId: string; threadId: string }
+): string | null {
+  if (body.profileOwnerType === undefined && body.profileOwnerId === undefined) {
+    return null;
+  }
+
+  if (body.profileOwnerType !== owner.ownerType || body.profileOwnerId !== owner.ownerId) {
+    return "profile owner must match the resolved browser owner";
+  }
+
+  return null;
+}
+
+function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null {
+  for (const [index, action] of actions.entries()) {
+    if (!action || typeof action !== "object") {
+      return `actions[${index}] must be an object`;
+    }
+
+    switch (action.kind) {
+      case "open": {
+        const url = parseOptionalRouteString(action.url);
+        if (!url) {
+          return `actions[${index}] open.url must be a non-empty string`;
+        }
+        if (!isHttpUrl(url)) {
+          return `actions[${index}] open.url must use http or https`;
+        }
+        break;
+      }
+      case "snapshot": {
+        if (action.note !== undefined && !parseOptionalRouteString(action.note)) {
+          return `actions[${index}] snapshot.note must be a non-empty string when provided`;
+        }
+        break;
+      }
+      case "type": {
+        if (!parseOptionalRouteString(action.text)) {
+          return `actions[${index}] type.text must be a non-empty string`;
+        }
+        const selectorError = validateActionSelectors(action.selectors, `actions[${index}] type.selectors`);
+        if (selectorError) {
+          return selectorError;
+        }
+        const refId = parseOptionalRouteString(action.refId);
+        if (!refId && !action.selectors?.length) {
+          return `actions[${index}] type requires refId or selectors`;
+        }
+        if (action.refId !== undefined && !refId) {
+          return `actions[${index}] type.refId must be a non-empty string when provided`;
+        }
+        if (action.submit !== undefined && typeof action.submit !== "boolean") {
+          return `actions[${index}] type.submit must be a boolean`;
+        }
+        break;
+      }
+      case "click": {
+        const selectorError = validateActionSelectors(action.selectors, `actions[${index}] click.selectors`);
+        if (selectorError) {
+          return selectorError;
+        }
+        const refId = parseOptionalRouteString(action.refId);
+        const text = parseOptionalRouteString(action.text);
+        const variants = Number(Boolean(action.selectors?.length)) + Number(Boolean(refId)) + Number(Boolean(text));
+        if (variants !== 1) {
+          return `actions[${index}] click requires exactly one of selectors, refId, or text`;
+        }
+        if (action.refId !== undefined && !refId) {
+          return `actions[${index}] click.refId must be a non-empty string when provided`;
+        }
+        if (action.text !== undefined && !text) {
+          return `actions[${index}] click.text must be a non-empty string when provided`;
+        }
+        break;
+      }
+      case "scroll": {
+        if (!BROWSER_SCROLL_DIRECTIONS.has(action.direction)) {
+          return `actions[${index}] scroll.direction must be up or down`;
+        }
+        if (action.amount !== undefined && (!Number.isInteger(action.amount) || action.amount <= 0)) {
+          return `actions[${index}] scroll.amount must be a positive integer`;
+        }
+        break;
+      }
+      case "console": {
+        if (!BROWSER_CONSOLE_PROBES.has(action.probe)) {
+          return `actions[${index}] console.probe is invalid`;
+        }
+        break;
+      }
+      case "wait": {
+        if (!Number.isInteger(action.timeoutMs) || action.timeoutMs <= 0) {
+          return `actions[${index}] wait.timeoutMs must be a positive integer`;
+        }
+        break;
+      }
+      case "screenshot": {
+        if (action.label !== undefined && !parseOptionalRouteString(action.label)) {
+          return `actions[${index}] screenshot.label must be a non-empty string when provided`;
+        }
+        break;
+      }
+      default:
+        return `actions[${index}] kind is invalid`;
+    }
+  }
+
+  return null;
+}
+
+function validateActionSelectors(selectors: string[] | undefined, label: string): string | null {
+  if (selectors === undefined) {
+    return null;
+  }
+  if (!Array.isArray(selectors) || selectors.length === 0) {
+    return `${label} must be a non-empty array`;
+  }
+  if (selectors.some((selector) => !parseOptionalRouteString(selector))) {
+    return `${label} must contain non-empty strings`;
+  }
+  return null;
+}
+
+function parseOptionalRouteString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }

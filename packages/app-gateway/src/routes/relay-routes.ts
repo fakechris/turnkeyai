@@ -3,6 +3,10 @@ import type http from "node:http";
 import type { BrowserTaskResult } from "@turnkeyai/core-types/team";
 import type { RelayControlPlane } from "@turnkeyai/browser-bridge/transport/transport-adapter";
 
+import type {
+  DaemonAuthorizationResult,
+  RelayPeerIdentityBindingResult,
+} from "../daemon-auth";
 import { readJsonBodySafe, sendJson } from "../http-helpers";
 
 export async function handleRelayRoutes(input: {
@@ -10,8 +14,19 @@ export async function handleRelayRoutes(input: {
   res: http.ServerResponse;
   url: URL;
   relayGateway: RelayControlPlane | null;
+  authorization: DaemonAuthorizationResult;
+  relayPeerBindingStore: {
+    bindPeerIdentity(
+      authorization: DaemonAuthorizationResult,
+      peerId: string
+    ): RelayPeerIdentityBindingResult;
+    authorizePeerIdentity(
+      authorization: DaemonAuthorizationResult,
+      peerId: string
+    ): RelayPeerIdentityBindingResult;
+  };
 }): Promise<boolean> {
-  const { req, res, url, relayGateway } = input;
+  const { req, res, url, relayGateway, authorization, relayPeerBindingStore } = input;
 
   if (req.method === "GET" && url.pathname === "/relay/peers") {
     if (!relayGateway) {
@@ -42,6 +57,11 @@ export async function handleRelayRoutes(input: {
       sendJson(res, 400, { error: "peerId is required" });
       return true;
     }
+    const peerIdentity = relayPeerBindingStore.bindPeerIdentity(authorization, body.peerId);
+    if (!peerIdentity.ok) {
+      sendJson(res, peerIdentity.statusCode ?? 403, { error: peerIdentity.error ?? "forbidden" });
+      return true;
+    }
     sendJson(
       res,
       201,
@@ -68,7 +88,13 @@ export async function handleRelayRoutes(input: {
       sendJson(res, 503, { error: "relay browser transport is not active" });
       return true;
     }
-    sendJson(res, 200, relayGateway.heartbeatPeer(decodeURIComponent(relayPeerHeartbeatMatch[1]!)));
+    const peerId = decodeURIComponent(relayPeerHeartbeatMatch[1]!);
+    const peerIdentity = relayPeerBindingStore.authorizePeerIdentity(authorization, peerId);
+    if (!peerIdentity.ok) {
+      sendJson(res, peerIdentity.statusCode ?? 403, { error: peerIdentity.error ?? "forbidden" });
+      return true;
+    }
+    sendJson(res, 200, relayGateway.heartbeatPeer(peerId));
     return true;
   }
 
@@ -76,6 +102,12 @@ export async function handleRelayRoutes(input: {
   if (req.method === "POST" && relayPeerTargetsMatch) {
     if (!relayGateway) {
       sendJson(res, 503, { error: "relay browser transport is not active" });
+      return true;
+    }
+    const peerId = decodeURIComponent(relayPeerTargetsMatch[1]!);
+    const peerIdentity = relayPeerBindingStore.authorizePeerIdentity(authorization, peerId);
+    if (!peerIdentity.ok) {
+      sendJson(res, peerIdentity.statusCode ?? 403, { error: peerIdentity.error ?? "forbidden" });
       return true;
     }
     const bodyResult = await readJsonBodySafe<{
@@ -111,7 +143,7 @@ export async function handleRelayRoutes(input: {
       res,
       200,
       relayGateway.reportTargets(
-        decodeURIComponent(relayPeerTargetsMatch[1]!),
+        peerId,
         targets.map((target) => ({
           relayTargetId: target.relayTargetId,
           url: target.url,
@@ -143,10 +175,16 @@ export async function handleRelayRoutes(input: {
       sendJson(res, 503, { error: "relay browser transport is not active" });
       return true;
     }
+    const peerId = decodeURIComponent(relayPeerPullActionsMatch[1]!);
+    const peerIdentity = relayPeerBindingStore.authorizePeerIdentity(authorization, peerId);
+    if (!peerIdentity.ok) {
+      sendJson(res, peerIdentity.statusCode ?? 403, { error: peerIdentity.error ?? "forbidden" });
+      return true;
+    }
     sendJson(
       res,
       200,
-      relayGateway.pullNextActionRequest(decodeURIComponent(relayPeerPullActionsMatch[1]!))
+      relayGateway.pullNextActionRequest(peerId)
     );
     return true;
   }
@@ -158,6 +196,11 @@ export async function handleRelayRoutes(input: {
       return true;
     }
     const peerId = decodeURIComponent(relayPeerActionResultsMatch[1]!);
+    const peerIdentity = relayPeerBindingStore.authorizePeerIdentity(authorization, peerId);
+    if (!peerIdentity.ok) {
+      sendJson(res, peerIdentity.statusCode ?? 403, { error: peerIdentity.error ?? "forbidden" });
+      return true;
+    }
     const bodyResult = await readJsonBodySafe<{
       actionRequestId?: string;
       browserSessionId?: string;
