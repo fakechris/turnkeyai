@@ -60,11 +60,25 @@ interface CoordinationEngineDeps {
   contextStateMaintainer?: ContextStateMaintainer;
   workerRuntime?: Pick<WorkerRuntime, "getState">;
   runtimeChainRecorder?: import("@turnkeyai/core-types/team").RuntimeChainRecorder;
+  ingressOutboxRootDir?: string;
+  ingressOutboxMaxRetries?: number;
+  ingressOutboxRetryDelayMs?: number;
+  ingressOutboxBackoffMultiplier?: number;
+  ingressOutboxMaxRetryDelayMs?: number;
   dispatchOutboxRootDir?: string;
   dispatchOutboxMaxRetries?: number;
   dispatchOutboxRetryDelayMs?: number;
   dispatchOutboxBackoffMultiplier?: number;
   dispatchOutboxMaxRetryDelayMs?: number;
+}
+
+interface FlowStartIntent {
+  intentId: string;
+  kind: "user-post" | "scheduled-task";
+  threadId: string;
+  message: TeamMessage;
+  flow: FlowLedger;
+  scheduledTask?: ScheduledTaskRecord;
 }
 
 interface DispatchDeliveryIntent {
@@ -76,11 +90,52 @@ interface DispatchDeliveryIntent {
 export class CoordinationEngine {
   private readonly deps: CoordinationEngineDeps;
   private readonly flowMutex = new KeyedAsyncMutex<string>();
+  private readonly flowStartIntentMutex = new KeyedAsyncMutex<string>();
   private readonly dispatchDeliveryMutex = new KeyedAsyncMutex<string>();
+  private readonly ingressOutboxShipper: OutboxBatchShipper<FlowStartIntent> | undefined;
   private readonly dispatchOutboxShipper: OutboxBatchShipper<DispatchDeliveryIntent> | undefined;
 
   constructor(deps: CoordinationEngineDeps) {
     this.deps = deps;
+    this.ingressOutboxShipper = deps.ingressOutboxRootDir
+      ? new OutboxBatchShipper<FlowStartIntent>({
+          outbox: new FileBatchOutbox<FlowStartIntent>({
+            rootDir: deps.ingressOutboxRootDir,
+            now: () => this.deps.clock.now(),
+          }),
+          sink: async (items) => {
+            for (const item of items) {
+              await this.materializeFlowStartIntent(item);
+            }
+          },
+          ...(deps.ingressOutboxMaxRetries != null ? { maxRetries: deps.ingressOutboxMaxRetries } : {}),
+          ...(deps.ingressOutboxRetryDelayMs != null ? { retryDelayMs: deps.ingressOutboxRetryDelayMs } : {}),
+          ...(deps.ingressOutboxBackoffMultiplier != null
+            ? { backoffMultiplier: deps.ingressOutboxBackoffMultiplier }
+            : {}),
+          ...(deps.ingressOutboxMaxRetryDelayMs != null
+            ? { maxRetryDelayMs: deps.ingressOutboxMaxRetryDelayMs }
+            : {}),
+          onDroppedBatch: async (batch) => {
+            for (const item of batch.items) {
+              console.error("flow start intent dropped after exhausting retries", {
+                intentId: item.intentId,
+                kind: item.kind,
+                threadId: item.threadId,
+                flowId: item.flow.flowId,
+                messageId: item.message.id,
+              });
+            }
+          },
+          onRetryScheduled: async (_batch, attempt, delayMs, error) => {
+            console.warn("flow start retry scheduled", {
+              attempt,
+              delayMs,
+              error,
+            });
+          },
+        })
+      : undefined;
     this.dispatchOutboxShipper = deps.dispatchOutboxRootDir
       ? new OutboxBatchShipper<DispatchDeliveryIntent>({
           outbox: new FileBatchOutbox<DispatchDeliveryIntent>({
@@ -119,6 +174,7 @@ export class CoordinationEngine {
           },
         })
       : undefined;
+    this.ingressOutboxShipper?.start();
     this.dispatchOutboxShipper?.start();
   }
 
@@ -129,16 +185,19 @@ export class CoordinationEngine {
     }
 
     const userMessage = this.buildUserMessage(thread, input.content);
-    await this.deps.teamMessageStore.append(userMessage);
-    await this.refreshThreadContext(thread.threadId);
-
     const flow = this.buildFlow(thread, userMessage.id);
-    await this.deps.flowLedgerStore.put(flow);
-    await this.recordRuntimeChainBestEffort("recordFlowCreated", flow, () =>
-      this.deps.runtimeChainRecorder?.recordFlowCreated(flow)
-    );
-
-    await this.dispatchToLead(thread, flow, userMessage);
+    const intent: FlowStartIntent = {
+      intentId: `${flow.flowId}:start`,
+      kind: "user-post",
+      threadId: thread.threadId,
+      message: userMessage,
+      flow,
+    };
+    if (this.ingressOutboxShipper) {
+      await this.startFlowViaOutbox(intent);
+      return;
+    }
+    await this.materializeFlowStartIntent(intent);
   }
 
   async dispatchToLead(thread: TeamThread, flow: FlowLedger, sourceMessage: TeamMessage): Promise<void> {
@@ -157,36 +216,22 @@ export class CoordinationEngine {
       throw new Error(`team thread not found: ${task.threadId}`);
     }
 
-    const scheduledMessage = this.buildScheduledMessage(thread, task);
-    await this.deps.teamMessageStore.append(scheduledMessage);
-    await this.refreshThreadContext(thread.threadId);
-
+    const normalizedTask = normalizeScheduledTaskRecord(task);
+    const scheduledMessage = this.buildScheduledMessage(thread, normalizedTask);
     const flow = this.buildFlow(thread, scheduledMessage.id);
-    await this.deps.flowLedgerStore.put(flow);
-    await this.recordRuntimeChainBestEffort("recordFlowCreated", flow, () =>
-      this.deps.runtimeChainRecorder?.recordFlowCreated(flow)
-    );
-    let continuationContext: DispatchContinuationContext | undefined;
-    try {
-      continuationContext = await this.resolveScheduledContinuationContext(task);
-    } catch (error) {
-      console.error("scheduled continuation lookup failed", { taskId: task.taskId, error });
-    }
-
-    const scheduledDispatch = getRequiredScheduledDispatch(task);
-    const scheduledContinuityMode = scheduledDispatch.continuity?.mode;
-    await this.dispatchToRole({
-      thread,
+    const intent: FlowStartIntent = {
+      intentId: `${flow.flowId}:start`,
+      kind: "scheduled-task",
+      threadId: thread.threadId,
+      message: scheduledMessage,
       flow,
-      sourceMessage: scheduledMessage,
-      toRoleId: scheduledDispatch.targetRoleId,
-      activationType: "cascade",
-      instructions: buildScheduledInstructions(task, continuationContext),
-      preferredWorkerKinds: getScheduledPreferredWorkerKinds(task),
-      sessionTarget: scheduledDispatch.sessionTarget,
-      ...(scheduledContinuityMode ? { continuityMode: scheduledContinuityMode } : {}),
-      ...(continuationContext ? { continuationContext } : {}),
-    });
+      scheduledTask: normalizedTask,
+    };
+    if (this.ingressOutboxShipper) {
+      await this.startFlowViaOutbox(intent);
+      return;
+    }
+    await this.materializeFlowStartIntent(intent);
   }
 
   async dispatchToRole(input: {
@@ -1116,6 +1161,72 @@ export class CoordinationEngine {
     }
   }
 
+  private async startFlowViaOutbox(intent: FlowStartIntent): Promise<void> {
+    let persisted = false;
+    try {
+      await this.ingressOutboxShipper!.enqueue([intent]);
+      persisted = true;
+      await this.materializeFlowStartIntent(intent);
+    } catch (error) {
+      if (!persisted) {
+        console.error("failed to persist flow start intent", {
+          intentId: intent.intentId,
+          kind: intent.kind,
+          threadId: intent.threadId,
+          flowId: intent.flow.flowId,
+          messageId: intent.message.id,
+          error,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async materializeFlowStartIntent(intent: FlowStartIntent): Promise<void> {
+    await this.flowStartIntentMutex.run(intent.intentId, async () => {
+      const thread = await this.deps.teamThreadStore.get(intent.threadId);
+      if (!thread) {
+        throw new Error(`team thread not found: ${intent.threadId}`);
+      }
+
+      await this.ensureMessagePersisted(intent.message);
+      await this.refreshThreadContext(thread.threadId);
+      const flow = await this.ensureFlowPersisted(intent.flow);
+
+      if (intent.kind === "user-post") {
+        await this.dispatchToLead(thread, flow, intent.message);
+        return;
+      }
+
+      const task = intent.scheduledTask;
+      if (!task) {
+        throw new Error(`scheduled task is missing from flow start intent ${intent.intentId}`);
+      }
+
+      let continuationContext: DispatchContinuationContext | undefined;
+      try {
+        continuationContext = await this.resolveScheduledContinuationContext(task);
+      } catch (error) {
+        console.error("scheduled continuation lookup failed", { taskId: task.taskId, error });
+      }
+
+      const scheduledDispatch = getRequiredScheduledDispatch(task);
+      const scheduledContinuityMode = scheduledDispatch.continuity?.mode;
+      await this.dispatchToRole({
+        thread,
+        flow,
+        sourceMessage: intent.message,
+        toRoleId: scheduledDispatch.targetRoleId,
+        activationType: "cascade",
+        instructions: buildScheduledInstructions(task, continuationContext),
+        preferredWorkerKinds: getScheduledPreferredWorkerKinds(task),
+        sessionTarget: scheduledDispatch.sessionTarget,
+        ...(scheduledContinuityMode ? { continuityMode: scheduledContinuityMode } : {}),
+        ...(continuationContext ? { continuationContext } : {}),
+      });
+    });
+  }
+
   private async deliverDispatchIntent(intent: DispatchDeliveryIntent): Promise<void> {
     await this.dispatchDeliveryMutex.run(intent.edgeId, async () => {
       const edge = await this.getEdge(intent.flowId, intent.edgeId);
@@ -1165,6 +1276,34 @@ export class CoordinationEngine {
     }
 
     return flow.edges.find((edge) => edge.edgeId === edgeId) ?? null;
+  }
+
+  private async ensureMessagePersisted(message: TeamMessage): Promise<void> {
+    const existing = await this.deps.teamMessageStore.get(message.id);
+    if (existing) {
+      if (existing.threadId !== message.threadId) {
+        throw new Error(`message thread mismatch for ${message.id}`);
+      }
+      return;
+    }
+
+    await this.deps.teamMessageStore.append(message);
+  }
+
+  private async ensureFlowPersisted(flow: FlowLedger): Promise<FlowLedger> {
+    const existing = await this.deps.flowLedgerStore.get(flow.flowId);
+    if (existing) {
+      if (existing.threadId !== flow.threadId || existing.rootMessageId !== flow.rootMessageId) {
+        throw new Error(`flow shape mismatch for ${flow.flowId}`);
+      }
+      return existing;
+    }
+
+    await this.putFlow(flow);
+    await this.recordRuntimeChainBestEffort("recordFlowCreated", flow, () =>
+      this.deps.runtimeChainRecorder?.recordFlowCreated(flow)
+    );
+    return (await this.deps.flowLedgerStore.get(flow.flowId)) ?? flow;
   }
 
   private async putFlow(flow: FlowLedger): Promise<void> {

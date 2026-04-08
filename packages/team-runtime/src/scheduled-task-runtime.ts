@@ -81,10 +81,14 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
       if (!claimedTask) {
         continue;
       }
+      const leasedTask = await this.scheduledTaskStore.get(task.taskId);
+      if (!leasedTask) {
+        continue;
+      }
 
       let failure: ReturnType<typeof classifyRuntimeError> | undefined;
       try {
-        await this.coordinationEngine.handleScheduledTask(claimedTask);
+        await this.coordinationEngine.handleScheduledTask(leasedTask);
       } catch (error) {
         failure = classifyRuntimeError({
           layer: "scheduled",
@@ -92,20 +96,12 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
           fallbackMessage: "scheduled task dispatch failed",
         });
         console.error(
-          `scheduled task dispatch failed for ${claimedTask.taskId}:`,
+          `scheduled task dispatch failed for ${leasedTask.taskId}:`,
           error instanceof Error ? error.message : error
         );
       }
 
       if (failure) {
-        const leasedTask: ScheduledTaskRecord = {
-          ...claimedTask,
-          schedule: {
-            ...claimedTask.schedule,
-            nextRunAt: leaseUntil,
-          },
-          updatedAt: leaseUntil,
-        };
         await this.recordReplay(leasedTask, now, failure);
         dispatched.push({
           task: leasedTask,
@@ -114,16 +110,16 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
         continue;
       }
 
-      const nextRunAt = computeNextRunAt(claimedTask.schedule.expr, claimedTask.schedule.tz, now);
+      const nextRunAt = computeNextRunAt(leasedTask.schedule.expr, leasedTask.schedule.tz, now);
       const updatedTask = normalizeScheduledTaskRecord({
-        ...claimedTask,
+        ...leasedTask,
         schedule: {
-          ...claimedTask.schedule,
+          ...leasedTask.schedule,
           nextRunAt,
         },
         updatedAt: now,
       });
-      await this.scheduledTaskStore.put(updatedTask);
+      await this.scheduledTaskStore.put(updatedTask, { expectedVersion: leasedTask.version });
       await this.recordReplay(updatedTask, now);
       dispatched.push({
         task: updatedTask,

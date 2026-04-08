@@ -29,12 +29,6 @@ import type {
   SummaryBuilder,
   WorkerSessionState,
 } from "@turnkeyai/core-types/team";
-import {
-  getScheduledContinuity,
-  getScheduledSessionTarget,
-  getScheduledTargetRoleId,
-  getScheduledTargetWorker,
-} from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
 import {
@@ -550,6 +544,7 @@ coordinationEngine = new CoordinationEngine({
   contextStateMaintainer,
   workerRuntime,
   runtimeChainRecorder,
+  ingressOutboxRootDir: path.join(DATA_DIR, "flow-start-outbox"),
   dispatchOutboxRootDir: path.join(DATA_DIR, "dispatch-outbox"),
 });
 const roleRunStartupRecoveryResult = await recoverRoleRunsOnStartup({

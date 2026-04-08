@@ -57,6 +57,14 @@ export interface WorkflowRouteDeps {
   clock: Clock;
 }
 
+const MAX_MESSAGE_CONTENT_CHARS = 20_000;
+const MAX_SCHEDULED_TITLE_CHARS = 200;
+const MAX_SCHEDULED_INSTRUCTIONS_CHARS = 20_000;
+const MAX_SCHEDULED_REF_COUNT = 32;
+const MAX_SCHEDULED_REF_CHARS = 200;
+const ALLOWED_SESSION_TARGETS = new Set(["main", "worker"]);
+const ALLOWED_TARGET_WORKERS = new Set(["browser", "coder", "finance", "explore", "harness"]);
+
 export async function handleWorkflowRoutes(input: {
   req: http.IncomingMessage;
   res: http.ServerResponse;
@@ -90,6 +98,10 @@ export async function handleWorkflowRoutes(input: {
     }
     if (!content) {
       sendJson(res, 400, { error: "content is required" });
+      return true;
+    }
+    if (content.length > MAX_MESSAGE_CONTENT_CHARS) {
+      sendJson(res, 400, { error: `content must be at most ${MAX_MESSAGE_CONTENT_CHARS} characters` });
       return true;
     }
     await deps.coordinationEngine.handleUserPost({ ...body, threadId, content });
@@ -153,12 +165,42 @@ export async function handleWorkflowRoutes(input: {
       sendJson(res, 400, { error: "capsule.instructions is required" });
       return true;
     }
+    if (title.length > MAX_SCHEDULED_TITLE_CHARS) {
+      sendJson(res, 400, { error: `capsule.title must be at most ${MAX_SCHEDULED_TITLE_CHARS} characters` });
+      return true;
+    }
+    if (instructions.length > MAX_SCHEDULED_INSTRUCTIONS_CHARS) {
+      sendJson(res, 400, { error: `capsule.instructions must be at most ${MAX_SCHEDULED_INSTRUCTIONS_CHARS} characters` });
+      return true;
+    }
     if (!expr) {
       sendJson(res, 400, { error: "schedule.expr is required" });
       return true;
     }
     if (!tz) {
       sendJson(res, 400, { error: "schedule.tz is required" });
+      return true;
+    }
+    if (body.schedule?.kind !== "cron") {
+      sendJson(res, 400, { error: "schedule.kind must be cron" });
+      return true;
+    }
+    if (body.sessionTarget && !ALLOWED_SESSION_TARGETS.has(body.sessionTarget)) {
+      sendJson(res, 400, { error: "sessionTarget must be main or worker" });
+      return true;
+    }
+    if (body.targetWorker && !ALLOWED_TARGET_WORKERS.has(body.targetWorker)) {
+      sendJson(res, 400, { error: "targetWorker is invalid" });
+      return true;
+    }
+    const artifactRefs = normalizeRefArray(body.capsule?.artifactRefs, "capsule.artifactRefs");
+    if (!artifactRefs.ok) {
+      sendJson(res, 400, { error: artifactRefs.error });
+      return true;
+    }
+    const dependencyRefs = normalizeRefArray(body.capsule?.dependencyRefs, "capsule.dependencyRefs");
+    if (!dependencyRefs.ok) {
+      sendJson(res, 400, { error: dependencyRefs.error });
       return true;
     }
     sendJson(
@@ -172,6 +214,8 @@ export async function handleWorkflowRoutes(input: {
           ...body.capsule,
           title,
           instructions,
+          ...(artifactRefs.value.length > 0 ? { artifactRefs: artifactRefs.value } : {}),
+          ...(dependencyRefs.value.length > 0 ? { dependencyRefs: dependencyRefs.value } : {}),
         },
         schedule: {
           ...body.schedule,
@@ -190,9 +234,46 @@ export async function handleWorkflowRoutes(input: {
       return true;
     }
     const body = bodyResult.value;
+    if (body.now != null && (!Number.isFinite(body.now) || body.now < 0)) {
+      sendJson(res, 400, { error: "now must be a non-negative finite number" });
+      return true;
+    }
     sendJson(res, 200, await deps.scheduledTaskRuntime.triggerDue(body.now));
     return true;
   }
 
   return false;
+}
+
+function normalizeRefArray(
+  value: unknown,
+  fieldName: string
+): { ok: true; value: string[] } | { ok: false; error: string } {
+  if (value == null) {
+    return { ok: true, value: [] };
+  }
+  if (!Array.isArray(value)) {
+    return { ok: false, error: `${fieldName} must be an array of non-empty strings` };
+  }
+  if (value.length > MAX_SCHEDULED_REF_COUNT) {
+    return { ok: false, error: `${fieldName} must contain at most ${MAX_SCHEDULED_REF_COUNT} entries` };
+  }
+  const normalized: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      return { ok: false, error: `${fieldName} must be an array of non-empty strings` };
+    }
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      return { ok: false, error: `${fieldName} must be an array of non-empty strings` };
+    }
+    if (trimmed.length > MAX_SCHEDULED_REF_CHARS) {
+      return {
+        ok: false,
+        error: `${fieldName} entries must be at most ${MAX_SCHEDULED_REF_CHARS} characters`,
+      };
+    }
+    normalized.push(trimmed);
+  }
+  return { ok: true, value: normalized };
 }

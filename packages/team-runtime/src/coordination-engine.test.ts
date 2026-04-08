@@ -1112,6 +1112,215 @@ test("coordination engine retries persisted dispatch delivery through the outbox
   }
 });
 
+test("coordination engine replays user-post ingress through the outbox after partial persistence", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "coordination-engine-ingress-outbox-"));
+  try {
+    const thread: TeamThread = {
+      threadId: "thread-ingress",
+      teamId: "team-ingress",
+      teamName: "Demo",
+      leadRoleId: "lead",
+      roles: [
+        { roleId: "lead", name: "Lead", seat: "lead", runtime: "local" },
+      ],
+      participantLinks: [],
+      metadataVersion: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const messages = new Map<string, TeamMessage>();
+    let storedFlow: FlowLedger | null = null;
+    let putAttempts = 0;
+    let ensureRunningCalls = 0;
+
+    const flowLedgerStore: FlowLedgerStore = {
+      async get(flowId) {
+        return storedFlow?.flowId === flowId ? storedFlow : null;
+      },
+      async put(flow, options) {
+        putAttempts += 1;
+        if (putAttempts === 1) {
+          throw new Error("transient flow persistence failure");
+        }
+        const existingVersion = storedFlow?.version ?? 0;
+        if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
+          throw new Error(`flow version conflict: expected ${options.expectedVersion}, found ${existingVersion}`);
+        }
+        storedFlow = {
+          ...flow,
+          version: existingVersion + 1,
+        };
+      },
+      async listByThread(threadId) {
+        return storedFlow && storedFlow.threadId === threadId ? [storedFlow] : [];
+      },
+    };
+
+    const engine = new CoordinationEngine({
+      teamThreadStore: {
+        async get(threadId) {
+          return threadId === thread.threadId ? thread : null;
+        },
+        async list() {
+          return [thread];
+        },
+        async create() {
+          throw new Error("not used");
+        },
+        async update() {
+          throw new Error("not used");
+        },
+        async delete() {},
+      },
+      teamMessageStore: {
+        async append(message) {
+          messages.set(message.id, message);
+        },
+        async list(threadId) {
+          return [...messages.values()].filter((message) => message.threadId === threadId);
+        },
+        async get(messageId) {
+          return messages.get(messageId) ?? null;
+        },
+      },
+      flowLedgerStore,
+      roleRunCoordinator: {
+        async getOrCreate() {
+          return {
+            runKey: "role:lead:thread:thread-ingress",
+            threadId: thread.threadId,
+            roleId: "lead",
+            mode: "group",
+            status: "idle",
+            iterationCount: 0,
+            maxIterations: 3,
+            inbox: [],
+            lastActiveAt: 1,
+            version: 1,
+          };
+        },
+        async enqueue(_runKey, handoff) {
+          return {
+            runKey: "role:lead:thread:thread-ingress",
+            threadId: thread.threadId,
+            roleId: "lead",
+            mode: "group",
+            status: "queued",
+            iterationCount: 0,
+            maxIterations: 3,
+            inbox: [handoff],
+            lastActiveAt: 1,
+            version: 2,
+          };
+        },
+        async dequeue() {
+          return null;
+        },
+        async ack() {},
+        async bindWorkerSession() {},
+        async clearWorkerSession() {},
+        async setStatus() {},
+        async incrementIteration() {
+          return 0;
+        },
+        async fail() {},
+        async finish() {},
+      },
+      handoffPlanner: {
+        parseMentions() {
+          return [];
+        },
+        async validateMentionTargets() {
+          return { allowed: true, mode: "serial", targetRoleIds: [] };
+        },
+        async buildHandoffs() {
+          return [];
+        },
+      },
+      recoveryDirector: {
+        async onUserMessage() {
+          return { action: "complete" as const };
+        },
+        async onRoleReply() {
+          return { action: "complete" as const };
+        },
+        async onRoleFailure() {
+          return { action: "abort" as const, reason: "fail" };
+        },
+      },
+      roleLoopRunner: {
+        async ensureRunning() {
+          ensureRunningCalls += 1;
+        },
+      },
+      summaryBuilder: {
+        async getRecentMessages(threadId) {
+          return [...messages.values()]
+            .filter((message) => message.threadId === threadId)
+            .map((message) => ({
+              messageId: message.id,
+              role: message.role,
+              ...(message.roleId ? { roleId: message.roleId } : {}),
+              name: message.name,
+              content: message.content,
+              createdAt: message.createdAt,
+            }));
+        },
+      },
+      relayBriefBuilder: {
+        build() {
+          return "brief";
+        },
+      },
+      idGenerator: {
+        flowId: () => "flow-ingress",
+        messageId: () => "msg-ingress",
+        taskId: () => "task-ingress",
+      },
+      runtimeLimits: {
+        flowMaxHops: 4,
+      },
+      clock: {
+        now: () => Date.now(),
+      },
+      ingressOutboxRootDir: path.join(tempDir, "ingress"),
+      ingressOutboxRetryDelayMs: 5,
+      ingressOutboxMaxRetryDelayMs: 5,
+      ingressOutboxMaxRetries: 3,
+    });
+
+    await assert.rejects(() =>
+      engine.handleUserPost({
+        threadId: thread.threadId,
+        content: "Recover this flow start.",
+      }),
+      /transient flow persistence failure/
+    );
+
+    assert.equal(messages.size, 1);
+    assert.equal(storedFlow, null);
+
+    const outbox = new FileBatchOutbox<unknown>({ rootDir: path.join(tempDir, "ingress") });
+    await waitFor(async () => {
+      const remaining = await outbox.listDue(32, Date.now() + 1_000);
+      return remaining.length === 0 && storedFlow?.status === "waiting_role";
+    });
+
+    assert.equal(messages.size, 1);
+    const replayedFlow = await flowLedgerStore.get("flow-ingress");
+    if (!replayedFlow) {
+      throw new Error("expected replayed flow to be persisted");
+    }
+    assert.equal(replayedFlow.rootMessageId, "msg-ingress");
+    assert.equal(replayedFlow.edges.length, 1);
+    assert.equal(replayedFlow.edges[0]?.state, "delivered");
+    assert.equal(ensureRunningCalls, 1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("coordination engine carries scheduled worker resume hints into the handoff payload", async () => {
   const thread: TeamThread = {
     threadId: "thread-scheduled",
