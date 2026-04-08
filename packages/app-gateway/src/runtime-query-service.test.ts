@@ -1145,3 +1145,131 @@ test("runtime query service attaches runtime chain artifact startup reconcile su
     affectedChainIds: ["chain:1", "chain:2"],
   });
 });
+
+test("runtime query service truth-aligns query summaries and fallback chain status", async () => {
+  const service = createRuntimeQueryService({
+    clock: { now: () => 1_000 },
+    workerRuntime: {
+      async spawn() {
+        return null;
+      },
+      async send() {
+        return null;
+      },
+      async resume() {
+        return null;
+      },
+      async interrupt() {
+        return null;
+      },
+      async cancel() {
+        return null;
+      },
+      async getState() {
+        return null;
+      },
+      async maybeRunForRole() {
+        return null;
+      },
+    },
+    teamThreadStore: {
+      async list() {
+        return [];
+      },
+    } as any,
+    flowLedgerStore: {
+      async listByThread() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    } as any,
+    roleRunStore: {
+      async listByThread() {
+        return [];
+      },
+    } as any,
+    runtimeChainStore: {
+      async listByThread() {
+        return [
+          {
+            chainId: "chain-1",
+            threadId: "thread-1",
+            rootKind: "task",
+            rootId: "task-1",
+            createdAt: 10,
+            updatedAt: 20,
+          },
+        ];
+      },
+      async get(chainId: string) {
+        return chainId === "chain-1"
+          ? {
+              chainId: "chain-1",
+              threadId: "thread-1",
+              rootKind: "task",
+              rootId: "task-1",
+              createdAt: 10,
+              updatedAt: 20,
+            }
+          : null;
+      },
+    } as any,
+    runtimeChainStatusStore: {
+      async listByThread() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    } as any,
+    runtimeChainSpanStore: {
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    runtimeChainEventStore: {
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    runtimeProgressStore: {
+      async listByThread() {
+        return [];
+      },
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    recoveryRunStore: {
+      async get() {
+        return null;
+      },
+      async listByThread() {
+        return [];
+      },
+    } as any,
+    recoveryRunEventStore: {
+      async listByRecoveryRun() {
+        return [];
+      },
+    } as any,
+    loadRecoveryRuntime: async () => ({
+      records: [],
+      report: {} as never,
+      runs: [],
+    }),
+  });
+
+  const entries = await service.listRuntimeChainEntriesByThread("thread-1", 10);
+  assert.equal(entries[0]?.confirmed, false);
+  assert.equal(entries[0]?.inferred, true);
+  assert.equal(entries[0]?.truthSource, "stored-chain-fallback-status");
+
+  const summary = await service.loadRuntimeSummary("thread-1", 10);
+  assert.equal(summary.confirmed, false);
+  assert.equal(summary.inferred, true);
+  assert.equal(summary.truthSource, "runtime-summary-query");
+  assert.equal(summary.activeChains[0]?.truthSource, "runtime-summary-query");
+});

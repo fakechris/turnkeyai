@@ -39,23 +39,39 @@ type RecoveryRuntimeSnapshot = {
   report: ReturnType<typeof buildReplayInspectionReport>;
   runs: RecoveryRun[];
 };
+type TruthAligned<T> = T & {
+  confirmed: boolean;
+  inferred: boolean;
+  stale: boolean;
+  truthSource: string;
+};
+type TruthAlignedRecoverySummary = {
+  totalRuns: number;
+  runs: TruthAligned<RecoveryRun>[];
+  confirmed: boolean;
+  inferred: boolean;
+  stale: boolean;
+  truthSource: string;
+};
+type TruthAlignedRecoveryTimeline = {
+  recoveryRun: TruthAligned<RecoveryRun>;
+  progress: ReturnType<typeof buildRecoveryRunProgress>;
+  totalEntries: number;
+  timeline: ReturnType<typeof buildRecoveryRunTimeline>;
+  confirmed: boolean;
+  inferred: boolean;
+  stale: boolean;
+  truthSource: string;
+};
 
 export interface RecoveryActionService {
   loadRecoveryRuntime(threadId: string): Promise<RecoveryRuntimeSnapshot>;
   syncRecoveryRuntime(threadId: string): Promise<RecoveryRuntimeSnapshot>;
-  buildRecoverySummary(threadId: string, limit: number): Promise<{ totalRuns: number; runs: RecoveryRun[] }>;
-  getReplayRecovery(threadId: string, groupId: string): Promise<ReplayRecoveryPlan | null>;
-  listRecoveryRuns(threadId: string): Promise<RecoveryRun[]>;
-  getRecoveryRun(threadId: string, recoveryRunId: string): Promise<RecoveryRun | null>;
-  getRecoveryTimeline(
-    threadId: string,
-    recoveryRunId: string
-  ): Promise<{
-    recoveryRun: RecoveryRun;
-    progress: ReturnType<typeof buildRecoveryRunProgress>;
-    totalEntries: number;
-    timeline: ReturnType<typeof buildRecoveryRunTimeline>;
-  } | null>;
+  buildRecoverySummary(threadId: string, limit: number): Promise<TruthAlignedRecoverySummary>;
+  getReplayRecovery(threadId: string, groupId: string): Promise<TruthAligned<ReplayRecoveryPlan> | null>;
+  listRecoveryRuns(threadId: string): Promise<Array<TruthAligned<RecoveryRun>>>;
+  getRecoveryRun(threadId: string, recoveryRunId: string): Promise<TruthAligned<RecoveryRun> | null>;
+  getRecoveryTimeline(threadId: string, recoveryRunId: string): Promise<TruthAlignedRecoveryTimeline | null>;
   executeRecoveryRunActionById(input: {
     threadId: string;
     recoveryRunId: string;
@@ -338,6 +354,34 @@ export function createRecoveryActionService(input: {
     const report = buildReplayInspectionReport(records);
     const runs = buildRecoveryRuns(records, stabilizedRuns, clock.now());
     return { records, report, runs };
+  }
+
+  function isQueryStaleRecoveryRun(run: RecoveryRun): boolean {
+    return (
+      ["running", "retrying", "fallback_running", "resumed", "superseded"].includes(run.status) &&
+      clock.now() - run.updatedAt >= recoveryRunStaleAfterMs
+    );
+  }
+
+  function truthAlignRecoveryRun(run: RecoveryRun, persistedRecoveryRunIds: Set<string>): TruthAligned<RecoveryRun> {
+    const confirmed = persistedRecoveryRunIds.has(run.recoveryRunId);
+    return {
+      ...run,
+      confirmed,
+      inferred: true,
+      stale: isQueryStaleRecoveryRun(run),
+      truthSource: confirmed ? "recovery-runtime-query+store" : "recovery-runtime-query",
+    };
+  }
+
+  function truthAlignReplayRecovery(plan: ReplayRecoveryPlan): TruthAligned<ReplayRecoveryPlan> {
+    return {
+      ...plan,
+      confirmed: false,
+      inferred: true,
+      stale: plan.latestFailure?.category === "stale_session",
+      truthSource: "replay-recovery-query",
+    };
   }
 
   async function syncRecoveryRuntime(threadId: string): Promise<RecoveryRuntimeSnapshot> {
@@ -1341,23 +1385,33 @@ export function createRecoveryActionService(input: {
   return {
     loadRecoveryRuntime,
     syncRecoveryRuntime,
-    async buildRecoverySummary(threadId: string, limit: number): Promise<{ totalRuns: number; runs: RecoveryRun[] }> {
+    async buildRecoverySummary(threadId: string, limit: number): Promise<TruthAlignedRecoverySummary> {
       const synced = await loadRecoveryRuntime(threadId);
+      const persistedRecoveryRunIds = new Set((await recoveryRunStore.listByThread(threadId)).map((run) => run.recoveryRunId));
       return {
         totalRuns: synced.runs.length,
-        runs: synced.runs.slice(0, limit),
+        runs: synced.runs.slice(0, limit).map((run) => truthAlignRecoveryRun(run, persistedRecoveryRunIds)),
+        confirmed: false,
+        inferred: true,
+        stale: synced.runs.some((run) => isQueryStaleRecoveryRun(run)),
+        truthSource: "recovery-summary-query",
       };
     },
-    async getReplayRecovery(threadId: string, groupId: string): Promise<ReplayRecoveryPlan | null> {
+    async getReplayRecovery(threadId: string, groupId: string): Promise<TruthAligned<ReplayRecoveryPlan> | null> {
       const synced = await loadRecoveryRuntime(threadId);
-      return findReplayRecoveryPlan(synced.records, groupId, synced.report);
+      const plan = findReplayRecoveryPlan(synced.records, groupId, synced.report);
+      return plan ? truthAlignReplayRecovery(plan) : null;
     },
-    async listRecoveryRuns(threadId: string): Promise<RecoveryRun[]> {
-      return (await loadRecoveryRuntime(threadId)).runs;
-    },
-    async getRecoveryRun(threadId: string, recoveryRunId: string): Promise<RecoveryRun | null> {
+    async listRecoveryRuns(threadId: string): Promise<Array<TruthAligned<RecoveryRun>>> {
       const synced = await loadRecoveryRuntime(threadId);
-      return synced.runs.find((item) => item.recoveryRunId === recoveryRunId) ?? null;
+      const persistedRecoveryRunIds = new Set((await recoveryRunStore.listByThread(threadId)).map((run) => run.recoveryRunId));
+      return synced.runs.map((run) => truthAlignRecoveryRun(run, persistedRecoveryRunIds));
+    },
+    async getRecoveryRun(threadId: string, recoveryRunId: string): Promise<TruthAligned<RecoveryRun> | null> {
+      const synced = await loadRecoveryRuntime(threadId);
+      const persistedRecoveryRunIds = new Set((await recoveryRunStore.listByThread(threadId)).map((run) => run.recoveryRunId));
+      const run = synced.runs.find((item) => item.recoveryRunId === recoveryRunId) ?? null;
+      return run ? truthAlignRecoveryRun(run, persistedRecoveryRunIds) : null;
     },
     async getRecoveryTimeline(threadId: string, recoveryRunId: string) {
       const synced = await loadRecoveryRuntime(threadId);
@@ -1365,13 +1419,19 @@ export function createRecoveryActionService(input: {
       if (!run) {
         return null;
       }
+      const persistedRecoveryRunIds = new Set((await recoveryRunStore.listByThread(threadId)).map((item) => item.recoveryRunId));
+      const truthAlignedRun = truthAlignRecoveryRun(run, persistedRecoveryRunIds);
       const events = await recoveryRunEventStore.listByRecoveryRun(run.recoveryRunId);
       const timeline = buildRecoveryRunTimeline(run, synced.records, events);
       return {
-        recoveryRun: run,
+        recoveryRun: truthAlignedRun,
         progress: buildRecoveryRunProgress(run),
         totalEntries: timeline.length,
         timeline,
+        confirmed: truthAlignedRun.confirmed,
+        inferred: true,
+        stale: truthAlignedRun.stale,
+        truthSource: "recovery-timeline-query",
       };
     },
     async executeRecoveryRunActionById(actionByIdInput) {

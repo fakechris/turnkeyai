@@ -216,3 +216,159 @@ test("browser routes return 400 for malformed JSON bodies", async () => {
   assert.equal(response.res.statusCode, 400);
   assert.deepEqual(response.json, { error: "Invalid JSON" });
 });
+
+test("browser spawn routes reject unsupported owner/profile types and invalid lease ttl", async () => {
+  const invalidOwner = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        ownerType: "worker",
+      },
+    }),
+    res: invalidOwner.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidOwner.res.statusCode, 400);
+  assert.deepEqual(invalidOwner.json, { error: "unsupported browser ownerType: worker" });
+
+  const invalidProfile = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        profileOwnerType: "user",
+        profileOwnerId: "user-1",
+      },
+    }),
+    res: invalidProfile.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidProfile.res.statusCode, 400);
+  assert.deepEqual(invalidProfile.json, { error: "unsupported browser profileOwnerType: user" });
+
+  const invalidLease = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        leaseTtlMs: 1.5,
+      },
+    }),
+    res: invalidLease.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidLease.res.statusCode, 400);
+  assert.deepEqual(invalidLease.json, { error: "leaseTtlMs must be a positive integer" });
+});
+
+test("browser task mutation routes reject invalid actions and target combinations", async () => {
+  const invalidActions = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "click", selectors: ["button"], text: "Open" }],
+      },
+    }),
+    res: invalidActions.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidActions.res.statusCode, 400);
+  assert.deepEqual(invalidActions.json, {
+    error: "actions[0] click requires exactly one of selectors, refId, or text",
+  });
+
+  const spawnTarget = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        targetId: "target-1",
+      },
+    }),
+    res: spawnTarget.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(spawnTarget.res.statusCode, 400);
+  assert.deepEqual(spawnTarget.json, {
+    error: "targetId is not accepted when spawning a browser session",
+  });
+
+  const targetOpenConflict = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/session-1/send",
+      body: {
+        threadId: "thread-1",
+        targetId: "target-1",
+        actions: [{ kind: "open", url: "https://example.com" }],
+      },
+    }),
+    res: targetOpenConflict.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/send"),
+    deps: createDeps(),
+  });
+  assert.equal(targetOpenConflict.res.statusCode, 400);
+  assert.deepEqual(targetOpenConflict.json, {
+    error: "targetId cannot be combined with open actions",
+  });
+});
+
+test("browser task mutation routes reject explicit actions mixed with url or foreign profile owner", async () => {
+  const mixedUrl = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/session-1/resume",
+      body: {
+        threadId: "thread-1",
+        url: "https://example.com",
+        actions: [{ kind: "snapshot", note: "inspect" }],
+      },
+    }),
+    res: mixedUrl.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/resume"),
+    deps: createDeps(),
+  });
+  assert.equal(mixedUrl.res.statusCode, 400);
+  assert.deepEqual(mixedUrl.json, {
+    error: "url cannot be combined with explicit actions",
+  });
+
+  const wrongProfile = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        profileOwnerType: "role",
+        profileOwnerId: "role-2",
+      },
+    }),
+    res: wrongProfile.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(wrongProfile.res.statusCode, 400);
+  assert.deepEqual(wrongProfile.json, {
+    error: "profile owner must match the resolved browser owner",
+  });
+});

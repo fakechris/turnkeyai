@@ -486,3 +486,121 @@ test("recovery action service treats duplicate in-flight dispatch as idempotent"
   assert.equal(scheduledTasks, 0);
   assert.deepEqual(appendedEventKinds, []);
 });
+
+test("recovery action service truth-aligns replay recovery plans", async () => {
+  const records = buildReplayRecords();
+  const service = createRecoveryActionService({
+    clock: { now: () => 100 },
+    idGenerator: {
+      messageId: () => "msg-1",
+      taskId: () => "task-1",
+    } as any,
+    recoveryRunActionMutex: {
+      async run(_key: string, work: () => Promise<unknown>) {
+        return work();
+      },
+    } as any,
+    recoveryRunStaleAfterMs: 60_000,
+    coordinationEngine: {
+      async handleScheduledTask() {},
+    } as any,
+    runtimeStateRecorder: {
+      async record() {},
+    } as any,
+    runtimeProgressRecorder: {
+      async record() {},
+    } as any,
+    replayRecorder: {
+      async list() {
+        return records;
+      },
+      async record() {
+        return "replay-recorded";
+      },
+    } as any,
+    recoveryRunStore: {
+      async listByThread() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+      async put() {},
+    } as any,
+    recoveryRunEventStore: {
+      async append() {},
+      async listByRecoveryRun() {
+        return [];
+      },
+    } as any,
+  });
+
+  const recovery = await service.getReplayRecovery("thread-1", "task-1");
+  assert.ok(recovery);
+  assert.equal((recovery as any).confirmed, false);
+  assert.equal((recovery as any).inferred, true);
+  assert.equal((recovery as any).stale, true);
+  assert.equal((recovery as any).truthSource, "replay-recovery-query");
+});
+
+test("recovery action service truth-aligns recovery runs and timelines", async () => {
+  const records = buildReplayRecords();
+  const persistedRun = buildBaseRecoveryRun(records);
+  const service = createRecoveryActionService({
+    clock: { now: () => 100 },
+    idGenerator: {
+      messageId: () => "msg-1",
+      taskId: () => "task-1",
+    } as any,
+    recoveryRunActionMutex: {
+      async run(_key: string, work: () => Promise<unknown>) {
+        return work();
+      },
+    } as any,
+    recoveryRunStaleAfterMs: 60_000,
+    coordinationEngine: {
+      async handleScheduledTask() {},
+    } as any,
+    runtimeStateRecorder: {
+      async record() {},
+    } as any,
+    runtimeProgressRecorder: {
+      async record() {},
+    } as any,
+    replayRecorder: {
+      async list() {
+        return records;
+      },
+      async record() {
+        return "replay-recorded";
+      },
+    } as any,
+    recoveryRunStore: {
+      async listByThread() {
+        return [persistedRun];
+      },
+      async get(recoveryRunId: string) {
+        return recoveryRunId === persistedRun.recoveryRunId ? persistedRun : null;
+      },
+      async put() {},
+    } as any,
+    recoveryRunEventStore: {
+      async append() {},
+      async listByRecoveryRun() {
+        return [];
+      },
+    } as any,
+  });
+
+  const runs = await service.listRecoveryRuns("thread-1");
+  assert.equal((runs[0] as any)?.confirmed, true);
+  assert.equal((runs[0] as any)?.inferred, true);
+  assert.equal((runs[0] as any)?.truthSource, "recovery-runtime-query+store");
+
+  const timeline = await service.getRecoveryTimeline("thread-1", persistedRun.recoveryRunId);
+  assert.ok(timeline);
+  assert.equal((timeline as any).confirmed, true);
+  assert.equal((timeline as any).inferred, true);
+  assert.equal((timeline as any).truthSource, "recovery-timeline-query");
+  assert.equal((timeline as any).recoveryRun.confirmed, true);
+});
