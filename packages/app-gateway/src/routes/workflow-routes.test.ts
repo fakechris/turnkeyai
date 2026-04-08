@@ -81,6 +81,23 @@ test("workflow routes reject blank message content", async () => {
   assert.deepEqual(response.json, { error: "content is required" });
 });
 
+test("workflow routes reject oversized message content", async () => {
+  const response = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      body: { threadId: "thread-1", content: "x".repeat(20_001) },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "content must be at most 20000 characters" });
+});
+
 test("workflow routes return 400 for malformed message JSON", async () => {
   const response = createResponse();
   await handleWorkflowRoutes({
@@ -223,6 +240,70 @@ test("workflow routes trim scheduled task fields before scheduling", async () =>
   });
 });
 
+test("workflow routes reject invalid scheduled task enums and ref arrays", async () => {
+  const response = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/scheduled-tasks",
+      body: {
+        threadId: "thread-1",
+        targetRoleId: "lead",
+        capsule: {
+          title: "Ship report",
+          instructions: "Verify metrics",
+          artifactRefs: ["valid", "   "],
+        },
+        schedule: {
+          kind: "once",
+          expr: "0 * * * *",
+          tz: "Asia/Shanghai",
+        },
+        sessionTarget: "sidecar",
+        targetWorker: "invalid-worker",
+      },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/scheduled-tasks"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "schedule.kind must be cron" });
+});
+
+test("workflow routes reject malformed scheduled task refs after enum validation passes", async () => {
+  const response = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/scheduled-tasks",
+      body: {
+        threadId: "thread-1",
+        targetRoleId: "lead",
+        capsule: {
+          title: "Ship report",
+          instructions: "Verify metrics",
+          artifactRefs: ["valid", "   "],
+        },
+        schedule: {
+          kind: "cron",
+          expr: "0 * * * *",
+          tz: "Asia/Shanghai",
+        },
+        sessionTarget: "main",
+        targetWorker: "browser",
+      },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/scheduled-tasks"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "capsule.artifactRefs must be an array of non-empty strings" });
+});
+
 test("workflow routes return 400 for malformed scheduled task JSON", async () => {
   const response = createResponse();
   await handleWorkflowRoutes({
@@ -255,4 +336,21 @@ test("workflow routes return 400 for malformed trigger-due JSON", async () => {
 
   assert.equal(response.res.statusCode, 400);
   assert.deepEqual(response.json, { error: "Invalid JSON" });
+});
+
+test("workflow routes reject invalid trigger-due now values", async () => {
+  const response = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/scheduled-tasks/trigger-due",
+      body: { now: -1 },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/scheduled-tasks/trigger-due"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "now must be a non-negative finite number" });
 });

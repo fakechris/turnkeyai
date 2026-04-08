@@ -71,14 +71,23 @@ export interface RelayPayload {
   continuity?: DispatchContinuity;
   coordination?: DispatchCoordination;
   constraints?: DispatchConstraints;
+  /** @deprecated Use `intent.relayBrief`. */
   relayBrief?: string;
+  /** @deprecated Use `intent.recentMessages`. */
   recentMessages?: TeamMessageSummary[];
+  /** @deprecated Use `intent.instructions`. */
   instructions?: string;
+  /** @deprecated Use `constraints.preferredWorkerKinds`. */
   preferredWorkerKinds?: WorkerKind[];
+  /** @deprecated Prefer `continuity`; keep `sessionTarget` only for legacy compatibility. */
   sessionTarget?: SessionTarget;
+  /** @deprecated Use `continuity.context`. */
   continuationContext?: DispatchContinuationContext;
+  /** @deprecated Use `coordination.merge`. */
   mergeContext?: FanOutMergeContext;
+  /** @deprecated Use `coordination.parallel`. */
   parallelContext?: ParallelOrchestrationContext;
+  /** @deprecated Use `constraints.dispatchPolicy`. */
   dispatchPolicy?: DispatchPolicy;
 }
 

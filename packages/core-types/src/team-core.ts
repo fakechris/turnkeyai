@@ -13,7 +13,8 @@ export type TeamMessageRole = "user" | "assistant" | "tool" | "system";
 export type DispatchMode = "serial" | "parallel" | "mixed";
 export type ActivationType = "mention" | "cascade" | "retry" | "fallback";
 export type ContinuityMode = "fresh" | "prefer-existing" | "resume-existing";
-export type SessionTarget = "main" | "worker";
+export const SESSION_TARGETS = ["main", "worker"] as const;
+export type SessionTarget = (typeof SESSION_TARGETS)[number];
 
 export interface TeamMessage {
   id: MessageId;
@@ -627,12 +628,13 @@ export interface RoleActivationInput {
   handoff: HandoffEnvelope;
 }
 
+export const WORKER_KINDS = ["browser", "coder", "finance", "explore", "harness"] as const;
+export type WorkerKind = (typeof WORKER_KINDS)[number];
+
 export interface SpawnedWorker {
-  workerType: "browser" | "coder" | "finance" | "explore" | "harness";
+  workerType: WorkerKind;
   workerRunKey: RunKey;
 }
-
-export type WorkerKind = SpawnedWorker["workerType"];
 
 export function buildRunKey(threadId: ThreadId, roleId: RoleId): RunKey {
   return `role:${roleId}:thread:${threadId}`;

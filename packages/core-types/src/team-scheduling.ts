@@ -30,9 +30,13 @@ export interface ScheduledTaskRecord {
     continuity?: DispatchContinuity;
     constraints?: Pick<DispatchConstraints, "preferredWorkerKinds">;
   };
+  /** @deprecated Use `dispatch.targetRoleId`. */
   targetRoleId?: RoleId;
+  /** @deprecated Use `dispatch.targetWorker`. */
   targetWorker?: WorkerKind;
+  /** @deprecated Use `dispatch.sessionTarget`. */
   sessionTarget?: SessionTarget;
+  /** @deprecated Use `dispatch.continuity.context.recovery`. */
   recoveryContext?: DispatchRecoveryContext;
   schedule: {
     kind: "cron";
