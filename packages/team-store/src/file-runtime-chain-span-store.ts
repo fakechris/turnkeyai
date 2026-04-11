@@ -27,15 +27,28 @@ export class FileRuntimeChainSpanStore implements RuntimeChainSpanStore {
     });
   }
 
-  async put(span: RuntimeChainSpan): Promise<void> {
+  async put(span: RuntimeChainSpan, options?: { expectedVersion?: number | undefined }): Promise<void> {
     await this.chainMutex.run(span.chainId, async () => {
       await this.spanMutex.run(span.spanId, async () => {
         const byIdPath = this.byIdFilePath(span.spanId);
         const chainPath = this.chainFilePath(span.chainId, span.spanId);
+        const existing =
+          (await readJsonFile<RuntimeChainSpan>(byIdPath)) ??
+          (await readJsonFile<RuntimeChainSpan>(this.legacyFlatFilePath(span.spanId)));
+        const existingVersion = existing?.version ?? 0;
+        if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
+          throw new Error(
+            `runtime chain span version conflict for ${span.spanId}: expected ${options.expectedVersion}, found ${existingVersion}`
+          );
+        }
         const byIdExisted = await fileExists(byIdPath);
-        await writeJsonFileAtomic(byIdPath, span);
+        const next = {
+          ...span,
+          version: existingVersion + 1,
+        } satisfies RuntimeChainSpan;
+        await writeJsonFileAtomic(byIdPath, next);
         try {
-          await writeJsonFileAtomic(chainPath, span);
+          await writeJsonFileAtomic(chainPath, next);
         } catch (error) {
           if (!byIdExisted) {
             await removeFileIfExists(byIdPath);

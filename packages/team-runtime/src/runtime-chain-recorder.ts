@@ -79,8 +79,12 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
         attention: false,
         updatedAt: flow.updatedAt,
       } satisfies RuntimeChainStatus;
-      await this.statusStore.put(status);
-      await this.runtimeStateRecorder?.record({ chain, status });
+      const previousStatus = await this.statusStore.get(chain.chainId);
+      await this.statusStore.put(status, previousStatus ? { expectedVersion: previousStatus.version } : undefined);
+      await this.runtimeStateRecorder?.record({
+        chain,
+        status: (await this.statusStore.get(chain.chainId)) ?? status,
+      });
     });
   }
 
@@ -94,33 +98,34 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
       if (next.activeSubjectKind === "dispatch" && next.activeSubjectId) {
         await this.ensureDispatchSpanFromTaskId(chain.chainId, rootSpan.spanId, flow.threadId, flow.flowId, next.activeSubjectId);
       }
-      await this.statusStore.put(next);
-      await this.runtimeStateRecorder?.record({ chain, status: next });
-      if (!hasMeaningfulStatusChange(previous, next)) {
+      await this.statusStore.put(next, previous ? { expectedVersion: previous.version } : undefined);
+      const persisted = (await this.statusStore.get(chain.chainId)) ?? next;
+      await this.runtimeStateRecorder?.record({ chain, status: persisted });
+      if (!hasMeaningfulStatusChange(previous, persisted)) {
         return;
       }
 
       await this.eventStore.append({
         eventId: buildRuntimeChainEventId(
           chain.chainId,
-          next.activeSubjectKind ?? "flow",
-          next.activeSubjectId ?? flow.flowId,
-          next.updatedAt
+          persisted.activeSubjectKind ?? "flow",
+          persisted.activeSubjectId ?? flow.flowId,
+          persisted.updatedAt
         ),
         chainId: chain.chainId,
-        spanId: next.activeSpanId ?? rootSpan.spanId,
+        spanId: persisted.activeSpanId ?? rootSpan.spanId,
         threadId: flow.threadId,
-        subjectKind: next.activeSubjectKind ?? "flow",
-        subjectId: next.activeSubjectId ?? flow.flowId,
-        phase: mapStatusPhaseToEventPhase(next.phase),
-        recordedAt: next.updatedAt,
-        summary: next.latestSummary,
-        ...(next.waitingReason ? { statusReason: next.waitingReason } : {}),
-        ...(next.activeSpanId && next.activeSpanId !== rootSpan.spanId
+        subjectKind: persisted.activeSubjectKind ?? "flow",
+        subjectId: persisted.activeSubjectId ?? flow.flowId,
+        phase: mapStatusPhaseToEventPhase(persisted.phase),
+        recordedAt: persisted.updatedAt,
+        summary: persisted.latestSummary,
+        ...(persisted.waitingReason ? { statusReason: persisted.waitingReason } : {}),
+        ...(persisted.activeSpanId && persisted.activeSpanId !== rootSpan.spanId
           ? { parentSpanId: rootSpan.spanId }
           : {}),
-        ...(next.activeSubjectKind === "dispatch" && next.activeSubjectId
-          ? { artifacts: { dispatchTaskId: next.activeSubjectId as TaskId } }
+        ...(persisted.activeSubjectKind === "dispatch" && persisted.activeSubjectId
+          ? { artifacts: { dispatchTaskId: persisted.activeSubjectId as TaskId } }
           : {}),
       } satisfies RuntimeChainEvent);
     });
@@ -167,8 +172,12 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
         attention: false,
         updatedAt: input.handoff.createdAt,
       } satisfies RuntimeChainStatus;
-      await this.statusStore.put(status);
-      await this.runtimeStateRecorder?.record({ chain, status });
+      const previousStatus = await this.statusStore.get(chain.chainId);
+      await this.statusStore.put(status, previousStatus ? { expectedVersion: previousStatus.version } : undefined);
+      await this.runtimeStateRecorder?.record({
+        chain,
+        status: (await this.statusStore.get(chain.chainId)) ?? status,
+      });
     });
   }
 
@@ -191,8 +200,8 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
           createdAt: flow.createdAt,
           updatedAt: flow.updatedAt,
         };
-    await this.chainStore.put(next);
-    return next;
+    await this.chainStore.put(next, existing ? { expectedVersion: existing.version } : undefined);
+    return (await this.chainStore.get(chainId)) ?? next;
   }
 
   private async ensureFlowRootSpan(flow: FlowLedger, chainId: string): Promise<RuntimeChainSpan> {
@@ -213,7 +222,7 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
       updatedAt: flow.updatedAt,
     };
     await this.spanStore.put(span);
-    return span;
+    return (await this.spanStore.get(spanId)) ?? span;
   }
 
   private async ensureDispatchSpan(chainId: string, parentSpanId: string, handoff: HandoffEnvelope): Promise<RuntimeChainSpan> {
@@ -258,7 +267,7 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
       updatedAt: now,
     };
     await this.spanStore.put(span);
-    return span;
+    return (await this.spanStore.get(spanId)) ?? span;
   }
 }
 

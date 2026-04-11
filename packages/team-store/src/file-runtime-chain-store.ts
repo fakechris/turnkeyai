@@ -26,14 +26,27 @@ export class FileRuntimeChainStore implements RuntimeChainStore {
     });
   }
 
-  async put(chain: RuntimeChain): Promise<void> {
+  async put(chain: RuntimeChain, options?: { expectedVersion?: number | undefined }): Promise<void> {
     await this.chainMutex.run(chain.chainId, async () => {
       const byIdPath = this.byIdFilePath(chain.chainId);
       const threadPath = this.threadFilePath(chain.threadId, chain.chainId);
+      const existing =
+        (await readJsonFile<RuntimeChain>(byIdPath)) ??
+        (await readJsonFile<RuntimeChain>(this.legacyFlatFilePath(chain.chainId)));
+      const existingVersion = existing?.version ?? 0;
+      if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
+        throw new Error(
+          `runtime chain version conflict for ${chain.chainId}: expected ${options.expectedVersion}, found ${existingVersion}`
+        );
+      }
       const byIdExisted = await fileExists(byIdPath);
-      await writeJsonFileAtomic(byIdPath, chain);
+      const next = {
+        ...chain,
+        version: existingVersion + 1,
+      } satisfies RuntimeChain;
+      await writeJsonFileAtomic(byIdPath, next);
       try {
-        await writeJsonFileAtomic(threadPath, chain);
+        await writeJsonFileAtomic(threadPath, next);
       } catch (error) {
         if (!byIdExisted) {
           await removeFileIfExists(byIdPath);

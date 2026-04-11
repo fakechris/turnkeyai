@@ -161,3 +161,118 @@ test("runtime chain store merges thread-scoped and legacy thread records", async
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("runtime chain stores assign versions and reject stale expectedVersion writes", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-runtime-chain-versions-"));
+
+  try {
+    const chainStore = new FileRuntimeChainStore({
+      rootDir: path.join(rootDir, "chains"),
+    });
+    const spanStore = new FileRuntimeChainSpanStore({
+      rootDir: path.join(rootDir, "spans"),
+    });
+    const statusStore = new FileRuntimeChainStatusStore({
+      rootDir: path.join(rootDir, "status"),
+    });
+
+    await chainStore.put({
+      chainId: "flow:flow-versioned",
+      threadId: "thread-1",
+      rootKind: "flow",
+      rootId: "flow-versioned",
+      flowId: "flow-versioned",
+      createdAt: 10,
+      updatedAt: 10,
+    });
+    const storedChain = await chainStore.get("flow:flow-versioned");
+    assert.equal(storedChain?.version, 1);
+    await chainStore.put(
+      {
+        ...storedChain!,
+        updatedAt: 20,
+      },
+      { expectedVersion: 1 }
+    );
+    assert.equal((await chainStore.get("flow:flow-versioned"))?.version, 2);
+    await assert.rejects(
+      () =>
+        chainStore.put(
+          {
+            ...storedChain!,
+            updatedAt: 30,
+          },
+          { expectedVersion: 1 }
+        ),
+      /runtime chain version conflict/
+    );
+
+    await spanStore.put({
+      spanId: "flow:flow-versioned",
+      chainId: "flow:flow-versioned",
+      subjectKind: "flow",
+      subjectId: "flow-versioned",
+      threadId: "thread-1",
+      flowId: "flow-versioned",
+      createdAt: 10,
+      updatedAt: 10,
+    });
+    const storedSpan = await spanStore.get("flow:flow-versioned");
+    assert.equal(storedSpan?.version, 1);
+    await spanStore.put(
+      {
+        ...storedSpan!,
+        updatedAt: 20,
+      },
+      { expectedVersion: 1 }
+    );
+    assert.equal((await spanStore.get("flow:flow-versioned"))?.version, 2);
+    await assert.rejects(
+      () =>
+        spanStore.put(
+          {
+            ...storedSpan!,
+            updatedAt: 30,
+          },
+          { expectedVersion: 1 }
+        ),
+      /runtime chain span version conflict/
+    );
+
+    await statusStore.put({
+      chainId: "flow:flow-versioned",
+      threadId: "thread-1",
+      phase: "started",
+      latestSummary: "started",
+      attention: false,
+      updatedAt: 10,
+    });
+    const storedStatus = await statusStore.get("flow:flow-versioned");
+    assert.equal(storedStatus?.version, 1);
+    await statusStore.put(
+      {
+        ...storedStatus!,
+        phase: "waiting",
+        latestSummary: "waiting",
+        updatedAt: 20,
+      },
+      { expectedVersion: 1 }
+    );
+    assert.equal((await statusStore.get("flow:flow-versioned"))?.version, 2);
+    await assert.rejects(
+      () =>
+        statusStore.put(
+          {
+            ...storedStatus!,
+            phase: "resolved",
+            latestSummary: "resolved",
+            updatedAt: 30,
+          },
+          { expectedVersion: 1 }
+        ),
+      /runtime chain status version conflict/
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
