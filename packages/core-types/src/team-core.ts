@@ -162,6 +162,7 @@ export interface RuntimeChain {
   roleId?: RoleId;
   createdAt: number;
   updatedAt: number;
+  version?: number;
 }
 
 export interface RuntimeChainSpan {
@@ -177,6 +178,7 @@ export interface RuntimeChainSpan {
   workerType?: WorkerKind;
   createdAt: number;
   updatedAt: number;
+  version?: number;
 }
 
 export interface RuntimeChainEvent {
@@ -231,6 +233,7 @@ export interface RuntimeChainStatus {
   headline?: string;
   nextStep?: string;
   updatedAt: number;
+  version?: number;
 }
 
 export interface RuntimeSummaryEntry {
@@ -539,14 +542,14 @@ export interface FlowLedgerStore {
 
 export interface RuntimeChainStore {
   get(chainId: string): Promise<RuntimeChain | null>;
-  put(chain: RuntimeChain): Promise<void>;
+  put(chain: RuntimeChain, options?: { expectedVersion?: number | undefined }): Promise<void>;
   listByThread(threadId: ThreadId): Promise<RuntimeChain[]>;
   listAll?(): Promise<RuntimeChain[]>;
 }
 
 export interface RuntimeChainSpanStore {
   get(spanId: string): Promise<RuntimeChainSpan | null>;
-  put(span: RuntimeChainSpan): Promise<void>;
+  put(span: RuntimeChainSpan, options?: { expectedVersion?: number | undefined }): Promise<void>;
   listByChain(chainId: string): Promise<RuntimeChainSpan[]>;
   listAll?(): Promise<RuntimeChainSpan[]>;
 }
@@ -559,7 +562,7 @@ export interface RuntimeChainEventStore {
 
 export interface RuntimeChainStatusStore {
   get(chainId: string): Promise<RuntimeChainStatus | null>;
-  put(status: RuntimeChainStatus): Promise<void>;
+  put(status: RuntimeChainStatus, options?: { expectedVersion?: number | undefined }): Promise<void>;
   listByThread(threadId: ThreadId): Promise<RuntimeChainStatus[]>;
   listActive(limit?: number): Promise<RuntimeChainStatus[]>;
   listAll?(): Promise<RuntimeChainStatus[]>;

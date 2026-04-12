@@ -550,6 +550,7 @@ coordinationEngine = new CoordinationEngine({
   clock,
   contextStateMaintainer,
   workerRuntime,
+  replayRecorder,
   runtimeChainRecorder,
   ingressOutboxRootDir: path.join(DATA_DIR, "flow-start-outbox"),
   dispatchOutboxRootDir: path.join(DATA_DIR, "dispatch-outbox"),

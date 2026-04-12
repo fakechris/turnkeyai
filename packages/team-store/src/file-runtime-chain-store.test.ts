@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -158,6 +158,237 @@ test("runtime chain store merges thread-scoped and legacy thread records", async
       ["flow:new", "flow:legacy"]
     );
   } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime chain stores assign versions and reject stale expectedVersion writes", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-runtime-chain-versions-"));
+
+  try {
+    const chainStore = new FileRuntimeChainStore({
+      rootDir: path.join(rootDir, "chains"),
+    });
+    const spanStore = new FileRuntimeChainSpanStore({
+      rootDir: path.join(rootDir, "spans"),
+    });
+    const statusStore = new FileRuntimeChainStatusStore({
+      rootDir: path.join(rootDir, "status"),
+    });
+
+    await chainStore.put({
+      chainId: "flow:flow-versioned",
+      threadId: "thread-1",
+      rootKind: "flow",
+      rootId: "flow-versioned",
+      flowId: "flow-versioned",
+      createdAt: 10,
+      updatedAt: 10,
+    });
+    const storedChain = await chainStore.get("flow:flow-versioned");
+    assert.equal(storedChain?.version, 1);
+    await chainStore.put(
+      {
+        ...storedChain!,
+        updatedAt: 20,
+      },
+      { expectedVersion: 1 }
+    );
+    assert.equal((await chainStore.get("flow:flow-versioned"))?.version, 2);
+    await assert.rejects(
+      () =>
+        chainStore.put(
+          {
+            ...storedChain!,
+            updatedAt: 30,
+          },
+          { expectedVersion: 1 }
+        ),
+      /runtime chain version conflict/
+    );
+
+    await spanStore.put({
+      spanId: "flow:flow-versioned",
+      chainId: "flow:flow-versioned",
+      subjectKind: "flow",
+      subjectId: "flow-versioned",
+      threadId: "thread-1",
+      flowId: "flow-versioned",
+      createdAt: 10,
+      updatedAt: 10,
+    });
+    const storedSpan = await spanStore.get("flow:flow-versioned");
+    assert.equal(storedSpan?.version, 1);
+    await spanStore.put(
+      {
+        ...storedSpan!,
+        updatedAt: 20,
+      },
+      { expectedVersion: 1 }
+    );
+    assert.equal((await spanStore.get("flow:flow-versioned"))?.version, 2);
+    await assert.rejects(
+      () =>
+        spanStore.put(
+          {
+            ...storedSpan!,
+            updatedAt: 30,
+          },
+          { expectedVersion: 1 }
+        ),
+      /runtime chain span version conflict/
+    );
+
+    await statusStore.put({
+      chainId: "flow:flow-versioned",
+      threadId: "thread-1",
+      phase: "started",
+      latestSummary: "started",
+      attention: false,
+      updatedAt: 10,
+    });
+    const storedStatus = await statusStore.get("flow:flow-versioned");
+    assert.equal(storedStatus?.version, 1);
+    await statusStore.put(
+      {
+        ...storedStatus!,
+        phase: "waiting",
+        latestSummary: "waiting",
+        updatedAt: 20,
+      },
+      { expectedVersion: 1 }
+    );
+    assert.equal((await statusStore.get("flow:flow-versioned"))?.version, 2);
+    await assert.rejects(
+      () =>
+        statusStore.put(
+          {
+            ...storedStatus!,
+            phase: "resolved",
+            latestSummary: "resolved",
+            updatedAt: 30,
+          },
+          { expectedVersion: 1 }
+        ),
+      /runtime chain status version conflict/
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime chain store restores by-id and thread projections when thread write fails", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-runtime-chain-rollback-"));
+  const chainsRoot = path.join(rootDir, "chains");
+  const threadDir = path.join(chainsRoot, "threads", encodeURIComponent("thread-1"));
+
+  try {
+    const chainStore = new FileRuntimeChainStore({ rootDir: chainsRoot });
+    await chainStore.put({
+      chainId: "flow:rollback",
+      threadId: "thread-1",
+      rootKind: "flow",
+      rootId: "flow:rollback",
+      flowId: "flow:rollback",
+      createdAt: 10,
+      updatedAt: 10,
+    });
+    const original = await chainStore.get("flow:rollback");
+    await chmod(threadDir, 0o500);
+    await assert.rejects(
+      () =>
+        chainStore.put(
+          {
+            ...original!,
+            updatedAt: 20,
+          },
+          { expectedVersion: original?.version }
+        )
+    );
+    await chmod(threadDir, 0o700);
+
+    assert.deepEqual(await chainStore.get("flow:rollback"), original);
+    assert.deepEqual((await chainStore.listByThread("thread-1"))[0], original);
+  } finally {
+    await chmod(threadDir, 0o700).catch(() => {});
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime chain span store restores by-id and chain projections when chain write fails", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-runtime-span-rollback-"));
+  const spansRoot = path.join(rootDir, "spans");
+  const chainDir = path.join(spansRoot, "chains", "flow:rollback");
+
+  try {
+    const spanStore = new FileRuntimeChainSpanStore({ rootDir: spansRoot });
+    await spanStore.put({
+      spanId: "dispatch:rollback",
+      chainId: "flow:rollback",
+      subjectKind: "dispatch",
+      subjectId: "rollback",
+      threadId: "thread-1",
+      flowId: "flow:rollback",
+      taskId: "rollback",
+      createdAt: 10,
+      updatedAt: 10,
+    });
+    const original = await spanStore.get("dispatch:rollback");
+    await chmod(chainDir, 0o500);
+    await assert.rejects(
+      () =>
+        spanStore.put(
+          {
+            ...original!,
+            updatedAt: 20,
+          },
+          { expectedVersion: original?.version }
+        )
+    );
+    await chmod(chainDir, 0o700);
+
+    assert.deepEqual(await spanStore.get("dispatch:rollback"), original);
+    assert.deepEqual((await spanStore.listByChain("flow:rollback"))[0], original);
+  } finally {
+    await chmod(chainDir, 0o700).catch(() => {});
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime chain status store restores by-id and thread projections when thread write fails", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-runtime-status-rollback-"));
+  const statusRoot = path.join(rootDir, "status");
+  const threadDir = path.join(statusRoot, "threads", encodeURIComponent("thread-1"));
+
+  try {
+    const statusStore = new FileRuntimeChainStatusStore({ rootDir: statusRoot });
+    await statusStore.put({
+      chainId: "flow:rollback",
+      threadId: "thread-1",
+      phase: "waiting",
+      latestSummary: "waiting",
+      attention: false,
+      updatedAt: 10,
+    });
+    const original = await statusStore.get("flow:rollback");
+    await chmod(threadDir, 0o500);
+    await assert.rejects(
+      () =>
+        statusStore.put(
+          {
+            ...original!,
+            latestSummary: "updated",
+            updatedAt: 20,
+          },
+          { expectedVersion: original?.version }
+        )
+    );
+    await chmod(threadDir, 0o700);
+
+    assert.deepEqual(await statusStore.get("flow:rollback"), original);
+    assert.deepEqual((await statusStore.listByThread("thread-1"))[0], original);
+  } finally {
+    await chmod(threadDir, 0o700).catch(() => {});
     await rm(rootDir, { recursive: true, force: true });
   }
 });

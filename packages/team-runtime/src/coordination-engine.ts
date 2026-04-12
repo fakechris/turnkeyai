@@ -10,6 +10,7 @@ import type {
   MergeSynthesisPacket,
   ParallelOrchestrationContext,
   RecoveryDecision,
+  ReplayStore,
   RecoveryDirector,
   RelayBriefBuilder,
   RoleId,
@@ -59,6 +60,7 @@ interface CoordinationEngineDeps {
   clock: Clock;
   contextStateMaintainer?: ContextStateMaintainer;
   workerRuntime?: Pick<WorkerRuntime, "getState">;
+  replayRecorder?: ReplayStore;
   runtimeChainRecorder?: import("@turnkeyai/core-types/team").RuntimeChainRecorder;
   ingressOutboxRootDir?: string;
   ingressOutboxMaxRetries?: number;
@@ -118,12 +120,15 @@ export class CoordinationEngine {
             : {}),
           onDroppedBatch: async (batch) => {
             for (const item of batch.items) {
+              await this.recordDroppedFlowStartIntentBestEffort(item, batch);
               console.error("flow start intent dropped after exhausting retries", {
                 intentId: item.intentId,
                 kind: item.kind,
                 threadId: item.threadId,
                 flowId: item.flow.flowId,
                 messageId: item.message.id,
+                attemptCount: batch.attemptCount + 1,
+                lastError: batch.lastError,
               });
             }
           },
@@ -1313,6 +1318,99 @@ export class CoordinationEngine {
       this.deps.runtimeChainRecorder?.recordFlowCreated(flow)
     );
     return (await this.deps.flowLedgerStore.get(flow.flowId)) ?? flow;
+  }
+
+  private async recordDroppedFlowStartIntentBestEffort(
+    intent: FlowStartIntent,
+    batch: import("./file-batch-outbox").OutboxBatchRecord<FlowStartIntent>
+  ): Promise<void> {
+    if (!this.deps.replayRecorder) {
+      return;
+    }
+
+    const layer = intent.kind === "scheduled-task" ? "scheduled" : "role";
+    const attemptsExhausted = batch.attemptCount + 1;
+    const summary =
+      intent.kind === "scheduled-task"
+        ? `Scheduled flow start intent ${intent.intentId} exhausted ingress outbox retries before dispatch.`
+        : `User-post flow start intent ${intent.intentId} exhausted ingress outbox retries before dispatch.`;
+
+    try {
+      if (intent.kind === "scheduled-task" && intent.scheduledTask) {
+        const scheduledDispatch = getRequiredScheduledDispatch(intent.scheduledTask);
+        await this.deps.replayRecorder.record({
+          replayId: `${intent.intentId}:ingress-dropped`,
+          layer,
+          status: "failed",
+          recordedAt: this.deps.clock.now(),
+          threadId: intent.threadId,
+          taskId: intent.scheduledTask.taskId,
+          flowId: intent.flow.flowId,
+          roleId: scheduledDispatch.targetRoleId,
+          ...(scheduledDispatch.targetWorker ? { workerType: scheduledDispatch.targetWorker } : {}),
+          summary,
+          failure: {
+            category: "unknown",
+            layer,
+            retryable: false,
+            message: summary,
+            recommendedAction: "inspect",
+            details: {
+              reason: "ingress_outbox_retries_exhausted",
+              attemptsExhausted,
+              lastError: batch.lastError,
+            },
+          },
+          metadata: {
+            source: "ingress_outbox_dropped",
+            intentId: intent.intentId,
+            kind: intent.kind,
+            messageId: intent.message.id,
+            message: intent.message,
+            scheduledTask: intent.scheduledTask,
+          },
+        });
+        return;
+      }
+
+      await this.deps.replayRecorder.record({
+        replayId: `${intent.intentId}:ingress-dropped`,
+        layer,
+        status: "failed",
+        recordedAt: this.deps.clock.now(),
+        threadId: intent.threadId,
+        flowId: intent.flow.flowId,
+        summary,
+        failure: {
+          category: "unknown",
+          layer,
+          retryable: false,
+          message: summary,
+          recommendedAction: "inspect",
+          details: {
+            reason: "ingress_outbox_retries_exhausted",
+            attemptsExhausted,
+            lastError: batch.lastError,
+          },
+        },
+        metadata: {
+          source: "ingress_outbox_dropped",
+          intentId: intent.intentId,
+          kind: intent.kind,
+          messageId: intent.message.id,
+          message: intent.message,
+        },
+      });
+    } catch (error) {
+      console.error("failed to record dropped flow start intent replay", {
+        intentId: intent.intentId,
+        kind: intent.kind,
+        threadId: intent.threadId,
+        flowId: intent.flow.flowId,
+        messageId: intent.message.id,
+        error,
+      });
+    }
   }
 
   private async putFlow(flow: FlowLedger): Promise<void> {

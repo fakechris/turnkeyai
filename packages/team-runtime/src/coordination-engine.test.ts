@@ -9,6 +9,7 @@ import type {
   FlowLedgerStore,
   HandoffEnvelope,
   HandoffPlanner,
+  ReplayRecord,
   RecoveryDirector,
   RuntimeChainRecorder,
   RoleLoopRunner,
@@ -21,6 +22,7 @@ import type {
   TeamThreadStore,
   WorkerRuntime,
 } from "@turnkeyai/core-types/team";
+import { buildReplayInspectionReport } from "@turnkeyai/qc-runtime/replay-inspection";
 
 import { CoordinationEngine } from "./coordination-engine";
 import { FileBatchOutbox } from "./file-batch-outbox";
@@ -1313,6 +1315,175 @@ test("coordination engine replays user-post ingress through the outbox after par
     assert.equal(replayedFlow.edges.length, 1);
     assert.equal(replayedFlow.edges[0]?.state, "delivered");
     assert.equal(ensureRunningCalls, 1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("coordination engine records exhausted ingress outbox batches into replay incidents", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "coordination-engine-ingress-drop-"));
+  try {
+    const thread: TeamThread = {
+      threadId: "thread-ingress-drop",
+      teamId: "team-ingress-drop",
+      teamName: "Demo",
+      leadRoleId: "lead",
+      roles: [{ roleId: "lead", name: "Lead", seat: "lead", runtime: "local" }],
+      participantLinks: [],
+      metadataVersion: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const messages = new Map<string, TeamMessage>();
+    const replayRecords: ReplayRecord[] = [];
+
+    const engine = new CoordinationEngine({
+      teamThreadStore: {
+        async get(threadId) {
+          return threadId === thread.threadId ? thread : null;
+        },
+        async list() {
+          return [thread];
+        },
+        async create() {
+          throw new Error("not used");
+        },
+        async update() {
+          throw new Error("not used");
+        },
+        async delete() {},
+      },
+      teamMessageStore: {
+        async append(message) {
+          messages.set(message.id, message);
+        },
+        async list(threadId) {
+          return [...messages.values()].filter((message) => message.threadId === threadId);
+        },
+        async get(messageId) {
+          return messages.get(messageId) ?? null;
+        },
+      },
+      flowLedgerStore: {
+        async get() {
+          return null;
+        },
+        async put() {
+          throw new Error("permanent flow persistence failure");
+        },
+        async listByThread() {
+          return [];
+        },
+      },
+      roleRunCoordinator: {
+        async getOrCreate() {
+          throw new Error("not used");
+        },
+        async enqueue() {
+          throw new Error("not used");
+        },
+        async dequeue() {
+          return null;
+        },
+        async ack() {},
+        async bindWorkerSession() {},
+        async clearWorkerSession() {},
+        async setStatus() {},
+        async incrementIteration() {
+          return 0;
+        },
+        async fail() {},
+        async finish() {},
+      },
+      handoffPlanner: {
+        parseMentions() {
+          return [];
+        },
+        async validateMentionTargets() {
+          return { allowed: true, mode: "serial", targetRoleIds: [] };
+        },
+        async buildHandoffs() {
+          return [];
+        },
+      },
+      recoveryDirector: {
+        async onUserMessage() {
+          return { action: "complete" as const };
+        },
+        async onRoleReply() {
+          return { action: "complete" as const };
+        },
+        async onRoleFailure() {
+          return { action: "abort" as const, reason: "fail" };
+        },
+      },
+      roleLoopRunner: {
+        async ensureRunning() {
+          throw new Error("not used");
+        },
+      },
+      summaryBuilder: {
+        async getRecentMessages() {
+          return [];
+        },
+      },
+      relayBriefBuilder: {
+        build() {
+          return "brief";
+        },
+      },
+      replayRecorder: {
+        async record(record) {
+          replayRecords.push(record);
+          return record.replayId;
+        },
+        async get(replayId) {
+          return replayRecords.find((record) => record.replayId === replayId) ?? null;
+        },
+        async list() {
+          return replayRecords;
+        },
+      },
+      idGenerator: {
+        flowId: () => "flow-ingress-drop",
+        messageId: () => "msg-ingress-drop",
+        taskId: () => "task-ingress-drop",
+      },
+      runtimeLimits: {
+        flowMaxHops: 4,
+      },
+      clock: {
+        now: () => Date.now(),
+      },
+      ingressOutboxRootDir: path.join(tempDir, "ingress"),
+      ingressOutboxRetryDelayMs: 5,
+      ingressOutboxMaxRetryDelayMs: 5,
+      ingressOutboxMaxRetries: 0,
+    });
+
+    await engine.handleUserPost({
+      threadId: thread.threadId,
+      content: "This intent should end up in replay incidents.",
+    });
+
+    const outbox = new FileBatchOutbox<unknown>({ rootDir: path.join(tempDir, "ingress") });
+    await waitFor(async () => {
+      const remaining = await outbox.listDue(32, Date.now() + 1_000);
+      return remaining.length === 0 && replayRecords.length === 1;
+    });
+
+    assert.equal(replayRecords[0]?.threadId, thread.threadId);
+    assert.equal(replayRecords[0]?.flowId, "flow-ingress-drop");
+    assert.equal(replayRecords[0]?.status, "failed");
+    assert.equal(replayRecords[0]?.failure?.recommendedAction, "inspect");
+    assert.equal(replayRecords[0]?.metadata?.source, "ingress_outbox_dropped");
+    assert.equal(replayRecords[0]?.metadata?.messageId, "msg-ingress-drop");
+
+    const report = buildReplayInspectionReport(replayRecords);
+    assert.equal(report.incidents.length, 1);
+    assert.equal(report.incidents[0]?.recoveryHint.action, "inspect");
+    assert.equal(report.incidents[0]?.groupId, "flow-ingress-drop:start:ingress-dropped");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

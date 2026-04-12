@@ -25,21 +25,38 @@ export class FileRuntimeChainStatusStore implements RuntimeChainStatusStore {
     });
   }
 
-  async put(status: RuntimeChainStatus): Promise<void> {
+  async put(status: RuntimeChainStatus, options?: { expectedVersion?: number | undefined }): Promise<void> {
     await this.chainMutex.run(status.chainId, async () => {
       const byIdPath = this.byIdFilePath(status.chainId);
       const threadPath = this.threadFilePath(status.threadId, status.chainId);
-      const previousById = await readJsonFile<RuntimeChainStatus>(byIdPath);
-      await writeJsonFileAtomic(byIdPath, status);
+      const previousById =
+        (await readJsonFile<RuntimeChainStatus>(byIdPath)) ??
+        (await readJsonFile<RuntimeChainStatus>(this.legacyFlatFilePath(status.chainId)));
+      const previousThread = await readJsonFile<RuntimeChainStatus>(threadPath);
+      const existingVersion = previousById?.version ?? 0;
+      if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
+        throw new Error(
+          `runtime chain status version conflict for ${status.chainId}: expected ${options.expectedVersion}, found ${existingVersion}`
+        );
+      }
+      const next = {
+        ...status,
+        version: existingVersion + 1,
+      } satisfies RuntimeChainStatus;
+      await writeJsonFileAtomic(byIdPath, next);
       try {
-        await writeJsonFileAtomic(threadPath, status);
+        await writeJsonFileAtomic(threadPath, next);
       } catch (error) {
         if (previousById) {
           await writeJsonFileAtomic(byIdPath, previousById);
         } else {
           await removeFileIfExists(byIdPath);
         }
-        await removeFileIfExists(threadPath);
+        if (previousThread) {
+          await writeJsonFileAtomic(threadPath, previousThread);
+        } else {
+          await removeFileIfExists(threadPath);
+        }
         throw error;
       }
     });
