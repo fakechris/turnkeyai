@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -273,6 +273,122 @@ test("runtime chain stores assign versions and reject stale expectedVersion writ
       /runtime chain status version conflict/
     );
   } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime chain store restores by-id and thread projections when thread write fails", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-runtime-chain-rollback-"));
+  const chainsRoot = path.join(rootDir, "chains");
+  const threadDir = path.join(chainsRoot, "threads", encodeURIComponent("thread-1"));
+
+  try {
+    const chainStore = new FileRuntimeChainStore({ rootDir: chainsRoot });
+    await chainStore.put({
+      chainId: "flow:rollback",
+      threadId: "thread-1",
+      rootKind: "flow",
+      rootId: "flow:rollback",
+      flowId: "flow:rollback",
+      createdAt: 10,
+      updatedAt: 10,
+    });
+    const original = await chainStore.get("flow:rollback");
+    await chmod(threadDir, 0o500);
+    await assert.rejects(
+      () =>
+        chainStore.put(
+          {
+            ...original!,
+            updatedAt: 20,
+          },
+          { expectedVersion: original?.version }
+        )
+    );
+    await chmod(threadDir, 0o700);
+
+    assert.deepEqual(await chainStore.get("flow:rollback"), original);
+    assert.deepEqual((await chainStore.listByThread("thread-1"))[0], original);
+  } finally {
+    await chmod(threadDir, 0o700).catch(() => {});
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime chain span store restores by-id and chain projections when chain write fails", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-runtime-span-rollback-"));
+  const spansRoot = path.join(rootDir, "spans");
+  const chainDir = path.join(spansRoot, "chains", "flow:rollback");
+
+  try {
+    const spanStore = new FileRuntimeChainSpanStore({ rootDir: spansRoot });
+    await spanStore.put({
+      spanId: "dispatch:rollback",
+      chainId: "flow:rollback",
+      subjectKind: "dispatch",
+      subjectId: "rollback",
+      threadId: "thread-1",
+      flowId: "flow:rollback",
+      taskId: "rollback",
+      createdAt: 10,
+      updatedAt: 10,
+    });
+    const original = await spanStore.get("dispatch:rollback");
+    await chmod(chainDir, 0o500);
+    await assert.rejects(
+      () =>
+        spanStore.put(
+          {
+            ...original!,
+            updatedAt: 20,
+          },
+          { expectedVersion: original?.version }
+        )
+    );
+    await chmod(chainDir, 0o700);
+
+    assert.deepEqual(await spanStore.get("dispatch:rollback"), original);
+    assert.deepEqual((await spanStore.listByChain("flow:rollback"))[0], original);
+  } finally {
+    await chmod(chainDir, 0o700).catch(() => {});
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime chain status store restores by-id and thread projections when thread write fails", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-runtime-status-rollback-"));
+  const statusRoot = path.join(rootDir, "status");
+  const threadDir = path.join(statusRoot, "threads", encodeURIComponent("thread-1"));
+
+  try {
+    const statusStore = new FileRuntimeChainStatusStore({ rootDir: statusRoot });
+    await statusStore.put({
+      chainId: "flow:rollback",
+      threadId: "thread-1",
+      phase: "waiting",
+      latestSummary: "waiting",
+      attention: false,
+      updatedAt: 10,
+    });
+    const original = await statusStore.get("flow:rollback");
+    await chmod(threadDir, 0o500);
+    await assert.rejects(
+      () =>
+        statusStore.put(
+          {
+            ...original!,
+            latestSummary: "updated",
+            updatedAt: 20,
+          },
+          { expectedVersion: original?.version }
+        )
+    );
+    await chmod(threadDir, 0o700);
+
+    assert.deepEqual(await statusStore.get("flow:rollback"), original);
+    assert.deepEqual((await statusStore.listByThread("thread-1"))[0], original);
+  } finally {
+    await chmod(threadDir, 0o700).catch(() => {});
     await rm(rootDir, { recursive: true, force: true });
   }
 });

@@ -33,6 +33,7 @@ export class FileRuntimeChainStore implements RuntimeChainStore {
       const existing =
         (await readJsonFile<RuntimeChain>(byIdPath)) ??
         (await readJsonFile<RuntimeChain>(this.legacyFlatFilePath(chain.chainId)));
+      const previousThread = await readJsonFile<RuntimeChain>(threadPath);
       const existingVersion = existing?.version ?? 0;
       if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
         throw new Error(
@@ -48,10 +49,16 @@ export class FileRuntimeChainStore implements RuntimeChainStore {
       try {
         await writeJsonFileAtomic(threadPath, next);
       } catch (error) {
-        if (!byIdExisted) {
+        if (byIdExisted && existing) {
+          await writeJsonFileAtomic(byIdPath, existing);
+        } else {
           await removeFileIfExists(byIdPath);
         }
-        await removeFileIfExists(threadPath);
+        if (previousThread) {
+          await writeJsonFileAtomic(threadPath, previousThread);
+        } else {
+          await removeFileIfExists(threadPath);
+        }
         throw error;
       }
     });

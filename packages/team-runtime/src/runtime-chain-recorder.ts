@@ -206,11 +206,6 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
 
   private async ensureFlowRootSpan(flow: FlowLedger, chainId: string): Promise<RuntimeChainSpan> {
     const spanId = buildFlowRootSpanId(flow.flowId);
-    const existing = await this.spanStore.get(spanId);
-    if (existing) {
-      return existing;
-    }
-
     const span: RuntimeChainSpan = {
       spanId,
       chainId,
@@ -221,8 +216,7 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
       createdAt: flow.createdAt,
       updatedAt: flow.updatedAt,
     };
-    await this.spanStore.put(span);
-    return (await this.spanStore.get(spanId)) ?? span;
+    return this.createOrMergeSpan(spanId, span);
   }
 
   private async ensureDispatchSpan(chainId: string, parentSpanId: string, handoff: HandoffEnvelope): Promise<RuntimeChainSpan> {
@@ -247,11 +241,6 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
     createdAt?: number
   ): Promise<RuntimeChainSpan> {
     const spanId = buildDispatchSpanId(taskId);
-    const existing = await this.spanStore.get(spanId);
-    if (existing) {
-      return existing;
-    }
-
     const now = createdAt ?? this.clock.now();
     const span: RuntimeChainSpan = {
       spanId,
@@ -266,8 +255,61 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
       createdAt: now,
       updatedAt: now,
     };
-    await this.spanStore.put(span);
-    return (await this.spanStore.get(spanId)) ?? span;
+    return this.createOrMergeSpan(spanId, span);
+  }
+
+  private async createOrMergeSpan(spanId: string, span: RuntimeChainSpan): Promise<RuntimeChainSpan> {
+    const existing = await this.spanStore.get(spanId);
+    if (existing) {
+      return this.mergeExistingSpan(spanId, existing, span);
+    }
+
+    try {
+      await this.spanStore.put(span, { expectedVersion: 0 });
+      return (await this.spanStore.get(spanId)) ?? span;
+    } catch (error) {
+      if (!isVersionConflictError(error)) {
+        throw error;
+      }
+    }
+
+    const conflicted = await this.spanStore.get(spanId);
+    if (!conflicted) {
+      throw new Error(`runtime chain span conflict without existing span: ${spanId}`);
+    }
+
+    return this.mergeExistingSpan(spanId, conflicted, span);
+  }
+
+  private async mergeExistingSpan(
+    spanId: string,
+    existing: RuntimeChainSpan,
+    incoming: RuntimeChainSpan
+  ): Promise<RuntimeChainSpan> {
+    let current = existing;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const merged = mergeRuntimeChainSpan(current, incoming);
+      if (areRuntimeChainSpansEqual(current, merged)) {
+        return current;
+      }
+
+      try {
+        await this.spanStore.put(merged, { expectedVersion: current.version });
+        return (await this.spanStore.get(spanId)) ?? merged;
+      } catch (error) {
+        if (!isVersionConflictError(error)) {
+          throw error;
+        }
+      }
+
+      const latest = await this.spanStore.get(spanId);
+      if (!latest) {
+        throw new Error(`runtime chain span conflict without existing span: ${spanId}`);
+      }
+      current = latest;
+    }
+
+    return current;
   }
 }
 
@@ -290,6 +332,44 @@ function buildRuntimeChainEventId(
   recordedAt: number
 ): string {
   return `${chainId}:${subjectKind}:${subjectId}:${recordedAt}`;
+}
+
+function isVersionConflictError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("version conflict");
+}
+
+function mergeRuntimeChainSpan(existing: RuntimeChainSpan, incoming: RuntimeChainSpan): RuntimeChainSpan {
+  return {
+    ...existing,
+    ...(existing.parentSpanId ?? incoming.parentSpanId
+      ? { parentSpanId: existing.parentSpanId ?? incoming.parentSpanId }
+      : {}),
+    ...(existing.flowId ?? incoming.flowId ? { flowId: existing.flowId ?? incoming.flowId } : {}),
+    ...(existing.taskId ?? incoming.taskId ? { taskId: existing.taskId ?? incoming.taskId } : {}),
+    ...(existing.roleId ?? incoming.roleId ? { roleId: existing.roleId ?? incoming.roleId } : {}),
+    ...(existing.workerType ?? incoming.workerType
+      ? { workerType: existing.workerType ?? incoming.workerType }
+      : {}),
+    createdAt: Math.min(existing.createdAt, incoming.createdAt),
+    updatedAt: Math.max(existing.updatedAt, incoming.updatedAt),
+  };
+}
+
+function areRuntimeChainSpansEqual(left: RuntimeChainSpan, right: RuntimeChainSpan): boolean {
+  return (
+    left.spanId === right.spanId &&
+    left.chainId === right.chainId &&
+    left.parentSpanId === right.parentSpanId &&
+    left.subjectKind === right.subjectKind &&
+    left.subjectId === right.subjectId &&
+    left.threadId === right.threadId &&
+    left.flowId === right.flowId &&
+    left.taskId === right.taskId &&
+    left.roleId === right.roleId &&
+    left.workerType === right.workerType &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt
+  );
 }
 
 function buildRuntimeChainStatusFromFlow(
