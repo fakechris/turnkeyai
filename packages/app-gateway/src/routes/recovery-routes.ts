@@ -7,6 +7,7 @@ import {
   parseRequiredNonEmptyString,
   sendJson,
 } from "../http-helpers";
+import { readIdempotencyKey, type RouteIdempotencyStore } from "../idempotency-store";
 
 export interface RecoveryRouteDeps {
   buildReplayIncidents(input: {
@@ -32,6 +33,7 @@ export interface RecoveryRouteDeps {
     groupId: string;
   }): Promise<{ statusCode: number; body: unknown }>;
   getReplay(replayId: string): Promise<unknown | null>;
+  idempotencyStore?: RouteIdempotencyStore;
 }
 
 export async function handleRecoveryRoutes(input: {
@@ -212,6 +214,11 @@ export async function handleRecoveryRoutes(input: {
     /^\/recovery-runs\/([^/]+)\/(approve|reject|retry|fallback|resume)$/
   );
   if (req.method === "POST" && recoveryRunActionMatch) {
+    const idempotencyKey = readIdempotencyKey(req);
+    if (!idempotencyKey.ok) {
+      sendJson(res, 400, { error: idempotencyKey.error });
+      return true;
+    }
     const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
@@ -222,17 +229,36 @@ export async function handleRecoveryRoutes(input: {
       sendJson(res, 400, { error: "recoveryRunId is required" });
       return true;
     }
-    const result = await deps.executeRecoveryRunAction({
-      threadId,
-      recoveryRunId,
-      action: recoveryRunActionMatch[2] as "approve" | "reject" | "retry" | "fallback" | "resume",
-    });
-    sendJson(res, result.statusCode, result.body);
+    const action = recoveryRunActionMatch[2] as "approve" | "reject" | "retry" | "fallback" | "resume";
+    const executeAction = async () =>
+      deps.executeRecoveryRunAction({
+        threadId,
+        recoveryRunId,
+        action,
+      });
+    const result = deps.idempotencyStore
+      ? await deps.idempotencyStore.execute({
+          scope: "recovery:run-action",
+          ...(idempotencyKey.key ? { key: idempotencyKey.key } : {}),
+          fingerprint: JSON.stringify({ threadId, recoveryRunId, action }),
+          execute: executeAction,
+        })
+      : ({
+          kind: "response",
+          ...(await executeAction()),
+          replayed: false,
+        } as const);
+    sendIdempotentResponse(res, result);
     return true;
   }
 
   const replayRecoveryDispatchMatch = url.pathname.match(/^\/replay-recoveries\/([^/]+)\/dispatch$/);
   if (req.method === "POST" && replayRecoveryDispatchMatch) {
+    const idempotencyKey = readIdempotencyKey(req);
+    if (!idempotencyKey.ok) {
+      sendJson(res, 400, { error: idempotencyKey.error });
+      return true;
+    }
     const threadId = parseRequiredNonEmptyString(url.searchParams.get("threadId"));
     if (!threadId) {
       sendJson(res, 400, { error: "threadId is required" });
@@ -243,11 +269,24 @@ export async function handleRecoveryRoutes(input: {
       sendJson(res, 400, { error: "groupId is required" });
       return true;
     }
-    const result = await deps.dispatchReplayRecovery({
-      threadId,
-      groupId,
-    });
-    sendJson(res, result.statusCode, result.body);
+    const executeDispatch = async () =>
+      deps.dispatchReplayRecovery({
+        threadId,
+        groupId,
+      });
+    const result = deps.idempotencyStore
+      ? await deps.idempotencyStore.execute({
+          scope: "recovery:replay-dispatch",
+          ...(idempotencyKey.key ? { key: idempotencyKey.key } : {}),
+          fingerprint: JSON.stringify({ threadId, groupId }),
+          execute: executeDispatch,
+        })
+      : ({
+          kind: "response",
+          ...(await executeDispatch()),
+          replayed: false,
+        } as const);
+    sendIdempotentResponse(res, result);
     return true;
   }
 
@@ -276,4 +315,20 @@ function parsePathParam(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+function sendIdempotentResponse(
+  res: http.ServerResponse,
+  result:
+    | { kind: "response"; statusCode: number; body: unknown; replayed: boolean }
+    | { kind: "conflict"; statusCode: 409; body: { error: string } }
+): void {
+  if (result.kind === "conflict") {
+    sendJson(res, result.statusCode, result.body);
+    return;
+  }
+  if (result.replayed) {
+    res.setHeader("x-turnkeyai-idempotency-status", "replayed");
+  }
+  sendJson(res, result.statusCode, result.body);
 }

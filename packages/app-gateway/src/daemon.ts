@@ -179,6 +179,7 @@ import {
   createRelayPeerIdentityBindingStore,
   resolveDaemonAuthConfig,
 } from "./daemon-auth";
+import { createRouteIdempotencyStore } from "./idempotency-store";
 import { createRecoveryActionService } from "./recovery-action-service";
 import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
 import { createRuntimeQueryService } from "./runtime-query-service";
@@ -214,6 +215,9 @@ const relayPeerBindingStore = createRelayPeerIdentityBindingStore({
 
 const idGenerator = createIdGenerator();
 const recoveryRunActionMutex = new KeyedAsyncMutex<string>();
+const routeIdempotencyStore = createRouteIdempotencyStore({
+  now: clock.now,
+});
 type RuntimeChainEntry = { chain: RuntimeChain; status: RuntimeChainStatus };
 const runtimeLimits = {
   memberMaxIterations: 6,
@@ -1031,6 +1035,7 @@ const server = http.createServer(async (req, res) => {
           dispatchReplayRecovery: ({ threadId, groupId }) =>
             recoveryActionService.dispatchReplayRecovery({ threadId, groupId }),
           getReplay: (replayId) => replayRecorder.get(replayId),
+          idempotencyStore: routeIdempotencyStore,
         },
       })
     ) {
@@ -1079,6 +1084,7 @@ const server = http.createServer(async (req, res) => {
           scheduledTaskRuntime,
           idGenerator,
           clock,
+          idempotencyStore: routeIdempotencyStore,
         },
       })
     ) {

@@ -165,11 +165,10 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
 }
 
 function getRequiredScheduledDispatch(task: ScheduledTaskRecord): NonNullable<ScheduledTaskRecord["dispatch"]> {
-  const normalized = task.dispatch ? task : normalizeScheduledTaskRecord(task);
-  if (!normalized.dispatch) {
+  if (!task.dispatch) {
     throw new Error(`scheduled task is missing canonical dispatch payload: ${task.taskId}`);
   }
-  return normalized.dispatch;
+  return task.dispatch;
 }
 
 function computeNextRunAt(expr: string, tz: string, after: number): number {

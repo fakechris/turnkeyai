@@ -4,7 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { RuntimeChainSpan, RuntimeChainSpanStore } from "@turnkeyai/core-types/team";
+import type {
+  RuntimeChain,
+  RuntimeChainSpan,
+  RuntimeChainSpanStore,
+  RuntimeChainStatus,
+  RuntimeChainStatusStore,
+  RuntimeChainStore,
+} from "@turnkeyai/core-types/team";
 import { FileRuntimeChainEventStore } from "@turnkeyai/team-store/file-runtime-chain-event-store";
 import { FileRuntimeChainSpanStore } from "@turnkeyai/team-store/file-runtime-chain-span-store";
 import { FileRuntimeChainStatusStore } from "@turnkeyai/team-store/file-runtime-chain-status-store";
@@ -46,6 +53,60 @@ class ConflictInjectingSpanStore implements RuntimeChainSpanStore {
 
   async listByChain(chainId: string): Promise<RuntimeChainSpan[]> {
     return this.inner.listByChain(chainId);
+  }
+}
+
+class ExpectVersionZeroOnCreateChainStore implements RuntimeChainStore {
+  private readonly inner: FileRuntimeChainStore;
+  sawCreateCas = false;
+
+  constructor(inner: FileRuntimeChainStore) {
+    this.inner = inner;
+  }
+
+  async get(chainId: string): Promise<RuntimeChain | null> {
+    return this.inner.get(chainId);
+  }
+
+  async put(chain: RuntimeChain, options?: { expectedVersion?: number | undefined }): Promise<void> {
+    if (chain.chainId === "flow:flow-create-cas" && (await this.inner.get(chain.chainId)) == null) {
+      assert.equal(options?.expectedVersion, 0);
+      this.sawCreateCas = true;
+    }
+    await this.inner.put(chain, options);
+  }
+
+  async listByThread(threadId: string): Promise<RuntimeChain[]> {
+    return this.inner.listByThread(threadId);
+  }
+}
+
+class ExpectVersionZeroOnCreateStatusStore implements RuntimeChainStatusStore {
+  private readonly inner: FileRuntimeChainStatusStore;
+  sawCreateCas = false;
+
+  constructor(inner: FileRuntimeChainStatusStore) {
+    this.inner = inner;
+  }
+
+  async get(chainId: string): Promise<RuntimeChainStatus | null> {
+    return this.inner.get(chainId);
+  }
+
+  async put(status: RuntimeChainStatus, options?: { expectedVersion?: number | undefined }): Promise<void> {
+    if (status.chainId === "flow:flow-create-cas" && (await this.inner.get(status.chainId)) == null) {
+      assert.equal(options?.expectedVersion, 0);
+      this.sawCreateCas = true;
+    }
+    await this.inner.put(status, options);
+  }
+
+  async listByThread(threadId: string): Promise<RuntimeChainStatus[]> {
+    return this.inner.listByThread(threadId);
+  }
+
+  async listActive(limit?: number): Promise<RuntimeChainStatus[]> {
+    return this.inner.listActive(limit);
   }
 }
 
@@ -214,6 +275,52 @@ test("runtime chain recorder materializes dispatch span from flow status without
     assert.ok(spans.some((span) => span.spanId === "dispatch:task-2"));
     assert.equal(status?.activeSpanId, "dispatch:task-2");
     assert.equal(status?.lastCompletedSpanId, undefined);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime chain recorder uses expectedVersion zero when creating chain and status projections", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-runtime-chain-recorder-create-cas-"));
+
+  try {
+    const innerChainStore = new FileRuntimeChainStore({ rootDir: path.join(rootDir, "chains") });
+    const chainStore = new ExpectVersionZeroOnCreateChainStore(innerChainStore);
+    const spanStore = new FileRuntimeChainSpanStore({ rootDir: path.join(rootDir, "spans") });
+    const eventStore = new FileRuntimeChainEventStore({ rootDir: path.join(rootDir, "events") });
+    const innerStatusStore = new FileRuntimeChainStatusStore({ rootDir: path.join(rootDir, "status") });
+    const statusStore = new ExpectVersionZeroOnCreateStatusStore(innerStatusStore);
+    const recorder = new DefaultRuntimeChainRecorder({
+      chainStore,
+      spanStore,
+      eventStore,
+      statusStore,
+      clock: {
+        now: () => 50,
+      },
+    });
+
+    await recorder.recordFlowCreated({
+      flowId: "flow-create-cas",
+      threadId: "thread-1",
+      rootMessageId: "msg-root",
+      mode: "serial",
+      status: "created",
+      currentStageIndex: 0,
+      activeRoleIds: [],
+      completedRoleIds: [],
+      failedRoleIds: [],
+      nextExpectedRoleId: "lead",
+      hopCount: 0,
+      maxHops: 5,
+      edges: [],
+      shardGroups: [],
+      createdAt: 10,
+      updatedAt: 10,
+    });
+
+    assert.equal(chainStore.sawCreateCas, true);
+    assert.equal(statusStore.sawCreateCas, true);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

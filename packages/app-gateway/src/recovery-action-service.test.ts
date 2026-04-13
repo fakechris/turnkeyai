@@ -389,6 +389,76 @@ test("recovery action service retries sync persistence after a version conflict"
   assert.equal(snapshot.runs[0]?.latestSummary, expectedRun.latestSummary);
 });
 
+test("recovery action service creates new recovery runs with expectedVersion zero", async () => {
+  const records = buildReplayRecords();
+  let latestRun: RecoveryRun | null = null;
+  let createOptions: number | undefined;
+  let taskCounter = 0;
+
+  const service = createRecoveryActionService({
+    clock: { now: () => 100 },
+    idGenerator: {
+      messageId: () => "msg-1",
+      taskId: () => `task-${++taskCounter}`,
+    } as any,
+    recoveryRunActionMutex: {
+      async run(_key: string, work: () => Promise<unknown>) {
+        return work();
+      },
+    } as any,
+    recoveryRunStaleAfterMs: 60_000,
+    coordinationEngine: {
+      async handleScheduledTask() {},
+    } as any,
+    runtimeStateRecorder: {
+      async record() {},
+    } as any,
+    runtimeProgressRecorder: {
+      async record() {},
+    } as any,
+    replayRecorder: {
+      async list() {
+        return records;
+      },
+      async record() {
+        return "replay-recorded";
+      },
+    } as any,
+    recoveryRunStore: {
+      async listByThread() {
+        return latestRun ? [latestRun] : [];
+      },
+      async get(recoveryRunId: string) {
+        return latestRun?.recoveryRunId === recoveryRunId ? latestRun : null;
+      },
+      async put(run: RecoveryRun, options?: { expectedVersion?: number }) {
+        if (!latestRun) {
+          createOptions = options?.expectedVersion;
+        }
+        latestRun = {
+          ...run,
+          version: (latestRun?.version ?? 0) + 1,
+        };
+      },
+    } as any,
+    recoveryRunEventStore: {
+      async append() {},
+      async listByRecoveryRun() {
+        return [];
+      },
+    } as any,
+  });
+
+  const result = await service.dispatchReplayRecovery({
+    threadId: "thread-1",
+    groupId: "task-1",
+  });
+
+  assert.equal(result.statusCode, 202);
+  assert.equal(createOptions, 0);
+  assert.ok(latestRun);
+});
+
 test("recovery action service treats duplicate in-flight dispatch as idempotent", async () => {
   const records = buildReplayRecords();
   const recoveryRunId = buildRecoveryRunId("task-1");
