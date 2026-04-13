@@ -60,3 +60,36 @@ test("role run coordinator canonicalizes enqueued legacy handoff payloads", asyn
   assert.deepEqual(storedRun?.inbox[0]?.payload.intent?.recentMessages, []);
   assert.equal(storedRun?.inbox[0]?.payload.relayBrief, "Continue with the browser session.");
 });
+
+test("role run coordinator uses expectedVersion zero when creating a run", async () => {
+  let createExpectedVersion: number | undefined;
+  const store: RoleRunStore = {
+    async get() {
+      return null;
+    },
+    async put(runState, options) {
+      createExpectedVersion = options?.expectedVersion;
+    },
+    async delete() {},
+    async listByThread() {
+      return [];
+    },
+    async listAll() {
+      return [];
+    },
+  };
+
+  const coordinator = new DefaultRoleRunCoordinator({
+    roleRunStore: store,
+    runtimeLimits: {
+      memberMaxIterations: 4,
+      maxQueuedHandoffsPerRole: 4,
+    },
+    now: () => 10,
+  });
+
+  const run = await coordinator.getOrCreate("thread-1", "role-lead");
+
+  assert.equal(run.runKey, "role:role-lead:thread:thread-1");
+  assert.equal(createExpectedVersion, 0);
+});

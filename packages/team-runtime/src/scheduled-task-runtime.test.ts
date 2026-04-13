@@ -90,6 +90,56 @@ test("scheduled task runtime persists tasks and dispatches due capsules", async 
   assert.ok((tasks.get(scheduled.taskId)?.schedule.nextRunAt ?? 0) > scheduled.createdAt);
 });
 
+test("scheduled task runtime uses expectedVersion zero when creating tasks", async () => {
+  let createExpectedVersion: number | undefined;
+  const store: ScheduledTaskStore = {
+    async get() {
+      return null;
+    },
+    async put(task, options) {
+      createExpectedVersion = options?.expectedVersion;
+    },
+    async listByThread() {
+      return [];
+    },
+    async listDue() {
+      return [];
+    },
+    async claimDue() {
+      return null;
+    },
+  };
+
+  const runtime = new DefaultScheduledTaskRuntime({
+    scheduledTaskStore: store,
+    coordinationEngine: {
+      async handleScheduledTask() {},
+    },
+    clock: {
+      now: () => Date.UTC(2026, 2, 27, 0, 0, 0),
+    },
+    idGenerator: {
+      taskId: () => "TASK-scheduled-1",
+    },
+  });
+
+  await runtime.schedule({
+    threadId: "thread-1",
+    targetRoleId: "role-operator",
+    schedule: {
+      kind: "cron",
+      expr: "0 9 * * *",
+      tz: "Asia/Shanghai",
+    },
+    capsule: {
+      title: "Daily check",
+      instructions: "Review daily metrics.",
+    },
+  });
+
+  assert.equal(createExpectedVersion, 0);
+});
+
 test("scheduled task runtime continues dispatching after one task throws", async () => {
   const tasks = new Map<string, ScheduledTaskRecord>();
   const dispatchedTaskIds: string[] = [];

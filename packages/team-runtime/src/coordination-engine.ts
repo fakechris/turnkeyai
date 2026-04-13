@@ -1414,7 +1414,7 @@ export class CoordinationEngine {
   }
 
   private async putFlow(flow: FlowLedger): Promise<void> {
-    await this.deps.flowLedgerStore.put(flow, flow.version != null ? { expectedVersion: flow.version } : undefined);
+    await this.deps.flowLedgerStore.put(flow, { expectedVersion: flow.version ?? 0 });
     await this.recordRuntimeChainBestEffort("syncFlowStatus", flow, () => this.deps.runtimeChainRecorder?.syncFlowStatus(flow));
   }
 
@@ -1746,7 +1746,7 @@ function getScheduledPreferredWorkerKinds(task: ScheduledTaskRecord): WorkerKind
 }
 
 function getRequiredRelayDispatchPolicy(payload: HandoffEnvelope["payload"]) {
-  const dispatchPolicy = payload.constraints?.dispatchPolicy ?? normalizeRelayPayload(payload).constraints?.dispatchPolicy;
+  const dispatchPolicy = payload.constraints?.dispatchPolicy;
   if (!dispatchPolicy) {
     throw new Error(`handoff payload is missing canonical constraints.dispatchPolicy for thread ${payload.threadId}`);
   }
