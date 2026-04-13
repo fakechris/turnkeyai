@@ -45,12 +45,16 @@ export function createRouteIdempotencyStore(
 
   function pruneExpiredEntries(currentTime: number): void {
     for (const [entryKey, entry] of entries.entries()) {
+      if (entry.pending) {
+        continue;
+      }
       if (entry.expiresAt <= currentTime) {
         entries.delete(entryKey);
       }
     }
     while (entries.size > maxEntries) {
-      const oldestKey = entries.keys().next().value;
+      const oldestSettledEntry = [...entries.entries()].find(([, entry]) => !entry.pending);
+      const oldestKey = oldestSettledEntry?.[0];
       if (!oldestKey) {
         break;
       }
@@ -126,7 +130,7 @@ export function createRouteIdempotencyStore(
 
       entries.set(entryKey, {
         fingerprint: input.fingerprint,
-        expiresAt: currentTime + ttlMs,
+        expiresAt: Number.POSITIVE_INFINITY,
         response: undefined,
         pending,
       });
@@ -183,10 +187,15 @@ function readHeaderValue(value: string | string[] | undefined): { value?: string
       return { error: true };
     }
     const first = value[0];
-    return typeof first === "string" && first.trim().length > 0 ? { value: first } : { error: true };
+    if (typeof first !== "string") {
+      return { error: true };
+    }
+    const trimmed = first.trim();
+    return trimmed.length > 0 && !trimmed.includes(",") ? { value: first } : { error: true };
   }
   if (typeof value === "string") {
-    return value.trim().length > 0 ? { value } : { error: true };
+    const trimmed = value.trim();
+    return trimmed.length > 0 && !trimmed.includes(",") ? { value } : { error: true };
   }
   return {};
 }

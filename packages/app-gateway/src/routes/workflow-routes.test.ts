@@ -605,3 +605,72 @@ test("workflow routes reject invalid idempotency headers", async () => {
   assert.equal(response.res.statusCode, 400);
   assert.deepEqual(response.json, { error: "Idempotency-Key must be a single non-empty string" });
 });
+
+test("workflow routes reject comma-joined idempotency headers", async () => {
+  const response = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      headers: { "idempotency-key": "msg-1, msg-2" },
+      body: { threadId: "thread-1", content: "hello world" },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "Idempotency-Key must be a single non-empty string" });
+});
+
+test("workflow routes accept idempotent message posts when event publish fails after the durable write", async () => {
+  let handled = 0;
+  let published = 0;
+  const deps = createDeps({
+    coordinationEngine: {
+      async handleUserPost() {
+        handled += 1;
+      },
+    },
+    teamEventBus: {
+      async publish() {
+        published += 1;
+        throw new Error("event bus unavailable");
+      },
+    },
+  });
+
+  const first = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      headers: { "idempotency-key": "msg-1" },
+      body: { threadId: "thread-1", content: "hello world" },
+    }),
+    res: first.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps,
+  });
+
+  const replay = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      headers: { "idempotency-key": "msg-1" },
+      body: { threadId: "thread-1", content: "hello world" },
+    }),
+    res: replay.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps,
+  });
+
+  assert.equal(handled, 1);
+  assert.equal(published, 1);
+  assert.equal(first.res.statusCode, 202);
+  assert.equal(replay.res.statusCode, 202);
+  assert.equal(replay.headers.get("x-turnkeyai-idempotency-status"), "replayed");
+  assert.deepEqual(replay.json, { accepted: true, threadId: "thread-1" });
+});

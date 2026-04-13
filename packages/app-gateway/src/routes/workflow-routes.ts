@@ -122,16 +122,23 @@ export async function handleWorkflowRoutes(input: {
     }
     const executeMessagePost = async () => {
       await deps.coordinationEngine.handleUserPost({ ...body, threadId, content });
-      await deps.teamEventBus.publish({
-        eventId: deps.idGenerator.messageId(),
-        threadId,
-        kind: "message.posted",
-        createdAt: deps.clock.now(),
-        payload: {
-          route: "user",
-          contentLength: content.length,
-        },
-      });
+      try {
+        await deps.teamEventBus.publish({
+          eventId: deps.idGenerator.messageId(),
+          threadId,
+          kind: "message.posted",
+          createdAt: deps.clock.now(),
+          payload: {
+            route: "user",
+            contentLength: content.length,
+          },
+        });
+      } catch (error) {
+        console.warn("message.posted event publish failed after accepting user post", {
+          threadId,
+          error,
+        });
+      }
       return {
         statusCode: 202,
         body: { accepted: true, threadId },
