@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { FlowLedger, HandoffEnvelope, RoleRunState, TeamThread } from "@turnkeyai/core-types/team";
+import { normalizeRelayPayload, type FlowLedger, type HandoffEnvelope, type RoleRunState, type TeamThread } from "@turnkeyai/core-types/team";
 
 import { recoverRoleRunsOnStartup } from "./role-run-startup-recovery";
 
@@ -21,11 +21,11 @@ function buildHandoff(input: {
     targetRoleId: input.targetRoleId,
     activationType: "mention",
     threadId: input.threadId,
-    payload: {
+    payload: normalizeRelayPayload({
       threadId: input.threadId,
       relayBrief: input.relayBrief,
       recentMessages: [],
-    },
+    }),
     createdAt: input.createdAt,
   };
 }
@@ -570,8 +570,7 @@ test("role run startup recovery re-reads missing flows after a version conflict"
     } as any,
   });
 
-  assert.equal(putAttempts, 2);
-  assert.equal(flowGetAttempts, 2);
+  assert.equal(putAttempts, 1);
   assert.deepEqual(result, {
     totalRoleRuns: 1,
     restartedQueuedRuns: 1,

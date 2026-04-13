@@ -54,7 +54,7 @@ export class DefaultRoleRunCoordinator implements RoleRunCoordinator {
         lastActiveAt: this.now(),
       };
 
-      await this.roleRunStore.put(created);
+      await this.roleRunStore.put(created, { expectedVersion: 0 });
       return created;
     });
   }

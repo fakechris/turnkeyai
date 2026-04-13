@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { createRouteIdempotencyStore, readIdempotencyKey } from "./idempotency-store";
+import {
+  createFileRouteIdempotencyStore,
+  createRouteIdempotencyStore,
+  readIdempotencyKey,
+} from "./idempotency-store";
 
 test("route idempotency store keeps pending entries until they settle", async () => {
   let now = 0;
@@ -137,4 +144,55 @@ test("readIdempotencyKey rejects comma-joined header values", () => {
       error: "Idempotency-Key must be a single non-empty string",
     }
   );
+});
+
+test("file route idempotency store replays settled responses across store recreation", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-route-idempotency-"));
+  try {
+    let executions = 0;
+    let now = 100;
+    const firstStore = createFileRouteIdempotencyStore({
+      rootDir,
+      now: () => now,
+      ttlMs: 10_000,
+    });
+
+    const first = await firstStore.execute({
+      scope: "workflow:messages",
+      key: "msg-1",
+      fingerprint: "fingerprint-1",
+      execute: async () => {
+        executions += 1;
+        return {
+          statusCode: 202,
+          body: { accepted: true, threadId: "thread-1" },
+        };
+      },
+    });
+
+    const restartedStore = createFileRouteIdempotencyStore({
+      rootDir,
+      now: () => now,
+      ttlMs: 10_000,
+    });
+    const replay = await restartedStore.execute({
+      scope: "workflow:messages",
+      key: "msg-1",
+      fingerprint: "fingerprint-1",
+      execute: async () => {
+        executions += 1;
+        return {
+          statusCode: 202,
+          body: { accepted: true, threadId: "thread-1" },
+        };
+      },
+    });
+
+    assert.equal(executions, 1);
+    assert.equal(first.kind, "response");
+    assert.equal(replay.kind, "response");
+    assert.equal(replay.replayed, true);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
 });

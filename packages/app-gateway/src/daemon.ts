@@ -179,7 +179,7 @@ import {
   createRelayPeerIdentityBindingStore,
   resolveDaemonAuthConfig,
 } from "./daemon-auth";
-import { createRouteIdempotencyStore } from "./idempotency-store";
+import { createFileRouteIdempotencyStore } from "./idempotency-store";
 import { createRecoveryActionService } from "./recovery-action-service";
 import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
 import { createRuntimeQueryService } from "./runtime-query-service";
@@ -215,7 +215,8 @@ const relayPeerBindingStore = createRelayPeerIdentityBindingStore({
 
 const idGenerator = createIdGenerator();
 const recoveryRunActionMutex = new KeyedAsyncMutex<string>();
-const routeIdempotencyStore = createRouteIdempotencyStore({
+const routeIdempotencyStore = createFileRouteIdempotencyStore({
+  rootDir: path.join(DATA_DIR, "route-idempotency"),
   now: clock.now,
 });
 type RuntimeChainEntry = { chain: RuntimeChain; status: RuntimeChainStatus };

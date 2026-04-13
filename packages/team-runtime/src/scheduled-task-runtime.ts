@@ -61,7 +61,7 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
       createdAt: now,
       updatedAt: now,
     });
-    await this.scheduledTaskStore.put(task);
+    await this.scheduledTaskStore.put(task, { expectedVersion: 0 });
     return (await this.scheduledTaskStore.get(task.taskId)) ?? task;
   }
 

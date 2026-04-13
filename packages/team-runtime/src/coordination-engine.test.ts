@@ -22,6 +22,7 @@ import type {
   TeamThreadStore,
   WorkerRuntime,
 } from "@turnkeyai/core-types/team";
+import { normalizeRelayPayload } from "@turnkeyai/core-types/team";
 import { buildReplayInspectionReport } from "@turnkeyai/qc-runtime/replay-inspection";
 
 import { CoordinationEngine } from "./coordination-engine";
@@ -206,6 +207,161 @@ test("coordination engine aborts flow when hop limit is reached before dispatch"
 
   assert.equal(storedFlow.status, "aborted");
   assert.equal(ensureRunningCalled, false);
+});
+
+test("coordination engine uses expectedVersion zero when creating a new flow", async () => {
+  const thread: TeamThread = {
+    threadId: "thread-cas",
+    teamId: "team-cas",
+    teamName: "Demo",
+    leadRoleId: "lead",
+    roles: [{ roleId: "lead", name: "Lead", seat: "lead", runtime: "local" }],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  let createExpectedVersion: number | undefined;
+  let storedFlow: FlowLedger | null = null;
+  const engine = new CoordinationEngine({
+    teamThreadStore: {
+      async get(threadId) {
+        return threadId === thread.threadId ? thread : null;
+      },
+      async list() {
+        return [thread];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore: {
+      async append() {},
+      async list() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    },
+    flowLedgerStore: {
+      async get(flowId) {
+        return storedFlow?.flowId === flowId ? storedFlow : null;
+      },
+      async put(flow, options) {
+        if (createExpectedVersion == null) {
+          createExpectedVersion = options?.expectedVersion;
+        }
+        storedFlow = {
+          ...flow,
+          version: 1,
+        };
+      },
+      async listByThread() {
+        return [];
+      },
+    },
+    roleRunCoordinator: {
+      async getOrCreate() {
+        return {
+          runKey: "role:lead:thread:thread-cas",
+          threadId: thread.threadId,
+          roleId: "lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 0,
+          maxIterations: 4,
+          inbox: [],
+          lastActiveAt: 1,
+          version: 1,
+        };
+      },
+      async enqueue(runKey, handoff) {
+        return {
+          runKey,
+          threadId: handoff.threadId,
+          roleId: handoff.targetRoleId,
+          mode: "group",
+          status: "queued",
+          iterationCount: 0,
+          maxIterations: 4,
+          inbox: [handoff],
+          lastActiveAt: 10,
+          version: 1,
+        };
+      },
+      async dequeue() {
+        return null;
+      },
+      async ack() {},
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus() {},
+      async incrementIteration() {
+        return 0;
+      },
+      async fail() {},
+      async finish() {},
+    },
+    handoffPlanner: {
+      parseMentions() {
+        return [];
+      },
+      async validateMentionTargets() {
+        return { allowed: true, mode: "serial", targetRoleIds: [] };
+      },
+      async buildHandoffs() {
+        return [];
+      },
+    },
+    recoveryDirector: {
+      async onUserMessage() {
+        return { action: "complete" };
+      },
+      async onRoleReply() {
+        return { action: "complete" };
+      },
+      async onRoleFailure() {
+        return { action: "complete" };
+      },
+    },
+    roleLoopRunner: {
+      async ensureRunning() {},
+    },
+    summaryBuilder: {
+      async getRecentMessages() {
+        return [];
+      },
+    } as SummaryBuilder,
+    relayBriefBuilder: {
+      build() {
+        return "relay brief";
+      },
+    },
+    runtimeLimits: {
+      flowMaxHops: 10,
+    },
+    idGenerator: {
+      flowId: () => "flow-cas",
+      messageId: () => "message-cas",
+      taskId: () => "task-cas",
+    },
+    clock: {
+      now: () => 10,
+    },
+  });
+
+  await engine.handleUserPost({
+    threadId: thread.threadId,
+    content: "hello world",
+  });
+
+  assert.equal(createExpectedVersion, 0);
 });
 
 test("coordination engine caps and truncates recent messages before dispatch payloads", async () => {
@@ -611,7 +767,7 @@ test("coordination engine dedupes repeated handoffs and advances edge state to c
       targetRoleId: "operator",
       activationType: "mention",
       threadId: thread.threadId,
-      payload: {
+      payload: normalizeRelayPayload({
         threadId: thread.threadId,
         relayBrief: "brief",
         recentMessages: [],
@@ -620,7 +776,7 @@ test("coordination engine dedupes repeated handoffs and advances edge state to c
           allowReenter: true,
           sourceFlowMode: "serial",
         },
-      },
+      }),
       createdAt: 1,
     },
     message: replyMessage,
@@ -2509,7 +2665,7 @@ test("coordination engine fan-out waits for all shards before dispatching merge 
     targetRoleId: "lead",
     activationType: "cascade",
     threadId: thread.threadId,
-    payload: {
+    payload: normalizeRelayPayload({
       threadId: thread.threadId,
       relayBrief: "Split the work.",
       recentMessages: [],
@@ -2518,7 +2674,7 @@ test("coordination engine fan-out waits for all shards before dispatching merge 
         allowReenter: true,
         sourceFlowMode: "parallel",
       },
-    },
+    }),
     createdAt: 1,
   };
 
@@ -2771,7 +2927,7 @@ test("coordination engine retries failed shard before merge synthesis", async ()
       targetRoleId: "lead",
       activationType: "cascade",
       threadId: thread.threadId,
-      payload: {
+      payload: normalizeRelayPayload({
         threadId: thread.threadId,
         relayBrief: "Split the work.",
         recentMessages: [],
@@ -2780,7 +2936,7 @@ test("coordination engine retries failed shard before merge synthesis", async ()
           allowReenter: true,
           sourceFlowMode: "parallel",
         },
-      },
+      }),
       createdAt: 1,
     },
     message: {
