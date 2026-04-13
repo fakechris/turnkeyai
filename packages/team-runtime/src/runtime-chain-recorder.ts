@@ -80,7 +80,7 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
         updatedAt: flow.updatedAt,
       } satisfies RuntimeChainStatus;
       const previousStatus = await this.statusStore.get(chain.chainId);
-      await this.statusStore.put(status, previousStatus ? { expectedVersion: previousStatus.version } : undefined);
+      await this.statusStore.put(status, { expectedVersion: previousStatus?.version ?? 0 });
       await this.runtimeStateRecorder?.record({
         chain,
         status: (await this.statusStore.get(chain.chainId)) ?? status,
@@ -98,7 +98,7 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
       if (next.activeSubjectKind === "dispatch" && next.activeSubjectId) {
         await this.ensureDispatchSpanFromTaskId(chain.chainId, rootSpan.spanId, flow.threadId, flow.flowId, next.activeSubjectId);
       }
-      await this.statusStore.put(next, previous ? { expectedVersion: previous.version } : undefined);
+      await this.statusStore.put(next, { expectedVersion: previous?.version ?? 0 });
       const persisted = (await this.statusStore.get(chain.chainId)) ?? next;
       await this.runtimeStateRecorder?.record({ chain, status: persisted });
       if (!hasMeaningfulStatusChange(previous, persisted)) {
@@ -173,7 +173,7 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
         updatedAt: input.handoff.createdAt,
       } satisfies RuntimeChainStatus;
       const previousStatus = await this.statusStore.get(chain.chainId);
-      await this.statusStore.put(status, previousStatus ? { expectedVersion: previousStatus.version } : undefined);
+      await this.statusStore.put(status, { expectedVersion: previousStatus?.version ?? 0 });
       await this.runtimeStateRecorder?.record({
         chain,
         status: (await this.statusStore.get(chain.chainId)) ?? status,
@@ -200,7 +200,7 @@ export class DefaultRuntimeChainRecorder implements RuntimeChainRecorder {
           createdAt: flow.createdAt,
           updatedAt: flow.updatedAt,
         };
-    await this.chainStore.put(next, existing ? { expectedVersion: existing.version } : undefined);
+    await this.chainStore.put(next, { expectedVersion: existing?.version ?? 0 });
     return (await this.chainStore.get(chainId)) ?? next;
   }
 

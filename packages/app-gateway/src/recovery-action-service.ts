@@ -596,11 +596,10 @@ export function createRecoveryActionService(input: {
   }
 
   function getRequiredScheduledDispatch(task: ScheduledTaskRecord): NonNullable<ScheduledTaskRecord["dispatch"]> {
-    const normalized = task.dispatch ? task : normalizeScheduledTaskRecord(task);
-    if (!normalized.dispatch) {
+    if (!task.dispatch) {
       throw new Error(`scheduled task is missing canonical dispatch payload: ${task.taskId}`);
     }
-    return normalized.dispatch;
+    return task.dispatch;
   }
 
   function getScheduledRecoveryContext(task: ScheduledTaskRecord) {
@@ -692,7 +691,7 @@ export function createRecoveryActionService(input: {
       }
 
       try {
-        await recoveryRunStore.put(next, { expectedVersion: previous?.version });
+        await recoveryRunStore.put(next, { expectedVersion: previous?.version ?? 0 });
         return {
           previous,
           next,
@@ -727,7 +726,7 @@ export function createRecoveryActionService(input: {
         return existing;
       }
       try {
-        await recoveryRunStore.put(skeleton, { expectedVersion: skeleton.version });
+        await recoveryRunStore.put(skeleton, { expectedVersion: 0 });
         return skeleton;
       } catch (error) {
         if (!isVersionConflictError(error)) {

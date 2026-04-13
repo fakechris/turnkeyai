@@ -2,29 +2,34 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
 
+import { createRouteIdempotencyStore } from "../idempotency-store";
 import { handleWorkflowRoutes, type WorkflowRouteDeps } from "./workflow-routes";
 
-function createRequest(input: { method: string; url: string; body?: unknown }) {
+function createRequest(input: { method: string; url: string; body?: unknown; headers?: Record<string, string> }) {
   const body =
     input.body === undefined ? [] : [Buffer.from(typeof input.body === "string" ? input.body : JSON.stringify(input.body))];
   return Object.assign(Readable.from(body), {
     method: input.method,
     url: input.url,
-    headers: {},
+    headers: input.headers ?? {},
   }) as any;
 }
 
 function createResponse() {
   let payload = "";
+  const headers = new Map<string, string>();
   const res = {
     statusCode: 200,
-    setHeader() {},
+    setHeader(name: string, value: string) {
+      headers.set(name.toLowerCase(), value);
+    },
     end(chunk?: string) {
       payload = chunk ?? "";
     },
   } as any;
   return {
     res,
+    headers,
     get json() {
       return payload ? JSON.parse(payload) : undefined;
     },
@@ -60,6 +65,9 @@ function createDeps(overrides: Partial<WorkflowRouteDeps> = {}): WorkflowRouteDe
     clock: {
       now: () => 123,
     },
+    idempotencyStore: createRouteIdempotencyStore({
+      now: () => 123,
+    }),
     ...overrides,
   };
 }
@@ -156,6 +164,98 @@ test("workflow routes trim message body before publishing", async () => {
   assert.deepEqual(response.json, { accepted: true, threadId: "thread-1" });
 });
 
+test("workflow routes replay idempotent message posts without duplicating side effects", async () => {
+  let handled = 0;
+  let published = 0;
+  const deps = createDeps({
+    coordinationEngine: {
+      async handleUserPost() {
+        handled += 1;
+      },
+    },
+    teamEventBus: {
+      async publish() {
+        published += 1;
+      },
+    },
+  });
+
+  const first = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      headers: { "idempotency-key": "msg-1" },
+      body: { threadId: "thread-1", content: "hello world" },
+    }),
+    res: first.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps,
+  });
+
+  const second = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      headers: { "idempotency-key": "msg-1" },
+      body: { threadId: " thread-1 ", content: " hello world " },
+    }),
+    res: second.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps,
+  });
+
+  assert.equal(handled, 1);
+  assert.equal(published, 1);
+  assert.equal(first.res.statusCode, 202);
+  assert.equal(second.res.statusCode, 202);
+  assert.equal(second.headers.get("x-turnkeyai-idempotency-status"), "replayed");
+  assert.deepEqual(second.json, { accepted: true, threadId: "thread-1" });
+});
+
+test("workflow routes reject idempotency key reuse with a different message body", async () => {
+  let handled = 0;
+  const deps = createDeps({
+    coordinationEngine: {
+      async handleUserPost() {
+        handled += 1;
+      },
+    },
+  });
+
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      headers: { "idempotency-key": "msg-1" },
+      body: { threadId: "thread-1", content: "hello world" },
+    }),
+    res: createResponse().res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps,
+  });
+
+  const conflict = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      headers: { "idempotency-key": "msg-1" },
+      body: { threadId: "thread-1", content: "different body" },
+    }),
+    res: conflict.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps,
+  });
+
+  assert.equal(handled, 1);
+  assert.equal(conflict.res.statusCode, 409);
+  assert.deepEqual(conflict.json, {
+    error: "idempotency key reuse does not match the original request",
+  });
+});
+
 test("workflow routes reject blank scheduled task fields", async () => {
   const response = createResponse();
   await handleWorkflowRoutes({
@@ -236,6 +336,91 @@ test("workflow routes trim scheduled task fields before scheduling", async () =>
       kind: "cron",
       expr: "0 * * * *",
       tz: "Asia/Shanghai",
+    },
+  });
+});
+
+test("workflow routes replay idempotent scheduled task creation without rescheduling", async () => {
+  let scheduleCalls = 0;
+  const deps = createDeps({
+    scheduledTaskRuntime: {
+      async listByThread(threadId: string) {
+        return [{ threadId }];
+      },
+      async schedule(input) {
+        scheduleCalls += 1;
+        return { taskId: "task-1", ...input };
+      },
+      async triggerDue(now?: number) {
+        return { now };
+      },
+    },
+  });
+
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/scheduled-tasks",
+      headers: { "idempotency-key": "task-1" },
+      body: {
+        threadId: "thread-1",
+        targetRoleId: "lead",
+        capsule: {
+          title: "Ship report",
+          instructions: "Verify metrics",
+        },
+        schedule: {
+          kind: "cron",
+          expr: "0 * * * *",
+          tz: "UTC",
+        },
+      },
+    }),
+    res: createResponse().res,
+    url: new URL("http://127.0.0.1/scheduled-tasks"),
+    deps,
+  });
+
+  const replay = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/scheduled-tasks",
+      headers: { "idempotency-key": "task-1" },
+      body: {
+        threadId: "thread-1",
+        targetRoleId: "lead",
+        capsule: {
+          title: " Ship report ",
+          instructions: " Verify metrics ",
+        },
+        schedule: {
+          kind: "cron",
+          expr: " 0 * * * * ",
+          tz: " UTC ",
+        },
+      },
+    }),
+    res: replay.res,
+    url: new URL("http://127.0.0.1/scheduled-tasks"),
+    deps,
+  });
+
+  assert.equal(scheduleCalls, 1);
+  assert.equal(replay.res.statusCode, 201);
+  assert.equal(replay.headers.get("x-turnkeyai-idempotency-status"), "replayed");
+  assert.deepEqual(replay.json, {
+    taskId: "task-1",
+    threadId: "thread-1",
+    targetRoleId: "lead",
+    capsule: {
+      title: "Ship report",
+      instructions: "Verify metrics",
+    },
+    schedule: {
+      kind: "cron",
+      expr: "0 * * * *",
+      tz: "UTC",
     },
   });
 });
@@ -353,4 +538,139 @@ test("workflow routes reject invalid trigger-due now values", async () => {
 
   assert.equal(response.res.statusCode, 400);
   assert.deepEqual(response.json, { error: "now must be a non-negative finite number" });
+});
+
+test("workflow routes replay idempotent trigger-due requests", async () => {
+  let triggerCalls = 0;
+  const deps = createDeps({
+    scheduledTaskRuntime: {
+      async listByThread(threadId: string) {
+        return [{ threadId }];
+      },
+      async schedule(input) {
+        return input;
+      },
+      async triggerDue(now?: number) {
+        triggerCalls += 1;
+        return { now, triggerCalls };
+      },
+    },
+  });
+
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/scheduled-tasks/trigger-due",
+      headers: { "idempotency-key": "trigger-1" },
+      body: { now: 99 },
+    }),
+    res: createResponse().res,
+    url: new URL("http://127.0.0.1/scheduled-tasks/trigger-due"),
+    deps,
+  });
+
+  const replay = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/scheduled-tasks/trigger-due",
+      headers: { "idempotency-key": "trigger-1" },
+      body: { now: 99 },
+    }),
+    res: replay.res,
+    url: new URL("http://127.0.0.1/scheduled-tasks/trigger-due"),
+    deps,
+  });
+
+  assert.equal(triggerCalls, 1);
+  assert.equal(replay.res.statusCode, 200);
+  assert.equal(replay.headers.get("x-turnkeyai-idempotency-status"), "replayed");
+  assert.deepEqual(replay.json, { now: 99, triggerCalls: 1 });
+});
+
+test("workflow routes reject invalid idempotency headers", async () => {
+  const response = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      headers: { "idempotency-key": "   " },
+      body: { threadId: "thread-1", content: "hello world" },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "Idempotency-Key must be a single non-empty string" });
+});
+
+test("workflow routes reject comma-joined idempotency headers", async () => {
+  const response = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      headers: { "idempotency-key": "msg-1, msg-2" },
+      body: { threadId: "thread-1", content: "hello world" },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "Idempotency-Key must be a single non-empty string" });
+});
+
+test("workflow routes accept idempotent message posts when event publish fails after the durable write", async () => {
+  let handled = 0;
+  let published = 0;
+  const deps = createDeps({
+    coordinationEngine: {
+      async handleUserPost() {
+        handled += 1;
+      },
+    },
+    teamEventBus: {
+      async publish() {
+        published += 1;
+        throw new Error("event bus unavailable");
+      },
+    },
+  });
+
+  const first = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      headers: { "idempotency-key": "msg-1" },
+      body: { threadId: "thread-1", content: "hello world" },
+    }),
+    res: first.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps,
+  });
+
+  const replay = createResponse();
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/messages",
+      headers: { "idempotency-key": "msg-1" },
+      body: { threadId: "thread-1", content: "hello world" },
+    }),
+    res: replay.res,
+    url: new URL("http://127.0.0.1/messages"),
+    deps,
+  });
+
+  assert.equal(handled, 1);
+  assert.equal(published, 1);
+  assert.equal(first.res.statusCode, 202);
+  assert.equal(replay.res.statusCode, 202);
+  assert.equal(replay.headers.get("x-turnkeyai-idempotency-status"), "replayed");
+  assert.deepEqual(replay.json, { accepted: true, threadId: "thread-1" });
 });

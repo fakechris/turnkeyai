@@ -17,6 +17,7 @@ import {
   readOptionalJsonBodySafe,
   sendJson,
 } from "../http-helpers";
+import { readIdempotencyKey, type RouteIdempotencyStore } from "../idempotency-store";
 
 interface CoordinationEngineDeps {
   handleUserPost(body: { threadId: string; content: string }): Promise<void>;
@@ -64,6 +65,7 @@ export interface WorkflowRouteDeps {
   scheduledTaskRuntime: ScheduledTaskRuntimeDeps;
   idGenerator: IdGenerator;
   clock: Clock;
+  idempotencyStore?: RouteIdempotencyStore;
 }
 
 const MAX_MESSAGE_CONTENT_CHARS = 20_000;
@@ -93,6 +95,11 @@ export async function handleWorkflowRoutes(input: {
   }
 
   if (req.method === "POST" && url.pathname === "/messages") {
+    const idempotencyKey = readIdempotencyKey(req);
+    if (!idempotencyKey.ok) {
+      sendJson(res, 400, { error: idempotencyKey.error });
+      return true;
+    }
     const bodyResult = await readJsonBodySafe<{ threadId: string; content: string }>(req);
     if (!bodyResult.ok) {
       sendJson(res, 400, { error: bodyResult.error });
@@ -113,22 +120,52 @@ export async function handleWorkflowRoutes(input: {
       sendJson(res, 400, { error: `content must be at most ${MAX_MESSAGE_CONTENT_CHARS} characters` });
       return true;
     }
-    await deps.coordinationEngine.handleUserPost({ ...body, threadId, content });
-    await deps.teamEventBus.publish({
-      eventId: deps.idGenerator.messageId(),
-      threadId,
-      kind: "message.posted",
-      createdAt: deps.clock.now(),
-      payload: {
-        route: "user",
-        contentLength: content.length,
-      },
-    });
-    sendJson(res, 202, { accepted: true, threadId });
+    const executeMessagePost = async () => {
+      await deps.coordinationEngine.handleUserPost({ ...body, threadId, content });
+      try {
+        await deps.teamEventBus.publish({
+          eventId: deps.idGenerator.messageId(),
+          threadId,
+          kind: "message.posted",
+          createdAt: deps.clock.now(),
+          payload: {
+            route: "user",
+            contentLength: content.length,
+          },
+        });
+      } catch (error) {
+        console.warn("message.posted event publish failed after accepting user post", {
+          threadId,
+          error,
+        });
+      }
+      return {
+        statusCode: 202,
+        body: { accepted: true, threadId },
+      };
+    };
+    const result = deps.idempotencyStore
+      ? await deps.idempotencyStore.execute({
+          scope: "workflow:messages",
+          ...(idempotencyKey.key ? { key: idempotencyKey.key } : {}),
+          fingerprint: JSON.stringify({ threadId, content }),
+          execute: executeMessagePost,
+        })
+      : ({
+          kind: "response",
+          ...(await executeMessagePost()),
+          replayed: false,
+        } as const);
+    sendIdempotentResponse(res, result);
     return true;
   }
 
   if (req.method === "POST" && url.pathname === "/scheduled-tasks") {
+    const idempotencyKey = readIdempotencyKey(req);
+    if (!idempotencyKey.ok) {
+      sendJson(res, 400, { error: idempotencyKey.error });
+      return true;
+    }
     const bodyResult = await readJsonBodySafe<{
       threadId: string;
       targetRoleId: string;
@@ -212,31 +249,46 @@ export async function handleWorkflowRoutes(input: {
       sendJson(res, 400, { error: dependencyRefs.error });
       return true;
     }
-    sendJson(
-      res,
-      201,
-      await deps.scheduledTaskRuntime.schedule({
-        ...body,
-        threadId,
-        targetRoleId,
-        capsule: {
-          ...body.capsule,
-          title,
-          instructions,
-          ...(artifactRefs.value.length > 0 ? { artifactRefs: artifactRefs.value } : {}),
-          ...(dependencyRefs.value.length > 0 ? { dependencyRefs: dependencyRefs.value } : {}),
-        },
-        schedule: {
-          ...body.schedule,
-          expr,
-          tz,
-        },
-      })
-    );
+    const normalizedInput = {
+      ...body,
+      threadId,
+      targetRoleId,
+      capsule: {
+        ...body.capsule,
+        title,
+        instructions,
+        ...(artifactRefs.value.length > 0 ? { artifactRefs: artifactRefs.value } : {}),
+        ...(dependencyRefs.value.length > 0 ? { dependencyRefs: dependencyRefs.value } : {}),
+      },
+      schedule: {
+        ...body.schedule,
+        expr,
+        tz,
+      },
+    };
+    const result = await deps.idempotencyStore?.execute({
+      scope: "workflow:scheduled-tasks",
+      ...(idempotencyKey.key ? { key: idempotencyKey.key } : {}),
+      fingerprint: JSON.stringify(normalizedInput),
+      execute: async () => ({
+        statusCode: 201,
+        body: await deps.scheduledTaskRuntime.schedule(normalizedInput),
+      }),
+    });
+    if (!result) {
+      sendJson(res, 201, await deps.scheduledTaskRuntime.schedule(normalizedInput));
+      return true;
+    }
+    sendIdempotentResponse(res, result);
     return true;
   }
 
   if (req.method === "POST" && url.pathname === "/scheduled-tasks/trigger-due") {
+    const idempotencyKey = readIdempotencyKey(req);
+    if (!idempotencyKey.ok) {
+      sendJson(res, 400, { error: idempotencyKey.error });
+      return true;
+    }
     const bodyResult = await readOptionalJsonBodySafe<{ now?: number }>(req);
     if (!bodyResult.ok) {
       sendJson(res, 400, { error: bodyResult.error });
@@ -247,7 +299,20 @@ export async function handleWorkflowRoutes(input: {
       sendJson(res, 400, { error: "now must be a non-negative finite number" });
       return true;
     }
-    sendJson(res, 200, await deps.scheduledTaskRuntime.triggerDue(body.now));
+    const result = await deps.idempotencyStore?.execute({
+      scope: "workflow:scheduled-tasks:trigger-due",
+      ...(idempotencyKey.key ? { key: idempotencyKey.key } : {}),
+      fingerprint: JSON.stringify({ now: body.now ?? null }),
+      execute: async () => ({
+        statusCode: 200,
+        body: await deps.scheduledTaskRuntime.triggerDue(body.now),
+      }),
+    });
+    if (!result) {
+      sendJson(res, 200, await deps.scheduledTaskRuntime.triggerDue(body.now));
+      return true;
+    }
+    sendIdempotentResponse(res, result);
     return true;
   }
 
@@ -285,4 +350,20 @@ function normalizeRefArray(
     normalized.push(trimmed);
   }
   return { ok: true, value: normalized };
+}
+
+function sendIdempotentResponse(
+  res: http.ServerResponse,
+  result:
+    | { kind: "response"; statusCode: number; body: unknown; replayed: boolean }
+    | { kind: "conflict"; statusCode: 409; body: { error: string } }
+): void {
+  if (result.kind === "conflict") {
+    sendJson(res, result.statusCode, result.body);
+    return;
+  }
+  if (result.replayed) {
+    res.setHeader("x-turnkeyai-idempotency-status", "replayed");
+  }
+  sendJson(res, result.statusCode, result.body);
 }
