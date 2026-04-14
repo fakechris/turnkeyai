@@ -191,3 +191,74 @@ test("file scheduled task store can update a legacy task without deadlocking", a
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("file scheduled task store canonicalizes legacy recovery dispatch metadata at the store boundary", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-scheduled-task-store-recovery-legacy-"));
+
+  try {
+    await writeJsonFileAtomic(path.join(rootDir, `${encodeURIComponent("TASK-recovery-legacy")}.json`), {
+      taskId: "TASK-recovery-legacy",
+      threadId: "thread-legacy",
+      targetRoleId: "role-operator",
+      targetWorker: "browser",
+      sessionTarget: "worker",
+      recoveryContext: {
+        parentGroupId: "group-1",
+        action: "retry_same_layer",
+      },
+      schedule: {
+        kind: "cron",
+        expr: "0 9 * * *",
+        tz: "Asia/Shanghai",
+        nextRunAt: 1,
+      },
+      capsule: {
+        title: "Legacy recovery task",
+        instructions: "Resume browser recovery.",
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const store = new FileScheduledTaskStore({ rootDir });
+    const task = await store.get("TASK-recovery-legacy");
+
+    assert.equal(task?.dispatch?.targetRoleId, "role-operator");
+    assert.equal(task?.dispatch?.targetWorker, "browser");
+    assert.equal(task?.dispatch?.sessionTarget, "worker");
+    assert.deepEqual(task?.dispatch?.constraints?.preferredWorkerKinds, ["browser"]);
+    assert.equal(task?.dispatch?.continuity?.context?.source, "recovery_dispatch");
+    assert.equal(task?.dispatch?.continuity?.context?.recovery?.parentGroupId, "group-1");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file scheduled task store throws a descriptive error for malformed legacy task records", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-scheduled-task-store-invalid-legacy-"));
+
+  try {
+    await writeJsonFileAtomic(path.join(rootDir, `${encodeURIComponent("TASK-invalid-legacy")}.json`), {
+      taskId: "TASK-invalid-legacy",
+      threadId: "thread-legacy",
+      sessionTarget: "main",
+      schedule: {
+        kind: "cron",
+        expr: "0 9 * * *",
+        tz: "Asia/Shanghai",
+        nextRunAt: 1,
+      },
+      capsule: {
+        title: "Invalid task",
+        instructions: "Missing target role.",
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const store = new FileScheduledTaskStore({ rootDir });
+    await assert.rejects(() => store.get("TASK-invalid-legacy"), /scheduled task is missing targetRoleId: TASK-invalid-legacy/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

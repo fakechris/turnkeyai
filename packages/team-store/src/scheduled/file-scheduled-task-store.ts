@@ -1,6 +1,11 @@
 import path from "node:path";
 
-import { normalizeScheduledTaskRecord, type ScheduledTaskRecord, type ScheduledTaskStore } from "@turnkeyai/core-types/team";
+import {
+  createScheduledTaskRecord,
+  type DispatchContinuity,
+  type ScheduledTaskRecord,
+  type ScheduledTaskStore,
+} from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
@@ -23,7 +28,7 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
   async put(task: ScheduledTaskRecord, options?: { expectedVersion?: number | undefined }): Promise<void> {
     await this.withTaskLock(task.taskId, async () => {
       const raw = await readJsonFile<ScheduledTaskRecord>(this.filePath(task.taskId));
-      const current = raw ? normalizeScheduledTaskRecord(raw) : null;
+      const current = raw ? normalizeStoredScheduledTaskRecord(raw) : null;
       const existingVersion = current?.version ?? 0;
       if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
         throw new Error(
@@ -33,7 +38,7 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
 
       await writeJsonFileAtomic(
         this.filePath(task.taskId),
-        normalizeScheduledTaskRecord({
+        normalizeStoredScheduledTaskRecord({
           ...task,
           version: existingVersion + 1,
         })
@@ -59,7 +64,7 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
   ): Promise<ScheduledTaskRecord | null> {
     return this.withTaskLock(taskId, async () => {
       const raw = await readJsonFile<ScheduledTaskRecord>(this.filePath(taskId));
-      const current = raw ? normalizeScheduledTaskRecord(raw) : null;
+      const current = raw ? normalizeStoredScheduledTaskRecord(raw) : null;
       if (
         !current ||
         current.updatedAt !== expectedUpdatedAt ||
@@ -68,7 +73,7 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
         return null;
       }
 
-      const claimedTask = normalizeScheduledTaskRecord({
+      const claimedTask = normalizeStoredScheduledTaskRecord({
         ...current,
         version: (current.version ?? 1) + 1,
         schedule: {
@@ -103,7 +108,7 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
       return null;
     }
 
-    const normalized = normalizeScheduledTaskRecord(raw);
+    const normalized = normalizeStoredScheduledTaskRecord(raw);
     if (isSameScheduledTaskShape(raw, normalized)) {
       return normalized;
     }
@@ -114,7 +119,7 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
         return null;
       }
 
-      const migrated = normalizeScheduledTaskRecord(current);
+      const migrated = normalizeStoredScheduledTaskRecord(current);
       if (!isSameScheduledTaskShape(current, migrated)) {
         await writeJsonFileAtomic(this.filePath(taskId), migrated);
       }
@@ -125,4 +130,47 @@ export class FileScheduledTaskStore implements ScheduledTaskStore {
 
 function isSameScheduledTaskShape(left: ScheduledTaskRecord, right: ScheduledTaskRecord): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function normalizeStoredScheduledTaskRecord(task: ScheduledTaskRecord): ScheduledTaskRecord {
+  const targetRoleId = task.dispatch?.targetRoleId ?? task.targetRoleId;
+  if (!targetRoleId) {
+    throw new Error(`scheduled task is missing targetRoleId: ${task.taskId}`);
+  }
+  const targetWorker = task.dispatch?.targetWorker ?? task.targetWorker;
+  const sessionTarget = task.dispatch?.sessionTarget ?? task.sessionTarget ?? "main";
+  const continuity: DispatchContinuity | undefined =
+    task.dispatch?.continuity ??
+    (task.recoveryContext
+      ? {
+          context: {
+            source: "recovery_dispatch",
+            ...(targetWorker ? { workerType: targetWorker } : {}),
+            recovery: task.recoveryContext,
+          },
+        }
+      : undefined);
+  const preferredWorkerKinds =
+    task.dispatch?.constraints?.preferredWorkerKinds?.length
+      ? task.dispatch.constraints.preferredWorkerKinds
+      : targetWorker
+        ? [targetWorker]
+        : [];
+
+  return createScheduledTaskRecord({
+    taskId: task.taskId,
+    threadId: task.threadId,
+    version: task.version ?? 1,
+    dispatch: {
+      targetRoleId,
+      sessionTarget,
+      ...(targetWorker ? { targetWorker } : {}),
+      ...(continuity ? { continuity } : {}),
+      ...(preferredWorkerKinds.length > 0 ? { constraints: { preferredWorkerKinds } } : {}),
+    },
+    schedule: task.schedule,
+    capsule: task.capsule,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+  });
 }

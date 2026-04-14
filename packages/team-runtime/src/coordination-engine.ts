@@ -35,7 +35,6 @@ import type {
 } from "@turnkeyai/core-types/team";
 import {
   createRelayPayload,
-  getScheduledPreferredWorkerKinds,
   normalizeRelayPayload,
   requireScheduledDispatch,
 } from "@turnkeyai/core-types/team";
@@ -1233,7 +1232,12 @@ export class CoordinationEngine {
         toRoleId: scheduledDispatch.targetRoleId,
         activationType: "cascade",
         instructions: buildScheduledInstructions(task, continuationContext),
-        preferredWorkerKinds: getScheduledPreferredWorkerKinds(task),
+        preferredWorkerKinds:
+          scheduledDispatch.constraints?.preferredWorkerKinds?.length
+            ? scheduledDispatch.constraints.preferredWorkerKinds
+            : scheduledDispatch.targetWorker
+              ? [scheduledDispatch.targetWorker]
+              : [],
         sessionTarget: scheduledDispatch.sessionTarget,
         ...(scheduledContinuityMode ? { continuityMode: scheduledContinuityMode } : {}),
         ...(continuationContext ? { continuationContext } : {}),
