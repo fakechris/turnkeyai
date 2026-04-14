@@ -20,6 +20,7 @@ import type {
   TeamEventBus,
   TeamMessage,
   TransportExecutionAudit,
+  WorkerContinuationOutcome,
   WorkerKind,
   WorkerExecutionResult,
   WorkerEvidenceDigestStore,
@@ -100,13 +101,15 @@ export class PolicyRoleRuntime implements RoleRuntime {
       let workerBindings: RoleRuntimeResult["workerBindings"] = [];
       let workerGovernance: WorkerGovernanceBundle | null = null;
       let workerReplayPath: string | null = null;
+      let workerContinuation: WorkerContinuationOutcome | null = null;
 
       if (this.workerRuntime) {
         try {
-          const existingWorker = await this.resolveExistingWorker(
+          const existingWorkerResolution = await this.resolveExistingWorker(
             input,
             basePacket
           );
+          const existingWorker = existingWorkerResolution.worker;
           if (existingWorker) {
             activeWorker = existingWorker;
             workerResult = await this.workerRuntime.resume({
@@ -115,6 +118,11 @@ export class PolicyRoleRuntime implements RoleRuntime {
               packet: basePacket,
             });
             workerState = await this.workerRuntime.getState(existingWorker.workerRunKey);
+            workerContinuation = buildWorkerContinuationOutcome({
+              packet: basePacket,
+              resolution: existingWorkerResolution,
+              activeWorker,
+            });
           } else {
             activeWorker = await this.workerRuntime.spawn({
               activation: input,
@@ -127,6 +135,11 @@ export class PolicyRoleRuntime implements RoleRuntime {
                 packet: basePacket,
               });
               workerState = await this.workerRuntime.getState(activeWorker.workerRunKey);
+              workerContinuation = buildWorkerContinuationOutcome({
+                packet: basePacket,
+                resolution: existingWorkerResolution,
+                activeWorker,
+              });
             }
           }
 
@@ -138,11 +151,26 @@ export class PolicyRoleRuntime implements RoleRuntime {
               "persist worker evidence"
             );
             await this.runBestEffort(
-              () => this.publishWorkerEvents(input, activeWorker!.workerRunKey, workerResult, workerState, workerGovernance),
+              () =>
+                this.publishWorkerEvents(
+                  input,
+                  activeWorker!.workerRunKey,
+                  workerResult,
+                  workerState,
+                  workerGovernance,
+                  workerContinuation
+                ),
               "publish worker events"
             );
             workerReplayPath = await this.runBestEffort(
-              () => this.recordWorkerReplay(input, activeWorker!.workerRunKey, workerResult, workerGovernance),
+              () =>
+                this.recordWorkerReplay(
+                  input,
+                  activeWorker!.workerRunKey,
+                  workerResult,
+                  workerGovernance,
+                  workerContinuation
+                ),
               "record worker replay",
               null
             );
@@ -181,6 +209,7 @@ export class PolicyRoleRuntime implements RoleRuntime {
               workerType: workerResult.workerType,
               workerPayload: workerResult.payload,
               ...(workerState ? { workerState } : {}),
+              ...(workerContinuation ? { workerContinuation } : {}),
               ...(apiDiagnosis.length > 0 ? { apiDiagnosis } : {}),
               ...(workerGovernance
                 ? {
@@ -204,7 +233,17 @@ export class PolicyRoleRuntime implements RoleRuntime {
         ...(basePacket.promptAssembly ? { promptAssembly: basePacket.promptAssembly } : {}),
       });
       const roleReplayPath = await this.runBestEffort(
-        () => this.recordRoleReplay(input, packet, message, workerGovernance, workerResult, workerError, workerReplayPath),
+        () =>
+          this.recordRoleReplay(
+            input,
+            packet,
+            message,
+            workerGovernance,
+            workerResult,
+            workerError,
+            workerReplayPath,
+            workerContinuation
+          ),
         "record role replay",
         null
       );
@@ -256,39 +295,103 @@ export class PolicyRoleRuntime implements RoleRuntime {
       continuityMode?: "fresh" | "prefer-existing" | "resume-existing";
       capabilityInspection?: { availableWorkers: WorkerKind[] };
     }
-  ): Promise<{ workerType: WorkerKind; workerRunKey: string } | null> {
+  ): Promise<{
+    worker: { workerType: WorkerKind; workerRunKey: string } | null;
+    requestedWorkerType?: WorkerKind;
+    requestedWorkerRunKey?: string;
+    reason?: WorkerContinuationOutcome["reason"];
+  }> {
     const workerSessions = input.runState.workerSessions;
     if (!workerSessions || !this.workerRuntime) {
-      return null;
+      return { worker: null };
     }
 
     const preferredKinds = packet.preferredWorkerKinds?.length ? packet.preferredWorkerKinds : inferPreferredWorkerKinds(input);
     const allowedWorkers = packet.capabilityInspection?.availableWorkers
       ? new Set(packet.capabilityInspection.availableWorkers)
       : null;
+    let firstUnavailable:
+      | {
+          requestedWorkerType?: WorkerKind;
+          requestedWorkerRunKey?: string;
+          reason: WorkerContinuationOutcome["reason"];
+        }
+      | null = null;
     for (const workerType of preferredKinds) {
+      const workerRunKey = workerSessions[workerType];
       if (allowedWorkers && !allowedWorkers.has(workerType)) {
+        if (workerRunKey && !firstUnavailable) {
+          firstUnavailable = {
+            requestedWorkerType: workerType,
+            requestedWorkerRunKey: workerRunKey,
+            reason: "capability_unavailable",
+          };
+        }
         continue;
       }
 
-      const workerRunKey = workerSessions[workerType];
       if (!workerRunKey) {
         continue;
       }
 
       const state = await this.workerRuntime.getState(workerRunKey);
-      if (!state || state.status === "failed" || state.status === "cancelled") {
+      if (!state) {
+        if (!firstUnavailable) {
+          firstUnavailable = {
+            requestedWorkerType: workerType,
+            requestedWorkerRunKey: workerRunKey,
+            reason: "session_missing",
+          };
+        }
+        continue;
+      }
+      if (state.status === "failed" || state.status === "cancelled") {
+        if (!firstUnavailable) {
+          firstUnavailable = {
+            requestedWorkerType: workerType,
+            requestedWorkerRunKey: workerRunKey,
+            reason: "session_terminal",
+          };
+        }
         continue;
       }
 
       if (!shouldReuseWorkerSession(packet.continuityMode, state.status)) {
+        if (!firstUnavailable) {
+          firstUnavailable = {
+            requestedWorkerType: workerType,
+            requestedWorkerRunKey: workerRunKey,
+            reason: "reuse_disallowed",
+          };
+        }
         continue;
       }
 
-      return { workerType, workerRunKey };
+      return {
+        worker: { workerType, workerRunKey },
+        requestedWorkerType: workerType,
+        requestedWorkerRunKey: workerRunKey,
+      };
     }
 
-    return null;
+    if (firstUnavailable) {
+      return {
+        worker: null,
+        ...firstUnavailable,
+      };
+    }
+
+    const boundKinds = preferredKinds.filter((workerType) => Boolean(workerSessions[workerType]));
+    return {
+      worker: null,
+      ...(boundKinds[0]
+        ? {
+            requestedWorkerType: boundKinds[0],
+            requestedWorkerRunKey: workerSessions[boundKinds[0]],
+          }
+        : {}),
+      reason: packet.continuityMode === "fresh" ? "fresh_requested" : "no_bound_session",
+    };
   }
 
   private buildMessage(
@@ -374,7 +477,8 @@ export class PolicyRoleRuntime implements RoleRuntime {
     workerRunKey: string,
     workerResult: Awaited<ReturnType<NonNullable<WorkerRuntime>["send"]>>,
     workerState: Awaited<ReturnType<NonNullable<WorkerRuntime>["getState"]>>,
-    governance: WorkerGovernanceBundle | null
+    governance: WorkerGovernanceBundle | null,
+    workerContinuation: WorkerContinuationOutcome | null
   ): Promise<void> {
     if (!this.teamEventBus || !workerResult) {
       return;
@@ -401,6 +505,7 @@ export class PolicyRoleRuntime implements RoleRuntime {
         workerRunKey,
         status: workerResult.status,
         ...(workerState ? { workerState: workerState.status } : {}),
+        ...(workerContinuation ? { workerContinuation } : {}),
       },
     });
 
@@ -423,6 +528,7 @@ export class PolicyRoleRuntime implements RoleRuntime {
         trust,
         admission,
         apiDiagnosis,
+        ...(workerContinuation ? { workerContinuation } : {}),
         ...(classifyFailureFromStatus({
           layer: "worker",
           status: workerResult.status,
@@ -566,7 +672,8 @@ export class PolicyRoleRuntime implements RoleRuntime {
     input: RoleActivationInput,
     workerRunKey: string,
     workerResult: WorkerExecutionResult | null,
-    governance: WorkerGovernanceBundle | null
+    governance: WorkerGovernanceBundle | null,
+    workerContinuation: WorkerContinuationOutcome | null
   ): Promise<string | null> {
     if (!this.replayRecorder || !workerResult) {
       return null;
@@ -601,6 +708,7 @@ export class PolicyRoleRuntime implements RoleRuntime {
         ...(recoveryContext
           ? { recoveryContext }
           : {}),
+        ...(workerContinuation ? { workerContinuation } : {}),
         governance: governance
           ? {
               permission: governance.permission,
@@ -656,7 +764,8 @@ export class PolicyRoleRuntime implements RoleRuntime {
     governance: WorkerGovernanceBundle | null,
     workerResult: WorkerExecutionResult | null,
     workerError: RuntimeError | null,
-    workerReplayPath: string | null
+    workerReplayPath: string | null,
+    workerContinuation: WorkerContinuationOutcome | null
   ): Promise<string | null> {
     if (!this.replayRecorder) {
       return null;
@@ -693,6 +802,7 @@ export class PolicyRoleRuntime implements RoleRuntime {
           ? { recoveryContext }
           : {}),
         ...(workerResult ? { workerStatus: workerResult.status, workerType: workerResult.workerType } : {}),
+        ...(workerContinuation ? { workerContinuation } : {}),
         ...(workerReplayPath ? { workerReplayPath } : {}),
         ...(governance
           ? {
@@ -773,6 +883,102 @@ interface WorkerGovernanceBundle {
   apiDiagnosis: ApiDiagnosisReport[];
   transportAudit: TransportExecutionAudit | null;
   cachedDecision: PermissionCacheRecord | null;
+}
+
+function buildWorkerContinuationOutcome(input: {
+  packet: {
+    continuityMode?: "fresh" | "prefer-existing" | "resume-existing";
+  };
+  resolution: {
+    worker: { workerType: WorkerKind; workerRunKey: string } | null;
+    requestedWorkerType?: WorkerKind;
+    requestedWorkerRunKey?: string;
+    reason?: WorkerContinuationOutcome["reason"];
+  };
+  activeWorker: { workerType: WorkerKind; workerRunKey: string } | null;
+}): WorkerContinuationOutcome | null {
+  const requestedMode = input.packet.continuityMode ?? null;
+  const activeWorker = input.activeWorker;
+  if (!activeWorker) {
+    return requestedMode
+      ? {
+          state: requestedMode === "resume-existing" ? "cold_recreated" : "spawned_fresh",
+          requestedMode,
+          ...(input.resolution.requestedWorkerType ? { requestedWorkerType: input.resolution.requestedWorkerType } : {}),
+          ...(input.resolution.requestedWorkerRunKey ? { requestedWorkerRunKey: input.resolution.requestedWorkerRunKey } : {}),
+          ...(input.resolution.reason ? { reason: input.resolution.reason } : {}),
+          summary:
+            requestedMode === "resume-existing"
+              ? buildColdRecreatedSummary(input.resolution.reason)
+              : buildSpawnFreshSummary(requestedMode, input.resolution.reason),
+        }
+      : null;
+  }
+
+  if (input.resolution.worker) {
+    return {
+      state: "resumed_existing",
+      requestedMode,
+      resolvedWorkerType: activeWorker.workerType,
+      resolvedWorkerRunKey: activeWorker.workerRunKey,
+      requestedWorkerType: input.resolution.worker.workerType,
+      requestedWorkerRunKey: input.resolution.worker.workerRunKey,
+      summary: `Resumed the existing ${activeWorker.workerType} worker session.`,
+    };
+  }
+
+  return {
+    state: requestedMode === "resume-existing" ? "cold_recreated" : "spawned_fresh",
+    requestedMode,
+    ...(input.resolution.requestedWorkerType ? { requestedWorkerType: input.resolution.requestedWorkerType } : {}),
+    ...(input.resolution.requestedWorkerRunKey ? { requestedWorkerRunKey: input.resolution.requestedWorkerRunKey } : {}),
+    resolvedWorkerType: activeWorker.workerType,
+    resolvedWorkerRunKey: activeWorker.workerRunKey,
+    ...(input.resolution.reason ? { reason: input.resolution.reason } : {}),
+    summary:
+      requestedMode === "resume-existing"
+        ? buildColdRecreatedSummary(input.resolution.reason)
+        : buildSpawnFreshSummary(requestedMode, input.resolution.reason),
+  };
+}
+
+function buildColdRecreatedSummary(reason: WorkerContinuationOutcome["reason"] | undefined): string {
+  switch (reason) {
+    case "session_missing":
+      return "Requested resume-existing but the bound worker session was missing, so work restarted cold.";
+    case "session_terminal":
+      return "Requested resume-existing but the bound worker session was already terminal, so work restarted cold.";
+    case "capability_unavailable":
+      return "Requested resume-existing but the bound worker capability was unavailable, so work restarted cold.";
+    case "reuse_disallowed":
+      return "Requested resume-existing but the existing worker session was not reusable, so work restarted cold.";
+    case "no_bound_session":
+      return "Requested resume-existing but no bound worker session was available, so work restarted cold.";
+    default:
+      return "Requested resume-existing but work restarted cold instead of resuming a live worker session.";
+  }
+}
+
+function buildSpawnFreshSummary(
+  requestedMode: "fresh" | "prefer-existing" | "resume-existing" | null,
+  reason: WorkerContinuationOutcome["reason"] | undefined
+): string {
+  if (requestedMode === "fresh" || reason === "fresh_requested") {
+    return "Started a fresh worker session as requested.";
+  }
+  if (requestedMode === "prefer-existing") {
+    switch (reason) {
+      case "session_missing":
+        return "Preferred an existing worker session, but the bound session was missing, so a fresh worker session started.";
+      case "session_terminal":
+        return "Preferred an existing worker session, but the bound session was terminal, so a fresh worker session started.";
+      case "capability_unavailable":
+        return "Preferred an existing worker session, but that capability was unavailable, so a fresh worker session started.";
+      default:
+        return "Preferred an existing worker session, but a fresh worker session started instead.";
+    }
+  }
+  return "Started a fresh worker session.";
 }
 
 function shouldReuseWorkerSession(

@@ -565,6 +565,207 @@ test("runtime chain status treats waiting_external recovery runs as waiting_manu
   assert.equal(decorated.nextStep, "inspect_then_resume");
 });
 
+test("runtime chain inspection clears stale waiting state when a worker is running again", () => {
+  const chain: RuntimeChain = {
+    chainId: "flow:flow-running-worker",
+    threadId: "thread-1",
+    rootKind: "flow",
+    rootId: "flow-running-worker",
+    flowId: "flow-running-worker",
+    createdAt: 1,
+    updatedAt: 10,
+  };
+  const status: RuntimeChainStatus = {
+    chainId: chain.chainId,
+    threadId: chain.threadId,
+    activeSpanId: "worker_run:worker-1",
+    activeSubjectKind: "worker_run",
+    activeSubjectId: "worker-1",
+    phase: "waiting",
+    waitingReason: "waiting for browser reconnect",
+    currentWaitingSpanId: "worker_run:worker-1",
+    currentWaitingPoint: "waiting for browser reconnect",
+    responseTimeoutAt: 20,
+    latestSummary: "Waiting for browser reconnect.",
+    attention: false,
+    updatedAt: 10,
+  };
+  const flow: FlowLedger = {
+    flowId: "flow-running-worker",
+    threadId: "thread-1",
+    rootMessageId: "msg-root",
+    mode: "serial",
+    status: "running",
+    currentStageIndex: 0,
+    activeRoleIds: ["lead"],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    hopCount: 1,
+    maxHops: 6,
+    edges: [],
+    createdAt: 1,
+    updatedAt: 10,
+  };
+  const roleRuns: RoleRunState[] = [
+    {
+      runKey: "run:thread-1:lead",
+      threadId: "thread-1",
+      roleId: "lead",
+      mode: "group",
+      status: "running",
+      iterationCount: 1,
+      maxIterations: 6,
+      inbox: [],
+      lastDequeuedTaskId: "task-1",
+      lastActiveAt: 25,
+      workerSessions: {
+        browser: "worker:browser:task:task-1",
+      },
+    },
+  ];
+  const worker: WorkerSessionState = {
+    workerRunKey: "worker:browser:task:task-1",
+    workerType: "browser",
+    status: "running",
+    createdAt: 15,
+    updatedAt: 30,
+    currentTaskId: "task-1",
+    lastError: {
+      code: "WORKER_TIMEOUT",
+      message: "stale reconnect error",
+      retryable: true,
+    },
+  };
+
+  const entry = buildAugmentedFlowRuntimeChainEntry({
+    chain,
+    status,
+    flow,
+    roleRuns,
+    workerStatesByRunKey: new Map([[worker.workerRunKey, worker]]),
+    now: 31,
+  });
+  const detail = buildAugmentedFlowRuntimeChainDetail({
+    chain,
+    status,
+    spans: [],
+    events: [],
+    flow,
+    roleRuns,
+    workerStatesByRunKey: new Map([[worker.workerRunKey, worker]]),
+    now: 31,
+  });
+
+  assert.equal(entry.status.phase, "heartbeat");
+  assert.equal(entry.status.waitingReason, undefined);
+  assert.equal(entry.status.currentWaitingPoint, undefined);
+  assert.equal(entry.status.currentWaitingSpanId, undefined);
+  assert.equal(entry.status.continuityReason, undefined);
+  assert.equal(detail.events.find((event) => event.subjectKind === "worker_run")?.statusReason, undefined);
+});
+
+test("decorate runtime chain status clears stale waiting state after a completion progress event", () => {
+  const chain: RuntimeChain = {
+    chainId: "flow:flow-progress-complete",
+    threadId: "thread-1",
+    rootKind: "flow",
+    rootId: "flow-progress-complete",
+    flowId: "flow-progress-complete",
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const status: RuntimeChainStatus = {
+    chainId: chain.chainId,
+    threadId: chain.threadId,
+    activeSpanId: "worker:run-1",
+    activeSubjectKind: "worker_run",
+    activeSubjectId: "run-1",
+    phase: "waiting",
+    waitingReason: "approval pending",
+    currentWaitingSpanId: "worker:run-1",
+    currentWaitingPoint: "approval pending",
+    responseTimeoutAt: 50,
+    latestSummary: "Approval pending.",
+    attention: false,
+    updatedAt: 10,
+  };
+  const progressEvents: RuntimeProgressEvent[] = [
+    {
+      progressId: "progress-complete",
+      threadId: chain.threadId,
+      chainId: chain.chainId,
+      spanId: "worker:run-1",
+      subjectKind: "worker_run",
+      subjectId: "run-1",
+      phase: "completed",
+      progressKind: "transition",
+      summary: "Worker completed cleanly.",
+      recordedAt: 20,
+    },
+  ];
+
+  const decorated = decorateRuntimeChainStatus({
+    chain,
+    status,
+    progressEvents,
+    now: 25,
+  });
+
+  assert.equal(decorated.phase, "completed");
+  assert.equal(decorated.waitingReason, undefined);
+  assert.equal(decorated.currentWaitingPoint, undefined);
+  assert.equal(decorated.responseTimeoutAt, undefined);
+  assert.equal(decorated.stale, undefined);
+});
+
+test("runtime chain inspection derives terminal flow status when no live role or worker remains", () => {
+  const chain: RuntimeChain = {
+    chainId: "flow:flow-completed",
+    threadId: "thread-1",
+    rootKind: "flow",
+    rootId: "flow-completed",
+    flowId: "flow-completed",
+    createdAt: 1,
+    updatedAt: 5,
+  };
+  const status: RuntimeChainStatus = {
+    chainId: chain.chainId,
+    threadId: chain.threadId,
+    phase: "started",
+    latestSummary: "Runtime chain created.",
+    attention: false,
+    updatedAt: 5,
+  };
+  const flow: FlowLedger = {
+    flowId: "flow-completed",
+    threadId: "thread-1",
+    rootMessageId: "msg-root",
+    mode: "serial",
+    status: "completed",
+    currentStageIndex: 1,
+    activeRoleIds: [],
+    completedRoleIds: ["lead"],
+    failedRoleIds: [],
+    hopCount: 1,
+    maxHops: 6,
+    edges: [],
+    createdAt: 1,
+    updatedAt: 20,
+  };
+
+  const entry = buildAugmentedFlowRuntimeChainEntry({
+    chain,
+    status,
+    flow,
+    roleRuns: [],
+    workerStatesByRunKey: new Map(),
+  });
+
+  assert.equal(entry.status.phase, "completed");
+  assert.equal(entry.status.latestSummary, "Flow completed.");
+  assert.equal(entry.status.lastCompletedSpanId, "flow:flow-completed");
+});
+
 test("runtime summary report groups active, failed, and resolved chains", () => {
   const report = buildRuntimeSummaryReport({
     entries: [

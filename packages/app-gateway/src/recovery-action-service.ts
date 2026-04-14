@@ -371,7 +371,11 @@ export function createRecoveryActionService(input: {
     );
   }
 
-  function truthAlignRecoveryRun(run: RecoveryRun, persistedRecoveryRunIds: Set<string>): TruthAligned<RecoveryRun> {
+  function truthAlignRecoveryRun(
+    run: RecoveryRun,
+    persistedRecoveryRunIds: Set<string>,
+    replayRecovery: ReplayRecoveryPlan | null
+  ): TruthAligned<RecoveryRun> {
     const confirmed = persistedRecoveryRunIds.has(run.recoveryRunId);
     const runtimeReconciliation = getRuntimeReconciliationResult?.();
     return {
@@ -380,7 +384,7 @@ export function createRecoveryActionService(input: {
       inferred: true,
       stale: isQueryStaleRecoveryRun(run),
       truthSource: confirmed ? "recovery-runtime-query+store" : "recovery-runtime-query",
-      remediation: buildRecoveryRunRemediation(run, runtimeReconciliation, confirmed),
+      remediation: buildRecoveryRunRemediation(run, runtimeReconciliation, confirmed, replayRecovery),
     };
   }
 
@@ -399,7 +403,8 @@ export function createRecoveryActionService(input: {
   function buildRecoveryRunRemediation(
     run: RecoveryRun,
     runtimeReconciliation: RuntimeReconciliationPassResult | undefined,
-    confirmed: boolean
+    confirmed: boolean,
+    replayRecovery: ReplayRecoveryPlan | null
   ): string[] {
     const remediation: string[] = [];
     if (!confirmed) {
@@ -420,6 +425,9 @@ export function createRecoveryActionService(input: {
     if (run.nextAction === "auto_resume") {
       remediation.push("Resume from the latest continuation checkpoint before scheduling new work.");
     }
+    if (replayRecovery?.workerContinuation?.state === "cold_recreated") {
+      remediation.push("This recovery degraded to a cold recreation; re-validate continuation context before allowing new side effects.");
+    }
     if (runtimeReconciliation?.flowRecovery.affectedRecoveryRunIds.includes(run.recoveryRunId)) {
       remediation.push("Inspect flow/recovery drift for this recovery run before operator action.");
     }
@@ -439,6 +447,9 @@ export function createRecoveryActionService(input: {
     }
     if (plan.nextAction === "retry_same_layer") {
       remediation.push("Retry on the same layer only after confirming the underlying target is still valid.");
+    }
+    if (plan.workerContinuation?.state === "cold_recreated") {
+      remediation.push("Treat this as a cold recreation, not a true worker resume, before approving further execution.");
     }
     if (runtimeReconciliation?.flowRecovery.affectedRecoveryRunIds.some((id) => id === buildRecoveryRunId(plan.groupId))) {
       remediation.push("Inspect related recovery run drift before auto-dispatching this recovery plan.");
@@ -1449,7 +1460,9 @@ export function createRecoveryActionService(input: {
       const runtimeReconciliation = getRuntimeReconciliationResult?.();
       return {
         totalRuns: synced.runs.length,
-        runs: synced.runs.slice(0, limit).map((run) => truthAlignRecoveryRun(run, persistedRecoveryRunIds)),
+        runs: synced.runs.slice(0, limit).map((run) =>
+          truthAlignRecoveryRun(run, persistedRecoveryRunIds, findReplayRecoveryPlan(synced.records, run.sourceGroupId, synced.report))
+        ),
         confirmed: false,
         inferred: true,
         stale: synced.runs.some((run) => isQueryStaleRecoveryRun(run)),
@@ -1466,13 +1479,17 @@ export function createRecoveryActionService(input: {
     async listRecoveryRuns(threadId: string): Promise<Array<TruthAligned<RecoveryRun>>> {
       const synced = await loadRecoveryRuntime(threadId);
       const persistedRecoveryRunIds = new Set((await recoveryRunStore.listByThread(threadId)).map((run) => run.recoveryRunId));
-      return synced.runs.map((run) => truthAlignRecoveryRun(run, persistedRecoveryRunIds));
+      return synced.runs.map((run) =>
+        truthAlignRecoveryRun(run, persistedRecoveryRunIds, findReplayRecoveryPlan(synced.records, run.sourceGroupId, synced.report))
+      );
     },
     async getRecoveryRun(threadId: string, recoveryRunId: string): Promise<TruthAligned<RecoveryRun> | null> {
       const synced = await loadRecoveryRuntime(threadId);
       const persistedRecoveryRunIds = new Set((await recoveryRunStore.listByThread(threadId)).map((run) => run.recoveryRunId));
       const run = synced.runs.find((item) => item.recoveryRunId === recoveryRunId) ?? null;
-      return run ? truthAlignRecoveryRun(run, persistedRecoveryRunIds) : null;
+      return run
+        ? truthAlignRecoveryRun(run, persistedRecoveryRunIds, findReplayRecoveryPlan(synced.records, run.sourceGroupId, synced.report))
+        : null;
     },
     async getRecoveryTimeline(threadId: string, recoveryRunId: string) {
       const synced = await loadRecoveryRuntime(threadId);
@@ -1481,7 +1498,11 @@ export function createRecoveryActionService(input: {
         return null;
       }
       const persistedRecoveryRunIds = new Set((await recoveryRunStore.listByThread(threadId)).map((item) => item.recoveryRunId));
-      const truthAlignedRun = truthAlignRecoveryRun(run, persistedRecoveryRunIds);
+      const truthAlignedRun = truthAlignRecoveryRun(
+        run,
+        persistedRecoveryRunIds,
+        findReplayRecoveryPlan(synced.records, run.sourceGroupId, synced.report)
+      );
       const events = await recoveryRunEventStore.listByRecoveryRun(run.recoveryRunId);
       const timeline = buildRecoveryRunTimeline(run, synced.records, events);
       return {

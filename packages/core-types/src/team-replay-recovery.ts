@@ -1,5 +1,6 @@
 import type {
   BrowserContinuationHint,
+  ContinuityMode,
   FlowId,
   FlowLedger,
   FlowStatus,
@@ -13,6 +14,7 @@ import type {
   RuntimeSummaryReport,
   WorkerKind,
 } from "./team-core";
+import type { WorkerContinuationOutcome } from "./team-runtime-support";
 import type {
   BrowserResumeMode,
   BrowserSessionStatus,
@@ -113,6 +115,7 @@ export interface ReplayTaskSummary {
   recoveryHint: ReplayRecoveryHint;
   requiresFollowUp: boolean;
   browserContinuity?: ReplayBrowserContinuitySummary;
+  workerContinuation?: ReplayWorkerContinuitySummary;
 }
 
 export interface ReplayInspectionReport {
@@ -154,6 +157,7 @@ export interface ReplayRecoveryPlan {
     | "inspect_then_resume"
     | "stop";
   targetLayer?: ReplayLayer;
+  workerContinuation?: ReplayWorkerContinuitySummary;
 }
 
 export interface ReplayTimelineEntry {
@@ -198,6 +202,18 @@ export interface ReplayBrowserContinuitySummary {
     | "action_timeout"
     | "action_failed";
   relayDiagnosticSummary?: string;
+}
+
+export interface ReplayWorkerContinuitySummary {
+  latestRecordedAt: number;
+  state: WorkerContinuationOutcome["state"];
+  summary: string;
+  requestedMode?: ContinuityMode | null;
+  requestedWorkerType?: WorkerKind;
+  requestedWorkerRunKey?: RunKey;
+  resolvedWorkerType?: WorkerKind;
+  resolvedWorkerRunKey?: RunKey;
+  reason?: WorkerContinuationOutcome["reason"];
 }
 
 export interface ReplayConsoleReport {

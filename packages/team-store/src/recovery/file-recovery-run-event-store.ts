@@ -53,21 +53,33 @@ export class FileRecoveryRunEventStore implements RecoveryRunEventStore {
   }
 
   async listByThread(threadId: string): Promise<RecoveryRunEvent[]> {
-    const threadFilePaths = await listJsonFiles(this.threadDir(threadId));
-    // Thread-scoped files store one event per file; the root dir only contains
-    // legacy recovery-run arrays kept for backwards-compatible fallback reads.
-    const threadRecords = await Promise.all(threadFilePaths.map((filePath) => readJsonFile<RecoveryRunEvent>(filePath)));
-    const threadEvents = threadRecords.filter((event): event is RecoveryRunEvent => event !== null);
-    if (threadEvents.length > 0) {
-      return threadEvents.sort((left, right) => left.recordedAt - right.recordedAt);
+    const [threadFilePaths, legacyFilePaths, byRunArrayPaths] = await Promise.all([
+      listJsonFiles(this.threadDir(threadId)),
+      listJsonFiles(this.rootDir),
+      listJsonFiles(path.join(this.rootDir, "by-run")),
+    ]);
+    // Thread-scoped files store one event per file. During migration, legacy root arrays
+    // and older by-run arrays can still coexist, so merge all sources instead of short-circuiting.
+    const [threadRecords, legacyArrays, byRunArrays] = await Promise.all([
+      Promise.all(threadFilePaths.map((filePath) => readJsonFile<RecoveryRunEvent>(filePath))),
+      Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRunEvent[]>(filePath))),
+      Promise.all(byRunArrayPaths.map((filePath) => readJsonFile<RecoveryRunEvent[]>(filePath))),
+    ]);
+    const merged = new Map<string, RecoveryRunEvent>();
+    for (const event of [
+      ...threadRecords.filter((item): item is RecoveryRunEvent => item !== null),
+      ...legacyArrays.flatMap((events) => events ?? []),
+      ...byRunArrays.flatMap((events) => events ?? []),
+    ]) {
+      if (event.threadId !== threadId) {
+        continue;
+      }
+      const existing = merged.get(event.eventId);
+      if (!existing || event.recordedAt >= existing.recordedAt) {
+        merged.set(event.eventId, event);
+      }
     }
-
-    const legacyFilePaths = await listJsonFiles(this.rootDir);
-    const records = await Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRunEvent[]>(filePath)));
-    return records
-      .flatMap((events) => events ?? [])
-      .filter((event) => event.threadId === threadId)
-      .sort((left, right) => left.recordedAt - right.recordedAt);
+    return [...merged.values()].sort((left, right) => left.recordedAt - right.recordedAt);
   }
 
   private recoveryRunDir(recoveryRunId: string): string {
