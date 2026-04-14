@@ -1827,6 +1827,11 @@ test("coordination engine carries scheduled worker resume hints into the handoff
   await engine.handleScheduledTask({
     taskId: "TASK-browser-check",
     threadId: thread.threadId,
+    dispatch: {
+      targetRoleId: "operator",
+      targetWorker: "browser",
+      sessionTarget: "worker",
+    },
     targetRoleId: "operator",
     targetWorker: "browser",
     sessionTarget: "worker",
@@ -1993,6 +1998,11 @@ test("coordination engine treats scheduled continuation lookup as best effort", 
   await engine.handleScheduledTask({
     taskId: "TASK-browser-fallback",
     threadId: thread.threadId,
+    dispatch: {
+      targetRoleId: "operator",
+      targetWorker: "browser",
+      sessionTarget: "worker",
+    },
     targetRoleId: "operator",
     targetWorker: "browser",
     sessionTarget: "worker",
@@ -2132,6 +2142,20 @@ test("coordination engine preserves recovery context for main-target recovery di
   await engine.handleScheduledTask({
     taskId: "TASK-recovery-main",
     threadId: thread.threadId,
+    dispatch: {
+      targetRoleId: "lead",
+      sessionTarget: "main",
+      continuity: {
+        context: {
+          source: "recovery_dispatch",
+          recovery: {
+            parentGroupId: "group-1",
+            action: "inspect_then_resume",
+            dispatchReplayId: "TASK-recovery-main:scheduled",
+          },
+        },
+      },
+    },
     targetRoleId: "lead",
     sessionTarget: "main",
     schedule: {
@@ -2293,6 +2317,22 @@ test("coordination engine preserves recovery context when worker continuation lo
   await engine.handleScheduledTask({
     taskId: "TASK-recovery-worker-fallback",
     threadId: thread.threadId,
+    dispatch: {
+      targetRoleId: "operator",
+      targetWorker: "browser",
+      sessionTarget: "worker",
+      continuity: {
+        context: {
+          source: "recovery_dispatch",
+          workerType: "browser",
+          recovery: {
+            parentGroupId: "group-2",
+            action: "retry_same_layer",
+            dispatchReplayId: "TASK-recovery-worker-fallback:scheduled",
+          },
+        },
+      },
+    },
     targetRoleId: "operator",
     targetWorker: "browser",
     sessionTarget: "worker",

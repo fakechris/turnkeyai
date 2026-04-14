@@ -1266,10 +1266,150 @@ test("runtime query service truth-aligns query summaries and fallback chain stat
   assert.equal(entries[0]?.confirmed, false);
   assert.equal(entries[0]?.inferred, true);
   assert.equal(entries[0]?.truthSource, "stored-chain-fallback-status");
+  assert.deepEqual(entries[0]?.remediation, [
+    "Run the runtime reconciliation pass before treating this chain projection as authoritative.",
+  ]);
 
   const summary = await service.loadRuntimeSummary("thread-1", 10);
   assert.equal(summary.confirmed, false);
   assert.equal(summary.inferred, true);
   assert.equal(summary.truthSource, "runtime-summary-query");
   assert.equal(summary.activeChains[0]?.truthSource, "runtime-summary-query");
+});
+
+test("runtime query service attaches latest runtime reconciliation guidance when available", async () => {
+  const service = createRuntimeQueryService({
+    clock: { now: () => 1_000 },
+    workerRuntime: {} as any,
+    getRuntimeReconciliationResult: () => ({
+      reconciledAt: 1_000,
+      syncedRecoveryThreads: 1,
+      syncedRecoveryRuns: 2,
+      staleRecoveryRuns: 1,
+      flowRecovery: {
+        orphanedFlows: 0,
+        abortedOrphanedFlows: 0,
+        orphanedRecoveryRuns: 0,
+        missingFlowRecoveryRuns: 1,
+        crossThreadFlowRecoveryRuns: 0,
+        failedRecoveryRuns: 1,
+        affectedFlowIds: [],
+        affectedRecoveryRunIds: ["recovery:task-1"],
+      },
+      runtimeChains: {
+        orphanedThreadChains: 0,
+        missingFlowChains: 1,
+        crossThreadFlowChains: 0,
+        affectedChainIds: ["chain-1"],
+      },
+      runtimeChainArtifacts: {
+        orphanedStatuses: 0,
+        crossThreadStatuses: 1,
+        orphanedSpans: 0,
+        crossThreadSpans: 0,
+        crossFlowSpans: 0,
+        orphanedEvents: 0,
+        missingSpanEvents: 0,
+        crossThreadEvents: 0,
+        crossChainEvents: 0,
+        affectedChainIds: ["chain-1"],
+      },
+      remediation: ["Inspect runtime chain projection drift for affected chains before trusting operator state."],
+    }),
+    teamThreadStore: {
+      async list() {
+        return [];
+      },
+    } as any,
+    flowLedgerStore: {
+      async get() {
+        return null;
+      },
+      async listByThread() {
+        return [];
+      },
+    } as any,
+    roleRunStore: {
+      async listByThread() {
+        return [];
+      },
+    } as any,
+    runtimeChainStore: {
+      async listByThread() {
+        return [
+          {
+            chainId: "chain-1",
+            threadId: "thread-1",
+            rootKind: "flow",
+            rootId: "flow-1",
+            createdAt: 100,
+            updatedAt: 100,
+          },
+        ];
+      },
+      async get() {
+        return null;
+      },
+    } as any,
+    runtimeChainStatusStore: {
+      async listByThread() {
+        return [
+          {
+            chainId: "chain-1",
+            threadId: "thread-1",
+            phase: "started",
+            canonicalState: "running",
+            latestSummary: "running",
+            attention: false,
+            updatedAt: 100,
+          },
+        ];
+      },
+      async get() {
+        return null;
+      },
+    } as any,
+    runtimeChainSpanStore: {
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    runtimeChainEventStore: {
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    runtimeProgressStore: {
+      async listByThread() {
+        return [];
+      },
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    recoveryRunStore: {
+      async get() {
+        return null;
+      },
+      async listByThread() {
+        return [];
+      },
+    } as any,
+    recoveryRunEventStore: {
+      async listByRecoveryRun() {
+        return [];
+      },
+    } as any,
+    loadRecoveryRuntime: async () => ({
+      records: [],
+      report: {} as never,
+      runs: [],
+    }),
+  });
+
+  const summary = await service.loadRuntimeSummary("thread-1", 10);
+  assert.equal(summary.runtimeReconciliation?.reconciledAt, 1_000);
+  assert.deepEqual(summary.remediation, [
+    "Inspect runtime chain projection drift for affected chains before trusting operator state.",
+  ]);
 });

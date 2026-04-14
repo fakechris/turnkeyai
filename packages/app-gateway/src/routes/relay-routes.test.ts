@@ -214,8 +214,8 @@ test("relay routes reject malformed target reports and trim nested action result
       url: " https://example.com/next ",
       title: " Follow-up ",
       status: "failed",
-      screenshotPaths: [" shot-1.png ", " "],
-      artifactIds: [" artifact-1 ", " "],
+      screenshotPaths: [" shot-1.png "],
+      artifactIds: [" artifact-1 "],
       screenshotPayloads: [{ label: " before ", mimeType: " image/png ", dataBase64: "abc123" }],
       errorMessage: " timed out ",
     },
@@ -236,6 +236,48 @@ test("relay routes reject malformed target reports and trim nested action result
     screenshotPayloads: [{ label: "before", mimeType: "image/png", dataBase64: "abc123" }],
     artifactIds: ["artifact-1"],
     errorMessage: "timed out",
+  });
+});
+
+test("relay routes reject invalid registration metadata and malformed action-result arrays", async () => {
+  const invalidRegister = await invokeRelayRoute({
+    method: "POST",
+    url: "/relay/peers/register",
+    body: {
+      peerId: "peer-1",
+      transportLabel: "   ",
+      capabilities: ["ok", " "],
+    },
+  });
+  assert.equal(invalidRegister.res.statusCode, 400);
+  assert.deepEqual(invalidRegister.json, {
+    error: "transportLabel must be a non-empty string when provided",
+  });
+
+  const relayPeerBindingStore = createRelayPeerIdentityBindingStore();
+  await invokeRelayRoute({
+    method: "POST",
+    url: "/relay/peers/register",
+    body: { peerId: "peer-1" },
+    relayPeerBindingStore,
+  });
+  const invalidActionResult = await invokeRelayRoute({
+    method: "POST",
+    url: "/relay/peers/peer-1/action-results",
+    body: {
+      actionRequestId: "request-3",
+      browserSessionId: "session-3",
+      taskId: "task-3",
+      relayTargetId: "target-3",
+      url: "https://example.com",
+      status: "completed",
+      screenshotPaths: ["valid.png", " "],
+    },
+    relayPeerBindingStore,
+  });
+  assert.equal(invalidActionResult.res.statusCode, 400);
+  assert.deepEqual(invalidActionResult.json, {
+    error: "screenshotPaths must contain non-empty strings",
   });
 });
 

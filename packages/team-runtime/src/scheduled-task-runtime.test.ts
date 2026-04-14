@@ -183,6 +183,10 @@ test("scheduled task runtime continues dispatching after one task throws", async
   tasks.set("TASK-1", {
     taskId: "TASK-1",
     threadId: "thread-1",
+    dispatch: {
+      targetRoleId: "role-operator",
+      sessionTarget: "main",
+    },
     targetRoleId: "role-operator",
     sessionTarget: "main",
     schedule: {
@@ -202,6 +206,10 @@ test("scheduled task runtime continues dispatching after one task throws", async
   tasks.set("TASK-2", {
     taskId: "TASK-2",
     threadId: "thread-1",
+    dispatch: {
+      targetRoleId: "role-operator",
+      sessionTarget: "main",
+    },
     targetRoleId: "role-operator",
     sessionTarget: "main",
     schedule: {
@@ -290,6 +298,11 @@ test("scheduled task runtime records replay entries for dispatch", async () => {
   tasks.set("TASK-replay", {
     taskId: "TASK-replay",
     threadId: "thread-1",
+    dispatch: {
+      targetRoleId: "role-operator",
+      targetWorker: "browser",
+      sessionTarget: "worker",
+    },
     targetRoleId: "role-operator",
     targetWorker: "browser",
     sessionTarget: "worker",

@@ -432,12 +432,36 @@ function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: Browser
     return "ownerType and ownerId are not accepted for existing browser sessions";
   }
 
+  if ((route === "send" || route === "resume") && (body.profileOwnerType !== undefined || body.profileOwnerId !== undefined)) {
+    return "profileOwnerType and profileOwnerId are not accepted for existing browser sessions";
+  }
+
+  if (body.leaseHolderRunKey !== undefined || body.leaseTtlMs !== undefined) {
+    return "leaseHolderRunKey and leaseTtlMs are managed by browser session runtime and are not accepted by browser routes";
+  }
+
+  if (body.taskId !== undefined && !parseOptionalRouteString(body.taskId)) {
+    return "taskId must be a non-empty string when provided";
+  }
+
+  if (body.instructions !== undefined && !parseOptionalRouteString(body.instructions)) {
+    return "instructions must be a non-empty string when provided";
+  }
+
   if (body.ownerType !== undefined && !EXTERNALLY_ADDRESSABLE_BROWSER_OWNER_TYPES.has(body.ownerType)) {
     return `unsupported browser ownerType: ${String(body.ownerType)}`;
   }
 
+  if (body.ownerId !== undefined && !parseOptionalRouteString(body.ownerId)) {
+    return "ownerId must be a non-empty string when provided";
+  }
+
   if (body.profileOwnerType !== undefined && !EXTERNALLY_ADDRESSABLE_BROWSER_OWNER_TYPES.has(body.profileOwnerType)) {
     return `unsupported browser profileOwnerType: ${String(body.profileOwnerType)}`;
+  }
+
+  if (body.profileOwnerId !== undefined && !parseOptionalRouteString(body.profileOwnerId)) {
+    return "profileOwnerId must be a non-empty string when provided";
   }
 
   const targetId = parseOptionalRouteString(body.targetId);
@@ -468,13 +492,6 @@ function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: Browser
     if (targetId && body.actions.some((action) => action.kind === "open")) {
       return "targetId cannot be combined with open actions";
     }
-  }
-
-  if (
-    body.leaseTtlMs !== undefined &&
-    (!Number.isInteger(body.leaseTtlMs) || body.leaseTtlMs <= 0)
-  ) {
-    return "leaseTtlMs must be a positive integer";
   }
 
   if ((body.profileOwnerType === undefined) !== (body.profileOwnerId === undefined)) {

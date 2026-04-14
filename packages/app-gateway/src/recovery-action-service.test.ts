@@ -611,6 +611,9 @@ test("recovery action service truth-aligns replay recovery plans", async () => {
   assert.equal((recovery as any).inferred, true);
   assert.equal((recovery as any).stale, true);
   assert.equal((recovery as any).truthSource, "replay-recovery-query");
+  assert.deepEqual((recovery as any).remediation, [
+    "Re-establish the browser/worker session before retrying this recovery plan.",
+  ]);
 });
 
 test("recovery action service truth-aligns recovery runs and timelines", async () => {
@@ -666,6 +669,8 @@ test("recovery action service truth-aligns recovery runs and timelines", async (
   assert.equal((runs[0] as any)?.confirmed, true);
   assert.equal((runs[0] as any)?.inferred, true);
   assert.equal((runs[0] as any)?.truthSource, "recovery-runtime-query+store");
+  assert.ok(Array.isArray((runs[0] as any)?.remediation));
+  assert.ok((runs[0] as any).remediation.length > 0);
 
   const timeline = await service.getRecoveryTimeline("thread-1", persistedRun.recoveryRunId);
   assert.ok(timeline);
@@ -673,4 +678,5 @@ test("recovery action service truth-aligns recovery runs and timelines", async (
   assert.equal((timeline as any).inferred, true);
   assert.equal((timeline as any).truthSource, "recovery-timeline-query");
   assert.equal((timeline as any).recoveryRun.confirmed, true);
+  assert.deepEqual((timeline as any).remediation, (runs[0] as any).remediation);
 });

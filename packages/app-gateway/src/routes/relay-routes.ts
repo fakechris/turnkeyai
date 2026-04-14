@@ -9,6 +9,9 @@ import type {
 } from "../daemon-auth";
 import { readJsonBodySafe, sendJson } from "../http-helpers";
 
+const RELAY_TARGET_STATUSES = new Set(["open", "attached", "detached", "closed"]);
+const RELAY_ACTION_RESULT_STATUSES = new Set(["completed", "failed"]);
+
 export async function handleRelayRoutes(input: {
   req: http.IncomingMessage;
   res: http.ServerResponse;
@@ -55,6 +58,21 @@ export async function handleRelayRoutes(input: {
     const body = bodyResult.value;
     if (!body.peerId?.trim()) {
       sendJson(res, 400, { error: "peerId is required" });
+      return true;
+    }
+    if (body.label !== undefined && !body.label.trim()) {
+      sendJson(res, 400, { error: "label must be a non-empty string when provided" });
+      return true;
+    }
+    if (body.transportLabel !== undefined && !body.transportLabel.trim()) {
+      sendJson(res, 400, { error: "transportLabel must be a non-empty string when provided" });
+      return true;
+    }
+    if (
+      body.capabilities !== undefined &&
+      (!Array.isArray(body.capabilities) || body.capabilities.some((capability) => typeof capability !== "string" || capability.trim().length === 0))
+    ) {
+      sendJson(res, 400, { error: "capabilities must contain non-empty strings" });
       return true;
     }
     const peerIdentity = relayPeerBindingStore.bindPeerIdentity(authorization, body.peerId);
@@ -137,6 +155,10 @@ export async function handleRelayRoutes(input: {
       }));
     if (targets.length !== body.targets.length || targets.some((target) => target.relayTargetId.length === 0)) {
       sendJson(res, 400, { error: "each target must include a non-empty relayTargetId" });
+      return true;
+    }
+    if (targets.some((target) => target.status !== undefined && !RELAY_TARGET_STATUSES.has(target.status))) {
+      sendJson(res, 400, { error: "each target status must be open, attached, detached, or closed" });
       return true;
     }
     sendJson(
@@ -235,8 +257,47 @@ export async function handleRelayRoutes(input: {
       sendJson(res, 400, { error: "url is required" });
       return true;
     }
-    if (!body.status) {
-      sendJson(res, 400, { error: "status is required" });
+    if (!body.status || !RELAY_ACTION_RESULT_STATUSES.has(body.status)) {
+      sendJson(res, 400, { error: "status must be completed or failed" });
+      return true;
+    }
+    if (body.trace !== undefined && !Array.isArray(body.trace)) {
+      sendJson(res, 400, { error: "trace must be an array when provided" });
+      return true;
+    }
+    if (
+      body.screenshotPaths !== undefined &&
+      (!Array.isArray(body.screenshotPaths) ||
+        body.screenshotPaths.some((path) => typeof path !== "string" || path.trim().length === 0))
+    ) {
+      sendJson(res, 400, { error: "screenshotPaths must contain non-empty strings" });
+      return true;
+    }
+    if (
+      body.artifactIds !== undefined &&
+      (!Array.isArray(body.artifactIds) ||
+        body.artifactIds.some((artifactId) => typeof artifactId !== "string" || artifactId.trim().length === 0))
+    ) {
+      sendJson(res, 400, { error: "artifactIds must contain non-empty strings" });
+      return true;
+    }
+    if (
+      body.screenshotPayloads !== undefined &&
+      (!Array.isArray(body.screenshotPayloads) ||
+        body.screenshotPayloads.some(
+          (payload) =>
+            !payload ||
+            typeof payload !== "object" ||
+            typeof payload.mimeType !== "string" ||
+            payload.mimeType.trim().length === 0 ||
+            typeof payload.dataBase64 !== "string" ||
+            payload.dataBase64.length === 0 ||
+            (payload.label !== undefined && payload.label.trim().length === 0)
+        ))
+    ) {
+      sendJson(res, 400, {
+        error: "screenshotPayloads must contain objects with non-empty mimeType and dataBase64",
+      });
       return true;
     }
     sendJson(
