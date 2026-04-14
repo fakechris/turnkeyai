@@ -233,3 +233,32 @@ test("file scheduled task store canonicalizes legacy recovery dispatch metadata 
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("file scheduled task store throws a descriptive error for malformed legacy task records", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-scheduled-task-store-invalid-legacy-"));
+
+  try {
+    await writeJsonFileAtomic(path.join(rootDir, `${encodeURIComponent("TASK-invalid-legacy")}.json`), {
+      taskId: "TASK-invalid-legacy",
+      threadId: "thread-legacy",
+      sessionTarget: "main",
+      schedule: {
+        kind: "cron",
+        expr: "0 9 * * *",
+        tz: "Asia/Shanghai",
+        nextRunAt: 1,
+      },
+      capsule: {
+        title: "Invalid task",
+        instructions: "Missing target role.",
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const store = new FileScheduledTaskStore({ rootDir });
+    await assert.rejects(() => store.get("TASK-invalid-legacy"), /scheduled task is missing targetRoleId: TASK-invalid-legacy/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

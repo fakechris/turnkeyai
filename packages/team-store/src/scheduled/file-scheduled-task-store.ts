@@ -133,7 +133,10 @@ function isSameScheduledTaskShape(left: ScheduledTaskRecord, right: ScheduledTas
 }
 
 function normalizeStoredScheduledTaskRecord(task: ScheduledTaskRecord): ScheduledTaskRecord {
-  const targetRoleId = task.dispatch?.targetRoleId ?? task.targetRoleId!;
+  const targetRoleId = task.dispatch?.targetRoleId ?? task.targetRoleId;
+  if (!targetRoleId) {
+    throw new Error(`scheduled task is missing targetRoleId: ${task.taskId}`);
+  }
   const targetWorker = task.dispatch?.targetWorker ?? task.targetWorker;
   const sessionTarget = task.dispatch?.sessionTarget ?? task.sessionTarget ?? "main";
   const continuity: DispatchContinuity | undefined =
