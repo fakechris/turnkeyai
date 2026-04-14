@@ -9,7 +9,7 @@ import type {
   ScheduledTaskStore,
   TriggeredScheduledTask,
 } from "@turnkeyai/core-types/team";
-import { normalizeScheduledTaskRecord } from "@turnkeyai/core-types/team";
+import { createScheduledTaskRecord, requireScheduledDispatch } from "@turnkeyai/core-types/team";
 import { classifyRuntimeError } from "@turnkeyai/qc-runtime/failure-taxonomy";
 
 import type { CoordinationEngine } from "./coordination-engine";
@@ -41,7 +41,7 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
 
   async schedule(input: ScheduleTaskInput): Promise<ScheduledTaskRecord> {
     const now = this.clock.now();
-    const task = normalizeScheduledTaskRecord({
+    const task = createScheduledTaskRecord({
       taskId: this.idGenerator.taskId(),
       threadId: input.threadId,
       dispatch: {
@@ -111,14 +111,14 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
       }
 
       const nextRunAt = computeNextRunAt(leasedTask.schedule.expr, leasedTask.schedule.tz, now);
-      const updatedTask = normalizeScheduledTaskRecord({
+      const updatedTask = {
         ...leasedTask,
         schedule: {
           ...leasedTask.schedule,
           nextRunAt,
         },
         updatedAt: now,
-      });
+      };
       await this.scheduledTaskStore.put(updatedTask, { expectedVersion: leasedTask.version });
       await this.recordReplay(updatedTask, now);
       dispatched.push({
@@ -139,7 +139,7 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
       return;
     }
 
-    const dispatch = getRequiredScheduledDispatch(task);
+    const dispatch = requireScheduledDispatch(task);
     const targetWorker = dispatch.targetWorker;
     await this.replayRecorder.record({
       replayId: `${task.taskId}:scheduled`,
@@ -162,13 +162,6 @@ export class DefaultScheduledTaskRuntime implements ScheduledTaskRuntime {
       },
     });
   }
-}
-
-function getRequiredScheduledDispatch(task: ScheduledTaskRecord): NonNullable<ScheduledTaskRecord["dispatch"]> {
-  if (!task.dispatch) {
-    throw new Error(`scheduled task is missing canonical dispatch payload: ${task.taskId}`);
-  }
-  return task.dispatch;
 }
 
 function computeNextRunAt(expr: string, tz: string, after: number): number {

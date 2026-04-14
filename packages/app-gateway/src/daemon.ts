@@ -184,9 +184,10 @@ import { createRecoveryActionService } from "./recovery-action-service";
 import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
 import { createRuntimeQueryService } from "./runtime-query-service";
 import { recoverRoleRunsOnStartup } from "./role-run-startup-recovery";
-import { reconcileFlowRecoveryOnStartup } from "./flow-recovery-startup-reconcile";
-import { reconcileRuntimeChainsOnStartup } from "./runtime-chain-startup-reconcile";
-import { reconcileRuntimeChainArtifactsOnStartup } from "./runtime-chain-artifact-startup-reconcile";
+import {
+  runRuntimeReconciliationPass,
+  type RuntimeReconciliationPassResult,
+} from "./runtime-reconciliation-pass";
 import { reconcileWorkerBindingsOnStartup } from "./worker-binding-startup-reconcile";
 import { handleBrowserRoutes, type BrowserTaskRouteBody } from "./routes/browser-routes";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
@@ -205,6 +206,7 @@ const VALIDATION_ARTIFACT_DIR = path.join(DATA_DIR, "validation-artifacts");
 const execFile = promisify(execFileCallback);
 const DAEMON_AUTH = resolveDaemonAuthConfig(process.env);
 const RECOVERY_RUN_STALE_AFTER_MS = 5 * 60 * 1000;
+const RUNTIME_RECONCILIATION_INTERVAL_MS = 60_000;
 
 const clock: Clock = {
   now: () => Date.now(),
@@ -566,51 +568,7 @@ const roleRunStartupRecoveryResult = await recoverRoleRunsOnStartup({
   roleRunStore,
   roleLoopRunner,
 });
-const flowRecoveryStartupReconcileResult = await reconcileFlowRecoveryOnStartup({
-  clock,
-  teamThreadStore,
-  flowLedgerStore,
-  recoveryRunStore,
-});
-const runtimeChainStartupReconcileResult = await reconcileRuntimeChainsOnStartup({
-  teamThreadStore,
-  flowLedgerStore,
-  runtimeChainStore,
-});
-const runtimeChainArtifactStartupReconcileResult = await reconcileRuntimeChainArtifactsOnStartup({
-  teamThreadStore,
-  runtimeChainStore,
-  runtimeChainStatusStore,
-  runtimeChainSpanStore,
-  runtimeChainEventStore,
-});
-if (
-  roleRunStartupRecoveryResult.restartedQueuedRuns > 0 ||
-  roleRunStartupRecoveryResult.restartedRunningRuns > 0 ||
-  roleRunStartupRecoveryResult.restartedResumingRuns > 0
-) {
-  console.info("role run startup recovery completed", roleRunStartupRecoveryResult);
-}
-if (
-  flowRecoveryStartupReconcileResult.orphanedFlows > 0 ||
-  flowRecoveryStartupReconcileResult.orphanedRecoveryRuns > 0 ||
-  flowRecoveryStartupReconcileResult.failedRecoveryRuns > 0
-) {
-  console.info("flow/recovery startup reconcile completed", flowRecoveryStartupReconcileResult);
-}
-if (runtimeChainStartupReconcileResult.affectedChainIds.length > 0) {
-  console.info("runtime chain startup reconcile completed", runtimeChainStartupReconcileResult);
-}
-if (runtimeChainArtifactStartupReconcileResult.affectedChainIds.length > 0) {
-  console.info("runtime chain artifact startup reconcile completed", runtimeChainArtifactStartupReconcileResult);
-}
-const scheduledTaskRuntime = new DefaultScheduledTaskRuntime({
-  scheduledTaskStore,
-  coordinationEngine,
-  clock,
-  idGenerator,
-  replayRecorder,
-});
+let runtimeReconciliationPassResult: RuntimeReconciliationPassResult | undefined;
 const recoveryActionService = createRecoveryActionService({
   clock,
   idGenerator,
@@ -622,6 +580,66 @@ const recoveryActionService = createRecoveryActionService({
   replayRecorder,
   recoveryRunStore,
   recoveryRunEventStore,
+  getRuntimeReconciliationResult: () => runtimeReconciliationPassResult,
+});
+let flowRecoveryStartupReconcileResult: RuntimeSummaryReport["flowRecoveryStartupReconcile"] | undefined;
+let runtimeChainStartupReconcileResult: RuntimeSummaryReport["runtimeChainStartupReconcile"] | undefined;
+let runtimeChainArtifactStartupReconcileResult: RuntimeSummaryReport["runtimeChainArtifactStartupReconcile"] | undefined;
+
+async function refreshRuntimeReconciliationPass(): Promise<void> {
+  runtimeReconciliationPassResult = await runRuntimeReconciliationPass({
+    clock,
+    teamThreadStore,
+    flowLedgerStore,
+    recoveryRunStore,
+    runtimeChainStore,
+    runtimeChainStatusStore,
+    runtimeChainSpanStore,
+    runtimeChainEventStore,
+    syncRecoveryRuntime: (threadId) => recoveryActionService.syncRecoveryRuntime(threadId),
+    recoveryRunStaleAfterMs: RECOVERY_RUN_STALE_AFTER_MS,
+  });
+  flowRecoveryStartupReconcileResult = runtimeReconciliationPassResult.flowRecovery;
+  runtimeChainStartupReconcileResult = runtimeReconciliationPassResult.runtimeChains;
+  runtimeChainArtifactStartupReconcileResult = runtimeReconciliationPassResult.runtimeChainArtifacts;
+}
+
+await refreshRuntimeReconciliationPass();
+if (
+  roleRunStartupRecoveryResult.restartedQueuedRuns > 0 ||
+  roleRunStartupRecoveryResult.restartedRunningRuns > 0 ||
+  roleRunStartupRecoveryResult.restartedResumingRuns > 0
+) {
+  console.info("role run startup recovery completed", roleRunStartupRecoveryResult);
+}
+if (
+  flowRecoveryStartupReconcileResult!.orphanedFlows > 0 ||
+  flowRecoveryStartupReconcileResult!.orphanedRecoveryRuns > 0 ||
+  flowRecoveryStartupReconcileResult!.failedRecoveryRuns > 0
+) {
+  console.info("flow/recovery startup reconcile completed", flowRecoveryStartupReconcileResult);
+}
+if (runtimeChainStartupReconcileResult!.affectedChainIds.length > 0) {
+  console.info("runtime chain startup reconcile completed", runtimeChainStartupReconcileResult);
+}
+if (runtimeChainArtifactStartupReconcileResult!.affectedChainIds.length > 0) {
+  console.info("runtime chain artifact startup reconcile completed", runtimeChainArtifactStartupReconcileResult);
+}
+const runtimeReconciliationTimer = setInterval(() => {
+  void refreshRuntimeReconciliationPass().catch((error) => {
+    console.error(
+      "runtime reconciliation pass failed",
+      error instanceof Error ? error.message : error
+    );
+  });
+}, RUNTIME_RECONCILIATION_INTERVAL_MS);
+runtimeReconciliationTimer.unref?.();
+const scheduledTaskRuntime = new DefaultScheduledTaskRuntime({
+  scheduledTaskStore,
+  coordinationEngine,
+  clock,
+  idGenerator,
+  replayRecorder,
 });
 const runtimeQueryService = createRuntimeQueryService({
   clock,
@@ -632,6 +650,7 @@ const runtimeQueryService = createRuntimeQueryService({
   getFlowRecoveryStartupReconcileResult: () => flowRecoveryStartupReconcileResult,
   getRuntimeChainStartupReconcileResult: () => runtimeChainStartupReconcileResult,
   getRuntimeChainArtifactStartupReconcileResult: () => runtimeChainArtifactStartupReconcileResult,
+  getRuntimeReconciliationResult: () => runtimeReconciliationPassResult,
   teamThreadStore,
   flowLedgerStore,
   roleRunStore,

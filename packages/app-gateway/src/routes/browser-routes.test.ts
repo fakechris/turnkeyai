@@ -217,7 +217,7 @@ test("browser routes return 400 for malformed JSON bodies", async () => {
   assert.deepEqual(response.json, { error: "Invalid JSON" });
 });
 
-test("browser spawn routes reject unsupported owner/profile types and invalid lease ttl", async () => {
+test("browser spawn routes reject unsupported owner/profile types and route-managed lease claims", async () => {
   const invalidOwner = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -260,7 +260,7 @@ test("browser spawn routes reject unsupported owner/profile types and invalid le
       url: "/browser-sessions/spawn",
       body: {
         threadId: "thread-1",
-        leaseTtlMs: 1.5,
+        leaseTtlMs: 30_000,
       },
     }),
     res: invalidLease.res,
@@ -268,7 +268,9 @@ test("browser spawn routes reject unsupported owner/profile types and invalid le
     deps: createDeps(),
   });
   assert.equal(invalidLease.res.statusCode, 400);
-  assert.deepEqual(invalidLease.json, { error: "leaseTtlMs must be a positive integer" });
+  assert.deepEqual(invalidLease.json, {
+    error: "leaseHolderRunKey and leaseTtlMs are managed by browser session runtime and are not accepted by browser routes",
+  });
 });
 
 test("browser task mutation routes reject invalid actions and target combinations", async () => {
@@ -370,5 +372,46 @@ test("browser task mutation routes reject explicit actions mixed with url or for
   assert.equal(wrongProfile.res.statusCode, 400);
   assert.deepEqual(wrongProfile.json, {
     error: "profile owner must match the resolved browser owner",
+  });
+});
+
+test("browser existing-session routes reject profile ownership overrides and blank task metadata", async () => {
+  const profileOverride = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/session-1/send",
+      body: {
+        threadId: "thread-1",
+        profileOwnerType: "thread",
+        profileOwnerId: "thread-1",
+      },
+    }),
+    res: profileOverride.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/send"),
+    deps: createDeps(),
+  });
+  assert.equal(profileOverride.res.statusCode, 400);
+  assert.deepEqual(profileOverride.json, {
+    error: "profileOwnerType and profileOwnerId are not accepted for existing browser sessions",
+  });
+
+  const blankTaskId = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        taskId: "   ",
+      },
+    }),
+    res: blankTaskId.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(blankTaskId.res.statusCode, 400);
+  assert.deepEqual(blankTaskId.json, {
+    error: "taskId must be a non-empty string when provided",
   });
 });

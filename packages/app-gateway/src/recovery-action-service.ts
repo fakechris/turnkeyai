@@ -10,7 +10,8 @@ import type {
   RuntimeChainStatus,
 } from "@turnkeyai/core-types/team";
 import {
-  normalizeScheduledTaskRecord,
+  createScheduledTaskRecord,
+  requireScheduledDispatch,
 } from "@turnkeyai/core-types/team";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
 import type { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
@@ -33,6 +34,7 @@ import type { FileRecoveryRunEventStore } from "@turnkeyai/team-store/recovery/f
 import type { FileRecoveryRunStore } from "@turnkeyai/team-store/recovery/file-recovery-run-store";
 
 import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
+import type { RuntimeReconciliationPassResult } from "./runtime-reconciliation-pass";
 
 type RecoveryRuntimeSnapshot = {
   records: Awaited<ReturnType<FileReplayRecorder["list"]>>;
@@ -44,6 +46,7 @@ type TruthAligned<T> = T & {
   inferred: boolean;
   stale: boolean;
   truthSource: string;
+  remediation: string[];
 };
 type TruthAlignedRecoverySummary = {
   totalRuns: number;
@@ -52,6 +55,8 @@ type TruthAlignedRecoverySummary = {
   inferred: boolean;
   stale: boolean;
   truthSource: string;
+  remediation: string[];
+  runtimeReconciliation?: RuntimeReconciliationPassResult;
 };
 type TruthAlignedRecoveryTimeline = {
   recoveryRun: TruthAligned<RecoveryRun>;
@@ -62,6 +67,7 @@ type TruthAlignedRecoveryTimeline = {
   inferred: boolean;
   stale: boolean;
   truthSource: string;
+  remediation: string[];
 };
 
 export interface RecoveryActionService {
@@ -91,6 +97,7 @@ export function createRecoveryActionService(input: {
   replayRecorder: FileReplayRecorder;
   recoveryRunStore: FileRecoveryRunStore;
   recoveryRunEventStore: FileRecoveryRunEventStore;
+  getRuntimeReconciliationResult?: () => RuntimeReconciliationPassResult | undefined;
 }): RecoveryActionService {
   const {
     clock,
@@ -103,6 +110,7 @@ export function createRecoveryActionService(input: {
     replayRecorder,
     recoveryRunStore,
     recoveryRunEventStore,
+    getRuntimeReconciliationResult,
   } = input;
 
   async function publishRecoveryRuntimeState(run: RecoveryRun): Promise<void> {
@@ -365,23 +373,77 @@ export function createRecoveryActionService(input: {
 
   function truthAlignRecoveryRun(run: RecoveryRun, persistedRecoveryRunIds: Set<string>): TruthAligned<RecoveryRun> {
     const confirmed = persistedRecoveryRunIds.has(run.recoveryRunId);
+    const runtimeReconciliation = getRuntimeReconciliationResult?.();
     return {
       ...run,
       confirmed,
       inferred: true,
       stale: isQueryStaleRecoveryRun(run),
       truthSource: confirmed ? "recovery-runtime-query+store" : "recovery-runtime-query",
+      remediation: buildRecoveryRunRemediation(run, runtimeReconciliation, confirmed),
     };
   }
 
   function truthAlignReplayRecovery(plan: ReplayRecoveryPlan): TruthAligned<ReplayRecoveryPlan> {
+    const runtimeReconciliation = getRuntimeReconciliationResult?.();
     return {
       ...plan,
       confirmed: false,
       inferred: true,
       stale: plan.latestFailure?.category === "stale_session",
       truthSource: "replay-recovery-query",
+      remediation: buildReplayRecoveryRemediation(plan, runtimeReconciliation),
     };
+  }
+
+  function buildRecoveryRunRemediation(
+    run: RecoveryRun,
+    runtimeReconciliation: RuntimeReconciliationPassResult | undefined,
+    confirmed: boolean
+  ): string[] {
+    const remediation: string[] = [];
+    if (!confirmed) {
+      remediation.push("Sync recovery runtime before trusting this derived recovery run.");
+    }
+    if (isQueryStaleRecoveryRun(run)) {
+      remediation.push("Inspect stale recovery execution before retrying or dispatching a fallback.");
+    }
+    if (run.latestFailure?.recommendedAction === "inspect") {
+      remediation.push("Inspect the latest recovery failure and choose resume, retry, or fallback deliberately.");
+    }
+    if (run.nextAction === "retry_same_layer") {
+      remediation.push("Retry on the same layer only after confirming the original execution context is still valid.");
+    }
+    if (run.nextAction === "fallback_transport") {
+      remediation.push("Use the safest fallback transport that preserves task intent before re-dispatch.");
+    }
+    if (run.nextAction === "auto_resume") {
+      remediation.push("Resume from the latest continuation checkpoint before scheduling new work.");
+    }
+    if (runtimeReconciliation?.flowRecovery.affectedRecoveryRunIds.includes(run.recoveryRunId)) {
+      remediation.push("Inspect flow/recovery drift for this recovery run before operator action.");
+    }
+    return [...new Set(remediation)];
+  }
+
+  function buildReplayRecoveryRemediation(
+    plan: ReplayRecoveryPlan,
+    runtimeReconciliation: RuntimeReconciliationPassResult | undefined
+  ): string[] {
+    const remediation: string[] = [];
+    if (plan.latestFailure?.category === "stale_session") {
+      remediation.push("Re-establish the browser/worker session before retrying this recovery plan.");
+    }
+    if (plan.nextAction === "fallback_transport") {
+      remediation.push("Dispatch the safest fallback transport when the original path is no longer reliable.");
+    }
+    if (plan.nextAction === "retry_same_layer") {
+      remediation.push("Retry on the same layer only after confirming the underlying target is still valid.");
+    }
+    if (runtimeReconciliation?.flowRecovery.affectedRecoveryRunIds.some((id) => id === buildRecoveryRunId(plan.groupId))) {
+      remediation.push("Inspect related recovery run drift before auto-dispatching this recovery plan.");
+    }
+    return [...new Set(remediation)];
   }
 
   async function syncRecoveryRuntime(threadId: string): Promise<RecoveryRuntimeSnapshot> {
@@ -456,7 +518,7 @@ export function createRecoveryActionService(input: {
     const rawTz = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
     const tz = rawTz.trim() ? rawTz : "UTC";
 
-    return normalizeScheduledTaskRecord({
+    return createScheduledTaskRecord({
       taskId: task.taskId,
       threadId: task.run.threadId,
       dispatch: {
@@ -596,10 +658,7 @@ export function createRecoveryActionService(input: {
   }
 
   function getRequiredScheduledDispatch(task: ScheduledTaskRecord): NonNullable<ScheduledTaskRecord["dispatch"]> {
-    if (!task.dispatch) {
-      throw new Error(`scheduled task is missing canonical dispatch payload: ${task.taskId}`);
-    }
-    return task.dispatch;
+    return requireScheduledDispatch(task);
   }
 
   function getScheduledRecoveryContext(task: ScheduledTaskRecord) {
@@ -1387,6 +1446,7 @@ export function createRecoveryActionService(input: {
     async buildRecoverySummary(threadId: string, limit: number): Promise<TruthAlignedRecoverySummary> {
       const synced = await loadRecoveryRuntime(threadId);
       const persistedRecoveryRunIds = new Set((await recoveryRunStore.listByThread(threadId)).map((run) => run.recoveryRunId));
+      const runtimeReconciliation = getRuntimeReconciliationResult?.();
       return {
         totalRuns: synced.runs.length,
         runs: synced.runs.slice(0, limit).map((run) => truthAlignRecoveryRun(run, persistedRecoveryRunIds)),
@@ -1394,6 +1454,8 @@ export function createRecoveryActionService(input: {
         inferred: true,
         stale: synced.runs.some((run) => isQueryStaleRecoveryRun(run)),
         truthSource: "recovery-summary-query",
+        remediation: buildRecoverySummaryRemediation(synced.runs, runtimeReconciliation),
+        ...(runtimeReconciliation ? { runtimeReconciliation } : {}),
       };
     },
     async getReplayRecovery(threadId: string, groupId: string): Promise<TruthAligned<ReplayRecoveryPlan> | null> {
@@ -1431,6 +1493,7 @@ export function createRecoveryActionService(input: {
         inferred: true,
         stale: truthAlignedRun.stale,
         truthSource: "recovery-timeline-query",
+        remediation: truthAlignedRun.remediation,
       };
     },
     async executeRecoveryRunActionById(actionByIdInput) {
@@ -1474,4 +1537,18 @@ export function createRecoveryActionService(input: {
       });
     },
   };
+}
+
+function buildRecoverySummaryRemediation(
+  runs: RecoveryRun[],
+  runtimeReconciliation: RuntimeReconciliationPassResult | undefined
+): string[] {
+  const remediation: string[] = [];
+  if (runs.some((run) => ["running", "retrying", "fallback_running", "resumed", "superseded"].includes(run.status))) {
+    remediation.push("Inspect in-flight recovery runs before dispatching additional recovery work.");
+  }
+  if (runtimeReconciliation?.remediation.length) {
+    remediation.push(...runtimeReconciliation.remediation);
+  }
+  return [...new Set(remediation)];
 }

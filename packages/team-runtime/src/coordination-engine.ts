@@ -35,8 +35,9 @@ import type {
 } from "@turnkeyai/core-types/team";
 import {
   createRelayPayload,
+  getScheduledPreferredWorkerKinds,
   normalizeRelayPayload,
-  normalizeScheduledTaskRecord,
+  requireScheduledDispatch,
 } from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
@@ -221,8 +222,7 @@ export class CoordinationEngine {
       throw new Error(`team thread not found: ${task.threadId}`);
     }
 
-    const normalizedTask = normalizeScheduledTaskRecord(task);
-    const scheduledMessage = this.buildScheduledMessage(thread, normalizedTask);
+    const scheduledMessage = this.buildScheduledMessage(thread, task);
     const flow = this.buildFlow(thread, scheduledMessage.id);
     const intent: FlowStartIntent = {
       intentId: `${flow.flowId}:start`,
@@ -230,7 +230,7 @@ export class CoordinationEngine {
       threadId: thread.threadId,
       message: scheduledMessage,
       flow,
-      scheduledTask: normalizedTask,
+      scheduledTask: task,
     };
     if (this.ingressOutboxShipper) {
       await this.startFlowViaOutbox(intent);
@@ -1734,15 +1734,7 @@ function buildScheduledInstructions(
 }
 
 function getRequiredScheduledDispatch(task: ScheduledTaskRecord): NonNullable<ScheduledTaskRecord["dispatch"]> {
-  if (!task.dispatch) {
-    throw new Error(`scheduled task is missing canonical dispatch payload: ${task.taskId}`);
-  }
-  return task.dispatch;
-}
-
-function getScheduledPreferredWorkerKinds(task: ScheduledTaskRecord): WorkerKind[] {
-  const dispatch = getRequiredScheduledDispatch(task);
-  return dispatch.constraints?.preferredWorkerKinds ?? (dispatch.targetWorker ? [dispatch.targetWorker] : []);
+  return requireScheduledDispatch(task);
 }
 
 function getRequiredRelayDispatchPolicy(payload: HandoffEnvelope["payload"]) {
