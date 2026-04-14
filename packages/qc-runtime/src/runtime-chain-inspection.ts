@@ -80,7 +80,7 @@ export function decorateRuntimeChainStatus(input: {
   progressEvents?: RuntimeProgressEvent[];
 }): RuntimeChainStatus {
   const now = input.now ?? Date.now();
-  const progressAugmentedStatus = applyRuntimeProgressToStatus(input.status, input.progressEvents);
+  const progressAugmentedStatus = applyRuntimeProgressToStatus(stripRuntimeChainDecorations(input.status), input.progressEvents);
   const staleReason = buildRuntimeChainStaleReason(progressAugmentedStatus, now);
   const provisionalStatus = staleReason
     ? {
@@ -539,8 +539,12 @@ function applyRuntimeProgressToStatus(
     return status;
   }
 
+  const carriesWaitingState =
+    latest.phase === "waiting" ||
+    ((latest.phase === "heartbeat" || latest.progressKind === "heartbeat") && status.phase === "waiting");
+  const nextStatusBase = carriesWaitingState ? status : stripRuntimeChainActivity(status);
   const nextStatus: RuntimeChainStatus = {
-    ...status,
+    ...nextStatusBase,
     updatedAt: latest.recordedAt,
     lastHeartbeatAt: latest.recordedAt,
     latestSummary: latest.summary || status.latestSummary,
@@ -570,6 +574,8 @@ function applyRuntimeProgressToStatus(
   if (latest.phase === "heartbeat" || latest.progressKind === "heartbeat") {
     nextStatus.phase = status.phase === "waiting" ? "waiting" : "heartbeat";
   } else if (latest.phase === "degraded" || latest.progressKind === "boundary") {
+    nextStatus.phase = latest.phase;
+  } else if (latest.phase) {
     nextStatus.phase = latest.phase;
   }
 
@@ -788,7 +794,7 @@ function projectLiveFlowState(input: {
   }
 
   return {
-    status: input.status,
+    status: flow ? buildFlowDerivedStatus(input.status, flow, input.chain) : input.status,
     syntheticSpans: [...liveRoleSpans, ...liveWorkerSpans, ...liveBrowserSpans],
     syntheticEvents: [...liveRoleEvents, ...liveWorkerEvents, ...liveBrowserEvents],
   };
@@ -1042,10 +1048,11 @@ function buildLiveBrowserSessionEvent(
 }
 
 function buildRoleDerivedStatus(base: RuntimeChainStatus, run: RoleRunState): RuntimeChainStatus {
+  const strippedBase = stripRuntimeChainActivity(base);
   const waitingReason = buildRoleRunWaitingReason(run);
   const spanId = buildRoleRunSpanId(run.runKey);
   return {
-    ...base,
+    ...strippedBase,
     activeSpanId: spanId,
     activeSubjectKind: "role_run",
     activeSubjectId: run.runKey,
@@ -1072,10 +1079,11 @@ function buildWorkerDerivedStatus(
   base: RuntimeChainStatus,
   input: { run: RoleRunState; worker: WorkerSessionState }
 ): RuntimeChainStatus {
+  const strippedBase = stripRuntimeChainActivity(base);
   const waitingReason = buildWorkerRunWaitingReason(input.worker);
   const spanId = buildWorkerRunSpanId(input.worker.workerRunKey);
   return {
-    ...base,
+    ...strippedBase,
     activeSpanId: spanId,
     activeSubjectKind: "worker_run",
     activeSubjectId: input.worker.workerRunKey,
@@ -1093,8 +1101,88 @@ function buildWorkerDerivedStatus(
     attention: base.attention || input.worker.status === "failed",
     updatedAt: Math.max(base.updatedAt, input.worker.updatedAt),
     ...(waitingReason ? { waitingReason, currentWaitingSpanId: spanId, currentWaitingPoint: waitingReason } : {}),
-    ...(input.worker.lastError?.retryable ? { closeKind: "transport_failure" as const } : {}),
+    ...(input.worker.status === "failed" && input.worker.lastError?.retryable
+      ? { closeKind: "transport_failure" as const }
+      : {}),
     ...(input.worker.status === "failed" ? { lastFailedSpanId: spanId } : {}),
+  };
+}
+
+function buildFlowDerivedStatus(base: RuntimeChainStatus, flow: FlowLedger, chain: RuntimeChain): RuntimeChainStatus {
+  const strippedBase = stripRuntimeChainActivity(base);
+  const spanId = chain.rootKind === "flow" ? `flow:${chain.rootId}` : undefined;
+  const updatedAt = Math.max(base.updatedAt, flow.updatedAt);
+  const waitingReason =
+    flow.status === "waiting_role"
+      ? flow.nextExpectedRoleId
+        ? `waiting on role ${flow.nextExpectedRoleId}`
+        : "waiting on next role"
+      : flow.status === "waiting_worker"
+        ? "waiting on worker"
+        : undefined;
+
+  return {
+    ...strippedBase,
+    ...(spanId ? { activeSpanId: spanId } : {}),
+    activeSubjectKind: "flow",
+    activeSubjectId: flow.flowId,
+    phase:
+      flow.status === "running"
+        ? "heartbeat"
+        : flow.status === "waiting_role" || flow.status === "waiting_worker"
+          ? "waiting"
+          : flow.status === "completed"
+            ? "completed"
+            : flow.status === "failed"
+              ? "failed"
+              : flow.status === "aborted"
+                ? "cancelled"
+                : "started",
+    continuityState:
+      flow.status === "running"
+        ? "alive"
+        : flow.status === "waiting_role" || flow.status === "waiting_worker"
+          ? "waiting"
+          : flow.status === "failed" || flow.status === "aborted"
+            ? "terminal"
+            : flow.status === "completed"
+              ? "resolved"
+              : "alive",
+    ...(waitingReason ? { continuityReason: waitingReason } : {}),
+    latestSummary:
+      flow.status === "running"
+        ? "Flow is actively running."
+        : flow.status === "waiting_role"
+          ? "Flow is waiting on the next role."
+          : flow.status === "waiting_worker"
+            ? "Flow is waiting on a worker."
+            : flow.status === "completed"
+              ? "Flow completed."
+              : flow.status === "failed"
+                ? "Flow failed."
+                : flow.status === "aborted"
+                  ? "Flow aborted."
+                  : "Flow created.",
+    ...(flow.status === "running" || flow.status === "waiting_role" || flow.status === "waiting_worker"
+      ? { lastHeartbeatAt: flow.updatedAt }
+      : {}),
+    ...(flow.status === "running"
+      ? { responseTimeoutAt: flow.updatedAt + RUNTIME_HEARTBEAT_STALE_AFTER_MS }
+      : waitingReason
+        ? { responseTimeoutAt: flow.updatedAt + RUNTIME_WAITING_STALE_AFTER_MS }
+        : {}),
+    ...(spanId ? { latestChildSpanId: spanId } : {}),
+    attention: base.attention || flow.status === "failed",
+    updatedAt,
+    ...(waitingReason
+      ? {
+          waitingReason,
+          ...(spanId ? { currentWaitingSpanId: spanId } : {}),
+          currentWaitingPoint: waitingReason,
+        }
+      : {}),
+    ...(flow.status === "completed" && spanId ? { lastCompletedSpanId: spanId } : {}),
+    ...(flow.status === "failed" && spanId ? { lastFailedSpanId: spanId } : {}),
   };
 }
 
@@ -1282,7 +1370,39 @@ function buildWorkerRunWaitingReason(worker: WorkerSessionState): string | undef
   if (worker.status === "waiting_input" || worker.status === "resumable") {
     return worker.continuationDigest?.summary ?? worker.lastResult?.summary ?? "waiting for follow-up input";
   }
-  return worker.lastError?.message;
+  return undefined;
+}
+
+function stripRuntimeChainActivity(status: RuntimeChainStatus): RuntimeChainStatus {
+  const {
+    waitingReason: _waitingReason,
+    currentWaitingSpanId: _currentWaitingSpanId,
+    currentWaitingPoint: _currentWaitingPoint,
+    responseTimeoutAt: _responseTimeoutAt,
+    reconnectWindowUntil: _reconnectWindowUntil,
+    closeKind: _closeKind,
+    continuityReason: _continuityReason,
+    stale: _stale,
+    staleReason: _staleReason,
+    canonicalState: _canonicalState,
+    caseKey: _caseKey,
+    caseState: _caseState,
+    severity: _severity,
+    headline: _headline,
+    nextStep: _nextStep,
+    ...rest
+  } = status;
+  return rest;
+}
+
+function stripRuntimeChainDecorations(status: RuntimeChainStatus): RuntimeChainStatus {
+  const {
+    stale: _stale,
+    staleReason: _staleReason,
+    canonicalState: _canonicalState,
+    ...rest
+  } = status;
+  return rest;
 }
 
 function mapTimelineEntryToChainPhase(

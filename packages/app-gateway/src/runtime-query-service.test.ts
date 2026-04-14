@@ -1413,3 +1413,132 @@ test("runtime query service attaches latest runtime reconciliation guidance when
     "Inspect runtime chain projection drift for affected chains before trusting operator state.",
   ]);
 });
+
+test("runtime query service excludes completed flow chains from active entries even when status fallback is used", async () => {
+  const service = createRuntimeQueryService({
+    clock: { now: () => 1_000 },
+    workerRuntime: {
+      async spawn() {
+        return null;
+      },
+      async send() {
+        return null;
+      },
+      async resume() {
+        return null;
+      },
+      async interrupt() {
+        return null;
+      },
+      async cancel() {
+        return null;
+      },
+      async getState() {
+        return null;
+      },
+      async maybeRunForRole() {
+        return null;
+      },
+    } as any,
+    teamThreadStore: {
+      async list() {
+        return [{ threadId: "thread-1" }];
+      },
+    } as any,
+    flowLedgerStore: {
+      async get() {
+        return null;
+      },
+      async listByThread() {
+        return [
+          {
+            flowId: "flow-1",
+            threadId: "thread-1",
+            rootMessageId: "msg-root",
+            mode: "serial",
+            status: "completed",
+            currentStageIndex: 1,
+            activeRoleIds: [],
+            completedRoleIds: ["lead"],
+            failedRoleIds: [],
+            hopCount: 1,
+            maxHops: 6,
+            edges: [],
+            createdAt: 100,
+            updatedAt: 150,
+          },
+        ];
+      },
+    } as any,
+    roleRunStore: {
+      async listByThread() {
+        return [];
+      },
+    } as any,
+    runtimeChainStore: {
+      async listByThread() {
+        return [
+          {
+            chainId: "flow:flow-1",
+            threadId: "thread-1",
+            rootKind: "flow",
+            rootId: "flow-1",
+            flowId: "flow-1",
+            createdAt: 100,
+            updatedAt: 100,
+          },
+        ];
+      },
+      async get() {
+        return null;
+      },
+    } as any,
+    runtimeChainStatusStore: {
+      async listByThread() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    } as any,
+    runtimeChainSpanStore: {
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    runtimeChainEventStore: {
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    runtimeProgressStore: {
+      async listByThread() {
+        return [];
+      },
+      async listByChain() {
+        return [];
+      },
+    } as any,
+    recoveryRunStore: {
+      async get() {
+        return null;
+      },
+      async listByThread() {
+        return [];
+      },
+    } as any,
+    recoveryRunEventStore: {
+      async listByRecoveryRun() {
+        return [];
+      },
+    } as any,
+    loadRecoveryRuntime: async () => ({
+      records: [],
+      report: {} as never,
+      runs: [],
+    }),
+  });
+
+  const entries = await service.listActiveRuntimeChainEntries(10, "thread-1");
+  assert.deepEqual(entries, []);
+});

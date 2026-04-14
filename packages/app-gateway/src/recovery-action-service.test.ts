@@ -680,3 +680,111 @@ test("recovery action service truth-aligns recovery runs and timelines", async (
   assert.equal((timeline as any).recoveryRun.confirmed, true);
   assert.deepEqual((timeline as any).remediation, (runs[0] as any).remediation);
 });
+
+test("recovery action service flags cold recreation recovery plans for operator remediation", async () => {
+  const records: ReplayRecord[] = [
+    {
+      replayId: "task-1:worker:worker-run-old",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-1",
+      roleId: "role-operator",
+      workerType: "browser",
+      summary: "worker session missing after restart",
+      failure: {
+        category: "stale_session",
+        layer: "worker",
+        retryable: true,
+        message: "worker session missing after restart",
+        recommendedAction: "resume",
+      },
+    },
+    {
+      replayId: "task-1:role:run-1",
+      layer: "role",
+      status: "completed",
+      recordedAt: 20,
+      threadId: "thread-1",
+      taskId: "task-1",
+      roleId: "role-operator",
+      summary: "cold recreation completed",
+      metadata: {
+        workerContinuation: {
+          state: "cold_recreated",
+          requestedMode: "resume-existing",
+          requestedWorkerType: "browser",
+          requestedWorkerRunKey: "worker-run-old",
+          resolvedWorkerType: "browser",
+          resolvedWorkerRunKey: "worker-run-new",
+          reason: "session_missing",
+          summary: "Requested resume-existing but the bound worker session was missing, so work restarted cold.",
+        },
+      },
+    },
+  ];
+  const persistedRun = buildBaseRecoveryRun(records);
+  const service = createRecoveryActionService({
+    clock: { now: () => 100 },
+    idGenerator: {
+      messageId: () => "msg-1",
+      taskId: () => "task-1",
+    } as any,
+    recoveryRunActionMutex: {
+      async run(_key: string, work: () => Promise<unknown>) {
+        return work();
+      },
+    } as any,
+    recoveryRunStaleAfterMs: 60_000,
+    coordinationEngine: {
+      async handleScheduledTask() {},
+    } as any,
+    runtimeStateRecorder: {
+      async record() {},
+    } as any,
+    runtimeProgressRecorder: {
+      async record() {},
+    } as any,
+    replayRecorder: {
+      async list() {
+        return records;
+      },
+      async record() {
+        return "replay-recorded";
+      },
+    } as any,
+    recoveryRunStore: {
+      async listByThread() {
+        return [persistedRun];
+      },
+      async get(recoveryRunId: string) {
+        return recoveryRunId === persistedRun.recoveryRunId ? persistedRun : null;
+      },
+      async put() {},
+    } as any,
+    recoveryRunEventStore: {
+      async append() {},
+      async listByRecoveryRun() {
+        return [];
+      },
+    } as any,
+  });
+
+  const replayRecovery = await service.getReplayRecovery("thread-1", "task-1");
+  assert.ok(replayRecovery);
+  assert.equal(replayRecovery?.workerContinuation?.state, "cold_recreated");
+  assert.ok(
+    replayRecovery?.remediation.includes(
+      "Treat this as a cold recreation, not a true worker resume, before approving further execution."
+    )
+  );
+
+  const recoveryRun = await service.getRecoveryRun("thread-1", persistedRun.recoveryRunId);
+  assert.ok(recoveryRun);
+  assert.ok(
+    recoveryRun?.remediation.includes(
+      "This recovery degraded to a cold recreation; re-validate continuation context before allowing new side effects."
+    )
+  );
+});

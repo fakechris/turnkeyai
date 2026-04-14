@@ -123,3 +123,89 @@ test("file recovery run event store reads legacy by-run array files", async () =
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("file recovery run event store merges thread-scoped, legacy flat, and by-run arrays for thread reads", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-event-store-merge-thread-"));
+  try {
+    const store = new FileRecoveryRunEventStore({ rootDir });
+    await writeJsonFileAtomic(path.join(rootDir, "recovery%3Atask-legacy.json"), [
+      {
+        eventId: "legacy-flat-event",
+        recoveryRunId: "recovery:task-legacy",
+        threadId: "thread-1",
+        sourceGroupId: "task-legacy",
+        kind: "action_requested",
+        status: "planned",
+        recordedAt: 10,
+        summary: "legacy flat event",
+      },
+    ]);
+    await writeJsonFileAtomic(path.join(rootDir, "by-run", "recovery%3Atask-by-run.json"), [
+      {
+        eventId: "legacy-by-run-event",
+        recoveryRunId: "recovery:task-by-run",
+        threadId: "thread-1",
+        sourceGroupId: "task-by-run",
+        kind: "action_dispatched",
+        status: "running",
+        recordedAt: 20,
+        summary: "legacy by-run event",
+      },
+    ]);
+
+    await store.append({
+      eventId: "thread-event",
+      recoveryRunId: "recovery:task-thread",
+      threadId: "thread-1",
+      sourceGroupId: "task-thread",
+      kind: "recovered",
+      status: "recovered",
+      recordedAt: 30,
+      summary: "thread event",
+    });
+
+    const events = await store.listByThread("thread-1");
+    assert.deepEqual(
+      events.map((event) => event.eventId),
+      ["legacy-flat-event", "legacy-by-run-event", "thread-event"]
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file recovery run event store includes canonical by-run journals and keeps thread-scoped events authoritative on ties", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-event-store-canonical-thread-"));
+  try {
+    const store = new FileRecoveryRunEventStore({ rootDir });
+    const recoveryRunId = "recovery:task-shared";
+    await writeJsonFileAtomic(path.join(rootDir, "by-run", encodeURIComponent(recoveryRunId), "events", "shared-event.json"), {
+      eventId: "shared-event",
+      recoveryRunId,
+      threadId: "thread-1",
+      sourceGroupId: "task-shared",
+      kind: "action_requested",
+      status: "planned",
+      recordedAt: 10,
+      summary: "canonical by-run event",
+    });
+
+    await store.append({
+      eventId: "shared-event",
+      recoveryRunId,
+      threadId: "thread-1",
+      sourceGroupId: "task-shared",
+      kind: "action_dispatched",
+      status: "running",
+      recordedAt: 10,
+      summary: "thread-scoped event wins tie",
+    });
+
+    const events = await store.listByThread("thread-1");
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.summary, "thread-scoped event wins tie");
+    assert.equal(events[0]?.kind, "action_dispatched");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

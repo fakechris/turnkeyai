@@ -169,6 +169,65 @@ test("replay inspection marks auto-dispatch-ready recovery when role and worker 
   assert.equal(plan?.autoDispatchReady, true);
 });
 
+test("replay inspection preserves cold recreation worker continuity on recovery plans", () => {
+  const records = [
+    {
+      replayId: "task-4a:worker:worker:browser:task:task-4a",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-4a",
+      roleId: "role-explore",
+      workerType: "browser",
+      summary: "worker session missing after restart",
+      failure: {
+        category: "stale_session",
+        layer: "worker",
+        retryable: true,
+        message: "worker session missing after restart",
+        recommendedAction: "resume",
+      },
+    },
+    {
+      replayId: "task-4a:role:role:role-explore:thread:thread-1",
+      layer: "role",
+      status: "completed",
+      recordedAt: 20,
+      threadId: "thread-1",
+      taskId: "task-4a",
+      roleId: "role-explore",
+      summary: "cold recreation completed",
+      metadata: {
+        workerContinuation: {
+          state: "cold_recreated",
+          requestedMode: "resume-existing",
+          requestedWorkerType: "browser",
+          requestedWorkerRunKey: "worker-run-old",
+          resolvedWorkerType: "browser",
+          resolvedWorkerRunKey: "worker-run-new",
+          reason: "session_missing",
+          summary: "Requested resume-existing but the bound worker session was missing, so work restarted cold.",
+        },
+      },
+    },
+  ] as Parameters<typeof buildReplayInspectionReport>[0];
+
+  const plan = findReplayRecoveryPlan(records, "task-4a");
+  assert.ok(plan);
+  assert.deepEqual(plan?.workerContinuation, {
+    latestRecordedAt: 20,
+    state: "cold_recreated",
+    requestedMode: "resume-existing",
+    requestedWorkerType: "browser",
+    requestedWorkerRunKey: "worker-run-old",
+    resolvedWorkerType: "browser",
+    resolvedWorkerRunKey: "worker-run-new",
+    reason: "session_missing",
+    summary: "Requested resume-existing but the bound worker session was missing, so work restarted cold.",
+  });
+});
+
 test("replay inspection builds replay console and incident bundle views", () => {
   const records = [
     {

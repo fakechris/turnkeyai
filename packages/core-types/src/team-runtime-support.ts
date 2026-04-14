@@ -1,5 +1,6 @@
 import type {
   ActivationType,
+  ContinuityMode,
   FlowId,
   DispatchMode,
   RuntimeError,
@@ -256,6 +257,32 @@ export interface WorkerSessionState {
     createdAt: number;
   };
 }
+
+export interface WorkerContinuationOutcome {
+  state: "resumed_existing" | "cold_recreated" | "spawned_fresh";
+  requestedMode?: ContinuityMode | null;
+  requestedWorkerType?: WorkerKind;
+  requestedWorkerRunKey?: RunKey;
+  resolvedWorkerType?: WorkerKind;
+  resolvedWorkerRunKey?: RunKey;
+  reason?:
+    | "fresh_requested"
+    | "no_bound_session"
+    | "session_missing"
+    | "session_terminal"
+    | "capability_unavailable"
+    | "reuse_disallowed";
+  summary: string;
+}
+
+export const WORKER_CONTINUATION_REASONS = [
+  "fresh_requested",
+  "no_bound_session",
+  "session_missing",
+  "session_terminal",
+  "capability_unavailable",
+  "reuse_disallowed",
+] as const;
 
 export interface WorkerSessionContextRecord {
   threadId: ThreadId;

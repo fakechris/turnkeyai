@@ -18,7 +18,9 @@ import type {
   ReplayRecoveryHint,
   ReplayTaskSummary,
   ReplayTimelineEntry,
+  ReplayWorkerContinuitySummary,
 } from "@turnkeyai/core-types/team";
+import { WORKER_CONTINUATION_REASONS, WORKER_KINDS } from "@turnkeyai/core-types/team";
 import { describeRecoveryRunGate, listAllowedRecoveryRunActions } from "@turnkeyai/core-types/recovery-operator-semantics";
 
 const REPLAY_LAYER_ORDER: ReplayLayer[] = ["scheduled", "role", "worker", "browser"];
@@ -95,6 +97,9 @@ export function buildReplayInspectionReport(records: ReplayRecord[]): ReplayInsp
         ...(extractReplayBrowserContinuity(record)
           ? { browserContinuity: extractReplayBrowserContinuity(record)! }
           : {}),
+        ...(extractReplayWorkerContinuity(record)
+          ? { workerContinuation: extractReplayWorkerContinuity(record)! }
+          : {}),
       });
       continue;
     }
@@ -146,6 +151,13 @@ export function buildReplayInspectionReport(records: ReplayRecord[]): ReplayInsp
         existing.browserContinuity = mergeBrowserContinuity(existing.browserContinuity, browserContinuity);
       } else {
         existing.browserContinuity = mergeBrowserContinuity(browserContinuity, existing.browserContinuity);
+      }
+    }
+
+    const workerContinuation = extractReplayWorkerContinuity(record);
+    if (workerContinuation) {
+      if (!existing.workerContinuation || existing.workerContinuation.latestRecordedAt <= workerContinuation.latestRecordedAt) {
+        existing.workerContinuation = workerContinuation;
       }
     }
 
@@ -1111,6 +1123,7 @@ function buildReplayRecoveryPlan(group: ReplayTaskSummary): ReplayRecoveryPlan {
     ...(targetWorker ? { targetWorker } : {}),
     nextAction: mapNextAction(hint.action, canAutoResume),
     ...(targetLayer ? { targetLayer } : {}),
+    ...(group.workerContinuation ? { workerContinuation: group.workerContinuation } : {}),
   };
 }
 
@@ -1582,9 +1595,66 @@ function extractReplayBrowserContinuity(record: ReplayRecord): ReplayBrowserCont
   };
 }
 
+function extractReplayWorkerContinuity(record: ReplayRecord): ReplayWorkerContinuitySummary | null {
+  const metadata = record.metadata && typeof record.metadata === "object" ? (record.metadata as Record<string, unknown>) : null;
+  const continuity =
+    metadata?.workerContinuation && typeof metadata.workerContinuation === "object"
+      ? (metadata.workerContinuation as Record<string, unknown>)
+      : null;
+  if (!continuity) {
+    return null;
+  }
+
+  const state = continuity.state;
+  if (state !== "resumed_existing" && state !== "cold_recreated" && state !== "spawned_fresh") {
+    return null;
+  }
+
+  const requestedMode =
+    continuity.requestedMode === "fresh" ||
+    continuity.requestedMode === "prefer-existing" ||
+    continuity.requestedMode === "resume-existing"
+      ? continuity.requestedMode
+      : undefined;
+  const requestedWorkerType = isWorkerKind(continuity.requestedWorkerType) ? continuity.requestedWorkerType : undefined;
+  const resolvedWorkerType = isWorkerKind(continuity.resolvedWorkerType) ? continuity.resolvedWorkerType : undefined;
+  const reason = isWorkerContinuationReason(continuity.reason) ? continuity.reason : undefined;
+  const summary = typeof continuity.summary === "string" ? continuity.summary : undefined;
+
+  return {
+    latestRecordedAt: record.recordedAt,
+    state,
+    summary: summary ?? `Worker continuity resolved as ${state}.`,
+    ...(requestedMode !== undefined ? { requestedMode } : {}),
+    ...(requestedWorkerType ? { requestedWorkerType } : {}),
+    ...(typeof continuity.requestedWorkerRunKey === "string"
+      ? { requestedWorkerRunKey: continuity.requestedWorkerRunKey }
+      : {}),
+    ...(resolvedWorkerType ? { resolvedWorkerType } : {}),
+    ...(typeof continuity.resolvedWorkerRunKey === "string"
+      ? { resolvedWorkerRunKey: continuity.resolvedWorkerRunKey }
+      : {}),
+    ...(reason ? { reason } : {}),
+  };
+}
+
 function extractRecoveryParentGroupId(record: ReplayRecord): string | undefined {
   const recoveryContext = extractRecoveryContext(record);
   return recoveryContext?.parentGroupId;
+}
+
+function isWorkerKind(value: unknown): value is ReplayRecord["workerType"] {
+  return typeof value === "string" && (WORKER_KINDS as readonly string[]).includes(value);
+}
+
+function isWorkerContinuationReason(value: unknown): value is
+  | "fresh_requested"
+  | "no_bound_session"
+  | "session_missing"
+  | "session_terminal"
+  | "capability_unavailable"
+  | "reuse_disallowed" {
+  return typeof value === "string" && (WORKER_CONTINUATION_REASONS as readonly string[]).includes(value);
 }
 
 function buildReplayParentByGroupId(records: ReplayRecord[]): Map<string, string> {
