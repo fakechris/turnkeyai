@@ -29,7 +29,8 @@ import type {
   PermissionScope,
   PromptAdmissionMode,
   TransportKind,
-} from "./team-runtime-support";
+} from "./team-governance";
+import type { ValidationOpsReport } from "./team-validation-ops";
 
 export type ReplayLayer = "scheduled" | "role" | "worker" | "browser";
 export type ReplayStatus = "completed" | "partial" | "failed";
@@ -467,76 +468,6 @@ export interface PromptConsoleReport {
   latestBoundaries: PromptBoundaryEntry[];
 }
 
-export type ValidationOpsRunType = "release-readiness" | "validation-profile" | "soak-series" | "transport-soak";
-export type ValidationOpsIssueKind = "validation-item" | "release-check" | "soak-suite" | "transport-target";
-export type ValidationOpsIssueSeverity = "warning" | "critical";
-export type ValidationOpsFailureBucket =
-  | "browser"
-  | "recovery"
-  | "context"
-  | "parallel"
-  | "governance"
-  | "runtime"
-  | "operator"
-  | "release"
-  | "soak"
-  | "transport"
-  | "validation";
-export type ValidationOpsRecommendedAction =
-  | "inspect"
-  | "rerun-release"
-  | "rerun-profile"
-  | "rerun-soak"
-  | "rerun-transport-soak";
-
-export interface ValidationOpsIssueRecord {
-  issueId: string;
-  kind: ValidationOpsIssueKind;
-  scope: string;
-  summary: string;
-  bucket: ValidationOpsFailureBucket;
-  severity: ValidationOpsIssueSeverity;
-  recommendedAction: ValidationOpsRecommendedAction;
-  commandHint: string;
-}
-
-export interface ValidationOpsRunRecord {
-  runId: string;
-  runType: ValidationOpsRunType;
-  title: string;
-  status: "passed" | "failed";
-  startedAt: number;
-  completedAt: number;
-  durationMs: number;
-  issueCount: number;
-  profileId?: string;
-  selectors?: string[];
-  cycles?: number;
-  targets?: string[];
-  artifactPath?: string;
-  issues: ValidationOpsIssueRecord[];
-}
-
-export interface ValidationOpsReport {
-  totalRuns: number;
-  failedRuns: number;
-  passedRuns: number;
-  attentionCount: number;
-  runTypeCounts: Partial<Record<ValidationOpsRunType, number>>;
-  bucketCounts: Partial<Record<ValidationOpsFailureBucket, number>>;
-  severityCounts: Partial<Record<ValidationOpsIssueSeverity, number>>;
-  recommendedActionCounts: Partial<Record<ValidationOpsRecommendedAction, number>>;
-  latestRuns: ValidationOpsRunRecord[];
-  activeIssues: Array<
-    ValidationOpsIssueRecord & {
-      runId: string;
-      runType: ValidationOpsRunType;
-      title: string;
-      recordedAt: number;
-    }
-  >;
-}
-
 export interface OperatorSummaryReport {
   flow: FlowConsoleReport;
   replay: ReplayConsoleReport;
@@ -862,9 +793,4 @@ export interface RecoveryRunStore {
 export interface RecoveryRunEventStore {
   append(event: RecoveryRunEvent): Promise<void>;
   listByRecoveryRun(recoveryRunId: string): Promise<RecoveryRunEvent[]>;
-}
-
-export interface ValidationOpsRunStore {
-  put(record: ValidationOpsRunRecord): Promise<void>;
-  list(limit?: number): Promise<ValidationOpsRunRecord[]>;
 }

@@ -20,7 +20,6 @@ import type {
   DispatchContinuationContext,
   DispatchCoordination,
   DispatchPolicy,
-  DispatchRecoveryContext,
 } from "./team-dispatch";
 import type {
   BrowserPageResult,
@@ -35,7 +34,25 @@ import type {
   BrowserTaskResult,
 } from "./browser";
 import type { RolePromptPacketLike } from "./team-orchestration";
-import type { ValidationOpsRunRecord } from "./team-replay-recovery";
+import type {
+  ApiDiagnosisReport,
+  ApiExecutionAttempt,
+  AuthAndScopeDiagnosisPolicy,
+  CapabilityDiscoveryService,
+  EvidenceSourceType,
+  EvidenceTrustAssessment,
+  EvidenceTrustLevel,
+  PermissionCacheRecord,
+  PermissionCacheStore,
+  PermissionEvaluation,
+  PromptAdmissionDecision,
+  PromptAdmissionMode,
+  TransportExecutionAudit,
+  TransportKind,
+  ApiExecutionVerifier,
+} from "./team-governance";
+import type { ValidationOpsRunRecord } from "./team-validation-ops";
+import type { WorkerStartupReconcileResult } from "./team-startup-reconcile";
 
 export interface ThreadSummaryRecord {
   threadId: string;
@@ -142,24 +159,6 @@ export interface WorkerEvidenceDigestStore {
   listByThread(threadId: string): Promise<WorkerEvidenceDigest[]>;
 }
 
-export interface PermissionCacheRecord {
-  cacheKey: string;
-  threadId: ThreadId;
-  workerType: WorkerKind;
-  requirement: PermissionRequirement;
-  decision: PermissionDecision;
-  createdAt: number;
-  updatedAt: number;
-  expiresAt?: number;
-  denialReason?: string;
-}
-
-export interface PermissionCacheStore {
-  get(cacheKey: string): Promise<PermissionCacheRecord | null>;
-  put(record: PermissionCacheRecord): Promise<void>;
-  listByThread(threadId: ThreadId): Promise<PermissionCacheRecord[]>;
-}
-
 export interface ThreadMemoryStore {
   get(threadId: string): Promise<ThreadMemoryRecord | null>;
   put(record: ThreadMemoryRecord): Promise<void>;
@@ -181,140 +180,6 @@ export interface ThreadJournalStore {
   get(threadId: string, dateKey: string): Promise<ThreadJournalRecord | null>;
   put(record: ThreadJournalRecord): Promise<void>;
   listByThread(threadId: string, limit?: number): Promise<ThreadJournalRecord[]>;
-}
-
-export type TransportKind = "official_api" | "business_tool" | "browser";
-export type EvidenceTrustLevel = "promotable" | "observational";
-export type EvidenceSourceType = "browser" | "api" | "tool";
-export type PromptAdmissionMode = "full" | "summary_only" | "blocked";
-export type PermissionRequirementLevel = "none" | "confirm" | "approval";
-export type PermissionScope = "read" | "navigate" | "mutate" | "publish" | "credential";
-export type PermissionDecision = "granted" | "denied" | "prompt_required";
-
-export interface PermissionRequirement {
-  level: PermissionRequirementLevel;
-  scope: PermissionScope;
-  rationale: string;
-  cacheKey: string;
-}
-
-export interface PermissionEvaluation {
-  requirement: PermissionRequirement;
-  decision: PermissionDecision;
-  source: "policy" | "cache";
-  denialReason?: string;
-  recommendedAction?: "proceed" | "retry_same_transport" | "fallback_browser" | "request_approval" | "abort";
-  fallbackTransport?: TransportKind;
-}
-
-export interface EvidenceTrustAssessment {
-  sourceType: EvidenceSourceType;
-  trustLevel: EvidenceTrustLevel;
-  rationale: string[];
-  verified: boolean;
-  downgraded: boolean;
-}
-
-export interface PromptAdmissionDecision {
-  mode: PromptAdmissionMode;
-  trustLevel: EvidenceTrustLevel;
-  reason: string;
-}
-
-export interface TransportExecutionAudit {
-  capability: string;
-  preferredOrder: TransportKind[];
-  attemptedTransports: TransportKind[];
-  finalTransport?: TransportKind;
-  downgraded: boolean;
-  fallbackReason?: string;
-  trustLevel: EvidenceTrustLevel;
-}
-
-export interface CapabilityInspectionInput {
-  threadId: ThreadId;
-  roleId: RoleId;
-  requestedCapabilities: string[];
-  preferredWorkerKinds?: WorkerKind[];
-}
-
-export interface ConnectorCapabilityState {
-  provider: string;
-  available: boolean;
-  authorized: boolean;
-  issues?: string[];
-  suggestedActions?: string[];
-}
-
-export interface ApiCapabilityState {
-  name: string;
-  configured: boolean;
-  ready: boolean;
-  issues?: string[];
-  suggestedActions?: string[];
-}
-
-export interface SkillCapabilityState {
-  skillId: string;
-  installed: boolean;
-}
-
-export interface TransportPreference {
-  capability: string;
-  orderedTransports: TransportKind[];
-}
-
-export interface CapabilityInspectionResult {
-  availableWorkers: WorkerKind[];
-  connectorStates: ConnectorCapabilityState[];
-  apiStates: ApiCapabilityState[];
-  skillStates: SkillCapabilityState[];
-  transportPreferences: TransportPreference[];
-  unavailableCapabilities: string[];
-  generatedAt: number;
-}
-
-export interface CapabilityDiscoveryService {
-  inspect(input: CapabilityInspectionInput): Promise<CapabilityInspectionResult>;
-}
-
-export interface ApiExecutionAttempt {
-  apiName: string;
-  operation: string;
-  transport: Exclude<TransportKind, "browser">;
-  statusCode?: number;
-  errorMessage?: string;
-  responseBody?: unknown;
-  credentialState?: "missing" | "present" | "invalid";
-  requiredScopes?: string[];
-  grantedScopes?: string[];
-  schemaErrors?: string[];
-  businessErrors?: string[];
-}
-
-export type ApiDiagnosisCategory =
-  | "ok"
-  | "credential"
-  | "scope"
-  | "schema"
-  | "business"
-  | "network"
-  | "unknown";
-
-export interface ApiDiagnosisReport {
-  ok: boolean;
-  category: ApiDiagnosisCategory;
-  retryable: boolean;
-  issues: string[];
-  suggestedActions: string[];
-}
-
-export interface AuthAndScopeDiagnosisPolicy {
-  diagnose(input: ApiExecutionAttempt): ApiDiagnosisReport | null;
-}
-
-export interface ApiExecutionVerifier {
-  verify(input: ApiExecutionAttempt): ApiDiagnosisReport;
 }
 
 export interface PermissionGovernancePolicy {
@@ -489,64 +354,4 @@ export interface WorkerSessionStore {
   get(workerRunKey: RunKey): Promise<WorkerSessionRecord | null>;
   put(record: WorkerSessionRecord): Promise<void>;
   list(limit?: number): Promise<WorkerSessionRecord[]>;
-}
-
-export interface WorkerStartupReconcileResult {
-  totalSessions: number;
-  downgradedRunningSessions: number;
-}
-
-export interface WorkerBindingStartupReconcileResult {
-  totalRoleRuns: number;
-  totalBindings: number;
-  clearedMissingBindings: number;
-  clearedTerminalBindings: number;
-  clearedCrossThreadBindings: number;
-  roleRunsNeedingAttention: number;
-  roleRunsRequeued: number;
-  roleRunsFailed: number;
-}
-
-export interface RoleRunStartupRecoveryResult {
-  totalRoleRuns: number;
-  restartedQueuedRuns: number;
-  restartedRunningRuns: number;
-  restartedResumingRuns: number;
-  restartedRunKeys: RunKey[];
-  orphanedThreadRuns: number;
-  failedOrphanedRuns: number;
-  failedRunKeys: RunKey[];
-  clearedInvalidHandoffs: number;
-  queuedRunsIdled: number;
-}
-
-export interface FlowRecoveryStartupReconcileResult {
-  orphanedFlows: number;
-  abortedOrphanedFlows: number;
-  orphanedRecoveryRuns: number;
-  missingFlowRecoveryRuns: number;
-  crossThreadFlowRecoveryRuns: number;
-  failedRecoveryRuns: number;
-  affectedFlowIds: RunKey[];
-  affectedRecoveryRunIds: RunKey[];
-}
-
-export interface RuntimeChainStartupReconcileResult {
-  orphanedThreadChains: number;
-  missingFlowChains: number;
-  crossThreadFlowChains: number;
-  affectedChainIds: RunKey[];
-}
-
-export interface RuntimeChainArtifactStartupReconcileResult {
-  orphanedStatuses: number;
-  crossThreadStatuses: number;
-  orphanedSpans: number;
-  crossThreadSpans: number;
-  crossFlowSpans: number;
-  orphanedEvents: number;
-  missingSpanEvents: number;
-  crossThreadEvents: number;
-  crossChainEvents: number;
-  affectedChainIds: RunKey[];
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createRelayPayload, normalizeRelayPayload, normalizeScheduledTaskRecord } from "./team";
+import { createRelayPayload, createScheduledTaskRecord, normalizeRelayPayload, requireScheduledDispatch } from "./team";
 
 test("normalizeRelayPayload fills canonical and mirrored relay payload fields", () => {
   const payload = normalizeRelayPayload({
@@ -49,16 +49,27 @@ test("createRelayPayload writes canonical relay payloads with mirrored compatibi
   assert.deepEqual(payload.preferredWorkerKinds, ["browser"]);
 });
 
-test("normalizeScheduledTaskRecord derives dispatch and mirrored fields from either path", () => {
-  const fromLegacy = normalizeScheduledTaskRecord({
+test("createScheduledTaskRecord writes canonical dispatch with mirrored compatibility fields", () => {
+  const task = createScheduledTaskRecord({
     taskId: "task-1",
     threadId: "thread-1",
-    targetRoleId: "role-1",
-    targetWorker: "browser",
-    sessionTarget: "worker",
-    recoveryContext: {
-      parentGroupId: "group-1",
-      action: "retry_same_layer",
+    dispatch: {
+      targetRoleId: "role-1",
+      targetWorker: "browser",
+      sessionTarget: "worker",
+      continuity: {
+        context: {
+          source: "recovery_dispatch",
+          workerType: "browser",
+          recovery: {
+            parentGroupId: "group-1",
+            action: "retry_same_layer",
+          },
+        },
+      },
+      constraints: {
+        preferredWorkerKinds: ["browser"],
+      },
     },
     capsule: {
       title: "Recover",
@@ -74,37 +85,37 @@ test("normalizeScheduledTaskRecord derives dispatch and mirrored fields from eit
     updatedAt: 1,
   });
 
-  assert.equal(fromLegacy.dispatch?.targetRoleId, "role-1");
-  assert.equal(fromLegacy.dispatch?.targetWorker, "browser");
-  assert.equal(fromLegacy.dispatch?.sessionTarget, "worker");
-  assert.equal(fromLegacy.dispatch?.continuity?.context?.recovery?.parentGroupId, "group-1");
+  assert.equal(task.dispatch?.targetRoleId, "role-1");
+  assert.equal(task.dispatch?.targetWorker, "browser");
+  assert.equal(task.dispatch?.sessionTarget, "worker");
+  assert.equal(task.dispatch?.continuity?.context?.recovery?.parentGroupId, "group-1");
+  assert.equal(task.targetRoleId, "role-1");
+  assert.equal(task.targetWorker, "browser");
+  assert.equal(task.sessionTarget, "worker");
+  assert.equal(task.recoveryContext?.parentGroupId, "group-1");
+});
 
-  const fromCanonical = normalizeScheduledTaskRecord({
-    taskId: "task-2",
-    threadId: "thread-1",
-    dispatch: {
-      targetRoleId: "role-2",
-      targetWorker: "explore",
-      sessionTarget: "worker",
-      constraints: {
-        preferredWorkerKinds: ["explore"],
-      },
-    },
-    capsule: {
-      title: "Inspect",
-      instructions: "Continue explore work",
-    },
-    schedule: {
-      kind: "cron",
-      expr: "* * * * *",
-      tz: "UTC",
-      nextRunAt: 2,
-    },
-    createdAt: 2,
-    updatedAt: 2,
-  });
-
-  assert.equal(fromCanonical.targetRoleId, "role-2");
-  assert.equal(fromCanonical.targetWorker, "explore");
-  assert.equal(fromCanonical.sessionTarget, "worker");
+test("requireScheduledDispatch rejects tasks without canonical dispatch", () => {
+  assert.throws(
+    () =>
+      requireScheduledDispatch({
+        taskId: "task-legacy",
+        threadId: "thread-1",
+        targetRoleId: "role-1",
+        sessionTarget: "main",
+        schedule: {
+          kind: "cron",
+          expr: "* * * * *",
+          tz: "UTC",
+          nextRunAt: 1,
+        },
+        capsule: {
+          title: "Legacy",
+          instructions: "Recover manually",
+        },
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    /missing canonical dispatch payload/
+  );
 });

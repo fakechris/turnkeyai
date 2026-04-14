@@ -20,7 +20,7 @@ import type {
   DispatchContinuationContext,
   DispatchCoordination,
 } from "./team-dispatch";
-import type { CapabilityInspectionResult } from "./team-runtime-support";
+import type { CapabilityInspectionResult } from "./team-governance";
 
 export interface SupervisorUserMessageInput {
   thread: TeamThread;
