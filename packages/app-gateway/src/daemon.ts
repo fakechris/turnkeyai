@@ -585,23 +585,32 @@ const recoveryActionService = createRecoveryActionService({
 let flowRecoveryStartupReconcileResult: RuntimeSummaryReport["flowRecoveryStartupReconcile"] | undefined;
 let runtimeChainStartupReconcileResult: RuntimeSummaryReport["runtimeChainStartupReconcile"] | undefined;
 let runtimeChainArtifactStartupReconcileResult: RuntimeSummaryReport["runtimeChainArtifactStartupReconcile"] | undefined;
+let runtimeReconciliationPassInFlight = false;
 
 async function refreshRuntimeReconciliationPass(): Promise<void> {
-  runtimeReconciliationPassResult = await runRuntimeReconciliationPass({
-    clock,
-    teamThreadStore,
-    flowLedgerStore,
-    recoveryRunStore,
-    runtimeChainStore,
-    runtimeChainStatusStore,
-    runtimeChainSpanStore,
-    runtimeChainEventStore,
-    syncRecoveryRuntime: (threadId) => recoveryActionService.syncRecoveryRuntime(threadId),
-    recoveryRunStaleAfterMs: RECOVERY_RUN_STALE_AFTER_MS,
-  });
-  flowRecoveryStartupReconcileResult = runtimeReconciliationPassResult.flowRecovery;
-  runtimeChainStartupReconcileResult = runtimeReconciliationPassResult.runtimeChains;
-  runtimeChainArtifactStartupReconcileResult = runtimeReconciliationPassResult.runtimeChainArtifacts;
+  if (runtimeReconciliationPassInFlight) {
+    return;
+  }
+  runtimeReconciliationPassInFlight = true;
+  try {
+    runtimeReconciliationPassResult = await runRuntimeReconciliationPass({
+      clock,
+      teamThreadStore,
+      flowLedgerStore,
+      recoveryRunStore,
+      runtimeChainStore,
+      runtimeChainStatusStore,
+      runtimeChainSpanStore,
+      runtimeChainEventStore,
+      syncRecoveryRuntime: (threadId) => recoveryActionService.syncRecoveryRuntime(threadId),
+      recoveryRunStaleAfterMs: RECOVERY_RUN_STALE_AFTER_MS,
+    });
+    flowRecoveryStartupReconcileResult = runtimeReconciliationPassResult.flowRecovery;
+    runtimeChainStartupReconcileResult = runtimeReconciliationPassResult.runtimeChains;
+    runtimeChainArtifactStartupReconcileResult = runtimeReconciliationPassResult.runtimeChainArtifacts;
+  } finally {
+    runtimeReconciliationPassInFlight = false;
+  }
 }
 
 await refreshRuntimeReconciliationPass();
@@ -613,16 +622,19 @@ if (
   console.info("role run startup recovery completed", roleRunStartupRecoveryResult);
 }
 if (
-  flowRecoveryStartupReconcileResult!.orphanedFlows > 0 ||
-  flowRecoveryStartupReconcileResult!.orphanedRecoveryRuns > 0 ||
-  flowRecoveryStartupReconcileResult!.failedRecoveryRuns > 0
+  flowRecoveryStartupReconcileResult &&
+  (
+    flowRecoveryStartupReconcileResult.orphanedFlows > 0 ||
+    flowRecoveryStartupReconcileResult.orphanedRecoveryRuns > 0 ||
+    flowRecoveryStartupReconcileResult.failedRecoveryRuns > 0
+  )
 ) {
   console.info("flow/recovery startup reconcile completed", flowRecoveryStartupReconcileResult);
 }
-if (runtimeChainStartupReconcileResult!.affectedChainIds.length > 0) {
+if (runtimeChainStartupReconcileResult && runtimeChainStartupReconcileResult.affectedChainIds.length > 0) {
   console.info("runtime chain startup reconcile completed", runtimeChainStartupReconcileResult);
 }
-if (runtimeChainArtifactStartupReconcileResult!.affectedChainIds.length > 0) {
+if (runtimeChainArtifactStartupReconcileResult && runtimeChainArtifactStartupReconcileResult.affectedChainIds.length > 0) {
   console.info("runtime chain artifact startup reconcile completed", runtimeChainArtifactStartupReconcileResult);
 }
 const runtimeReconciliationTimer = setInterval(() => {
