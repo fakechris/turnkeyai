@@ -1,3 +1,4 @@
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
@@ -53,23 +54,26 @@ export class FileRecoveryRunEventStore implements RecoveryRunEventStore {
   }
 
   async listByThread(threadId: string): Promise<RecoveryRunEvent[]> {
-    const [threadFilePaths, legacyFilePaths, byRunArrayPaths] = await Promise.all([
+    const [threadFilePaths, legacyFilePaths, byRunArrayPaths, byRunEventPaths] = await Promise.all([
       listJsonFiles(this.threadDir(threadId)),
       listJsonFiles(this.rootDir),
       listJsonFiles(path.join(this.rootDir, "by-run")),
+      this.listByRunEventPaths(),
     ]);
     // Thread-scoped files store one event per file. During migration, legacy root arrays
-    // and older by-run arrays can still coexist, so merge all sources instead of short-circuiting.
-    const [threadRecords, legacyArrays, byRunArrays] = await Promise.all([
+    // older by-run arrays, and canonical per-run journals can still coexist.
+    const [threadRecords, legacyArrays, byRunArrays, byRunJournalEvents] = await Promise.all([
       Promise.all(threadFilePaths.map((filePath) => readJsonFile<RecoveryRunEvent>(filePath))),
       Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRunEvent[]>(filePath))),
       Promise.all(byRunArrayPaths.map((filePath) => readJsonFile<RecoveryRunEvent[]>(filePath))),
+      Promise.all(byRunEventPaths.map((filePath) => readJsonFile<RecoveryRunEvent>(filePath))),
     ]);
     const merged = new Map<string, RecoveryRunEvent>();
     for (const event of [
-      ...threadRecords.filter((item): item is RecoveryRunEvent => item !== null),
       ...legacyArrays.flatMap((events) => events ?? []),
       ...byRunArrays.flatMap((events) => events ?? []),
+      ...byRunJournalEvents.filter((item): item is RecoveryRunEvent => item !== null),
+      ...threadRecords.filter((item): item is RecoveryRunEvent => item !== null),
     ]) {
       if (event.threadId !== threadId) {
         continue;
@@ -80,6 +84,22 @@ export class FileRecoveryRunEventStore implements RecoveryRunEventStore {
       }
     }
     return [...merged.values()].sort((left, right) => left.recordedAt - right.recordedAt);
+  }
+
+  private async listByRunEventPaths(): Promise<string[]> {
+    const byRunRoot = path.join(this.rootDir, "by-run");
+    let entries;
+    try {
+      entries = await readdir(byRunRoot, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const eventPathLists = await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => listJsonFiles(path.join(byRunRoot, entry.name, "events")))
+    );
+    return eventPathLists.flat();
   }
 
   private recoveryRunDir(recoveryRunId: string): string {

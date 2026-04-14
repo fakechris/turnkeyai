@@ -275,6 +275,15 @@ export interface WorkerContinuationOutcome {
   summary: string;
 }
 
+export const WORKER_CONTINUATION_REASONS = [
+  "fresh_requested",
+  "no_bound_session",
+  "session_missing",
+  "session_terminal",
+  "capability_unavailable",
+  "reuse_disallowed",
+] as const;
+
 export interface WorkerSessionContextRecord {
   threadId: ThreadId;
   flowId: FlowId;

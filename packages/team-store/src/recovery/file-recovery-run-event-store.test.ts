@@ -173,3 +173,39 @@ test("file recovery run event store merges thread-scoped, legacy flat, and by-ru
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("file recovery run event store includes canonical by-run journals and keeps thread-scoped events authoritative on ties", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-event-store-canonical-thread-"));
+  try {
+    const store = new FileRecoveryRunEventStore({ rootDir });
+    const recoveryRunId = "recovery:task-shared";
+    await writeJsonFileAtomic(path.join(rootDir, "by-run", encodeURIComponent(recoveryRunId), "events", "shared-event.json"), {
+      eventId: "shared-event",
+      recoveryRunId,
+      threadId: "thread-1",
+      sourceGroupId: "task-shared",
+      kind: "action_requested",
+      status: "planned",
+      recordedAt: 10,
+      summary: "canonical by-run event",
+    });
+
+    await store.append({
+      eventId: "shared-event",
+      recoveryRunId,
+      threadId: "thread-1",
+      sourceGroupId: "task-shared",
+      kind: "action_dispatched",
+      status: "running",
+      recordedAt: 10,
+      summary: "thread-scoped event wins tie",
+    });
+
+    const events = await store.listByThread("thread-1");
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.summary, "thread-scoped event wins tie");
+    assert.equal(events[0]?.kind, "action_dispatched");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

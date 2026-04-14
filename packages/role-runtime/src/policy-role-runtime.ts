@@ -112,34 +112,34 @@ export class PolicyRoleRuntime implements RoleRuntime {
           const existingWorker = existingWorkerResolution.worker;
           if (existingWorker) {
             activeWorker = existingWorker;
+            workerContinuation = buildWorkerContinuationOutcome({
+              packet: basePacket,
+              resolution: existingWorkerResolution,
+              activeWorker,
+            });
             workerResult = await this.workerRuntime.resume({
               workerRunKey: existingWorker.workerRunKey,
               activation: input,
               packet: basePacket,
             });
             workerState = await this.workerRuntime.getState(existingWorker.workerRunKey);
-            workerContinuation = buildWorkerContinuationOutcome({
-              packet: basePacket,
-              resolution: existingWorkerResolution,
-              activeWorker,
-            });
           } else {
             activeWorker = await this.workerRuntime.spawn({
               activation: input,
               packet: basePacket,
             });
             if (activeWorker) {
+              workerContinuation = buildWorkerContinuationOutcome({
+                packet: basePacket,
+                resolution: existingWorkerResolution,
+                activeWorker,
+              });
               workerResult = await this.workerRuntime.send({
                 workerRunKey: activeWorker.workerRunKey,
                 activation: input,
                 packet: basePacket,
               });
               workerState = await this.workerRuntime.getState(activeWorker.workerRunKey);
-              workerContinuation = buildWorkerContinuationOutcome({
-                packet: basePacket,
-                resolution: existingWorkerResolution,
-                activeWorker,
-              });
             }
           }
 
@@ -183,7 +183,14 @@ export class PolicyRoleRuntime implements RoleRuntime {
           );
           if (activeWorker) {
             workerReplayPath = await this.runBestEffort(
-              () => this.recordWorkerFailureReplay(input, activeWorker!.workerRunKey, activeWorker!.workerType, workerError!),
+              () =>
+                this.recordWorkerFailureReplay(
+                  input,
+                  activeWorker!.workerRunKey,
+                  activeWorker!.workerType,
+                  workerError!,
+                  workerContinuation
+                ),
               "record worker failure replay",
               null
             );
@@ -227,6 +234,7 @@ export class PolicyRoleRuntime implements RoleRuntime {
           ? {
               workerUsed: false,
               workerError,
+              ...(workerContinuation ? { workerContinuation } : {}),
               ...(workerReplayPath ? { replay: { worker: workerReplayPath } } : {}),
             }
           : {}),
@@ -361,7 +369,7 @@ export class PolicyRoleRuntime implements RoleRuntime {
           firstUnavailable = {
             requestedWorkerType: workerType,
             requestedWorkerRunKey: workerRunKey,
-            reason: "reuse_disallowed",
+            reason: packet.continuityMode === "fresh" ? "fresh_requested" : "reuse_disallowed",
           };
         }
         continue;
@@ -727,7 +735,8 @@ export class PolicyRoleRuntime implements RoleRuntime {
     input: RoleActivationInput,
     workerRunKey: string,
     workerType: WorkerKind,
-    error: RuntimeError
+    error: RuntimeError,
+    workerContinuation?: WorkerContinuationOutcome | null
   ): Promise<string | null> {
     if (!this.replayRecorder) {
       return null;
@@ -754,6 +763,9 @@ export class PolicyRoleRuntime implements RoleRuntime {
         error,
         fallbackMessage: error.message,
       }),
+      metadata: {
+        ...(workerContinuation ? { workerContinuation } : {}),
+      },
     });
   }
 

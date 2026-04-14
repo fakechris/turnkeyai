@@ -753,6 +753,117 @@ test("policy role runtime marks missing resume-existing worker sessions as cold 
     reason: "session_missing",
     summary: "Requested resume-existing but the bound worker session was missing, so work restarted cold.",
   });
+  const workerReplay = recordedReplays.find((record) => record.layer === "worker");
+  assert.deepEqual((workerReplay?.metadata as Record<string, unknown>)?.workerContinuation, {
+    state: "cold_recreated",
+    requestedMode: "resume-existing",
+    requestedWorkerType: "browser",
+    requestedWorkerRunKey: "worker-run-missing",
+    resolvedWorkerType: "browser",
+    resolvedWorkerRunKey: "worker-run-fresh",
+    reason: "session_missing",
+    summary: "Requested resume-existing but the bound worker session was missing, so work restarted cold.",
+  });
+});
+
+test("policy role runtime records fresh-requested continuity when an existing session is intentionally skipped", async () => {
+  let spawned = false;
+  const runtime = new PolicyRoleRuntime({
+    idGenerator: {
+      messageId: () => "msg-operator-fresh",
+    },
+    clock: {
+      now: () => 703,
+    },
+    promptPolicy: {
+      async buildPacket() {
+        return {
+          roleId: "role-operator",
+          roleName: "Operator",
+          seat: "member",
+          systemPrompt: "Operate carefully.",
+          taskPrompt: "Start over from a fresh browser session.",
+          outputContract: "Return a short browser-backed result.",
+          suggestedMentions: ["role-lead"],
+          continuityMode: "fresh",
+        };
+      },
+    },
+    responseGenerator: {
+      async generate() {
+        return {
+          content: "Started fresh as requested.",
+          mentions: ["role-lead"],
+        };
+      },
+    },
+    workerRuntime: {
+      async spawn() {
+        spawned = true;
+        return { workerType: "browser", workerRunKey: "worker-run-fresh" };
+      },
+      async send() {
+        return {
+          workerType: "browser",
+          status: "completed",
+          summary: "Ran a fresh browser pass.",
+          payload: { trace: [{ kind: "open" }] },
+        };
+      },
+      async resume() {
+        throw new Error("resume should not run for fresh continuity");
+      },
+      async interrupt() {
+        return null;
+      },
+      async cancel() {
+        return null;
+      },
+      async getState(workerRunKey: string) {
+        if (workerRunKey === "worker-run-existing") {
+          return {
+            workerRunKey,
+            workerType: "browser",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+          };
+        }
+        return {
+          workerRunKey,
+          workerType: "browser",
+          status: "done",
+          createdAt: 3,
+          updatedAt: 4,
+        };
+      },
+      async maybeRunForRole() {
+        return null;
+      },
+    },
+  });
+
+  const result = await runtime.runActivation({
+    ...buildOperatorActivationInput(),
+    runState: {
+      ...buildOperatorActivationInput().runState,
+      workerSessions: {
+        browser: "worker-run-existing",
+      },
+    },
+  });
+
+  assert.equal(spawned, true);
+  assert.deepEqual(result.message?.metadata?.workerContinuation, {
+    state: "spawned_fresh",
+    requestedMode: "fresh",
+    requestedWorkerType: "browser",
+    requestedWorkerRunKey: "worker-run-existing",
+    resolvedWorkerType: "browser",
+    resolvedWorkerRunKey: "worker-run-fresh",
+    reason: "fresh_requested",
+    summary: "Started a fresh worker session as requested.",
+  });
 });
 
 test("policy role runtime does not resume a worker excluded by capability inspection", async () => {

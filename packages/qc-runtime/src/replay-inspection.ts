@@ -20,6 +20,7 @@ import type {
   ReplayTimelineEntry,
   ReplayWorkerContinuitySummary,
 } from "@turnkeyai/core-types/team";
+import { WORKER_CONTINUATION_REASONS, WORKER_KINDS } from "@turnkeyai/core-types/team";
 import { describeRecoveryRunGate, listAllowedRecoveryRunActions } from "@turnkeyai/core-types/recovery-operator-semantics";
 
 const REPLAY_LAYER_ORDER: ReplayLayer[] = ["scheduled", "role", "worker", "browser"];
@@ -1643,7 +1644,7 @@ function extractRecoveryParentGroupId(record: ReplayRecord): string | undefined 
 }
 
 function isWorkerKind(value: unknown): value is ReplayRecord["workerType"] {
-  return value === "browser" || value === "explore" || value === "finance" || value === "coder" || value === "harness";
+  return typeof value === "string" && (WORKER_KINDS as readonly string[]).includes(value);
 }
 
 function isWorkerContinuationReason(value: unknown): value is
@@ -1653,14 +1654,7 @@ function isWorkerContinuationReason(value: unknown): value is
   | "session_terminal"
   | "capability_unavailable"
   | "reuse_disallowed" {
-  return (
-    value === "fresh_requested" ||
-    value === "no_bound_session" ||
-    value === "session_missing" ||
-    value === "session_terminal" ||
-    value === "capability_unavailable" ||
-    value === "reuse_disallowed"
-  );
+  return typeof value === "string" && (WORKER_CONTINUATION_REASONS as readonly string[]).includes(value);
 }
 
 function buildReplayParentByGroupId(records: ReplayRecord[]): Map<string, string> {
