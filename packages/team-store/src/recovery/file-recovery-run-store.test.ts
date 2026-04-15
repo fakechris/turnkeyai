@@ -217,6 +217,89 @@ test("file recovery run store increments projection versions on overwrite", asyn
   }
 });
 
+test("file recovery run store merges thread-scoped, by-id, and legacy runs during partial migration reads", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-partial-migration-"));
+  try {
+    await writeJsonFileAtomic(path.join(rootDir, "recovery%3Atask-1.json"), {
+      recoveryRunId: "recovery:task-1",
+      threadId: "thread-1",
+      sourceGroupId: "task-1",
+      latestStatus: "failed",
+      status: "waiting_approval",
+      nextAction: "request_approval",
+      autoDispatchReady: false,
+      requiresManualIntervention: true,
+      latestSummary: "legacy",
+      attempts: [],
+      createdAt: 10,
+      updatedAt: 20,
+    });
+    await writeJsonFileAtomic(path.join(rootDir, "by-id", "recovery%3Atask-1.json"), {
+      recoveryRunId: "recovery:task-1",
+      threadId: "thread-1",
+      sourceGroupId: "task-1",
+      latestStatus: "partial",
+      status: "retrying",
+      nextAction: "retry_same_layer",
+      autoDispatchReady: true,
+      requiresManualIntervention: false,
+      latestSummary: "by-id",
+      attempts: [],
+      createdAt: 10,
+      updatedAt: 25,
+    });
+    await writeJsonFileAtomic(path.join(rootDir, "threads", "thread-1", "recovery%3Atask-1.json"), {
+      recoveryRunId: "recovery:task-1",
+      threadId: "thread-1",
+      sourceGroupId: "task-1",
+      latestStatus: "partial",
+      status: "running",
+      nextAction: "auto_resume",
+      autoDispatchReady: true,
+      requiresManualIntervention: false,
+      latestSummary: "thread-scoped",
+      attempts: [],
+      createdAt: 10,
+      updatedAt: 30,
+    });
+    await writeJsonFileAtomic(path.join(rootDir, "threads", "thread-1", "recovery%3Atask-2.json"), {
+      recoveryRunId: "recovery:task-2",
+      threadId: "thread-1",
+      sourceGroupId: "task-2",
+      latestStatus: "failed",
+      status: "aborted",
+      nextAction: "stop",
+      autoDispatchReady: false,
+      requiresManualIntervention: true,
+      latestSummary: "thread-only",
+      attempts: [],
+      createdAt: 11,
+      updatedAt: 31,
+    });
+
+    const store = new FileRecoveryRunStore({ rootDir });
+    const threadRuns = await store.listByThread("thread-1");
+    const allRuns = await store.listAll();
+
+    assert.deepEqual(
+      threadRuns.map((run) => [run.recoveryRunId, run.latestSummary]),
+      [
+        ["recovery:task-2", "thread-only"],
+        ["recovery:task-1", "thread-scoped"],
+      ]
+    );
+    assert.deepEqual(
+      allRuns.map((run) => [run.recoveryRunId, run.latestSummary]),
+      [
+        ["recovery:task-2", "thread-only"],
+        ["recovery:task-1", "thread-scoped"],
+      ]
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("file recovery run store rejects stale expected versions", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-conflict-store-"));
   try {

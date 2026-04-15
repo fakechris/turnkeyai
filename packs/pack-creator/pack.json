@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "packId": "pack-creator",
+  "displayName": "Pack Creator",
+  "domain": "meta-tooling",
+  "summary": "Scaffold, validate, and harden new domain packs from reusable contracts, recipes, and examples.",
+  "owner": "turnkeyai",
+  "creator": {
+    "tool": "turnkeyai pack create",
+    "version": 1
+  },
+  "capabilities": [
+    {
+      "id": "domain-intake",
+      "summary": "Capture the target domain, deliverables, constraints, and acceptance contract for a new pack."
+    },
+    {
+      "id": "pack-scaffolding",
+      "summary": "Generate a new pack skeleton with manifest, recipes, references, and example requests."
+    },
+    {
+      "id": "contract-hardening",
+      "summary": "Review the pack structure, naming, and workflows so another agent can reuse it safely."
+    },
+    {
+      "id": "example-validation",
+      "summary": "Validate the generated pack against at least one concrete domain example and close any gaps."
+    }
+  ],
+  "workflows": [
+    {
+      "id": "domain-intake",
+      "summary": "Normalize domain boundaries, users, artifacts, and quality bars before scaffolding."
+    },
+    {
+      "id": "skeleton-generation",
+      "summary": "Create the pack manifest, operating contract, starter recipes, and domain references."
+    },
+    {
+      "id": "example-pack-validation",
+      "summary": "Use one concrete pack request to verify the pack is reusable outside the initial example."
+    },
+    {
+      "id": "handoff",
+      "summary": "Summarize what the new pack covers, what remains domain-specific, and what to extend next."
+    }
+  ]
+}

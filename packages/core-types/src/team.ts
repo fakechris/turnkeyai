@@ -1,6 +1,7 @@
 export * from "./team-core";
 export * from "./browser";
 export * from "./team-governance";
+export * from "./team-memory";
 export * from "./team-replay-recovery";
 export * from "./team-runtime-support";
 export * from "./team-startup-reconcile";

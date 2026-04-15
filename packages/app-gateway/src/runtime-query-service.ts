@@ -112,13 +112,15 @@ export function createRuntimeQueryService(input: {
   getRoleRunStartupRecoveryResult?: () =>
     | {
         totalRoleRuns: number;
-        restartedQueuedRuns: number;
-        restartedRunningRuns: number;
-        restartedResumingRuns: number;
-        restartedRunKeys: string[];
-        orphanedThreadRuns: number;
-        failedOrphanedRuns: number;
-        failedRunKeys: string[];
+      restartedQueuedRuns: number;
+      restartedRunningRuns: number;
+      restartedResumingRuns: number;
+      restartedRunKeys: string[];
+      coldRestartRuns: number;
+      coldRestartRunKeys: string[];
+      orphanedThreadRuns: number;
+      failedOrphanedRuns: number;
+      failedRunKeys: string[];
         clearedInvalidHandoffs: number;
         queuedRunsIdled: number;
       }

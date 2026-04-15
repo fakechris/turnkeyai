@@ -6,6 +6,7 @@ import type {
   WorkerKind,
 } from "@turnkeyai/core-types/team";
 import type { EvidenceTrustAssessment, PermissionEvaluation } from "@turnkeyai/core-types/team";
+import { inspectBrowserExcerptSafety } from "./browser-excerpt-safety";
 
 export class DefaultPromptAdmissionPolicy implements PromptAdmissionPolicy {
   decide(input: {
@@ -41,6 +42,15 @@ export class DefaultPromptAdmissionPolicy implements PromptAdmissionPolicy {
       };
     }
 
+    const excerptSafety = inspectBrowserPayloadExcerpt(input.workerType, input.payload);
+    if (excerptSafety?.suspicious) {
+      return {
+        mode: "summary_only",
+        trustLevel: "observational",
+        reason: excerptSafety.issues[0] ?? "browser excerpt contained prompt-like instructions and was downgraded",
+      };
+    }
+
     if (input.apiDiagnosis.some((entry) => !entry.ok && !entry.retryable)) {
       return {
         mode: "summary_only",
@@ -63,4 +73,20 @@ export class DefaultPromptAdmissionPolicy implements PromptAdmissionPolicy {
       reason: input.workerStatus === "completed" ? "verified result can be promoted" : "partial result admitted as summary only",
     };
   }
+}
+
+function inspectBrowserPayloadExcerpt(workerType: WorkerKind, payload: Record<string, unknown>) {
+  if (workerType !== "browser") {
+    return null;
+  }
+
+  const page = payload.page;
+  if (!page || typeof page !== "object") {
+    return null;
+  }
+
+  const excerpt = typeof (page as Record<string, unknown>).textExcerpt === "string"
+    ? ((page as Record<string, unknown>).textExcerpt as string)
+    : "";
+  return inspectBrowserExcerptSafety(excerpt);
 }
