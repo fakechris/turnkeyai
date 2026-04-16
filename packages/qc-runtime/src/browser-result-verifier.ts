@@ -1,6 +1,7 @@
 import type { BrowserTaskResult } from "@turnkeyai/core-types/team";
 
 import type { VerificationReport } from "./browser-step-verifier";
+import { inspectBrowserExcerptSafety } from "./browser-excerpt-safety";
 
 export class BrowserResultVerifier {
   verify(result: BrowserTaskResult): VerificationReport {
@@ -16,6 +17,9 @@ export class BrowserResultVerifier {
 
     if (!result.page.textExcerpt) {
       issues.push("page excerpt is empty");
+    } else {
+      const excerptSafety = inspectBrowserExcerptSafety(result.page.textExcerpt);
+      issues.push(...excerptSafety.issues);
     }
 
     if (result.trace.length === 0) {

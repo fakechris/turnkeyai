@@ -1,3 +1,4 @@
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
@@ -37,72 +38,87 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
         ...run,
         version: existingVersion + 1,
       });
-      await writeJsonFileAtomic(byIdPath, storedRun);
+      const writtenAttemptPaths: string[] = [];
       try {
         await writeJsonFileAtomic(threadPath, storedRun);
-        await Promise.all(run.attempts.map((attempt) => writeJsonFileAtomic(this.attemptFilePath(run.recoveryRunId, attempt.attemptId), attempt)));
+        for (const attempt of run.attempts) {
+          const attemptPath = this.attemptFilePath(run.recoveryRunId, attempt.attemptId);
+          await writeJsonFileAtomic(attemptPath, attempt);
+          writtenAttemptPaths.push(attemptPath);
+        }
+        await writeJsonFileAtomic(byIdPath, storedRun);
       } catch (error) {
-        await removeFileIfExists(byIdPath);
+        await Promise.all(writtenAttemptPaths.map((filePath) => removeFileIfExists(filePath)));
         throw error;
       }
     });
   }
 
   async listByThread(threadId: string): Promise<RecoveryRun[]> {
-    const threadFilePaths = await listJsonFiles(this.threadDir(threadId));
-    const records = await Promise.all(threadFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath)));
-    const threadScoped = await Promise.all(
-      records
-        .filter((record): record is RecoveryRun => record !== null)
-        .map((record) => this.hydrateAttempts(record))
-    );
-    if (threadScoped.length > 0) {
-      return threadScoped.sort((left, right) => right.updatedAt - left.updatedAt);
-    }
-
-    const legacyFilePaths = await listJsonFiles(this.rootDir);
-    const legacyRecords = await Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath)));
-    const hydratedLegacy = await Promise.all(
-      legacyRecords
-        .filter((record): record is RecoveryRun => record !== null && record.threadId === threadId)
-        .map((record) => this.hydrateAttempts(record))
-    );
-    return hydratedLegacy
-      .sort((left, right) => right.updatedAt - left.updatedAt);
+    const [threadFilePaths, byIdFilePaths, legacyFilePaths] = await Promise.all([
+      listJsonFiles(this.threadDir(threadId)),
+      listJsonFiles(path.join(this.rootDir, "by-id")),
+      listJsonFiles(this.rootDir),
+    ]);
+    const [threadRecords, byIdRecords, legacyRecords] = await Promise.all([
+      Promise.all(threadFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
+      Promise.all(byIdFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
+      Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
+    ]);
+    return this.mergeRunsForThread(threadId, [
+      ...legacyRecords.filter((record): record is RecoveryRun => record !== null),
+      ...byIdRecords.filter((record): record is RecoveryRun => record !== null),
+      ...threadRecords.filter((record): record is RecoveryRun => record !== null),
+    ]);
   }
 
   async listAll(): Promise<RecoveryRun[]> {
-    const byIdFilePaths = await listJsonFiles(path.join(this.rootDir, "by-id"));
-    if (byIdFilePaths.length > 0) {
-      const records = await Promise.all(byIdFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath)));
-      const hydrated = await Promise.all(
-        records
-          .filter((record): record is RecoveryRun => record !== null)
-          .map((record) => this.hydrateAttempts(record))
-      );
-      return hydrated
-        .sort((left, right) => right.updatedAt - left.updatedAt);
-    }
-
-    const legacyFilePaths = await listJsonFiles(this.rootDir);
-    const records = await Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath)));
-    const hydrated = await Promise.all(
-      records
-        .filter((record): record is RecoveryRun => record !== null)
-        .map((record) => this.hydrateAttempts(record))
-    );
-    return hydrated
-      .sort((left, right) => right.updatedAt - left.updatedAt);
+    const [byIdFilePaths, legacyFilePaths, threadScopedPaths] = await Promise.all([
+      listJsonFiles(path.join(this.rootDir, "by-id")),
+      listJsonFiles(this.rootDir),
+      this.listThreadScopedPaths(),
+    ]);
+    const [byIdRecords, legacyRecords, threadRecords] = await Promise.all([
+      Promise.all(byIdFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
+      Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
+      Promise.all(threadScopedPaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
+    ]);
+    return this.mergeAllRuns([
+      ...legacyRecords.filter((record): record is RecoveryRun => record !== null),
+      ...byIdRecords.filter((record): record is RecoveryRun => record !== null),
+      ...threadRecords.filter((record): record is RecoveryRun => record !== null),
+    ]);
   }
 
   private async readRecoveryRun(recoveryRunId: string): Promise<RecoveryRun | null> {
-    const run =
-      (await readJsonFile<RecoveryRun>(this.byIdFilePath(recoveryRunId))) ??
-      (await readJsonFile<RecoveryRun>(this.legacyFlatFilePath(recoveryRunId)));
+    const [byIdRun, legacyRun, threadScopedRun] = await Promise.all([
+      readJsonFile<RecoveryRun>(this.byIdFilePath(recoveryRunId)),
+      readJsonFile<RecoveryRun>(this.legacyFlatFilePath(recoveryRunId)),
+      this.readThreadScopedRecoveryRun(recoveryRunId),
+    ]);
+    const run = [legacyRun, byIdRun, threadScopedRun].reduce<RecoveryRun | null>((latest, candidate) => {
+      if (!candidate) {
+        return latest;
+      }
+      if (!latest || candidate.updatedAt >= latest.updatedAt) {
+        return candidate;
+      }
+      return latest;
+    }, null);
     if (!run) {
       return null;
     }
     return this.hydrateAttempts(run);
+  }
+
+  private async readThreadScopedRecoveryRun(recoveryRunId: string): Promise<RecoveryRun | null> {
+    const threadScopedPaths = await this.listThreadScopedPaths();
+    const encodedFileName = `${encodeURIComponent(recoveryRunId)}.json`;
+    const matchedPath = threadScopedPaths.find((filePath) => path.basename(filePath) === encodedFileName);
+    if (!matchedPath) {
+      return null;
+    }
+    return readJsonFile<RecoveryRun>(matchedPath);
   }
 
   private async hydrateAttempts(run: RecoveryRun): Promise<RecoveryRun> {
@@ -127,6 +143,52 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
       ...run,
       attempts: [...mergedAttempts.values()].sort(compareRecoveryAttempts),
     });
+  }
+
+  private async mergeRunsForThread(threadId: string, records: RecoveryRun[]): Promise<RecoveryRun[]> {
+    const merged = new Map<string, RecoveryRun>();
+    for (const record of records) {
+      if (record.threadId !== threadId) {
+        continue;
+      }
+      const existing = merged.get(record.recoveryRunId);
+      if (!existing || record.updatedAt >= existing.updatedAt) {
+        merged.set(record.recoveryRunId, record);
+      }
+    }
+    const hydrated = await Promise.all([...merged.values()].map((record) => this.hydrateAttempts(record)));
+    return hydrated.sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  private async mergeAllRuns(records: RecoveryRun[]): Promise<RecoveryRun[]> {
+    const merged = new Map<string, RecoveryRun>();
+    for (const record of records) {
+      const existing = merged.get(record.recoveryRunId);
+      if (!existing || record.updatedAt >= existing.updatedAt) {
+        merged.set(record.recoveryRunId, record);
+      }
+    }
+    const hydrated = await Promise.all([...merged.values()].map((record) => this.hydrateAttempts(record)));
+    return hydrated.sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  private async listThreadScopedPaths(): Promise<string[]> {
+    const threadsRoot = path.join(this.rootDir, "threads");
+    let threadDirs;
+    try {
+      threadDirs = await readdir(threadsRoot, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return [];
+      }
+      throw error;
+    }
+    const fileLists = await Promise.all(
+      threadDirs
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => listJsonFiles(path.join(threadsRoot, entry.name)))
+    );
+    return fileLists.flat();
   }
 
   private byIdFilePath(recoveryRunId: string): string {

@@ -22,6 +22,8 @@ export interface RoleRunStartupRecoveryResult {
   restartedRunningRuns: number;
   restartedResumingRuns: number;
   restartedRunKeys: RunKey[];
+  coldRestartRuns: number;
+  coldRestartRunKeys: RunKey[];
   orphanedThreadRuns: number;
   failedOrphanedRuns: number;
   failedRunKeys: RunKey[];

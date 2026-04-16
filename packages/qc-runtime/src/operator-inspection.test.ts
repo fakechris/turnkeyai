@@ -1435,6 +1435,8 @@ test("operator triage surfaces worker session drift when runtime summary reports
         restartedRunningRuns: 1,
         restartedResumingRuns: 0,
         restartedRunKeys: ["run:queued", "run:running"],
+        coldRestartRuns: 1,
+        coldRestartRunKeys: ["run:running"],
         orphanedThreadRuns: 1,
         failedOrphanedRuns: 1,
         failedRunKeys: ["run:orphaned"],
@@ -1522,6 +1524,8 @@ test("operator triage surfaces worker session drift when runtime summary reports
         restartedRunningRuns: 1,
         restartedResumingRuns: 0,
         restartedRunKeys: ["run:queued", "run:running"],
+        coldRestartRuns: 1,
+        coldRestartRunKeys: ["run:running"],
         orphanedThreadRuns: 1,
         failedOrphanedRuns: 1,
         failedRunKeys: ["run:orphaned"],
@@ -1571,6 +1575,7 @@ test("operator triage surfaces worker session drift when runtime summary reports
   const startupRecoveryFocus = report.focusAreas.find((area) => area.label === "role-run-startup-recovery");
   assert.equal(startupRecoveryFocus?.commandHint, "runs");
   assert.equal(startupRecoveryFocus?.state, "role_run_startup_recovery");
+  assert.ok(startupRecoveryFocus?.reason.includes("cold-restart=1"));
   const flowRecoveryFocus = report.focusAreas.find((area) => area.label === "flow-recovery-startup-reconcile");
   assert.equal(flowRecoveryFocus?.commandHint, "recovery-run recovery:1");
   assert.equal(flowRecoveryFocus?.caseKey, "recovery:1");

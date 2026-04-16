@@ -8,6 +8,7 @@ import type {
   WorkerExecutionResult,
   WorkerKind,
 } from "@turnkeyai/core-types/team";
+import { inspectBrowserExcerptSafety } from "./browser-excerpt-safety";
 
 export class DefaultEvidenceTrustPolicy implements EvidenceTrustPolicy {
   assess(input: {
@@ -74,13 +75,18 @@ export class DefaultEvidenceTrustPolicy implements EvidenceTrustPolicy {
       case "browser": {
         const browserQuality = extractBrowserQuality(input.payload);
         const readOnly = hasOnlyReadOnlyBrowserSteps(input.payload);
-        if (browserQuality.ok && readOnly) {
+        const excerptSafety = inspectBrowserPayloadExcerpt(input.payload);
+        if (browserQuality.ok && readOnly && !excerptSafety.suspicious) {
           verified = true;
           trustLevel = "promotable";
           rationale.push("browser result is verified and trace is read-only");
         } else {
           downgraded = true;
-          rationale.push(browserQuality.reason ?? "browser evidence is not fully verifiable");
+          rationale.push(
+            excerptSafety.suspicious
+              ? excerptSafety.issues[0] ?? "browser excerpt contains prompt-like instructions"
+              : browserQuality.reason ?? "browser evidence is not fully verifiable"
+          );
         }
         break;
       }
@@ -144,4 +150,18 @@ function hasOnlyReadOnlyBrowserSteps(payload: Record<string, unknown>): boolean 
     .filter((kind): kind is string => typeof kind === "string");
 
   return kinds.length > 0 && kinds.every((kind) => allowed.has(kind));
+}
+
+function inspectBrowserPayloadExcerpt(payload: Record<string, unknown>) {
+  const page = payload.page;
+  if (!page || typeof page !== "object") {
+    return {
+      suspicious: false,
+      issues: [] as string[],
+    };
+  }
+  const excerpt = typeof (page as Record<string, unknown>).textExcerpt === "string"
+    ? ((page as Record<string, unknown>).textExcerpt as string)
+    : "";
+  return inspectBrowserExcerptSafety(excerpt);
 }
