@@ -47,7 +47,7 @@ export async function recoverRoleRunsOnStartup(input: {
     (run) => threadIds.has(run.threadId) && (run.status === "queued" || run.status === "running" || run.status === "resuming")
   );
   const coldRestartRunKeys = restartableRuns
-    .filter((run) => (run.status === "running" || run.status === "resuming") && Object.keys(run.workerSessions ?? {}).length === 0)
+    .filter((run) => (run.status === "running" || run.status === "resuming") && hasNoActiveWorkerSessions(run))
     .map((run) => run.runKey);
 
   await Promise.all(restartableRuns.map((run) => input.roleLoopRunner.ensureRunning(run.runKey)));
@@ -66,6 +66,10 @@ export async function recoverRoleRunsOnStartup(input: {
     clearedInvalidHandoffs,
     queuedRunsIdled,
   };
+}
+
+function hasNoActiveWorkerSessions(run: RoleRunState): boolean {
+  return !Object.values(run.workerSessions ?? {}).some((session) => session != null);
 }
 
 function isTerminalRoleRun(run: RoleRunState): boolean {

@@ -278,9 +278,12 @@ test("file recovery run store merges thread-scoped, by-id, and legacy runs durin
     });
 
     const store = new FileRecoveryRunStore({ rootDir });
+    const threadScopedOnlyRun = await store.get("recovery:task-2");
     const threadRuns = await store.listByThread("thread-1");
     const allRuns = await store.listAll();
 
+    assert.equal(threadScopedOnlyRun?.latestSummary, "thread-only");
+    assert.equal(threadScopedOnlyRun?.version, 1);
     assert.deepEqual(
       threadRuns.map((run) => [run.recoveryRunId, run.latestSummary]),
       [
@@ -294,6 +297,68 @@ test("file recovery run store merges thread-scoped, by-id, and legacy runs durin
         ["recovery:task-2", "thread-only"],
         ["recovery:task-1", "thread-scoped"],
       ]
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file recovery run store uses thread-scoped version for expectedVersion checks", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-thread-version-"));
+  try {
+    await writeJsonFileAtomic(path.join(rootDir, "by-id", "recovery%3Atask-1.json"), {
+      recoveryRunId: "recovery:task-1",
+      threadId: "thread-1",
+      sourceGroupId: "task-1",
+      latestStatus: "failed",
+      status: "waiting_approval",
+      nextAction: "request_approval",
+      autoDispatchReady: false,
+      requiresManualIntervention: true,
+      latestSummary: "by-id",
+      attempts: [],
+      createdAt: 10,
+      updatedAt: 20,
+      version: 1,
+    });
+    await writeJsonFileAtomic(path.join(rootDir, "threads", "thread-1", "recovery%3Atask-1.json"), {
+      recoveryRunId: "recovery:task-1",
+      threadId: "thread-1",
+      sourceGroupId: "task-1",
+      latestStatus: "partial",
+      status: "retrying",
+      nextAction: "retry_same_layer",
+      autoDispatchReady: true,
+      requiresManualIntervention: false,
+      latestSummary: "thread-scoped",
+      attempts: [],
+      createdAt: 10,
+      updatedAt: 30,
+      version: 2,
+    });
+
+    const store = new FileRecoveryRunStore({ rootDir });
+
+    await assert.rejects(
+      () =>
+        store.put(
+          {
+            recoveryRunId: "recovery:task-1",
+            threadId: "thread-1",
+            sourceGroupId: "task-1",
+            latestStatus: "partial",
+            status: "resumed",
+            nextAction: "auto_resume",
+            autoDispatchReady: true,
+            requiresManualIntervention: false,
+            latestSummary: "resuming",
+            attempts: [],
+            createdAt: 10,
+            updatedAt: 40,
+          },
+          { expectedVersion: 1 }
+        ),
+      /recovery run version conflict/
     );
   } finally {
     await rm(rootDir, { recursive: true, force: true });

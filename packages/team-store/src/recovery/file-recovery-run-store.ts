@@ -38,7 +38,6 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
         ...run,
         version: existingVersion + 1,
       });
-      await writeJsonFileAtomic(byIdPath, storedRun);
       const writtenAttemptPaths: string[] = [];
       try {
         await writeJsonFileAtomic(threadPath, storedRun);
@@ -47,9 +46,8 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
           await writeJsonFileAtomic(attemptPath, attempt);
           writtenAttemptPaths.push(attemptPath);
         }
+        await writeJsonFileAtomic(byIdPath, storedRun);
       } catch (error) {
-        await removeFileIfExists(byIdPath);
-        await removeFileIfExists(threadPath);
         await Promise.all(writtenAttemptPaths.map((filePath) => removeFileIfExists(filePath)));
         throw error;
       }
@@ -93,13 +91,34 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
   }
 
   private async readRecoveryRun(recoveryRunId: string): Promise<RecoveryRun | null> {
-    const run =
-      (await readJsonFile<RecoveryRun>(this.byIdFilePath(recoveryRunId))) ??
-      (await readJsonFile<RecoveryRun>(this.legacyFlatFilePath(recoveryRunId)));
+    const [byIdRun, legacyRun, threadScopedRun] = await Promise.all([
+      readJsonFile<RecoveryRun>(this.byIdFilePath(recoveryRunId)),
+      readJsonFile<RecoveryRun>(this.legacyFlatFilePath(recoveryRunId)),
+      this.readThreadScopedRecoveryRun(recoveryRunId),
+    ]);
+    const run = [legacyRun, byIdRun, threadScopedRun].reduce<RecoveryRun | null>((latest, candidate) => {
+      if (!candidate) {
+        return latest;
+      }
+      if (!latest || candidate.updatedAt >= latest.updatedAt) {
+        return candidate;
+      }
+      return latest;
+    }, null);
     if (!run) {
       return null;
     }
     return this.hydrateAttempts(run);
+  }
+
+  private async readThreadScopedRecoveryRun(recoveryRunId: string): Promise<RecoveryRun | null> {
+    const threadScopedPaths = await this.listThreadScopedPaths();
+    const encodedFileName = `${encodeURIComponent(recoveryRunId)}.json`;
+    const matchedPath = threadScopedPaths.find((filePath) => path.basename(filePath) === encodedFileName);
+    if (!matchedPath) {
+      return null;
+    }
+    return readJsonFile<RecoveryRun>(matchedPath);
   }
 
   private async hydrateAttempts(run: RecoveryRun): Promise<RecoveryRun> {
@@ -158,8 +177,11 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
     let threadDirs;
     try {
       threadDirs = await readdir(threadsRoot, { withFileTypes: true });
-    } catch {
-      return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return [];
+      }
+      throw error;
     }
     const fileLists = await Promise.all(
       threadDirs
