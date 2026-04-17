@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, unlink } from "node:fs/promises";
+import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -152,6 +152,32 @@ test("pack creator rejects overwrite without force", async () => {
   }
 });
 
+test("pack creator normalizes domain strings consistently", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-pack-domain-normalize-"));
+  try {
+    await runPackCommand([
+      "create",
+      "--root-dir",
+      rootDir,
+      "--pack-id",
+      "finance-pack",
+      "--display-name",
+      "Finance Pack",
+      "--domain",
+      "Finance + Ops",
+      "--summary",
+      "Scaffold a finance pack.",
+    ]);
+
+    const manifest = JSON.parse(await readFile(path.join(rootDir, "packs", "finance-pack", "pack.json"), "utf8")) as {
+      domain: string;
+    };
+    assert.equal(manifest.domain, "finance-ops");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("pack validate accepts generated packs and rejects missing required files", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-pack-validate-"));
   try {
@@ -175,6 +201,48 @@ test("pack validate accepts generated packs and rejects missing required files",
       () => validatePackWorkspace({ rootDir, packId: "media-pack" }),
       /missing required file/
     );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("pack creator does not overwrite a corrupted catalog", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-pack-corrupt-catalog-"));
+  try {
+    await createPackWorkspace({
+      rootDir,
+      packId: "media-pack",
+      displayName: "Media Pack",
+      domain: "media",
+      summary: "Validation sample.",
+      owner: "turnkeyai",
+      capabilities: [{ id: "media-intake", summary: "Normalize the request." }],
+      workflows: [{ id: "brief-intake", summary: "Review the inputs." }],
+      force: false,
+    });
+
+    const catalogPath = path.join(rootDir, "packs", "catalog.json");
+    await unlink(catalogPath);
+    await writeFile(catalogPath, "{not-json", "utf8");
+
+    await assert.rejects(
+      () =>
+        createPackWorkspace({
+          rootDir,
+          packId: "finance-pack",
+          displayName: "Finance Pack",
+          domain: "finance + ops",
+          summary: "Should fail on broken catalog.",
+          owner: "turnkeyai",
+          capabilities: [{ id: "finance-intake", summary: "Normalize the request." }],
+          workflows: [{ id: "brief-intake", summary: "Review the inputs." }],
+          force: false,
+        }),
+      /SyntaxError|invalid pack catalog/
+    );
+
+    const raw = await readFile(catalogPath, "utf8");
+    assert.equal(raw, "{not-json");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

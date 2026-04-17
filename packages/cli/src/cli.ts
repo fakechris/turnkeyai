@@ -17,7 +17,10 @@ if (!isCliCommand(command)) {
   printHelp(1);
 }
 
-void runCommand(command, args);
+void runCommand(command, args).catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});
 
 function isCliCommand(value: string): value is CliCommand {
   return value === "daemon" || value === "pack" || value === "tui";

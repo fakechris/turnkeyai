@@ -494,12 +494,16 @@ async function readCatalog(catalogPath: string): Promise<PackCatalog> {
     if (parsed.schemaVersion === 1 && Array.isArray(parsed.packs)) {
       return parsed;
     }
-  } catch {}
-
-  return {
-    schemaVersion: 1,
-    packs: [],
-  };
+    throw new Error(`invalid pack catalog: ${catalogPath}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return {
+        schemaVersion: 1,
+        packs: [],
+      };
+    }
+    throw error;
+  }
 }
 
 async function readPackManifest(manifestPath: string): Promise<PackManifest> {
@@ -558,7 +562,7 @@ function normalizePackId(value: string): string {
 }
 
 function normalizeDomain(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, "-");
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 function normalizeSectionId(value: string): string {
