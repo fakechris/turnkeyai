@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-type CliCommand = "daemon" | "tui";
+import { runPackCommand } from "./pack";
+
+type CliCommand = "daemon" | "pack" | "tui";
 
 const [, , command, ...args] = process.argv;
 
@@ -15,13 +17,21 @@ if (!isCliCommand(command)) {
   printHelp(1);
 }
 
-runCommand(command, args);
+void runCommand(command, args).catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});
 
 function isCliCommand(value: string): value is CliCommand {
-  return value === "daemon" || value === "tui";
+  return value === "daemon" || value === "pack" || value === "tui";
 }
 
-function runCommand(command: CliCommand, args: string[]): void {
+async function runCommand(command: CliCommand, args: string[]): Promise<void> {
+  if (command === "pack") {
+    await runPackCommand(args);
+    return;
+  }
+
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
   const entryPath = path.join(currentDir, `${command}.js`);
   const child = spawn(process.execPath, [entryPath, ...args], {
@@ -49,6 +59,8 @@ function printHelp(exitCode: number): never {
     "",
     "Usage:",
     "  turnkeyai daemon",
+    "  turnkeyai pack create --pack-id <id> --display-name <name> --domain <domain> --summary <text>",
+    "  turnkeyai pack validate [--pack-id <id>]",
     "  turnkeyai tui",
     "",
     "Environment:",
