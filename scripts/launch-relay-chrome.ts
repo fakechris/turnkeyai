@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
+import { prepareRelayExtensionRuntimeDir } from "./relay-extension-runtime";
+
 const args = process.argv.slice(2);
 let startUrl = "https://example.com";
 let profileDir: string | null = null;
@@ -47,11 +49,15 @@ const resolvedProfileDir =
   profileDir ?? path.join(os.tmpdir(), "turnkeyai-relay-chrome-profile");
 
 await mkdir(resolvedProfileDir, { recursive: true });
+const runtimeExtensionDir = await prepareRelayExtensionRuntimeDir({
+  sourceDir: extensionDir,
+  targetDir: path.join(resolvedProfileDir, "_relay-extension"),
+});
 
 const launchArgs = [
   `--user-data-dir=${resolvedProfileDir}`,
-  `--disable-extensions-except=${extensionDir}`,
-  `--load-extension=${extensionDir}`,
+  `--disable-extensions-except=${runtimeExtensionDir}`,
+  `--load-extension=${runtimeExtensionDir}`,
   "--no-first-run",
   "--no-default-browser-check",
   startUrl,
@@ -65,7 +71,7 @@ child.unref();
 
 console.log(`launched Chrome relay smoke browser`);
 console.log(`chrome: ${resolvedChromePath}`);
-console.log(`extension: ${extensionDir}`);
+console.log(`extension: ${runtimeExtensionDir}`);
 console.log(`profile: ${resolvedProfileDir}`);
 console.log(`url: ${startUrl}`);
 console.log(`next: start daemon with TURNKEYAI_BROWSER_TRANSPORT=relay and inspect relay-peers / relay-targets`);

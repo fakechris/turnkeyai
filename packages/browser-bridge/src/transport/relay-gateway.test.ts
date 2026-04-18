@@ -104,6 +104,71 @@ test("relay gateway dispatches queued action requests and resolves submitted res
   assert.equal(gateway.listTargets({ peerId: "peer-1" })[0]?.relayTargetId, "tab-1");
 });
 
+test("relay gateway dispatches wait actions to peers that advertise wait support", async () => {
+  const gateway = new RelayGateway({
+    now: () => 1_000,
+    createId: (prefix) => `${prefix}-wait`,
+  });
+  gateway.registerPeer({
+    peerId: "peer-1",
+    capabilities: ["wait", "snapshot"],
+  });
+
+  const dispatchPromise = gateway.dispatchActionRequest({
+    browserSessionId: "browser-session-1",
+    taskId: "task-wait",
+    actions: [
+      { kind: "wait", timeoutMs: 25 },
+      { kind: "snapshot", note: "after-wait" },
+    ],
+  });
+
+  const request = gateway.pullNextActionRequest("peer-1");
+  assert.ok(request);
+  assert.deepEqual(
+    request?.actions.map((action) => action.kind),
+    ["wait", "snapshot"]
+  );
+
+  gateway.submitActionResult({
+    actionRequestId: request!.actionRequestId,
+    peerId: "peer-1",
+    browserSessionId: request!.browserSessionId,
+    taskId: request!.taskId,
+    relayTargetId: "tab-1",
+    claimToken: request!.claimToken!,
+    url: "https://example.com",
+    title: "Example Domain",
+    status: "completed",
+    page: {
+      requestedUrl: "https://example.com",
+      finalUrl: "https://example.com",
+      title: "Example Domain",
+      textExcerpt: "Example Domain",
+      statusCode: 200,
+      interactives: [],
+    },
+    trace: [
+      {
+        stepId: "task-wait:browser-step:1",
+        kind: "wait",
+        startedAt: 1,
+        completedAt: 2,
+        status: "ok",
+        input: { timeoutMs: 25 },
+        output: { finalUrl: "https://example.com" },
+      },
+    ],
+    screenshotPaths: [],
+    screenshotPayloads: [],
+    artifactIds: [],
+  });
+
+  const result = await dispatchPromise;
+  assert.equal(result.taskId, "task-wait");
+  assert.equal(result.trace[0]?.kind, "wait");
+});
+
 test("relay gateway drops timed out action requests from the pending queue", async () => {
   const gateway = new RelayGateway({
     now: () => Date.now(),

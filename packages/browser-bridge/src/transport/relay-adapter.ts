@@ -215,11 +215,7 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
   ): Promise<BrowserTaskResult> {
     const supportedActions = task.actions.filter(isRelayExecutableAction);
     if (supportedActions.length !== task.actions.length) {
-      const unsupported = task.actions
-        .filter((action) => !isRelayExecutableAction(action))
-        .map((action) => action.kind)
-        .join(", ");
-      throw new Error(`relay browser transport does not support action kinds yet: ${unsupported}`);
+      throw new Error("relay browser transport does not support one or more action kinds");
     }
     let relayActions = supportedActions;
 

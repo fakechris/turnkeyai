@@ -206,6 +206,29 @@ export async function executeChromeRelayContentScriptActions(
         continue;
       }
 
+      if (action.kind === "wait") {
+        const timeoutMs =
+          typeof action.timeoutMs === "number" && Number.isFinite(action.timeoutMs) && action.timeoutMs >= 0
+            ? action.timeoutMs
+            : 0;
+        await sleep(timeoutMs);
+        latestSnapshot = captureSnapshot(environment);
+        trace.push({
+          stepId,
+          kind: "wait",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            timeoutMs,
+          },
+          output: {
+            finalUrl: latestSnapshot.finalUrl,
+          },
+        });
+        continue;
+      }
+
       if (action.kind === "open") {
         trace.push({
           stepId,
@@ -376,6 +399,10 @@ function createDomEvent(type: string): unknown {
     return new Event(type, { bubbles: true, cancelable: true });
   }
   return { type };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function getDefaultContentScriptEnvironment(): ChromeRelayContentScriptEnvironment {
