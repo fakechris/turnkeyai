@@ -358,13 +358,85 @@ test("replay inspection enriches relay browser continuity with peer and target d
   const bundle = buildReplayIncidentBundle(records, "task-relay", relayDiagnostics);
 
   assert.equal(consoleReport.latestBundles[0]?.relayDiagnosticBucket, "peer_stale");
+  assert.equal(consoleReport.latestBundles[0]?.truthSource, "replay-store+relay-diagnostics");
+  assert.equal(consoleReport.latestBundles[0]?.truthState, "stale");
+  assert.ok(
+    consoleReport.latestBundles[0]?.remediation.some(
+      (item) => item.action === "reconnect_session" && item.scope === "transport"
+    )
+  );
   assert.ok(bundle?.browserContinuity);
+  assert.equal(bundle?.truthSource, "replay-store+relay-diagnostics");
+  assert.equal(bundle?.truthState, "stale");
   assert.equal(bundle?.browserContinuity?.transportPeerId, "peer-relay");
   assert.equal(bundle?.browserContinuity?.relayPeerStatus, "stale");
   assert.equal(bundle?.browserContinuity?.relayTargetStatus, "missing");
   assert.equal(bundle?.browserContinuity?.relayDiagnosticBucket, "peer_stale");
   assert.match(bundle?.browserContinuity?.relayDiagnosticSummary ?? "", /stale/i);
   assert.match(bundle?.caseHeadline ?? "", /relay=peer_stale/);
+});
+
+test("replay inspection marks relay-enriched truth as inferred when diagnostics are non-authoritative", () => {
+  const records = [
+    {
+      replayId: "task-relay-inferred:worker",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-relay-inferred",
+      workerType: "browser",
+      summary: "relay browser worker is waiting for a still-attached target",
+      failure: {
+        category: "transport_failed",
+        layer: "worker",
+        retryable: true,
+        message: "relay browser action is still inflight",
+        recommendedAction: "inspect",
+      },
+      metadata: {
+        payload: {
+          sessionId: "browser-session-relay",
+          targetId: "target-relay",
+          transportMode: "relay",
+          transportLabel: "chrome-relay",
+          transportPeerId: "peer-relay",
+          transportTargetId: "chrome-tab:199",
+          resumeMode: "warm",
+          targetResolution: "attached",
+        },
+      },
+    },
+  ] as Parameters<typeof buildReplayInspectionReport>[0];
+
+  const relayDiagnostics = {
+    peers: [
+      {
+        peerId: "peer-relay",
+        transportLabel: "chrome-relay",
+        lastSeenAt: 20,
+        status: "online" as const,
+      },
+    ],
+    targets: [
+      {
+        relayTargetId: "chrome-tab:199",
+        peerId: "peer-relay",
+        url: "https://example.com/inferred",
+        status: "attached" as const,
+        lastSeenAt: 20,
+      },
+    ],
+    actions: [],
+  };
+
+  const consoleReport = buildReplayConsoleReport(records, 5, [], relayDiagnostics);
+  const bundle = buildReplayIncidentBundle(records, "task-relay-inferred", relayDiagnostics);
+
+  assert.equal(consoleReport.latestBundles[0]?.truthSource, "replay-store+relay-diagnostics");
+  assert.equal(consoleReport.latestBundles[0]?.truthState, "inferred");
+  assert.equal(bundle?.truthSource, "replay-store+relay-diagnostics");
+  assert.equal(bundle?.truthState, "inferred");
 });
 
 test("replay inspection enriches relay browser continuity with action claim diagnostics", () => {
@@ -833,6 +905,8 @@ test("replay console counts resolved groups even when browser continuity is not 
   assert.equal(consoleReport.latestResolvedBundles[0]?.caseState, "resolved");
   assert.equal(consoleReport.latestResolvedBundles[0]?.workflowStatus, "recovered");
   assert.equal(consoleReport.latestResolvedBundles[0]?.browserContinuityState, "attention");
+  assert.equal(consoleReport.latestResolvedBundles[0]?.truthSource, "replay-store");
+  assert.equal(consoleReport.latestResolvedBundles[0]?.truthState, "stale");
 });
 
 test("replay console suppresses superseded failed follow-up groups once the root chain recovers", () => {

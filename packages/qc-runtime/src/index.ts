@@ -50,6 +50,7 @@ export * from "./prompt-inspection";
 export * from "./prompt-admission-policy";
 export * from "./replay-inspection";
 export * from "./runtime-chain-inspection";
+export * from "./truth-alignment";
 export * from "./validation-suite";
 export * from "./validation-soak-series";
 export * from "./validation-profile";

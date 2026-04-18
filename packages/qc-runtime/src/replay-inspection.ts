@@ -19,9 +19,11 @@ import type {
   ReplayTaskSummary,
   ReplayTimelineEntry,
   ReplayWorkerContinuitySummary,
+  TruthRemediation,
 } from "@turnkeyai/core-types/team";
 import { WORKER_CONTINUATION_REASONS, WORKER_KINDS } from "@turnkeyai/core-types/team";
 import { describeRecoveryRunGate, listAllowedRecoveryRunActions } from "@turnkeyai/core-types/recovery-operator-semantics";
+import { buildTruthAlignment, dedupeTruthRemediation, truthRemediation } from "./truth-alignment";
 
 const REPLAY_LAYER_ORDER: ReplayLayer[] = ["scheduled", "role", "worker", "browser"];
 const MAX_RETRY_ATTEMPTS_BEFORE_ESCALATION = 2;
@@ -365,11 +367,28 @@ function buildReplayConsoleBundleEntry(
         : operatorNextAction && operatorNextAction !== "none"
           ? operatorNextAction
           : "none";
+  const truthAlignment = bundle
+    ? {
+        confirmed: bundle.confirmed,
+        inferred: bundle.inferred,
+        stale: bundle.stale,
+        truthState: bundle.truthState,
+        truthSource: bundle.truthSource,
+        remediation: bundle.remediation,
+      }
+    : buildTruthAlignment({
+        confirmed: false,
+        inferred: true,
+        stale: false,
+        truthSource: "replay-recovery-query",
+        remediation: buildReplayConsoleFallbackRemediation(recovery),
+      });
   return {
     groupId: bundle?.group.groupId ?? recovery?.groupId ?? "unknown",
     latestStatus: bundle?.group.latestStatus ?? recovery?.latestStatus ?? "failed",
     nextAction,
     autoDispatchReady: recovery?.autoDispatchReady ?? false,
+    ...truthAlignment,
     ...(bundle?.caseState ? { caseState: bundle.caseState } : {}),
     ...(bundle?.recoveryWorkflow?.status ? { workflowStatus: bundle.recoveryWorkflow.status } : {}),
     ...(bundle?.recoveryWorkflow?.summary ? { workflowSummary: bundle.recoveryWorkflow.summary } : {}),
@@ -390,6 +409,202 @@ function buildReplayConsoleBundleEntry(
       ? { operatorAllowedActions: bundle.recoveryOperator.allowedActions }
       : {}),
   };
+}
+
+function buildReplayConsoleFallbackRemediation(recovery: ReplayRecoveryPlan | null): TruthRemediation[] {
+  if (!recovery) {
+    return [];
+  }
+  const remediation: TruthRemediation[] = [];
+  switch (recovery.nextAction) {
+    case "retry_same_layer":
+      remediation.push(
+        truthRemediation({
+          action: "retry_same_layer",
+          scope: "replay",
+          subjectId: recovery.groupId,
+          summary: "Retry the same replay layer before escalating recovery work.",
+        })
+      );
+      break;
+    case "fallback_transport":
+      remediation.push(
+        truthRemediation({
+          action: "fallback_transport",
+          scope: "transport",
+          subjectId: recovery.groupId,
+          summary: "Switch transport or browser continuation strategy before retrying this replay case.",
+        })
+      );
+      break;
+    case "auto_resume":
+      remediation.push(
+        truthRemediation({
+          action: "resume_from_checkpoint",
+          scope: "replay",
+          subjectId: recovery.groupId,
+          summary: "Resume from the last healthy replay layer before introducing new side effects.",
+        })
+      );
+      break;
+    case "request_approval":
+    case "inspect_then_resume":
+      remediation.push(
+        truthRemediation({
+          action: "review_manual_gate",
+          scope: "replay",
+          subjectId: recovery.groupId,
+          summary: "Review this replay case manually before resuming execution.",
+        })
+      );
+      break;
+    default:
+      break;
+  }
+  if (recovery.workerContinuation?.state === "cold_recreated") {
+    remediation.push(
+      truthRemediation({
+        action: "review_cold_recreation",
+        scope: "replay",
+        subjectId: recovery.groupId,
+        summary: "Treat this replay case as a cold recreation, not a true worker resume.",
+      })
+    );
+  }
+  return dedupeTruthRemediation(remediation);
+}
+
+function buildReplayBundleTruthAlignment(input: {
+  group: ReplayTaskSummary;
+  browserContinuity: ReplayIncidentBundle["browserContinuity"] | undefined;
+  recoveryWorkflow: ReplayIncidentBundle["recoveryWorkflow"] | undefined;
+  relayDiagnostics: RelayDiagnosticsSnapshot | undefined;
+}): ReturnType<typeof buildTruthAlignment> {
+  const { group, browserContinuity, recoveryWorkflow, relayDiagnostics } = input;
+  const remediation: TruthRemediation[] = [];
+  const subjectId = group.groupId;
+  const nextAction = recoveryWorkflow?.nextAction ?? "none";
+
+  if (
+    group.latestFailure?.category === "stale_session" ||
+    browserContinuity?.browserDiagnosticBucket === "reconnect_required" ||
+    browserContinuity?.relayDiagnosticBucket === "peer_stale" ||
+    browserContinuity?.relayDiagnosticBucket === "peer_missing" ||
+    browserContinuity?.relayDiagnosticBucket === "target_missing" ||
+    browserContinuity?.relayDiagnosticBucket === "target_detached" ||
+    browserContinuity?.relayDiagnosticBucket === "target_closed" ||
+    browserContinuity?.relayDiagnosticBucket === "claim_reclaimed"
+  ) {
+    remediation.push(
+      truthRemediation({
+        action: "reconnect_session",
+        scope: "transport",
+        subjectId,
+        summary: "Re-establish browser/relay session ownership before retrying this replay case.",
+      })
+    );
+  }
+
+  if (
+    group.latestFailure?.category === "transport_failed" ||
+    browserContinuity?.browserDiagnosticBucket ||
+    browserContinuity?.relayDiagnosticBucket
+  ) {
+    remediation.push(
+      truthRemediation({
+        action: "inspect_transport",
+        scope: "transport",
+        subjectId,
+        summary: "Inspect transport diagnostics before trusting replay continuity for this case.",
+      })
+    );
+  }
+
+  switch (nextAction) {
+    case "retry_same_layer":
+      remediation.push(
+        truthRemediation({
+          action: "retry_same_layer",
+          scope: "replay",
+          subjectId,
+          summary: "Retry the failed replay layer before escalating recovery work.",
+        })
+      );
+      break;
+    case "fallback_transport":
+      remediation.push(
+        truthRemediation({
+          action: "fallback_transport",
+          scope: "transport",
+          subjectId,
+          summary: "Fallback to an alternate transport or continuation strategy for this replay case.",
+        })
+      );
+      break;
+    case "auto_resume":
+      remediation.push(
+        truthRemediation({
+          action: "resume_from_checkpoint",
+          scope: "replay",
+          subjectId,
+          summary: "Resume from the last healthy replay layer before allowing fresh work.",
+        })
+      );
+      break;
+    case "request_approval":
+    case "inspect_then_resume":
+      remediation.push(
+        truthRemediation({
+          action: "review_manual_gate",
+          scope: "replay",
+          subjectId,
+          summary: "Manual review is required before resuming this replay case.",
+        })
+      );
+      break;
+    default:
+      break;
+  }
+
+  if (group.workerContinuation?.state === "cold_recreated") {
+    remediation.push(
+      truthRemediation({
+        action: "review_cold_recreation",
+        scope: "replay",
+        subjectId,
+        summary: "Treat this replay case as a cold recreation, not a true resume.",
+      })
+    );
+  }
+
+  if (recoveryWorkflow?.status === "manual_follow_up") {
+    remediation.push(
+      truthRemediation({
+        action: "review_manual_gate",
+        scope: "replay",
+        subjectId,
+        summary: "Replay follow-up is waiting on manual review before the case can close.",
+      })
+    );
+  }
+
+  const stale =
+    group.latestFailure?.category === "stale_session" ||
+    browserContinuity?.browserDiagnosticBucket === "reconnect_required" ||
+    browserContinuity?.relayDiagnosticBucket === "peer_stale" ||
+    browserContinuity?.relayDiagnosticBucket === "peer_missing" ||
+    browserContinuity?.relayDiagnosticBucket === "target_missing" ||
+    browserContinuity?.relayDiagnosticBucket === "target_detached" ||
+    browserContinuity?.relayDiagnosticBucket === "target_closed" ||
+    browserContinuity?.relayDiagnosticBucket === "claim_reclaimed";
+
+  return buildTruthAlignment({
+    confirmed: !relayDiagnostics,
+    inferred: Boolean(relayDiagnostics),
+    stale: Boolean(stale),
+    truthSource: relayDiagnostics ? "replay-store+relay-diagnostics" : "replay-store",
+    remediation: dedupeTruthRemediation(remediation),
+  });
 }
 
 export function listActionableReplayIncidents(
@@ -516,8 +731,15 @@ export function buildReplayIncidentBundle(
 
   const caseState = deriveBundleCaseState(group, recoveryWorkflow, enrichedBrowserContinuity);
   const caseHeadline = buildBundleCaseHeadline(groupId, caseState, recoveryWorkflow, enrichedBrowserContinuity, group);
+  const truthAlignment = buildReplayBundleTruthAlignment({
+    group,
+    browserContinuity: enrichedBrowserContinuity,
+    recoveryWorkflow,
+    relayDiagnostics,
+  });
 
   return {
+    ...truthAlignment,
     group,
     ...(caseState ? { caseState } : {}),
     ...(caseHeadline ? { caseHeadline } : {}),
@@ -557,7 +779,54 @@ export function attachRecoveryRunToReplayIncidentBundle(input: {
     latestSummary: input.run.latestSummary,
     ...(latestBrowserOutcome ? { latestBrowserOutcome } : {}),
   };
+  input.bundle.remediation = dedupeTruthRemediation([
+    ...input.bundle.remediation,
+    ...buildReplayRecoveryRunRemediation(input.run),
+  ]);
   return input.bundle;
+}
+
+function buildReplayRecoveryRunRemediation(run: RecoveryRun): TruthRemediation[] {
+  const remediation: TruthRemediation[] = [];
+  if (["running", "retrying", "fallback_running", "resumed", "superseded"].includes(run.status)) {
+    remediation.push(
+      truthRemediation({
+        action: "inspect_recovery_run",
+        scope: "recovery",
+        subjectId: run.recoveryRunId,
+        summary: "Inspect the in-flight recovery run before dispatching more replay recovery work.",
+      })
+    );
+  }
+  if (run.nextAction === "retry_same_layer") {
+    remediation.push(
+      truthRemediation({
+        action: "retry_same_layer",
+        scope: "recovery",
+        subjectId: run.recoveryRunId,
+        summary: "Retry the same recovery layer before escalating this replay case.",
+      })
+    );
+  } else if (run.nextAction === "fallback_transport") {
+    remediation.push(
+      truthRemediation({
+        action: "fallback_transport",
+        scope: "transport",
+        subjectId: run.recoveryRunId,
+        summary: "Fallback transport before dispatching another recovery attempt.",
+      })
+    );
+  } else if (run.nextAction === "auto_resume") {
+    remediation.push(
+      truthRemediation({
+        action: "resume_from_checkpoint",
+        scope: "recovery",
+        subjectId: run.recoveryRunId,
+        summary: "Resume from the last healthy checkpoint before dispatching fresh work.",
+      })
+    );
+  }
+  return dedupeTruthRemediation(remediation);
 }
 
 function deriveRecoveryRunOperatorCaseState(run: RecoveryRun): NonNullable<ReplayIncidentBundle["caseState"]> {

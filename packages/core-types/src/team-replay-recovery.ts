@@ -32,6 +32,7 @@ import type {
   PromptAdmissionMode,
   TransportKind,
 } from "./team-governance";
+import type { TruthAlignment, TruthRemediation, TruthSource } from "./team-truth";
 import type { ValidationOpsReport } from "./team-validation-ops";
 
 export type ReplayLayer = "scheduled" | "role" | "worker" | "browser";
@@ -125,6 +126,15 @@ export interface ReplayInspectionReport {
   groups: ReplayTaskSummary[];
   layerCounts: Partial<Record<ReplayLayer, number>>;
   failureCounts: Partial<Record<FailureCategory, number>>;
+}
+
+export interface ReplayTruthSummary {
+  confirmed: TruthAlignment["confirmed"];
+  inferred: TruthAlignment["inferred"];
+  stale: TruthAlignment["stale"];
+  truthState: TruthAlignment["truthState"];
+  truthSource: TruthSource;
+  remediation: TruthRemediation[];
 }
 
 export interface ReplayRecoveryHint {
@@ -237,6 +247,12 @@ export interface ReplayConsoleReport {
     latestStatus: ReplayTaskSummary["latestStatus"];
     nextAction: ReplayRecoveryPlan["nextAction"] | "none";
     autoDispatchReady: boolean;
+    confirmed: TruthAlignment["confirmed"];
+    inferred: TruthAlignment["inferred"];
+    stale: TruthAlignment["stale"];
+    truthState: TruthAlignment["truthState"];
+    truthSource: TruthSource;
+    remediation: TruthRemediation[];
     caseState?: OperatorCaseState;
     workflowStatus?: NonNullable<ReplayIncidentBundle["recoveryWorkflow"]>["status"];
     workflowSummary?: string;
@@ -256,6 +272,12 @@ export interface ReplayConsoleReport {
     latestStatus: ReplayTaskSummary["latestStatus"];
     nextAction: ReplayRecoveryPlan["nextAction"] | "none";
     autoDispatchReady: boolean;
+    confirmed: TruthAlignment["confirmed"];
+    inferred: TruthAlignment["inferred"];
+    stale: TruthAlignment["stale"];
+    truthState: TruthAlignment["truthState"];
+    truthSource: TruthSource;
+    remediation: TruthRemediation[];
     caseState?: OperatorCaseState;
     workflowStatus?: NonNullable<ReplayIncidentBundle["recoveryWorkflow"]>["status"];
     workflowSummary?: string;
@@ -295,7 +317,7 @@ export interface FlowConsoleReport {
   }>;
 }
 
-export interface ReplayIncidentBundle {
+export interface ReplayIncidentBundle extends ReplayTruthSummary {
   group: ReplayTaskSummary;
   caseState?: OperatorCaseState;
   caseHeadline?: string;
@@ -610,6 +632,9 @@ export interface OperatorAttentionItem {
   relayDiagnosticBucket?: ReplayBrowserContinuitySummary["relayDiagnosticBucket"];
   action?: string;
   allowedActions?: RecoveryRunAction[];
+  truthState?: TruthAlignment["truthState"];
+  truthSource?: TruthSource;
+  remediation?: TruthRemediation[];
 }
 
 export interface OperatorAttentionCaseSummary {
@@ -631,6 +656,9 @@ export interface OperatorAttentionCaseSummary {
   browserDiagnosticBucket?: ReplayBrowserContinuitySummary["browserDiagnosticBucket"];
   relayDiagnosticBucket?: ReplayBrowserContinuitySummary["relayDiagnosticBucket"];
   reasons?: string[];
+  truthState?: TruthAlignment["truthState"];
+  truthSource?: TruthSource;
+  remediation?: TruthRemediation[];
 }
 
 export interface OperatorAttentionReport {

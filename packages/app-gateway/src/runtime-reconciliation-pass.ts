@@ -4,6 +4,7 @@ import type {
   FlowRecoveryStartupReconcileResult,
   RecoveryRun,
   RecoveryRunStore,
+  RuntimeReconciliationSnapshot,
   RuntimeChainArtifactStartupReconcileResult,
   RuntimeChainEventStore,
   RuntimeChainSpanStore,
@@ -13,26 +14,13 @@ import type {
   TeamThreadStore,
 } from "@turnkeyai/core-types/team";
 import { FileBatchOutbox, type OutboxInspectionResult } from "@turnkeyai/team-runtime/file-batch-outbox";
+import { truthRemediation } from "@turnkeyai/qc-runtime/truth-alignment";
 
 import { reconcileFlowRecoveryOnStartup } from "./flow-recovery-startup-reconcile";
 import { reconcileRuntimeChainArtifactsOnStartup } from "./runtime-chain-artifact-startup-reconcile";
 import { reconcileRuntimeChainsOnStartup } from "./runtime-chain-startup-reconcile";
 
-export interface RuntimeReconciliationPassResult {
-  reconciledAt: number;
-  syncedRecoveryThreads: number;
-  syncedRecoveryRuns: number;
-  staleRecoveryRuns: number;
-  flowRecovery: FlowRecoveryStartupReconcileResult;
-  runtimeChains: RuntimeChainStartupReconcileResult;
-  runtimeChainArtifacts: RuntimeChainArtifactStartupReconcileResult;
-  crossStoreSafety: {
-    flowStartOutbox: OutboxInspectionResult;
-    dispatchOutbox: OutboxInspectionResult;
-    roleOutcomeOutbox: OutboxInspectionResult;
-  };
-  remediation: string[];
-}
+export type RuntimeReconciliationPassResult = RuntimeReconciliationSnapshot;
 
 export async function runRuntimeReconciliationPass(input: {
   clock: Clock;
@@ -105,36 +93,87 @@ function buildRuntimeReconciliationRemediation(input: {
   runtimeChainArtifacts: RuntimeChainArtifactStartupReconcileResult;
   staleRecoveryRuns: number;
   crossStoreSafety: RuntimeReconciliationPassResult["crossStoreSafety"];
-}): string[] {
-  const remediation: string[] = [];
+}): RuntimeReconciliationPassResult["remediation"] {
+  const remediation: RuntimeReconciliationPassResult["remediation"] = [];
 
   if (input.flowRecovery.failedRecoveryRuns > 0) {
-    remediation.push("Inspect affected recovery runs and retry or supersede any orphaned flow-linked recovery work.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_flow_recovery_drift",
+        scope: "flow_recovery",
+        summary: "Inspect affected recovery runs and retry or supersede any orphaned flow-linked recovery work.",
+      })
+    );
   }
   if (input.runtimeChains.affectedChainIds.length > 0) {
-    remediation.push("Inspect runtime chain projection drift for affected chains before trusting operator state.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_runtime_chain",
+        scope: "runtime_summary",
+        summary: "Inspect runtime chain projection drift for affected chains before trusting operator state.",
+      })
+    );
   }
   if (input.runtimeChainArtifacts.affectedChainIds.length > 0) {
-    remediation.push("Repair runtime chain status/span/event drift for affected chains.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_runtime_artifacts",
+        scope: "runtime_summary",
+        summary: "Repair runtime chain status/span/event drift for affected chains.",
+      })
+    );
   }
   if (input.staleRecoveryRuns > 0) {
-    remediation.push("Inspect stale in-flight recovery runs and resume or fallback before re-dispatching work.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_recovery_run",
+        scope: "recovery",
+        summary: "Inspect stale in-flight recovery runs and resume or fallback before re-dispatching work.",
+      })
+    );
   }
   if (input.crossStoreSafety.flowStartOutbox.deadLetterBatches > 0) {
-    remediation.push("Inspect dead-lettered flow-start intents before trusting message-to-flow convergence.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_outbox_dead_letter",
+        scope: "cross_store_safety",
+        subjectId: "flow-start-outbox",
+        summary: "Inspect dead-lettered flow-start intents before trusting message-to-flow convergence.",
+      })
+    );
   }
   if (input.crossStoreSafety.dispatchOutbox.deadLetterBatches > 0) {
-    remediation.push("Inspect dead-lettered dispatch deliveries before assuming role queues received their handoffs.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_outbox_dead_letter",
+        scope: "cross_store_safety",
+        subjectId: "dispatch-outbox",
+        summary: "Inspect dead-lettered dispatch deliveries before assuming role queues received their handoffs.",
+      })
+    );
   }
   if (input.crossStoreSafety.roleOutcomeOutbox.deadLetterBatches > 0) {
-    remediation.push("Inspect dead-lettered role outcomes before trusting reply/failure-driven flow state transitions.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_outbox_dead_letter",
+        scope: "cross_store_safety",
+        subjectId: "role-outcome-outbox",
+        summary: "Inspect dead-lettered role outcomes before trusting reply/failure-driven flow state transitions.",
+      })
+    );
   }
   if (
     input.crossStoreSafety.flowStartOutbox.expiredInflightBatches > 0 ||
     input.crossStoreSafety.dispatchOutbox.expiredInflightBatches > 0 ||
     input.crossStoreSafety.roleOutcomeOutbox.expiredInflightBatches > 0
   ) {
-    remediation.push("Inspect expired in-flight outbox leases after restart before replaying additional work.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_outbox_lease",
+        scope: "cross_store_safety",
+        summary: "Inspect expired in-flight outbox leases after restart before replaying additional work.",
+      })
+    );
   }
 
   return remediation;

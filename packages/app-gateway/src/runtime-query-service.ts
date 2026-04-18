@@ -1,11 +1,15 @@
 import type {
   Clock,
   RoleRunState,
+  RuntimeReconciliationSnapshot,
   RuntimeChain,
   RuntimeChainCanonicalState,
   RuntimeChainStatus,
   RuntimeSummaryEntry,
   RuntimeSummaryReport,
+  TruthAligned,
+  TruthRemediation,
+  TruthSource,
   WorkerSessionRecord,
   WorkerRuntime,
   WorkerSessionState,
@@ -20,6 +24,7 @@ import {
   decorateRuntimeChainStatus,
   isRecoveryRuntimeChainId,
 } from "@turnkeyai/qc-runtime/runtime-chain-inspection";
+import { buildTruthAlignment, dedupeTruthRemediation, truthRemediation } from "@turnkeyai/qc-runtime/truth-alignment";
 import type { FileFlowLedgerStore } from "@turnkeyai/team-store/file-flow-ledger-store";
 import type { FileRoleRunStore } from "@turnkeyai/team-store/file-role-run-store";
 import type { FileRuntimeChainEventStore } from "@turnkeyai/team-store/file-runtime-chain-event-store";
@@ -30,16 +35,8 @@ import type { FileRuntimeProgressStore } from "@turnkeyai/team-store/file-runtim
 import type { FileRecoveryRunStore } from "@turnkeyai/team-store/recovery/file-recovery-run-store";
 import type { FileRecoveryRunEventStore } from "@turnkeyai/team-store/recovery/file-recovery-run-event-store";
 import type { FileTeamThreadStore } from "@turnkeyai/team-store/file-team-thread-store";
-import type { RuntimeReconciliationPassResult } from "./runtime-reconciliation-pass";
 
 export type RuntimeChainEntry = { chain: RuntimeChain; status: RuntimeChainStatus };
-export type TruthAligned<T> = T & {
-  confirmed: boolean;
-  inferred: boolean;
-  stale: boolean;
-  truthSource: string;
-  remediation: string[];
-};
 export type TruthAlignedRuntimeSummaryEntry = TruthAligned<RuntimeSummaryEntry>;
 export type TruthAlignedRuntimeSummaryReport = Omit<
   RuntimeSummaryReport,
@@ -54,9 +51,10 @@ export type TruthAlignedRuntimeSummaryReport = Omit<
   confirmed: boolean;
   inferred: boolean;
   stale: boolean;
-  truthSource: string;
-  remediation: string[];
-  runtimeReconciliation?: RuntimeReconciliationPassResult;
+  truthState: TruthAligned<RuntimeSummaryReport>["truthState"];
+  truthSource: TruthSource;
+  remediation: TruthRemediation[];
+  runtimeReconciliation?: RuntimeReconciliationSnapshot;
 };
 export type TruthAlignedRuntimeChainDetail = {
   chain: unknown;
@@ -66,8 +64,9 @@ export type TruthAlignedRuntimeChainDetail = {
   confirmed: boolean;
   inferred: boolean;
   stale: boolean;
-  truthSource: string;
-  remediation: string[];
+  truthState: TruthAligned<unknown>["truthState"];
+  truthSource: TruthSource;
+  remediation: TruthRemediation[];
 };
 type RecoveryRuntimeSnapshot = {
   records: Awaited<ReturnType<FileReplayRecorder["list"]>>;
@@ -159,7 +158,7 @@ export function createRuntimeQueryService(input: {
         affectedChainIds: string[];
       }
     | undefined;
-  getRuntimeReconciliationResult?: () => RuntimeReconciliationPassResult | undefined;
+  getRuntimeReconciliationResult?: () => RuntimeReconciliationSnapshot | undefined;
   teamThreadStore: FileTeamThreadStore;
   flowLedgerStore: FileFlowLedgerStore;
   roleRunStore: FileRoleRunStore;
@@ -285,11 +284,13 @@ export function createRuntimeQueryService(input: {
   ): TruthAligned<RuntimeChainEntry> {
     return {
       ...entry,
-      confirmed: truthSource === "stored-chain",
-      inferred: truthSource !== "stored-chain",
-      stale: Boolean(entry.status.stale),
-      truthSource,
-      remediation: buildRuntimeEntryRemediation(entry, truthSource, getRuntimeReconciliationResult?.()),
+      ...buildTruthAlignment({
+        confirmed: truthSource === "stored-chain",
+        inferred: truthSource !== "stored-chain",
+        stale: Boolean(entry.status.stale),
+        truthSource,
+        remediation: buildRuntimeEntryRemediation(entry, truthSource, getRuntimeReconciliationResult?.()),
+      }),
     };
   }
 
@@ -299,50 +300,101 @@ export function createRuntimeQueryService(input: {
   ): TruthAligned<typeof entry> {
     return {
       ...entry,
-      confirmed: false,
-      inferred: true,
-      stale: Boolean(entry.stale),
-      truthSource,
-      remediation: buildRuntimeSummaryEntryRemediation(entry, getRuntimeReconciliationResult?.()),
+      ...buildTruthAlignment({
+        confirmed: false,
+        inferred: true,
+        stale: Boolean(entry.stale),
+        truthSource,
+        remediation: buildRuntimeSummaryEntryRemediation(entry, getRuntimeReconciliationResult?.()),
+      }),
     };
   }
 
   function buildRuntimeEntryRemediation(
     entry: RuntimeChainEntry,
     truthSource: TruthAligned<RuntimeChainEntry>["truthSource"],
-    runtimeReconciliation?: RuntimeReconciliationPassResult
-  ): string[] {
-    const remediation: string[] = [];
+    runtimeReconciliation?: RuntimeReconciliationSnapshot
+  ): TruthRemediation[] {
+    const remediation: TruthRemediation[] = [];
     if (truthSource !== "stored-chain") {
-      remediation.push("Run the runtime reconciliation pass before treating this chain projection as authoritative.");
+      remediation.push(
+        truthRemediation({
+          action: "reconcile_runtime",
+          scope: "runtime_chain",
+          subjectId: entry.chain.chainId,
+          summary: "Run the runtime reconciliation pass before treating this chain projection as authoritative.",
+        })
+      );
     }
     if (entry.status.stale) {
-      remediation.push("Inspect runtime progress or worker/browser heartbeats before re-dispatching this chain.");
+      remediation.push(
+        truthRemediation({
+          action: "inspect_runtime_stale",
+          scope: "runtime_chain",
+          subjectId: entry.chain.chainId,
+          summary: "Inspect runtime progress or worker/browser heartbeats before re-dispatching this chain.",
+        })
+      );
     }
     if (runtimeReconciliation?.runtimeChains.affectedChainIds.includes(entry.chain.chainId)) {
-      remediation.push("Inspect runtime chain projection drift for this chain.");
+      remediation.push(
+        truthRemediation({
+          action: "inspect_runtime_chain",
+          scope: "runtime_chain",
+          subjectId: entry.chain.chainId,
+          summary: "Inspect runtime chain projection drift for this chain.",
+        })
+      );
     }
     if (runtimeReconciliation?.runtimeChainArtifacts.affectedChainIds.includes(entry.chain.chainId)) {
-      remediation.push("Inspect runtime chain status/span/event drift for this chain.");
+      remediation.push(
+        truthRemediation({
+          action: "inspect_runtime_artifacts",
+          scope: "runtime_chain",
+          subjectId: entry.chain.chainId,
+          summary: "Inspect runtime chain status/span/event drift for this chain.",
+        })
+      );
     }
-    return remediation;
+    return dedupeTruthRemediation(remediation);
   }
 
   function buildRuntimeSummaryEntryRemediation(
     entry: RuntimeSummaryEntry,
-    runtimeReconciliation?: RuntimeReconciliationPassResult
-  ): string[] {
-    const remediation: string[] = [];
+    runtimeReconciliation?: RuntimeReconciliationSnapshot
+  ): TruthRemediation[] {
+    const remediation: TruthRemediation[] = [];
     if (entry.stale) {
-      remediation.push("Inspect the latest runtime progress before resuming or retrying this chain.");
+      remediation.push(
+        truthRemediation({
+          action: "inspect_runtime_stale",
+          scope: "runtime_summary",
+          subjectId: entry.chainId,
+          summary: "Inspect the latest runtime progress before resuming or retrying this chain.",
+        })
+      );
     }
     if (runtimeReconciliation?.runtimeChains.affectedChainIds.includes(entry.chainId)) {
-      remediation.push("Inspect runtime chain projection drift for this chain.");
+      remediation.push(
+        truthRemediation({
+          action: "inspect_runtime_chain",
+          scope: "runtime_summary",
+          subjectId: entry.chainId,
+          summary: "Inspect runtime chain projection drift for this chain.",
+        })
+      );
     }
     if (runtimeReconciliation?.runtimeChainArtifacts.affectedChainIds.includes(entry.chainId)) {
-      remediation.push("Inspect runtime chain artifact drift for this chain.");
+      remediation.push(
+        truthRemediation({
+          action: "inspect_runtime_artifacts",
+          scope: "runtime_summary",
+          subjectId: entry.chainId,
+          summary: "Inspect runtime chain artifact drift for this chain.",
+        })
+      );
     }
-    return remediation;
+    return dedupeTruthRemediation(remediation);
   }
 
   async function loadRuntimeChainEntriesForThread(threadId: string): Promise<RuntimeChainEntry[]> {
@@ -586,11 +638,13 @@ export function createRuntimeQueryService(input: {
                 : report;
       return {
         ...enrichedReport,
-        confirmed: false,
-        inferred: true,
-        stale: enrichedReport.staleCount > 0,
-        truthSource: "runtime-summary-query",
-        remediation: buildRuntimeSummaryRemediation(enrichedReport, runtimeReconciliation),
+        ...buildTruthAlignment({
+          confirmed: false,
+          inferred: true,
+          stale: enrichedReport.staleCount > 0,
+          truthSource: "runtime-summary-query",
+          remediation: buildRuntimeSummaryRemediation(enrichedReport, runtimeReconciliation),
+        }),
         attentionChains: enrichedReport.attentionChains.map((entry) =>
           truthAlignRuntimeSummaryEntry(entry, "runtime-summary-query")
         ),
@@ -660,11 +714,18 @@ export function createRuntimeQueryService(input: {
         return {
           ...detail,
           status,
-          confirmed: false,
-          inferred: true,
-          stale: Boolean(status.stale),
-          truthSource: "derived-recovery-chain",
-          remediation: buildRuntimeChainDetailRemediation(chainId, Boolean(status.stale), true, getRuntimeReconciliationResult?.()),
+          ...buildTruthAlignment({
+            confirmed: false,
+            inferred: true,
+            stale: Boolean(status.stale),
+            truthSource: "derived-recovery-chain",
+            remediation: buildRuntimeChainDetailRemediation(
+              chainId,
+              Boolean(status.stale),
+              true,
+              getRuntimeReconciliationResult?.()
+            ),
+          }),
         };
       }
 
@@ -694,16 +755,18 @@ export function createRuntimeQueryService(input: {
           status: decoratedStatus,
           spans,
           events,
-          confirmed: status != null,
-          inferred: status == null,
-          stale: Boolean(decoratedStatus?.stale),
-          truthSource: status == null ? "stored-chain-fallback-status" : "stored-chain",
-          remediation: buildRuntimeChainDetailRemediation(
-            chain.chainId,
-            Boolean(decoratedStatus?.stale),
-            status == null,
-            getRuntimeReconciliationResult?.()
-          ),
+          ...buildTruthAlignment({
+            confirmed: status != null,
+            inferred: status == null,
+            stale: Boolean(decoratedStatus?.stale),
+            truthSource: status == null ? "stored-chain-fallback-status" : "stored-chain",
+            remediation: buildRuntimeChainDetailRemediation(
+              chain.chainId,
+              Boolean(decoratedStatus?.stale),
+              status == null,
+              getRuntimeReconciliationResult?.()
+            ),
+          }),
         };
       }
 
@@ -734,16 +797,18 @@ export function createRuntimeQueryService(input: {
       });
       return {
         ...detail,
-        confirmed: status != null,
-        inferred: status == null,
-        stale: Boolean((detail.status as RuntimeChainStatus | null)?.stale),
-        truthSource: status == null ? "stored-chain-fallback-status" : "stored-chain",
-        remediation: buildRuntimeChainDetailRemediation(
-          detail.chain.chainId,
-          Boolean((detail.status as RuntimeChainStatus | null)?.stale),
-          status == null,
-          getRuntimeReconciliationResult?.()
-        ),
+        ...buildTruthAlignment({
+          confirmed: status != null,
+          inferred: status == null,
+          stale: Boolean((detail.status as RuntimeChainStatus | null)?.stale),
+          truthSource: status == null ? "stored-chain-fallback-status" : "stored-chain",
+          remediation: buildRuntimeChainDetailRemediation(
+            detail.chain.chainId,
+            Boolean((detail.status as RuntimeChainStatus | null)?.stale),
+            status == null,
+            getRuntimeReconciliationResult?.()
+          ),
+        }),
       };
     },
   };
@@ -751,36 +816,70 @@ export function createRuntimeQueryService(input: {
 
 function buildRuntimeSummaryRemediation(
   report: RuntimeSummaryReport,
-  runtimeReconciliation?: RuntimeReconciliationPassResult
-): string[] {
-  const remediation: string[] = [];
+  runtimeReconciliation?: RuntimeReconciliationSnapshot
+): TruthRemediation[] {
+  const remediation: TruthRemediation[] = [];
   if (report.staleCount > 0) {
-    remediation.push("Inspect stale runtime chains before trusting summary-level attention counts.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_runtime_stale",
+        scope: "runtime_summary",
+        summary: "Inspect stale runtime chains before trusting summary-level attention counts.",
+      })
+    );
   }
   if (runtimeReconciliation?.remediation.length) {
     remediation.push(...runtimeReconciliation.remediation);
   }
-  return [...new Set(remediation)];
+  return dedupeTruthRemediation(remediation);
 }
 
 function buildRuntimeChainDetailRemediation(
   chainId: string,
   stale: boolean,
   inferred: boolean,
-  runtimeReconciliation?: RuntimeReconciliationPassResult
-): string[] {
-  const remediation: string[] = [];
+  runtimeReconciliation?: RuntimeReconciliationSnapshot
+): TruthRemediation[] {
+  const remediation: TruthRemediation[] = [];
   if (inferred) {
-    remediation.push("Run the runtime reconciliation pass before trusting fallback-derived chain detail.");
+    remediation.push(
+      truthRemediation({
+        action: "reconcile_runtime",
+        scope: "runtime_chain",
+        subjectId: chainId,
+        summary: "Run the runtime reconciliation pass before trusting fallback-derived chain detail.",
+      })
+    );
   }
   if (stale) {
-    remediation.push("Inspect runtime progress or heartbeat activity before retrying this chain.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_runtime_stale",
+        scope: "runtime_chain",
+        subjectId: chainId,
+        summary: "Inspect runtime progress or heartbeat activity before retrying this chain.",
+      })
+    );
   }
   if (runtimeReconciliation?.runtimeChains.affectedChainIds.includes(chainId)) {
-    remediation.push("Inspect runtime chain projection drift for this chain.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_runtime_chain",
+        scope: "runtime_chain",
+        subjectId: chainId,
+        summary: "Inspect runtime chain projection drift for this chain.",
+      })
+    );
   }
   if (runtimeReconciliation?.runtimeChainArtifacts.affectedChainIds.includes(chainId)) {
-    remediation.push("Inspect runtime chain artifact drift for this chain.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_runtime_artifacts",
+        scope: "runtime_chain",
+        subjectId: chainId,
+        summary: "Inspect runtime chain artifact drift for this chain.",
+      })
+    );
   }
-  return remediation;
+  return dedupeTruthRemediation(remediation);
 }

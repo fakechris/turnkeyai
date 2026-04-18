@@ -21,6 +21,7 @@ import type {
   RuntimeSummaryReport,
   ShardResultRecord,
   TeamEvent,
+  TruthRemediationAction,
 } from "@turnkeyai/core-types/team";
 import { describeRecoveryRunGate, listAllowedRecoveryRunActions } from "@turnkeyai/core-types/recovery-operator-semantics";
 import { detectConflictRoleIds, detectDuplicateRoleIds } from "@turnkeyai/core-types/shard-result-analysis";
@@ -419,6 +420,9 @@ export function buildOperatorAttentionReport(input: {
         ...(browserContinuity?.relayDiagnosticBucket
           ? { relayDiagnosticBucket: browserContinuity.relayDiagnosticBucket }
           : {}),
+        ...(bundle?.truthState ? { truthState: bundle.truthState } : {}),
+        ...(bundle?.truthSource ? { truthSource: bundle.truthSource } : {}),
+        ...(bundle?.remediation?.length ? { remediation: bundle.remediation } : {}),
         summary: incident.latestFailure?.message ?? incident.recoveryHint.reason,
         ...(incident.recoveryHint.action ? { action: incident.recoveryHint.action } : {}),
       };
@@ -990,6 +994,9 @@ function buildAttentionCaseSummary(
     ...(browserDiagnosticBucket ? { browserDiagnosticBucket } : {}),
     ...(relayDiagnosticBucket ? { relayDiagnosticBucket } : {}),
     ...(primary.reasons && primary.reasons.length > 0 ? { reasons: primary.reasons } : {}),
+    ...(primary.truthState ? { truthState: primary.truthState } : {}),
+    ...(primary.truthSource ? { truthSource: primary.truthSource } : {}),
+    ...(primary.remediation?.length ? { remediation: primary.remediation } : {}),
   };
 }
 
@@ -1132,6 +1139,10 @@ function deriveAttentionNextStep(item: OperatorAttentionItem): string {
   if (item.action) {
     return item.action;
   }
+  const remediationAction = selectPriorityRemediationAction(item.remediation?.map((entry) => entry.action) ?? []);
+  if (remediationAction) {
+    return remediationAction;
+  }
   switch (item.lifecycle) {
     case "recovering":
       return "monitor_recovery";
@@ -1143,6 +1154,31 @@ function deriveAttentionNextStep(item: OperatorAttentionItem): string {
     default:
       return "inspect_case";
   }
+}
+
+const TRUTH_REMEDIATION_PRIORITY: Record<TruthRemediationAction, number> = {
+  reconnect_session: 100,
+  fallback_transport: 90,
+  resume_from_checkpoint: 80,
+  retry_same_layer: 70,
+  review_manual_gate: 60,
+  review_cold_recreation: 55,
+  inspect_transport: 50,
+  inspect_recovery_failure: 45,
+  inspect_recovery_run: 40,
+  inspect_flow_recovery_drift: 35,
+  inspect_runtime_chain: 30,
+  inspect_runtime_artifacts: 25,
+  inspect_runtime_stale: 20,
+  inspect_outbox_dead_letter: 15,
+  inspect_outbox_lease: 10,
+  reconcile_runtime: 5,
+};
+
+function selectPriorityRemediationAction(actions: TruthRemediationAction[]): TruthRemediationAction | undefined {
+  return [...actions].sort(
+    (left, right) => (TRUTH_REMEDIATION_PRIORITY[right] ?? 0) - (TRUTH_REMEDIATION_PRIORITY[left] ?? 0)
+  )[0];
 }
 
 function mapAttentionCaseToTriageFocus(entry: OperatorAttentionCaseSummary): OperatorTriageFocusArea {
