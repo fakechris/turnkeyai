@@ -1,5 +1,8 @@
 # TurnkeyAI
 
+[![npm version](https://img.shields.io/npm/v/@turnkeyai/cli?label=%40turnkeyai%2Fcli)](https://www.npmjs.com/package/@turnkeyai/cli)
+[![npm downloads](https://img.shields.io/npm/dm/@turnkeyai/cli)](https://www.npmjs.com/package/@turnkeyai/cli)
+
 本项目的目标，是构建一套本地优先、可扩展、可审计的协作式 Agent Runtime。
 
 它不是单一的聊天应用，也不是单一的 browser automation demo。它更像一个逐步成型的本地 Agent Workbench：支持 Team、Role、Worker、Browser Runtime、Prompt/Context 管理，以及后续的桌面端壳层。
@@ -116,15 +119,60 @@
 
 ## 快速开始
 
+当前仓库与公开 CLI 包统一要求 `Node.js 24+`。
+
+使用公开 npm CLI：
+
+```bash
+npx @turnkeyai/cli --help
+npx @turnkeyai/cli daemon
+```
+
+另一个终端中连接 TUI：
+
+```bash
+npx @turnkeyai/cli tui
+```
+
+如果希望安装成全局命令：
+
+```bash
+npm install -g @turnkeyai/cli
+turnkeyai daemon
+turnkeyai tui
+```
+
+默认 daemon 地址：
+
+```text
+http://127.0.0.1:4100
+```
+
+常用环境变量：
+
+- `TURNKEYAI_DAEMON_PORT`: 覆盖本地 daemon 监听端口
+- `TURNKEYAI_DAEMON_URL`: 让 TUI / CLI 连接指定 daemon
+- `TURNKEYAI_DAEMON_TOKEN`: 开启 daemon token auth 时使用的访问 token
+- `TURNKEYAI_BROWSER_TRANSPORT`: 选择 `relay` 或 `direct-cdp` browser transport
+- `TURNKEYAI_BROWSER_RELAY_TOKEN`: relay peer 使用的独立 token
+- `TURNKEYAI_BROWSER_CDP_ENDPOINT`: direct-cdp transport 使用的 CDP endpoint
+
+本地源码开发：
+
 ```bash
 npm install
 npm run typecheck
 npm test
 ```
 
-当前仓库与公开 CLI 包统一要求 `Node.js 24+`。
-
 主干 PR 的基础 CI 当前会运行 `npm run typecheck`、`npm test` 和 `npm run build`。
+
+本地源码运行 daemon / TUI：
+
+```bash
+npm run daemon
+npm run tui
+```
 
 如果要构建 Chrome relay extension 产物：
 
@@ -216,30 +264,6 @@ TURNKEYAI_BROWSER_RELAY_TOKEN=... TURNKEYAI_BROWSER_TRANSPORT=relay npm run daem
 TURNKEYAI_BROWSER_TRANSPORT=direct-cdp \
 TURNKEYAI_BROWSER_CDP_ENDPOINT=http://127.0.0.1:9222 \
 npm run daemon
-```
-
-启动本地 daemon：
-
-```bash
-npm run daemon
-```
-
-启动 TUI：
-
-```bash
-npm run tui
-```
-
-如果使用公开发布的 CLI 包：
-
-```bash
-npx @turnkeyai/cli daemon
-```
-
-另一个终端中连接 TUI：
-
-```bash
-npx @turnkeyai/cli tui
 ```
 
 当前 daemon 主要提供：
