@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { MessageId, TeamMessage, TeamMessageStore, ThreadId } from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
-import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
+import { listJsonFiles, readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 interface FileTeamMessageStoreOptions {
   rootDir: string;
@@ -19,7 +19,23 @@ export class FileTeamMessageStore implements TeamMessageStore {
 
   async append(message: TeamMessage): Promise<void> {
     await this.withThreadLock(message.threadId, async () => {
-      await writeJsonFileAtomic(this.entryFilePath(message.threadId, message), message);
+      const entryPath = this.entryFilePath(message.threadId, message);
+      const byIdPath = this.byIdFilePath(message.id);
+      const existingProjection = await readJsonFile<TeamMessage>(byIdPath);
+      const nextProjection =
+        !existingProjection || message.updatedAt >= existingProjection.updatedAt ? message : existingProjection;
+
+      let entryWritten = false;
+      try {
+        await writeJsonFileAtomic(entryPath, message);
+        entryWritten = true;
+        await writeJsonFileAtomic(byIdPath, nextProjection);
+      } catch (error) {
+        if (entryWritten) {
+          await removeFileIfExists(entryPath);
+        }
+        throw error;
+      }
     });
   }
 
@@ -32,11 +48,21 @@ export class FileTeamMessageStore implements TeamMessageStore {
   }
 
   async get(messageId: MessageId): Promise<TeamMessage | null> {
+    const projected = await readJsonFile<TeamMessage>(this.byIdFilePath(messageId));
+    if (projected) {
+      return projected;
+    }
+
     const threadIds = await this.listThreadIds();
     for (const threadId of threadIds) {
       const messages = await this.readThreadMessages(threadId);
       const message = messages.find((item) => item.id === messageId);
       if (message) {
+        try {
+          await this.backfillByIdProjection(message);
+        } catch {
+          // Preserve successful reads; projection backfill is best-effort.
+        }
         return message;
       }
     }
@@ -94,6 +120,14 @@ export class FileTeamMessageStore implements TeamMessageStore {
     return path.join(this.rootDir, "threads");
   }
 
+  private byIdDir(): string {
+    return path.join(this.rootDir, "by-id");
+  }
+
+  private byIdFilePath(messageId: MessageId): string {
+    return path.join(this.byIdDir(), `${encodeURIComponent(messageId)}.json`);
+  }
+
   private threadDir(threadId: ThreadId): string {
     return path.join(this.threadRootDir(), encodeURIComponent(threadId));
   }
@@ -107,6 +141,17 @@ export class FileTeamMessageStore implements TeamMessageStore {
     const updatedAt = String(message.updatedAt).padStart(16, "0");
     const messageId = encodeURIComponent(message.id);
     return path.join(this.entryDir(threadId), `${createdAt}-${updatedAt}-${messageId}.json`);
+  }
+
+  private async backfillByIdProjection(message: TeamMessage): Promise<void> {
+    await this.withThreadLock(message.threadId, async () => {
+      const byIdPath = this.byIdFilePath(message.id);
+      const existingProjection = await readJsonFile<TeamMessage>(byIdPath);
+      if (existingProjection && existingProjection.updatedAt >= message.updatedAt) {
+        return;
+      }
+      await writeJsonFileAtomic(byIdPath, message);
+    });
   }
 }
 

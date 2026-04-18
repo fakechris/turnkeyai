@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
+import { readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 import { FileRecoveryRunStore } from "./file-recovery-run-store";
 
@@ -172,6 +172,98 @@ test("file recovery run store merges legacy attempts with newer journal attempts
     assert.equal(stored?.attempts[0]?.summary, "retrying again");
     assert.equal(stored?.attempts[1]?.attemptId, "recovery:task-1:attempt:2");
     assert.equal(stored?.version, 2);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file recovery run store repairs legacy flat runs into canonical by-id, thread, and attempt projections on read", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-repair-legacy-"));
+  try {
+    await writeJsonFileAtomic(path.join(rootDir, "recovery%3Atask-legacy.json"), {
+      recoveryRunId: "recovery:task-legacy",
+      threadId: "thread-legacy",
+      sourceGroupId: "task-legacy",
+      latestStatus: "failed",
+      status: "retrying",
+      nextAction: "retry_same_layer",
+      autoDispatchReady: true,
+      requiresManualIntervention: false,
+      latestSummary: "legacy only",
+      attempts: [
+        {
+          attemptId: "recovery:task-legacy:attempt:1",
+          action: "retry",
+          requestedAt: 11,
+          updatedAt: 12,
+          status: "retrying",
+          nextAction: "retry_same_layer",
+          summary: "legacy attempt",
+        },
+      ],
+      createdAt: 10,
+      updatedAt: 20,
+    });
+
+    const store = new FileRecoveryRunStore({ rootDir });
+    const restored = await store.get("recovery:task-legacy");
+
+    assert.ok(restored);
+    assert.equal(restored?.attempts.length, 1);
+    assert.deepEqual(
+      await readJsonFile(path.join(rootDir, "by-id", "recovery%3Atask-legacy.json")),
+      {
+        ...restored,
+        attempts: [],
+      }
+    );
+    assert.deepEqual(
+      await readJsonFile(path.join(rootDir, "threads", "thread-legacy", "recovery%3Atask-legacy.json")),
+      {
+        ...restored,
+        attempts: [],
+      }
+    );
+    assert.deepEqual(
+      await readJsonFile(path.join(rootDir, "attempts", "recovery%3Atask-legacy", "recovery%3Atask-legacy%3Aattempt%3A1.json")),
+      restored?.attempts[0]
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file recovery run store repairs thread-scoped projections from by-id records during thread reads", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-repair-thread-"));
+  try {
+    await writeJsonFileAtomic(path.join(rootDir, "by-id", "recovery%3Atask-1.json"), {
+      recoveryRunId: "recovery:task-1",
+      threadId: "thread-1",
+      sourceGroupId: "task-1",
+      latestStatus: "partial",
+      status: "retrying",
+      nextAction: "retry_same_layer",
+      autoDispatchReady: true,
+      requiresManualIntervention: false,
+      latestSummary: "by-id only",
+      attempts: [],
+      createdAt: 10,
+      updatedAt: 20,
+      version: 1,
+    });
+
+    const store = new FileRecoveryRunStore({ rootDir });
+    const runs = await store.listByThread("thread-1");
+
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]?.latestSummary, "by-id only");
+    assert.deepEqual(
+      await readJsonFile(path.join(rootDir, "threads", "thread-1", "recovery%3Atask-1.json")),
+      {
+        ...runs[0],
+        attempts: [],
+      }
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

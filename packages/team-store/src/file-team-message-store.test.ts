@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
+import { readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 import { FileTeamMessageStore } from "./file-team-message-store";
 
@@ -113,6 +113,82 @@ test("file team message store prefers newer append-only entries over legacy dupl
     assert.equal(messages.length, 1);
     assert.equal(messages[0]?.content, "newer");
   } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file team message store backfills by-id projection from legacy thread records on read", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-message-store-backfill-"));
+
+  try {
+    await writeJsonFileAtomic(path.join(rootDir, "thread-1.json"), [
+      {
+        id: "msg-legacy",
+        threadId: "thread-1",
+        role: "user",
+        name: "Chris",
+        content: "legacy",
+        createdAt: 10,
+        updatedAt: 10,
+      },
+    ]);
+
+    const store = new FileTeamMessageStore({ rootDir });
+    const restored = await store.get("msg-legacy");
+
+    assert.equal(restored?.content, "legacy");
+    assert.deepEqual(
+      await readJsonFile(path.join(rootDir, "by-id", "msg-legacy.json")),
+      restored
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file team message store restores append-only entry when by-id projection write fails", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-message-store-rollback-"));
+  const byIdDir = path.join(rootDir, "by-id");
+
+  try {
+    const store = new FileTeamMessageStore({ rootDir });
+
+    await store.append({
+      id: "msg-1",
+      threadId: "thread-1",
+      role: "user",
+      name: "Chris",
+      content: "hello",
+      createdAt: 10,
+      updatedAt: 10,
+    });
+
+    if (process.platform === "win32") {
+      return;
+    }
+
+    await chmod(byIdDir, 0o500);
+    await assert.rejects(() =>
+      store.append({
+        id: "msg-2",
+        threadId: "thread-1",
+        role: "assistant",
+        name: "Lead",
+        content: "should rollback",
+        createdAt: 20,
+        updatedAt: 20,
+      })
+    );
+    await chmod(byIdDir, 0o700);
+
+    const messages = await store.list("thread-1");
+    assert.deepEqual(
+      messages.map((message) => message.id),
+      ["msg-1"]
+    );
+    assert.equal(await store.get("msg-2"), null);
+  } finally {
+    await chmod(byIdDir, 0o700).catch(() => {});
     await rm(rootDir, { recursive: true, force: true });
   }
 });

@@ -19,7 +19,12 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
 
   async get(recoveryRunId: string): Promise<RecoveryRun | null> {
     return this.runMutex.run(recoveryRunId, async () => {
-      return this.readRecoveryRun(recoveryRunId);
+      const run = await this.readRecoveryRun(recoveryRunId);
+      if (!run) {
+        return null;
+      }
+      await this.repairCanonicalStorageBestEffort(run);
+      return run;
     });
   }
 
@@ -88,11 +93,19 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
       Promise.all(byIdFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
       Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
     ]);
-    return this.mergeRunsForThread(threadId, [
+    const runs = await this.mergeRunsForThread(threadId, [
       ...legacyRecords.filter((record): record is RecoveryRun => record !== null),
       ...byIdRecords.filter((record): record is RecoveryRun => record !== null),
       ...threadRecords.filter((record): record is RecoveryRun => record !== null),
     ]);
+    await Promise.all(
+      runs.map((run) =>
+        this.runMutex.run(run.recoveryRunId, async () => {
+          await this.repairCanonicalStorageBestEffort(run);
+        })
+      )
+    );
+    return runs;
   }
 
   async listAll(): Promise<RecoveryRun[]> {
@@ -106,11 +119,19 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
       Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
       Promise.all(threadScopedPaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
     ]);
-    return this.mergeAllRuns([
+    const runs = await this.mergeAllRuns([
       ...legacyRecords.filter((record): record is RecoveryRun => record !== null),
       ...byIdRecords.filter((record): record is RecoveryRun => record !== null),
       ...threadRecords.filter((record): record is RecoveryRun => record !== null),
     ]);
+    await Promise.all(
+      runs.map((run) =>
+        this.runMutex.run(run.recoveryRunId, async () => {
+          await this.repairCanonicalStorageBestEffort(run);
+        })
+      )
+    );
+    return runs;
   }
 
   private async readRecoveryRun(recoveryRunId: string): Promise<RecoveryRun | null> {
@@ -237,6 +258,48 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
   private attemptFilePath(recoveryRunId: string, attemptId: string): string {
     return path.join(this.attemptDir(recoveryRunId), `${encodeURIComponent(attemptId)}.json`);
   }
+
+  private async repairCanonicalStorage(run: RecoveryRun): Promise<void> {
+    const normalizedRun = normalizeRecoveryRunVersion(run);
+    const strippedRun = stripAttempts(normalizedRun);
+    const byIdPath = this.byIdFilePath(normalizedRun.recoveryRunId);
+    const threadPath = this.threadFilePath(normalizedRun.threadId, normalizedRun.recoveryRunId);
+    const [existingById, existingThread, attemptPaths] = await Promise.all([
+      readJsonFile<RecoveryRun>(byIdPath),
+      readJsonFile<RecoveryRun>(threadPath),
+      listJsonFiles(this.attemptDir(normalizedRun.recoveryRunId)),
+    ]);
+    const existingAttempts = new Map(
+      (
+        await Promise.all(attemptPaths.map((filePath) => readJsonFile<RecoveryRunAttempt>(filePath)))
+      )
+        .filter((attempt): attempt is RecoveryRunAttempt => attempt !== null)
+        .map((attempt) => [attempt.attemptId, attempt])
+    );
+
+    const writes: Promise<void>[] = [];
+    if (shouldRepairRunProjection(existingById, strippedRun)) {
+      writes.push(writeJsonFileAtomic(byIdPath, strippedRun));
+    }
+    if (shouldRepairRunProjection(existingThread, strippedRun)) {
+      writes.push(writeJsonFileAtomic(threadPath, strippedRun));
+    }
+    for (const attempt of normalizedRun.attempts) {
+      const existingAttempt = existingAttempts.get(attempt.attemptId) ?? null;
+      if (shouldRepairAttemptProjection(existingAttempt, attempt)) {
+        writes.push(writeJsonFileAtomic(this.attemptFilePath(normalizedRun.recoveryRunId, attempt.attemptId), attempt));
+      }
+    }
+    await Promise.all(writes);
+  }
+
+  private async repairCanonicalStorageBestEffort(run: RecoveryRun): Promise<void> {
+    try {
+      await this.repairCanonicalStorage(run);
+    } catch {
+      // Preserve successful reads; repair is best-effort during migration.
+    }
+  }
 }
 
 function stripAttempts(run: RecoveryRun): RecoveryRun {
@@ -261,4 +324,28 @@ function compareRecoveryAttempts(left: RecoveryRunAttempt, right: RecoveryRunAtt
     return left.updatedAt - right.updatedAt;
   }
   return left.attemptId.localeCompare(right.attemptId);
+}
+
+function shouldRepairRunProjection(current: RecoveryRun | null, desired: RecoveryRun): boolean {
+  if (!current) {
+    return true;
+  }
+  const normalizedCurrent = stripAttempts(normalizeRecoveryRunVersion(current));
+  if ((normalizedCurrent.version ?? 0) > (desired.version ?? 0)) {
+    return false;
+  }
+  if (normalizedCurrent.updatedAt > desired.updatedAt) {
+    return false;
+  }
+  return JSON.stringify(normalizedCurrent) !== JSON.stringify(desired);
+}
+
+function shouldRepairAttemptProjection(current: RecoveryRunAttempt | null, desired: RecoveryRunAttempt): boolean {
+  if (!current) {
+    return true;
+  }
+  if (current.updatedAt > desired.updatedAt) {
+    return false;
+  }
+  return JSON.stringify(current) !== JSON.stringify(desired);
 }

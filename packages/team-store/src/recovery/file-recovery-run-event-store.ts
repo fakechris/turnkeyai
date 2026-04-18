@@ -50,7 +50,11 @@ export class FileRecoveryRunEventStore implements RecoveryRunEventStore {
         merged.set(event.eventId, event);
       }
     }
-    return [...merged.values()].sort((left, right) => left.recordedAt - right.recordedAt);
+    const events = [...merged.values()].sort((left, right) => left.recordedAt - right.recordedAt);
+    await this.mutex.run(recoveryRunId, async () => {
+      await this.repairCanonicalStorageBestEffort(events);
+    });
+    return events;
   }
 
   async listByThread(threadId: string): Promise<RecoveryRunEvent[]> {
@@ -83,7 +87,24 @@ export class FileRecoveryRunEventStore implements RecoveryRunEventStore {
         merged.set(event.eventId, event);
       }
     }
-    return [...merged.values()].sort((left, right) => left.recordedAt - right.recordedAt);
+    const events = [...merged.values()].sort((left, right) => left.recordedAt - right.recordedAt);
+    const eventsByRecoveryRun = new Map<string, RecoveryRunEvent[]>();
+    for (const event of events) {
+      const bucket = eventsByRecoveryRun.get(event.recoveryRunId);
+      if (bucket) {
+        bucket.push(event);
+      } else {
+        eventsByRecoveryRun.set(event.recoveryRunId, [event]);
+      }
+    }
+    await Promise.all(
+      [...eventsByRecoveryRun.entries()].map(([recoveryRunId, recoveryRunEvents]) =>
+        this.mutex.run(recoveryRunId, async () => {
+          await this.repairCanonicalStorageBestEffort(recoveryRunEvents);
+        })
+      )
+    );
+    return events;
   }
 
   private async listByRunEventPaths(): Promise<string[]> {
@@ -129,4 +150,39 @@ export class FileRecoveryRunEventStore implements RecoveryRunEventStore {
   private legacyFlatFilePath(recoveryRunId: string): string {
     return path.join(this.rootDir, `${encodeURIComponent(recoveryRunId)}.json`);
   }
+
+  private async repairCanonicalStorage(events: RecoveryRunEvent[]): Promise<void> {
+    const writes: Promise<void>[] = [];
+    for (const event of events) {
+      const [existingByRunEvent, existingThreadEvent] = await Promise.all([
+        readJsonFile<RecoveryRunEvent>(this.recoveryRunEventFilePath(event.recoveryRunId, event.eventId)),
+        readJsonFile<RecoveryRunEvent>(this.threadEventFilePath(event.threadId, event.eventId)),
+      ]);
+      if (shouldRepairEventProjection(existingByRunEvent, event)) {
+        writes.push(writeJsonFileAtomic(this.recoveryRunEventFilePath(event.recoveryRunId, event.eventId), event));
+      }
+      if (shouldRepairEventProjection(existingThreadEvent, event)) {
+        writes.push(writeJsonFileAtomic(this.threadEventFilePath(event.threadId, event.eventId), event));
+      }
+    }
+    await Promise.all(writes);
+  }
+
+  private async repairCanonicalStorageBestEffort(events: RecoveryRunEvent[]): Promise<void> {
+    try {
+      await this.repairCanonicalStorage(events);
+    } catch {
+      // Preserve successful reads; repair is best-effort during migration.
+    }
+  }
+}
+
+function shouldRepairEventProjection(current: RecoveryRunEvent | null, desired: RecoveryRunEvent): boolean {
+  if (!current) {
+    return true;
+  }
+  if (current.recordedAt > desired.recordedAt) {
+    return false;
+  }
+  return JSON.stringify(current) !== JSON.stringify(desired);
 }
