@@ -2,6 +2,7 @@ import type { BrowserTaskAction } from "@turnkeyai/core-types/team";
 
 import type {
   RelayActionRequest,
+  RelayActionRequestRecord,
   RelayActionResult,
   RelayExecutableBrowserAction,
   RelayPeerRecord,
@@ -15,37 +16,64 @@ interface RelayGatewayOptions {
   createId?: (prefix: string) => string;
   staleAfterMs?: number;
   actionTimeoutMs?: number;
+  claimLeaseMs?: number;
 }
 
 interface RelayPeerState {
   registration: Omit<RelayPeerRecord, "status">;
   targets: Map<string, RelayTargetRecord>;
-  pendingActionRequests: RelayActionRequest[];
 }
 
 interface PendingRelayActionResolution {
-  peerId: string;
   resolve: (result: RelayActionResult) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
 }
 
+interface RelayQueuedAction {
+  actionRequestId: string;
+  browserSessionId: string;
+  taskId: string;
+  relayTargetId?: string;
+  targetId?: string;
+  actions: RelayExecutableBrowserAction[];
+  actionKinds: RelayExecutableBrowserAction["kind"][];
+  createdAt: number;
+  expiresAt: number;
+  preferredPeerId?: string;
+  lockedPeerId?: string;
+  state: RelayActionRequestRecord["state"];
+  assignedPeerId?: string;
+  claimToken?: string;
+  claimedAt?: number;
+  claimExpiresAt?: number;
+  attemptCount: number;
+  reclaimCount: number;
+  lastClaimExpiredAt?: number;
+  resolution: PendingRelayActionResolution;
+}
+
 const DEFAULT_STALE_AFTER_MS = 30_000;
 const DEFAULT_ACTION_TIMEOUT_MS = 30_000;
+const DEFAULT_CLAIM_LEASE_MS = 10_000;
 
 export class RelayGateway {
   private readonly now: () => number;
   private readonly createId: (prefix: string) => string;
   private readonly staleAfterMs: number;
   private readonly actionTimeoutMs: number;
+  private readonly claimLeaseMs: number;
+  private idSequence = 0;
   private readonly peers = new Map<string, RelayPeerState>();
-  private readonly pendingResults = new Map<string, PendingRelayActionResolution>();
+  private readonly actionRequests = new Map<string, RelayQueuedAction>();
+  private readonly actionRequestOrder: string[] = [];
 
   constructor(options: RelayGatewayOptions = {}) {
     this.now = options.now ?? (() => Date.now());
-    this.createId = options.createId ?? ((prefix) => `${prefix}-${Date.now()}`);
+    this.createId = options.createId ?? ((prefix) => `${prefix}-${this.now()}-${(this.idSequence += 1)}`);
     this.staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
     this.actionTimeoutMs = options.actionTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS;
+    this.claimLeaseMs = options.claimLeaseMs ?? DEFAULT_CLAIM_LEASE_MS;
   }
 
   registerPeer(input: RelayPeerRegistration): RelayPeerRecord {
@@ -67,14 +95,15 @@ export class RelayGateway {
     this.peers.set(peerId, {
       registration,
       targets: existing?.targets ?? new Map<string, RelayTargetRecord>(),
-      pendingActionRequests: existing?.pendingActionRequests ?? [],
     });
     return this.toPeerRecord(registration);
   }
 
   heartbeatPeer(peerId: string): RelayPeerRecord {
     const state = this.getPeerState(peerId);
-    state.registration.lastSeenAt = this.now();
+    const now = this.now();
+    state.registration.lastSeenAt = now;
+    this.renewInflightClaims(peerId, now);
     return this.toPeerRecord(state.registration);
   }
 
@@ -122,73 +151,148 @@ export class RelayGateway {
     );
   }
 
+  listActionRequests(): RelayActionRequestRecord[] {
+    this.reclaimExpiredActionRequests();
+    return this.actionRequestOrder
+      .map((actionRequestId) => this.actionRequests.get(actionRequestId) ?? null)
+      .filter((record): record is RelayQueuedAction => Boolean(record))
+      .map((record) => this.toActionRequestRecord(record));
+  }
+
   async dispatchActionRequest(input: {
-    peerId: string;
     browserSessionId: string;
     taskId: string;
     relayTargetId?: string;
     targetId?: string;
     actions: RelayExecutableBrowserAction[];
+    preferredPeerId?: string;
   }): Promise<RelayActionResult> {
-    const state = this.getPeerState(input.peerId);
-    if (this.getPeerStatus(state.registration.lastSeenAt) !== "online") {
-      throw new Error(`relay peer is stale: ${input.peerId}`);
-    }
+    this.reclaimExpiredActionRequests();
+
     if (!input.actions.length) {
       throw new Error("relay action request must include at least one action");
     }
 
-    const request: RelayActionRequest = {
-      actionRequestId: this.createId("relay-action"),
-      peerId: state.registration.peerId,
-      browserSessionId: input.browserSessionId,
-      taskId: input.taskId,
-      ...(input.relayTargetId ? { relayTargetId: input.relayTargetId } : {}),
-      ...(input.targetId ? { targetId: input.targetId } : {}),
-      actions: input.actions,
-      createdAt: this.now(),
-      expiresAt: this.now() + this.actionTimeoutMs,
-    };
-    state.pendingActionRequests.push(request);
+    const relayTargetId = input.relayTargetId?.trim();
+    const targetBinding = relayTargetId ? this.findTargetRecord(relayTargetId) : null;
+    if (relayTargetId && !targetBinding) {
+      throw new Error(`relay target not found: ${relayTargetId}`);
+    }
 
+    const preferredPeerId = input.preferredPeerId?.trim() || undefined;
+    const actionKinds = [...new Set(input.actions.map((action) => action.kind))];
+    if (relayTargetId) {
+      const lockedPeerCapabilities = this.getPeerCapabilities(targetBinding!.peerId);
+      if (!this.peerSupportsActionKinds(lockedPeerCapabilities, actionKinds)) {
+        throw new Error(`relay peer ${targetBinding!.peerId} does not support required action kinds`);
+      }
+    } else if (!this.hasAnyClaimablePeer(actionKinds, preferredPeerId)) {
+      throw new Error("relay browser transport has no compatible registered peers");
+    }
+
+    const actionRequestId = this.createId("relay-action");
     return new Promise<RelayActionResult>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.pendingResults.delete(request.actionRequestId);
-        const pendingRequestIndex = state.pendingActionRequests.indexOf(request);
-        if (pendingRequestIndex >= 0) {
-          state.pendingActionRequests.splice(pendingRequestIndex, 1);
+        const record = this.actionRequests.get(actionRequestId);
+        if (!record) {
+          return;
         }
-        reject(new Error(`relay action request timed out: ${request.actionRequestId}`));
+        this.actionRequests.delete(actionRequestId);
+        this.removeActionRequestFromOrder(actionRequestId);
+        reject(new Error(`relay action request timed out: ${actionRequestId}`));
       }, this.actionTimeoutMs);
-      this.pendingResults.set(request.actionRequestId, {
-        peerId: state.registration.peerId,
-        resolve,
-        reject,
-        timeout,
+
+      this.actionRequests.set(actionRequestId, {
+        actionRequestId,
+        browserSessionId: input.browserSessionId,
+        taskId: input.taskId,
+        ...(relayTargetId ? { relayTargetId } : {}),
+        ...(input.targetId ? { targetId: input.targetId } : {}),
+        actions: input.actions,
+        actionKinds,
+        createdAt: this.now(),
+        expiresAt: this.now() + this.actionTimeoutMs,
+        ...(preferredPeerId ? { preferredPeerId } : {}),
+        ...(targetBinding?.peerId ? { lockedPeerId: targetBinding.peerId } : {}),
+        state: "pending",
+        attemptCount: 0,
+        reclaimCount: 0,
+        resolution: {
+          resolve,
+          reject,
+          timeout,
+        },
       });
+      this.actionRequestOrder.push(actionRequestId);
     });
   }
 
   pullNextActionRequest(peerId: string): RelayActionRequest | null {
     const state = this.getPeerState(peerId);
     state.registration.lastSeenAt = this.now();
-    return state.pendingActionRequests.shift() ?? null;
+    this.reclaimExpiredActionRequests();
+
+    const peerRecord = this.toPeerRecord(state.registration);
+    const action = this.findClaimableActionForPeer(peerRecord);
+    if (!action) {
+      return null;
+    }
+
+    const now = this.now();
+    const claimToken = this.createId("relay-claim");
+    action.state = "inflight";
+    action.assignedPeerId = peerRecord.peerId;
+    action.claimToken = claimToken;
+    action.claimedAt = now;
+    action.claimExpiresAt = Math.min(action.expiresAt, now + this.claimLeaseMs);
+    action.attemptCount += 1;
+
+    return {
+      actionRequestId: action.actionRequestId,
+      peerId: peerRecord.peerId,
+      browserSessionId: action.browserSessionId,
+      taskId: action.taskId,
+      ...(action.relayTargetId ? { relayTargetId: action.relayTargetId } : {}),
+      ...(action.targetId ? { targetId: action.targetId } : {}),
+      actions: action.actions,
+      createdAt: action.createdAt,
+      expiresAt: action.expiresAt,
+      claimToken,
+      claimedAt: action.claimedAt,
+      claimExpiresAt: action.claimExpiresAt,
+      attemptCount: action.attemptCount,
+      reclaimCount: action.reclaimCount,
+    };
   }
 
   submitActionResult(input: RelayActionResult): RelayActionResult {
     const state = this.getPeerState(input.peerId);
     state.registration.lastSeenAt = this.now();
 
-    const pending = this.pendingResults.get(input.actionRequestId);
-    if (!pending) {
+    const action = this.actionRequests.get(input.actionRequestId);
+    if (!action) {
       throw new Error(`unknown relay action request: ${input.actionRequestId}`);
     }
-    if (pending.peerId !== input.peerId) {
+    const isActiveClaimSubmission =
+      action.state === "inflight" &&
+      action.assignedPeerId === input.peerId &&
+      action.claimToken === input.claimToken;
+    if (!isActiveClaimSubmission) {
+      this.reclaimExpiredActionRequests();
+    }
+    if (action.state !== "inflight" || !action.assignedPeerId || !action.claimToken) {
+      throw new Error(`relay action request is not currently claimed: ${input.actionRequestId}`);
+    }
+    if (action.assignedPeerId !== input.peerId) {
       throw new Error(`relay action result peer mismatch: ${input.peerId}`);
     }
+    if (action.claimToken !== input.claimToken) {
+      throw new Error(`relay action result claim mismatch: ${input.actionRequestId}`);
+    }
 
-    clearTimeout(pending.timeout);
-    this.pendingResults.delete(input.actionRequestId);
+    clearTimeout(action.resolution.timeout);
+    this.actionRequests.delete(input.actionRequestId);
+    this.removeActionRequestFromOrder(input.actionRequestId);
 
     const knownTarget = state.targets.get(input.relayTargetId);
     state.targets.set(input.relayTargetId, {
@@ -200,8 +304,122 @@ export class RelayGateway {
       lastSeenAt: this.now(),
     });
 
-    pending.resolve(input);
+    action.resolution.resolve(input);
     return input;
+  }
+
+  private findClaimableActionForPeer(peer: RelayPeerRecord): RelayQueuedAction | null {
+    for (const actionRequestId of this.actionRequestOrder) {
+      const action = this.actionRequests.get(actionRequestId);
+      if (!action || action.state !== "pending") {
+        continue;
+      }
+      if (this.canPeerClaimAction(peer, action)) {
+        return action;
+      }
+    }
+    return null;
+  }
+
+  private canPeerClaimAction(peer: RelayPeerRecord, action: RelayQueuedAction): boolean {
+    if (peer.status !== "online") {
+      return false;
+    }
+    if (action.lockedPeerId && action.lockedPeerId !== peer.peerId) {
+      return false;
+    }
+    if (
+      action.preferredPeerId &&
+      action.preferredPeerId !== peer.peerId &&
+      this.isPeerOnline(action.preferredPeerId) &&
+      this.peerSupportsActionKinds(this.getPeerCapabilities(action.preferredPeerId), action.actionKinds)
+    ) {
+      return false;
+    }
+    return this.peerSupportsActionKinds(peer.capabilities, action.actionKinds);
+  }
+
+  private reclaimExpiredActionRequests(): void {
+    const now = this.now();
+    for (const action of this.actionRequests.values()) {
+      if (action.state !== "inflight" || action.claimExpiresAt === undefined || action.claimExpiresAt > now) {
+        continue;
+      }
+      if (action.expiresAt <= now) {
+        continue;
+      }
+      action.state = "pending";
+      action.reclaimCount += 1;
+      action.lastClaimExpiredAt = now;
+      delete action.assignedPeerId;
+      delete action.claimToken;
+      delete action.claimedAt;
+      delete action.claimExpiresAt;
+    }
+  }
+
+  private renewInflightClaims(peerId: string, now: number): void {
+    for (const action of this.actionRequests.values()) {
+      if (action.state !== "inflight" || action.assignedPeerId !== peerId) {
+        continue;
+      }
+      action.claimExpiresAt = Math.min(action.expiresAt, now + this.claimLeaseMs);
+    }
+  }
+
+  private hasAnyClaimablePeer(
+    actionKinds: RelayExecutableBrowserAction["kind"][],
+    preferredPeerId?: string
+  ): boolean {
+    const onlinePeers = this.listPeers().filter((peer) => peer.status === "online");
+    if (preferredPeerId) {
+      const preferred = onlinePeers.find((peer) => peer.peerId === preferredPeerId);
+      if (preferred && this.peerSupportsActionKinds(preferred.capabilities, actionKinds)) {
+        return true;
+      }
+    }
+    return onlinePeers.some((peer) => this.peerSupportsActionKinds(peer.capabilities, actionKinds));
+  }
+
+  private peerSupportsActionKinds(capabilities: string[], actionKinds: RelayExecutableBrowserAction["kind"][]): boolean {
+    if (!actionKinds.length) {
+      return true;
+    }
+    const capabilitySet = new Set(capabilities);
+    return actionKinds.every((kind) => capabilitySet.has(kind));
+  }
+
+  private getPeerCapabilities(peerId: string): string[] {
+    return this.peers.get(peerId)?.registration.capabilities ?? [];
+  }
+
+  private isPeerOnline(peerId: string): boolean {
+    const state = this.peers.get(peerId);
+    if (!state) {
+      return false;
+    }
+    return this.getPeerStatus(state.registration.lastSeenAt) === "online";
+  }
+
+  private findTargetRecord(relayTargetId: string): RelayTargetRecord | null {
+    const normalized = relayTargetId.trim();
+    if (!normalized) {
+      return null;
+    }
+    for (const state of this.peers.values()) {
+      const target = state.targets.get(normalized);
+      if (target) {
+        return target;
+      }
+    }
+    return null;
+  }
+
+  private removeActionRequestFromOrder(actionRequestId: string): void {
+    const index = this.actionRequestOrder.indexOf(actionRequestId);
+    if (index >= 0) {
+      this.actionRequestOrder.splice(index, 1);
+    }
   }
 
   private getPeerState(peerId: string): RelayPeerState {
@@ -220,6 +438,29 @@ export class RelayGateway {
     return {
       ...registration,
       status: this.getPeerStatus(registration.lastSeenAt),
+    };
+  }
+
+  private toActionRequestRecord(action: RelayQueuedAction): RelayActionRequestRecord {
+    return {
+      actionRequestId: action.actionRequestId,
+      browserSessionId: action.browserSessionId,
+      taskId: action.taskId,
+      ...(action.relayTargetId ? { relayTargetId: action.relayTargetId } : {}),
+      ...(action.targetId ? { targetId: action.targetId } : {}),
+      actionKinds: [...action.actionKinds],
+      createdAt: action.createdAt,
+      expiresAt: action.expiresAt,
+      state: action.state,
+      ...(action.preferredPeerId ? { preferredPeerId: action.preferredPeerId } : {}),
+      ...(action.lockedPeerId ? { lockedPeerId: action.lockedPeerId } : {}),
+      ...(action.assignedPeerId ? { assignedPeerId: action.assignedPeerId } : {}),
+      ...(action.claimToken ? { claimToken: action.claimToken } : {}),
+      ...(action.claimedAt !== undefined ? { claimedAt: action.claimedAt } : {}),
+      ...(action.claimExpiresAt !== undefined ? { claimExpiresAt: action.claimExpiresAt } : {}),
+      attemptCount: action.attemptCount,
+      reclaimCount: action.reclaimCount,
+      ...(action.lastClaimExpiredAt !== undefined ? { lastClaimExpiredAt: action.lastClaimExpiredAt } : {}),
     };
   }
 

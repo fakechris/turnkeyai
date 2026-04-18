@@ -50,6 +50,7 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "POST", pathname: "/scheduled-tasks/trigger-due", expected: "operator" },
     { method: "POST", pathname: "/browser-sessions/spawn", expected: "operator" },
     { method: "GET", pathname: "/browser-sessions", expected: "operator" },
+    { method: "POST", pathname: "/browser-sessions/session-1/revoke", expected: "operator" },
     { method: "POST", pathname: "/recovery-runs/run-1/retry", expected: "operator" },
     { method: "POST", pathname: "/replay-recoveries/thread-1/dispatch", expected: "operator" },
     { method: "GET", pathname: "/replay-recoveries/thread-1", expected: "read" },
@@ -59,6 +60,7 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "POST", pathname: "/relay/peers/register", expected: "relay-peer" },
     { method: "POST", pathname: "/relay/peers/peer-1/heartbeat", expected: "relay-peer" },
     { method: "GET", pathname: "/relay/targets", expected: "admin" },
+    { method: "GET", pathname: "/relay/actions", expected: "admin" },
   ] as const;
 
   for (const entry of cases) {

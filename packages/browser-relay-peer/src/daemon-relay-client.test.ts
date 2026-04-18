@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type {
   RelayActionRequest,
+  RelayActionRequestRecord,
   RelayActionResult,
   RelayPeerRecord,
   RelayTargetRecord,
@@ -53,6 +54,7 @@ test("daemon relay client can pull and submit action requests", async () => {
           actions: [{ kind: "snapshot", note: "inspect" }],
           createdAt: 1,
           expiresAt: 2,
+          claimToken: "claim-1",
         } satisfies RelayActionRequest);
       }
 
@@ -62,6 +64,7 @@ test("daemon relay client can pull and submit action requests", async () => {
         browserSessionId: "browser-session-1",
         taskId: "task-1",
         relayTargetId: "tab-1",
+        claimToken: "claim-1",
         url: "https://example.com",
         title: "Example",
         status: "completed",
@@ -89,6 +92,7 @@ test("daemon relay client can pull and submit action requests", async () => {
     browserSessionId: "browser-session-1",
     taskId: "task-1",
     relayTargetId: "tab-1",
+    claimToken: "claim-1",
     url: "https://example.com",
     status: "completed",
     trace: [],
@@ -98,6 +102,36 @@ test("daemon relay client can pull and submit action requests", async () => {
   });
   assert.equal(result.peerId, "peer-1");
   assert.equal(result.relayTargetId, "tab-1");
+  assert.equal(result.claimToken, "claim-1");
+});
+
+test("daemon relay client can list action request diagnostics", async () => {
+  const client = new DaemonRelayClient({
+    baseUrl: "http://127.0.0.1:4100",
+    fetchImpl: async () =>
+      jsonResponse(200, [
+        {
+          actionRequestId: "relay-action-1",
+          browserSessionId: "browser-session-1",
+          taskId: "task-1",
+          actionKinds: ["snapshot"],
+          createdAt: 1,
+          expiresAt: 2,
+          state: "inflight",
+          assignedPeerId: "peer-1",
+          claimToken: "claim-1",
+          claimedAt: 1,
+          claimExpiresAt: 2,
+          attemptCount: 1,
+          reclaimCount: 0,
+        },
+      ] satisfies RelayActionRequestRecord[]),
+  });
+
+  const actions = await client.listActionRequests();
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0]?.state, "inflight");
+  assert.equal(actions[0]?.assignedPeerId, "peer-1");
 });
 
 test("daemon relay client surfaces daemon errors", async () => {
@@ -131,7 +165,16 @@ test("daemon relay client binds the default global fetch to the current global s
   }
 });
 
-function jsonResponse(status: number, payload: RelayPeerRecord | RelayActionRequest | RelayActionResult | RelayTargetRecord[] | { error: string }): Response {
+function jsonResponse(
+  status: number,
+  payload:
+    | RelayPeerRecord
+    | RelayActionRequest
+    | RelayActionResult
+    | RelayActionRequestRecord[]
+    | RelayTargetRecord[]
+    | { error: string }
+): Response {
   return new Response(JSON.stringify(payload), {
     status,
     headers: {

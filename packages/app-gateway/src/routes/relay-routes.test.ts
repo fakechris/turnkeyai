@@ -37,6 +37,25 @@ function createRelayGateway() {
     listPeers() {
       return [];
     },
+    listActionRequests() {
+      return [
+        {
+          actionRequestId: "action-1",
+          browserSessionId: "session-1",
+          taskId: "task-1",
+          actionKinds: ["snapshot"],
+          createdAt: 1,
+          expiresAt: 100,
+          state: "inflight",
+          assignedPeerId: "peer-1",
+          claimToken: "claim-1",
+          claimedAt: 2,
+          claimExpiresAt: 50,
+          attemptCount: 1,
+          reclaimCount: 0,
+        },
+      ];
+    },
     registerPeer(input: unknown) {
       return input;
     },
@@ -125,6 +144,7 @@ test("relay routes reject missing peer ids and required action fields", async ()
       browserSessionId: "session-1",
       taskId: "task-1",
       relayTargetId: "target-1",
+      claimToken: "claim-1",
       url: "https://example.com",
       status: "completed",
     },
@@ -132,7 +152,26 @@ test("relay routes reject missing peer ids and required action fields", async ()
   });
   assert.equal(action.res.statusCode, 400);
   assert.deepEqual(action.json, {
-    error: "actionRequestId, browserSessionId, taskId, and relayTargetId are required",
+    error: "actionRequestId, browserSessionId, taskId, relayTargetId, and claimToken are required",
+  });
+
+  const malformedClaimToken = await invokeRelayRoute({
+    method: "POST",
+    url: "/relay/peers/peer-1/action-results",
+    body: {
+      actionRequestId: "request-1",
+      browserSessionId: "session-1",
+      taskId: "task-1",
+      relayTargetId: "target-1",
+      claimToken: { invalid: true },
+      url: "https://example.com",
+      status: "completed",
+    },
+    relayPeerBindingStore,
+  });
+  assert.equal(malformedClaimToken.res.statusCode, 400);
+  assert.deepEqual(malformedClaimToken.json, {
+    error: "actionRequestId, browserSessionId, taskId, relayTargetId, and claimToken are required",
   });
 });
 
@@ -159,6 +198,7 @@ test("relay routes trim optional peer ids and action result fields", async () =>
       browserSessionId: " session-1 ",
       taskId: " task-1 ",
       relayTargetId: " target-1 ",
+      claimToken: " claim-1 ",
       url: " https://example.com ",
       title: " Example ",
       status: "completed",
@@ -172,6 +212,7 @@ test("relay routes trim optional peer ids and action result fields", async () =>
     browserSessionId: "session-1",
     taskId: "task-1",
     relayTargetId: "target-1",
+    claimToken: "claim-1",
     url: "https://example.com",
     title: "Example",
     status: "completed",
@@ -211,6 +252,7 @@ test("relay routes reject malformed target reports and trim nested action result
       browserSessionId: " session-2 ",
       taskId: " task-2 ",
       relayTargetId: " target-2 ",
+      claimToken: " claim-2 ",
       url: " https://example.com/next ",
       title: " Follow-up ",
       status: "failed",
@@ -228,6 +270,7 @@ test("relay routes reject malformed target reports and trim nested action result
     browserSessionId: "session-2",
     taskId: "task-2",
     relayTargetId: "target-2",
+    claimToken: "claim-2",
     url: "https://example.com/next",
     title: "Follow-up",
     status: "failed",
@@ -269,6 +312,7 @@ test("relay routes reject invalid registration metadata and malformed action-res
       browserSessionId: "session-3",
       taskId: "task-3",
       relayTargetId: "target-3",
+      claimToken: "claim-3",
       url: "https://example.com",
       status: "completed",
       screenshotPaths: ["valid.png", " "],
@@ -279,6 +323,37 @@ test("relay routes reject invalid registration metadata and malformed action-res
   assert.deepEqual(invalidActionResult.json, {
     error: "screenshotPaths must contain non-empty strings",
   });
+});
+
+test("relay admin routes expose in-flight action diagnostics", async () => {
+  const actions = await invokeRelayRoute({
+    method: "GET",
+    url: "/relay/actions",
+    authorization: createAuthorization({
+      requiredAccess: "admin",
+      grantedAccess: "admin",
+      token: "admin-token",
+    }),
+  });
+
+  assert.equal(actions.res.statusCode, 200);
+  assert.deepEqual(actions.json, [
+    {
+      actionRequestId: "action-1",
+      browserSessionId: "session-1",
+      taskId: "task-1",
+      actionKinds: ["snapshot"],
+      createdAt: 1,
+      expiresAt: 100,
+      state: "inflight",
+      assignedPeerId: "peer-1",
+      claimToken: "claim-1",
+      claimedAt: 2,
+      claimExpiresAt: 50,
+      attemptCount: 1,
+      reclaimCount: 0,
+    },
+  ]);
 });
 
 test("relay routes return 400 for malformed JSON bodies", async () => {

@@ -61,6 +61,7 @@ function createDeps(overrides: Partial<BrowserRouteDeps> = {}): BrowserRouteDeps
       async closeTarget(browserSessionId: string, targetId: string) {
         return { browserSessionId, targetId };
       },
+      async closeSession() {},
       async evictIdleSessions(input) {
         return input;
       },
@@ -413,5 +414,86 @@ test("browser existing-session routes reject profile ownership overrides and bla
   assert.equal(blankTaskId.res.statusCode, 400);
   assert.deepEqual(blankTaskId.json, {
     error: "taskId must be a non-empty string when provided",
+  });
+});
+
+test("browser session revoke route closes the session with a default reason", async () => {
+  let closed: { browserSessionId: string; reason: string | undefined } | null = null;
+  const response = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/session-1/revoke",
+      body: { threadId: "thread-1" },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/revoke"),
+    deps: createDeps({
+      browserBridge: {
+        ...createDeps().browserBridge,
+        async closeSession(browserSessionId: string, reason?: string) {
+          closed = { browserSessionId, reason };
+        },
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.deepEqual(response.json, {
+    browserSessionId: "session-1",
+    status: "closed",
+    reason: "operator revoked browser session",
+  });
+  assert.deepEqual(closed, {
+    browserSessionId: "session-1",
+    reason: "operator revoked browser session",
+  });
+});
+
+test("browser session revoke route rejects blank reasons and trims explicit reasons", async () => {
+  const invalid = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/session-1/revoke",
+      body: { threadId: "thread-1", reason: "   " },
+    }),
+    res: invalid.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/revoke"),
+    deps: createDeps(),
+  });
+  assert.equal(invalid.res.statusCode, 400);
+  assert.deepEqual(invalid.json, {
+    error: "reason must be a non-empty string when provided",
+  });
+
+  let closed: { browserSessionId: string; reason: string | undefined } | null = null;
+  const trimmed = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/session-1/revoke",
+      body: { threadId: "thread-1", reason: " operator handoff " },
+    }),
+    res: trimmed.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/revoke"),
+    deps: createDeps({
+      browserBridge: {
+        ...createDeps().browserBridge,
+        async closeSession(browserSessionId: string, reason?: string) {
+          closed = { browserSessionId, reason };
+        },
+      },
+    }),
+  });
+  assert.equal(trimmed.res.statusCode, 200);
+  assert.deepEqual(trimmed.json, {
+    browserSessionId: "session-1",
+    status: "closed",
+    reason: "operator handoff",
+  });
+  assert.deepEqual(closed, {
+    browserSessionId: "session-1",
+    reason: "operator handoff",
   });
 });

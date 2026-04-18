@@ -3616,6 +3616,7 @@ const BUILT_IN_CASES: RegressionCase[] = [
           },
         ],
         targets: [],
+        actions: [],
       };
 
       const bundle = buildReplayIncidentBundle(records, "task-relay-workflow", relayDiagnostics);

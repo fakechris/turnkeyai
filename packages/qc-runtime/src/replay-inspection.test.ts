@@ -351,6 +351,7 @@ test("replay inspection enriches relay browser continuity with peer and target d
       },
     ],
     targets: [],
+    actions: [],
   };
 
   const consoleReport = buildReplayConsoleReport(records, 5, [], relayDiagnostics);
@@ -364,6 +365,194 @@ test("replay inspection enriches relay browser continuity with peer and target d
   assert.equal(bundle?.browserContinuity?.relayDiagnosticBucket, "peer_stale");
   assert.match(bundle?.browserContinuity?.relayDiagnosticSummary ?? "", /stale/i);
   assert.match(bundle?.caseHeadline ?? "", /relay=peer_stale/);
+});
+
+test("replay inspection enriches relay browser continuity with action claim diagnostics", () => {
+  const records = [
+    {
+      replayId: "task-relay-claim:worker",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-relay-claim",
+      workerType: "browser",
+      summary: "relay browser worker is waiting on an action claim",
+      failure: {
+        category: "transport_failed",
+        layer: "worker",
+        retryable: true,
+        message: "relay action request timed out: relay-action-1",
+        recommendedAction: "retry",
+      },
+      metadata: {
+        payload: {
+          sessionId: "browser-session-relay",
+          targetId: "target-relay",
+          transportMode: "relay",
+          transportLabel: "chrome-relay",
+          transportPeerId: "peer-relay",
+          transportTargetId: "chrome-tab:99",
+          resumeMode: "warm",
+          targetResolution: "reconnect",
+        },
+      },
+    },
+  ] as Parameters<typeof buildReplayInspectionReport>[0];
+
+  const inflightDiagnostics = {
+    peers: [
+      {
+        peerId: "peer-relay",
+        transportLabel: "chrome-relay",
+        lastSeenAt: 20,
+        status: "online" as const,
+      },
+    ],
+    targets: [
+      {
+        peerId: "peer-relay",
+        relayTargetId: "chrome-tab:99",
+        url: "https://example.com",
+        status: "attached" as const,
+        lastSeenAt: 20,
+      },
+    ],
+    actions: [
+      {
+        actionRequestId: "relay-action-1",
+        browserSessionId: "browser-session-relay",
+        taskId: "task-relay-claim",
+        relayTargetId: "chrome-tab:99",
+        actionKinds: ["snapshot"],
+        createdAt: 1,
+        expiresAt: 50,
+        state: "inflight" as const,
+        assignedPeerId: "peer-relay",
+        claimToken: "claim-1",
+        claimedAt: 2,
+        claimExpiresAt: 12,
+        attemptCount: 1,
+        reclaimCount: 0,
+      },
+    ],
+  };
+
+  const reclaimedDiagnostics = {
+    ...inflightDiagnostics,
+    actions: [
+      {
+        actionRequestId: "relay-action-1",
+        browserSessionId: "browser-session-relay",
+        taskId: "task-relay-claim",
+        relayTargetId: "chrome-tab:99",
+        actionKinds: ["snapshot"],
+        createdAt: 1,
+        expiresAt: 50,
+        state: "pending" as const,
+        assignedPeerId: "peer-relay",
+        reclaimCount: 1,
+        attemptCount: 1,
+        lastClaimExpiredAt: 13,
+      },
+    ],
+  };
+
+  const inflightBundle = buildReplayIncidentBundle(records, "task-relay-claim", inflightDiagnostics);
+  assert.equal(inflightBundle?.browserContinuity?.relayDiagnosticBucket, "action_inflight");
+  assert.match(inflightBundle?.browserContinuity?.relayDiagnosticSummary ?? "", /in flight/i);
+
+  const reclaimedBundle = buildReplayIncidentBundle(records, "task-relay-claim", reclaimedDiagnostics);
+  assert.equal(reclaimedBundle?.browserContinuity?.relayDiagnosticBucket, "claim_reclaimed");
+  assert.match(reclaimedBundle?.browserContinuity?.relayDiagnosticSummary ?? "", /reclaimed/i);
+});
+
+test("replay inspection prefers task or relay target matches over unrelated same-session actions", () => {
+  const records = [
+    {
+      replayId: "task-relay-priority:worker",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-relay-priority",
+      workerType: "browser",
+      summary: "relay browser worker is waiting on an action claim",
+      failure: {
+        category: "transport_failed",
+        layer: "worker",
+        retryable: true,
+        message: "relay action request timed out: relay-action-2",
+        recommendedAction: "retry",
+      },
+      metadata: {
+        payload: {
+          sessionId: "browser-session-shared",
+          targetId: "target-relay",
+          transportMode: "relay",
+          transportLabel: "chrome-relay",
+          transportPeerId: "peer-relay",
+          transportTargetId: "chrome-tab:99",
+          resumeMode: "warm",
+          targetResolution: "reconnect",
+        },
+      },
+    },
+  ] as Parameters<typeof buildReplayInspectionReport>[0];
+
+  const relayDiagnostics = {
+    peers: [
+      {
+        peerId: "peer-relay",
+        transportLabel: "chrome-relay",
+        lastSeenAt: 20,
+        status: "online" as const,
+      },
+    ],
+    targets: [
+      {
+        peerId: "peer-relay",
+        relayTargetId: "chrome-tab:99",
+        url: "https://example.com/priority",
+        status: "attached" as const,
+        lastSeenAt: 20,
+      },
+    ],
+    actions: [
+      {
+        actionRequestId: "relay-action-unrelated",
+        browserSessionId: "browser-session-shared",
+        taskId: "task-other",
+        relayTargetId: "chrome-tab:123",
+        actionKinds: ["snapshot"],
+        createdAt: 100,
+        expiresAt: 200,
+        state: "inflight" as const,
+        assignedPeerId: "peer-relay",
+        claimExpiresAt: 150,
+        attemptCount: 1,
+        reclaimCount: 0,
+      },
+      {
+        actionRequestId: "relay-action-priority",
+        browserSessionId: "browser-session-shared",
+        taskId: "task-relay-priority",
+        relayTargetId: "chrome-tab:99",
+        actionKinds: ["snapshot"],
+        createdAt: 50,
+        expiresAt: 150,
+        state: "pending" as const,
+        assignedPeerId: "peer-relay",
+        attemptCount: 1,
+        reclaimCount: 1,
+        lastClaimExpiredAt: 60,
+      },
+    ],
+  };
+
+  const bundle = buildReplayIncidentBundle(records, "task-relay-priority", relayDiagnostics);
+  assert.equal(bundle?.browserContinuity?.relayDiagnosticBucket, "claim_reclaimed");
+  assert.match(bundle?.browserContinuity?.relayDiagnosticSummary ?? "", /reclaimed/i);
 });
 
 test("replay inspection enriches direct-cdp browser continuity with reconnect diagnostics", () => {

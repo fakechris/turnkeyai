@@ -56,6 +56,7 @@ interface BrowserBridgeDeps {
     targetId: string,
     owner?: { ownerType?: BrowserSessionOwnerType; ownerId?: string }
   ): Promise<unknown>;
+  closeSession(browserSessionId: string, reason?: string): Promise<void>;
   evictIdleSessions(input: { idleBefore: number; reason?: string }): Promise<unknown>;
 }
 
@@ -384,6 +385,39 @@ export async function handleBrowserRoutes(input: {
         ownerId: access.ownerId,
       })
     );
+    return true;
+  }
+
+  const browserSessionRevokeMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/revoke$/);
+  if (req.method === "POST" && browserSessionRevokeMatch) {
+    const bodyResult = await readOptionalJsonBodySafe<{
+      threadId?: string;
+      reason?: string;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
+    if (body.reason !== undefined && !parseOptionalRouteString(body.reason)) {
+      sendJson(res, 400, { error: "reason must be a non-empty string when provided" });
+      return true;
+    }
+    const access = await deps.requireBrowserSessionAccess({
+      browserSessionId: decodeURIComponent(browserSessionRevokeMatch[1]!),
+      threadId: body.threadId,
+    });
+    if ("error" in access) {
+      sendJson(res, access.statusCode, { error: access.error });
+      return true;
+    }
+    const reason = parseOptionalRouteString(body.reason) ?? "operator revoked browser session";
+    await deps.browserBridge.closeSession(access.sessionId, reason);
+    sendJson(res, 200, {
+      browserSessionId: access.sessionId,
+      status: "closed",
+      reason,
+    });
     return true;
   }
 

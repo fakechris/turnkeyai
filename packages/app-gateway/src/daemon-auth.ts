@@ -145,7 +145,7 @@ export function resolveDaemonRequestAccess(
 }
 
 function isRelayReadRoute(method: string | undefined, pathname: string): boolean {
-  return method === "GET" && (pathname === "/relay/peers" || pathname === "/relay/targets");
+  return method === "GET" && (pathname === "/relay/peers" || pathname === "/relay/targets" || pathname === "/relay/actions");
 }
 
 function isRelayPeerMutationRoute(method: string | undefined, pathname: string): boolean {

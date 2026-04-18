@@ -1008,7 +1008,17 @@ function buildResolvedRecentCaseSummaries(
   browserContinuityState?: "stable" | "recovered" | "attention";
   browserTransportLabel?: string;
   browserDiagnosticBucket?: ReplayBrowserContinuitySummary["browserDiagnosticBucket"];
-  relayDiagnosticBucket?: "peer_missing" | "peer_stale" | "target_missing" | "target_detached" | "target_closed" | "content_script_unavailable" | "action_timeout" | "action_failed";
+  relayDiagnosticBucket?:
+    | "peer_missing"
+    | "peer_stale"
+    | "target_missing"
+    | "target_detached"
+    | "target_closed"
+    | "action_inflight"
+    | "claim_reclaimed"
+    | "content_script_unavailable"
+    | "action_timeout"
+    | "action_failed";
   reasonPreview?: string;
   latestUpdate: string;
   nextStep: string;

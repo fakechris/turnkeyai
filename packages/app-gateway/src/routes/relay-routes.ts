@@ -191,6 +191,15 @@ export async function handleRelayRoutes(input: {
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/relay/actions") {
+    if (!relayGateway) {
+      sendJson(res, 503, { error: "relay browser transport is not active" });
+      return true;
+    }
+    sendJson(res, 200, relayGateway.listActionRequests());
+    return true;
+  }
+
   const relayPeerPullActionsMatch = url.pathname.match(/^\/relay\/peers\/([^/]+)\/pull-actions$/);
   if (req.method === "POST" && relayPeerPullActionsMatch) {
     if (!relayGateway) {
@@ -228,6 +237,7 @@ export async function handleRelayRoutes(input: {
       browserSessionId?: string;
       taskId?: string;
       relayTargetId?: string;
+      claimToken?: string;
       url?: string;
       title?: string;
       status?: "completed" | "failed";
@@ -247,13 +257,21 @@ export async function handleRelayRoutes(input: {
       return true;
     }
     const body = bodyResult.value;
-    if (!body.actionRequestId?.trim() || !body.browserSessionId?.trim() || !body.taskId?.trim() || !body.relayTargetId?.trim()) {
+    const actionRequestId = typeof body.actionRequestId === "string" ? body.actionRequestId.trim() : "";
+    const browserSessionId = typeof body.browserSessionId === "string" ? body.browserSessionId.trim() : "";
+    const taskId = typeof body.taskId === "string" ? body.taskId.trim() : "";
+    const relayTargetId = typeof body.relayTargetId === "string" ? body.relayTargetId.trim() : "";
+    const claimToken = typeof body.claimToken === "string" ? body.claimToken.trim() : "";
+    const url = typeof body.url === "string" ? body.url.trim() : "";
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const errorMessage = typeof body.errorMessage === "string" ? body.errorMessage.trim() : "";
+    if (!actionRequestId || !browserSessionId || !taskId || !relayTargetId || !claimToken) {
       sendJson(res, 400, {
-        error: "actionRequestId, browserSessionId, taskId, and relayTargetId are required",
+        error: "actionRequestId, browserSessionId, taskId, relayTargetId, and claimToken are required",
       });
       return true;
     }
-    if (!body.url?.trim()) {
+    if (!url) {
       sendJson(res, 400, { error: "url is required" });
       return true;
     }
@@ -292,7 +310,8 @@ export async function handleRelayRoutes(input: {
             payload.mimeType.trim().length === 0 ||
             typeof payload.dataBase64 !== "string" ||
             payload.dataBase64.length === 0 ||
-            (payload.label !== undefined && payload.label.trim().length === 0)
+            (payload.label !== undefined &&
+              (typeof payload.label !== "string" || payload.label.trim().length === 0))
         ))
     ) {
       sendJson(res, 400, {
@@ -304,13 +323,14 @@ export async function handleRelayRoutes(input: {
       res,
       200,
       relayGateway.submitActionResult({
-        actionRequestId: body.actionRequestId.trim(),
+        actionRequestId,
         peerId,
-        browserSessionId: body.browserSessionId.trim(),
-        taskId: body.taskId.trim(),
-        relayTargetId: body.relayTargetId.trim(),
-        url: body.url.trim(),
-        ...(body.title?.trim() ? { title: body.title.trim() } : {}),
+        browserSessionId,
+        taskId,
+        relayTargetId,
+        claimToken,
+        url,
+        ...(title ? { title } : {}),
         status: body.status,
         ...(body.page ? { page: body.page } : {}),
         trace: Array.isArray(body.trace) ? body.trace : [],
@@ -327,10 +347,11 @@ export async function handleRelayRoutes(input: {
                   Boolean(payload) &&
                   typeof payload === "object" &&
                   typeof payload.mimeType === "string" &&
-                  typeof payload.dataBase64 === "string"
+                  typeof payload.dataBase64 === "string" &&
+                  (payload.label === undefined || typeof payload.label === "string")
               )
               .map((payload) => ({
-                ...(payload.label?.trim() ? { label: payload.label.trim() } : {}),
+                ...(typeof payload.label === "string" && payload.label.trim() ? { label: payload.label.trim() } : {}),
                 mimeType: payload.mimeType.trim(),
                 dataBase64: payload.dataBase64,
               }))
@@ -341,7 +362,7 @@ export async function handleRelayRoutes(input: {
               .map((artifactId) => artifactId.trim())
               .filter((artifactId) => artifactId.length > 0)
           : [],
-        ...(body.errorMessage?.trim() ? { errorMessage: body.errorMessage.trim() } : {}),
+        ...(errorMessage ? { errorMessage } : {}),
       })
     );
     return true;
