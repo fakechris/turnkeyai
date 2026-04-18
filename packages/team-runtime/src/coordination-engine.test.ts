@@ -2114,6 +2114,243 @@ test("coordination engine replays role replies through the outbox after partial 
   }
 });
 
+test("coordination engine does not replay successful role outcomes after optimistic materialization", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "coordination-engine-role-outcome-no-replay-"));
+  try {
+    const thread: TeamThread = {
+      threadId: "thread-role-outcome-no-replay",
+      teamId: "team-role-outcome-no-replay",
+      teamName: "Demo",
+      leadRoleId: "lead",
+      roles: [
+        { roleId: "lead", name: "Lead", seat: "lead", runtime: "local" },
+        { roleId: "operator", name: "Operator", seat: "member", runtime: "local" },
+      ],
+      participantLinks: [],
+      metadataVersion: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const handoff: HandoffEnvelope = {
+      taskId: "task-role-outcome-no-replay",
+      flowId: "flow-role-outcome-no-replay",
+      sourceMessageId: "msg-root",
+      sourceRoleId: "lead",
+      targetRoleId: "operator",
+      activationType: "mention",
+      threadId: thread.threadId,
+      payload: normalizeRelayPayload({
+        threadId: thread.threadId,
+        relayBrief: "brief",
+        recentMessages: [],
+        dispatchPolicy: {
+          allowParallel: false,
+          allowReenter: true,
+          sourceFlowMode: "serial",
+        },
+      }),
+      createdAt: 1,
+    };
+
+    let storedFlow: FlowLedger = {
+      flowId: handoff.flowId,
+      threadId: thread.threadId,
+      rootMessageId: "msg-root",
+      mode: "serial",
+      status: "waiting_role",
+      currentStageIndex: 0,
+      activeRoleIds: ["operator"],
+      completedRoleIds: [],
+      failedRoleIds: [],
+      nextExpectedRoleId: "operator",
+      hopCount: 1,
+      maxHops: 5,
+      edges: [
+        {
+          edgeId: `${handoff.taskId}:edge`,
+          flowId: handoff.flowId,
+          fromRoleId: "lead",
+          toRoleId: "operator",
+          sourceMessageId: handoff.sourceMessageId,
+          state: "delivered",
+          createdAt: 1,
+        },
+      ],
+      createdAt: 1,
+      updatedAt: 1,
+      version: 1,
+    };
+
+    let roleReplyRefreshes = 0;
+
+    const engine = new CoordinationEngine({
+      teamThreadStore: {
+        async get(threadId) {
+          return threadId === thread.threadId ? thread : null;
+        },
+        async list() {
+          return [thread];
+        },
+        async create() {
+          throw new Error("not used");
+        },
+        async update() {
+          throw new Error("not used");
+        },
+        async delete() {},
+      },
+      teamMessageStore: {
+        async append() {},
+        async list() {
+          return [];
+        },
+        async get() {
+          return null;
+        },
+      },
+      flowLedgerStore: {
+        async get(flowId) {
+          return flowId === storedFlow.flowId ? storedFlow : null;
+        },
+        async put(flow, options) {
+          const existingVersion = storedFlow.version ?? 0;
+          if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
+            throw new Error(`flow version conflict: expected ${options.expectedVersion}, found ${existingVersion}`);
+          }
+          storedFlow = {
+            ...flow,
+            version: existingVersion + 1,
+          };
+        },
+        async listByThread(threadId) {
+          return threadId === storedFlow.threadId ? [storedFlow] : [];
+        },
+      },
+      roleRunCoordinator: {
+        async getOrCreate() {
+          throw new Error("not used");
+        },
+        async enqueue() {
+          throw new Error("not used");
+        },
+        async dequeue() {
+          return null;
+        },
+        async ack() {},
+        async bindWorkerSession() {},
+        async clearWorkerSession() {},
+        async setStatus() {},
+        async incrementIteration() {
+          return 0;
+        },
+        async fail() {},
+        async finish() {},
+      },
+      handoffPlanner: {
+        parseMentions() {
+          return [];
+        },
+        async validateMentionTargets() {
+          return { allowed: false, mode: "serial", targetRoleIds: [] };
+        },
+        async buildHandoffs() {
+          return [];
+        },
+      },
+      recoveryDirector: {
+        async onUserMessage() {
+          return { action: "complete" as const };
+        },
+        async onRoleReply() {
+          return { action: "complete" as const };
+        },
+        async onRoleFailure() {
+          return { action: "abort" as const, reason: "fail" };
+        },
+      },
+      roleLoopRunner: {
+        async ensureRunning() {
+          throw new Error("not used");
+        },
+      },
+      summaryBuilder: {
+        async getRecentMessages() {
+          return [];
+        },
+      },
+      relayBriefBuilder: {
+        build() {
+          return "brief";
+        },
+      },
+      contextStateMaintainer: {
+        async onUserMessage() {},
+        async onRoleReply() {
+          roleReplyRefreshes += 1;
+        },
+        async drain() {},
+      },
+      idGenerator: {
+        flowId: () => "flow-generated",
+        messageId: () => "msg-generated",
+        taskId: () => "task-generated",
+      },
+      runtimeLimits: {
+        flowMaxHops: 5,
+      },
+      clock: {
+        now: () => Date.now(),
+      },
+      roleOutcomeOutboxRootDir: tempDir,
+      roleOutcomeOutboxRetryDelayMs: 5,
+      roleOutcomeOutboxMaxRetryDelayMs: 5,
+      roleOutcomeOutboxMaxRetries: 3,
+    });
+
+    await engine.handleRoleReply({
+      flow: storedFlow,
+      thread,
+      runState: {
+        runKey: "role:operator:thread:thread-role-outcome-no-replay",
+        threadId: thread.threadId,
+        roleId: "operator",
+        mode: "group",
+        status: "running",
+        iterationCount: 0,
+        maxIterations: 3,
+        inbox: [],
+        lastActiveAt: 1,
+        version: 1,
+      },
+      handoff,
+      message: {
+        id: "msg-role-outcome-no-replay",
+        threadId: thread.threadId,
+        role: "assistant",
+        roleId: "operator",
+        name: "Operator",
+        content: "Done.",
+        createdAt: 2,
+        updatedAt: 2,
+      },
+    });
+
+    const outbox = new FileBatchOutbox<unknown>({ rootDir: tempDir });
+    await waitFor(async () => {
+      return (await outbox.listAll()).length === 0 && storedFlow.status === "completed";
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    assert.equal(roleReplyRefreshes, 1);
+    assert.equal((await outbox.listAll()).length, 0);
+    assert.equal(storedFlow.version, 5);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("coordination engine records exhausted role outcome outbox batches into replay incidents", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "coordination-engine-role-outcome-drop-"));
   try {

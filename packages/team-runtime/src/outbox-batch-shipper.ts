@@ -59,6 +59,28 @@ export class OutboxBatchShipper<T> {
     this.kick(0);
   }
 
+  async enqueueClaimed(items: T[]): Promise<OutboxClaimRecord<T>> {
+    return this.outbox.enqueueClaimed(items, {
+      leaseDurationMs: this.leaseDurationMs,
+    });
+  }
+
+  async ackClaim(batchId: string, leaseId: string): Promise<boolean> {
+    return this.outbox.ack(batchId, leaseId);
+  }
+
+  async releaseClaim(batchId: string, leaseId: string, error?: unknown): Promise<void> {
+    await this.outbox.release(batchId, {
+      leaseId,
+      error,
+    });
+    if (this.scheduled) {
+      clearTimeout(this.scheduled);
+      this.scheduled = null;
+    }
+    this.kick(0);
+  }
+
   start(): void {
     this.kick(0);
   }

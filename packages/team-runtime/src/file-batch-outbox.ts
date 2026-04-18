@@ -62,15 +62,19 @@ export class FileBatchOutbox<T> {
 
   async enqueue(items: T[]): Promise<OutboxBatchRecord<T>> {
     return this.withLock(async () => {
-      const now = this.now();
-      const record: OutboxBatchRecord<T> = {
-        batchId: `batch:${now}:${Math.random().toString(36).slice(2, 10)}`,
-        createdAt: now,
-        availableAt: now,
-        attemptCount: 0,
-        items,
-        state: "pending",
-      };
+      const record = this.buildPendingRecord(items);
+      await writeJsonFileAtomic(this.filePath(record.batchId), record);
+      return record;
+    });
+  }
+
+  async enqueueClaimed(items: T[], input?: { leaseDurationMs?: number }): Promise<OutboxClaimRecord<T>> {
+    return this.withLock(async () => {
+      const record = this.toClaimedRecord(
+        this.buildPendingRecord(items),
+        this.now(),
+        Math.max(input?.leaseDurationMs ?? 30_000, 1)
+      );
       await writeJsonFileAtomic(this.filePath(record.batchId), record);
       return record;
     });
@@ -163,6 +167,32 @@ export class FileBatchOutbox<T> {
     });
   }
 
+  async release(
+    batchId: string,
+    input: { delayMs?: number; error?: unknown; leaseId?: string }
+  ): Promise<OutboxBatchRecord<T>> {
+    return this.withLock(async () => {
+      const current = await this.requireRecord(batchId);
+      if (input.leaseId && current.leaseId !== input.leaseId) {
+        throw new Error(`outbox batch lease mismatch for ${batchId}`);
+      }
+      const now = this.now();
+      const next: OutboxBatchRecord<T> = {
+        ...current,
+        availableAt: now + Math.max(input.delayMs ?? 0, 0),
+        state: "pending",
+        lastAttemptAt: current.lastAttemptAt ?? now,
+        ...(input.error ? { lastError: input.error instanceof Error ? input.error.message : String(input.error) } : {}),
+      };
+      delete next.leaseId;
+      delete next.leasedAt;
+      delete next.leaseExpiresAt;
+      delete next.deadLetteredAt;
+      await writeJsonFileAtomic(this.filePath(batchId), next);
+      return next;
+    });
+  }
+
   async deadLetter(
     batchId: string,
     input: { attemptCount: number; items: T[]; error?: unknown; leaseId?: string }
@@ -234,6 +264,33 @@ export class FileBatchOutbox<T> {
       }
       return left.batchId.localeCompare(right.batchId);
     });
+  }
+
+  private buildPendingRecord(items: T[]): OutboxBatchRecord<T> {
+    const now = this.now();
+    return {
+      batchId: `batch:${now}:${Math.random().toString(36).slice(2, 10)}`,
+      createdAt: now,
+      availableAt: now,
+      attemptCount: 0,
+      items,
+      state: "pending",
+    };
+  }
+
+  private toClaimedRecord(
+    record: OutboxBatchRecord<T>,
+    now: number,
+    leaseDurationMs: number
+  ): OutboxClaimRecord<T> {
+    return {
+      ...record,
+      state: "inflight",
+      leaseId: `lease:${now}:${Math.random().toString(36).slice(2, 10)}`,
+      leasedAt: now,
+      leaseExpiresAt: now + leaseDurationMs,
+      lastAttemptAt: now,
+    };
   }
 
   private selectDueRecords(

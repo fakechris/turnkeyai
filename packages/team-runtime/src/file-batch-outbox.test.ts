@@ -119,3 +119,36 @@ test("file batch outbox preserves original creation time across retries and dead
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("file batch outbox can release an optimistic claim back to pending without incrementing attempts", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "file-batch-outbox-release-"));
+  let now = 20_000;
+
+  try {
+    const outbox = new FileBatchOutbox<number>({
+      rootDir: tempDir,
+      now: () => now,
+    });
+    const claimed = await outbox.enqueueClaimed([7], {
+      leaseDurationMs: 100,
+    });
+    assert.equal(claimed.state, "inflight");
+    assert.equal(claimed.attemptCount, 0);
+
+    now = 20_010;
+    const released = await outbox.release(claimed.batchId, {
+      leaseId: claimed.leaseId,
+      error: new Error("optimistic materialization failed"),
+    });
+    assert.equal(released.state, "pending");
+    assert.equal(released.attemptCount, 0);
+    assert.equal(released.availableAt, 20_010);
+    assert.equal(released.lastError, "optimistic materialization failed");
+
+    const due = await outbox.listDue(32, now);
+    assert.equal(due.length, 1);
+    assert.equal(due[0]?.batchId, claimed.batchId);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

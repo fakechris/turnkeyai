@@ -1264,28 +1264,49 @@ export class CoordinationEngine {
   }
 
   private async dispatchViaOutbox(intent: DispatchDeliveryIntent): Promise<void> {
-    let persisted = false;
+    let claimed:
+      | {
+          batchId: string;
+          leaseId: string;
+        }
+      | undefined;
     try {
-      await this.dispatchOutboxShipper!.enqueue([intent]);
-      persisted = true;
+      const batch = await this.dispatchOutboxShipper!.enqueueClaimed([intent]);
+      claimed = {
+        batchId: batch.batchId,
+        leaseId: batch.leaseId,
+      };
       await this.deliverDispatchIntent(intent);
+      await this.dispatchOutboxShipper!.ackClaim(batch.batchId, batch.leaseId);
     } catch (error) {
-      if (!persisted) {
+      if (!claimed) {
         await this.markHandoffCancelled(intent.flowId, intent.edgeId);
         await this.removeActiveRole(intent.flowId, intent.handoff.targetRoleId);
+      } else {
+        await this.dispatchOutboxShipper!.releaseClaim(claimed.batchId, claimed.leaseId, error);
       }
       throw error;
     }
   }
 
   private async startRoleOutcomeViaOutbox(intent: RoleOutcomeIntent): Promise<void> {
-    let persisted = false;
+    let claimed:
+      | {
+          batchId: string;
+          leaseId: string;
+        }
+      | undefined;
     try {
-      await this.roleOutcomeOutboxShipper!.enqueue([intent]);
-      persisted = true;
+      const batch = await this.roleOutcomeOutboxShipper!.enqueueClaimed([intent]);
+      claimed = {
+        batchId: batch.batchId,
+        leaseId: batch.leaseId,
+      };
       await this.materializeRoleOutcomeIntent(intent);
+      await this.roleOutcomeOutboxShipper!.ackClaim(batch.batchId, batch.leaseId);
     } catch (error) {
-      if (persisted) {
+      if (claimed) {
+        await this.roleOutcomeOutboxShipper!.releaseClaim(claimed.batchId, claimed.leaseId, error);
         console.error("role outcome intent accepted for async replay after materialization failure", {
           intentId: intent.intentId,
           kind: intent.kind,
@@ -1311,13 +1332,23 @@ export class CoordinationEngine {
   }
 
   private async startFlowViaOutbox(intent: FlowStartIntent): Promise<void> {
-    let persisted = false;
+    let claimed:
+      | {
+          batchId: string;
+          leaseId: string;
+        }
+      | undefined;
     try {
-      await this.ingressOutboxShipper!.enqueue([intent]);
-      persisted = true;
+      const batch = await this.ingressOutboxShipper!.enqueueClaimed([intent]);
+      claimed = {
+        batchId: batch.batchId,
+        leaseId: batch.leaseId,
+      };
       await this.materializeFlowStartIntent(intent);
+      await this.ingressOutboxShipper!.ackClaim(batch.batchId, batch.leaseId);
     } catch (error) {
-      if (persisted) {
+      if (claimed) {
+        await this.ingressOutboxShipper!.releaseClaim(claimed.batchId, claimed.leaseId, error);
         console.error("flow start intent accepted for async replay after materialization failure", {
           intentId: intent.intentId,
           kind: intent.kind,
