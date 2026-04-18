@@ -72,6 +72,11 @@ interface CoordinationEngineDeps {
   dispatchOutboxRetryDelayMs?: number;
   dispatchOutboxBackoffMultiplier?: number;
   dispatchOutboxMaxRetryDelayMs?: number;
+  roleOutcomeOutboxRootDir?: string;
+  roleOutcomeOutboxMaxRetries?: number;
+  roleOutcomeOutboxRetryDelayMs?: number;
+  roleOutcomeOutboxBackoffMultiplier?: number;
+  roleOutcomeOutboxMaxRetryDelayMs?: number;
 }
 
 interface FlowStartIntent {
@@ -89,13 +94,26 @@ interface DispatchDeliveryIntent {
   handoff: HandoffEnvelope;
 }
 
+interface RoleOutcomeIntent {
+  intentId: string;
+  kind: "reply" | "failure";
+  threadId: string;
+  flowId: string;
+  roleId: RoleId;
+  handoff: HandoffEnvelope;
+  message: TeamMessage;
+  error?: RuntimeError;
+}
+
 export class CoordinationEngine {
   private readonly deps: CoordinationEngineDeps;
   private readonly flowMutex = new KeyedAsyncMutex<string>();
   private readonly flowStartIntentMutex = new KeyedAsyncMutex<string>();
   private readonly dispatchDeliveryMutex = new KeyedAsyncMutex<string>();
+  private readonly roleOutcomeIntentMutex = new KeyedAsyncMutex<string>();
   private readonly ingressOutboxShipper: OutboxBatchShipper<FlowStartIntent> | undefined;
   private readonly dispatchOutboxShipper: OutboxBatchShipper<DispatchDeliveryIntent> | undefined;
+  private readonly roleOutcomeOutboxShipper: OutboxBatchShipper<RoleOutcomeIntent> | undefined;
 
   constructor(deps: CoordinationEngineDeps) {
     this.deps = deps;
@@ -127,7 +145,7 @@ export class CoordinationEngine {
                 threadId: item.threadId,
                 flowId: item.flow.flowId,
                 messageId: item.message.id,
-                attemptCount: batch.attemptCount + 1,
+                attemptCount: batch.attemptCount,
                 lastError: batch.lastError,
               });
             }
@@ -162,6 +180,7 @@ export class CoordinationEngine {
             : {}),
           onDroppedBatch: async (batch) => {
             for (const item of batch.items) {
+              await this.recordDroppedDispatchIntentBestEffort(item, batch);
               await this.abandonDispatchIntent(item);
             }
           },
@@ -179,8 +198,42 @@ export class CoordinationEngine {
           },
         })
       : undefined;
+    this.roleOutcomeOutboxShipper = deps.roleOutcomeOutboxRootDir
+      ? new OutboxBatchShipper<RoleOutcomeIntent>({
+          outbox: new FileBatchOutbox<RoleOutcomeIntent>({
+            rootDir: deps.roleOutcomeOutboxRootDir,
+            now: () => this.deps.clock.now(),
+          }),
+          sink: async (items) => {
+            for (const item of items) {
+              await this.materializeRoleOutcomeIntent(item);
+            }
+          },
+          ...(deps.roleOutcomeOutboxMaxRetries != null ? { maxRetries: deps.roleOutcomeOutboxMaxRetries } : {}),
+          ...(deps.roleOutcomeOutboxRetryDelayMs != null ? { retryDelayMs: deps.roleOutcomeOutboxRetryDelayMs } : {}),
+          ...(deps.roleOutcomeOutboxBackoffMultiplier != null
+            ? { backoffMultiplier: deps.roleOutcomeOutboxBackoffMultiplier }
+            : {}),
+          ...(deps.roleOutcomeOutboxMaxRetryDelayMs != null
+            ? { maxRetryDelayMs: deps.roleOutcomeOutboxMaxRetryDelayMs }
+            : {}),
+          onDroppedBatch: async (batch) => {
+            for (const item of batch.items) {
+              await this.recordDroppedRoleOutcomeIntentBestEffort(item, batch);
+            }
+          },
+          onRetryScheduled: async (_batch, attempt, delayMs, error) => {
+            console.warn("role outcome retry scheduled", {
+              attempt,
+              delayMs,
+              error,
+            });
+          },
+        })
+      : undefined;
     this.ingressOutboxShipper?.start();
     this.dispatchOutboxShipper?.start();
+    this.roleOutcomeOutboxShipper?.start();
   }
 
   async handleUserPost(input: SendTeamMessageInput): Promise<void> {
@@ -378,66 +431,20 @@ export class CoordinationEngine {
     handoff: HandoffEnvelope;
     message: TeamMessage;
   }): Promise<void> {
-    await this.markHandoffResponded(input.flow.flowId, input.handoff.taskId);
-    await this.deps.teamMessageStore.append(input.message);
-    await this.refreshRoleContext(input.thread.threadId, input.runState.roleId);
-    await this.markRoleCompleted(input.flow.flowId, input.runState.roleId);
-    await this.markHandoffClosed(input.flow.flowId, input.handoff.taskId);
-    await this.recordShardReply(input.flow.flowId, input.handoff, input.runState.roleId, input.message);
-
-    const decision = await this.deps.handoffPlanner.validateMentionTargets(input.thread, {
-      flow: input.flow,
-      sourceRoleId: input.runState.roleId,
-      messageId: input.message.id,
-      content: input.message.content,
-    });
-
-    if (!decision.allowed || decision.targetRoleIds.length === 0) {
-      const fanOutHandled = await this.handleFanOutMerge(input.flow.flowId, input.thread, input.runState.roleId, input.message, input.handoff);
-      if (fanOutHandled) {
-        return;
-      }
-
-      const recovery = await this.deps.recoveryDirector.onRoleReply({
-        thread: input.thread,
-        flow: input.flow,
-        message: input.message,
-        mentions: [],
-      });
-
-      await this.applyRecoveryDecision(recovery, input.flow, input.thread, input.message);
+    const intent: RoleOutcomeIntent = {
+      intentId: `${input.handoff.taskId}:reply:${input.message.id}`,
+      kind: "reply",
+      threadId: input.thread.threadId,
+      flowId: input.flow.flowId,
+      roleId: input.runState.roleId,
+      handoff: input.handoff,
+      message: input.message,
+    };
+    if (this.roleOutcomeOutboxShipper) {
+      await this.startRoleOutcomeViaOutbox(intent);
       return;
     }
-
-    const fanOutGroupId =
-      decision.targetRoleIds.length > 1 ? `${input.message.id}:fanout` : undefined;
-
-    for (const [index, targetRoleId] of decision.targetRoleIds.entries()) {
-      await this.dispatchToRole({
-        thread: input.thread,
-        flow: input.flow,
-        sourceMessage: input.message,
-        fromRoleId: input.runState.roleId,
-        toRoleId: targetRoleId,
-        activationType: "mention",
-        ...(fanOutGroupId
-          ? {
-              fanOutGroupId,
-              coverageTargetRoleIds: decision.targetRoleIds,
-              mergeBackToRoleId: input.thread.leadRoleId,
-              parallelContext: buildResearchShardPacket({
-                fanOutGroupId,
-                shardRoleId: targetRoleId,
-                shardIndex: index,
-                shardCount: decision.targetRoleIds.length,
-                expectedRoleIds: decision.targetRoleIds,
-                mergeBackToRoleId: input.thread.leadRoleId,
-                sourceMessage: input.message,
-              }),
-            }
-          : {}),
-      });
-    }
+    await this.materializeRoleOutcomeIntent(intent);
   }
 
   async onRoleFailure(input: {
@@ -447,34 +454,140 @@ export class CoordinationEngine {
     handoff: HandoffEnvelope;
     error: RuntimeError;
   }): Promise<void> {
-    await this.markHandoffResponded(input.flow.flowId, input.handoff.taskId);
-    await this.markRoleFailed(input.flow.flowId, input.runState.roleId);
-    await this.markHandoffClosed(input.flow.flowId, input.handoff.taskId);
+    const failureNotice = this.buildFailureNotice(input.thread, input.runState.roleId, input.error);
+    const intent: RoleOutcomeIntent = {
+      intentId: `${input.handoff.taskId}:failure`,
+      kind: "failure",
+      threadId: input.thread.threadId,
+      flowId: input.flow.flowId,
+      roleId: input.runState.roleId,
+      handoff: input.handoff,
+      message: failureNotice,
+      error: input.error,
+    };
+    if (this.roleOutcomeOutboxShipper) {
+      await this.startRoleOutcomeViaOutbox(intent);
+      return;
+    }
+    await this.materializeRoleOutcomeIntent(intent);
+  }
 
+  private async materializeRoleOutcomeIntent(intent: RoleOutcomeIntent): Promise<void> {
+    await this.roleOutcomeIntentMutex.run(intent.intentId, async () => {
+      const thread = await this.deps.teamThreadStore.get(intent.threadId);
+      if (!thread) {
+        throw new Error(`team thread not found: ${intent.threadId}`);
+      }
+      const flow = await this.requireFlow(intent.flowId);
+
+      if (intent.kind === "reply") {
+        await this.materializeRoleReplyIntent(flow, thread, intent);
+        return;
+      }
+
+      if (!intent.error) {
+        throw new Error(`role failure intent is missing an error: ${intent.intentId}`);
+      }
+      await this.materializeRoleFailureIntent(flow, thread, intent, intent.error);
+    });
+  }
+
+  private async materializeRoleReplyIntent(
+    flow: FlowLedger,
+    thread: TeamThread,
+    intent: RoleOutcomeIntent
+  ): Promise<void> {
+    await this.markHandoffResponded(flow.flowId, intent.handoff.taskId);
+    await this.ensureMessagePersisted(intent.message);
+    await this.refreshRoleContext(thread.threadId, intent.roleId);
+    await this.markRoleCompleted(flow.flowId, intent.roleId);
+    await this.markHandoffClosed(flow.flowId, intent.handoff.taskId);
+    await this.recordShardReply(flow.flowId, intent.handoff, intent.roleId, intent.message);
+
+    const latestFlow = await this.requireFlow(flow.flowId);
+    const decision = await this.deps.handoffPlanner.validateMentionTargets(thread, {
+      flow: latestFlow,
+      sourceRoleId: intent.roleId,
+      messageId: intent.message.id,
+      content: intent.message.content,
+    });
+
+    if (!decision.allowed || decision.targetRoleIds.length === 0) {
+      const fanOutHandled = await this.handleFanOutMerge(flow.flowId, thread, intent.roleId, intent.message, intent.handoff);
+      if (fanOutHandled) {
+        return;
+      }
+
+      const recovery = await this.deps.recoveryDirector.onRoleReply({
+        thread,
+        flow: latestFlow,
+        message: intent.message,
+        mentions: [],
+      });
+
+      await this.applyRecoveryDecision(recovery, latestFlow, thread, intent.message);
+      return;
+    }
+
+    const fanOutGroupId = decision.targetRoleIds.length > 1 ? `${intent.message.id}:fanout` : undefined;
+    for (const [index, targetRoleId] of decision.targetRoleIds.entries()) {
+      await this.dispatchToRole({
+        thread,
+        flow: latestFlow,
+        sourceMessage: intent.message,
+        fromRoleId: intent.roleId,
+        toRoleId: targetRoleId,
+        activationType: "mention",
+        ...(fanOutGroupId
+          ? {
+              fanOutGroupId,
+              coverageTargetRoleIds: decision.targetRoleIds,
+              mergeBackToRoleId: thread.leadRoleId,
+              parallelContext: buildResearchShardPacket({
+                fanOutGroupId,
+                shardRoleId: targetRoleId,
+                shardIndex: index,
+                shardCount: decision.targetRoleIds.length,
+                expectedRoleIds: decision.targetRoleIds,
+                mergeBackToRoleId: thread.leadRoleId,
+                sourceMessage: intent.message,
+              }),
+            }
+          : {}),
+      });
+    }
+  }
+
+  private async materializeRoleFailureIntent(
+    flow: FlowLedger,
+    thread: TeamThread,
+    intent: RoleOutcomeIntent,
+    error: RuntimeError
+  ): Promise<void> {
+    await this.markHandoffResponded(flow.flowId, intent.handoff.taskId);
+    await this.markRoleFailed(flow.flowId, intent.roleId);
+    await this.markHandoffClosed(flow.flowId, intent.handoff.taskId);
+
+    const latestFlow = await this.requireFlow(flow.flowId);
     const parallelFailureHandled = await this.handleFanOutFailure(
-      input.flow.flowId,
-      input.thread,
-      input.runState.roleId,
-      input.handoff,
-      input.error
+      latestFlow.flowId,
+      thread,
+      intent.roleId,
+      intent.handoff,
+      error
     );
     if (parallelFailureHandled) {
       return;
     }
 
     const recovery = await this.deps.recoveryDirector.onRoleFailure({
-      thread: input.thread,
-      flow: input.flow,
-      failedRoleId: input.runState.roleId,
-      error: input.error,
+      thread,
+      flow: latestFlow,
+      failedRoleId: intent.roleId,
+      error,
     });
 
-    await this.applyRecoveryDecision(
-      recovery,
-      input.flow,
-      input.thread,
-      this.buildFailureNotice(input.thread, input.runState.roleId, input.error)
-    );
+    await this.applyRecoveryDecision(recovery, latestFlow, thread, intent.message);
   }
 
   private buildUserMessage(thread: TeamThread, content: string): TeamMessage {
@@ -1165,6 +1278,38 @@ export class CoordinationEngine {
     }
   }
 
+  private async startRoleOutcomeViaOutbox(intent: RoleOutcomeIntent): Promise<void> {
+    let persisted = false;
+    try {
+      await this.roleOutcomeOutboxShipper!.enqueue([intent]);
+      persisted = true;
+      await this.materializeRoleOutcomeIntent(intent);
+    } catch (error) {
+      if (persisted) {
+        console.error("role outcome intent accepted for async replay after materialization failure", {
+          intentId: intent.intentId,
+          kind: intent.kind,
+          threadId: intent.threadId,
+          flowId: intent.flowId,
+          taskId: intent.handoff.taskId,
+          roleId: intent.roleId,
+          error,
+        });
+        return;
+      }
+      console.error("failed to persist role outcome intent", {
+        intentId: intent.intentId,
+        kind: intent.kind,
+        threadId: intent.threadId,
+        flowId: intent.flowId,
+        taskId: intent.handoff.taskId,
+        roleId: intent.roleId,
+        error,
+      });
+      throw error;
+    }
+  }
+
   private async startFlowViaOutbox(intent: FlowStartIntent): Promise<void> {
     let persisted = false;
     try {
@@ -1333,7 +1478,7 @@ export class CoordinationEngine {
     }
 
     const layer = intent.kind === "scheduled-task" ? "scheduled" : "role";
-    const attemptsExhausted = batch.attemptCount + 1;
+    const attemptsExhausted = batch.attemptCount;
     const summary =
       intent.kind === "scheduled-task"
         ? `Scheduled flow start intent ${intent.intentId} exhausted ingress outbox retries before dispatch.`
@@ -1412,6 +1557,112 @@ export class CoordinationEngine {
         threadId: intent.threadId,
         flowId: intent.flow.flowId,
         messageId: intent.message.id,
+        error,
+      });
+    }
+  }
+
+  private async recordDroppedDispatchIntentBestEffort(
+    intent: DispatchDeliveryIntent,
+    batch: import("./file-batch-outbox").OutboxBatchRecord<DispatchDeliveryIntent>
+  ): Promise<void> {
+    if (!this.deps.replayRecorder) {
+      return;
+    }
+
+    try {
+      const summary = `Dispatch delivery intent ${intent.edgeId} exhausted retries before the role queue accepted the handoff.`;
+      await this.deps.replayRecorder.record({
+        replayId: `${intent.edgeId}:dispatch-dropped`,
+        layer: "role",
+        status: "failed",
+        recordedAt: this.deps.clock.now(),
+        threadId: intent.handoff.threadId,
+        taskId: intent.handoff.taskId,
+        flowId: intent.flowId,
+        roleId: intent.handoff.targetRoleId,
+        summary,
+        failure: {
+          category: "unknown",
+          layer: "role",
+          retryable: false,
+          message: summary,
+          recommendedAction: "inspect",
+          details: {
+            reason: "dispatch_outbox_retries_exhausted",
+            attemptsExhausted: batch.attemptCount,
+            lastError: batch.lastError,
+          },
+        },
+        metadata: {
+          source: "dispatch_outbox_dropped",
+          edgeId: intent.edgeId,
+          handoff: intent.handoff,
+        },
+      });
+    } catch (error) {
+      console.error("failed to record dropped dispatch intent replay", {
+        flowId: intent.flowId,
+        edgeId: intent.edgeId,
+        taskId: intent.handoff.taskId,
+        roleId: intent.handoff.targetRoleId,
+        error,
+      });
+    }
+  }
+
+  private async recordDroppedRoleOutcomeIntentBestEffort(
+    intent: RoleOutcomeIntent,
+    batch: import("./file-batch-outbox").OutboxBatchRecord<RoleOutcomeIntent>
+  ): Promise<void> {
+    if (!this.deps.replayRecorder) {
+      return;
+    }
+
+    try {
+      const summary =
+        intent.kind === "reply"
+          ? `Role reply intent ${intent.intentId} exhausted retries before flow state fully converged.`
+          : `Role failure intent ${intent.intentId} exhausted retries before recovery state fully converged.`;
+      await this.deps.replayRecorder.record({
+        replayId: `${intent.intentId}:role-outcome-dropped`,
+        layer: "role",
+        status: "failed",
+        recordedAt: this.deps.clock.now(),
+        threadId: intent.threadId,
+        taskId: intent.handoff.taskId,
+        flowId: intent.flowId,
+        roleId: intent.roleId,
+        summary,
+        failure: {
+          category: "unknown",
+          layer: "role",
+          retryable: false,
+          message: summary,
+          recommendedAction: "inspect",
+          details: {
+            reason: "role_outcome_outbox_retries_exhausted",
+            attemptsExhausted: batch.attemptCount,
+            lastError: batch.lastError,
+            outcomeKind: intent.kind,
+          },
+        },
+        metadata: {
+          source: "role_outcome_outbox_dropped",
+          intentId: intent.intentId,
+          kind: intent.kind,
+          handoff: intent.handoff,
+          message: intent.message,
+          ...(intent.error ? { error: intent.error } : {}),
+        },
+      });
+    } catch (error) {
+      console.error("failed to record dropped role outcome intent replay", {
+        intentId: intent.intentId,
+        kind: intent.kind,
+        threadId: intent.threadId,
+        flowId: intent.flowId,
+        roleId: intent.roleId,
         error,
       });
     }

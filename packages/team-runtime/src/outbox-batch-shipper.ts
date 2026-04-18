@@ -1,4 +1,4 @@
-import { FileBatchOutbox, type OutboxBatchRecord } from "./file-batch-outbox";
+import { FileBatchOutbox, type OutboxBatchRecord, type OutboxClaimRecord } from "./file-batch-outbox";
 
 interface OutboxBatchShipperOptions<T> {
   outbox: FileBatchOutbox<T>;
@@ -8,6 +8,7 @@ interface OutboxBatchShipperOptions<T> {
   retryDelayMs?: number;
   backoffMultiplier?: number;
   maxRetryDelayMs?: number;
+  leaseDurationMs?: number;
   onDroppedBatch?: (batch: OutboxBatchRecord<T>) => Promise<void> | void;
   onRetryScheduled?: (
     batch: OutboxBatchRecord<T>,
@@ -25,6 +26,7 @@ export class OutboxBatchShipper<T> {
   private readonly retryDelayMs: number;
   private readonly backoffMultiplier: number;
   private readonly maxRetryDelayMs: number;
+  private readonly leaseDurationMs: number;
   private readonly onDroppedBatch: (batch: OutboxBatchRecord<T>) => Promise<void> | void;
   private readonly onRetryScheduled: (
     batch: OutboxBatchRecord<T>,
@@ -43,6 +45,7 @@ export class OutboxBatchShipper<T> {
     this.retryDelayMs = options.retryDelayMs ?? 100;
     this.backoffMultiplier = Math.max(options.backoffMultiplier ?? 2, 1);
     this.maxRetryDelayMs = Math.max(options.maxRetryDelayMs ?? 5_000, this.retryDelayMs);
+    this.leaseDurationMs = Math.max(options.leaseDurationMs ?? 30_000, 1);
     this.onDroppedBatch = options.onDroppedBatch ?? (() => {});
     this.onRetryScheduled = options.onRetryScheduled ?? (() => {});
   }
@@ -84,7 +87,11 @@ export class OutboxBatchShipper<T> {
     this.draining = true;
     try {
       while (true) {
-        const batches = await this.outbox.listDue(32, this.now());
+        const batches = await this.outbox.claimDue({
+          limit: 32,
+          leaseDurationMs: this.leaseDurationMs,
+          now: this.now(),
+        });
         if (batches.length === 0) {
           break;
         }
@@ -98,15 +105,20 @@ export class OutboxBatchShipper<T> {
     }
   }
 
-  private async processBatch(batch: OutboxBatchRecord<T>, force: boolean): Promise<void> {
+  private async processBatch(batch: OutboxClaimRecord<T>, force: boolean): Promise<void> {
     try {
       await this.sink(batch.items);
-      await this.outbox.ack(batch.batchId);
+      await this.outbox.ack(batch.batchId, batch.leaseId);
     } catch (error) {
       const attempt = batch.attemptCount + 1;
       if (attempt > this.maxRetries) {
-        await this.outbox.ack(batch.batchId);
-        await this.onDroppedBatch(batch);
+        const deadLettered = await this.outbox.deadLetter(batch.batchId, {
+          attemptCount: attempt,
+          items: batch.items,
+          error,
+          leaseId: batch.leaseId,
+        });
+        await this.onDroppedBatch(deadLettered);
         return;
       }
       const delayMs = force ? 0 : this.nextDelayMs(attempt);
@@ -116,6 +128,7 @@ export class OutboxBatchShipper<T> {
         delayMs,
         items: batch.items,
         error,
+        leaseId: batch.leaseId,
       });
     }
   }
