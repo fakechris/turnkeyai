@@ -40,7 +40,7 @@ export function truthRemediation(input: {
 export function dedupeTruthRemediation(remediation: TruthRemediation[]): TruthRemediation[] {
   const deduped = new Map<string, TruthRemediation>();
   for (const item of remediation) {
-    const key = [item.action, item.scope, item.subjectId ?? "", item.summary].join("::");
+    const key = JSON.stringify([item.action, item.scope, item.subjectId ?? "", item.summary]);
     if (!deduped.has(key)) {
       deduped.set(key, item);
     }

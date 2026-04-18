@@ -376,6 +376,69 @@ test("replay inspection enriches relay browser continuity with peer and target d
   assert.match(bundle?.caseHeadline ?? "", /relay=peer_stale/);
 });
 
+test("replay inspection marks relay-enriched truth as inferred when diagnostics are non-authoritative", () => {
+  const records = [
+    {
+      replayId: "task-relay-inferred:worker",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-relay-inferred",
+      workerType: "browser",
+      summary: "relay browser worker is waiting for a still-attached target",
+      failure: {
+        category: "transport_failed",
+        layer: "worker",
+        retryable: true,
+        message: "relay browser action is still inflight",
+        recommendedAction: "inspect",
+      },
+      metadata: {
+        payload: {
+          sessionId: "browser-session-relay",
+          targetId: "target-relay",
+          transportMode: "relay",
+          transportLabel: "chrome-relay",
+          transportPeerId: "peer-relay",
+          transportTargetId: "chrome-tab:199",
+          resumeMode: "warm",
+          targetResolution: "attached",
+        },
+      },
+    },
+  ] as Parameters<typeof buildReplayInspectionReport>[0];
+
+  const relayDiagnostics = {
+    peers: [
+      {
+        peerId: "peer-relay",
+        transportLabel: "chrome-relay",
+        lastSeenAt: 20,
+        status: "online" as const,
+      },
+    ],
+    targets: [
+      {
+        relayTargetId: "chrome-tab:199",
+        peerId: "peer-relay",
+        url: "https://example.com/inferred",
+        status: "attached" as const,
+        lastSeenAt: 20,
+      },
+    ],
+    actions: [],
+  };
+
+  const consoleReport = buildReplayConsoleReport(records, 5, [], relayDiagnostics);
+  const bundle = buildReplayIncidentBundle(records, "task-relay-inferred", relayDiagnostics);
+
+  assert.equal(consoleReport.latestBundles[0]?.truthSource, "replay-store+relay-diagnostics");
+  assert.equal(consoleReport.latestBundles[0]?.truthState, "inferred");
+  assert.equal(bundle?.truthSource, "replay-store+relay-diagnostics");
+  assert.equal(bundle?.truthState, "inferred");
+});
+
 test("replay inspection enriches relay browser continuity with action claim diagnostics", () => {
   const records = [
     {

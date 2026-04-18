@@ -599,7 +599,7 @@ function buildReplayBundleTruthAlignment(input: {
     browserContinuity?.relayDiagnosticBucket === "claim_reclaimed";
 
   return buildTruthAlignment({
-    confirmed: true,
+    confirmed: !relayDiagnostics,
     inferred: Boolean(relayDiagnostics),
     stale: Boolean(stale),
     truthSource: relayDiagnostics ? "replay-store+relay-diagnostics" : "replay-store",
