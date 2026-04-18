@@ -125,6 +125,37 @@ test("relay gateway drops timed out action requests from the pending queue", asy
   assert.equal(gateway.pullNextActionRequest("peer-1"), null);
 });
 
+test("relay gateway fails fast when a locked target peer lacks required capabilities", async () => {
+  const gateway = new RelayGateway({
+    now: () => 1_000,
+    createId: (prefix) => `${prefix}-locked-target`,
+  });
+  gateway.registerPeer({
+    peerId: "peer-1",
+    capabilities: ["snapshot"],
+  });
+  gateway.reportTargets("peer-1", [
+    {
+      relayTargetId: "tab-1",
+      url: "https://example.com",
+      title: "Example",
+      status: "attached",
+    },
+  ]);
+
+  await assert.rejects(
+    () =>
+      gateway.dispatchActionRequest({
+        browserSessionId: "browser-session-1",
+        taskId: "task-1",
+        relayTargetId: "tab-1",
+        actions: [{ kind: "open", url: "https://example.com/opened" }],
+      }),
+    /relay peer peer-1 does not support required action kinds/
+  );
+  assert.equal(gateway.listActionRequests().length, 0);
+});
+
 test("relay gateway reclaims expired inflight claims and reassigns them", async () => {
   let now = 1_000;
   let seq = 0;

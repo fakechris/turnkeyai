@@ -180,7 +180,12 @@ export class RelayGateway {
 
     const preferredPeerId = input.preferredPeerId?.trim() || undefined;
     const actionKinds = [...new Set(input.actions.map((action) => action.kind))];
-    if (!relayTargetId && !this.hasAnyClaimablePeer(actionKinds, preferredPeerId)) {
+    if (relayTargetId) {
+      const lockedPeerCapabilities = this.getPeerCapabilities(targetBinding!.peerId);
+      if (!this.peerSupportsActionKinds(lockedPeerCapabilities, actionKinds)) {
+        throw new Error(`relay peer ${targetBinding!.peerId} does not support required action kinds`);
+      }
+    } else if (!this.hasAnyClaimablePeer(actionKinds, preferredPeerId)) {
       throw new Error("relay browser transport has no compatible registered peers");
     }
 
