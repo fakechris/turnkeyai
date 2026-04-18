@@ -1,5 +1,5 @@
 import type { BrowserOwnerType, BrowserResumeMode } from "./browser";
-import type { ReplayRecoveryPlan } from "./team-replay-recovery";
+import type { ReplayRecoveryPlan } from "./team-replay-types";
 import type {
   ActivationType,
   ContinuityMode,

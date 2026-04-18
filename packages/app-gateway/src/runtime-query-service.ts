@@ -13,6 +13,7 @@ import type {
   WorkerSessionRecord,
   WorkerRuntime,
   WorkerSessionState,
+  WorkerStartupReconcileResult,
 } from "@turnkeyai/core-types/team";
 import type { FileReplayRecorder } from "@turnkeyai/qc-runtime/file-replay-recorder";
 import {
@@ -95,7 +96,7 @@ export interface RuntimeQueryService {
 export function createRuntimeQueryService(input: {
   clock: Clock;
   workerRuntime: WorkerRuntime;
-  getWorkerStartupReconcileResult?: () => { totalSessions: number; downgradedRunningSessions: number } | undefined;
+  getWorkerStartupReconcileResult?: () => WorkerStartupReconcileResult | undefined;
   getWorkerBindingReconcileResult?: () =>
     | {
         totalRoleRuns: number;

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { readJsonFile } from "@turnkeyai/shared-utils/file-store-utils";
 import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 import { FileRecoveryRunEventStore } from "./file-recovery-run-event-store";
@@ -205,6 +206,69 @@ test("file recovery run event store includes canonical by-run journals and keeps
     assert.equal(events.length, 1);
     assert.equal(events[0]?.summary, "thread-scoped event wins tie");
     assert.equal(events[0]?.kind, "action_dispatched");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file recovery run event store repairs legacy flat arrays into canonical per-event journal on read", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-event-store-repair-legacy-"));
+  try {
+    const recoveryRunId = "recovery:task-legacy";
+    await writeJsonFileAtomic(path.join(rootDir, `${encodeURIComponent(recoveryRunId)}.json`), [
+      {
+        eventId: "legacy-event-1",
+        recoveryRunId,
+        threadId: "thread-legacy",
+        sourceGroupId: "task-legacy",
+        kind: "action_requested",
+        status: "planned",
+        recordedAt: 10,
+        summary: "legacy event",
+      },
+    ]);
+
+    const store = new FileRecoveryRunEventStore({ rootDir });
+    const events = await store.listByRecoveryRun(recoveryRunId);
+
+    assert.equal(events.length, 1);
+    assert.deepEqual(
+      await readJsonFile(path.join(rootDir, "by-run", encodeURIComponent(recoveryRunId), "events", "legacy-event-1.json")),
+      events[0]
+    );
+    assert.deepEqual(
+      await readJsonFile(path.join(rootDir, "threads", "thread-legacy", "legacy-event-1.json")),
+      events[0]
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file recovery run event store repairs missing thread projection from canonical by-run journal during thread reads", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-event-store-repair-thread-"));
+  try {
+    const recoveryRunId = "recovery:task-shared";
+    await writeJsonFileAtomic(path.join(rootDir, "by-run", encodeURIComponent(recoveryRunId), "events", "thread-only.json"), {
+      eventId: "thread-only",
+      recoveryRunId,
+      threadId: "thread-1",
+      sourceGroupId: "task-shared",
+      kind: "recovered",
+      status: "recovered",
+      recordedAt: 20,
+      summary: "canonical only",
+    });
+
+    const store = new FileRecoveryRunEventStore({ rootDir });
+    const events = await store.listByThread("thread-1");
+
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.summary, "canonical only");
+    assert.deepEqual(
+      await readJsonFile(path.join(rootDir, "threads", "thread-1", "thread-only.json")),
+      events[0]
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
