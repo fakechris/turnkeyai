@@ -85,6 +85,10 @@ export class BrowserRelayPeerRuntime {
     if (!request) {
       return null;
     }
+    const claimToken = request.claimToken;
+    if (!claimToken) {
+      throw new Error(`relay action request is missing claimToken: ${request.actionRequestId}`);
+    }
 
     let execution: RelayPeerExecutionResult;
     const heartbeatLease = this.startExecutionHeartbeat();
@@ -105,14 +109,11 @@ export class BrowserRelayPeerRuntime {
         errorMessage: error instanceof Error ? error.message : "relay execution failed",
       };
     } finally {
-      await heartbeatLease.stop();
+      heartbeatLease.stop();
     }
     const relayTargetId = execution.relayTargetId ?? request.relayTargetId;
     if (!relayTargetId) {
       throw new Error(`relay execution result missing relayTargetId for request: ${request.actionRequestId}`);
-    }
-    if (!request.claimToken) {
-      throw new Error(`relay action request is missing claimToken: ${request.actionRequestId}`);
     }
 
     return this.client.submitActionResult(this.peer.peerId, {
@@ -120,7 +121,7 @@ export class BrowserRelayPeerRuntime {
       browserSessionId: request.browserSessionId,
       taskId: request.taskId,
       relayTargetId,
-      claimToken: request.claimToken,
+      claimToken,
       url: execution.url,
       ...(execution.title ? { title: execution.title } : {}),
       status: execution.status,
@@ -151,7 +152,7 @@ export class BrowserRelayPeerRuntime {
     }
   }
 
-  private startExecutionHeartbeat(): { stop: () => Promise<void> } {
+  private startExecutionHeartbeat(): { stop: () => void } {
     let stopped = false;
     let inFlightHeartbeat: Promise<void> | null = null;
     const timer = setInterval(() => {
@@ -168,12 +169,9 @@ export class BrowserRelayPeerRuntime {
     }, this.executionHeartbeatIntervalMs);
 
     return {
-      stop: async () => {
+      stop: () => {
         stopped = true;
         clearInterval(timer);
-        if (inFlightHeartbeat) {
-          await inFlightHeartbeat;
-        }
       },
     };
   }

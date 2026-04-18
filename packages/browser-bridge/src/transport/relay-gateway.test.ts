@@ -156,6 +156,84 @@ test("relay gateway fails fast when a locked target peer lacks required capabili
   assert.equal(gateway.listActionRequests().length, 0);
 });
 
+test("relay gateway default ids stay unique for same-millisecond dispatches", async () => {
+  const gateway = new RelayGateway({
+    now: () => 1_000,
+    actionTimeoutMs: 100,
+  });
+  gateway.registerPeer({
+    peerId: "peer-1",
+    capabilities: ["snapshot"],
+  });
+
+  const firstDispatch = gateway.dispatchActionRequest({
+    browserSessionId: "browser-session-1",
+    taskId: "task-1",
+    actions: [{ kind: "snapshot", note: "first" }],
+  });
+  const secondDispatch = gateway.dispatchActionRequest({
+    browserSessionId: "browser-session-2",
+    taskId: "task-2",
+    actions: [{ kind: "snapshot", note: "second" }],
+  });
+
+  const firstClaim = gateway.pullNextActionRequest("peer-1");
+  const secondClaim = gateway.pullNextActionRequest("peer-1");
+  assert.ok(firstClaim);
+  assert.ok(secondClaim);
+  assert.notEqual(firstClaim?.actionRequestId, secondClaim?.actionRequestId);
+  assert.notEqual(firstClaim?.claimToken, secondClaim?.claimToken);
+
+  gateway.submitActionResult({
+    actionRequestId: firstClaim!.actionRequestId,
+    peerId: "peer-1",
+    browserSessionId: firstClaim!.browserSessionId,
+    taskId: firstClaim!.taskId,
+    relayTargetId: "tab-1",
+    claimToken: firstClaim!.claimToken!,
+    url: "https://example.com/first",
+    status: "completed",
+    page: {
+      requestedUrl: "https://example.com/first",
+      finalUrl: "https://example.com/first",
+      title: "First",
+      textExcerpt: "First",
+      statusCode: 200,
+      interactives: [],
+    },
+    trace: [],
+    screenshotPaths: [],
+    screenshotPayloads: [],
+    artifactIds: [],
+  });
+  gateway.submitActionResult({
+    actionRequestId: secondClaim!.actionRequestId,
+    peerId: "peer-1",
+    browserSessionId: secondClaim!.browserSessionId,
+    taskId: secondClaim!.taskId,
+    relayTargetId: "tab-2",
+    claimToken: secondClaim!.claimToken!,
+    url: "https://example.com/second",
+    status: "completed",
+    page: {
+      requestedUrl: "https://example.com/second",
+      finalUrl: "https://example.com/second",
+      title: "Second",
+      textExcerpt: "Second",
+      statusCode: 200,
+      interactives: [],
+    },
+    trace: [],
+    screenshotPaths: [],
+    screenshotPayloads: [],
+    artifactIds: [],
+  });
+
+  const [firstResult, secondResult] = await Promise.all([firstDispatch, secondDispatch]);
+  assert.equal(firstResult.taskId, "task-1");
+  assert.equal(secondResult.taskId, "task-2");
+});
+
 test("relay gateway reclaims expired inflight claims and reassigns them", async () => {
   let now = 1_000;
   let seq = 0;

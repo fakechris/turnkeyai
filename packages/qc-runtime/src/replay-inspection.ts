@@ -1320,19 +1320,28 @@ function enrichBrowserContinuityDiagnostics(
   }
 
   if (isRelayContinuity(continuity) && relayDiagnostics) {
-    const action =
-      relayDiagnostics.actions
-        .filter(
-          (item) =>
-            (continuity.sessionId && item.browserSessionId === continuity.sessionId) ||
-            (group.taskId && item.taskId === group.taskId) ||
-            (continuity.transportTargetId && item.relayTargetId === continuity.transportTargetId)
-        )
-        .sort(
-          (left, right) =>
-            (right.claimExpiresAt ?? right.expiresAt) - (left.claimExpiresAt ?? left.expiresAt) ||
-            right.createdAt - left.createdAt
-        )[0] ?? null;
+    const sortRelayActionsByRecency = (
+      left: RelayDiagnosticsSnapshot["actions"][number],
+      right: RelayDiagnosticsSnapshot["actions"][number]
+    ) =>
+      (right.claimExpiresAt ?? right.expiresAt) - (left.claimExpiresAt ?? left.expiresAt) ||
+      right.createdAt - left.createdAt;
+    const actionCandidates =
+      [
+        group.taskId && continuity.transportTargetId
+          ? relayDiagnostics.actions.filter(
+              (item) => item.taskId === group.taskId && item.relayTargetId === continuity.transportTargetId
+            )
+          : [],
+        group.taskId ? relayDiagnostics.actions.filter((item) => item.taskId === group.taskId) : [],
+        continuity.transportTargetId
+          ? relayDiagnostics.actions.filter((item) => item.relayTargetId === continuity.transportTargetId)
+          : [],
+        continuity.sessionId
+          ? relayDiagnostics.actions.filter((item) => item.browserSessionId === continuity.sessionId)
+          : [],
+      ].find((items) => items.length > 0) ?? [];
+    const action = actionCandidates.sort(sortRelayActionsByRecency)[0] ?? null;
     const target =
       continuity.transportTargetId != null
         ? relayDiagnostics.targets.find((item) => item.relayTargetId === continuity.transportTargetId) ?? null

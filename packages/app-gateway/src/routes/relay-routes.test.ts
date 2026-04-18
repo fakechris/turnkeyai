@@ -38,7 +38,23 @@ function createRelayGateway() {
       return [];
     },
     listActionRequests() {
-      return [{ actionRequestId: "action-1", browserSessionId: "session-1", taskId: "task-1", actionKinds: ["snapshot"], createdAt: 1, expiresAt: 2, state: "pending", attemptCount: 0, reclaimCount: 0 }];
+      return [
+        {
+          actionRequestId: "action-1",
+          browserSessionId: "session-1",
+          taskId: "task-1",
+          actionKinds: ["snapshot"],
+          createdAt: 1,
+          expiresAt: 100,
+          state: "inflight",
+          assignedPeerId: "peer-1",
+          claimToken: "claim-1",
+          claimedAt: 2,
+          claimExpiresAt: 50,
+          attemptCount: 1,
+          reclaimCount: 0,
+        },
+      ];
     },
     registerPeer(input: unknown) {
       return input;
@@ -136,6 +152,25 @@ test("relay routes reject missing peer ids and required action fields", async ()
   });
   assert.equal(action.res.statusCode, 400);
   assert.deepEqual(action.json, {
+    error: "actionRequestId, browserSessionId, taskId, relayTargetId, and claimToken are required",
+  });
+
+  const malformedClaimToken = await invokeRelayRoute({
+    method: "POST",
+    url: "/relay/peers/peer-1/action-results",
+    body: {
+      actionRequestId: "request-1",
+      browserSessionId: "session-1",
+      taskId: "task-1",
+      relayTargetId: "target-1",
+      claimToken: { invalid: true },
+      url: "https://example.com",
+      status: "completed",
+    },
+    relayPeerBindingStore,
+  });
+  assert.equal(malformedClaimToken.res.statusCode, 400);
+  assert.deepEqual(malformedClaimToken.json, {
     error: "actionRequestId, browserSessionId, taskId, relayTargetId, and claimToken are required",
   });
 });
@@ -309,9 +344,13 @@ test("relay admin routes expose in-flight action diagnostics", async () => {
       taskId: "task-1",
       actionKinds: ["snapshot"],
       createdAt: 1,
-      expiresAt: 2,
-      state: "pending",
-      attemptCount: 0,
+      expiresAt: 100,
+      state: "inflight",
+      assignedPeerId: "peer-1",
+      claimToken: "claim-1",
+      claimedAt: 2,
+      claimExpiresAt: 50,
+      attemptCount: 1,
       reclaimCount: 0,
     },
   ]);

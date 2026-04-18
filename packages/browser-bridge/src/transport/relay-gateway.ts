@@ -63,13 +63,14 @@ export class RelayGateway {
   private readonly staleAfterMs: number;
   private readonly actionTimeoutMs: number;
   private readonly claimLeaseMs: number;
+  private idSequence = 0;
   private readonly peers = new Map<string, RelayPeerState>();
   private readonly actionRequests = new Map<string, RelayQueuedAction>();
   private readonly actionRequestOrder: string[] = [];
 
   constructor(options: RelayGatewayOptions = {}) {
     this.now = options.now ?? (() => Date.now());
-    this.createId = options.createId ?? ((prefix) => `${prefix}-${Date.now()}`);
+    this.createId = options.createId ?? ((prefix) => `${prefix}-${this.now()}-${(this.idSequence += 1)}`);
     this.staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
     this.actionTimeoutMs = options.actionTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS;
     this.claimLeaseMs = options.claimLeaseMs ?? DEFAULT_CLAIM_LEASE_MS;

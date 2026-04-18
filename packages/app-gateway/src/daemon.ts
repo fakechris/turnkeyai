@@ -411,7 +411,24 @@ function getRelayDiagnosticsSnapshot() {
     ? {
         peers: relayGateway.listPeers(),
         targets: relayGateway.listTargets(),
-        actions: relayGateway.listActionRequests(),
+        actions: relayGateway.listActionRequests().map((action) => ({
+          actionRequestId: action.actionRequestId,
+          browserSessionId: action.browserSessionId,
+          taskId: action.taskId,
+          ...(action.relayTargetId ? { relayTargetId: action.relayTargetId } : {}),
+          ...(action.targetId ? { targetId: action.targetId } : {}),
+          actionKinds: [...action.actionKinds],
+          createdAt: action.createdAt,
+          expiresAt: action.expiresAt,
+          state: action.state,
+          ...(action.preferredPeerId ? { preferredPeerId: action.preferredPeerId } : {}),
+          ...(action.lockedPeerId ? { lockedPeerId: action.lockedPeerId } : {}),
+          ...(action.assignedPeerId ? { assignedPeerId: action.assignedPeerId } : {}),
+          ...(action.claimExpiresAt !== undefined ? { claimExpiresAt: action.claimExpiresAt } : {}),
+          attemptCount: action.attemptCount,
+          reclaimCount: action.reclaimCount,
+          ...(action.lastClaimExpiredAt !== undefined ? { lastClaimExpiredAt: action.lastClaimExpiredAt } : {}),
+        })),
       }
     : undefined;
 }
