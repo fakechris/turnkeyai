@@ -132,7 +132,14 @@ function isSameScheduledTaskShape(left: ScheduledTaskRecord, right: ScheduledTas
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function normalizeStoredScheduledTaskRecord(task: ScheduledTaskRecord): ScheduledTaskRecord {
+type LegacyStoredScheduledTaskRecord = ScheduledTaskRecord & {
+  targetRoleId?: string;
+  targetWorker?: import("@turnkeyai/core-types/team").WorkerKind;
+  sessionTarget?: import("@turnkeyai/core-types/team").SessionTarget;
+  recoveryContext?: import("@turnkeyai/core-types/team").DispatchRecoveryContext;
+};
+
+function normalizeStoredScheduledTaskRecord(task: LegacyStoredScheduledTaskRecord): ScheduledTaskRecord {
   const targetRoleId = task.dispatch?.targetRoleId ?? task.targetRoleId;
   if (!targetRoleId) {
     throw new Error(`scheduled task is missing targetRoleId: ${task.taskId}`);

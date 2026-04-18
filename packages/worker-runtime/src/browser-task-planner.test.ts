@@ -2,13 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type {
+  DispatchContinuationContext,
+  DispatchPolicy,
   FlowLedger,
   HandoffEnvelope,
   RolePromptPacketLike,
   RoleRunState,
   TeamThread,
+  TeamMessageSummary,
   WorkerInvocationInput,
 } from "@turnkeyai/core-types/team";
+import { normalizeRelayPayload } from "@turnkeyai/core-types/team";
 
 import { DefaultBrowserTaskPlanner } from "./browser-task-planner";
 
@@ -242,7 +246,13 @@ function buildTestInvocationInput(overrides?: {
   thread?: Partial<TeamThread>;
   flow?: Partial<FlowLedger>;
   handoff?: Partial<Omit<HandoffEnvelope, "payload">> & {
-    payload?: Partial<HandoffEnvelope["payload"]>;
+    payload?: Partial<HandoffEnvelope["payload"]> & {
+      relayBrief?: string;
+      recentMessages?: TeamMessageSummary[];
+      instructions?: string;
+      dispatchPolicy?: DispatchPolicy;
+      continuationContext?: DispatchContinuationContext;
+    };
   };
   packet?: Partial<RolePromptPacketLike>;
 }): WorkerInvocationInput {
@@ -303,7 +313,7 @@ function buildTestInvocationInput(overrides?: {
     targetRoleId: runState.roleId,
     activationType: "mention",
     threadId: runState.threadId,
-    payload: {
+    payload: normalizeRelayPayload({
       threadId: runState.threadId,
       relayBrief: "",
       recentMessages: [],
@@ -314,7 +324,7 @@ function buildTestInvocationInput(overrides?: {
         sourceFlowMode: "serial",
       },
       ...(handoffPayloadOverrides ?? {}),
-    },
+    }),
     createdAt: 1,
     ...handoffRestOverrides,
   };

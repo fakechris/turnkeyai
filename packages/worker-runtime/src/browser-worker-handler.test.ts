@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { BrowserBridge, WorkerInvocationInput } from "@turnkeyai/core-types/team";
+import { normalizeRelayPayload, type BrowserBridge, type WorkerInvocationInput } from "@turnkeyai/core-types/team";
 import { FileReplayRecorder } from "@turnkeyai/qc-runtime/file-replay-recorder";
 
 import { BrowserWorkerHandler } from "./browser-worker-handler";
@@ -805,7 +805,7 @@ function buildWorkerInvocationInput(overrides?: {
         targetRoleId: "role-operator",
         activationType: "mention",
         threadId: "thread-1",
-        payload: {
+        payload: normalizeRelayPayload({
           threadId: "thread-1",
           relayBrief: "",
           recentMessages: [],
@@ -815,7 +815,7 @@ function buildWorkerInvocationInput(overrides?: {
             allowReenter: true,
             sourceFlowMode: "serial",
           },
-        },
+        }),
         createdAt: 1,
       },
     },

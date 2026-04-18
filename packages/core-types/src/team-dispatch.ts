@@ -71,27 +71,21 @@ export interface RelayPayload {
   continuity?: DispatchContinuity;
   coordination?: DispatchCoordination;
   constraints?: DispatchConstraints;
-  /** @deprecated Use `intent.relayBrief`. */
-  relayBrief?: string;
-  /** @deprecated Use `intent.recentMessages`. */
-  recentMessages?: TeamMessageSummary[];
-  /** @deprecated Use `intent.instructions`. */
-  instructions?: string;
-  /** @deprecated Use `constraints.preferredWorkerKinds`. */
-  preferredWorkerKinds?: WorkerKind[];
-  /** @deprecated Prefer `continuity`; keep `sessionTarget` only for legacy compatibility. */
   sessionTarget?: SessionTarget;
-  /** @deprecated Use `continuity.context`. */
-  continuationContext?: DispatchContinuationContext;
-  /** @deprecated Use `coordination.merge`. */
-  mergeContext?: FanOutMergeContext;
-  /** @deprecated Use `coordination.parallel`. */
-  parallelContext?: ParallelOrchestrationContext;
-  /** @deprecated Use `constraints.dispatchPolicy`. */
-  dispatchPolicy?: DispatchPolicy;
 }
 
-export function normalizeRelayPayload(payload: RelayPayload): RelayPayload {
+type LegacyRelayPayloadInput = RelayPayload & {
+  relayBrief?: string;
+  recentMessages?: TeamMessageSummary[];
+  instructions?: string;
+  preferredWorkerKinds?: WorkerKind[];
+  continuationContext?: DispatchContinuationContext;
+  mergeContext?: FanOutMergeContext;
+  parallelContext?: ParallelOrchestrationContext;
+  dispatchPolicy?: DispatchPolicy;
+};
+
+export function normalizeRelayPayload(payload: LegacyRelayPayloadInput): RelayPayload {
   const relayBrief = payload.intent?.relayBrief ?? payload.relayBrief ?? "";
   const recentMessages = payload.intent?.recentMessages ?? payload.recentMessages ?? [];
   const instructions = payload.intent?.instructions ?? payload.instructions;
@@ -115,11 +109,15 @@ export function normalizeRelayPayload(payload: RelayPayload): RelayPayload {
 
   return {
     threadId: payload.threadId,
-    intent: {
-      relayBrief,
-      recentMessages,
-      ...(instructions ? { instructions } : {}),
-    },
+    ...(relayBrief || recentMessages.length > 0 || instructions
+      ? {
+          intent: {
+            relayBrief,
+            recentMessages,
+            ...(instructions ? { instructions } : {}),
+          },
+        }
+      : {}),
     ...(continuity ? { continuity } : {}),
     ...(coordination ? { coordination } : {}),
     ...(dispatchPolicy
@@ -129,20 +127,8 @@ export function normalizeRelayPayload(payload: RelayPayload): RelayPayload {
             ...(preferredWorkerKinds.length > 0 ? { preferredWorkerKinds } : {}),
           },
         }
-      : preferredWorkerKinds.length > 0
-        ? {
-            preferredWorkerKinds,
-          }
-        : {}),
-    relayBrief,
-    recentMessages,
-    ...(instructions ? { instructions } : {}),
-    ...(preferredWorkerKinds.length > 0 ? { preferredWorkerKinds } : {}),
+      : {}),
     ...(payload.sessionTarget ? { sessionTarget: payload.sessionTarget } : {}),
-    ...(continuity?.context ? { continuationContext: continuity.context } : {}),
-    ...(coordination?.merge ? { mergeContext: coordination.merge } : {}),
-    ...(coordination?.parallel ? { parallelContext: coordination.parallel } : {}),
-    ...(dispatchPolicy ? { dispatchPolicy } : {}),
   };
 }
 
@@ -299,23 +285,26 @@ export function toMessageSummary(message: TeamMessage): TeamMessageSummary {
 }
 
 export function getDispatchPolicy(payload: RelayPayload): DispatchPolicy {
-  return payload.constraints?.dispatchPolicy ?? payload.dispatchPolicy!;
+  if (!payload.constraints?.dispatchPolicy) {
+    throw new Error(`relay payload is missing canonical constraints.dispatchPolicy for thread ${payload.threadId}`);
+  }
+  return payload.constraints.dispatchPolicy;
 }
 
 export function getRelayBrief(payload: RelayPayload): string {
-  return payload.intent?.relayBrief ?? payload.relayBrief ?? "";
+  return payload.intent?.relayBrief ?? "";
 }
 
 export function getRecentMessages(payload: RelayPayload): TeamMessageSummary[] {
-  return payload.intent?.recentMessages ?? payload.recentMessages ?? [];
+  return payload.intent?.recentMessages ?? [];
 }
 
 export function getInstructions(payload: RelayPayload): string | undefined {
-  return payload.intent?.instructions ?? payload.instructions;
+  return payload.intent?.instructions;
 }
 
 export function getPreferredWorkerKinds(payload: RelayPayload): WorkerKind[] {
-  return payload.constraints?.preferredWorkerKinds ?? payload.preferredWorkerKinds ?? [];
+  return payload.constraints?.preferredWorkerKinds ?? [];
 }
 
 export function getSessionTarget(payload: RelayPayload): SessionTarget | undefined {
@@ -327,13 +316,13 @@ export function getDispatchContinuityMode(payload: RelayPayload): ContinuityMode
 }
 
 export function getContinuationContext(payload: RelayPayload): DispatchContinuationContext | undefined {
-  return payload.continuity?.context ?? payload.continuationContext;
+  return payload.continuity?.context;
 }
 
 export function getMergeContext(payload: RelayPayload): DispatchCoordination["merge"] {
-  return payload.coordination?.merge ?? payload.mergeContext;
+  return payload.coordination?.merge;
 }
 
 export function getParallelContext(payload: RelayPayload): DispatchCoordination["parallel"] {
-  return payload.coordination?.parallel ?? payload.parallelContext;
+  return payload.coordination?.parallel;
 }

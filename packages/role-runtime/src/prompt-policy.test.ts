@@ -4,7 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { RoleActivationInput } from "@turnkeyai/core-types/team";
+import {
+  normalizeRelayPayload,
+  type DispatchContinuationContext,
+  type DispatchPolicy,
+  type FanOutMergeContext,
+  type ParallelOrchestrationContext,
+  type RoleActivationInput,
+  type TeamMessageSummary,
+  type WorkerKind,
+} from "@turnkeyai/core-types/team";
 import { FileRoleScratchpadStore } from "@turnkeyai/team-store/context/file-role-scratchpad-store";
 import { FileThreadJournalStore } from "@turnkeyai/team-store/context/file-thread-journal-store";
 import { FileThreadMemoryStore } from "@turnkeyai/team-store/context/file-thread-memory-store";
@@ -198,10 +207,9 @@ test("default role prompt policy can retrieve thread memory when the query match
       ...buildFinanceActivationInput(),
       handoff: {
         ...buildFinanceActivationInput().handoff,
-        payload: {
-          ...buildFinanceActivationInput().handoff.payload,
+        payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
           relayBrief: "Before answering, remember my preference for concise recommendations.",
-        },
+        }),
       },
     });
 
@@ -282,10 +290,9 @@ test("default role prompt policy keeps a deterministic section order when sessio
       ...buildFinanceActivationInput(),
       handoff: {
         ...buildFinanceActivationInput().handoff,
-        payload: {
-          ...buildFinanceActivationInput().handoff.payload,
+        payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
           instructions: "Continue the same task and tell me what is pending or waiting next.",
-        },
+        }),
       },
     });
 
@@ -414,8 +421,7 @@ test("default role prompt policy preserves session memory continuity under tight
       ...activation,
       handoff: {
         ...activation.handoff,
-        payload: {
-          ...activation.handoff.payload,
+        payload: withRelayPayloadOverrides(activation.handoff.payload, {
           relayBrief:
             "Continue the same supplier review, keep the unresolved browser follow-up visible, and tell me what is still waiting next. "
               .repeat(6)
@@ -464,7 +470,7 @@ test("default role prompt policy preserves session memory continuity under tight
               createdAt: 6,
             },
           ],
-        },
+        }),
       },
     });
 
@@ -521,11 +527,10 @@ test("default role prompt policy trims lower-priority prompt sections when over 
     ...buildFinanceActivationInput(),
     handoff: {
       ...buildFinanceActivationInput().handoff,
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         relayBrief:
           "Compare OpenAI and Anthropic launch costs and return only the finance delta. ".repeat(10).trim(),
-      },
+      }),
     },
   });
 
@@ -690,11 +695,10 @@ test("default role prompt policy keeps widened explicit recall memory hits with 
       ...buildFinanceActivationInput(),
       handoff: {
         ...buildFinanceActivationInput().handoff,
-        payload: {
-          ...buildFinanceActivationInput().handoff.payload,
+        payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
           relayBrief:
             "Recall preference pricing-1, preference pricing-2, preference pricing-3, preference pricing-4, preference pricing-5, and preference pricing-6 before continuing.",
-        },
+        }),
       },
     });
 
@@ -779,11 +783,10 @@ test("default role prompt policy keeps constraint memory ahead of journal recap 
       ...buildFinanceActivationInput(),
       handoff: {
         ...buildFinanceActivationInput().handoff,
-        payload: {
-          ...buildFinanceActivationInput().handoff.payload,
+        payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
           relayBrief:
             "Continue the task, keep the budget constraint visible, and recall what limit still matters before the next step.",
-        },
+        }),
       },
     });
 
@@ -813,8 +816,7 @@ test("default role prompt policy keeps salient earlier turns during recent-turn 
     ...activation,
     handoff: {
       ...activation.handoff,
-      payload: {
-        ...activation.handoff.payload,
+      payload: withRelayPayloadOverrides(activation.handoff.payload, {
         recentMessages: [
           {
             messageId: "m1",
@@ -866,7 +868,7 @@ test("default role prompt policy keeps salient earlier turns during recent-turn 
             createdAt: 7,
           },
         ],
-      },
+      }),
     },
   });
 
@@ -940,10 +942,9 @@ test("default role prompt policy honors explicit preferred worker instructions",
     handoff: {
       ...buildFinanceActivationInput().handoff,
       targetRoleId: "role-operator",
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         instructions: "Continue this scheduled task.\nPreferred worker: explore",
-      },
+      }),
     },
   });
 
@@ -978,8 +979,7 @@ test("default role prompt policy honors structured worker resume hints", async (
     handoff: {
       ...buildFinanceActivationInput().handoff,
       targetRoleId: "role-operator",
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         instructions: "This string should not override structured preferences.",
         preferredWorkerKinds: ["browser"],
         sessionTarget: "worker",
@@ -989,7 +989,7 @@ test("default role prompt policy honors structured worker resume hints", async (
           workerRunKey: "worker:browser:task:task-existing",
           summary: "Continue the existing browser review from the partial findings.",
         },
-      },
+      }),
     },
   });
 
@@ -1035,11 +1035,10 @@ test("default role prompt policy resumes worker-targeted handoffs without explic
     handoff: {
       ...buildFinanceActivationInput().handoff,
       targetRoleId: "role-operator",
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         sessionTarget: "worker",
         instructions: "Check the pending browser follow-up.",
-      },
+      }),
     },
   });
 
@@ -1074,10 +1073,9 @@ test("default role prompt policy infers continuity preference from continue-styl
     handoff: {
       ...buildFinanceActivationInput().handoff,
       targetRoleId: "role-operator",
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         instructions: "Please continue with the same browser session and pick up where you left off.",
-      },
+      }),
     },
   });
 
@@ -1140,10 +1138,9 @@ test("default role prompt policy builds a role-level continuity section from scr
       ...buildFinanceActivationInput(),
       handoff: {
         ...buildFinanceActivationInput().handoff,
-        payload: {
-          ...buildFinanceActivationInput().handoff.payload,
+        payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
           instructions: "Continue the same finance analysis from where it paused.",
-        },
+        }),
       },
     });
 
@@ -1166,8 +1163,7 @@ test("default role prompt policy injects merge coverage context for synthesis tu
     ...buildFinanceActivationInput(),
     handoff: {
       ...buildFinanceActivationInput().handoff,
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         mergeContext: {
           fanOutGroupId: "msg-lead-fanout:fanout",
           expectedRoleIds: ["research", "finance"],
@@ -1177,7 +1173,7 @@ test("default role prompt policy injects merge coverage context for synthesis tu
           missingRoleIds: [],
           followUpRequired: true,
         },
-      },
+      }),
     },
   });
 
@@ -1208,8 +1204,7 @@ test("default role prompt policy injects research shard packet", async () => {
     ...buildFinanceActivationInput(),
     handoff: {
       ...buildFinanceActivationInput().handoff,
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         parallelContext: {
           kind: "research_shard",
           fanOutGroupId: "msg-lead-fanout:fanout",
@@ -1220,7 +1215,7 @@ test("default role prompt policy injects research shard packet", async () => {
           mergeBackToRoleId: "role-lead",
           shardGoal: "Investigate pricing implications and return only the finance slice.",
         },
-      },
+      }),
     },
     thread: {
       ...buildFinanceActivationInput().thread,
@@ -1261,8 +1256,7 @@ test("default role prompt policy filters self and unknown follow-up mentions", a
     ...buildFinanceActivationInput(),
     handoff: {
       ...buildFinanceActivationInput().handoff,
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         parallelContext: {
           kind: "merge_synthesis",
           fanOutGroupId: "msg-lead-fanout:fanout",
@@ -1276,7 +1270,7 @@ test("default role prompt policy filters self and unknown follow-up mentions", a
           followUpRequired: true,
           shardSummaries: [],
         },
-      },
+      }),
     },
     thread: {
       ...buildFinanceActivationInput().thread,
@@ -1323,10 +1317,9 @@ test("default role prompt policy keeps an older unresolved turn when recent turn
     ...buildFinanceActivationInput(),
     handoff: {
       ...buildFinanceActivationInput().handoff,
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         recentMessages,
-      },
+      }),
     },
   });
 
@@ -1362,10 +1355,9 @@ test("default role prompt policy keeps an older merge-conflict turn when recent 
     ...buildFinanceActivationInput(),
     handoff: {
       ...buildFinanceActivationInput().handoff,
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         recentMessages,
-      },
+      }),
     },
   });
 
@@ -1401,10 +1393,9 @@ test("default role prompt policy keeps an older blocker turn when recent turns a
     ...buildFinanceActivationInput(),
     handoff: {
       ...buildFinanceActivationInput().handoff,
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         recentMessages,
-      },
+      }),
     },
   });
 
@@ -1443,8 +1434,7 @@ test("default role prompt policy keeps salient blocker turns when recent-turn se
     ...buildFinanceActivationInput(),
     handoff: {
       ...buildFinanceActivationInput().handoff,
-      payload: {
-        ...buildFinanceActivationInput().handoff.payload,
+      payload: withRelayPayloadOverrides(buildFinanceActivationInput().handoff.payload, {
         recentMessages: [
           {
             messageId: "msg-user-blocker-0",
@@ -1463,7 +1453,7 @@ test("default role prompt policy keeps salient blocker turns when recent-turn se
             ...(index % 2 === 0 ? { roleId: "role-lead" } : {}),
           })),
         ],
-      },
+      }),
     },
   });
 
@@ -1489,8 +1479,7 @@ test("default role prompt policy keeps both older user approval ask and assistan
     ...activation,
     handoff: {
       ...activation.handoff,
-      payload: {
-        ...activation.handoff.payload,
+      payload: withRelayPayloadOverrides(activation.handoff.payload, {
         recentMessages: [
           {
             messageId: "msg-user-approval-0",
@@ -1516,7 +1505,7 @@ test("default role prompt policy keeps both older user approval ask and assistan
             ...(index % 2 === 0 ? { roleId: "role-lead" } : {}),
           })),
         ],
-      },
+      }),
     },
   });
 
@@ -1524,6 +1513,82 @@ test("default role prompt policy keeps both older user approval ask and assistan
   assert.match(packet.taskPrompt, /finance shard is still missing and the follow-up is unresolved/);
   assert.match(packet.taskPrompt, /Routine continuation turn 7/);
 });
+
+type RelayPayloadOverrides = Partial<RoleActivationInput["handoff"]["payload"]> & {
+  relayBrief?: string;
+  recentMessages?: TeamMessageSummary[];
+  instructions?: string;
+  dispatchPolicy?: DispatchPolicy;
+  preferredWorkerKinds?: WorkerKind[];
+  continuationContext?: DispatchContinuationContext;
+  mergeContext?: FanOutMergeContext;
+  parallelContext?: ParallelOrchestrationContext;
+};
+
+function withRelayPayloadOverrides(
+  payload: RoleActivationInput["handoff"]["payload"],
+  overrides: RelayPayloadOverrides
+): RoleActivationInput["handoff"]["payload"] {
+  const {
+    relayBrief,
+    recentMessages,
+    instructions,
+    dispatchPolicy,
+    preferredWorkerKinds,
+    continuationContext,
+    mergeContext,
+    parallelContext,
+    ...rest
+  } = overrides;
+
+  const nextRelayBrief = relayBrief ?? payload.intent?.relayBrief;
+  const nextRecentMessages = recentMessages ?? payload.intent?.recentMessages;
+  const nextInstructions = instructions ?? payload.intent?.instructions;
+  const nextDispatchPolicy = dispatchPolicy ?? payload.constraints?.dispatchPolicy;
+  const nextPreferredWorkerKinds = preferredWorkerKinds ?? payload.constraints?.preferredWorkerKinds;
+  const nextContinuationContext = continuationContext ?? payload.continuity?.context;
+  const nextMergeContext = mergeContext ?? payload.coordination?.merge;
+  const nextParallelContext = parallelContext ?? payload.coordination?.parallel;
+
+  return normalizeRelayPayload({
+    ...payload,
+    ...rest,
+    ...(nextRelayBrief !== undefined || nextRecentMessages !== undefined || nextInstructions !== undefined
+      ? {
+          intent: {
+            relayBrief: nextRelayBrief ?? "",
+            recentMessages: nextRecentMessages ?? [],
+            ...(nextInstructions ? { instructions: nextInstructions } : {}),
+          },
+        }
+      : {}),
+    ...(nextDispatchPolicy
+      ? {
+          constraints: {
+            dispatchPolicy: nextDispatchPolicy,
+            ...(nextPreferredWorkerKinds?.length ? { preferredWorkerKinds: nextPreferredWorkerKinds } : {}),
+          },
+        }
+      : {}),
+    ...(nextContinuationContext
+      ? {
+          continuity: {
+            ...(payload.continuity ?? {}),
+            context: nextContinuationContext,
+          },
+        }
+      : {}),
+    ...(nextMergeContext || nextParallelContext
+      ? {
+          coordination: {
+            ...(payload.coordination ?? {}),
+            ...(nextMergeContext ? { merge: nextMergeContext } : {}),
+            ...(nextParallelContext ? { parallel: nextParallelContext } : {}),
+          },
+        }
+      : {}),
+  });
+}
 
 function buildFinanceActivationInput(): RoleActivationInput {
   return {
@@ -1582,7 +1647,7 @@ function buildFinanceActivationInput(): RoleActivationInput {
       targetRoleId: "role-finance",
       activationType: "mention",
       threadId: "thread-1",
-      payload: {
+      payload: normalizeRelayPayload({
         threadId: "thread-1",
         relayBrief: "Compare OpenAI and Anthropic launch costs and return only the finance delta.",
         recentMessages: [
@@ -1608,7 +1673,7 @@ function buildFinanceActivationInput(): RoleActivationInput {
           allowReenter: true,
           sourceFlowMode: "serial",
         },
-      },
+      }),
       createdAt: 3,
     },
   };

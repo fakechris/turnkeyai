@@ -11,7 +11,6 @@ export function createScheduledTaskRecord(input: {
   updatedAt: number;
 }): ScheduledTaskRecord {
   const preferredWorkerKinds = input.dispatch.constraints?.preferredWorkerKinds;
-  const recoveryContext = input.dispatch.continuity?.context?.recovery;
 
   return {
     taskId: input.taskId,
@@ -24,10 +23,6 @@ export function createScheduledTaskRecord(input: {
       ...(input.dispatch.continuity ? { continuity: input.dispatch.continuity } : {}),
       ...(preferredWorkerKinds?.length ? { constraints: { preferredWorkerKinds } } : {}),
     },
-    targetRoleId: input.dispatch.targetRoleId,
-    ...(input.dispatch.targetWorker ? { targetWorker: input.dispatch.targetWorker } : {}),
-    sessionTarget: input.dispatch.sessionTarget,
-    ...(recoveryContext ? { recoveryContext } : {}),
     schedule: input.schedule,
     capsule: input.capsule,
     createdAt: input.createdAt,

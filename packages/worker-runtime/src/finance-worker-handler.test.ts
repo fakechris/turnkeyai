@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { WorkerInvocationInput } from "@turnkeyai/core-types/team";
+import { normalizeRelayPayload, type WorkerInvocationInput } from "@turnkeyai/core-types/team";
 
 import { FinanceWorkerHandler } from "./finance-worker-handler";
 
@@ -77,7 +77,7 @@ function buildFinanceInvocationInput(): WorkerInvocationInput {
         targetRoleId: "role-finance",
         activationType: "mention",
         threadId: "thread-1",
-        payload: {
+        payload: normalizeRelayPayload({
           threadId: "thread-1",
           relayBrief: "Summarize pricing.",
           recentMessages: [],
@@ -87,7 +87,7 @@ function buildFinanceInvocationInput(): WorkerInvocationInput {
             allowReenter: true,
             sourceFlowMode: "serial",
           },
-        },
+        }),
         createdAt: 1,
       },
     },
