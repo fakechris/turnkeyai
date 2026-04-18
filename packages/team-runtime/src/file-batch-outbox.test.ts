@@ -152,3 +152,53 @@ test("file batch outbox can release an optimistic claim back to pending without 
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("file batch outbox preserves dead letters and reclaimable inflight batches across store recreation", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "file-batch-outbox-restart-"));
+  let now = 30_000;
+
+  try {
+    let outbox = new FileBatchOutbox<number>({
+      rootDir: tempDir,
+      now: () => now,
+    });
+    const inflight = await outbox.enqueueClaimed([1], {
+      leaseDurationMs: 50,
+    });
+    const pending = await outbox.enqueue([2]);
+    const pendingClaim = await outbox.claimDue({
+      leaseDurationMs: 50,
+      now,
+    });
+    assert.equal(pendingClaim.length, 1);
+    assert.equal(pendingClaim[0]?.batchId, pending.batchId);
+    assert.ok(pendingClaim[0]?.leaseId);
+    await outbox.deadLetter(pending.batchId, {
+      attemptCount: 1,
+      items: [2],
+      error: new Error("permanent failure"),
+      leaseId: pendingClaim[0]!.leaseId,
+    });
+
+    now = 30_200;
+    outbox = new FileBatchOutbox<number>({
+      rootDir: tempDir,
+      now: () => now,
+    });
+
+    const inspection = await outbox.inspect(now);
+    assert.equal(inspection.deadLetterBatches, 1);
+    assert.equal(inspection.expiredInflightBatches, 1);
+    assert.deepEqual(inspection.affectedBatchIds.sort(), [inflight.batchId, pending.batchId].sort());
+
+    const reclaimed = await outbox.claimDue({
+      leaseDurationMs: 50,
+      now,
+    });
+    assert.equal(reclaimed.length, 1);
+    assert.equal(reclaimed[0]?.batchId, inflight.batchId);
+    assert.notEqual(reclaimed[0]?.leaseId, inflight.leaseId);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

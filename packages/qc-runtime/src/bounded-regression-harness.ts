@@ -1894,6 +1894,46 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
   {
+    caseId: "governance-browser-evidence-stays-summary-only",
+    title: "Governance keeps downgraded browser evidence in summary-only mode",
+    area: "governance",
+    summary:
+      "Suspicious or non-verifiable browser evidence should remain observational and summary-only instead of being promoted as final evidence.",
+    run() {
+      const report = buildGovernanceConsoleReport([], [
+        {
+          eventId: "evt-browser-evidence",
+          threadId: "thread-1",
+          kind: "audit.logged",
+          createdAt: 10,
+          payload: {
+            workerType: "browser",
+            status: "completed",
+            transport: "browser",
+            trustLevel: "observational",
+            admissionMode: "summary_only",
+            permission: {
+              recommendedAction: "proceed",
+            },
+          },
+        },
+      ]);
+      const details = [
+        `attention=${report.attentionCount}`,
+        `browser=${report.transportCounts.browser ?? 0}`,
+        `observational=${report.trustCounts.observational ?? 0}`,
+        `summary_only=${report.admissionCounts.summary_only ?? 0}`,
+      ];
+      const passed =
+        report.attentionCount === 0 &&
+        report.transportCounts.browser === 1 &&
+        report.trustCounts.observational === 1 &&
+        report.admissionCounts.summary_only === 1 &&
+        report.recommendedActionCounts.proceed === 1;
+      return buildResult(this, passed, details);
+    },
+  },
+  {
     caseId: "governance-publish-readback-verifies-closure",
     title: "Governed publish read-back verification closes the path",
     area: "governance",

@@ -306,6 +306,43 @@ test("evidence trust policy downgrades browser evidence with prompt-like page ex
   assert.ok(assessment.rationale.some((entry) => entry.includes("override prior instructions")));
 });
 
+test("evidence trust policy downgrades browser evidence with non-read-only trace", () => {
+  const policy = new DefaultEvidenceTrustPolicy();
+
+  const assessment = policy.assess({
+    workerType: "browser",
+    workerStatus: "completed",
+    payload: {
+      page: {
+        textExcerpt: "Product inventory dashboard",
+      },
+      trace: [{ kind: "open" }, { kind: "click" }],
+      quality: {
+        stepReport: { ok: true },
+        resultReport: { ok: true },
+        errors: [],
+      },
+    },
+    apiDiagnosis: [],
+    permission: {
+      requirement: {
+        level: "none",
+        scope: "read",
+        rationale: "read-only",
+        cacheKey: "thread-1:browser:read:none",
+      },
+      decision: "granted",
+      source: "policy",
+      recommendedAction: "proceed",
+    },
+  });
+
+  assert.equal(assessment.trustLevel, "observational");
+  assert.equal(assessment.verified, false);
+  assert.equal(assessment.downgraded, true);
+  assert.ok(assessment.rationale.some((entry) => entry.includes("not fully verifiable")));
+});
+
 test("prompt admission policy downgrades observational evidence to summary-only", () => {
   const policy = new DefaultPromptAdmissionPolicy();
   const apiDiagnosis: ApiDiagnosisReport[] = [];
@@ -379,4 +416,46 @@ test("prompt admission policy keeps suspicious browser excerpts out of full prom
     decision.reason.includes("override prior instructions") ||
       decision.reason.includes("control tool execution")
   );
+});
+
+test("prompt admission policy downgrades unresolved non-retryable API diagnosis", () => {
+  const policy = new DefaultPromptAdmissionPolicy();
+
+  const decision = policy.decide({
+    workerType: "explore",
+    workerStatus: "completed",
+    summary: "Fetched product metadata.",
+    payload: {},
+    trust: {
+      sourceType: "api",
+      trustLevel: "promotable",
+      rationale: ["successful API execution with no diagnosis errors"],
+      verified: true,
+      downgraded: false,
+    },
+    permission: {
+      requirement: {
+        level: "none",
+        scope: "read",
+        rationale: "read-only",
+        cacheKey: "thread-1:explore:read:none",
+      },
+      decision: "granted",
+      source: "policy",
+      recommendedAction: "proceed",
+    },
+    apiDiagnosis: [
+      {
+        ok: false,
+        category: "schema",
+        retryable: false,
+        issues: ["unexpected response schema"],
+        suggestedActions: ["inspect API result before promoting"],
+      },
+    ],
+  });
+
+  assert.equal(decision.mode, "summary_only");
+  assert.equal(decision.trustLevel, "observational");
+  assert.ok(decision.reason.includes("unresolved API diagnosis"));
 });

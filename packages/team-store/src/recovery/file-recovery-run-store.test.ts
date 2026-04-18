@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { chmod } from "node:fs/promises";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -409,6 +410,76 @@ test("file recovery run store rejects stale expected versions", async () => {
       /recovery run version conflict/
     );
   } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("file recovery run store restores thread, by-id, and attempts when by-id write fails", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "runtime-recovery-run-rollback-"));
+  const byIdDir = path.join(rootDir, "by-id");
+
+  try {
+    const store = new FileRecoveryRunStore({ rootDir });
+
+    await store.put({
+      recoveryRunId: "recovery:rollback",
+      threadId: "thread-1",
+      sourceGroupId: "task-rollback",
+      latestStatus: "failed",
+      status: "retrying",
+      nextAction: "retry_same_layer",
+      autoDispatchReady: true,
+      requiresManualIntervention: false,
+      latestSummary: "first attempt",
+      attempts: [
+        {
+          attemptId: "recovery:rollback:attempt:1",
+          action: "retry",
+          requestedAt: 11,
+          updatedAt: 12,
+          status: "retrying",
+          nextAction: "retry_same_layer",
+          summary: "first retry",
+        },
+      ],
+      createdAt: 10,
+      updatedAt: 20,
+    });
+
+    const original = await store.get("recovery:rollback");
+    assert.ok(original);
+
+    if (process.platform === "win32") {
+      return;
+    }
+
+    await chmod(byIdDir, 0o500);
+    await assert.rejects(
+      () =>
+        store.put(
+          {
+            ...original!,
+            latestSummary: "updated summary",
+            updatedAt: 30,
+            attempts: [
+              {
+                ...original!.attempts[0]!,
+                updatedAt: 31,
+                summary: "updated retry summary",
+              },
+            ],
+          },
+          { expectedVersion: original?.version }
+        )
+    );
+    await chmod(byIdDir, 0o700);
+
+    const restored = await store.get("recovery:rollback");
+    assert.deepEqual(restored, original);
+    assert.deepEqual((await store.listByThread("thread-1"))[0], original);
+    assert.equal(restored?.attempts[0]?.summary, "first retry");
+  } finally {
+    await chmod(byIdDir, 0o700).catch(() => {});
     await rm(rootDir, { recursive: true, force: true });
   }
 });
