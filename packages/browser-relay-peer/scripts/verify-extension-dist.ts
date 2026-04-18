@@ -32,31 +32,29 @@ async function main(): Promise<void> {
 }
 
 async function readJsonFileWithRetry(filePath: string, timeoutMs: number): Promise<unknown> {
-  const startedAt = Date.now();
-  let lastError: unknown = null;
-  while (Date.now() - startedAt <= timeoutMs) {
-    try {
-      return JSON.parse(await readFile(filePath, "utf8")) as unknown;
-    } catch (error) {
-      lastError = error;
-      if (!shouldRetry(error)) {
-        throw error;
-      }
-      await sleep(VERIFY_POLL_INTERVAL_MS);
-    }
-  }
-  throw lastError instanceof Error
-    ? new Error(`timed out waiting for readable JSON file: ${filePath}`, { cause: lastError })
-    : new Error(`timed out waiting for readable JSON file: ${filePath}`);
+  return retryUntil(
+    async () => JSON.parse(await readFile(filePath, "utf8")) as unknown,
+    timeoutMs,
+    `timed out waiting for readable JSON file: ${filePath}`
+  );
 }
 
 async function waitForFile(filePath: string, timeoutMs: number): Promise<void> {
+  await retryUntil(
+    async () => {
+      await access(filePath);
+    },
+    timeoutMs,
+    `timed out waiting for extension dist file: ${filePath}`
+  );
+}
+
+async function retryUntil<T>(operation: () => Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
   const startedAt = Date.now();
   let lastError: unknown = null;
   while (Date.now() - startedAt <= timeoutMs) {
     try {
-      await access(filePath);
-      return;
+      return await operation();
     } catch (error) {
       lastError = error;
       if (!shouldRetry(error)) {
@@ -66,8 +64,8 @@ async function waitForFile(filePath: string, timeoutMs: number): Promise<void> {
     }
   }
   throw lastError instanceof Error
-    ? new Error(`timed out waiting for extension dist file: ${filePath}`, { cause: lastError })
-    : new Error(`timed out waiting for extension dist file: ${filePath}`);
+    ? new Error(errorMessage, { cause: lastError })
+    : new Error(errorMessage);
 }
 
 function shouldRetry(error: unknown): boolean {

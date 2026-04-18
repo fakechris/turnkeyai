@@ -530,6 +530,13 @@ async function runBrowserSessionSmoke(input: {
   if (sendTransportLabel !== "chrome-relay") {
     throw new Error(`relay send smoke returned unexpected transport label: ${sendTransportLabel}`);
   }
+  const waitTrace = sendResponse.trace?.find((entry) => entry.kind === "wait");
+  if (!waitTrace) {
+    throw new Error("relay send smoke did not record wait trace");
+  }
+  if (waitTrace.input?.timeoutMs !== 50) {
+    throw new Error(`relay send smoke recorded unexpected wait timeout: ${String(waitTrace.input?.timeoutMs ?? "unknown")}`);
+  }
   const metadataTrace = sendResponse.trace?.find((entry) => entry.kind === "console");
   const metadataResult = metadataTrace?.output && typeof metadataTrace.output === "object"
     ? (metadataTrace.output as { result?: { title?: unknown; href?: unknown; interactiveCount?: unknown } }).result

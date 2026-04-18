@@ -37,7 +37,7 @@ test("chrome content script executes snapshot, click, type, scroll, wait, and co
     { kind: "click", text: "Approve" },
     { kind: "type", selectors: ["input"], text: "hello", submit: true },
     { kind: "scroll", direction: "down", amount: 240 },
-    { kind: "wait", timeoutMs: 1 },
+    { kind: "wait", timeoutMs: 0 },
     { kind: "console", probe: "page-metadata" },
   ]);
 

@@ -31,6 +31,17 @@ import { RelayGateway, isRelayExecutableAction } from "./relay-gateway";
 import type { RelayActionRequest, RelayActionResult } from "./relay-protocol";
 import type { BrowserTransportAdapter, BrowserTransportFactoryOptions, RelayControlPlane, RelayTransportOptions } from "./transport-adapter";
 
+const RELAY_EXECUTABLE_ACTION_KINDS = new Set<string>([
+  "open",
+  "snapshot",
+  "click",
+  "type",
+  "scroll",
+  "console",
+  "wait",
+  "screenshot",
+]);
+
 export class RelayBrowserAdapter implements BrowserTransportAdapter {
   readonly transportMode = "relay" as const;
   readonly transportLabel = "chrome-relay";
@@ -215,7 +226,8 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
   ): Promise<BrowserTaskResult> {
     const supportedActions = task.actions.filter(isRelayExecutableAction);
     if (supportedActions.length !== task.actions.length) {
-      throw new Error("relay browser transport does not support one or more action kinds");
+      const unsupportedKinds = [...new Set(task.actions.map((action) => action.kind).filter((kind) => !RELAY_EXECUTABLE_ACTION_KINDS.has(kind)))];
+      throw new Error(`relay browser transport does not support action kinds yet: ${unsupportedKinds.join(", ")}`);
     }
     let relayActions = supportedActions;
 

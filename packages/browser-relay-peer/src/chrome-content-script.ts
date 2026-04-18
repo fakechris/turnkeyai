@@ -42,6 +42,8 @@ export interface ChromeRelayContentScriptEnvironment {
   window: WindowLike;
 }
 
+const MAX_RELAY_WAIT_ACTION_MS = 60_000;
+
 export function registerChromeRelayContentScript(
   runtime: ChromeRuntimeLike,
   environment: ChromeRelayContentScriptEnvironment = getDefaultContentScriptEnvironment()
@@ -209,7 +211,7 @@ export async function executeChromeRelayContentScriptActions(
       if (action.kind === "wait") {
         const timeoutMs =
           typeof action.timeoutMs === "number" && Number.isFinite(action.timeoutMs) && action.timeoutMs >= 0
-            ? action.timeoutMs
+            ? Math.min(Math.trunc(action.timeoutMs), MAX_RELAY_WAIT_ACTION_MS)
             : 0;
         await sleep(timeoutMs);
         latestSnapshot = captureSnapshot(environment);

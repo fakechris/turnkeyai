@@ -42,7 +42,6 @@ for (let index = 0; index < args.length; index += 1) {
 }
 
 const extensionDir = path.resolve(process.cwd(), "packages/browser-relay-peer/dist/extension");
-await access(path.join(extensionDir, "manifest.json"));
 
 const resolvedChromePath = await resolveChromePath(chromePath ?? process.env.TURNKEYAI_BROWSER_PATH);
 const resolvedProfileDir =

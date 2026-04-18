@@ -9,6 +9,8 @@ export class ChromeRelayActionExecutor {
   private readonly contentScriptRetryAttempts = 20;
   private readonly contentScriptRetryDelayMs = 150;
   private readonly tabObserver: ChromeRelayTabObserver;
+  private readonly maxWaitActionMs = 60_000;
+  private readonly requestCompletionBufferMs = 500;
 
   constructor(private readonly platform: ChromeExtensionPlatform) {
     this.tabObserver = new ChromeRelayTabObserver(platform);
@@ -60,7 +62,10 @@ export class ChromeRelayActionExecutor {
       throw new Error("relay action executor could not resolve a target tab");
     }
 
-    const pageActions = pendingActions.filter((action) => action.kind !== "screenshot");
+    const pageActions = this.normalizePageActions(
+      request,
+      pendingActions.filter((action) => action.kind !== "screenshot")
+    );
     const screenshotActions = pendingActions.filter((action) => action.kind === "screenshot");
 
     const contentScriptResponse = pageActions.length
@@ -137,6 +142,45 @@ export class ChromeRelayActionExecutor {
 
   private hasOpenAction(request: RelayActionRequest): boolean {
     return request.actions.some((action) => action.kind === "open");
+  }
+
+  private normalizePageActions(
+    request: RelayActionRequest,
+    actions: RelayActionRequest["actions"]
+  ): RelayActionRequest["actions"] {
+    let remainingWaitBudgetMs = this.maxWaitActionMs;
+    const remainingRequestBudgetMs = request.expiresAt - Date.now() - this.requestCompletionBufferMs;
+    if (Number.isFinite(remainingRequestBudgetMs) && remainingRequestBudgetMs > 0) {
+      remainingWaitBudgetMs = Math.min(remainingWaitBudgetMs, remainingRequestBudgetMs);
+    }
+
+    return actions.map((action) => {
+      if (action.kind !== "wait") {
+        return action;
+      }
+      const timeoutMs =
+        typeof action.timeoutMs === "number" && Number.isFinite(action.timeoutMs) && action.timeoutMs >= 0
+          ? Math.trunc(action.timeoutMs)
+          : 0;
+      if (timeoutMs > this.maxWaitActionMs) {
+        throw new Error(
+          `relay wait action exceeds maximum supported duration: ${timeoutMs}ms > ${this.maxWaitActionMs}ms`
+        );
+      }
+      if (timeoutMs > remainingWaitBudgetMs) {
+        throw new Error(
+          `relay wait action exceeds remaining request budget: ${timeoutMs}ms > ${Math.max(
+            0,
+            Math.trunc(remainingWaitBudgetMs)
+          )}ms`
+        );
+      }
+      remainingWaitBudgetMs -= timeoutMs;
+      return {
+        ...action,
+        timeoutMs,
+      };
+    });
   }
 
   private sendContentScriptActions(
