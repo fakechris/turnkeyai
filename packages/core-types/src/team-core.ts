@@ -1,4 +1,4 @@
-import type { OperatorCaseState } from "./team-replay-recovery";
+import type { OperatorCaseState } from "./team-replay-types";
 import type { RelayPayload, ShardResultRecord } from "./team-dispatch";
 
 export type ThreadId = string;

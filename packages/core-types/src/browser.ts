@@ -1,5 +1,5 @@
 import type { RoleId, RunKey, TaskId, ThreadId, WorkerKind } from "./team-core";
-import type { FailureSummary } from "./team-replay-recovery";
+import type { FailureSummary } from "./team-replay-types";
 
 export interface BrowserPageResult {
   requestedUrl: string;
