@@ -116,10 +116,10 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
       results
         .filter((result) => result.repairNeeded)
         .map((result) =>
-        this.runMutex.run(result.run.recoveryRunId, async () => {
-          await this.repairCanonicalStorageBestEffort(result.run);
-        })
-      )
+          this.runMutex.run(result.run.recoveryRunId, async () => {
+            await this.repairCanonicalStorageBestEffort(result.run);
+          })
+        )
     );
     return results.map((result) => result.run);
   }
@@ -144,10 +144,10 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
       results
         .filter((result) => result.repairNeeded)
         .map((result) =>
-        this.runMutex.run(result.run.recoveryRunId, async () => {
-          await this.repairCanonicalStorageBestEffort(result.run);
-        })
-      )
+          this.runMutex.run(result.run.recoveryRunId, async () => {
+            await this.repairCanonicalStorageBestEffort(result.run);
+          })
+        )
     );
     return results.map((result) => result.run);
   }
