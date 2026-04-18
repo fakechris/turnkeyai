@@ -92,20 +92,20 @@ export function normalizeRelayPayload(payload: LegacyRelayPayloadInput): RelayPa
   const preferredWorkerKinds = payload.constraints?.preferredWorkerKinds ?? payload.preferredWorkerKinds ?? [];
   const dispatchPolicy = payload.constraints?.dispatchPolicy ?? payload.dispatchPolicy;
   const continuity =
-    payload.continuity ??
-    (payload.continuationContext
+    payload.continuity || payload.continuationContext
       ? {
-          context: payload.continuationContext,
+          ...(payload.continuity ?? {}),
+          ...(payload.continuationContext ? { context: payload.continuationContext } : {}),
         }
-      : undefined);
+      : undefined;
   const coordination =
-    payload.coordination ??
-    (payload.mergeContext || payload.parallelContext
+    payload.coordination || payload.mergeContext || payload.parallelContext
       ? {
+          ...(payload.coordination ?? {}),
           ...(payload.mergeContext ? { merge: payload.mergeContext } : {}),
           ...(payload.parallelContext ? { parallel: payload.parallelContext } : {}),
         }
-      : undefined);
+      : undefined;
 
   return {
     threadId: payload.threadId,

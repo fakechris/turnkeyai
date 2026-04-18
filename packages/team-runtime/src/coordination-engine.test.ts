@@ -3485,7 +3485,6 @@ test("coordination engine keeps legacy dispatch policy aligned with expected nex
   });
 
   assert.deepEqual(enqueued[0]?.payload.constraints?.dispatchPolicy?.expectedNextRoleIds, ["lead"]);
-  assert.deepEqual(enqueued[0]?.payload.constraints?.dispatchPolicy?.expectedNextRoleIds, ["lead"]);
 });
 
 test("coordination engine fan-out waits for all shards before dispatching merge back to lead", async () => {

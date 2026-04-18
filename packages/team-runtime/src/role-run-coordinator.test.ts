@@ -27,7 +27,7 @@ function createInMemoryRoleRunStore(): RoleRunStore & { records: Map<string, Rol
   };
 }
 
-test("role run coordinator canonicalizes enqueued legacy handoff payloads", async () => {
+test("role run coordinator enqueues canonical handoff payloads", async () => {
   const roleRunStore = createInMemoryRoleRunStore();
   const coordinator = new DefaultRoleRunCoordinator({
     roleRunStore,

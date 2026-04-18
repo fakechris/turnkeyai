@@ -1514,10 +1514,11 @@ test("default role prompt policy keeps both older user approval ask and assistan
   assert.match(packet.taskPrompt, /Routine continuation turn 7/);
 });
 
-type RelayPayloadOverrides = Partial<RoleActivationInput["handoff"]["payload"]> & {
+type RelayPayloadOverrides = {
   relayBrief?: string;
   recentMessages?: TeamMessageSummary[];
   instructions?: string;
+  sessionTarget?: RoleActivationInput["handoff"]["payload"]["sessionTarget"];
   dispatchPolicy?: DispatchPolicy;
   preferredWorkerKinds?: WorkerKind[];
   continuationContext?: DispatchContinuationContext;
@@ -1533,6 +1534,7 @@ function withRelayPayloadOverrides(
     relayBrief,
     recentMessages,
     instructions,
+    sessionTarget,
     dispatchPolicy,
     preferredWorkerKinds,
     continuationContext,
@@ -1553,6 +1555,7 @@ function withRelayPayloadOverrides(
   return normalizeRelayPayload({
     ...payload,
     ...rest,
+    ...(sessionTarget ? { sessionTarget } : {}),
     ...(nextRelayBrief !== undefined || nextRecentMessages !== undefined || nextInstructions !== undefined
       ? {
           intent: {
