@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { createRelayPayload, createScheduledTaskRecord, normalizeRelayPayload, requireScheduledDispatch } from "./team";
 
-test("normalizeRelayPayload fills canonical and mirrored relay payload fields", () => {
+test("normalizeRelayPayload fills canonical relay payload fields", () => {
   const payload = normalizeRelayPayload({
     threadId: "thread-1",
     relayBrief: "Inspect pricing",
@@ -25,12 +25,9 @@ test("normalizeRelayPayload fills canonical and mirrored relay payload fields", 
   assert.equal(payload.constraints?.dispatchPolicy.sourceFlowMode, "parallel");
   assert.deepEqual(payload.constraints?.preferredWorkerKinds, ["browser"]);
   assert.equal(payload.continuity?.context?.source, "follow_up");
-  assert.equal(payload.dispatchPolicy?.sourceFlowMode, "parallel");
-  assert.deepEqual(payload.preferredWorkerKinds, ["browser"]);
-  assert.equal(payload.continuationContext?.source, "follow_up");
 });
 
-test("createRelayPayload writes canonical relay payloads with mirrored compatibility fields", () => {
+test("createRelayPayload writes canonical relay payloads", () => {
   const payload = createRelayPayload({
     threadId: "thread-1",
     relayBrief: "Continue",
@@ -44,12 +41,10 @@ test("createRelayPayload writes canonical relay payloads with mirrored compatibi
   });
 
   assert.equal(payload.intent?.relayBrief, "Continue");
-  assert.equal(payload.relayBrief, "Continue");
   assert.deepEqual(payload.constraints?.preferredWorkerKinds, ["browser"]);
-  assert.deepEqual(payload.preferredWorkerKinds, ["browser"]);
 });
 
-test("createScheduledTaskRecord writes canonical dispatch with mirrored compatibility fields", () => {
+test("createScheduledTaskRecord writes canonical dispatch payloads", () => {
   const task = createScheduledTaskRecord({
     taskId: "task-1",
     threadId: "thread-1",
@@ -89,10 +84,6 @@ test("createScheduledTaskRecord writes canonical dispatch with mirrored compatib
   assert.equal(task.dispatch?.targetWorker, "browser");
   assert.equal(task.dispatch?.sessionTarget, "worker");
   assert.equal(task.dispatch?.continuity?.context?.recovery?.parentGroupId, "group-1");
-  assert.equal(task.targetRoleId, "role-1");
-  assert.equal(task.targetWorker, "browser");
-  assert.equal(task.sessionTarget, "worker");
-  assert.equal(task.recoveryContext?.parentGroupId, "group-1");
 });
 
 test("requireScheduledDispatch rejects tasks without canonical dispatch", () => {
@@ -101,8 +92,6 @@ test("requireScheduledDispatch rejects tasks without canonical dispatch", () => 
       requireScheduledDispatch({
         taskId: "task-legacy",
         threadId: "thread-1",
-        targetRoleId: "role-1",
-        sessionTarget: "main",
         schedule: {
           kind: "cron",
           expr: "* * * * *",

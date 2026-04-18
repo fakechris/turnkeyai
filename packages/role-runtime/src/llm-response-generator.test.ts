@@ -307,8 +307,6 @@ function buildActivation(
           relayBrief: "Handle the task.",
           recentMessages: [],
         },
-        relayBrief: "Handle the task.",
-        recentMessages: [],
       },
       createdAt: 1,
     },

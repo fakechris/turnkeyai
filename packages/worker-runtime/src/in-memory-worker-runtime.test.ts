@@ -9,6 +9,7 @@ import type {
   WorkerSessionRecord,
   WorkerSessionStore,
 } from "@turnkeyai/core-types/team";
+import { normalizeRelayPayload } from "@turnkeyai/core-types/team";
 
 import { InMemoryWorkerRuntime } from "./in-memory-worker-runtime";
 
@@ -793,7 +794,7 @@ function buildWorkerInvocationInput(): WorkerInvocationInput {
         targetRoleId: "role-operator",
         activationType: "mention",
         threadId: "thread-1",
-        payload: {
+        payload: normalizeRelayPayload({
           threadId: "thread-1",
           relayBrief: "",
           recentMessages: [],
@@ -803,7 +804,7 @@ function buildWorkerInvocationInput(): WorkerInvocationInput {
             allowReenter: true,
             sourceFlowMode: "serial",
           },
-        },
+        }),
         createdAt: 1,
       },
     },

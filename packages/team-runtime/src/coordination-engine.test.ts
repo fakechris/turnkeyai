@@ -528,7 +528,7 @@ test("coordination engine caps and truncates recent messages before dispatch pay
 
   const firstHandoff = enqueued[0];
   assert.ok(firstHandoff);
-  const recentMessages = firstHandoff.payload.recentMessages ?? [];
+  const recentMessages = firstHandoff.payload.intent?.recentMessages ?? [];
   assert.equal(enqueued.length, 1);
   assert.equal(recentMessages.length, 8);
   assert.equal(firstHandoff.payload.intent?.recentMessages.length, 8);
@@ -2703,11 +2703,13 @@ test("coordination engine carries scheduled worker resume hints into the handoff
       },
       async enqueue(runKey, handoff) {
         const payload = {
-          ...(handoff.payload.preferredWorkerKinds ? { preferredWorkerKinds: handoff.payload.preferredWorkerKinds } : {}),
+          ...(handoff.payload.constraints?.preferredWorkerKinds?.length
+            ? { preferredWorkerKinds: handoff.payload.constraints.preferredWorkerKinds }
+            : {}),
           ...(handoff.payload.sessionTarget ? { sessionTarget: handoff.payload.sessionTarget } : {}),
-          ...(handoff.payload.instructions ? { instructions: handoff.payload.instructions } : {}),
-          ...(handoff.payload.continuationContext
-            ? { continuationContext: handoff.payload.continuationContext }
+          ...(handoff.payload.intent?.instructions ? { instructions: handoff.payload.intent.instructions } : {}),
+          ...(handoff.payload.continuity?.context
+            ? { continuationContext: handoff.payload.continuity.context }
             : {}),
         };
         enqueued.push({
@@ -2780,9 +2782,6 @@ test("coordination engine carries scheduled worker resume hints into the handoff
       targetWorker: "browser",
       sessionTarget: "worker",
     },
-    targetRoleId: "operator",
-    targetWorker: "browser",
-    sessionTarget: "worker",
     schedule: {
       kind: "cron",
       expr: "0 9 * * *",
@@ -2951,9 +2950,6 @@ test("coordination engine treats scheduled continuation lookup as best effort", 
       targetWorker: "browser",
       sessionTarget: "worker",
     },
-    targetRoleId: "operator",
-    targetWorker: "browser",
-    sessionTarget: "worker",
     schedule: {
       kind: "cron",
       expr: "0 9 * * *",
@@ -2969,8 +2965,8 @@ test("coordination engine treats scheduled continuation lookup as best effort", 
   });
 
   assert.equal(enqueued.length, 1);
-  assert.equal(enqueued[0]?.payload.continuationContext, undefined);
-  assert.match(enqueued[0]?.payload.instructions ?? "", /Resume the existing worker session when available/);
+  assert.equal(enqueued[0]?.payload.continuity?.context, undefined);
+  assert.match(enqueued[0]?.payload.intent?.instructions ?? "", /Resume the existing worker session when available/);
 });
 
 test("coordination engine preserves recovery context for main-target recovery dispatches", async () => {
@@ -3104,8 +3100,6 @@ test("coordination engine preserves recovery context for main-target recovery di
         },
       },
     },
-    targetRoleId: "lead",
-    sessionTarget: "main",
     schedule: {
       kind: "cron",
       expr: "0 9 * * *",
@@ -3116,17 +3110,12 @@ test("coordination engine preserves recovery context for main-target recovery di
       title: "Recovery follow-up",
       instructions: "Pick up the recovery workflow from the latest failure.",
     },
-    recoveryContext: {
-      parentGroupId: "group-1",
-      action: "inspect_then_resume",
-      dispatchReplayId: "TASK-recovery-main:scheduled",
-    },
     createdAt: 1,
     updatedAt: 1,
   });
 
   assert.equal(enqueued.length, 1);
-  assert.deepEqual(enqueued[0]?.payload.continuationContext, {
+  assert.deepEqual(enqueued[0]?.payload.continuity?.context, {
     source: "recovery_dispatch",
     recovery: {
       parentGroupId: "group-1",
@@ -3281,9 +3270,6 @@ test("coordination engine preserves recovery context when worker continuation lo
         },
       },
     },
-    targetRoleId: "operator",
-    targetWorker: "browser",
-    sessionTarget: "worker",
     schedule: {
       kind: "cron",
       expr: "0 9 * * *",
@@ -3294,17 +3280,12 @@ test("coordination engine preserves recovery context when worker continuation lo
       title: "Recovery worker follow-up",
       instructions: "Retry the browser recovery flow.",
     },
-    recoveryContext: {
-      parentGroupId: "group-2",
-      action: "retry_same_layer",
-      dispatchReplayId: "TASK-recovery-worker-fallback:scheduled",
-    },
     createdAt: 1,
     updatedAt: 1,
   });
 
   assert.equal(enqueued.length, 1);
-  assert.deepEqual(enqueued[0]?.payload.continuationContext, {
+  assert.deepEqual(enqueued[0]?.payload.continuity?.context, {
     source: "recovery_dispatch",
     workerType: "browser",
     recovery: {
@@ -3504,7 +3485,6 @@ test("coordination engine keeps legacy dispatch policy aligned with expected nex
   });
 
   assert.deepEqual(enqueued[0]?.payload.constraints?.dispatchPolicy?.expectedNextRoleIds, ["lead"]);
-  assert.deepEqual(enqueued[0]?.payload.dispatchPolicy?.expectedNextRoleIds, ["lead"]);
 });
 
 test("coordination engine fan-out waits for all shards before dispatching merge back to lead", async () => {
@@ -3684,11 +3664,11 @@ test("coordination engine fan-out waits for all shards before dispatching merge 
   });
 
   assert.equal(enqueued.length, 2);
-  const fanOutGroupId = enqueued[0]?.handoff.payload.dispatchPolicy?.fanOutGroupId;
+  const fanOutGroupId = enqueued[0]?.handoff.payload.constraints?.dispatchPolicy?.fanOutGroupId;
   assert.ok(fanOutGroupId);
-  assert.equal(enqueued[1]?.handoff.payload.dispatchPolicy?.fanOutGroupId, fanOutGroupId);
-  assert.deepEqual(enqueued[0]?.handoff.payload.dispatchPolicy?.coverageTargetRoleIds, ["research", "finance"]);
-  assert.equal(enqueued[0]?.handoff.payload.parallelContext?.kind, "research_shard");
+  assert.equal(enqueued[1]?.handoff.payload.constraints?.dispatchPolicy?.fanOutGroupId, fanOutGroupId);
+  assert.deepEqual(enqueued[0]?.handoff.payload.constraints?.dispatchPolicy?.coverageTargetRoleIds, ["research", "finance"]);
+  assert.equal(enqueued[0]?.handoff.payload.coordination?.parallel?.kind, "research_shard");
 
   const researchHandoff = enqueued[0]!.handoff;
   await engine.handleRoleReply({
@@ -3736,8 +3716,8 @@ test("coordination engine fan-out waits for all shards before dispatching merge 
   );
   assert.equal(enqueued.length, 3);
   assert.equal(enqueued[2]?.handoff.targetRoleId, "lead");
-  assert.equal(enqueued[2]?.handoff.payload.parallelContext?.kind, "merge_synthesis");
-  assert.deepEqual(enqueued[2]?.handoff.payload.mergeContext, {
+  assert.equal(enqueued[2]?.handoff.payload.coordination?.parallel?.kind, "merge_synthesis");
+  assert.deepEqual(enqueued[2]?.handoff.payload.coordination?.merge, {
     fanOutGroupId,
     expectedRoleIds: ["research", "finance"],
     completedRoleIds: ["research", "finance"],
@@ -3760,9 +3740,9 @@ test("coordination engine fan-out waits for all shards before dispatching merge 
     ],
     followUpRequired: false,
   });
-  assert.match(enqueued[2]?.handoff.payload.instructions ?? "", /Fan-out group completed/);
-  assert.match(enqueued[2]?.handoff.payload.instructions ?? "", /Covered roles: research, finance/);
-  assert.match(enqueued[2]?.handoff.payload.instructions ?? "", /Completed: research, finance/);
+  assert.match(enqueued[2]?.handoff.payload.intent?.instructions ?? "", /Fan-out group completed/);
+  assert.match(enqueued[2]?.handoff.payload.intent?.instructions ?? "", /Covered roles: research, finance/);
+  assert.match(enqueued[2]?.handoff.payload.intent?.instructions ?? "", /Completed: research, finance/);
 });
 
 test("coordination engine retries failed shard before merge synthesis", async () => {
@@ -3955,7 +3935,7 @@ test("coordination engine retries failed shard before merge synthesis", async ()
   assert.equal(enqueued.length, 3);
   assert.equal(enqueued[2]?.handoff.targetRoleId, "research");
   assert.equal(enqueued[2]?.handoff.activationType, "retry");
-  assert.match(enqueued[2]?.handoff.payload.instructions ?? "", /Retry shard research/);
+  assert.match(enqueued[2]?.handoff.payload.intent?.instructions ?? "", /Retry shard research/);
 });
 
 test("coordination engine emits runtime chain records for new flows and dispatches", async () => {

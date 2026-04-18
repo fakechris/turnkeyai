@@ -12,6 +12,7 @@ import type {
   TeamThread,
   TeamThreadStore,
 } from "@turnkeyai/core-types/team";
+import { normalizeRelayPayload } from "@turnkeyai/core-types/team";
 
 import { InlineRoleLoopRunner } from "./inline-role-loop-runner";
 
@@ -24,7 +25,7 @@ test("inline role loop runner persists worker bindings returned by the role runt
     targetRoleId: "role-operator",
     activationType: "mention",
     threadId: "thread-1",
-    payload: {
+    payload: normalizeRelayPayload({
       threadId: "thread-1",
       relayBrief: "Continue using the browser worker.",
       recentMessages: [],
@@ -33,7 +34,7 @@ test("inline role loop runner persists worker bindings returned by the role runt
         allowReenter: true,
         sourceFlowMode: "serial",
       },
-    },
+    }),
     createdAt: 1,
   };
 
@@ -215,7 +216,7 @@ test("inline role loop runner emits runtime progress for worker-waiting transiti
     targetRoleId: "role-operator",
     activationType: "mention",
     threadId: "thread-2",
-    payload: {
+    payload: normalizeRelayPayload({
       threadId: "thread-2",
       relayBrief: "Continue.",
       recentMessages: [],
@@ -224,7 +225,7 @@ test("inline role loop runner emits runtime progress for worker-waiting transiti
         allowReenter: true,
         sourceFlowMode: "serial",
       },
-    },
+    }),
     createdAt: 2,
   };
   const runState: RoleRunState = {
@@ -376,7 +377,7 @@ test("inline role loop runner emits long-running heartbeat ticks while a role st
     targetRoleId: "role-operator",
     activationType: "mention",
     threadId: "thread-heartbeat",
-    payload: {
+    payload: normalizeRelayPayload({
       threadId: "thread-heartbeat",
       relayBrief: "Keep running.",
       recentMessages: [],
@@ -385,7 +386,7 @@ test("inline role loop runner emits long-running heartbeat ticks while a role st
         allowReenter: true,
         sourceFlowMode: "serial",
       },
-    },
+    }),
     createdAt: 1,
   };
   const runState: RoleRunState = {
@@ -549,7 +550,7 @@ test("inline role loop runner ignores heartbeat recorder failures", async () => 
     targetRoleId: "role-operator",
     activationType: "mention",
     threadId: "thread-heartbeat-failure",
-    payload: {
+    payload: normalizeRelayPayload({
       threadId: "thread-heartbeat-failure",
       relayBrief: "Continue.",
       recentMessages: [],
@@ -558,7 +559,7 @@ test("inline role loop runner ignores heartbeat recorder failures", async () => 
         allowReenter: true,
         sourceFlowMode: "serial",
       },
-    },
+    }),
     createdAt: 1,
   };
   const runState: RoleRunState = {

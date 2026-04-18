@@ -3,8 +3,11 @@ import path from "node:path";
 import {
   createScheduledTaskRecord,
   type DispatchContinuity,
+  type DispatchRecoveryContext,
   type ScheduledTaskRecord,
   type ScheduledTaskStore,
+  type SessionTarget,
+  type WorkerKind,
 } from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { listJsonFiles, readJsonFile, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
@@ -132,7 +135,14 @@ function isSameScheduledTaskShape(left: ScheduledTaskRecord, right: ScheduledTas
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function normalizeStoredScheduledTaskRecord(task: ScheduledTaskRecord): ScheduledTaskRecord {
+type LegacyStoredScheduledTaskRecord = ScheduledTaskRecord & {
+  targetRoleId?: string;
+  targetWorker?: WorkerKind;
+  sessionTarget?: SessionTarget;
+  recoveryContext?: DispatchRecoveryContext;
+};
+
+function normalizeStoredScheduledTaskRecord(task: LegacyStoredScheduledTaskRecord): ScheduledTaskRecord {
   const targetRoleId = task.dispatch?.targetRoleId ?? task.targetRoleId;
   if (!targetRoleId) {
     throw new Error(`scheduled task is missing targetRoleId: ${task.taskId}`);

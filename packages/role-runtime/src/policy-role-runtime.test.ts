@@ -13,6 +13,7 @@ import type {
   WorkerExecutionResult,
   WorkerRuntime,
 } from "@turnkeyai/core-types/team";
+import { normalizeRelayPayload } from "@turnkeyai/core-types/team";
 import { DefaultApiExecutionVerifier } from "@turnkeyai/qc-runtime/api-execution-verifier";
 import { DefaultEvidenceTrustPolicy } from "@turnkeyai/qc-runtime/evidence-trust-policy";
 import { FileReplayRecorder } from "@turnkeyai/qc-runtime/file-replay-recorder";
@@ -283,11 +284,12 @@ test("policy role runtime preserves explicit request envelope overflow errors", 
       targetRoleId: "role-operator",
       activationType: "handoff",
       createdAt: 1,
-      payload: {
+      payload: normalizeRelayPayload({
+        threadId: "thread-envelope",
         instructions: "Continue the operator work.",
         relayBrief: "Continue the operator work.",
         recentMessages: [],
-      },
+      }),
     },
     runState: {
       runKey: "role:operator:thread:thread-envelope",
@@ -1461,7 +1463,7 @@ function buildOperatorActivationInput(): RoleActivationInput {
       targetRoleId: "role-operator",
       activationType: "mention",
       threadId: "thread-1",
-      payload: {
+      payload: normalizeRelayPayload({
         threadId: "thread-1",
         relayBrief: "Use the browser worker to inspect the public pricing page and return the current entry offer.",
         recentMessages: [],
@@ -1471,7 +1473,7 @@ function buildOperatorActivationInput(): RoleActivationInput {
           allowReenter: true,
           sourceFlowMode: "serial",
         },
-      },
+      }),
       createdAt: 2,
     },
   };

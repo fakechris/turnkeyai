@@ -187,8 +187,6 @@ test("scheduled task runtime continues dispatching after one task throws", async
       targetRoleId: "role-operator",
       sessionTarget: "main",
     },
-    targetRoleId: "role-operator",
-    sessionTarget: "main",
     schedule: {
       kind: "cron",
       expr: "0 9 * * *",
@@ -210,8 +208,6 @@ test("scheduled task runtime continues dispatching after one task throws", async
       targetRoleId: "role-operator",
       sessionTarget: "main",
     },
-    targetRoleId: "role-operator",
-    sessionTarget: "main",
     schedule: {
       kind: "cron",
       expr: "0 10 * * *",
@@ -303,9 +299,6 @@ test("scheduled task runtime records replay entries for dispatch", async () => {
       targetWorker: "browser",
       sessionTarget: "worker",
     },
-    targetRoleId: "role-operator",
-    targetWorker: "browser",
-    sessionTarget: "worker",
     schedule: {
       kind: "cron",
       expr: "0 9 * * *",
