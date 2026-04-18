@@ -5,6 +5,7 @@ import type { ChromeExtensionPlatform } from "./chrome-extension-types";
 import { ChromeRelayActionExecutor } from "./chrome-action-executor";
 
 test("chrome relay action executor can open a tab and then execute content-script actions", async () => {
+  const now = Date.now();
   const sentMessages: unknown[] = [];
   const platform = fakePlatform({
     activeTab: { id: 7, windowId: 3, url: "https://example.com", title: "Example", status: "complete" },
@@ -44,8 +45,8 @@ test("chrome relay action executor can open a tab and then execute content-scrip
       { kind: "open", url: "https://example.com/new" },
       { kind: "snapshot", note: "after-open" },
     ],
-    createdAt: 1,
-    expiresAt: 2,
+    createdAt: now,
+    expiresAt: now + 5_000,
   });
 
   assert.equal(result.status, "completed");
@@ -55,6 +56,7 @@ test("chrome relay action executor can open a tab and then execute content-scrip
 });
 
 test("chrome relay action executor captures screenshot payloads through the extension platform", async () => {
+  const now = Date.now();
   const executor = new ChromeRelayActionExecutor(
     fakePlatform({
       activeTab: { id: 7, windowId: 3, url: "https://example.com", title: "Example", status: "complete" },
@@ -84,8 +86,8 @@ test("chrome relay action executor captures screenshot payloads through the exte
     browserSessionId: "browser-session-1",
     taskId: "task-1",
     actions: [{ kind: "screenshot", label: "final" }],
-    createdAt: 1,
-    expiresAt: 2,
+    createdAt: now,
+    expiresAt: now + 5_000,
   });
 
   assert.equal(result.status, "completed");
@@ -96,6 +98,7 @@ test("chrome relay action executor captures screenshot payloads through the exte
 });
 
 test("chrome relay action executor surfaces content-script failures", async () => {
+  const now = Date.now();
   const executor = new ChromeRelayActionExecutor(
     fakePlatform({
       activeTab: { id: 7, windowId: 3, url: "https://example.com", title: "Example", status: "complete" },
@@ -115,8 +118,8 @@ test("chrome relay action executor surfaces content-script failures", async () =
     browserSessionId: "browser-session-1",
     taskId: "task-1",
     actions: [{ kind: "snapshot", note: "inspect" }],
-    createdAt: 1,
-    expiresAt: 2,
+    createdAt: now,
+    expiresAt: now + 5_000,
   });
 
   assert.equal(result.status, "failed");
@@ -124,6 +127,7 @@ test("chrome relay action executor surfaces content-script failures", async () =
 });
 
 test("chrome relay action executor retries transient content-script startup errors", async () => {
+  const now = Date.now();
   let attempts = 0;
   const executor = new ChromeRelayActionExecutor(
     fakePlatform({
@@ -155,12 +159,52 @@ test("chrome relay action executor retries transient content-script startup erro
     browserSessionId: "browser-session-1",
     taskId: "task-1",
     actions: [{ kind: "snapshot", note: "inspect" }],
-    createdAt: 1,
-    expiresAt: 2,
+    createdAt: now,
+    expiresAt: now + 5_000,
   });
 
   assert.equal(result.status, "completed");
   assert.equal(attempts, 3);
+});
+
+test("chrome relay action executor rejects wait actions that exceed the remaining request budget", async () => {
+  const now = Date.now();
+  let sentMessages = 0;
+  const executor = new ChromeRelayActionExecutor(
+    fakePlatform({
+      activeTab: { id: 7, windowId: 3, url: "https://example.com", title: "Example", status: "complete" },
+      onSendMessage() {
+        sentMessages += 1;
+        return {
+          ok: true,
+          page: {
+            requestedUrl: "https://example.com",
+            finalUrl: "https://example.com",
+            title: "Example",
+            textExcerpt: "Example page",
+            statusCode: 200,
+            interactives: [],
+          },
+          trace: [],
+        };
+      },
+    })
+  );
+
+  await assert.rejects(
+    () =>
+      executor.execute({
+        actionRequestId: "relay-action-wait-budget",
+        peerId: "peer-1",
+        browserSessionId: "browser-session-1",
+        taskId: "task-1",
+        actions: [{ kind: "wait", timeoutMs: 1_000 }],
+        createdAt: now,
+        expiresAt: now + 600,
+      }),
+    /relay wait action exceeds remaining request budget/
+  );
+  assert.equal(sentMessages, 0);
 });
 
 function fakePlatform(input: {

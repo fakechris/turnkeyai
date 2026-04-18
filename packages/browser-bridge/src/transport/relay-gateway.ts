@@ -479,6 +479,7 @@ export function isRelayExecutableAction(
     action.kind === "type" ||
     action.kind === "scroll" ||
     action.kind === "console" ||
+    action.kind === "wait" ||
     action.kind === "screenshot"
   );
 }

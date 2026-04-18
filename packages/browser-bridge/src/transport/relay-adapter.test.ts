@@ -214,7 +214,7 @@ test("relay browser adapter chooses a peer whose capabilities satisfy open actio
     ]);
     gateway.registerPeer({
       peerId: "peer-browser",
-      capabilities: ["open", "snapshot", "click", "type", "scroll", "console", "screenshot"],
+      capabilities: ["open", "snapshot", "click", "type", "scroll", "console", "wait", "screenshot"],
       transportLabel: "chrome-relay",
     });
     gateway.reportTargets("peer-browser", [
@@ -289,6 +289,102 @@ test("relay browser adapter chooses a peer whose capabilities satisfy open actio
     assert.equal(result.transportPeerId, "peer-browser");
     assert.equal(result.transportTargetId, "chrome-tab:1");
     assert.equal(result.page.finalUrl, "https://example.com/opened");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("relay browser adapter can dispatch wait actions through a compatible peer", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-"));
+
+  try {
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir: path.join(tempDir, "artifacts"),
+      stateRootDir: path.join(tempDir, "state"),
+      relay: {
+        relayPeerId: "peer-1",
+      },
+    });
+    const gateway = adapter.getRelayControlPlane();
+    gateway.registerPeer({
+      peerId: "peer-1",
+      capabilities: ["wait", "snapshot"],
+    });
+    gateway.reportTargets("peer-1", [
+      {
+        relayTargetId: "tab-1",
+        url: "https://example.com/wait",
+        title: "Wait",
+        status: "attached",
+      },
+    ]);
+
+    const resultPromise = adapter.spawnSession({
+      taskId: "task-wait",
+      threadId: "thread-1",
+      instructions: "Wait briefly and inspect the page",
+      actions: [
+        { kind: "wait", timeoutMs: 25 },
+        { kind: "snapshot", note: "after-wait" },
+      ],
+      ownerType: "thread",
+      ownerId: "thread-1",
+      profileOwnerType: "thread",
+      profileOwnerId: "thread-1",
+    });
+
+    const request = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-1"));
+    assert.deepEqual(
+      request.actions.map((action) => action.kind),
+      ["wait", "snapshot"]
+    );
+
+    gateway.submitActionResult({
+      actionRequestId: request.actionRequestId,
+      peerId: "peer-1",
+      browserSessionId: request.browserSessionId,
+      taskId: request.taskId,
+      relayTargetId: "tab-1",
+      claimToken: request.claimToken!,
+      url: "https://example.com/wait",
+      title: "Wait",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/wait",
+        finalUrl: "https://example.com/wait",
+        title: "Wait",
+        textExcerpt: "Wait page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [
+        {
+          stepId: "task-wait:relay-step:1",
+          kind: "wait",
+          startedAt: 1,
+          completedAt: 2,
+          status: "ok",
+          input: { timeoutMs: 25 },
+          output: { finalUrl: "https://example.com/wait" },
+        },
+        {
+          stepId: "task-wait:relay-step:2",
+          kind: "snapshot",
+          startedAt: 3,
+          completedAt: 4,
+          status: "ok",
+          input: { note: "after-wait" },
+          output: { finalUrl: "https://example.com/wait" },
+        },
+      ],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      artifactIds: [],
+    });
+
+    const result = await resultPromise;
+    assert.equal(result.page.finalUrl, "https://example.com/wait");
+    assert.equal(result.trace[0]?.kind, "wait");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

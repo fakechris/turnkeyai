@@ -5,6 +5,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import { createServer, type Server } from "node:http";
 
+import { prepareRelayExtensionRuntimeDir } from "./relay-extension-runtime";
+
 const args = process.argv.slice(2);
 let daemonUrl = process.env.TURNKEYAI_DAEMON_URL ?? "";
 let startUrl = "";
@@ -149,6 +151,10 @@ async function main(): Promise<void> {
     }
 
     await mkdir(resolvedProfileDir, { recursive: true });
+    const runtimeExtensionDir = await prepareRelayExtensionRuntimeDir({
+      sourceDir: extensionDir,
+      targetDir: path.join(resolvedProfileDir, "_relay-extension"),
+    });
     const primaryProfileDir = path.join(resolvedProfileDir, "peer-1");
     await mkdir(primaryProfileDir, { recursive: true });
 
@@ -167,7 +173,7 @@ async function main(): Promise<void> {
       "primary",
       launchChromePeer({
         chromePath: resolvedChromePath,
-        extensionDir,
+        extensionDir: runtimeExtensionDir,
         profileDir: primaryProfileDir,
         startUrl: effectiveStartUrl,
       })
@@ -212,7 +218,7 @@ async function main(): Promise<void> {
             relaunch: () =>
               launchChromePeer({
                 chromePath: resolvedChromePath,
-                extensionDir,
+                extensionDir: runtimeExtensionDir,
                 profileDir: primaryProfileDir,
                 startUrl: effectiveStartUrl,
               }),
@@ -507,6 +513,7 @@ async function runBrowserSessionSmoke(input: {
     actions: [
       { kind: "type", selectors: ["#relay-input"], text: "turnkey relay" },
       { kind: "click", selectors: ["#relay-submit"] },
+      { kind: "wait", timeoutMs: 50 },
       { kind: "console", probe: "page-metadata" },
       { kind: "snapshot", note: "after-submit" },
     ],
@@ -522,6 +529,13 @@ async function runBrowserSessionSmoke(input: {
   }
   if (sendTransportLabel !== "chrome-relay") {
     throw new Error(`relay send smoke returned unexpected transport label: ${sendTransportLabel}`);
+  }
+  const waitTrace = sendResponse.trace?.find((entry) => entry.kind === "wait");
+  if (!waitTrace) {
+    throw new Error("relay send smoke did not record wait trace");
+  }
+  if (waitTrace.input?.timeoutMs !== 50) {
+    throw new Error(`relay send smoke recorded unexpected wait timeout: ${String(waitTrace.input?.timeoutMs ?? "unknown")}`);
   }
   const metadataTrace = sendResponse.trace?.find((entry) => entry.kind === "console");
   const metadataResult = metadataTrace?.output && typeof metadataTrace.output === "object"
