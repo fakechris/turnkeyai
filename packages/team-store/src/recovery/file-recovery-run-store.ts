@@ -36,6 +36,7 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
           `recovery run version conflict for ${run.recoveryRunId}: expected ${options.expectedVersion}, found ${existingVersion}`
         );
       }
+      const existingAttemptsById = new Map((existing?.attempts ?? []).map((attempt) => [attempt.attemptId, attempt]));
       const storedRun = stripAttempts({
         ...run,
         version: existingVersion + 1,
@@ -46,30 +47,31 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
         await writeJsonFileAtomic(threadPath, storedRun);
         for (const attempt of run.attempts) {
           const attemptPath = this.attemptFilePath(run.recoveryRunId, attempt.attemptId);
-          previousAttempts.set(attemptPath, await readJsonFile<RecoveryRunAttempt>(attemptPath));
+          previousAttempts.set(attemptPath, existingAttemptsById.get(attempt.attemptId) ?? null);
           await writeJsonFileAtomic(attemptPath, attempt);
           writtenAttemptPaths.push(attemptPath);
         }
         await writeJsonFileAtomic(byIdPath, storedRun);
       } catch (error) {
-        await Promise.all(
-          writtenAttemptPaths.map(async (filePath) => {
-            const previousAttempt = previousAttempts.get(filePath);
-            if (previousAttempt) {
-              await writeJsonFileAtomic(filePath, previousAttempt);
-            } else {
-              await removeFileIfExists(filePath);
-            }
-          })
-        );
+        const safeRollback = async (op: () => Promise<void>) => {
+          try {
+            await op();
+          } catch {
+            // Preserve the original write failure; rollback is best-effort.
+          }
+        };
+        for (const filePath of writtenAttemptPaths) {
+          const previousAttempt = previousAttempts.get(filePath);
+          await safeRollback(() =>
+            previousAttempt ? writeJsonFileAtomic(filePath, previousAttempt) : removeFileIfExists(filePath)
+          );
+        }
         if (!previousById) {
-          await removeFileIfExists(byIdPath);
+          await safeRollback(() => removeFileIfExists(byIdPath));
         }
-        if (previousThread) {
-          await writeJsonFileAtomic(threadPath, previousThread);
-        } else {
-          await removeFileIfExists(threadPath);
-        }
+        await safeRollback(() =>
+          previousThread ? writeJsonFileAtomic(threadPath, previousThread) : removeFileIfExists(threadPath)
+        );
         throw error;
       }
     });

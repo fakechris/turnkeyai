@@ -170,6 +170,9 @@ test("file batch outbox preserves dead letters and reclaimable inflight batches 
       leaseDurationMs: 50,
       now,
     });
+    assert.equal(pendingClaim.length, 1);
+    assert.equal(pendingClaim[0]?.batchId, pending.batchId);
+    assert.ok(pendingClaim[0]?.leaseId);
     await outbox.deadLetter(pending.batchId, {
       attemptCount: 1,
       items: [2],

@@ -449,6 +449,10 @@ test("file recovery run store restores thread, by-id, and attempts when by-id wr
     const original = await store.get("recovery:rollback");
     assert.ok(original);
 
+    if (process.platform === "win32") {
+      return;
+    }
+
     await chmod(byIdDir, 0o500);
     await assert.rejects(
       () =>
