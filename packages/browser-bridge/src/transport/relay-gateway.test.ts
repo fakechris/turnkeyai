@@ -49,7 +49,6 @@ test("relay gateway dispatches queued action requests and resolves submitted res
   });
 
   const dispatchPromise = gateway.dispatchActionRequest({
-    peerId: "peer-1",
     browserSessionId: "browser-session-1",
     taskId: "task-1",
     actions: [
@@ -81,6 +80,7 @@ test("relay gateway dispatches queued action requests and resolves submitted res
     browserSessionId: "browser-session-1",
     taskId: "task-1",
     relayTargetId: "tab-1",
+    claimToken: request!.claimToken!,
     url: "https://example.com",
     title: "Example Domain",
     status: "completed",
@@ -116,7 +116,6 @@ test("relay gateway drops timed out action requests from the pending queue", asy
   });
 
   const dispatchPromise = gateway.dispatchActionRequest({
-    peerId: "peer-1",
     browserSessionId: "browser-session-1",
     taskId: "task-1",
     actions: [{ kind: "snapshot", note: "timeout" }],
@@ -124,4 +123,141 @@ test("relay gateway drops timed out action requests from the pending queue", asy
 
   await assert.rejects(dispatchPromise, /relay action request timed out/);
   assert.equal(gateway.pullNextActionRequest("peer-1"), null);
+});
+
+test("relay gateway reclaims expired inflight claims and reassigns them", async () => {
+  let now = 1_000;
+  let seq = 0;
+  const gateway = new RelayGateway({
+    now: () => now,
+    createId: (prefix) => `${prefix}-${++seq}`,
+    actionTimeoutMs: 100,
+    claimLeaseMs: 10,
+  });
+  gateway.registerPeer({
+    peerId: "peer-1",
+    capabilities: ["snapshot"],
+  });
+  gateway.registerPeer({
+    peerId: "peer-2",
+    capabilities: ["snapshot"],
+  });
+
+  const dispatchPromise = gateway.dispatchActionRequest({
+    browserSessionId: "browser-session-1",
+    taskId: "task-1",
+    actions: [{ kind: "snapshot", note: "inspect" }],
+  });
+
+  const firstClaim = gateway.pullNextActionRequest("peer-1");
+  assert.ok(firstClaim);
+  assert.equal(firstClaim?.peerId, "peer-1");
+  assert.equal(firstClaim?.attemptCount, 1);
+  assert.equal(firstClaim?.reclaimCount, 0);
+
+  now += 11;
+  const secondClaim = gateway.pullNextActionRequest("peer-2");
+  assert.ok(secondClaim);
+  assert.equal(secondClaim?.peerId, "peer-2");
+  assert.equal(secondClaim?.attemptCount, 2);
+  assert.equal(secondClaim?.reclaimCount, 1);
+
+  const requests = gateway.listActionRequests();
+  assert.deepEqual(requests, [
+    {
+      actionRequestId: "relay-action-1",
+      browserSessionId: "browser-session-1",
+      taskId: "task-1",
+      actionKinds: ["snapshot"],
+      createdAt: 1_000,
+      expiresAt: 1_100,
+      state: "inflight",
+      assignedPeerId: "peer-2",
+      claimToken: "relay-claim-3",
+      claimedAt: 1_011,
+      claimExpiresAt: 1_021,
+      attemptCount: 2,
+      reclaimCount: 1,
+      lastClaimExpiredAt: 1_011,
+    },
+  ]);
+
+  gateway.submitActionResult({
+    actionRequestId: secondClaim!.actionRequestId,
+    peerId: "peer-2",
+    browserSessionId: secondClaim!.browserSessionId,
+    taskId: secondClaim!.taskId,
+    relayTargetId: "tab-2",
+    claimToken: secondClaim!.claimToken!,
+    url: "https://example.com/reclaimed",
+    status: "completed",
+    page: {
+      requestedUrl: "https://example.com/reclaimed",
+      finalUrl: "https://example.com/reclaimed",
+      title: "Reclaimed",
+      textExcerpt: "Reclaimed page",
+      statusCode: 200,
+      interactives: [],
+    },
+    trace: [],
+    screenshotPaths: [],
+    screenshotPayloads: [],
+    artifactIds: [],
+  });
+  await dispatchPromise;
+});
+
+test("relay gateway heartbeats renew inflight claim leases", async () => {
+  let now = 1_000;
+  let seq = 0;
+  const gateway = new RelayGateway({
+    now: () => now,
+    createId: (prefix) => `${prefix}-${++seq}`,
+    actionTimeoutMs: 100,
+    claimLeaseMs: 10,
+  });
+  gateway.registerPeer({
+    peerId: "peer-1",
+    capabilities: ["snapshot"],
+  });
+
+  const dispatchPromise = gateway.dispatchActionRequest({
+    browserSessionId: "browser-session-1",
+    taskId: "task-1",
+    actions: [{ kind: "snapshot", note: "inspect" }],
+  });
+
+  const claim = gateway.pullNextActionRequest("peer-1");
+  assert.ok(claim);
+  assert.equal(claim?.claimExpiresAt, 1_010);
+
+  now = 1_008;
+  gateway.heartbeatPeer("peer-1");
+  const renewed = gateway.listActionRequests()[0];
+  assert.equal(renewed?.state, "inflight");
+  assert.equal(renewed?.claimExpiresAt, 1_018);
+
+  gateway.submitActionResult({
+    actionRequestId: claim!.actionRequestId,
+    peerId: "peer-1",
+    browserSessionId: claim!.browserSessionId,
+    taskId: claim!.taskId,
+    relayTargetId: "tab-1",
+    claimToken: claim!.claimToken!,
+    url: "https://example.com",
+    status: "completed",
+    page: {
+      requestedUrl: "https://example.com",
+      finalUrl: "https://example.com",
+      title: "Example",
+      textExcerpt: "Example",
+      statusCode: 200,
+      interactives: [],
+    },
+    trace: [],
+    screenshotPaths: [],
+    screenshotPayloads: [],
+    artifactIds: [],
+  });
+  await dispatchPromise;
 });

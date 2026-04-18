@@ -1,5 +1,6 @@
 import type {
   RelayActionRequest,
+  RelayActionRequestRecord,
   RelayActionResult,
   RelayPeerRecord,
   RelayPeerRegistration,
@@ -42,6 +43,10 @@ export class DaemonRelayClient {
 
   async submitActionResult(peerId: string, result: Omit<RelayActionResult, "peerId">): Promise<RelayActionResult> {
     return this.postJson(`/relay/peers/${encodeURIComponent(peerId)}/action-results`, result);
+  }
+
+  async listActionRequests(): Promise<RelayActionRequestRecord[]> {
+    return this.getJson("/relay/actions");
   }
 
   async listPeers(): Promise<RelayPeerRecord[]> {

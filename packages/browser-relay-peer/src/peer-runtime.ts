@@ -42,6 +42,7 @@ export interface BrowserRelayPeerRuntimeOptions {
   client: RelayPeerClient;
   targetObserver: RelayPeerTargetObserver;
   actionExecutor: RelayPeerActionExecutor;
+  executionHeartbeatIntervalMs?: number;
 }
 
 export class BrowserRelayPeerRuntime {
@@ -49,6 +50,7 @@ export class BrowserRelayPeerRuntime {
   private readonly client: RelayPeerClient;
   private readonly targetObserver: RelayPeerTargetObserver;
   private readonly actionExecutor: RelayPeerActionExecutor;
+  private readonly executionHeartbeatIntervalMs: number;
   private started = false;
 
   constructor(options: BrowserRelayPeerRuntimeOptions) {
@@ -56,6 +58,7 @@ export class BrowserRelayPeerRuntime {
     this.client = options.client;
     this.targetObserver = options.targetObserver;
     this.actionExecutor = options.actionExecutor;
+    this.executionHeartbeatIntervalMs = Math.max(250, options.executionHeartbeatIntervalMs ?? 2_000);
   }
 
   async start(): Promise<RelayPeerRecord> {
@@ -84,6 +87,7 @@ export class BrowserRelayPeerRuntime {
     }
 
     let execution: RelayPeerExecutionResult;
+    const heartbeatLease = this.startExecutionHeartbeat();
     try {
       execution = await this.actionExecutor.execute(request);
     } catch (error) {
@@ -100,10 +104,15 @@ export class BrowserRelayPeerRuntime {
         artifactIds: [],
         errorMessage: error instanceof Error ? error.message : "relay execution failed",
       };
+    } finally {
+      await heartbeatLease.stop();
     }
     const relayTargetId = execution.relayTargetId ?? request.relayTargetId;
     if (!relayTargetId) {
       throw new Error(`relay execution result missing relayTargetId for request: ${request.actionRequestId}`);
+    }
+    if (!request.claimToken) {
+      throw new Error(`relay action request is missing claimToken: ${request.actionRequestId}`);
     }
 
     return this.client.submitActionResult(this.peer.peerId, {
@@ -111,6 +120,7 @@ export class BrowserRelayPeerRuntime {
       browserSessionId: request.browserSessionId,
       taskId: request.taskId,
       relayTargetId,
+      claimToken: request.claimToken,
       url: execution.url,
       ...(execution.title ? { title: execution.title } : {}),
       status: execution.status,
@@ -139,5 +149,32 @@ export class BrowserRelayPeerRuntime {
     if (!this.started) {
       await this.start();
     }
+  }
+
+  private startExecutionHeartbeat(): { stop: () => Promise<void> } {
+    let stopped = false;
+    let inFlightHeartbeat: Promise<void> | null = null;
+    const timer = setInterval(() => {
+      if (stopped || inFlightHeartbeat) {
+        return;
+      }
+      inFlightHeartbeat = this.client
+        .heartbeatPeer(this.peer.peerId)
+        .then(() => undefined)
+        .catch(() => undefined)
+        .finally(() => {
+          inFlightHeartbeat = null;
+        });
+    }, this.executionHeartbeatIntervalMs);
+
+    return {
+      stop: async () => {
+        stopped = true;
+        clearInterval(timer);
+        if (inFlightHeartbeat) {
+          await inFlightHeartbeat;
+        }
+      },
+    };
   }
 }

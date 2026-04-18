@@ -43,6 +43,24 @@ export interface RelayDiagnosticsSnapshot {
     status?: "open" | "attached" | "detached" | "closed";
     lastSeenAt: number;
   }>;
+  actions: Array<{
+    actionRequestId: string;
+    browserSessionId: string;
+    taskId: string;
+    relayTargetId?: string;
+    targetId?: string;
+    actionKinds: string[];
+    createdAt: number;
+    expiresAt: number;
+    state: "pending" | "inflight";
+    preferredPeerId?: string;
+    lockedPeerId?: string;
+    assignedPeerId?: string;
+    claimExpiresAt?: number;
+    attemptCount: number;
+    reclaimCount: number;
+    lastClaimExpiredAt?: number;
+  }>;
 }
 
 export function buildReplayInspectionReport(records: ReplayRecord[]): ReplayInspectionReport {
@@ -1302,6 +1320,19 @@ function enrichBrowserContinuityDiagnostics(
   }
 
   if (isRelayContinuity(continuity) && relayDiagnostics) {
+    const action =
+      relayDiagnostics.actions
+        .filter(
+          (item) =>
+            (continuity.sessionId && item.browserSessionId === continuity.sessionId) ||
+            (group.taskId && item.taskId === group.taskId) ||
+            (continuity.transportTargetId && item.relayTargetId === continuity.transportTargetId)
+        )
+        .sort(
+          (left, right) =>
+            (right.claimExpiresAt ?? right.expiresAt) - (left.claimExpiresAt ?? left.expiresAt) ||
+            right.createdAt - left.createdAt
+        )[0] ?? null;
     const target =
       continuity.transportTargetId != null
         ? relayDiagnostics.targets.find((item) => item.relayTargetId === continuity.transportTargetId) ?? null
@@ -1312,7 +1343,7 @@ function enrichBrowserContinuityDiagnostics(
       peerId == null ? undefined : peer?.status ?? "missing";
     const relayTargetStatus: ReplayBrowserContinuitySummary["relayTargetStatus"] =
       continuity.transportTargetId == null ? undefined : target?.status ?? "missing";
-    const relayDiagnostic = deriveRelayDiagnostic(group, continuity, relayPeerStatus, relayTargetStatus);
+    const relayDiagnostic = deriveRelayDiagnostic(group, continuity, relayPeerStatus, relayTargetStatus, action);
 
     return {
       ...continuity,
@@ -1348,7 +1379,10 @@ function deriveRelayDiagnostic(
   group: ReplayTaskSummary,
   continuity: ReplayBrowserContinuitySummary,
   relayPeerStatus: ReplayBrowserContinuitySummary["relayPeerStatus"],
-  relayTargetStatus: ReplayBrowserContinuitySummary["relayTargetStatus"]
+  relayTargetStatus: ReplayBrowserContinuitySummary["relayTargetStatus"],
+  action:
+    | RelayDiagnosticsSnapshot["actions"][number]
+    | null
 ):
   | {
       bucket: NonNullable<ReplayBrowserContinuitySummary["relayDiagnosticBucket"]>;
@@ -1393,6 +1427,23 @@ function deriveRelayDiagnostic(
       summary: continuity.transportTargetId
         ? `Relay target ${continuity.transportTargetId} is closed and cannot be reused.`
         : "Relay target is closed and cannot be reused.",
+    };
+  }
+  if (action?.reclaimCount && action.state === "pending") {
+    const sourcePeerId = action.assignedPeerId ?? action.lockedPeerId ?? action.preferredPeerId;
+    return {
+      bucket: "claim_reclaimed",
+      summary: sourcePeerId
+        ? `Relay action was reclaimed after peer ${sourcePeerId} stopped responding and is queued for another claim.`
+        : "Relay action was reclaimed after the previous peer claim expired and is queued for another claim.",
+    };
+  }
+  if (action?.state === "inflight") {
+    return {
+      bucket: "action_inflight",
+      summary: action.assignedPeerId
+        ? `Relay action is currently in flight on peer ${action.assignedPeerId}.`
+        : "Relay action is currently in flight on a relay peer.",
     };
   }
 

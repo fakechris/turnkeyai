@@ -411,6 +411,7 @@ function getRelayDiagnosticsSnapshot() {
     ? {
         peers: relayGateway.listPeers(),
         targets: relayGateway.listTargets(),
+        actions: relayGateway.listActionRequests(),
       }
     : undefined;
 }

@@ -44,6 +44,8 @@ export interface RelayTargetRecord extends RelayTargetReport {
   lastSeenAt: number;
 }
 
+export type RelayActionRequestState = "pending" | "inflight";
+
 export interface RelayActionRequest {
   actionRequestId: string;
   peerId: string;
@@ -54,6 +56,11 @@ export interface RelayActionRequest {
   actions: RelayExecutableBrowserAction[];
   createdAt: number;
   expiresAt: number;
+  claimToken?: string;
+  claimedAt?: number;
+  claimExpiresAt?: number;
+  attemptCount?: number;
+  reclaimCount?: number;
 }
 
 export interface RelayActionResult {
@@ -63,6 +70,7 @@ export interface RelayActionResult {
   taskId: string;
   relayTargetId: string;
   url: string;
+  claimToken: string;
   title?: string;
   status: "completed" | "failed";
   page?: BrowserSnapshotResult;
@@ -71,4 +79,25 @@ export interface RelayActionResult {
   screenshotPayloads: RelayScreenshotPayload[];
   artifactIds: string[];
   errorMessage?: string;
+}
+
+export interface RelayActionRequestRecord {
+  actionRequestId: string;
+  browserSessionId: string;
+  taskId: string;
+  relayTargetId?: string;
+  targetId?: string;
+  actionKinds: RelayExecutableBrowserAction["kind"][];
+  createdAt: number;
+  expiresAt: number;
+  state: RelayActionRequestState;
+  preferredPeerId?: string;
+  lockedPeerId?: string;
+  assignedPeerId?: string;
+  claimToken?: string;
+  claimedAt?: number;
+  claimExpiresAt?: number;
+  attemptCount: number;
+  reclaimCount: number;
+  lastClaimExpiredAt?: number;
 }

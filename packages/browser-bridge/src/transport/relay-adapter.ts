@@ -271,14 +271,13 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
         }
       }
 
-      const peerId = this.resolvePeerId(relayActions, currentTarget?.transportSessionId);
       const relayResult = await this.gateway.dispatchActionRequest({
-        peerId,
         browserSessionId: sessionId,
         taskId: task.taskId,
         ...(currentTarget?.transportSessionId ? { relayTargetId: currentTarget.transportSessionId } : {}),
         ...(currentTargetId ? { targetId: currentTargetId } : {}),
         actions: relayActions,
+        ...(this.preferredPeerId ? { preferredPeerId: this.preferredPeerId } : {}),
       });
 
       if (relayResult.status === "failed") {
@@ -324,7 +323,7 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
         targetId: target.targetId,
         transportMode: this.transportMode,
         transportLabel: this.transportLabel,
-        transportPeerId: peerId,
+        transportPeerId: relayResult.peerId,
         transportTargetId: relayResult.relayTargetId,
         dispatchMode,
         resumeMode,
@@ -369,15 +368,50 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
     actions: RelayActionRequest["actions"]
   ): Promise<BrowserTarget> {
     const requiredCapabilities = new Set(actions.map((action) => action.kind));
-    const capablePeerIds = new Set(
-      this.gateway
-        .listPeers()
-        .filter((peer) => peer.status === "online" && this.peerSupportsActions(peer.capabilities, requiredCapabilities))
-        .map((peer) => peer.peerId)
-    );
+    const inflightCounts = new Map<string, number>();
+    for (const request of this.gateway.listActionRequests()) {
+      if (request.state !== "inflight") {
+        continue;
+      }
+      const peerId = request.assignedPeerId ?? request.lockedPeerId;
+      if (!peerId) {
+        continue;
+      }
+      inflightCounts.set(peerId, (inflightCounts.get(peerId) ?? 0) + 1);
+    }
+    const eligiblePeers = this.gateway
+      .listPeers()
+      .filter((peer) => peer.status === "online" && this.peerSupportsActions(peer.capabilities, requiredCapabilities))
+      .sort((left, right) => {
+        const preferredDelta =
+          Number(right.peerId === this.preferredPeerId) - Number(left.peerId === this.preferredPeerId);
+        if (preferredDelta !== 0) {
+          return preferredDelta;
+        }
+        const inflightDelta = (inflightCounts.get(left.peerId) ?? 0) - (inflightCounts.get(right.peerId) ?? 0);
+        if (inflightDelta !== 0) {
+          return inflightDelta;
+        }
+        return right.lastSeenAt - left.lastSeenAt || left.peerId.localeCompare(right.peerId);
+      });
+    const peerRank = new Map(eligiblePeers.map((peer, index) => [peer.peerId, index] as const));
     const discoveredTarget = this.gateway
-      .listTargets(this.preferredPeerId ? { peerId: this.preferredPeerId } : undefined)
-      .find((item) => item.status !== "closed" && capablePeerIds.has(item.peerId));
+      .listTargets()
+      .filter(
+        (item) =>
+          (item.status === "open" || item.status === "attached") &&
+          peerRank.has(item.peerId)
+      )
+      .sort((left, right) => {
+        const leftRank = peerRank.get(left.peerId) ?? Number.MAX_SAFE_INTEGER;
+        const rightRank = peerRank.get(right.peerId) ?? Number.MAX_SAFE_INTEGER;
+        return (
+          leftRank - rightRank ||
+          Number(right.status === "attached") - Number(left.status === "attached") ||
+          right.lastSeenAt - left.lastSeenAt ||
+          left.relayTargetId.localeCompare(right.relayTargetId)
+        );
+      })[0];
     if (!discoveredTarget) {
       throw new Error("no relay target available for attach");
     }
@@ -390,33 +424,6 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
       lastResumeMode: "hot",
       createIfMissing: true,
     });
-  }
-
-  private resolvePeerId(actions: RelayActionRequest["actions"], relayTargetId?: string): string {
-    if (relayTargetId) {
-      const knownTarget = this.gateway.listTargets().find((item) => item.relayTargetId === relayTargetId);
-      if (knownTarget) {
-        return knownTarget.peerId;
-      }
-    }
-
-    if (this.preferredPeerId) {
-      return this.preferredPeerId;
-    }
-
-    const requiredCapabilities = new Set(actions.map((action) => action.kind));
-    const onlinePeer = this.gateway
-      .listPeers()
-      .find((peer) => peer.status === "online" && this.peerSupportsActions(peer.capabilities, requiredCapabilities));
-    if (!onlinePeer) {
-      const endpoint = this.options.relay?.endpoint?.trim();
-      throw new Error(
-        endpoint
-          ? `relay browser transport has no compatible registered peers (endpoint=${endpoint})`
-          : "relay browser transport has no compatible registered peers"
-      );
-    }
-    return onlinePeer.peerId;
   }
 
   private peerSupportsActions(capabilities: string[], requiredCapabilities: ReadonlySet<string>): boolean {
@@ -433,7 +440,13 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
   }
 
   private hasKnownRelayTarget(relayTargetId: string): boolean {
-    return this.gateway.listTargets().some((target) => target.relayTargetId === relayTargetId && target.status !== "closed");
+    return this.gateway
+      .listTargets()
+      .some(
+        (target) =>
+          target.relayTargetId === relayTargetId &&
+          (target.status === "open" || target.status === "attached")
+      );
   }
 
   private async persistSnapshotArtifact(input: {

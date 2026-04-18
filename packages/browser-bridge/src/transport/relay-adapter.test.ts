@@ -7,6 +7,7 @@ import test from "node:test";
 import type { BrowserActionTrace } from "@turnkeyai/core-types/team";
 
 import { RelayBrowserAdapter } from "./relay-adapter";
+import { RelayGateway } from "./relay-gateway";
 import type { RelayActionRequest } from "./relay-protocol";
 
 test("relay browser adapter can attach to a reported target and execute snapshot actions", async () => {
@@ -68,6 +69,7 @@ test("relay browser adapter can attach to a reported target and execute snapshot
       browserSessionId: request!.browserSessionId,
       taskId: request!.taskId,
       relayTargetId: "tab-1",
+      claimToken: request!.claimToken!,
       url: "https://example.com/pricing",
       title: "Pricing",
       status: "completed",
@@ -146,6 +148,7 @@ test("relay browser adapter persists screenshot payloads returned by a relay pee
       browserSessionId: request.browserSessionId,
       taskId: request.taskId,
       relayTargetId: "tab-1",
+      claimToken: request.claimToken!,
       url: "https://example.com/pricing",
       title: "Pricing",
       status: "completed",
@@ -247,6 +250,7 @@ test("relay browser adapter chooses a peer whose capabilities satisfy open actio
       browserSessionId: request.browserSessionId,
       taskId: request.taskId,
       relayTargetId: "chrome-tab:1",
+      claimToken: request.claimToken!,
       url: "https://example.com/opened",
       title: "Opened",
       status: "completed",
@@ -304,7 +308,7 @@ test("relay browser adapter reattaches when a stored relay target disappears aft
     const gateway = adapter.getRelayControlPlane();
     gateway.registerPeer({
       peerId: "peer-1",
-      capabilities: ["snapshot", "console"],
+      capabilities: ["open", "snapshot", "console"],
       transportLabel: "chrome-relay",
     });
     gateway.reportTargets("peer-1", [
@@ -334,6 +338,7 @@ test("relay browser adapter reattaches when a stored relay target disappears aft
       browserSessionId: initialRequest.browserSessionId,
       taskId: initialRequest.taskId,
       relayTargetId: "chrome-tab:1",
+      claimToken: initialRequest.claimToken!,
       url: "https://example.com/submitted",
       title: "Submitted",
       status: "completed",
@@ -382,6 +387,7 @@ test("relay browser adapter reattaches when a stored relay target disappears aft
       browserSessionId: resumedRequest.browserSessionId,
       taskId: resumedRequest.taskId,
       relayTargetId: "chrome-tab:2",
+      claimToken: resumedRequest.claimToken!,
       url: "https://example.com/submitted",
       title: "Submitted",
       status: "completed",
@@ -420,6 +426,123 @@ test("relay browser adapter reattaches when a stored relay target disappears aft
     assert.equal(resumedResult.transportTargetId, "chrome-tab:2");
     assert.equal(resumedResult.resumeMode, "warm");
     assert.equal(resumedResult.targetResolution, "reconnect");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("relay browser adapter prefers peers without inflight relay work when attaching targets", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-"));
+
+  try {
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir: path.join(tempDir, "artifacts"),
+      stateRootDir: path.join(tempDir, "state"),
+    });
+    const gateway = adapter.getRelayControlPlane();
+    gateway.registerPeer({
+      peerId: "peer-busy",
+      capabilities: ["snapshot"],
+      transportLabel: "chrome-relay",
+    });
+    gateway.registerPeer({
+      peerId: "peer-idle",
+      capabilities: ["snapshot"],
+      transportLabel: "chrome-relay",
+    });
+    gateway.reportTargets("peer-busy", [
+      {
+        relayTargetId: "chrome-tab:busy",
+        url: "https://example.com/busy",
+        title: "Busy",
+        status: "attached",
+      },
+    ]);
+    gateway.reportTargets("peer-idle", [
+      {
+        relayTargetId: "chrome-tab:idle",
+        url: "https://example.com/idle",
+        title: "Idle",
+        status: "attached",
+      },
+    ]);
+
+    const busyDispatch = (gateway as RelayGateway).dispatchActionRequest({
+      browserSessionId: "browser-session-busy",
+      taskId: "task-busy",
+      actions: [{ kind: "snapshot", note: "busy" }],
+    });
+    const busyRequest = gateway.pullNextActionRequest("peer-busy");
+    assert.ok(busyRequest);
+
+    const resultPromise = adapter.spawnSession({
+      taskId: "task-select-idle",
+      threadId: "thread-1",
+      instructions: "Inspect available target",
+      actions: [{ kind: "snapshot", note: "inspect" }],
+      ownerType: "thread",
+      ownerId: "thread-1",
+      profileOwnerType: "thread",
+      profileOwnerId: "thread-1",
+    });
+
+    const idleRequest = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-idle"));
+    assert.equal(idleRequest.peerId, "peer-idle");
+    assert.equal(idleRequest.relayTargetId, "chrome-tab:idle");
+    assert.equal(gateway.pullNextActionRequest("peer-busy"), null);
+
+    gateway.submitActionResult({
+      actionRequestId: idleRequest.actionRequestId,
+      peerId: "peer-idle",
+      browserSessionId: idleRequest.browserSessionId,
+      taskId: idleRequest.taskId,
+      relayTargetId: "chrome-tab:idle",
+      claimToken: idleRequest.claimToken!,
+      url: "https://example.com/idle",
+      title: "Idle",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/idle",
+        finalUrl: "https://example.com/idle",
+        title: "Idle",
+        textExcerpt: "Idle page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      artifactIds: [],
+    });
+
+    const result = await resultPromise;
+    assert.equal(result.transportPeerId, "peer-idle");
+    assert.equal(result.transportTargetId, "chrome-tab:idle");
+
+    gateway.submitActionResult({
+      actionRequestId: busyRequest!.actionRequestId,
+      peerId: "peer-busy",
+      browserSessionId: busyRequest!.browserSessionId,
+      taskId: busyRequest!.taskId,
+      relayTargetId: "chrome-tab:busy",
+      claimToken: busyRequest!.claimToken!,
+      url: "https://example.com/busy",
+      title: "Busy",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/busy",
+        finalUrl: "https://example.com/busy",
+        title: "Busy",
+        textExcerpt: "Busy page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      artifactIds: [],
+    });
+    await busyDispatch;
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -115,6 +115,8 @@ export type BrowserTransportDiagnosticBucket =
   | "target_missing"
   | "target_detached"
   | "target_closed"
+  | "action_inflight"
+  | "claim_reclaimed"
   | "content_script_unavailable"
   | "action_timeout"
   | "action_failed"

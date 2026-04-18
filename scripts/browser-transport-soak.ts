@@ -116,10 +116,11 @@ const result = await runBrowserTransportSoak(
           : buildDirectCdpSmokeArgs(runTimeoutMs, verifyReconnect, verifyWorkflowLog);
       const startedAt = Date.now();
       try {
+        const commandTimeoutMs = runTimeoutMs + 30_000;
         const { stdout, stderr } = await execFile("npm", commandArgs, {
           cwd: process.cwd(),
           maxBuffer: 16 * 1024 * 1024,
-          timeout: runTimeoutMs,
+          timeout: commandTimeoutMs,
           killSignal: "SIGTERM",
         });
         return {

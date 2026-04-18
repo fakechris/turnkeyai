@@ -191,6 +191,15 @@ export async function handleRelayRoutes(input: {
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/relay/actions") {
+    if (!relayGateway) {
+      sendJson(res, 503, { error: "relay browser transport is not active" });
+      return true;
+    }
+    sendJson(res, 200, relayGateway.listActionRequests());
+    return true;
+  }
+
   const relayPeerPullActionsMatch = url.pathname.match(/^\/relay\/peers\/([^/]+)\/pull-actions$/);
   if (req.method === "POST" && relayPeerPullActionsMatch) {
     if (!relayGateway) {
@@ -228,6 +237,7 @@ export async function handleRelayRoutes(input: {
       browserSessionId?: string;
       taskId?: string;
       relayTargetId?: string;
+      claimToken?: string;
       url?: string;
       title?: string;
       status?: "completed" | "failed";
@@ -247,9 +257,15 @@ export async function handleRelayRoutes(input: {
       return true;
     }
     const body = bodyResult.value;
-    if (!body.actionRequestId?.trim() || !body.browserSessionId?.trim() || !body.taskId?.trim() || !body.relayTargetId?.trim()) {
+    if (
+      !body.actionRequestId?.trim() ||
+      !body.browserSessionId?.trim() ||
+      !body.taskId?.trim() ||
+      !body.relayTargetId?.trim() ||
+      !body.claimToken?.trim()
+    ) {
       sendJson(res, 400, {
-        error: "actionRequestId, browserSessionId, taskId, and relayTargetId are required",
+        error: "actionRequestId, browserSessionId, taskId, relayTargetId, and claimToken are required",
       });
       return true;
     }
@@ -309,6 +325,7 @@ export async function handleRelayRoutes(input: {
         browserSessionId: body.browserSessionId.trim(),
         taskId: body.taskId.trim(),
         relayTargetId: body.relayTargetId.trim(),
+        claimToken: body.claimToken.trim(),
         url: body.url.trim(),
         ...(body.title?.trim() ? { title: body.title.trim() } : {}),
         status: body.status,

@@ -23,6 +23,7 @@ test("browser relay peer runtime registers, syncs targets, pulls actions, and su
       actions: [{ kind: "snapshot", note: "inspect" }],
       createdAt: 1,
       expiresAt: 2,
+      claimToken: "claim-1",
     },
   ];
   const submitted: RelayActionResult[] = [];
@@ -176,6 +177,7 @@ test("browser relay peer runtime submits a failed result when execution throws f
           actions: [{ kind: "snapshot", note: "inspect" }],
           createdAt: 1,
           expiresAt: 2,
+          claimToken: "claim-1",
         };
       },
       async submitActionResult(peerId, result) {
@@ -204,6 +206,125 @@ test("browser relay peer runtime submits a failed result when execution throws f
   assert.match(result?.errorMessage ?? "", /content script unavailable/);
   assert.equal(result?.relayTargetId, "chrome-tab:7");
   assert.equal(submitted.length, 1);
+});
+
+test("browser relay peer runtime rejects action requests without claim tokens", async () => {
+  const runtime = new BrowserRelayPeerRuntime({
+    peer: {
+      peerId: "peer-1",
+      capabilities: ["snapshot"],
+    },
+    client: {
+      async registerPeer() {
+        return peerRecord();
+      },
+      async heartbeatPeer() {
+        return peerRecord();
+      },
+      async reportTargets(peerId, targets) {
+        return targets.map((target) => toTargetRecord(peerId, target));
+      },
+      async pullNextAction() {
+        return {
+          actionRequestId: "relay-action-1",
+          peerId: "peer-1",
+          browserSessionId: "browser-session-1",
+          taskId: "task-1",
+          relayTargetId: "chrome-tab:7",
+          actions: [{ kind: "snapshot", note: "inspect" }],
+          createdAt: 1,
+          expiresAt: 2,
+        };
+      },
+      async submitActionResult() {
+        throw new Error("submit should not be called when claimToken is missing");
+      },
+    },
+    targetObserver: {
+      async listTargets() {
+        return [];
+      },
+    },
+    actionExecutor: {
+      async execute() {
+        return {
+          relayTargetId: "chrome-tab:7",
+          url: "https://example.com",
+          status: "completed" as const,
+          trace: [],
+        };
+      },
+    },
+  });
+
+  await assert.rejects(() => runtime.runCycle(), /relay action request is missing claimToken/);
+});
+
+test("browser relay peer runtime heartbeats while executing a long-running action", async () => {
+  const calls: string[] = [];
+  const runtime = new BrowserRelayPeerRuntime({
+    peer: {
+      peerId: "peer-1",
+      capabilities: ["snapshot"],
+    },
+    client: {
+      async registerPeer() {
+        calls.push("register");
+        return peerRecord();
+      },
+      async heartbeatPeer() {
+        calls.push("heartbeat");
+        return peerRecord();
+      },
+      async reportTargets(peerId, targets) {
+        calls.push(`targets:${peerId}:${targets.length}`);
+        return targets.map((target) => toTargetRecord(peerId, target));
+      },
+      async pullNextAction() {
+        calls.push("pull");
+        return {
+          actionRequestId: "relay-action-1",
+          peerId: "peer-1",
+          browserSessionId: "browser-session-1",
+          taskId: "task-1",
+          relayTargetId: "tab-1",
+          actions: [{ kind: "snapshot", note: "inspect" }],
+          createdAt: 1,
+          expiresAt: 2,
+          claimToken: "claim-1",
+        };
+      },
+      async submitActionResult(peerId, result) {
+        calls.push(`submit:${peerId}:${result.claimToken}`);
+        return {
+          peerId,
+          ...result,
+        };
+      },
+    },
+    targetObserver: {
+      async listTargets() {
+        return [];
+      },
+    },
+    actionExecutor: {
+      async execute() {
+        await new Promise((resolve) => setTimeout(resolve, 275));
+        return {
+          relayTargetId: "tab-1",
+          url: "https://example.com",
+          status: "completed" as const,
+          trace: [],
+        };
+      },
+    },
+    executionHeartbeatIntervalMs: 250,
+  });
+
+  const result = await runtime.runCycle();
+  assert.equal(result?.claimToken, "claim-1");
+  assert.ok(calls.filter((entry) => entry === "heartbeat").length >= 2);
+  assert.ok(calls.includes("submit:peer-1:claim-1"));
 });
 
 function peerRecord(): RelayPeerRecord {

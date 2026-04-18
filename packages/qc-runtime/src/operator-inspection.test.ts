@@ -966,6 +966,7 @@ test("operator inspection flattens cross-surface attention items", () => {
         },
       ],
       targets: [],
+      actions: [],
     },
     limit: 10,
   });

@@ -4,6 +4,7 @@ import type {
 } from "@turnkeyai/core-types/team";
 import type {
   RelayActionRequest,
+  RelayActionRequestRecord,
   RelayActionResult,
   RelayPeerRecord,
   RelayPeerRegistration,
@@ -22,6 +23,7 @@ export interface RelayControlPlane {
   reportTargets(peerId: string, targets: RelayTargetReport[]): RelayTargetRecord[];
   listPeers(): RelayPeerRecord[];
   listTargets(input?: { peerId?: string }): RelayTargetRecord[];
+  listActionRequests(): RelayActionRequestRecord[];
   pullNextActionRequest(peerId: string): RelayActionRequest | null;
   submitActionResult(input: RelayActionResult): RelayActionResult;
 }
