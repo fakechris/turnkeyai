@@ -561,6 +561,7 @@ coordinationEngine = new CoordinationEngine({
   runtimeChainRecorder,
   ingressOutboxRootDir: path.join(DATA_DIR, "flow-start-outbox"),
   dispatchOutboxRootDir: path.join(DATA_DIR, "dispatch-outbox"),
+  roleOutcomeOutboxRootDir: path.join(DATA_DIR, "role-outcome-outbox"),
 });
 const roleRunStartupRecoveryResult = await recoverRoleRunsOnStartup({
   teamThreadStore,
@@ -604,6 +605,9 @@ async function refreshRuntimeReconciliationPass(): Promise<void> {
       runtimeChainEventStore,
       syncRecoveryRuntime: (threadId) => recoveryActionService.syncRecoveryRuntime(threadId),
       recoveryRunStaleAfterMs: RECOVERY_RUN_STALE_AFTER_MS,
+      flowStartOutboxRootDir: path.join(DATA_DIR, "flow-start-outbox"),
+      dispatchOutboxRootDir: path.join(DATA_DIR, "dispatch-outbox"),
+      roleOutcomeOutboxRootDir: path.join(DATA_DIR, "role-outcome-outbox"),
     });
     flowRecoveryStartupReconcileResult = runtimeReconciliationPassResult.flowRecovery;
     runtimeChainStartupReconcileResult = runtimeReconciliationPassResult.runtimeChains;

@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+
+import { FileBatchOutbox } from "@turnkeyai/team-runtime/file-batch-outbox";
 
 import { runRuntimeReconciliationPass } from "./runtime-reconciliation-pass";
 
@@ -127,4 +132,112 @@ test("runtime reconciliation pass syncs recovery runtime and reports drift remed
     result.remediation.includes("Inspect affected recovery runs and retry or supersede any orphaned flow-linked recovery work.")
   );
   assert.ok(result.remediation.includes("Inspect runtime chain projection drift for affected chains before trusting operator state."));
+});
+
+test("runtime reconciliation pass reports cross-store safety dead letters and expired leases", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-reconcile-cross-store-"));
+  const now = 5_000;
+
+  try {
+    const flowStartOutbox = new FileBatchOutbox<{ kind: string }>({
+      rootDir: path.join(tempDir, "flow-start"),
+      now: () => now,
+    });
+    const flowStartBatch = await flowStartOutbox.enqueue([{ kind: "flow-start" }]);
+    const flowStartClaim = await flowStartOutbox.claimDue({ leaseDurationMs: 50, now });
+    await flowStartOutbox.deadLetter(flowStartBatch.batchId, {
+      attemptCount: 1,
+      items: flowStartBatch.items,
+      error: new Error("flow start failed"),
+      leaseId: flowStartClaim[0]!.leaseId,
+    });
+
+    const dispatchOutbox = new FileBatchOutbox<{ kind: string }>({
+      rootDir: path.join(tempDir, "dispatch"),
+      now: () => now,
+    });
+    await dispatchOutbox.enqueue([{ kind: "dispatch" }]);
+    await dispatchOutbox.claimDue({ leaseDurationMs: 50, now });
+
+    const roleOutcomeOutbox = new FileBatchOutbox<{ kind: string }>({
+      rootDir: path.join(tempDir, "role-outcome"),
+      now: () => now,
+    });
+    const roleOutcomeBatch = await roleOutcomeOutbox.enqueue([{ kind: "role-outcome" }]);
+    const roleOutcomeClaim = await roleOutcomeOutbox.claimDue({ leaseDurationMs: 50, now });
+    await roleOutcomeOutbox.deadLetter(roleOutcomeBatch.batchId, {
+      attemptCount: 2,
+      items: roleOutcomeBatch.items,
+      error: new Error("role outcome failed"),
+      leaseId: roleOutcomeClaim[0]!.leaseId,
+    });
+
+    const result = await runRuntimeReconciliationPass({
+      clock: { now: () => now + 1_000 },
+      teamThreadStore: {
+        async list() {
+          return [];
+        },
+      } as any,
+      flowLedgerStore: {
+        async get() {
+          return null;
+        },
+        async listByThread() {
+          return [];
+        },
+      } as any,
+      recoveryRunStore: {
+        async listByThread() {
+          return [];
+        },
+        async put() {},
+      } as any,
+      runtimeChainStore: {
+        async listByThread() {
+          return [];
+        },
+      } as any,
+      runtimeChainStatusStore: {
+        async listByThread() {
+          return [];
+        },
+      } as any,
+      runtimeChainSpanStore: {
+        async listByChain() {
+          return [];
+        },
+      } as any,
+      runtimeChainEventStore: {
+        async listByChain() {
+          return [];
+        },
+      } as any,
+      async syncRecoveryRuntime() {
+        return { runs: [] };
+      },
+      recoveryRunStaleAfterMs: 500,
+      flowStartOutboxRootDir: path.join(tempDir, "flow-start"),
+      dispatchOutboxRootDir: path.join(tempDir, "dispatch"),
+      roleOutcomeOutboxRootDir: path.join(tempDir, "role-outcome"),
+    });
+
+    assert.equal(result.crossStoreSafety.flowStartOutbox.deadLetterBatches, 1);
+    assert.equal(result.crossStoreSafety.dispatchOutbox.inflightBatches, 1);
+    assert.equal(result.crossStoreSafety.dispatchOutbox.expiredInflightBatches, 1);
+    assert.equal(result.crossStoreSafety.roleOutcomeOutbox.deadLetterBatches, 1);
+    assert.ok(
+      result.remediation.includes("Inspect dead-lettered flow-start intents before trusting message-to-flow convergence.")
+    );
+    assert.ok(
+      result.remediation.includes(
+        "Inspect dead-lettered role outcomes before trusting reply/failure-driven flow state transitions."
+      )
+    );
+    assert.ok(
+      result.remediation.includes("Inspect expired in-flight outbox leases after restart before replaying additional work.")
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
