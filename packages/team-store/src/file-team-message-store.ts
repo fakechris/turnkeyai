@@ -12,6 +12,7 @@ interface FileTeamMessageStoreOptions {
 export class FileTeamMessageStore implements TeamMessageStore {
   private readonly rootDir: string;
   private readonly threadMutex = new KeyedAsyncMutex<ThreadId>();
+  private legacyByIdBackfillPromise: Promise<void> | null = null;
 
   constructor(options: FileTeamMessageStoreOptions) {
     this.rootDir = options.rootDir;
@@ -22,14 +23,15 @@ export class FileTeamMessageStore implements TeamMessageStore {
       const entryPath = this.entryFilePath(message.threadId, message);
       const byIdPath = this.byIdFilePath(message.id);
       const existingProjection = await readJsonFile<TeamMessage>(byIdPath);
-      const nextProjection =
-        !existingProjection || message.updatedAt >= existingProjection.updatedAt ? message : existingProjection;
+      const shouldUpdateProjection = !existingProjection || message.updatedAt >= existingProjection.updatedAt;
 
       let entryWritten = false;
       try {
         await writeJsonFileAtomic(entryPath, message);
         entryWritten = true;
-        await writeJsonFileAtomic(byIdPath, nextProjection);
+        if (shouldUpdateProjection) {
+          await writeJsonFileAtomic(byIdPath, message);
+        }
       } catch (error) {
         if (entryWritten) {
           await removeFileIfExists(entryPath);
@@ -53,20 +55,8 @@ export class FileTeamMessageStore implements TeamMessageStore {
       return projected;
     }
 
-    const threadIds = await this.listThreadIds();
-    for (const threadId of threadIds) {
-      const messages = await this.readThreadMessages(threadId);
-      const message = messages.find((item) => item.id === messageId);
-      if (message) {
-        try {
-          await this.backfillByIdProjection(message);
-        } catch {
-          // Preserve successful reads; projection backfill is best-effort.
-        }
-        return message;
-      }
-    }
-    return null;
+    await this.backfillLegacyByIdProjectionsOnce();
+    return readJsonFile<TeamMessage>(this.byIdFilePath(messageId));
   }
 
   private async listThreadIds(): Promise<ThreadId[]> {
@@ -152,6 +142,33 @@ export class FileTeamMessageStore implements TeamMessageStore {
       }
       await writeJsonFileAtomic(byIdPath, message);
     });
+  }
+
+  private async backfillLegacyByIdProjectionsOnce(): Promise<void> {
+    if (!this.legacyByIdBackfillPromise) {
+      this.legacyByIdBackfillPromise = this.backfillLegacyByIdProjections();
+    }
+    return this.legacyByIdBackfillPromise;
+  }
+
+  private async backfillLegacyByIdProjections(): Promise<void> {
+    const markerPath = this.legacyBackfillMarkerPath();
+    const marker = await readJsonFile<{ completedAt: number }>(markerPath);
+    if (marker) {
+      return;
+    }
+    const legacyThreadPaths = await listJsonFiles(this.rootDir);
+    for (const filePath of legacyThreadPaths) {
+      const messages = await readJsonFile<TeamMessage[]>(filePath);
+      for (const message of messages ?? []) {
+        await this.backfillByIdProjection(message);
+      }
+    }
+    await writeJsonFileAtomic(markerPath, { completedAt: Date.now() });
+  }
+
+  private legacyBackfillMarkerPath(): string {
+    return path.join(this.rootDir, ".migration", "legacy-by-id-backfill-complete");
   }
 }
 

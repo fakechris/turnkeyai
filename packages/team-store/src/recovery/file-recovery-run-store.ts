@@ -9,6 +9,18 @@ interface FileRecoveryRunStoreOptions {
   rootDir: string;
 }
 
+type RecoveryRunProjectionSource = "legacy" | "by-id" | "thread";
+
+interface SourcedRecoveryRun {
+  source: RecoveryRunProjectionSource;
+  run: RecoveryRun;
+}
+
+interface RecoveryRunReadResult {
+  run: RecoveryRun;
+  repairNeeded: boolean;
+}
+
 export class FileRecoveryRunStore implements RecoveryRunStore {
   private readonly rootDir: string;
   private readonly runMutex = new KeyedAsyncMutex<string>();
@@ -19,12 +31,14 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
 
   async get(recoveryRunId: string): Promise<RecoveryRun | null> {
     return this.runMutex.run(recoveryRunId, async () => {
-      const run = await this.readRecoveryRun(recoveryRunId);
-      if (!run) {
+      const result = await this.readRecoveryRunWithRepairState(recoveryRunId);
+      if (!result) {
         return null;
       }
-      await this.repairCanonicalStorageBestEffort(run);
-      return run;
+      if (result.repairNeeded) {
+        await this.repairCanonicalStorageBestEffort(result.run);
+      }
+      return result.run;
     });
   }
 
@@ -93,19 +107,21 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
       Promise.all(byIdFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
       Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
     ]);
-    const runs = await this.mergeRunsForThread(threadId, [
-      ...legacyRecords.filter((record): record is RecoveryRun => record !== null),
-      ...byIdRecords.filter((record): record is RecoveryRun => record !== null),
-      ...threadRecords.filter((record): record is RecoveryRun => record !== null),
+    const results = await this.mergeRunsForThread(threadId, [
+      ...legacyRecords.filter((record): record is RecoveryRun => record !== null).map((run) => ({ source: "legacy" as const, run })),
+      ...byIdRecords.filter((record): record is RecoveryRun => record !== null).map((run) => ({ source: "by-id" as const, run })),
+      ...threadRecords.filter((record): record is RecoveryRun => record !== null).map((run) => ({ source: "thread" as const, run })),
     ]);
     await Promise.all(
-      runs.map((run) =>
-        this.runMutex.run(run.recoveryRunId, async () => {
-          await this.repairCanonicalStorageBestEffort(run);
+      results
+        .filter((result) => result.repairNeeded)
+        .map((result) =>
+        this.runMutex.run(result.run.recoveryRunId, async () => {
+          await this.repairCanonicalStorageBestEffort(result.run);
         })
       )
     );
-    return runs;
+    return results.map((result) => result.run);
   }
 
   async listAll(): Promise<RecoveryRun[]> {
@@ -119,40 +135,42 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
       Promise.all(legacyFilePaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
       Promise.all(threadScopedPaths.map((filePath) => readJsonFile<RecoveryRun>(filePath))),
     ]);
-    const runs = await this.mergeAllRuns([
-      ...legacyRecords.filter((record): record is RecoveryRun => record !== null),
-      ...byIdRecords.filter((record): record is RecoveryRun => record !== null),
-      ...threadRecords.filter((record): record is RecoveryRun => record !== null),
+    const results = await this.mergeAllRuns([
+      ...legacyRecords.filter((record): record is RecoveryRun => record !== null).map((run) => ({ source: "legacy" as const, run })),
+      ...byIdRecords.filter((record): record is RecoveryRun => record !== null).map((run) => ({ source: "by-id" as const, run })),
+      ...threadRecords.filter((record): record is RecoveryRun => record !== null).map((run) => ({ source: "thread" as const, run })),
     ]);
     await Promise.all(
-      runs.map((run) =>
-        this.runMutex.run(run.recoveryRunId, async () => {
-          await this.repairCanonicalStorageBestEffort(run);
+      results
+        .filter((result) => result.repairNeeded)
+        .map((result) =>
+        this.runMutex.run(result.run.recoveryRunId, async () => {
+          await this.repairCanonicalStorageBestEffort(result.run);
         })
       )
     );
-    return runs;
+    return results.map((result) => result.run);
   }
 
   private async readRecoveryRun(recoveryRunId: string): Promise<RecoveryRun | null> {
+    return (await this.readRecoveryRunWithRepairState(recoveryRunId))?.run ?? null;
+  }
+
+  private async readRecoveryRunWithRepairState(recoveryRunId: string): Promise<RecoveryRunReadResult | null> {
     const [byIdRun, legacyRun, threadScopedRun] = await Promise.all([
       readJsonFile<RecoveryRun>(this.byIdFilePath(recoveryRunId)),
       readJsonFile<RecoveryRun>(this.legacyFlatFilePath(recoveryRunId)),
       this.readThreadScopedRecoveryRun(recoveryRunId),
     ]);
-    const run = [legacyRun, byIdRun, threadScopedRun].reduce<RecoveryRun | null>((latest, candidate) => {
-      if (!candidate) {
-        return latest;
-      }
-      if (!latest || candidate.updatedAt >= latest.updatedAt) {
-        return candidate;
-      }
-      return latest;
-    }, null);
-    if (!run) {
+    const sourced = [
+      legacyRun ? { source: "legacy" as const, run: legacyRun } : null,
+      byIdRun ? { source: "by-id" as const, run: byIdRun } : null,
+      threadScopedRun ? { source: "thread" as const, run: threadScopedRun } : null,
+    ].filter((record): record is SourcedRecoveryRun => record !== null);
+    if (sourced.length === 0) {
       return null;
     }
-    return this.hydrateAttempts(run);
+    return this.hydrateMergedRun(sourced);
   }
 
   private async readThreadScopedRecoveryRun(recoveryRunId: string): Promise<RecoveryRun | null> {
@@ -189,31 +207,50 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
     });
   }
 
-  private async mergeRunsForThread(threadId: string, records: RecoveryRun[]): Promise<RecoveryRun[]> {
-    const merged = new Map<string, RecoveryRun>();
+  private async mergeRunsForThread(threadId: string, records: SourcedRecoveryRun[]): Promise<RecoveryRunReadResult[]> {
+    const grouped = new Map<string, SourcedRecoveryRun[]>();
     for (const record of records) {
-      if (record.threadId !== threadId) {
+      if (record.run.threadId !== threadId) {
         continue;
       }
-      const existing = merged.get(record.recoveryRunId);
-      if (!existing || record.updatedAt >= existing.updatedAt) {
-        merged.set(record.recoveryRunId, record);
-      }
+      const bucket = grouped.get(record.run.recoveryRunId) ?? [];
+      bucket.push(record);
+      grouped.set(record.run.recoveryRunId, bucket);
     }
-    const hydrated = await Promise.all([...merged.values()].map((record) => this.hydrateAttempts(record)));
-    return hydrated.sort((left, right) => right.updatedAt - left.updatedAt);
+    const hydrated = await Promise.all([...grouped.values()].map((records) => this.hydrateMergedRun(records)));
+    return hydrated.sort((left, right) => right.run.updatedAt - left.run.updatedAt);
   }
 
-  private async mergeAllRuns(records: RecoveryRun[]): Promise<RecoveryRun[]> {
-    const merged = new Map<string, RecoveryRun>();
+  private async mergeAllRuns(records: SourcedRecoveryRun[]): Promise<RecoveryRunReadResult[]> {
+    const grouped = new Map<string, SourcedRecoveryRun[]>();
     for (const record of records) {
-      const existing = merged.get(record.recoveryRunId);
-      if (!existing || record.updatedAt >= existing.updatedAt) {
-        merged.set(record.recoveryRunId, record);
-      }
+      const bucket = grouped.get(record.run.recoveryRunId) ?? [];
+      bucket.push(record);
+      grouped.set(record.run.recoveryRunId, bucket);
     }
-    const hydrated = await Promise.all([...merged.values()].map((record) => this.hydrateAttempts(record)));
-    return hydrated.sort((left, right) => right.updatedAt - left.updatedAt);
+    const hydrated = await Promise.all([...grouped.values()].map((records) => this.hydrateMergedRun(records)));
+    return hydrated.sort((left, right) => right.run.updatedAt - left.run.updatedAt);
+  }
+
+  private async hydrateMergedRun(records: SourcedRecoveryRun[]): Promise<RecoveryRunReadResult> {
+    const latest = records.reduce<RecoveryRun | null>((current, record) => {
+      if (!current || record.run.updatedAt >= current.updatedAt) {
+        return record.run;
+      }
+      return current;
+    }, null);
+    if (!latest) {
+      throw new Error("cannot hydrate empty recovery run group");
+    }
+    const embeddedAttempts = mergeEmbeddedAttempts(records.map((record) => record.run));
+    const run = await this.hydrateAttempts({
+      ...latest,
+      attempts: embeddedAttempts,
+    });
+    return {
+      run,
+      repairNeeded: shouldRepairRunSources(records),
+    };
   }
 
   private async listThreadScopedPaths(): Promise<string[]> {
@@ -324,6 +361,30 @@ function compareRecoveryAttempts(left: RecoveryRunAttempt, right: RecoveryRunAtt
     return left.updatedAt - right.updatedAt;
   }
   return left.attemptId.localeCompare(right.attemptId);
+}
+
+function mergeEmbeddedAttempts(runs: RecoveryRun[]): RecoveryRunAttempt[] {
+  const merged = new Map<string, RecoveryRunAttempt>();
+  for (const run of runs) {
+    for (const attempt of run.attempts) {
+      const existing = merged.get(attempt.attemptId);
+      if (!existing || attempt.updatedAt >= existing.updatedAt) {
+        merged.set(attempt.attemptId, attempt);
+      }
+    }
+  }
+  return [...merged.values()].sort(compareRecoveryAttempts);
+}
+
+function shouldRepairRunSources(records: SourcedRecoveryRun[]): boolean {
+  const sources = new Set(records.map((record) => record.source));
+  if (sources.has("legacy")) {
+    return true;
+  }
+  if (!sources.has("by-id") || !sources.has("thread")) {
+    return true;
+  }
+  return records.some((record) => record.run.attempts.length > 0);
 }
 
 function shouldRepairRunProjection(current: RecoveryRun | null, desired: RecoveryRun): boolean {

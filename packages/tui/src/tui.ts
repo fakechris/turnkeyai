@@ -1058,7 +1058,7 @@ function printWorkerSessions(records: WorkerSessionRecord[]): void {
         record.context?.roleId ? `role=${record.context.roleId}` : "role=-",
         record.context?.taskId ? `task=${record.context.taskId}` : "task=-",
         record.state.lastError?.message ? `error=${JSON.stringify(record.state.lastError.message)}` : null,
-      ].join(" ")
+      ].filter(Boolean).join(" ")
     );
   }
 }
