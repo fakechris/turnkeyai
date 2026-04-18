@@ -612,7 +612,12 @@ test("recovery action service truth-aligns replay recovery plans", async () => {
   assert.equal((recovery as any).stale, true);
   assert.equal((recovery as any).truthSource, "replay-recovery-query");
   assert.deepEqual((recovery as any).remediation, [
-    "Re-establish the browser/worker session before retrying this recovery plan.",
+    {
+      action: "reconnect_session",
+      scope: "transport",
+      subjectId: "task-1",
+      summary: "Re-establish the browser/worker session before retrying this recovery plan.",
+    },
   ]);
 });
 
@@ -775,16 +780,21 @@ test("recovery action service flags cold recreation recovery plans for operator 
   assert.ok(replayRecovery);
   assert.equal(replayRecovery?.workerContinuation?.state, "cold_recreated");
   assert.ok(
-    replayRecovery?.remediation.includes(
-      "Treat this as a cold recreation, not a true worker resume, before approving further execution."
+    replayRecovery?.remediation.some(
+      (item) =>
+        item.action === "review_cold_recreation" &&
+        item.summary === "Treat this as a cold recreation, not a true worker resume, before approving further execution."
     )
   );
 
   const recoveryRun = await service.getRecoveryRun("thread-1", persistedRun.recoveryRunId);
   assert.ok(recoveryRun);
   assert.ok(
-    recoveryRun?.remediation.includes(
-      "This recovery degraded to a cold recreation; re-validate continuation context before allowing new side effects."
+    recoveryRun?.remediation.some(
+      (item) =>
+        item.action === "review_cold_recreation" &&
+        item.summary ===
+          "This recovery degraded to a cold recreation; re-validate continuation context before allowing new side effects."
     )
   );
 });

@@ -975,7 +975,7 @@ function printRuntimeChains(
   }
 }
 
-function printRuntimeSummary(report: RuntimeSummaryReport): void {
+function printRuntimeSummary(report: RuntimeSummaryReport & TruthPrintable): void {
   console.log("Runtime Summary");
   console.log(`  total chains: ${report.totalChains}`);
   console.log(`  active: ${report.activeCount}`);
@@ -1031,6 +1031,8 @@ function printRuntimeSummary(report: RuntimeSummaryReport): void {
       `  runtime chain artifact startup reconcile: orphaned-statuses=${report.runtimeChainArtifactStartupReconcile.orphanedStatuses} cross-thread-statuses=${report.runtimeChainArtifactStartupReconcile.crossThreadStatuses} orphaned-spans=${report.runtimeChainArtifactStartupReconcile.orphanedSpans} cross-thread-spans=${report.runtimeChainArtifactStartupReconcile.crossThreadSpans} cross-flow-spans=${report.runtimeChainArtifactStartupReconcile.crossFlowSpans} orphaned-events=${report.runtimeChainArtifactStartupReconcile.orphanedEvents} missing-span-events=${report.runtimeChainArtifactStartupReconcile.missingSpanEvents} cross-thread-events=${report.runtimeChainArtifactStartupReconcile.crossThreadEvents} cross-chain-events=${report.runtimeChainArtifactStartupReconcile.crossChainEvents} affected=${report.runtimeChainArtifactStartupReconcile.affectedChainIds.length}`
     );
   }
+  printTruthFields(report);
+  printTruthRemediation(report);
   printRuntimeSummaryEntries("  attention chains:", report.attentionChains);
   printRuntimeSummaryEntries("  active chains:", report.activeChains);
   printRuntimeSummaryEntries("  waiting chains:", report.waitingChains);
@@ -1062,7 +1064,7 @@ function printWorkerSessions(records: WorkerSessionRecord[]): void {
 
 function printRuntimeSummaryEntries(
   title: string,
-  entries: RuntimeSummaryReport["attentionChains"]
+  entries: Array<RuntimeSummaryReport["attentionChains"][number] & TruthPrintable>
 ): void {
   if (entries.length === 0) {
     return;
@@ -1103,6 +1105,8 @@ function printRuntimeSummaryEntries(
     if (entry.nextStep) {
       console.log(`      next: ${entry.nextStep}`);
     }
+    printTruthFields(entry, "      ");
+    printTruthRemediation(entry, "      ", 2);
     if (entry.latestChildSpanId) {
       console.log(`      latest child: ${entry.latestChildSpanId}`);
     }
@@ -1114,7 +1118,7 @@ function printRuntimeChain(input: {
   status: RuntimeChainStatus | null;
   spans: RuntimeChainSpan[];
   events: RuntimeChainEvent[];
-}): void {
+} & TruthPrintable): void {
   console.log("Runtime Chain");
   console.log(`  chain: ${input.chain.chainId}`);
   console.log(`  thread: ${input.chain.threadId}`);
@@ -1174,6 +1178,8 @@ function printRuntimeChain(input: {
       console.log(`  last failed: ${input.status.lastFailedSpanId}`);
     }
   }
+  printTruthFields(input);
+  printTruthRemediation(input);
   if (input.spans.length > 0) {
     console.log("  spans:");
     for (const span of input.spans) {
@@ -1395,6 +1401,63 @@ function printStringSection(label: string, values: string[]): void {
   }
   for (const value of values) {
     console.log(`    - ${value}`);
+  }
+}
+
+type TruthPrintable = {
+  confirmed?: boolean;
+  inferred?: boolean;
+  stale?: boolean;
+  truthState?: string;
+  truthSource?: string;
+  remediation?: Array<{
+    action: string;
+    scope: string;
+    summary: string;
+    subjectId?: string;
+  }>;
+  runtimeReconciliation?: {
+    reconciledAt: number;
+  };
+};
+
+function printTruthFields(payload: TruthPrintable, indent = "  "): void {
+  if (payload.truthState || payload.truthSource) {
+    const parts: string[] = [];
+    if (payload.truthState) {
+      parts.push(`state=${payload.truthState}`);
+    }
+    if (payload.truthSource) {
+      parts.push(`source=${payload.truthSource}`);
+    }
+    if (payload.confirmed != null) {
+      parts.push(`confirmed=${payload.confirmed ? "yes" : "no"}`);
+    }
+    if (payload.inferred != null) {
+      parts.push(`inferred=${payload.inferred ? "yes" : "no"}`);
+    }
+    if (payload.stale != null) {
+      parts.push(`stale=${payload.stale ? "yes" : "no"}`);
+    }
+    console.log(`${indent}truth: ${parts.join("  ")}`);
+  }
+  if (payload.runtimeReconciliation?.reconciledAt) {
+    console.log(`${indent}reconciled at: ${new Date(payload.runtimeReconciliation.reconciledAt).toISOString()}`);
+  }
+}
+
+function printTruthRemediation(payload: TruthPrintable, indent = "  ", limit = 4): void {
+  if (!payload.remediation?.length) {
+    return;
+  }
+  console.log(`${indent}remediation:`);
+  for (const item of payload.remediation.slice(0, limit)) {
+    const parts = [`action=${item.action}`, `scope=${item.scope}`];
+    if (item.subjectId) {
+      parts.push(`subject=${item.subjectId}`);
+    }
+    console.log(`${indent}  - ${parts.join("  ")}`);
+    console.log(`${indent}    ${item.summary}`);
   }
 }
 
@@ -1638,6 +1701,8 @@ function printOperatorAttention(report: OperatorAttentionReport): void {
       console.log(`    - ${parts.join("  ")}`);
       console.log(`      ${entry.headline}`);
       console.log(`      next=${entry.nextStep}  latest=${entry.latestUpdate}`);
+      printTruthFields(entry, "      ");
+      printTruthRemediation(entry, "      ", 2);
       if (entry.reasons && entry.reasons.length > 0) {
         console.log(`      reasons: ${entry.reasons.join(" | ")}`);
       }
@@ -1675,6 +1740,8 @@ function printOperatorAttention(report: OperatorAttentionReport): void {
     console.log(`  - ${parts.join("  ")}`);
     console.log(`    headline: ${item.headline}`);
     console.log(`    ${item.summary}`);
+    printTruthFields(item, "    ");
+    printTruthRemediation(item, "    ", 2);
     if (item.reasons && item.reasons.length > 0) {
       console.log(`    reasons: ${item.reasons.join(" | ")}`);
     }
@@ -2904,7 +2971,7 @@ async function handleRecoveryActionCommand(
   );
 }
 
-function printRecoveryRunList(payload: { totalRuns: number; runs: RecoveryRun[] }): void {
+function printRecoveryRunList(payload: { totalRuns: number; runs: Array<RecoveryRun & TruthPrintable> }): void {
   console.log(`Recovery runs: ${payload.totalRuns}`);
   for (const run of payload.runs) {
     const parts = [
@@ -2924,6 +2991,8 @@ function printRecoveryRunList(payload: { totalRuns: number; runs: RecoveryRun[] 
       `- ${parts.join("  ")}`
     );
     console.log(`  ${run.latestSummary}`);
+    printTruthFields(run);
+    printTruthRemediation(run);
     const allowedActions = listAllowedRecoveryRunActions(run.status).filter((action) => action !== "dispatch");
     if (allowedActions.length > 0) {
       console.log(`  allowed: ${allowedActions.map(describeAttemptAction).join(", ")}`);
@@ -3011,7 +3080,7 @@ function printRecoveryConsole(report: RecoveryConsoleReport): void {
   }
 }
 
-function printRecoveryRun(run: RecoveryRun): void {
+function printRecoveryRun(run: RecoveryRun & TruthPrintable): void {
   console.log(`Recovery Run: ${run.recoveryRunId}`);
   console.log(`  thread: ${run.threadId}`);
   console.log(`  source group: ${run.sourceGroupId}`);
@@ -3036,6 +3105,8 @@ function printRecoveryRun(run: RecoveryRun): void {
       `  browser: session=${run.browserSession.sessionId} target=${run.browserSession.targetId ?? "-"} resume=${run.browserSession.resumeMode}`
     );
   }
+  printTruthFields(run);
+  printTruthRemediation(run);
   console.log(`  attempts: ${run.attempts.length}`);
   for (const attempt of run.attempts) {
     const parts = [
@@ -3070,11 +3141,11 @@ function printRecoveryRun(run: RecoveryRun): void {
 }
 
 function printRecoveryTimeline(payload: {
-  recoveryRun: RecoveryRun;
+  recoveryRun: RecoveryRun & TruthPrintable;
   progress: RecoveryRunProgress;
   totalEntries: number;
   timeline: RecoveryRunTimelineEntry[];
-}): void {
+} & TruthPrintable): void {
   console.log(`Recovery Timeline: ${payload.recoveryRun.recoveryRunId}`);
   console.log(
     `  phase=${payload.progress.phase}  active=${payload.progress.activeAttemptId ?? "-"}  settled=${payload.progress.settledAttempts}/${payload.progress.totalAttempts}`
@@ -3085,6 +3156,8 @@ function printRecoveryTimeline(payload: {
       `  last settled: ${payload.progress.lastSettledAttemptId} (${payload.progress.lastSettledStatus ?? "unknown"})`
     );
   }
+  printTruthFields(payload);
+  printTruthRemediation(payload);
   console.log(`  timeline entries: ${payload.totalEntries}`);
   for (const entry of payload.timeline) {
     const parts = [
@@ -3127,6 +3200,8 @@ function printRecoveryTimeline(payload: {
 function printReplayBundle(bundle: ReplayIncidentBundle): void {
   console.log(`Incident Bundle: ${bundle.group.groupId}`);
   console.log(`  latest status: ${bundle.group.latestStatus}`);
+  printTruthFields(bundle);
+  printTruthRemediation(bundle);
   if (bundle.caseState) {
     console.log(`  case state: ${bundle.caseState}`);
   }
@@ -3413,6 +3488,7 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
         `next=${describeRecoveryAction(bundle.nextAction)}`,
         `latest=${bundle.latestStatus}`,
         `auto=${bundle.autoDispatchReady ? "yes" : "no"}`,
+        `truth=${bundle.truthState}`,
       ];
       if (bundle.caseState) {
         parts.push(`case=${bundle.caseState}`);
@@ -3444,6 +3520,7 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       if (bundle.workflowSummary) {
         console.log(`      ${bundle.workflowSummary}`);
       }
+      printTruthRemediation(bundle, "      ", 2);
       if (bundle.operatorGate || (bundle.operatorAllowedActions && bundle.operatorAllowedActions.length > 0)) {
         const operatorParts: string[] = [];
         if (bundle.operatorGate) {
@@ -3464,6 +3541,7 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
         `next=${describeRecoveryAction(bundle.nextAction)}`,
         `latest=${bundle.latestStatus}`,
         `auto=${bundle.autoDispatchReady ? "yes" : "no"}`,
+        `truth=${bundle.truthState}`,
       ];
       if (bundle.caseState) {
         parts.push(`case=${bundle.caseState}`);
@@ -3492,6 +3570,7 @@ function printReplayConsole(payload: ReplayConsoleReport): void {
       if (bundle.workflowSummary) {
         console.log(`      ${bundle.workflowSummary}`);
       }
+      printTruthRemediation(bundle, "      ", 2);
       if (bundle.operatorGate || (bundle.operatorAllowedActions && bundle.operatorAllowedActions.length > 0)) {
         const operatorParts: string[] = [];
         if (bundle.operatorGate) {

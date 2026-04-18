@@ -358,7 +358,16 @@ test("replay inspection enriches relay browser continuity with peer and target d
   const bundle = buildReplayIncidentBundle(records, "task-relay", relayDiagnostics);
 
   assert.equal(consoleReport.latestBundles[0]?.relayDiagnosticBucket, "peer_stale");
+  assert.equal(consoleReport.latestBundles[0]?.truthSource, "replay-store+relay-diagnostics");
+  assert.equal(consoleReport.latestBundles[0]?.truthState, "stale");
+  assert.ok(
+    consoleReport.latestBundles[0]?.remediation.some(
+      (item) => item.action === "reconnect_session" && item.scope === "transport"
+    )
+  );
   assert.ok(bundle?.browserContinuity);
+  assert.equal(bundle?.truthSource, "replay-store+relay-diagnostics");
+  assert.equal(bundle?.truthState, "stale");
   assert.equal(bundle?.browserContinuity?.transportPeerId, "peer-relay");
   assert.equal(bundle?.browserContinuity?.relayPeerStatus, "stale");
   assert.equal(bundle?.browserContinuity?.relayTargetStatus, "missing");
@@ -833,6 +842,8 @@ test("replay console counts resolved groups even when browser continuity is not 
   assert.equal(consoleReport.latestResolvedBundles[0]?.caseState, "resolved");
   assert.equal(consoleReport.latestResolvedBundles[0]?.workflowStatus, "recovered");
   assert.equal(consoleReport.latestResolvedBundles[0]?.browserContinuityState, "attention");
+  assert.equal(consoleReport.latestResolvedBundles[0]?.truthSource, "replay-store");
+  assert.equal(consoleReport.latestResolvedBundles[0]?.truthState, "stale");
 });
 
 test("replay console suppresses superseded failed follow-up groups once the root chain recovers", () => {

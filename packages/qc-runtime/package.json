@@ -27,6 +27,7 @@
     "./prompt-admission-policy": "./src/prompt-admission-policy.ts",
     "./replay-inspection": "./src/replay-inspection.ts",
     "./runtime-chain-inspection": "./src/runtime-chain-inspection.ts",
+    "./truth-alignment": "./src/truth-alignment.ts",
     "./index": "./src/index.ts"
   }
 }

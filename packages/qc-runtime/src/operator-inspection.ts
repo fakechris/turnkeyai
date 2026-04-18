@@ -419,6 +419,9 @@ export function buildOperatorAttentionReport(input: {
         ...(browserContinuity?.relayDiagnosticBucket
           ? { relayDiagnosticBucket: browserContinuity.relayDiagnosticBucket }
           : {}),
+        ...(bundle?.truthState ? { truthState: bundle.truthState } : {}),
+        ...(bundle?.truthSource ? { truthSource: bundle.truthSource } : {}),
+        ...(bundle?.remediation?.length ? { remediation: bundle.remediation } : {}),
         summary: incident.latestFailure?.message ?? incident.recoveryHint.reason,
         ...(incident.recoveryHint.action ? { action: incident.recoveryHint.action } : {}),
       };
@@ -990,6 +993,9 @@ function buildAttentionCaseSummary(
     ...(browserDiagnosticBucket ? { browserDiagnosticBucket } : {}),
     ...(relayDiagnosticBucket ? { relayDiagnosticBucket } : {}),
     ...(primary.reasons && primary.reasons.length > 0 ? { reasons: primary.reasons } : {}),
+    ...(primary.truthState ? { truthState: primary.truthState } : {}),
+    ...(primary.truthSource ? { truthSource: primary.truthSource } : {}),
+    ...(primary.remediation?.length ? { remediation: primary.remediation } : {}),
   };
 }
 
@@ -1131,6 +1137,9 @@ function resolveReplayRootGroupId(groupId: string, parentByGroupId: Map<string, 
 function deriveAttentionNextStep(item: OperatorAttentionItem): string {
   if (item.action) {
     return item.action;
+  }
+  if (item.remediation?.[0]?.action) {
+    return item.remediation[0].action;
   }
   switch (item.lifecycle) {
     case "recovering":

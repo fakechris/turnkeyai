@@ -1271,7 +1271,12 @@ test("runtime query service truth-aligns query summaries and fallback chain stat
   assert.equal(entries[0]?.inferred, true);
   assert.equal(entries[0]?.truthSource, "stored-chain-fallback-status");
   assert.deepEqual(entries[0]?.remediation, [
-    "Run the runtime reconciliation pass before treating this chain projection as authoritative.",
+    {
+      action: "reconcile_runtime",
+      scope: "runtime_chain",
+      subjectId: "chain-1",
+      summary: "Run the runtime reconciliation pass before treating this chain projection as authoritative.",
+    },
   ]);
 
   const summary = await service.loadRuntimeSummary("thread-1", 10);
@@ -1347,7 +1352,13 @@ test("runtime query service attaches latest runtime reconciliation guidance when
           affectedBatchIds: [],
         },
       },
-      remediation: ["Inspect runtime chain projection drift for affected chains before trusting operator state."],
+      remediation: [
+        {
+          action: "inspect_runtime_chain",
+          scope: "runtime_summary",
+          summary: "Inspect runtime chain projection drift for affected chains before trusting operator state.",
+        },
+      ],
     }),
     teamThreadStore: {
       async list() {
@@ -1443,7 +1454,11 @@ test("runtime query service attaches latest runtime reconciliation guidance when
   const summary = await service.loadRuntimeSummary("thread-1", 10);
   assert.equal(summary.runtimeReconciliation?.reconciledAt, 1_000);
   assert.deepEqual(summary.remediation, [
-    "Inspect runtime chain projection drift for affected chains before trusting operator state.",
+    {
+      action: "inspect_runtime_chain",
+      scope: "runtime_summary",
+      summary: "Inspect runtime chain projection drift for affected chains before trusting operator state.",
+    },
   ]);
 });
 

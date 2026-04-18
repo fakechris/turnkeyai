@@ -4,6 +4,7 @@ export * from "./team-governance";
 export * from "./team-memory";
 export * from "./team-replay-recovery";
 export * from "./team-runtime-support";
+export * from "./team-truth";
 export * from "./team-startup-reconcile";
 export * from "./team-scheduling";
 export * from "./team-orchestration";

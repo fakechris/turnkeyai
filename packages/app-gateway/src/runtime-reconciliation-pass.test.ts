@@ -129,9 +129,15 @@ test("runtime reconciliation pass syncs recovery runtime and reports drift remed
   assert.equal(result.runtimeChains.affectedChainIds[0], "chain-1");
   assert.equal(result.runtimeChainArtifacts.crossThreadStatuses, 1);
   assert.ok(
-    result.remediation.includes("Inspect affected recovery runs and retry or supersede any orphaned flow-linked recovery work.")
+    result.remediation.some(
+      (item) => item.action === "inspect_flow_recovery_drift" && item.scope === "flow_recovery"
+    )
   );
-  assert.ok(result.remediation.includes("Inspect runtime chain projection drift for affected chains before trusting operator state."));
+  assert.ok(
+    result.remediation.some(
+      (item) => item.action === "inspect_runtime_chain" && item.scope === "runtime_summary"
+    )
+  );
 });
 
 test("runtime reconciliation pass reports cross-store safety dead letters and expired leases", async () => {
@@ -227,15 +233,17 @@ test("runtime reconciliation pass reports cross-store safety dead letters and ex
     assert.equal(result.crossStoreSafety.dispatchOutbox.expiredInflightBatches, 1);
     assert.equal(result.crossStoreSafety.roleOutcomeOutbox.deadLetterBatches, 1);
     assert.ok(
-      result.remediation.includes("Inspect dead-lettered flow-start intents before trusting message-to-flow convergence.")
-    );
-    assert.ok(
-      result.remediation.includes(
-        "Inspect dead-lettered role outcomes before trusting reply/failure-driven flow state transitions."
+      result.remediation.some(
+        (item) => item.action === "inspect_outbox_dead_letter" && item.subjectId === "flow-start-outbox"
       )
     );
     assert.ok(
-      result.remediation.includes("Inspect expired in-flight outbox leases after restart before replaying additional work.")
+      result.remediation.some(
+        (item) => item.action === "inspect_outbox_dead_letter" && item.subjectId === "role-outcome-outbox"
+      )
+    );
+    assert.ok(
+      result.remediation.some((item) => item.action === "inspect_outbox_lease")
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true });

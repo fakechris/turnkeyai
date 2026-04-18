@@ -6,8 +6,12 @@ import type {
   RecoveryRunAction,
   RecoveryRunEvent,
   ReplayRecoveryPlan,
+  RuntimeReconciliationSnapshot,
   ScheduledTaskRecord,
   RuntimeChainStatus,
+  TruthAligned,
+  TruthRemediation,
+  TruthSource,
 } from "@turnkeyai/core-types/team";
 import {
   createScheduledTaskRecord,
@@ -27,6 +31,7 @@ import {
   findRecoveryRun,
 } from "@turnkeyai/qc-runtime/replay-inspection";
 import { buildDerivedRecoveryRuntimeChain } from "@turnkeyai/qc-runtime/runtime-chain-inspection";
+import { buildTruthAlignment, dedupeTruthRemediation, truthRemediation } from "@turnkeyai/qc-runtime/truth-alignment";
 import type { CoordinationEngine } from "@turnkeyai/team-runtime/coordination-engine";
 import type { DefaultRuntimeProgressRecorder } from "@turnkeyai/team-runtime/runtime-progress-recorder";
 import type { DefaultRuntimeStateRecorder } from "@turnkeyai/team-runtime/runtime-state-recorder";
@@ -34,19 +39,10 @@ import type { FileRecoveryRunEventStore } from "@turnkeyai/team-store/recovery/f
 import type { FileRecoveryRunStore } from "@turnkeyai/team-store/recovery/file-recovery-run-store";
 
 import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
-import type { RuntimeReconciliationPassResult } from "./runtime-reconciliation-pass";
-
 type RecoveryRuntimeSnapshot = {
   records: Awaited<ReturnType<FileReplayRecorder["list"]>>;
   report: ReturnType<typeof buildReplayInspectionReport>;
   runs: RecoveryRun[];
-};
-type TruthAligned<T> = T & {
-  confirmed: boolean;
-  inferred: boolean;
-  stale: boolean;
-  truthSource: string;
-  remediation: string[];
 };
 type TruthAlignedRecoverySummary = {
   totalRuns: number;
@@ -54,9 +50,10 @@ type TruthAlignedRecoverySummary = {
   confirmed: boolean;
   inferred: boolean;
   stale: boolean;
-  truthSource: string;
-  remediation: string[];
-  runtimeReconciliation?: RuntimeReconciliationPassResult;
+  truthState: TruthAligned<RecoveryRun>["truthState"];
+  truthSource: TruthSource;
+  remediation: TruthRemediation[];
+  runtimeReconciliation?: RuntimeReconciliationSnapshot;
 };
 type TruthAlignedRecoveryTimeline = {
   recoveryRun: TruthAligned<RecoveryRun>;
@@ -66,8 +63,9 @@ type TruthAlignedRecoveryTimeline = {
   confirmed: boolean;
   inferred: boolean;
   stale: boolean;
-  truthSource: string;
-  remediation: string[];
+  truthState: TruthAligned<RecoveryRun>["truthState"];
+  truthSource: TruthSource;
+  remediation: TruthRemediation[];
 };
 
 export interface RecoveryActionService {
@@ -97,7 +95,7 @@ export function createRecoveryActionService(input: {
   replayRecorder: FileReplayRecorder;
   recoveryRunStore: FileRecoveryRunStore;
   recoveryRunEventStore: FileRecoveryRunEventStore;
-  getRuntimeReconciliationResult?: () => RuntimeReconciliationPassResult | undefined;
+  getRuntimeReconciliationResult?: () => RuntimeReconciliationSnapshot | undefined;
 }): RecoveryActionService {
   const {
     clock,
@@ -380,11 +378,13 @@ export function createRecoveryActionService(input: {
     const runtimeReconciliation = getRuntimeReconciliationResult?.();
     return {
       ...run,
-      confirmed,
-      inferred: true,
-      stale: isQueryStaleRecoveryRun(run),
-      truthSource: confirmed ? "recovery-runtime-query+store" : "recovery-runtime-query",
-      remediation: buildRecoveryRunRemediation(run, runtimeReconciliation, confirmed, replayRecovery),
+      ...buildTruthAlignment({
+        confirmed,
+        inferred: true,
+        stale: isQueryStaleRecoveryRun(run),
+        truthSource: confirmed ? "recovery-runtime-query+store" : "recovery-runtime-query",
+        remediation: buildRecoveryRunRemediation(run, runtimeReconciliation, confirmed, replayRecovery),
+      }),
     };
   }
 
@@ -392,69 +392,162 @@ export function createRecoveryActionService(input: {
     const runtimeReconciliation = getRuntimeReconciliationResult?.();
     return {
       ...plan,
-      confirmed: false,
-      inferred: true,
-      stale: plan.latestFailure?.category === "stale_session",
-      truthSource: "replay-recovery-query",
-      remediation: buildReplayRecoveryRemediation(plan, runtimeReconciliation),
+      ...buildTruthAlignment({
+        confirmed: false,
+        inferred: true,
+        stale: plan.latestFailure?.category === "stale_session",
+        truthSource: "replay-recovery-query",
+        remediation: buildReplayRecoveryRemediation(plan, runtimeReconciliation),
+      }),
     };
   }
 
   function buildRecoveryRunRemediation(
     run: RecoveryRun,
-    runtimeReconciliation: RuntimeReconciliationPassResult | undefined,
+    runtimeReconciliation: RuntimeReconciliationSnapshot | undefined,
     confirmed: boolean,
     replayRecovery: ReplayRecoveryPlan | null
-  ): string[] {
-    const remediation: string[] = [];
+  ): TruthRemediation[] {
+    const remediation: TruthRemediation[] = [];
     if (!confirmed) {
-      remediation.push("Sync recovery runtime before trusting this derived recovery run.");
+      remediation.push(
+        truthRemediation({
+          action: "reconcile_runtime",
+          scope: "recovery",
+          subjectId: run.recoveryRunId,
+          summary: "Sync recovery runtime before trusting this derived recovery run.",
+        })
+      );
     }
     if (isQueryStaleRecoveryRun(run)) {
-      remediation.push("Inspect stale recovery execution before retrying or dispatching a fallback.");
+      remediation.push(
+        truthRemediation({
+          action: "inspect_recovery_run",
+          scope: "recovery",
+          subjectId: run.recoveryRunId,
+          summary: "Inspect stale recovery execution before retrying or dispatching a fallback.",
+        })
+      );
     }
     if (run.latestFailure?.recommendedAction === "inspect") {
-      remediation.push("Inspect the latest recovery failure and choose resume, retry, or fallback deliberately.");
+      remediation.push(
+        truthRemediation({
+          action: "inspect_recovery_failure",
+          scope: "recovery",
+          subjectId: run.recoveryRunId,
+          summary: "Inspect the latest recovery failure and choose resume, retry, or fallback deliberately.",
+        })
+      );
     }
     if (run.nextAction === "retry_same_layer") {
-      remediation.push("Retry on the same layer only after confirming the original execution context is still valid.");
+      remediation.push(
+        truthRemediation({
+          action: "retry_same_layer",
+          scope: "recovery",
+          subjectId: run.recoveryRunId,
+          summary: "Retry on the same layer only after confirming the original execution context is still valid.",
+        })
+      );
     }
     if (run.nextAction === "fallback_transport") {
-      remediation.push("Use the safest fallback transport that preserves task intent before re-dispatch.");
+      remediation.push(
+        truthRemediation({
+          action: "fallback_transport",
+          scope: "recovery",
+          subjectId: run.recoveryRunId,
+          summary: "Use the safest fallback transport that preserves task intent before re-dispatch.",
+        })
+      );
     }
     if (run.nextAction === "auto_resume") {
-      remediation.push("Resume from the latest continuation checkpoint before scheduling new work.");
+      remediation.push(
+        truthRemediation({
+          action: "resume_from_checkpoint",
+          scope: "recovery",
+          subjectId: run.recoveryRunId,
+          summary: "Resume from the latest continuation checkpoint before scheduling new work.",
+        })
+      );
     }
     if (replayRecovery?.workerContinuation?.state === "cold_recreated") {
-      remediation.push("This recovery degraded to a cold recreation; re-validate continuation context before allowing new side effects.");
+      remediation.push(
+        truthRemediation({
+          action: "review_cold_recreation",
+          scope: "recovery",
+          subjectId: run.recoveryRunId,
+          summary: "This recovery degraded to a cold recreation; re-validate continuation context before allowing new side effects.",
+        })
+      );
     }
     if (runtimeReconciliation?.flowRecovery.affectedRecoveryRunIds.includes(run.recoveryRunId)) {
-      remediation.push("Inspect flow/recovery drift for this recovery run before operator action.");
+      remediation.push(
+        truthRemediation({
+          action: "inspect_flow_recovery_drift",
+          scope: "flow_recovery",
+          subjectId: run.recoveryRunId,
+          summary: "Inspect flow/recovery drift for this recovery run before operator action.",
+        })
+      );
     }
-    return [...new Set(remediation)];
+    return dedupeTruthRemediation(remediation);
   }
 
   function buildReplayRecoveryRemediation(
     plan: ReplayRecoveryPlan,
-    runtimeReconciliation: RuntimeReconciliationPassResult | undefined
-  ): string[] {
-    const remediation: string[] = [];
+    runtimeReconciliation: RuntimeReconciliationSnapshot | undefined
+  ): TruthRemediation[] {
+    const remediation: TruthRemediation[] = [];
     if (plan.latestFailure?.category === "stale_session") {
-      remediation.push("Re-establish the browser/worker session before retrying this recovery plan.");
+      remediation.push(
+        truthRemediation({
+          action: "reconnect_session",
+          scope: "transport",
+          subjectId: plan.groupId,
+          summary: "Re-establish the browser/worker session before retrying this recovery plan.",
+        })
+      );
     }
     if (plan.nextAction === "fallback_transport") {
-      remediation.push("Dispatch the safest fallback transport when the original path is no longer reliable.");
+      remediation.push(
+        truthRemediation({
+          action: "fallback_transport",
+          scope: "transport",
+          subjectId: plan.groupId,
+          summary: "Dispatch the safest fallback transport when the original path is no longer reliable.",
+        })
+      );
     }
     if (plan.nextAction === "retry_same_layer") {
-      remediation.push("Retry on the same layer only after confirming the underlying target is still valid.");
+      remediation.push(
+        truthRemediation({
+          action: "retry_same_layer",
+          scope: "replay",
+          subjectId: plan.groupId,
+          summary: "Retry on the same layer only after confirming the underlying target is still valid.",
+        })
+      );
     }
     if (plan.workerContinuation?.state === "cold_recreated") {
-      remediation.push("Treat this as a cold recreation, not a true worker resume, before approving further execution.");
+      remediation.push(
+        truthRemediation({
+          action: "review_cold_recreation",
+          scope: "replay",
+          subjectId: plan.groupId,
+          summary: "Treat this as a cold recreation, not a true worker resume, before approving further execution.",
+        })
+      );
     }
     if (runtimeReconciliation?.flowRecovery.affectedRecoveryRunIds.some((id) => id === buildRecoveryRunId(plan.groupId))) {
-      remediation.push("Inspect related recovery run drift before auto-dispatching this recovery plan.");
+      remediation.push(
+        truthRemediation({
+          action: "inspect_flow_recovery_drift",
+          scope: "flow_recovery",
+          subjectId: buildRecoveryRunId(plan.groupId),
+          summary: "Inspect related recovery run drift before auto-dispatching this recovery plan.",
+        })
+      );
     }
-    return [...new Set(remediation)];
+    return dedupeTruthRemediation(remediation);
   }
 
   async function syncRecoveryRuntime(threadId: string): Promise<RecoveryRuntimeSnapshot> {
@@ -1463,11 +1556,13 @@ export function createRecoveryActionService(input: {
         runs: synced.runs.slice(0, limit).map((run) =>
           truthAlignRecoveryRun(run, persistedRecoveryRunIds, findReplayRecoveryPlan(synced.records, run.sourceGroupId, synced.report))
         ),
-        confirmed: false,
-        inferred: true,
-        stale: synced.runs.some((run) => isQueryStaleRecoveryRun(run)),
-        truthSource: "recovery-summary-query",
-        remediation: buildRecoverySummaryRemediation(synced.runs, runtimeReconciliation),
+        ...buildTruthAlignment({
+          confirmed: false,
+          inferred: true,
+          stale: synced.runs.some((run) => isQueryStaleRecoveryRun(run)),
+          truthSource: "recovery-summary-query",
+          remediation: buildRecoverySummaryRemediation(synced.runs, runtimeReconciliation),
+        }),
         ...(runtimeReconciliation ? { runtimeReconciliation } : {}),
       };
     },
@@ -1510,11 +1605,13 @@ export function createRecoveryActionService(input: {
         progress: buildRecoveryRunProgress(run),
         totalEntries: timeline.length,
         timeline,
-        confirmed: truthAlignedRun.confirmed,
-        inferred: true,
-        stale: truthAlignedRun.stale,
-        truthSource: "recovery-timeline-query",
-        remediation: truthAlignedRun.remediation,
+        ...buildTruthAlignment({
+          confirmed: truthAlignedRun.confirmed,
+          inferred: true,
+          stale: truthAlignedRun.stale,
+          truthSource: "recovery-timeline-query",
+          remediation: truthAlignedRun.remediation,
+        }),
       };
     },
     async executeRecoveryRunActionById(actionByIdInput) {
@@ -1562,14 +1659,20 @@ export function createRecoveryActionService(input: {
 
 function buildRecoverySummaryRemediation(
   runs: RecoveryRun[],
-  runtimeReconciliation: RuntimeReconciliationPassResult | undefined
-): string[] {
-  const remediation: string[] = [];
+  runtimeReconciliation: RuntimeReconciliationSnapshot | undefined
+): TruthRemediation[] {
+  const remediation: TruthRemediation[] = [];
   if (runs.some((run) => ["running", "retrying", "fallback_running", "resumed", "superseded"].includes(run.status))) {
-    remediation.push("Inspect in-flight recovery runs before dispatching additional recovery work.");
+    remediation.push(
+      truthRemediation({
+        action: "inspect_recovery_run",
+        scope: "recovery",
+        summary: "Inspect in-flight recovery runs before dispatching additional recovery work.",
+      })
+    );
   }
   if (runtimeReconciliation?.remediation.length) {
     remediation.push(...runtimeReconciliation.remediation);
   }
-  return [...new Set(remediation)];
+  return dedupeTruthRemediation(remediation);
 }
