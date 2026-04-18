@@ -29,6 +29,7 @@ test("bounded regression harness lists built-in cases", () => {
   assert.ok(cases.some((item) => item.caseId === "parallel-flow-summary-clears-attention-after-retry"));
   assert.ok(cases.some((item) => item.caseId === "governance-official-api-success-high-trust"));
   assert.ok(cases.some((item) => item.caseId === "governance-summary-highlights-browser-fallback"));
+  assert.ok(cases.some((item) => item.caseId === "governance-browser-evidence-stays-summary-only"));
   assert.ok(cases.some((item) => item.caseId === "governance-approval-required-side-effect-blocks"));
   assert.ok(cases.some((item) => item.caseId === "governance-publish-readback-verifies-closure"));
   assert.ok(cases.some((item) => item.caseId === "operator-summary-aligns-attention-across-surfaces"));
@@ -160,10 +161,11 @@ test("bounded regression harness can run scenario-parity governance and parallel
     "parallel-flow-summary-highlights-shard-issues",
     "governance-official-api-success-high-trust",
     "governance-summary-highlights-browser-fallback",
+    "governance-browser-evidence-stays-summary-only",
     "governance-approval-required-side-effect-blocks",
     "governance-publish-readback-verifies-closure",
     "browser-ownership-reclaim-keeps-single-recovered-case",
   ]);
-  assert.equal(result.totalCases, 8);
+  assert.equal(result.totalCases, 9);
   assert.equal(result.failedCases, 0);
 });

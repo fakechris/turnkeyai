@@ -74,6 +74,7 @@ const SCENARIOS: FailureInjectionScenarioDescriptor[] = [
     summary: "验证 permission governance 在失败注入下能解释 fallback 与 approval-required 路径。",
     caseIds: [
       "governance-summary-highlights-browser-fallback",
+      "governance-browser-evidence-stays-summary-only",
       "governance-approval-required-side-effect-blocks",
     ],
   },

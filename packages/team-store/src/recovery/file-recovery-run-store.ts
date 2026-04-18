@@ -28,6 +28,8 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
       const byIdPath = this.byIdFilePath(run.recoveryRunId);
       const threadPath = this.threadFilePath(run.threadId, run.recoveryRunId);
       const existing = await this.readRecoveryRun(run.recoveryRunId);
+      const previousById = await readJsonFile<RecoveryRun>(byIdPath);
+      const previousThread = await readJsonFile<RecoveryRun>(threadPath);
       const existingVersion = existing?.version ?? 0;
       if (options?.expectedVersion != null && existingVersion !== options.expectedVersion) {
         throw new Error(
@@ -39,16 +41,35 @@ export class FileRecoveryRunStore implements RecoveryRunStore {
         version: existingVersion + 1,
       });
       const writtenAttemptPaths: string[] = [];
+      const previousAttempts = new Map<string, RecoveryRunAttempt | null>();
       try {
         await writeJsonFileAtomic(threadPath, storedRun);
         for (const attempt of run.attempts) {
           const attemptPath = this.attemptFilePath(run.recoveryRunId, attempt.attemptId);
+          previousAttempts.set(attemptPath, await readJsonFile<RecoveryRunAttempt>(attemptPath));
           await writeJsonFileAtomic(attemptPath, attempt);
           writtenAttemptPaths.push(attemptPath);
         }
         await writeJsonFileAtomic(byIdPath, storedRun);
       } catch (error) {
-        await Promise.all(writtenAttemptPaths.map((filePath) => removeFileIfExists(filePath)));
+        await Promise.all(
+          writtenAttemptPaths.map(async (filePath) => {
+            const previousAttempt = previousAttempts.get(filePath);
+            if (previousAttempt) {
+              await writeJsonFileAtomic(filePath, previousAttempt);
+            } else {
+              await removeFileIfExists(filePath);
+            }
+          })
+        );
+        if (!previousById) {
+          await removeFileIfExists(byIdPath);
+        }
+        if (previousThread) {
+          await writeJsonFileAtomic(threadPath, previousThread);
+        } else {
+          await removeFileIfExists(threadPath);
+        }
         throw error;
       }
     });

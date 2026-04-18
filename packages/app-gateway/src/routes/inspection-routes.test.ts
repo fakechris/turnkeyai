@@ -202,3 +202,89 @@ test("inspection routes trim capability inputs before dispatch", async () => {
     requestedCapabilities: ["browser", "api"],
   });
 });
+
+test("inspection routes preserve runtime truth and remediation fields", async () => {
+  const response = createResponse();
+  await handleInspectionRoutes({
+    req: createRequest({ method: "GET", url: "/runtime-summary?threadId=%20thread-1%20&limit=5" }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/runtime-summary?threadId=%20thread-1%20&limit=5"),
+    deps: createDeps({
+      async loadRuntimeSummary(threadId, limit) {
+        return {
+          threadId,
+          limit,
+          attentionChains: [
+            {
+              chainId: "flow:thread-1",
+              truthState: "stale",
+              truthSource: "reconciliation",
+              remediation: [{ action: "inspect_runtime_chain", scope: "runtime_summary" }],
+            },
+          ],
+        };
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.equal(response.json.threadId, "thread-1");
+  assert.equal(response.json.attentionChains[0]?.truthState, "stale");
+  assert.equal(response.json.attentionChains[0]?.truthSource, "reconciliation");
+  assert.deepEqual(response.json.attentionChains[0]?.remediation, [
+    { action: "inspect_runtime_chain", scope: "runtime_summary" },
+  ]);
+});
+
+test("inspection routes preserve replay and operator remediation surfaces", async () => {
+  const replay = createResponse();
+  await handleInspectionRoutes({
+    req: createRequest({ method: "GET", url: "/replay-console?threadId=%20%20&limit=4" }),
+    res: replay.res,
+    url: new URL("http://127.0.0.1/replay-console?threadId=%20%20&limit=4"),
+    deps: createDeps({
+      async buildReplayConsole(threadId, limit) {
+        return {
+          threadId,
+          limit,
+          latestBundles: [
+            {
+              bundleId: "bundle-1",
+              truthState: "inferred",
+              remediation: [{ action: "inspect", scope: "replay_bundle" }],
+            },
+          ],
+        };
+      },
+    }),
+  });
+  assert.equal(replay.res.statusCode, 200);
+  assert.equal(replay.json.threadId, undefined);
+  assert.equal(replay.json.latestBundles[0]?.truthState, "inferred");
+  assert.deepEqual(replay.json.latestBundles[0]?.remediation, [{ action: "inspect", scope: "replay_bundle" }]);
+
+  const operator = createResponse();
+  await handleInspectionRoutes({
+    req: createRequest({ method: "GET", url: "/operator-attention?threadId=thread-1&limit=3" }),
+    res: operator.res,
+    url: new URL("http://127.0.0.1/operator-attention?threadId=thread-1&limit=3"),
+    deps: createDeps({
+      async buildOperatorAttention(threadId, limit) {
+        return {
+          threadId,
+          limit,
+          items: [
+            {
+              caseId: "case-1",
+              truthState: "stale",
+              remediation: [{ action: "resume", scope: "operator_attention" }],
+            },
+          ],
+        };
+      },
+    }),
+  });
+  assert.equal(operator.res.statusCode, 200);
+  assert.equal(operator.json.items[0]?.truthState, "stale");
+  assert.deepEqual(operator.json.items[0]?.remediation, [{ action: "resume", scope: "operator_attention" }]);
+});
