@@ -604,6 +604,19 @@ export function buildOperatorTriageReport(input: {
       state: "worker_session_drift",
     });
   }
+  if ((input.summary.workerStartupReconcile?.unrecoverableSessions ?? 0) > 0) {
+    focusAreas.push({
+      area: "runtime",
+      label: "worker-session-startup-loss",
+      severity: "critical",
+      headline: `worker startup reconcile unrecoverable=${input.summary.workerStartupReconcile?.unrecoverableSessions ?? 0}`,
+      reason:
+        `Startup reconcile marked ${input.summary.workerStartupReconcile?.unrecoverableMissingContextSessions ?? 0} session(s) unrecoverable due to missing context and ${input.summary.workerStartupReconcile?.unrecoverableUnavailableHandlerSessions ?? 0} due to missing handlers.`,
+      nextStep: "inspect_runtime_worker_sessions",
+      commandHint: "runtime-worker-sessions 10",
+      state: "worker_session_unrecoverable",
+    });
+  }
   if ((input.summary.workerBindingReconcile?.roleRunsNeedingAttention ?? 0) > 0) {
     focusAreas.push({
       area: "runtime",

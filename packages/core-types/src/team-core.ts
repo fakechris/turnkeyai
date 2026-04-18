@@ -281,6 +281,9 @@ export interface RuntimeSummaryReport {
   workerStartupReconcile?: {
     totalSessions: number;
     downgradedRunningSessions: number;
+    unrecoverableSessions: number;
+    unrecoverableMissingContextSessions: number;
+    unrecoverableUnavailableHandlerSessions: number;
   };
   workerSessionHealth?: {
     totalSessions: number;

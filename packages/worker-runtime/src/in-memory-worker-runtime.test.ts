@@ -677,6 +677,13 @@ test("in-memory worker runtime exposes startup reconcile summary after hydration
           updatedAt: 20,
           currentTaskId: "task-running",
         },
+        context: {
+          threadId: "thread-1",
+          flowId: "flow-1",
+          taskId: "task-running",
+          roleId: "role-operator",
+          parentSpanId: "role:role-operator:thread:1",
+        },
       },
     ],
     [
@@ -742,9 +749,135 @@ test("in-memory worker runtime exposes startup reconcile summary after hydration
   assert.deepEqual(result, {
     totalSessions: 2,
     downgradedRunningSessions: 1,
+    unrecoverableSessions: 0,
+    unrecoverableMissingContextSessions: 0,
+    unrecoverableUnavailableHandlerSessions: 0,
   });
   assert.equal(stored.get("worker:browser:task:task-running")?.state.status, "resumable");
 });
+
+test("in-memory worker runtime marks persisted sessions without context as unrecoverable on startup", async () => {
+  const stored = new Map<string, WorkerSessionRecord>([
+    [
+      "worker:browser:task:task-missing-context",
+      {
+        workerRunKey: "worker:browser:task:task-missing-context",
+        executionToken: 1,
+        state: {
+          workerRunKey: "worker:browser:task:task-missing-context",
+          workerType: "browser",
+          status: "resumable",
+          createdAt: 10,
+          updatedAt: 20,
+          currentTaskId: "task-missing-context",
+        },
+      },
+    ],
+  ]);
+  const sessionStore: WorkerSessionStore = {
+    async get(workerRunKey) {
+      return stored.get(workerRunKey) ?? null;
+    },
+    async put(record) {
+      stored.set(workerRunKeyOf(record), record);
+    },
+    async list() {
+      return Array.from(stored.values());
+    },
+  };
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return null;
+      },
+      async getHandler() {
+        return null;
+      },
+    },
+    sessionStore,
+    now: () => 500,
+  });
+
+  const result = await runtime.reconcileStartup();
+  const restored = await runtime.getState("worker:browser:task:task-missing-context");
+
+  assert.deepEqual(result, {
+    totalSessions: 1,
+    downgradedRunningSessions: 0,
+    unrecoverableSessions: 1,
+    unrecoverableMissingContextSessions: 1,
+    unrecoverableUnavailableHandlerSessions: 0,
+  });
+  assert.equal(restored?.status, "failed");
+  assert.match(restored?.lastError?.message ?? "", /context was missing/i);
+});
+
+test("in-memory worker runtime marks persisted sessions with unavailable handlers as unrecoverable on startup", async () => {
+  const stored = new Map<string, WorkerSessionRecord>([
+    [
+      "worker:finance:task:task-missing-handler",
+      {
+        workerRunKey: "worker:finance:task:task-missing-handler",
+        executionToken: 1,
+        state: {
+          workerRunKey: "worker:finance:task:task-missing-handler",
+          workerType: "finance",
+          status: "waiting_external",
+          createdAt: 10,
+          updatedAt: 20,
+          currentTaskId: "task-missing-handler",
+        },
+        context: {
+          threadId: "thread-1",
+          flowId: "flow-1",
+          taskId: "task-missing-handler",
+          roleId: "role-operator",
+          parentSpanId: "role:role-operator:thread:1",
+        },
+      },
+    ],
+  ]);
+  const sessionStore: WorkerSessionStore = {
+    async get(workerRunKey) {
+      return stored.get(workerRunKey) ?? null;
+    },
+    async put(record) {
+      stored.set(workerRunKeyOf(record), record);
+    },
+    async list() {
+      return Array.from(stored.values());
+    },
+  };
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return null;
+      },
+      async getHandler() {
+        return null;
+      },
+    },
+    sessionStore,
+    now: () => 600,
+  });
+
+  const result = await runtime.reconcileStartup();
+  const restored = await runtime.getState("worker:finance:task:task-missing-handler");
+
+  assert.deepEqual(result, {
+    totalSessions: 1,
+    downgradedRunningSessions: 0,
+    unrecoverableSessions: 1,
+    unrecoverableMissingContextSessions: 0,
+    unrecoverableUnavailableHandlerSessions: 1,
+  });
+  assert.equal(restored?.status, "failed");
+  assert.match(restored?.lastError?.message ?? "", /no handler is available/i);
+});
+
+function workerRunKeyOf(record: WorkerSessionRecord): string {
+  return record.workerRunKey;
+}
 
 function buildWorkerInvocationInput(): WorkerInvocationInput {
   return {

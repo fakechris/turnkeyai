@@ -455,6 +455,9 @@ test("runtime query service attaches startup reconcile summary when available", 
     getWorkerStartupReconcileResult: () => ({
       totalSessions: 3,
       downgradedRunningSessions: 2,
+      unrecoverableSessions: 1,
+      unrecoverableMissingContextSessions: 1,
+      unrecoverableUnavailableHandlerSessions: 0,
     }),
     teamThreadStore: {
       async list() {
@@ -533,6 +536,9 @@ test("runtime query service attaches startup reconcile summary when available", 
   assert.deepEqual(report.workerStartupReconcile, {
     totalSessions: 3,
     downgradedRunningSessions: 2,
+    unrecoverableSessions: 1,
+    unrecoverableMissingContextSessions: 1,
+    unrecoverableUnavailableHandlerSessions: 0,
   });
 });
 

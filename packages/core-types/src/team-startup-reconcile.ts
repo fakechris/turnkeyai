@@ -3,6 +3,9 @@ import type { RunKey } from "./team-core";
 export interface WorkerStartupReconcileResult {
   totalSessions: number;
   downgradedRunningSessions: number;
+  unrecoverableSessions: number;
+  unrecoverableMissingContextSessions: number;
+  unrecoverableUnavailableHandlerSessions: number;
 }
 
 export interface WorkerBindingStartupReconcileResult {

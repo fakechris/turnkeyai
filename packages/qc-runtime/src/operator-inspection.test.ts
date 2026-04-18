@@ -1593,6 +1593,87 @@ test("operator triage surfaces worker session drift when runtime summary reports
   assert.equal(runtimeChainArtifactFocus?.state, "runtime_chain_artifact_startup_reconcile");
 });
 
+test("operator triage surfaces unrecoverable worker sessions after startup reconcile", () => {
+  const summary = buildOperatorSummaryReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [],
+    runtimeSummary: {
+      totalChains: 0,
+      activeCount: 0,
+      waitingCount: 0,
+      failedCount: 0,
+      resolvedCount: 0,
+      staleCount: 0,
+      attentionCount: 0,
+      stateCounts: {},
+      continuityCounts: {},
+      caseStateCounts: {},
+      attentionChains: [],
+      activeChains: [],
+      waitingChains: [],
+      staleChains: [],
+      failedChains: [],
+      recentlyResolved: [],
+      workerStartupReconcile: {
+        totalSessions: 4,
+        downgradedRunningSessions: 1,
+        unrecoverableSessions: 2,
+        unrecoverableMissingContextSessions: 1,
+        unrecoverableUnavailableHandlerSessions: 1,
+      },
+    },
+    limit: 20,
+  });
+  const attention = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [],
+    limit: 10,
+  });
+  const report = buildOperatorTriageReport({
+    summary,
+    attention,
+    runtime: {
+      totalChains: 0,
+      activeCount: 0,
+      waitingCount: 0,
+      failedCount: 0,
+      resolvedCount: 0,
+      staleCount: 0,
+      attentionCount: 0,
+      stateCounts: {},
+      continuityCounts: {},
+      caseStateCounts: {},
+      attentionChains: [],
+      activeChains: [],
+      waitingChains: [],
+      staleChains: [],
+      failedChains: [],
+      recentlyResolved: [],
+      workerStartupReconcile: {
+        totalSessions: 4,
+        downgradedRunningSessions: 1,
+        unrecoverableSessions: 2,
+        unrecoverableMissingContextSessions: 1,
+        unrecoverableUnavailableHandlerSessions: 1,
+      },
+    },
+    limit: 20,
+  });
+
+  const startupLoss = report.focusAreas.find((area) => area.label === "worker-session-startup-loss");
+  assert.equal(startupLoss?.severity, "critical");
+  assert.equal(startupLoss?.commandHint, "runtime-worker-sessions 10");
+  assert.equal(startupLoss?.state, "worker_session_unrecoverable");
+  assert.match(startupLoss?.reason ?? "", /missing context/i);
+  assert.match(startupLoss?.reason ?? "", /missing handlers/i);
+});
+
 function buildPromptBoundary(input: {
   progressId: string;
   recordedAt: number;

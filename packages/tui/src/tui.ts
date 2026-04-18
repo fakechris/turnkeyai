@@ -995,7 +995,7 @@ function printRuntimeSummary(report: RuntimeSummaryReport & TruthPrintable): voi
   }
   if (report.workerStartupReconcile) {
     console.log(
-      `  worker startup reconcile: total=${report.workerStartupReconcile.totalSessions} downgraded-running=${report.workerStartupReconcile.downgradedRunningSessions}`
+      `  worker startup reconcile: total=${report.workerStartupReconcile.totalSessions} downgraded-running=${report.workerStartupReconcile.downgradedRunningSessions} unrecoverable=${report.workerStartupReconcile.unrecoverableSessions} missing-context=${report.workerStartupReconcile.unrecoverableMissingContextSessions} missing-handler=${report.workerStartupReconcile.unrecoverableUnavailableHandlerSessions}`
     );
   }
   if (report.workerSessionHealth) {
@@ -1057,6 +1057,7 @@ function printWorkerSessions(records: WorkerSessionRecord[]): void {
         record.context?.flowId ? `flow=${record.context.flowId}` : "flow=-",
         record.context?.roleId ? `role=${record.context.roleId}` : "role=-",
         record.context?.taskId ? `task=${record.context.taskId}` : "task=-",
+        record.state.lastError?.message ? `error=${JSON.stringify(record.state.lastError.message)}` : null,
       ].join(" ")
     );
   }
@@ -1514,7 +1515,7 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
   console.log(`  total attention: ${report.totalAttentionCount}`);
   if (report.workerStartupReconcile) {
     console.log(
-      `  worker startup reconcile: total=${report.workerStartupReconcile.totalSessions} downgraded-running=${report.workerStartupReconcile.downgradedRunningSessions}`
+      `  worker startup reconcile: total=${report.workerStartupReconcile.totalSessions} downgraded-running=${report.workerStartupReconcile.downgradedRunningSessions} unrecoverable=${report.workerStartupReconcile.unrecoverableSessions} missing-context=${report.workerStartupReconcile.unrecoverableMissingContextSessions} missing-handler=${report.workerStartupReconcile.unrecoverableUnavailableHandlerSessions}`
     );
   }
   if (report.workerSessionHealth) {

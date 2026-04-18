@@ -48,6 +48,9 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
   private startupReconcileResult: WorkerStartupReconcileResult = {
     totalSessions: 0,
     downgradedRunningSessions: 0,
+    unrecoverableSessions: 0,
+    unrecoverableMissingContextSessions: 0,
+    unrecoverableUnavailableHandlerSessions: 0,
   };
 
   constructor(options: InMemoryWorkerRuntimeOptions) {
@@ -75,29 +78,44 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     const records = await this.sessionStore.list();
     const now = this.now();
     let downgradedRunningSessions = 0;
+    let unrecoverableMissingContextSessions = 0;
+    let unrecoverableUnavailableHandlerSessions = 0;
     for (const record of records) {
-      const nextRecord =
-        record.state.status === "running"
-          ? {
-              ...record,
-              state: {
-                ...record.state,
-                status: "resumable" as const,
-                updatedAt: now,
-                lastError: {
-                  code: "WORKER_TIMEOUT" as const,
-                  message: "Worker runtime restarted while execution was in progress.",
-                  retryable: true,
-                },
-                continuationDigest: {
-                  reason: "supervisor_retry" as const,
-                  summary: buildHydrationContinuationSummary(record.state),
-                  createdAt: now,
-                },
-              },
-            }
-          : record;
-      if (nextRecord !== record) {
+      let nextRecord = record;
+      const recoverableStatus = requiresRestartRecovery(record.state.status);
+      const missingContext = recoverableStatus && !hasRecoverableContext(record.context);
+      const handlerUnavailable =
+        recoverableStatus && !missingContext && (await this.isHandlerUnavailableForRestart(record.state.workerType));
+
+      if (missingContext) {
+        unrecoverableMissingContextSessions += 1;
+        nextRecord = buildUnrecoverableHydratedRecord(record, now, {
+          message: "Worker runtime restarted but the persisted session context was missing, so the session cannot resume.",
+        });
+      } else if (handlerUnavailable) {
+        unrecoverableUnavailableHandlerSessions += 1;
+        nextRecord = buildUnrecoverableHydratedRecord(record, now, {
+          message: `Worker runtime restarted but no handler is available for ${record.state.workerType}, so the session cannot resume.`,
+        });
+      } else if (record.state.status === "running") {
+        nextRecord = {
+          ...record,
+          state: {
+            ...record.state,
+            status: "resumable" as const,
+            updatedAt: now,
+            lastError: {
+              code: "WORKER_TIMEOUT" as const,
+              message: "Worker runtime restarted while execution was in progress.",
+              retryable: true,
+            },
+            continuationDigest: {
+              reason: "supervisor_retry" as const,
+              summary: buildHydrationContinuationSummary(record.state),
+              createdAt: now,
+            },
+          },
+        };
         downgradedRunningSessions += 1;
       }
       this.sessions.set(nextRecord.workerRunKey, {
@@ -112,7 +130,17 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     this.startupReconcileResult = {
       totalSessions: records.length,
       downgradedRunningSessions,
+      unrecoverableSessions: unrecoverableMissingContextSessions + unrecoverableUnavailableHandlerSessions,
+      unrecoverableMissingContextSessions,
+      unrecoverableUnavailableHandlerSessions,
     };
+  }
+
+  private async isHandlerUnavailableForRestart(workerType: WorkerSessionState["workerType"]): Promise<boolean> {
+    if (!this.workerRegistry.getHandler) {
+      return false;
+    }
+    return (await this.workerRegistry.getHandler(workerType)) == null;
   }
 
   private async persistSession(workerRunKey: string): Promise<void> {
@@ -662,4 +690,40 @@ function buildHydrationContinuationSummary(sessionState: WorkerSessionState): st
     return `Worker runtime restarted while task ${sessionState.currentTaskId} was still active. Resume from the latest safe checkpoint.`;
   }
   return "Worker runtime restarted while execution was in progress. Resume from the latest safe checkpoint.";
+}
+
+function requiresRestartRecovery(status: WorkerSessionState["status"]): boolean {
+  return ["running", "waiting_input", "waiting_external", "resumable"].includes(status);
+}
+
+function hasRecoverableContext(
+  context: WorkerSessionRecord["context"]
+): context is NonNullable<WorkerSessionRecord["context"]> {
+  return Boolean(
+    context?.threadId &&
+      context.flowId &&
+      context.taskId &&
+      context.roleId &&
+      context.parentSpanId
+  );
+}
+
+function buildUnrecoverableHydratedRecord(
+  record: WorkerSessionRecord,
+  now: number,
+  input: { message: string }
+): WorkerSessionRecord {
+  return {
+    ...record,
+    state: {
+      ...record.state,
+      status: "failed",
+      updatedAt: now,
+      lastError: {
+        code: "WORKER_FAILED",
+        message: input.message,
+        retryable: false,
+      },
+    },
+  };
 }
