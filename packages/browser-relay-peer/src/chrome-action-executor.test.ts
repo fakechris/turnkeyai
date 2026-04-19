@@ -294,6 +294,103 @@ test("chrome relay action executor can run target-scoped cdp commands", async ()
   assert.equal(sentMessages.length, 1);
 });
 
+test("chrome relay action executor can wait for and trace cdp events", async () => {
+  const now = Date.now();
+  const debuggerCommands: unknown[] = [];
+  const waitedEvents: unknown[] = [];
+  const drainedEvents: unknown[] = [];
+  const detachedTabs: number[] = [];
+  const platform = fakePlatform({
+    activeTab: { id: 7, windowId: 3, url: "https://example.com", title: "Example", status: "complete" },
+    onDebuggerCommand(tabId, method, params) {
+      debuggerCommands.push({ tabId, method, params });
+      return { result: { value: "ok" } };
+    },
+    onSendMessage() {
+      return {
+        ok: true,
+        page: {
+          requestedUrl: "https://example.com",
+          finalUrl: "https://example.com",
+          title: "Example",
+          textExcerpt: "Example page",
+          statusCode: 200,
+          interactives: [],
+        },
+        trace: [],
+      };
+    },
+  });
+  platform.waitForDebuggerEvent = async (tabId, method, timeoutMs) => {
+    waitedEvents.push({ tabId, method, timeoutMs });
+    return {
+      method,
+      params: { type: "log" },
+      timestamp: 123,
+    };
+  };
+  platform.drainDebuggerEvents = async (tabId, input) => {
+    drainedEvents.push({ tabId, input });
+    return [
+      {
+        method: "Runtime.consoleAPICalled",
+        params: { type: "log" },
+        timestamp: 123,
+      },
+    ];
+  };
+  platform.detachDebugger = async (tabId) => {
+    detachedTabs.push(tabId);
+  };
+  const executor = new ChromeRelayActionExecutor(platform);
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-cdp-events",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-1",
+    actions: [
+      {
+        kind: "cdp",
+        method: "Runtime.evaluate",
+        params: {
+          expression: "console.log('ok')",
+        },
+        events: {
+          waitFor: "Runtime.consoleAPICalled",
+          timeoutMs: 1_000,
+          maxEvents: 1,
+        },
+      },
+    ],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(waitedEvents, [{ tabId: 7, method: "Runtime.consoleAPICalled", timeoutMs: 1_000 }]);
+  assert.deepEqual(drainedEvents, [
+    {
+      tabId: 7,
+      input: {
+        include: ["Runtime.consoleAPICalled"],
+        maxEvents: 1,
+      },
+    },
+  ]);
+  assert.deepEqual(detachedTabs, [7]);
+  assert.equal(result.trace[0]?.kind, "cdp");
+  assert.deepEqual(result.trace[0]?.output?.events, [
+    {
+      method: "Runtime.consoleAPICalled",
+      timestamp: 123,
+      paramsBytes: 14,
+      params: { type: "log" },
+    },
+  ]);
+  assert.equal(debuggerCommands.length, 1);
+});
+
 test("chrome relay action executor rejects blocked cdp methods before debugger dispatch", async () => {
   const now = Date.now();
   let debuggerCommands = 0;

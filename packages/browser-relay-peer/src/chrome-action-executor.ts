@@ -1,6 +1,9 @@
 import type { BrowserActionTrace } from "@turnkeyai/core-types/team";
 import {
+  MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS,
+  MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
+  MAX_BROWSER_CDP_EVENT_PARAMS_BYTES,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
@@ -9,12 +12,16 @@ import type {
   RelayScreenshotPayload,
 } from "@turnkeyai/browser-bridge/transport/relay-protocol";
 
-import type { ChromeExtensionPlatform, ChromeTabLike } from "./chrome-extension-types";
+import type { ChromeDebuggerEventLike, ChromeExtensionPlatform, ChromeTabLike } from "./chrome-extension-types";
 import type { RelayContentScriptExecuteResponse } from "./chrome-content-script-protocol";
 import { ChromeRelayTabObserver, formatRelayTargetId } from "./chrome-tab-observer";
 
 type RelayAction = RelayActionRequest["actions"][number];
 type RelayCdpAction = Extract<RelayAction, { kind: "cdp" }>;
+interface RelayCdpActionOutput {
+  result: unknown;
+  events: ChromeDebuggerEventLike[];
+}
 
 const MAX_CDP_TRACE_RESULT_BYTES = 4_096;
 
@@ -39,6 +46,19 @@ export class ChromeRelayActionExecutor {
       throw new Error("relay action executor requires an existing tab or an open action");
     }
 
+    const debuggerTabsToDetach = new Set<number>();
+    try {
+      return await this.executeResolvedRequest(request, activeTab, debuggerTabsToDetach);
+    } finally {
+      await detachDebuggerTabs(this.platform, debuggerTabsToDetach);
+    }
+  }
+
+  private async executeResolvedRequest(
+    request: RelayActionRequest,
+    activeTab: ChromeTabLike | null,
+    debuggerTabsToDetach: Set<number>
+  ) {
     const trace: BrowserActionTrace[] = [];
     const screenshotPayloads: RelayScreenshotPayload[] = [];
     const contentScriptBatch: RelayActionRequest["actions"] = [];
@@ -108,7 +128,7 @@ export class ChromeRelayActionExecutor {
 
       if (action.kind === "cdp") {
         const startedAt = Date.now();
-        const cdpResult = await this.executeCdpAction(activeTab.id, action);
+        const cdpResult = await this.executeCdpAction(activeTab.id, action, debuggerTabsToDetach);
         needsFinalSnapshot = true;
         trace.push({
           stepId: `${request.taskId}:relay-cdp:${index + 1}`,
@@ -122,7 +142,7 @@ export class ChromeRelayActionExecutor {
           },
           output: {
             method: action.method,
-            ...summarizeCdpResult(cdpResult),
+            ...summarizeCdpActionOutput(cdpResult),
           },
         });
         continue;
@@ -239,7 +259,11 @@ export class ChromeRelayActionExecutor {
     );
   }
 
-  private async executeCdpAction(tabId: number, action: RelayCdpAction): Promise<unknown> {
+  private async executeCdpAction(
+    tabId: number,
+    action: RelayCdpAction,
+    debuggerTabsToDetach: Set<number>
+  ): Promise<RelayCdpActionOutput> {
     const method = normalizeBrowserCdpMethod(action.method);
     if (!method || isBlockedBrowserCdpMethod(method)) {
       throw new Error(`relay cdp action method is not allowed: ${action.method}`);
@@ -248,11 +272,31 @@ export class ChromeRelayActionExecutor {
       throw new Error("relay cdp action requires chrome debugger support");
     }
     const timeoutMs = normalizeCdpTimeoutMs(action.timeoutMs);
-    return withTimeout(
+    debuggerTabsToDetach.add(tabId);
+    const events = normalizeCdpEventOptions(action.events);
+    if (events.waitFor && !this.platform.waitForDebuggerEvent) {
+      throw new Error("relay cdp events require chrome debugger event support");
+    }
+    const waitForEvent =
+      events.waitFor && this.platform.waitForDebuggerEvent
+        ? this.platform.waitForDebuggerEvent(tabId, events.waitFor, events.timeoutMs)
+        : null;
+    const result = await withTimeout(
       this.platform.sendDebuggerCommand(tabId, method, action.params ?? {}),
       timeoutMs,
       `relay cdp action timed out after ${timeoutMs}ms: ${method}`
     );
+    const waitedEvent = waitForEvent ? await waitForEvent : null;
+    const drainInput = {
+      ...(events.include ? { include: events.include } : {}),
+      maxEvents: events.maxEvents,
+    };
+    const drainedEvents =
+      (await this.platform.drainDebuggerEvents?.(tabId, drainInput)) ?? [];
+    return {
+      result,
+      events: dedupeCdpEvents([...(waitedEvent ? [waitedEvent] : []), ...drainedEvents], events.maxEvents),
+    };
   }
 
   private buildFailedContentScriptResult(
@@ -368,6 +412,39 @@ function normalizeCdpTimeoutMs(value: number | undefined): number {
     : MAX_BROWSER_CDP_ACTION_TIMEOUT_MS;
 }
 
+function normalizeCdpEventOptions(events: RelayCdpAction["events"]): {
+  waitFor?: string;
+  include?: string[];
+  timeoutMs: number;
+  maxEvents: number;
+} {
+  const waitFor = normalizeBrowserCdpMethod(events?.waitFor);
+  const include = [...new Set([...(events?.include ?? []), ...(waitFor ? [waitFor] : [])])]
+    .map((eventName) => normalizeBrowserCdpMethod(eventName))
+    .filter((eventName): eventName is string => Boolean(eventName && !isBlockedBrowserCdpMethod(eventName)));
+  const timeoutMs =
+    typeof events?.timeoutMs === "number" && Number.isInteger(events.timeoutMs) && events.timeoutMs > 0
+      ? Math.min(events.timeoutMs, MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS)
+      : MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS;
+  const maxEvents =
+    typeof events?.maxEvents === "number" && Number.isInteger(events.maxEvents) && events.maxEvents > 0
+      ? Math.min(events.maxEvents, MAX_BROWSER_CDP_ACTION_EVENTS)
+      : MAX_BROWSER_CDP_ACTION_EVENTS;
+  return {
+    ...(waitFor && !isBlockedBrowserCdpMethod(waitFor) ? { waitFor } : {}),
+    ...(include.length ? { include } : {}),
+    timeoutMs,
+    maxEvents,
+  };
+}
+
+function summarizeCdpActionOutput(output: RelayCdpActionOutput): Record<string, unknown> {
+  return {
+    ...summarizeCdpResult(output.result),
+    ...(output.events.length ? { events: summarizeCdpEvents(output.events) } : {}),
+  };
+}
+
 function summarizeCdpResult(result: unknown): Record<string, unknown> {
   const json = safeStringify(result);
   const resultJsonBytes = byteLength(json);
@@ -378,6 +455,39 @@ function summarizeCdpResult(result: unknown): Record<string, unknown> {
     resultTruncated: true,
     resultJsonBytes,
   };
+}
+
+function summarizeCdpEvents(events: ChromeDebuggerEventLike[]): Array<Record<string, unknown>> {
+  return events.map((event) => {
+    const paramsJson = safeStringify(event.params ?? null);
+    const paramsBytes = byteLength(paramsJson);
+    return {
+      method: event.method,
+      timestamp: event.timestamp,
+      paramsBytes,
+      ...(paramsBytes <= MAX_BROWSER_CDP_EVENT_PARAMS_BYTES
+        ? { params: parseSafeJson(paramsJson) }
+        : { paramsTruncated: true }),
+    };
+  });
+}
+
+function dedupeCdpEvents(events: ChromeDebuggerEventLike[], maxEvents: number): ChromeDebuggerEventLike[] {
+  const seen = new Set<string>();
+  const deduped: ChromeDebuggerEventLike[] = [];
+  for (const event of events) {
+    const key = `${event.timestamp}:${event.method}:${safeStringify(event.params ?? null)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped.slice(-maxEvents);
+}
+
+async function detachDebuggerTabs(platform: ChromeExtensionPlatform, tabIds: ReadonlySet<number>): Promise<void> {
+  await Promise.all([...tabIds].map((tabId) => platform.detachDebugger?.(tabId).catch(() => undefined)));
 }
 
 function safeStringify(value: unknown): string {

@@ -48,6 +48,10 @@ export type BrowserConsoleProbe = "page-metadata" | "interactive-summary";
 
 export const MAX_BROWSER_CDP_ACTION_TIMEOUT_MS = 30_000;
 export const MAX_BROWSER_CDP_ACTION_PARAMS_BYTES = 64 * 1024;
+export const MAX_BROWSER_CDP_ACTION_EVENT_NAMES = 20;
+export const MAX_BROWSER_CDP_ACTION_EVENTS = 20;
+export const MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS = 30_000;
+export const MAX_BROWSER_CDP_EVENT_PARAMS_BYTES = 8 * 1024;
 
 const BROWSER_CDP_METHOD_PATTERN = /^[A-Z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$/;
 const BLOCKED_BROWSER_CDP_METHOD_PREFIXES = ["Browser.", "Target."];
@@ -64,6 +68,13 @@ export function isBlockedBrowserCdpMethod(method: string): boolean {
   return BLOCKED_BROWSER_CDP_METHOD_PREFIXES.some((prefix) => method.startsWith(prefix));
 }
 
+export interface BrowserCdpEventOptions {
+  waitFor?: string;
+  include?: string[];
+  timeoutMs?: number;
+  maxEvents?: number;
+}
+
 export type BrowserClickAction =
   | { kind: "click"; selectors: string[]; refId?: never; text?: never }
   | { kind: "click"; refId: string; selectors?: never; text?: never }
@@ -78,7 +89,13 @@ export type BrowserTaskAction =
   | { kind: "console"; probe: BrowserConsoleProbe }
   | { kind: "wait"; timeoutMs: number }
   | { kind: "screenshot"; label?: string }
-  | { kind: "cdp"; method: string; params?: Record<string, unknown>; timeoutMs?: number };
+  | {
+      kind: "cdp";
+      method: string;
+      params?: Record<string, unknown>;
+      timeoutMs?: number;
+      events?: BrowserCdpEventOptions;
+    };
 
 export interface BrowserTaskRequest {
   taskId: string;

@@ -25,11 +25,14 @@ import type {
   BrowserTaskResult,
 } from "@turnkeyai/core-types/team";
 import {
+  MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS,
+  MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
+  MAX_BROWSER_CDP_EVENT_PARAMS_BYTES,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Locator, type Page } from "playwright-core";
 
 import { captureDomSnapshot } from "./dom-snapshot";
 import type { BrowserSessionManager as LocalBrowserSessionManager } from "./session/browser-session-manager";
@@ -37,6 +40,17 @@ import type { BrowserSessionManager as LocalBrowserSessionManager } from "./sess
 const DEFAULT_VIEWPORT = { width: 1440, height: 960 };
 const DEFAULT_WAIT_MS = 800;
 const MAX_CDP_TRACE_RESULT_BYTES = 4_096;
+
+interface LocalCdpEvent {
+  method: string;
+  params?: Record<string, unknown>;
+  timestamp: number;
+}
+
+interface LocalCdpActionOutput {
+  result: unknown;
+  events: LocalCdpEvent[];
+}
 
 export class ChromeSessionManager {
   private readonly artifactRootDir: string;
@@ -975,7 +989,7 @@ export class ChromeSessionManager {
         traceOutput: {
           method: action.method,
           paramsBytes: jsonByteLength(action.params),
-          ...summarizeCdpResult(result),
+          ...summarizeCdpActionOutput(result),
         },
       };
     }
@@ -1102,7 +1116,7 @@ async function settle(page: Page): Promise<void> {
 async function executeTargetCdpAction(
   page: Page,
   action: Extract<BrowserTaskAction, { kind: "cdp" }>
-): Promise<unknown> {
+): Promise<LocalCdpActionOutput> {
   const method = normalizeBrowserCdpMethod(action.method);
   if (!method || isBlockedBrowserCdpMethod(method)) {
     throw new Error(`browser cdp action method is not allowed: ${action.method}`);
@@ -1113,13 +1127,28 @@ async function executeTargetCdpAction(
     method: string,
     params?: Record<string, unknown>
   ) => Promise<unknown>;
+  const eventOptions = normalizeCdpEventOptions(action.events);
+  const capturedEvents: LocalCdpEvent[] = [];
+  const passiveEventNames = (eventOptions.include ?? []).filter((eventName) => eventName !== eventOptions.waitFor);
+  const removeListeners = attachCdpEventListeners(cdpSession, passiveEventNames, capturedEvents);
+  const waitForEvent = eventOptions.waitFor
+    ? waitForCdpEvent(cdpSession, eventOptions.waitFor, eventOptions.timeoutMs, capturedEvents)
+    : null;
   try {
-    return await withTimeout(
+    const result = await withTimeout(
       sendRaw(method, action.params ?? {}),
       normalizeCdpTimeoutMs(action.timeoutMs),
       `browser cdp action timed out: ${method}`
     );
+    if (waitForEvent) {
+      await waitForEvent;
+    }
+    return {
+      result,
+      events: dedupeLocalCdpEvents(capturedEvents, eventOptions.maxEvents),
+    };
   } finally {
+    removeListeners();
     await cdpSession.detach().catch(() => undefined);
   }
 }
@@ -1128,6 +1157,99 @@ function normalizeCdpTimeoutMs(value: number | undefined): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0
     ? Math.min(value, MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
     : MAX_BROWSER_CDP_ACTION_TIMEOUT_MS;
+}
+
+function normalizeCdpEventOptions(events: Extract<BrowserTaskAction, { kind: "cdp" }>["events"]): {
+  waitFor?: string;
+  include?: string[];
+  timeoutMs: number;
+  maxEvents: number;
+} {
+  const waitFor = normalizeBrowserCdpMethod(events?.waitFor);
+  const include = [...new Set([...(events?.include ?? []), ...(waitFor ? [waitFor] : [])])]
+    .map((eventName) => normalizeBrowserCdpMethod(eventName))
+    .filter((eventName): eventName is string => Boolean(eventName && !isBlockedBrowserCdpMethod(eventName)));
+  const timeoutMs =
+    typeof events?.timeoutMs === "number" && Number.isInteger(events.timeoutMs) && events.timeoutMs > 0
+      ? Math.min(events.timeoutMs, MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS)
+      : MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS;
+  const maxEvents =
+    typeof events?.maxEvents === "number" && Number.isInteger(events.maxEvents) && events.maxEvents > 0
+      ? Math.min(events.maxEvents, MAX_BROWSER_CDP_ACTION_EVENTS)
+      : MAX_BROWSER_CDP_ACTION_EVENTS;
+  return {
+    ...(waitFor && !isBlockedBrowserCdpMethod(waitFor) ? { waitFor } : {}),
+    ...(include.length ? { include } : {}),
+    timeoutMs,
+    maxEvents,
+  };
+}
+
+function attachCdpEventListeners(
+  cdpSession: CDPSession,
+  eventNames: string[],
+  capturedEvents: LocalCdpEvent[]
+): () => void {
+  const eventSource = cdpSession as unknown as {
+    on(eventName: string, listener: (params?: Record<string, unknown>) => void): void;
+    off(eventName: string, listener: (params?: Record<string, unknown>) => void): void;
+  };
+  const listeners = eventNames.map((eventName) => {
+    const listener = (params?: Record<string, unknown>) => {
+      capturedEvents.push({
+        method: eventName,
+        ...(params ? { params } : {}),
+        timestamp: Date.now(),
+      });
+    };
+    eventSource.on(eventName, listener);
+    return { eventName, listener };
+  });
+  return () => {
+    for (const { eventName, listener } of listeners) {
+      eventSource.off(eventName, listener);
+    }
+  };
+}
+
+function waitForCdpEvent(
+  cdpSession: CDPSession,
+  eventName: string,
+  timeoutMs: number,
+  capturedEvents: LocalCdpEvent[]
+): Promise<LocalCdpEvent> {
+  const eventSource = cdpSession as unknown as {
+    on(eventName: string, listener: (params?: Record<string, unknown>) => void): void;
+    off(eventName: string, listener: (params?: Record<string, unknown>) => void): void;
+  };
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const listener = (params?: Record<string, unknown>) => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      const event: LocalCdpEvent = {
+        method: eventName,
+        ...(params ? { params } : {}),
+        timestamp: Date.now(),
+      };
+      capturedEvents.push(event);
+      eventSource.off(eventName, listener);
+      resolve(event);
+    };
+    timeout = setTimeout(() => {
+      eventSource.off(eventName, listener);
+      reject(new Error(`browser cdp event timed out after ${timeoutMs}ms: ${eventName}`));
+    }, timeoutMs);
+    eventSource.on(eventName, listener);
+  });
+}
+
+function summarizeCdpActionOutput(output: LocalCdpActionOutput): Record<string, unknown> {
+  return {
+    ...summarizeCdpResult(output.result),
+    ...(output.events.length ? { events: summarizeLocalCdpEvents(output.events) } : {}),
+  };
 }
 
 function summarizeCdpResult(result: unknown): Record<string, unknown> {
@@ -1140,6 +1262,35 @@ function summarizeCdpResult(result: unknown): Record<string, unknown> {
     resultTruncated: true,
     resultJsonBytes,
   };
+}
+
+function summarizeLocalCdpEvents(events: LocalCdpEvent[]): Array<Record<string, unknown>> {
+  return events.map((event) => {
+    const paramsJson = safeStringify(event.params ?? null);
+    const paramsBytes = byteLength(paramsJson);
+    return {
+      method: event.method,
+      timestamp: event.timestamp,
+      paramsBytes,
+      ...(paramsBytes <= MAX_BROWSER_CDP_EVENT_PARAMS_BYTES
+        ? { params: parseSafeJson(paramsJson) }
+        : { paramsTruncated: true }),
+    };
+  });
+}
+
+function dedupeLocalCdpEvents(events: LocalCdpEvent[], maxEvents: number): LocalCdpEvent[] {
+  const seen = new Set<string>();
+  const deduped: LocalCdpEvent[] = [];
+  for (const event of events) {
+    const key = `${event.timestamp}:${event.method}:${safeStringify(event.params ?? null)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped.slice(-maxEvents);
 }
 
 function safeStringify(value: unknown): string {

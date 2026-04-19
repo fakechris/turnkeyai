@@ -693,3 +693,94 @@ test("chrome session manager executes target-scoped cdp actions through a page C
   assert.equal(output.traceOutput?.method, "Runtime.evaluate");
   assert.deepEqual(output.traceOutput?.result, { result: { value: "Example" } });
 });
+
+test("chrome session manager waits for target-scoped cdp events", async () => {
+  const listeners = new Map<string, Set<(params?: Record<string, unknown>) => void>>();
+  let detached = 0;
+  const cdpSession = {
+    on(method: string, listener: (params?: Record<string, unknown>) => void) {
+      const set = listeners.get(method) ?? new Set();
+      set.add(listener);
+      listeners.set(method, set);
+    },
+    off(method: string, listener: (params?: Record<string, unknown>) => void) {
+      listeners.get(method)?.delete(listener);
+    },
+    async send() {
+      for (const listener of listeners.get("Runtime.consoleAPICalled") ?? []) {
+        listener({ type: "log" });
+      }
+      return { result: { value: "ok" } };
+    },
+    async detach() {
+      detached += 1;
+    },
+  };
+  const fakePage = {
+    context() {
+      return {
+        async newCDPSession(page: Page) {
+          assert.equal(page, fakePage);
+          return cdpSession;
+        },
+      };
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action: {
+        kind: "cdp";
+        method: string;
+        params?: Record<string, unknown>;
+        events?: {
+          waitFor?: string;
+          timeoutMs?: number;
+          maxEvents?: number;
+        };
+      };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  const output = await internal.executeAction({
+    page: fakePage,
+    action: {
+      kind: "cdp",
+      method: "Runtime.evaluate",
+      params: {
+        expression: "console.log('ok')",
+      },
+      events: {
+        waitFor: "Runtime.consoleAPICalled",
+        timeoutMs: 1_000,
+        maxEvents: 1,
+      },
+    },
+    stepIndex: 1,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-cdp",
+  });
+
+  assert.equal(detached, 1);
+  const events = output.traceOutput?.events as Array<Record<string, unknown>>;
+  assert.deepEqual(events, [
+    {
+      method: "Runtime.consoleAPICalled",
+      timestamp: events[0]?.timestamp,
+      paramsBytes: 14,
+      params: { type: "log" },
+    },
+  ]);
+});

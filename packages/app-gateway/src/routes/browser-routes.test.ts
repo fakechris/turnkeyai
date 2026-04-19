@@ -411,6 +411,25 @@ test("browser task mutation routes validate cdp action contracts", async () => {
     error: "actions[0] cdp.timeoutMs must be a positive integer <= 30000",
   });
 
+  const invalidEvents = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cdp", method: "Runtime.evaluate", events: { waitFor: "Target.attachedToTarget" } }],
+      },
+    }),
+    res: invalidEvents.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidEvents.res.statusCode, 400);
+  assert.deepEqual(invalidEvents.json, {
+    error: "actions[0] cdp.events.waitFor is not allowed on browser task routes",
+  });
+
   let capturedActions: unknown;
   const validDeps = createDeps();
   validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
@@ -444,6 +463,12 @@ test("browser task mutation routes validate cdp action contracts", async () => {
             method: "Runtime.evaluate",
             params: { expression: "document.title", returnByValue: true },
             timeoutMs: 1_000,
+            events: {
+              waitFor: "Runtime.consoleAPICalled",
+              include: ["Runtime.exceptionThrown"],
+              timeoutMs: 1_000,
+              maxEvents: 2,
+            },
           },
         ],
       },
@@ -459,6 +484,12 @@ test("browser task mutation routes validate cdp action contracts", async () => {
       method: "Runtime.evaluate",
       params: { expression: "document.title", returnByValue: true },
       timeoutMs: 1_000,
+      events: {
+        waitFor: "Runtime.consoleAPICalled",
+        include: ["Runtime.exceptionThrown"],
+        timeoutMs: 1_000,
+        maxEvents: 2,
+      },
     },
   ]);
 });

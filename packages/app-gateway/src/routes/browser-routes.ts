@@ -9,6 +9,9 @@ import type {
   IdGenerator,
 } from "@turnkeyai/core-types/team";
 import {
+  MAX_BROWSER_CDP_ACTION_EVENT_NAMES,
+  MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS,
+  MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_PARAMS_BYTES,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
   isBlockedBrowserCdpMethod,
@@ -670,11 +673,75 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         ) {
           return `actions[${index}] cdp.timeoutMs must be a positive integer <= ${MAX_BROWSER_CDP_ACTION_TIMEOUT_MS}`;
         }
+        if (action.events !== undefined) {
+          const eventsError = validateBrowserCdpEvents(action.events, `actions[${index}] cdp.events`);
+          if (eventsError) {
+            return eventsError;
+          }
+        }
         break;
       }
       default:
         return `actions[${index}] kind is invalid`;
     }
+  }
+
+  return null;
+}
+
+function validateBrowserCdpEvents(events: unknown, label: string): string | null {
+  if (!isPlainRecord(events)) {
+    return `${label} must be an object when provided`;
+  }
+
+  if (events.waitFor !== undefined) {
+    const waitFor = normalizeBrowserCdpMethod(events.waitFor);
+    if (!waitFor) {
+      return `${label}.waitFor must be a valid CDP Domain.event string`;
+    }
+    if (isBlockedBrowserCdpMethod(waitFor)) {
+      return `${label}.waitFor is not allowed on browser task routes`;
+    }
+  }
+
+  if (events.include !== undefined) {
+    if (!Array.isArray(events.include) || events.include.length === 0) {
+      return `${label}.include must be a non-empty array when provided`;
+    }
+    if (events.include.length > MAX_BROWSER_CDP_ACTION_EVENT_NAMES) {
+      return `${label}.include must contain at most ${MAX_BROWSER_CDP_ACTION_EVENT_NAMES} events`;
+    }
+    for (const eventName of events.include) {
+      const normalized = normalizeBrowserCdpMethod(eventName);
+      if (!normalized) {
+        return `${label}.include must contain valid CDP Domain.event strings`;
+      }
+      if (isBlockedBrowserCdpMethod(normalized)) {
+        return `${label}.include contains an event that is not allowed on browser task routes`;
+      }
+    }
+  }
+
+  const timeoutMs = events.timeoutMs;
+  if (
+    timeoutMs !== undefined &&
+    (typeof timeoutMs !== "number" ||
+      !Number.isInteger(timeoutMs) ||
+      timeoutMs <= 0 ||
+      timeoutMs > MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS)
+  ) {
+    return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS}`;
+  }
+
+  const maxEvents = events.maxEvents;
+  if (
+    maxEvents !== undefined &&
+    (typeof maxEvents !== "number" ||
+      !Number.isInteger(maxEvents) ||
+      maxEvents <= 0 ||
+      maxEvents > MAX_BROWSER_CDP_ACTION_EVENTS)
+  ) {
+    return `${label}.maxEvents must be a positive integer <= ${MAX_BROWSER_CDP_ACTION_EVENTS}`;
   }
 
   return null;
