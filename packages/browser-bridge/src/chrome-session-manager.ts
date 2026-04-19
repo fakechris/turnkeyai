@@ -25,6 +25,7 @@ import type {
   BrowserTaskResult,
 } from "@turnkeyai/core-types/team";
 import {
+  DEFAULT_BROWSER_DIALOG_TIMEOUT_MS,
   DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENTS,
@@ -33,7 +34,7 @@ import {
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
-import { chromium, type Browser, type BrowserContext, type CDPSession, type Locator, type Page } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Dialog, type Locator, type Page } from "playwright-core";
 
 import { captureDomSnapshot } from "./dom-snapshot";
 import type { BrowserSessionManager as LocalBrowserSessionManager } from "./session/browser-session-manager";
@@ -189,6 +190,7 @@ export class ChromeSessionManager {
     const trace: BrowserActionTrace[] = [];
     const screenshotPaths: string[] = [];
     const artifactIds: string[] = [];
+    const pendingDialogHandlers: Promise<void>[] = [];
 
     let requestedUrl = "";
     let lastStatusCode = 200;
@@ -236,6 +238,28 @@ export class ChromeSessionManager {
         const startedAt = Date.now();
 
         try {
+          if (action.kind === "dialog") {
+            const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_DIALOG_TIMEOUT_MS;
+            const traceEntry: BrowserActionTrace = {
+              stepId,
+              kind: action.kind,
+              startedAt,
+              completedAt: Date.now(),
+              status: "ok",
+              input: toTraceInput(action),
+              output: {
+                action: action.action,
+                timeoutMs,
+                armed: true,
+              },
+            };
+            trace.push(traceEntry);
+            const pending = armPageDialogHandler(page, action, traceEntry, timeoutMs);
+            pending.catch(() => undefined);
+            pendingDialogHandlers.push(pending);
+            continue;
+          }
+
           const output = await this.executeAction({
             page,
             action,
@@ -354,6 +378,8 @@ export class ChromeSessionManager {
           throw error;
         }
       }
+
+      await Promise.all(pendingDialogHandlers);
 
       if (!latestSnapshot) {
         latestSnapshot = await this.captureSnapshot({
@@ -1089,6 +1115,10 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "dialog") {
+      throw new Error("dialog actions must be armed by the browser task executor");
+    }
+
     const screenshotPath = path.join(
       sessionDir,
       `${String(stepIndex).padStart(2, "0")}-${sanitizeLabel(action.label ?? action.kind)}.png`
@@ -1246,6 +1276,59 @@ async function resolveTextLocator(page: Page, text: string): Promise<Locator> {
 async function settle(page: Page): Promise<void> {
   await page.waitForLoadState("domcontentloaded", { timeout: 5_000 }).catch(() => {});
   await page.waitForTimeout(DEFAULT_WAIT_MS);
+}
+
+function armPageDialogHandler(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "dialog" }>,
+  traceEntry: BrowserActionTrace,
+  timeoutMs: number
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const clear = () => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+    };
+    const fail = (error: Error) => {
+      traceEntry.completedAt = Date.now();
+      traceEntry.status = "failed";
+      traceEntry.errorMessage = error.message;
+      reject(error);
+    };
+    const handler = async (dialog: Dialog) => {
+      clear();
+      try {
+        const dialogType = dialog.type();
+        const message = dialog.message();
+        if (action.action === "accept") {
+          await dialog.accept(action.promptText);
+        } else {
+          await dialog.dismiss();
+        }
+        traceEntry.completedAt = Date.now();
+        traceEntry.output = {
+          action: action.action,
+          timeoutMs,
+          type: dialogType,
+          message,
+          ...(action.promptText !== undefined ? { promptTextLength: action.promptText.length } : {}),
+        };
+        resolve();
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error("browser dialog handler failed"));
+      }
+    };
+
+    page.once("dialog", handler);
+    timeout = setTimeout(() => {
+      const off = (page as unknown as { off?: (eventName: string, listener: (dialog: Dialog) => void) => void }).off;
+      off?.call(page, "dialog", handler);
+      fail(new Error(`browser dialog action timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
 }
 
 function formatKeyboardShortcut(action: Extract<BrowserTaskAction, { kind: "key" }>): string {
@@ -1566,6 +1649,14 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
 
   if (action.kind === "wait") {
     return { timeoutMs: action.timeoutMs };
+  }
+
+  if (action.kind === "dialog") {
+    return {
+      action: action.action,
+      promptTextLength: action.promptText?.length ?? null,
+      timeoutMs: action.timeoutMs ?? null,
+    };
   }
 
   if (action.kind === "cdp") {

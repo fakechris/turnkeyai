@@ -334,7 +334,7 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
-test("browser task mutation routes validate key hover select drag and waitFor action contracts", async () => {
+test("browser task mutation routes validate key hover select drag waitFor and dialog action contracts", async () => {
   const invalidHover = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -430,6 +430,25 @@ test("browser task mutation routes validate key hover select drag and waitFor ac
     error: "actions[0] waitFor.timeoutMs must be a positive integer <= 60000",
   });
 
+  const invalidDialog = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "dialog", action: "dismiss", promptText: "ignored" }],
+      },
+    }),
+    res: invalidDialog.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidDialog.res.statusCode, 400);
+  assert.deepEqual(invalidDialog.json, {
+    error: "actions[0] dialog.promptText is only supported when action is accept",
+  });
+
   let capturedActions: unknown;
   const validDeps = createDeps();
   validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
@@ -457,6 +476,7 @@ test("browser task mutation routes validate key hover select drag and waitFor ac
           { kind: "select", selectors: ["select[name=plan]"], label: "Team" },
           { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
           { kind: "waitFor", text: "Done", timeoutMs: 1_000 },
+          { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
         ],
       },
     }),
@@ -471,6 +491,7 @@ test("browser task mutation routes validate key hover select drag and waitFor ac
     { kind: "select", selectors: ["select[name=plan]"], label: "Team" },
     { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
     { kind: "waitFor", text: "Done", timeoutMs: 1_000 },
+    { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
   ]);
 });
 

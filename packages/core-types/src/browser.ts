@@ -22,6 +22,7 @@ export type BrowserActionKind =
   | "console"
   | "wait"
   | "waitFor"
+  | "dialog"
   | "screenshot"
   | "cdp";
 
@@ -60,6 +61,8 @@ export const MAX_BROWSER_CDP_EVENT_PARAMS_BYTES = 8 * 1024;
 export const MAX_BROWSER_KEY_ACTION_KEY_LENGTH = 64;
 export const DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS = 5_000;
 export const MAX_BROWSER_WAIT_FOR_TIMEOUT_MS = 60_000;
+export const DEFAULT_BROWSER_DIALOG_TIMEOUT_MS = 5_000;
+export const MAX_BROWSER_DIALOG_TIMEOUT_MS = 60_000;
 
 const BROWSER_CDP_METHOD_PATTERN = /^[A-Z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$/;
 const BLOCKED_BROWSER_CDP_METHOD_PREFIXES = ["Browser.", "Target."];
@@ -117,6 +120,13 @@ export type BrowserDragAction = {
 
 export type BrowserWaitForAction = { kind: "waitFor"; timeoutMs?: number } & BrowserActionTarget;
 
+export type BrowserDialogAction = {
+  kind: "dialog";
+  action: "accept" | "dismiss";
+  promptText?: string;
+  timeoutMs?: number;
+};
+
 export type BrowserTaskAction =
   | { kind: "open"; url: string }
   | { kind: "snapshot"; note?: string }
@@ -130,6 +140,7 @@ export type BrowserTaskAction =
   | { kind: "console"; probe: BrowserConsoleProbe }
   | { kind: "wait"; timeoutMs: number }
   | BrowserWaitForAction
+  | BrowserDialogAction
   | { kind: "screenshot"; label?: string }
   | {
       kind: "cdp";

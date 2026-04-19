@@ -44,6 +44,7 @@ const RELAY_EXECUTABLE_ACTION_KINDS = new Set<string>([
   "console",
   "wait",
   "waitFor",
+  "dialog",
   "screenshot",
   "cdp",
 ]);

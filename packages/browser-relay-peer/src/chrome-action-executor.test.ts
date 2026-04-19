@@ -111,6 +111,68 @@ test("chrome relay action executor creates a new tab for new-target open request
   assert.equal((sentMessages[0] as { tabId: number }).tabId, 8);
 });
 
+test("chrome relay action executor arms and handles prompt dialogs around content actions", async () => {
+  const now = Date.now();
+  const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];
+  let resolveDialog: ((event: { method: string; params: Record<string, unknown>; timestamp: number }) => void) | null = null;
+  const platform = fakePlatform({
+    activeTab: { id: 7, windowId: 3, url: "https://example.com/form", title: "Form", status: "complete" },
+    onDebuggerCommand(tabId, method, params) {
+      debuggerCommands.push({ tabId, method, params });
+      return {};
+    },
+    onSendMessage() {
+      resolveDialog?.({
+        method: "Page.javascriptDialogOpening",
+        params: { type: "prompt", message: "Continue?" },
+        timestamp: 123,
+      });
+      return {
+        ok: true,
+        page: {
+          requestedUrl: "https://example.com/form",
+          finalUrl: "https://example.com/form",
+          title: "Form",
+          textExcerpt: "Form page",
+          statusCode: 200,
+          interactives: [],
+        },
+        trace: [],
+      };
+    },
+  });
+  platform.waitForDebuggerEvent = async (tabId, method, timeoutMs) => {
+    assert.equal(tabId, 7);
+    assert.equal(method, "Page.javascriptDialogOpening");
+    assert.equal(timeoutMs, 1_000);
+    return await new Promise((resolve) => {
+      resolveDialog = resolve;
+    });
+  };
+  const executor = new ChromeRelayActionExecutor(platform);
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-dialog",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-dialog",
+    actions: [
+      { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
+      { kind: "click", text: "Submit" },
+    ],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.trace[0]?.kind, "dialog");
+  assert.equal(result.trace[0]?.status, "ok");
+  assert.deepEqual(debuggerCommands, [
+    { tabId: 7, method: "Page.enable", params: {} },
+    { tabId: 7, method: "Page.handleJavaScriptDialog", params: { accept: true, promptText: "yes" } },
+  ]);
+});
+
 test("chrome relay action executor captures screenshot payloads through the extension platform", async () => {
   const now = Date.now();
   const activations: Array<{ tabId: number; active?: boolean }> = [];

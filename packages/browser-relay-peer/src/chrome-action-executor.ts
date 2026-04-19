@@ -1,5 +1,6 @@
 import type { BrowserActionTrace } from "@turnkeyai/core-types/team";
 import {
+  DEFAULT_BROWSER_DIALOG_TIMEOUT_MS,
   DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENTS,
@@ -22,6 +23,7 @@ type RelayCdpAction = Extract<RelayAction, { kind: "cdp" }>;
 type RelayHoverAction = Extract<RelayAction, { kind: "hover" }>;
 type RelayKeyAction = Extract<RelayAction, { kind: "key" }>;
 type RelayDragAction = Extract<RelayAction, { kind: "drag" }>;
+type RelayDialogAction = Extract<RelayAction, { kind: "dialog" }>;
 interface RelayCdpActionOutput {
   result: unknown;
   events: ChromeDebuggerEventLike[];
@@ -117,6 +119,7 @@ export class ChromeRelayActionExecutor {
   ) {
     const trace: BrowserActionTrace[] = [];
     const screenshotPayloads: RelayScreenshotPayload[] = [];
+    const pendingDialogHandlers: Promise<void>[] = [];
     const contentScriptBatch: RelayActionRequest["actions"] = [];
     const contentScriptState: {
       latestResponse: RelayContentScriptExecuteResponse | null;
@@ -251,6 +254,32 @@ export class ChromeRelayActionExecutor {
         continue;
       }
 
+      if (action.kind === "dialog") {
+        const startedAt = Date.now();
+        const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_DIALOG_TIMEOUT_MS;
+        const traceEntry: BrowserActionTrace = {
+          stepId: `${request.taskId}:relay-dialog:${index + 1}`,
+          kind: "dialog",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            action: action.action,
+            promptTextLength: action.promptText?.length ?? null,
+            timeoutMs: action.timeoutMs ?? null,
+          },
+          output: {
+            action: action.action,
+            timeoutMs,
+            armed: true,
+          },
+        };
+        trace.push(traceEntry);
+        const armed = await this.armDialogAction(activeTab.id, action, debuggerTabsToDetach, traceEntry, timeoutMs);
+        pendingDialogHandlers.push(armed.pending);
+        continue;
+      }
+
       if (action.kind === "cdp") {
         const startedAt = Date.now();
         const cdpResult = await this.executeCdpAction(activeTab.id, action, debuggerTabsToDetach);
@@ -325,6 +354,7 @@ export class ChromeRelayActionExecutor {
     if (contentScriptResponse && !contentScriptResponse.ok) {
       return this.buildFailedContentScriptResult(activeTab, trace, screenshotPayloads, contentScriptResponse);
     }
+    await Promise.all(pendingDialogHandlers);
 
     const finalTab = activeTab;
     if (!finalTab || typeof finalTab.id !== "number") {
@@ -558,6 +588,46 @@ export class ChromeRelayActionExecutor {
       modifierMask,
       commandCount,
     };
+  }
+
+  private async armDialogAction(
+    tabId: number,
+    action: RelayDialogAction,
+    debuggerTabsToDetach: Set<number>,
+    traceEntry: BrowserActionTrace,
+    timeoutMs: number
+  ): Promise<{ pending: Promise<void> }> {
+    const sendDebuggerCommand = this.platform.sendDebuggerCommand;
+    const waitForDebuggerEvent = this.platform.waitForDebuggerEvent;
+    if (!sendDebuggerCommand || !waitForDebuggerEvent) {
+      throw new Error("relay dialog action requires chrome debugger event support");
+    }
+    debuggerTabsToDetach.add(tabId);
+    await sendDebuggerCommand(tabId, "Page.enable", {});
+    const pending = (async () => {
+      try {
+        const event = await waitForDebuggerEvent(tabId, "Page.javascriptDialogOpening", timeoutMs);
+        await sendDebuggerCommand(tabId, "Page.handleJavaScriptDialog", {
+          accept: action.action === "accept",
+          ...(action.action === "accept" && action.promptText !== undefined ? { promptText: action.promptText } : {}),
+        });
+        traceEntry.completedAt = Date.now();
+        traceEntry.output = {
+          action: action.action,
+          timeoutMs,
+          type: typeof event.params?.type === "string" ? event.params.type : null,
+          message: typeof event.params?.message === "string" ? event.params.message : null,
+          ...(action.promptText !== undefined ? { promptTextLength: action.promptText.length } : {}),
+        };
+      } catch (error) {
+        traceEntry.completedAt = Date.now();
+        traceEntry.status = "failed";
+        traceEntry.errorMessage = error instanceof Error ? error.message : "relay dialog action failed";
+        throw error;
+      }
+    })();
+    pending.catch(() => undefined);
+    return { pending };
   }
 
   private buildFailedContentScriptResult(

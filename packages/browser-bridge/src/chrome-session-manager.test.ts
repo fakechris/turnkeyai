@@ -770,6 +770,93 @@ test("chrome session manager executes hover key select drag and waitFor input ac
   );
 });
 
+test("chrome session manager arms and handles prompt dialogs around page actions", async () => {
+  let dialogHandler: ((dialog: unknown) => void | Promise<void>) | null = null;
+  let acceptedPrompt: string | undefined;
+  let clickCount = 0;
+  const fakeLocator = {
+    first() {
+      return this;
+    },
+    async count() {
+      return 1;
+    },
+    async click() {
+      clickCount += 1;
+      await dialogHandler?.({
+        type: () => "prompt",
+        message: () => "Continue?",
+        accept: async (value?: string) => {
+          acceptedPrompt = value;
+        },
+        dismiss: async () => undefined,
+      });
+    },
+  };
+  const fakePage = {
+    once(eventName: string, handler: (dialog: unknown) => void) {
+      assert.equal(eventName, "dialog");
+      dialogHandler = handler;
+    },
+    off(eventName: string) {
+      assert.equal(eventName, "dialog");
+      dialogHandler = null;
+    },
+    locator() {
+      return fakeLocator;
+    },
+    async waitForLoadState() {
+      return undefined;
+    },
+    async waitForTimeout() {
+      return undefined;
+    },
+    url() {
+      return "https://example.com/form";
+    },
+  } as unknown as Page;
+  const fakeContext = {
+    pages() {
+      return [fakePage];
+    },
+    async newPage() {
+      return fakePage;
+    },
+    async close() {
+      return undefined;
+    },
+  } as unknown as BrowserContext;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    createEphemeralContext: async () => fakeContext,
+    captureSnapshot: async () => ({
+      requestedUrl: "https://example.com/form",
+      finalUrl: "https://example.com/form",
+      title: "Form",
+      textExcerpt: "Form page",
+      statusCode: 200,
+      interactives: [],
+    }),
+  });
+
+  const result = await manager.spawnSession({
+    taskId: "task-dialog",
+    threadId: "thread-dialog",
+    instructions: "Submit a prompted form",
+    actions: [
+      { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
+      { kind: "click", selectors: ["button.submit"] },
+    ],
+  });
+
+  assert.equal(clickCount, 1);
+  assert.equal(acceptedPrompt, "yes");
+  assert.equal(result.trace[0]?.kind, "dialog");
+  assert.equal(result.trace[0]?.status, "ok");
+  assert.equal(result.trace[0]?.output?.type, "prompt");
+  assert.equal(result.trace[1]?.kind, "click");
+});
+
 test("chrome session manager executes target-scoped cdp actions through a page CDP session", async () => {
   const commands: unknown[] = [];
   let detached = 0;

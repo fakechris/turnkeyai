@@ -14,6 +14,7 @@ import {
   MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_PARAMS_BYTES,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
+  MAX_BROWSER_DIALOG_TIMEOUT_MS,
   MAX_BROWSER_KEY_ACTION_KEY_LENGTH,
   MAX_BROWSER_WAIT_FOR_TIMEOUT_MS,
   isBlockedBrowserCdpMethod,
@@ -674,6 +675,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         if (waitForError) return waitForError;
         break;
       }
+      case "dialog": {
+        const dialogError = validateDialogAction(action, `actions[${index}] dialog`);
+        if (dialogError) return dialogError;
+        break;
+      }
       case "screenshot": {
         if (action.label !== undefined && !parseOptionalRouteString(action.label)) {
           return `actions[${index}] screenshot.label must be a non-empty string when provided`;
@@ -905,6 +911,33 @@ function validateWaitForAction(
     (!Number.isInteger(action.timeoutMs) || action.timeoutMs <= 0 || action.timeoutMs > MAX_BROWSER_WAIT_FOR_TIMEOUT_MS)
   ) {
     return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_WAIT_FOR_TIMEOUT_MS}`;
+  }
+  return null;
+}
+
+function validateDialogAction(
+  action: {
+    action?: unknown;
+    promptText?: unknown;
+    timeoutMs?: number;
+  },
+  label: string
+): string | null {
+  if (action.action !== "accept" && action.action !== "dismiss") {
+    return `${label}.action must be accept or dismiss`;
+  }
+  const promptText = parseOptionalRouteString(action.promptText);
+  if (action.promptText !== undefined && !promptText) {
+    return `${label}.promptText must be a non-empty string when provided`;
+  }
+  if (action.promptText !== undefined && action.action !== "accept") {
+    return `${label}.promptText is only supported when action is accept`;
+  }
+  if (
+    action.timeoutMs !== undefined &&
+    (!Number.isInteger(action.timeoutMs) || action.timeoutMs <= 0 || action.timeoutMs > MAX_BROWSER_DIALOG_TIMEOUT_MS)
+  ) {
+    return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_DIALOG_TIMEOUT_MS}`;
   }
   return null;
 }

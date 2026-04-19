@@ -26,6 +26,7 @@ test("chrome relay extension config falls back to default loopback daemon settin
       "console",
       "wait",
       "waitFor",
+      "dialog",
       "screenshot",
       "cdp",
     ]);
