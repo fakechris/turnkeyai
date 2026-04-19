@@ -334,7 +334,7 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
-test("browser task mutation routes validate key hover select drag waitFor dialog and popup action contracts", async () => {
+test("browser task mutation routes validate key hover select drag waitFor dialog popup and storage action contracts", async () => {
   const invalidHover = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -468,6 +468,25 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     error: "actions[0] popup.timeoutMs must be a positive integer <= 60000",
   });
 
+  const invalidStorage = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "storage", area: "localStorage", action: "set", key: "token" }],
+      },
+    }),
+    res: invalidStorage.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidStorage.res.statusCode, 400);
+  assert.deepEqual(invalidStorage.json, {
+    error: "actions[0] storage.value must be a string for set",
+  });
+
   let capturedActions: unknown;
   const validDeps = createDeps();
   validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
@@ -497,6 +516,8 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
           { kind: "waitFor", text: "Done", timeoutMs: 1_000 },
           { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
           { kind: "popup", timeoutMs: 1_000 },
+          { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
+          { kind: "storage", area: "localStorage", action: "get", key: "token" },
         ],
       },
     }),
@@ -513,6 +534,8 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     { kind: "waitFor", text: "Done", timeoutMs: 1_000 },
     { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
     { kind: "popup", timeoutMs: 1_000 },
+    { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
+    { kind: "storage", area: "localStorage", action: "get", key: "token" },
   ]);
 });
 

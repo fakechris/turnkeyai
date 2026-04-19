@@ -32,6 +32,8 @@ import {
   MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
   MAX_BROWSER_CDP_EVENT_PARAMS_BYTES,
+  MAX_BROWSER_STORAGE_READ_ENTRIES,
+  MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
@@ -1128,6 +1130,13 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "storage") {
+      const result = await executeStorageAction(page, action);
+      return {
+        traceOutput: result,
+      };
+    }
+
     if (action.kind === "waitFor") {
       const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS;
       const locator = await this.resolveActionTargetLocator(
@@ -1476,6 +1485,99 @@ async function executeTargetCdpAction(
   }
 }
 
+async function executeStorageAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "storage" }>
+): Promise<Record<string, unknown>> {
+  return await page.evaluate(
+    ({ area, action: storageAction, key, value, maxEntries, maxValueBytes }) => {
+      const storage = area === "localStorage" ? window.localStorage : window.sessionStorage;
+      const summarizeValue = (rawValue: string | null) => {
+        if (rawValue === null) {
+          return {
+            found: false,
+            value: null,
+            valueBytes: 0,
+            valueTruncated: false,
+          };
+        }
+        const valueBytes = new TextEncoder().encode(rawValue).length;
+        return {
+          found: true,
+          value: valueBytes <= maxValueBytes ? rawValue : rawValue.slice(0, maxValueBytes),
+          valueBytes,
+          valueTruncated: valueBytes > maxValueBytes,
+        };
+      };
+
+      if (storageAction === "set") {
+        storage.setItem(key!, value ?? "");
+        return {
+          area,
+          action: storageAction,
+          key,
+          valueBytes: new TextEncoder().encode(value ?? "").length,
+          entryCount: storage.length,
+        };
+      }
+      if (storageAction === "remove") {
+        const existed = storage.getItem(key!) !== null;
+        storage.removeItem(key!);
+        return {
+          area,
+          action: storageAction,
+          key,
+          removed: existed,
+          entryCount: storage.length,
+        };
+      }
+      if (storageAction === "clear") {
+        const clearedCount = storage.length;
+        storage.clear();
+        return {
+          area,
+          action: storageAction,
+          clearedCount,
+          entryCount: storage.length,
+        };
+      }
+
+      if (key) {
+        return {
+          area,
+          action: storageAction,
+          key,
+          ...summarizeValue(storage.getItem(key)),
+          entryCount: storage.length,
+        };
+      }
+
+      const entries = Array.from({ length: Math.min(storage.length, maxEntries) }, (_, index) => {
+        const entryKey = storage.key(index) ?? "";
+        return {
+          key: entryKey,
+          ...summarizeValue(storage.getItem(entryKey)),
+        };
+      });
+      return {
+        area,
+        action: storageAction,
+        entries,
+        entryCount: storage.length,
+        entriesTruncated: storage.length > maxEntries,
+      };
+    },
+    {
+      area: action.area,
+      action: action.action,
+      key: "key" in action ? action.key : undefined,
+      value: "value" in action ? action.value : undefined,
+      maxEntries: MAX_BROWSER_STORAGE_READ_ENTRIES,
+      maxValueBytes: MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+    }
+  );
+}
+
 function normalizeCdpTimeoutMs(value: number | undefined): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0
     ? Math.min(value, MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
@@ -1743,6 +1845,15 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
   if (action.kind === "popup") {
     return {
       timeoutMs: action.timeoutMs ?? null,
+    };
+  }
+
+  if (action.kind === "storage") {
+    return {
+      area: action.area,
+      action: action.action,
+      key: "key" in action ? action.key : null,
+      valueBytes: "value" in action ? byteLength(action.value) : null,
     };
   }
 

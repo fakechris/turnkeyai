@@ -947,6 +947,63 @@ test("chrome session manager switches to an armed popup page after the trigger a
   assert.equal(result.trace[1]?.kind, "click");
 });
 
+test("chrome session manager executes bounded storage actions", async () => {
+  const evaluateInputs: unknown[] = [];
+  const fakePage = {
+    async evaluate(_fn: unknown, input: unknown) {
+      evaluateInputs.push(input);
+      return {
+        area: "localStorage",
+        action: "get",
+        key: "token",
+        found: true,
+        value: "abc",
+        valueBytes: 3,
+        valueTruncated: false,
+        entryCount: 1,
+      };
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action: { kind: "storage"; area: "localStorage"; action: "get"; key: string };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  const output = await internal.executeAction({
+    page: fakePage,
+    action: { kind: "storage", area: "localStorage", action: "get", key: "token" },
+    stepIndex: 1,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-storage",
+  });
+
+  assert.deepEqual(evaluateInputs, [
+    {
+      area: "localStorage",
+      action: "get",
+      key: "token",
+      value: undefined,
+      maxEntries: 100,
+      maxValueBytes: 8192,
+    },
+  ]);
+  assert.equal(output.traceOutput?.value, "abc");
+});
+
 test("chrome session manager executes target-scoped cdp actions through a page CDP session", async () => {
   const commands: unknown[] = [];
   let detached = 0;

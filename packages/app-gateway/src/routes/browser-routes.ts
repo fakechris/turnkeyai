@@ -17,6 +17,8 @@ import {
   MAX_BROWSER_DIALOG_TIMEOUT_MS,
   MAX_BROWSER_KEY_ACTION_KEY_LENGTH,
   MAX_BROWSER_POPUP_TIMEOUT_MS,
+  MAX_BROWSER_STORAGE_KEY_LENGTH,
+  MAX_BROWSER_STORAGE_VALUE_BYTES,
   MAX_BROWSER_WAIT_FOR_TIMEOUT_MS,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
@@ -474,6 +476,8 @@ const BROWSER_SCROLL_DIRECTIONS = new Set<Extract<BrowserTaskAction, { kind: "sc
   "down",
 ]);
 const BROWSER_KEY_MODIFIERS = new Set(["Alt", "Control", "Meta", "Shift"]);
+const BROWSER_STORAGE_AREAS = new Set(["localStorage", "sessionStorage"]);
+const BROWSER_STORAGE_ACTIONS = new Set(["get", "set", "remove", "clear"]);
 
 function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: BrowserTaskMutationRoute): string | null {
   if ((route === "send" || route === "resume") && (body.ownerType !== undefined || body.ownerId !== undefined)) {
@@ -684,6 +688,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
       case "popup": {
         const popupError = validatePopupAction(action, `actions[${index}] popup`);
         if (popupError) return popupError;
+        break;
+      }
+      case "storage": {
+        const storageError = validateStorageAction(action, `actions[${index}] storage`);
+        if (storageError) return storageError;
         break;
       }
       case "screenshot": {
@@ -960,6 +969,53 @@ function validatePopupAction(
   ) {
     return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_POPUP_TIMEOUT_MS}`;
   }
+  return null;
+}
+
+function validateStorageAction(
+  action: {
+    area?: unknown;
+    action?: unknown;
+    key?: unknown;
+    value?: unknown;
+  },
+  label: string
+): string | null {
+  if (!BROWSER_STORAGE_AREAS.has(action.area as string)) {
+    return `${label}.area must be localStorage or sessionStorage`;
+  }
+  if (!BROWSER_STORAGE_ACTIONS.has(action.action as string)) {
+    return `${label}.action must be get, set, remove, or clear`;
+  }
+
+  const storageAction = action.action as string;
+  const key = parseOptionalRouteString(action.key);
+  if ((storageAction === "set" || storageAction === "remove") && !key) {
+    return `${label}.key must be a non-empty string for ${storageAction}`;
+  }
+  if (storageAction === "clear" && action.key !== undefined) {
+    return `${label}.key is not accepted for clear`;
+  }
+  if (action.key !== undefined) {
+    if (!key) {
+      return `${label}.key must be a non-empty string when provided`;
+    }
+    if (key.length > MAX_BROWSER_STORAGE_KEY_LENGTH) {
+      return `${label}.key must be <= ${MAX_BROWSER_STORAGE_KEY_LENGTH} characters`;
+    }
+  }
+
+  if (storageAction === "set") {
+    if (typeof action.value !== "string") {
+      return `${label}.value must be a string for set`;
+    }
+    if (Buffer.byteLength(action.value, "utf8") > MAX_BROWSER_STORAGE_VALUE_BYTES) {
+      return `${label}.value exceeds ${MAX_BROWSER_STORAGE_VALUE_BYTES} bytes`;
+    }
+  } else if (action.value !== undefined) {
+    return `${label}.value is only accepted for set`;
+  }
+
   return null;
 }
 

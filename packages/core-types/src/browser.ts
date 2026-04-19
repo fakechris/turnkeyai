@@ -24,6 +24,7 @@ export type BrowserActionKind =
   | "waitFor"
   | "dialog"
   | "popup"
+  | "storage"
   | "screenshot"
   | "cdp";
 
@@ -66,6 +67,10 @@ export const DEFAULT_BROWSER_DIALOG_TIMEOUT_MS = 5_000;
 export const MAX_BROWSER_DIALOG_TIMEOUT_MS = 60_000;
 export const DEFAULT_BROWSER_POPUP_TIMEOUT_MS = 5_000;
 export const MAX_BROWSER_POPUP_TIMEOUT_MS = 60_000;
+export const MAX_BROWSER_STORAGE_KEY_LENGTH = 1_024;
+export const MAX_BROWSER_STORAGE_VALUE_BYTES = 64 * 1024;
+export const MAX_BROWSER_STORAGE_READ_VALUE_BYTES = 8 * 1024;
+export const MAX_BROWSER_STORAGE_READ_ENTRIES = 100;
 
 const BROWSER_CDP_METHOD_PATTERN = /^[A-Z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$/;
 const BLOCKED_BROWSER_CDP_METHOD_PREFIXES = ["Browser.", "Target."];
@@ -135,6 +140,14 @@ export type BrowserPopupAction = {
   timeoutMs?: number;
 };
 
+export type BrowserStorageArea = "localStorage" | "sessionStorage";
+
+export type BrowserStorageAction =
+  | { kind: "storage"; area: BrowserStorageArea; action: "get"; key?: string }
+  | { kind: "storage"; area: BrowserStorageArea; action: "set"; key: string; value: string }
+  | { kind: "storage"; area: BrowserStorageArea; action: "remove"; key: string }
+  | { kind: "storage"; area: BrowserStorageArea; action: "clear" };
+
 export type BrowserTaskAction =
   | { kind: "open"; url: string }
   | { kind: "snapshot"; note?: string }
@@ -150,6 +163,7 @@ export type BrowserTaskAction =
   | BrowserWaitForAction
   | BrowserDialogAction
   | BrowserPopupAction
+  | BrowserStorageAction
   | { kind: "screenshot"; label?: string }
   | {
       kind: "cdp";

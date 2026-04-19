@@ -1,5 +1,9 @@
 import type { BrowserActionTrace, BrowserSnapshotResult } from "@turnkeyai/core-types/team";
-import { DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS } from "@turnkeyai/core-types/team";
+import {
+  DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
+  MAX_BROWSER_STORAGE_READ_ENTRIES,
+  MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+} from "@turnkeyai/core-types/team";
 import type { RelayExecutableBrowserAction } from "@turnkeyai/browser-bridge/transport/relay-protocol";
 
 import type { ChromeRuntimeLike } from "./chrome-extension-types";
@@ -44,9 +48,20 @@ interface WindowLike {
   location?: {
     href?: string;
   };
+  localStorage?: StorageLike;
+  sessionStorage?: StorageLike;
   scrollY?: number;
   pageYOffset?: number;
   scrollBy?(options: { top: number; behavior: "instant" | "smooth" }): void;
+}
+
+interface StorageLike {
+  readonly length: number;
+  key(index: number): string | null;
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+  clear(): void;
 }
 
 export interface ChromeRelayContentScriptEnvironment {
@@ -256,6 +271,29 @@ export async function executeChromeRelayContentScriptActions(
         continue;
       }
 
+      if (action.kind === "storage") {
+        const result = executeStorageAction(environment, action);
+        latestSnapshot = captureSnapshot(environment);
+        trace.push({
+          stepId,
+          kind: "storage",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            area: action.area,
+            action: action.action,
+            key: "key" in action ? action.key : null,
+            valueBytes: "value" in action ? byteLength(action.value) : null,
+          },
+          output: {
+            finalUrl: latestSnapshot.finalUrl,
+            ...result,
+          },
+        });
+        continue;
+      }
+
       if (action.kind === "wait") {
         const timeoutMs =
           typeof action.timeoutMs === "number" && Number.isFinite(action.timeoutMs) && action.timeoutMs >= 0
@@ -412,6 +450,89 @@ function executeConsoleProbe(
       }));
 }
 
+function executeStorageAction(
+  environment: ChromeRelayContentScriptEnvironment,
+  action: Extract<RelayExecutableBrowserAction, { kind: "storage" }>
+): Record<string, unknown> {
+  const storage = action.area === "localStorage" ? environment.window.localStorage : environment.window.sessionStorage;
+  if (!storage) {
+    throw new Error(`content script storage area is unavailable: ${action.area}`);
+  }
+  if (action.action === "set") {
+    storage.setItem(action.key, action.value);
+    return {
+      area: action.area,
+      action: action.action,
+      key: action.key,
+      valueBytes: byteLength(action.value),
+      entryCount: storage.length,
+    };
+  }
+  if (action.action === "remove") {
+    const removed = storage.getItem(action.key) !== null;
+    storage.removeItem(action.key);
+    return {
+      area: action.area,
+      action: action.action,
+      key: action.key,
+      removed,
+      entryCount: storage.length,
+    };
+  }
+  if (action.action === "clear") {
+    const clearedCount = storage.length;
+    storage.clear();
+    return {
+      area: action.area,
+      action: action.action,
+      clearedCount,
+      entryCount: storage.length,
+    };
+  }
+  if (action.key) {
+    return {
+      area: action.area,
+      action: action.action,
+      key: action.key,
+      ...summarizeStorageValue(storage.getItem(action.key)),
+      entryCount: storage.length,
+    };
+  }
+
+  const entries = Array.from({ length: Math.min(storage.length, MAX_BROWSER_STORAGE_READ_ENTRIES) }, (_, index) => {
+    const key = storage.key(index) ?? "";
+    return {
+      key,
+      ...summarizeStorageValue(storage.getItem(key)),
+    };
+  });
+  return {
+    area: action.area,
+    action: action.action,
+    entries,
+    entryCount: storage.length,
+    entriesTruncated: storage.length > MAX_BROWSER_STORAGE_READ_ENTRIES,
+  };
+}
+
+function summarizeStorageValue(value: string | null): Record<string, unknown> {
+  if (value === null) {
+    return {
+      found: false,
+      value: null,
+      valueBytes: 0,
+      valueTruncated: false,
+    };
+  }
+  const valueBytes = byteLength(value);
+  return {
+    found: true,
+    value: valueBytes <= MAX_BROWSER_STORAGE_READ_VALUE_BYTES ? value : value.slice(0, MAX_BROWSER_STORAGE_READ_VALUE_BYTES),
+    valueBytes,
+    valueTruncated: valueBytes > MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+  };
+}
+
 function resolveElement(
   documentLike: DocumentLike,
   action: { refId?: unknown; selectors?: unknown; text?: unknown }
@@ -553,6 +674,10 @@ function createDomEvent(type: string): unknown {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
 }
 
 function getDefaultContentScriptEnvironment(): ChromeRelayContentScriptEnvironment {

@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { executeChromeRelayContentScriptActions } from "./chrome-content-script";
 
-test("chrome content script executes snapshot, click, type, select, waitFor, scroll, wait, and console actions against a document-like environment", async () => {
+test("chrome content script executes snapshot, click, type, select, waitFor, storage, scroll, wait, and console actions against a document-like environment", async () => {
   let clicked = false;
   let dispatched = 0;
   let scrollTop = 0;
@@ -34,6 +34,7 @@ test("chrome content script executes snapshot, click, type, select, waitFor, scr
       location: {
         href: "https://example.com/workflow",
       },
+      localStorage: createStorage(),
       scrollY: 0,
       scrollBy({ top }: { top: number }) {
         scrollTop += top;
@@ -49,6 +50,8 @@ test("chrome content script executes snapshot, click, type, select, waitFor, scr
     { kind: "type", selectors: ["input"], text: "hello", submit: true },
     { kind: "select", selectors: ["select"], label: "Team" },
     { kind: "waitFor", text: "Approve", timeoutMs: 0 },
+    { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
+    { kind: "storage", area: "localStorage", action: "get", key: "token" },
     { kind: "scroll", direction: "down", amount: 240 },
     { kind: "wait", timeoutMs: 0 },
     { kind: "console", probe: "page-metadata" },
@@ -56,7 +59,7 @@ test("chrome content script executes snapshot, click, type, select, waitFor, scr
 
   assert.equal(response.ok, true);
   assert.equal(response.page?.finalUrl, "https://example.com/workflow");
-  assert.equal(response.trace.length, 8);
+  assert.equal(response.trace.length, 10);
   assert.equal(clicked, true);
   assert.equal(input.value, "hello");
   assert.equal(select.value, "team");
@@ -64,8 +67,10 @@ test("chrome content script executes snapshot, click, type, select, waitFor, scr
   assert.equal(dispatched >= 2, true);
   assert.equal(scrollTop, 240);
   assert.equal(response.trace[4]?.kind, "waitFor");
-  assert.equal(response.trace[6]?.kind, "wait");
-  assert.equal(response.trace[7]?.kind, "console");
+  assert.equal(response.trace[5]?.kind, "storage");
+  assert.equal(response.trace[6]?.output?.value, "abc");
+  assert.equal(response.trace[8]?.kind, "wait");
+  assert.equal(response.trace[9]?.kind, "console");
 });
 
 test("chrome content script returns a failed response when the target element cannot be resolved", async () => {
@@ -159,4 +164,28 @@ function createElement(
     dispatchEvent: overrides.dispatchEvent ?? (() => undefined),
   };
   return element;
+}
+
+function createStorage() {
+  const values = new Map<string, string>();
+  return {
+    get length() {
+      return values.size;
+    },
+    key(index: number) {
+      return [...values.keys()][index] ?? null;
+    },
+    getItem(key: string) {
+      return values.get(key) ?? null;
+    },
+    setItem(key: string, value: string) {
+      values.set(key, value);
+    },
+    removeItem(key: string) {
+      values.delete(key);
+    },
+    clear() {
+      values.clear();
+    },
+  };
 }

@@ -460,7 +460,8 @@ export class ChromeRelayActionExecutor {
       action.kind === "scroll" ||
       action.kind === "console" ||
       action.kind === "wait" ||
-      action.kind === "waitFor"
+      action.kind === "waitFor" ||
+      action.kind === "storage"
     );
   }
 
