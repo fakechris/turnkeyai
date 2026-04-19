@@ -31,6 +31,7 @@ import {
   MAX_BROWSER_STORAGE_KEY_LENGTH,
   MAX_BROWSER_STORAGE_VALUE_BYTES,
   MAX_BROWSER_UPLOAD_ARTIFACT_ID_LENGTH,
+  MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH,
   MAX_BROWSER_WAIT_FOR_TIMEOUT_MS,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
@@ -502,6 +503,7 @@ const BROWSER_SCROLL_DIRECTIONS = new Set<Extract<BrowserTaskAction, { kind: "sc
   "up",
   "down",
 ]);
+const BROWSER_WAIT_FOR_STATES = new Set(["visible", "hidden", "attached", "detached"]);
 const BROWSER_KEY_MODIFIERS = new Set(["Alt", "Control", "Meta", "Shift"]);
 const BROWSER_STORAGE_AREAS = new Set(["localStorage", "sessionStorage"]);
 const BROWSER_STORAGE_ACTIONS = new Set(["get", "set", "remove", "clear"]);
@@ -979,19 +981,67 @@ function validateWaitForAction(
     selectors?: unknown;
     refId?: unknown;
     text?: unknown;
+    state?: unknown;
+    urlPattern?: unknown;
+    titlePattern?: unknown;
+    bodyTextPattern?: unknown;
     timeoutMs?: number;
   },
   label: string
 ): string | null {
-  const targetError = validateTargetedAction(action, label);
-  if (targetError) {
-    return targetError;
-  }
   if (
     action.timeoutMs !== undefined &&
     (!Number.isInteger(action.timeoutMs) || action.timeoutMs <= 0 || action.timeoutMs > MAX_BROWSER_WAIT_FOR_TIMEOUT_MS)
   ) {
     return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_WAIT_FOR_TIMEOUT_MS}`;
+  }
+
+  const hasTarget = action.selectors !== undefined || action.refId !== undefined || action.text !== undefined;
+  const conditionCount =
+    (hasTarget ? 1 : 0) +
+    (action.urlPattern !== undefined ? 1 : 0) +
+    (action.titlePattern !== undefined ? 1 : 0) +
+    (action.bodyTextPattern !== undefined ? 1 : 0);
+  if (conditionCount !== 1) {
+    return `${label} requires exactly one of selectors, refId, text, urlPattern, titlePattern, or bodyTextPattern`;
+  }
+
+  if (hasTarget) {
+    const targetError = validateTargetedAction(action, label);
+    if (targetError) {
+      return targetError;
+    }
+    if (action.state !== undefined && !BROWSER_WAIT_FOR_STATES.has(action.state as string)) {
+      return `${label}.state must be visible, hidden, attached, or detached`;
+    }
+    return null;
+  }
+
+  if (action.state !== undefined) {
+    return `${label}.state is only accepted for element targets`;
+  }
+  const urlPatternError = validateWaitForPattern(action.urlPattern, `${label}.urlPattern`);
+  if (action.urlPattern !== undefined && urlPatternError) {
+    return urlPatternError;
+  }
+  const titlePatternError = validateWaitForPattern(action.titlePattern, `${label}.titlePattern`);
+  if (action.titlePattern !== undefined && titlePatternError) {
+    return titlePatternError;
+  }
+  const bodyTextPatternError = validateWaitForPattern(action.bodyTextPattern, `${label}.bodyTextPattern`);
+  if (action.bodyTextPattern !== undefined && bodyTextPatternError) {
+    return bodyTextPatternError;
+  }
+  return null;
+}
+
+function validateWaitForPattern(value: unknown, label: string): string | null {
+  const pattern = parseOptionalRouteString(value);
+  if (!pattern) {
+    return `${label} must be a non-empty string`;
+  }
+  if (pattern.length > MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH) {
+    return `${label} must be <= ${MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH} characters`;
   }
   return null;
 }

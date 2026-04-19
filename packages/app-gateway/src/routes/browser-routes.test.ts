@@ -430,6 +430,25 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     error: "actions[0] waitFor.timeoutMs must be a positive integer <= 60000",
   });
 
+  const invalidWaitForCombination = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "waitFor", text: "Done", urlPattern: "/done" }],
+      },
+    }),
+    res: invalidWaitForCombination.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidWaitForCombination.res.statusCode, 400);
+  assert.deepEqual(invalidWaitForCombination.json, {
+    error: "actions[0] waitFor requires exactly one of selectors, refId, text, urlPattern, titlePattern, or bodyTextPattern",
+  });
+
   const invalidDialog = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -710,7 +729,10 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
           { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
           { kind: "select", selectors: ["select[name=plan]"], label: "Team" },
           { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
-          { kind: "waitFor", text: "Done", timeoutMs: 1_000 },
+          { kind: "waitFor", text: "Done", state: "attached", timeoutMs: 1_000 },
+          { kind: "waitFor", urlPattern: "/done", timeoutMs: 1_000 },
+          { kind: "waitFor", titlePattern: "Done", timeoutMs: 1_000 },
+          { kind: "waitFor", bodyTextPattern: "Submitted", timeoutMs: 1_000 },
           { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
           { kind: "popup", timeoutMs: 1_000 },
           { kind: "probe", probe: "forms", maxItems: 10 },
@@ -737,7 +759,10 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
     { kind: "select", selectors: ["select[name=plan]"], label: "Team" },
     { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
-    { kind: "waitFor", text: "Done", timeoutMs: 1_000 },
+    { kind: "waitFor", text: "Done", state: "attached", timeoutMs: 1_000 },
+    { kind: "waitFor", urlPattern: "/done", timeoutMs: 1_000 },
+    { kind: "waitFor", titlePattern: "Done", timeoutMs: 1_000 },
+    { kind: "waitFor", bodyTextPattern: "Submitted", timeoutMs: 1_000 },
     { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
     { kind: "popup", timeoutMs: 1_000 },
     { kind: "probe", probe: "forms", maxItems: 10 },

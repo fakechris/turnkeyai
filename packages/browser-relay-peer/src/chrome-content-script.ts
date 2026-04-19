@@ -4,6 +4,7 @@ import {
   MAX_BROWSER_PROBE_ITEMS,
   MAX_BROWSER_STORAGE_READ_ENTRIES,
   MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+  MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH,
 } from "@turnkeyai/core-types/team";
 import type { RelayExecutableBrowserAction } from "@turnkeyai/browser-bridge/transport/relay-protocol";
 
@@ -31,6 +32,7 @@ interface DocumentLikeElement {
   checked?: boolean;
   disabled?: boolean;
   required?: boolean;
+  offsetParent?: unknown;
   files?: unknown;
   selectedIndex?: number;
   options?: DocumentLikeOptionCollection;
@@ -40,6 +42,7 @@ interface DocumentLikeElement {
   click?(): void;
   focus?(): void;
   dispatchEvent?(event: unknown): void;
+  getClientRects?(): { length: number };
   querySelectorAll?(selector: string): DocumentLikeCollection;
 }
 
@@ -395,7 +398,30 @@ export async function executeChromeRelayContentScriptActions(
           typeof action.timeoutMs === "number" && Number.isFinite(action.timeoutMs) && action.timeoutMs >= 0
             ? Math.min(Math.trunc(action.timeoutMs), MAX_RELAY_WAIT_ACTION_MS)
             : DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS;
-        const element = await waitForElement(environment.document, action, timeoutMs);
+        if (isWaitForPageCondition(action)) {
+          const result = await waitForPageCondition(environment, action, timeoutMs);
+          latestSnapshot = captureSnapshot(environment);
+          trace.push({
+            stepId,
+            kind: "waitFor",
+            startedAt,
+            completedAt: Date.now(),
+            status: "ok",
+            input: {
+              urlPattern: "urlPattern" in action ? action.urlPattern : null,
+              titlePattern: "titlePattern" in action ? action.titlePattern : null,
+              bodyTextPattern: "bodyTextPattern" in action ? action.bodyTextPattern : null,
+              timeoutMs,
+            },
+            output: {
+              finalUrl: latestSnapshot.finalUrl,
+              ...result,
+            },
+          });
+          continue;
+        }
+        const state = action.state ?? "visible";
+        const element = await waitForElement(environment.document, action, timeoutMs, state);
         latestSnapshot = captureSnapshot(environment);
         trace.push({
           stepId,
@@ -407,6 +433,7 @@ export async function executeChromeRelayContentScriptActions(
             refId: typeof action.refId === "string" ? action.refId : null,
             selectors: Array.isArray(action.selectors) ? action.selectors : [],
             text: typeof action.text === "string" ? action.text : null,
+            state,
             timeoutMs,
           },
           output: {
@@ -781,15 +808,27 @@ function resolveElement(
 async function waitForElement(
   documentLike: DocumentLike,
   action: { refId?: unknown; selectors?: unknown; text?: unknown },
-  timeoutMs: number
+  timeoutMs: number,
+  state: "visible" | "hidden" | "attached" | "detached"
 ): Promise<DocumentLikeElement> {
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
   do {
     try {
-      return resolveElement(documentLike, action);
+      const element = resolveElement(documentLike, action);
+      const visible = isElementVisible(element);
+      if (state === "attached" || (state === "visible" && visible)) {
+        return element;
+      }
+      if (state === "hidden" && !visible) {
+        return element;
+      }
+      lastError = new Error(`content script waitFor target is not ${state}`);
     } catch (error) {
       lastError = error;
+      if (state === "detached" || state === "hidden") {
+        return { tagName: nullTagNameForWaitState(state), innerText: "" };
+      }
     }
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
@@ -801,8 +840,82 @@ async function waitForElement(
   throw new Error(lastError instanceof Error ? lastError.message : "content script waitFor target timed out");
 }
 
+async function waitForPageCondition(
+  environment: ChromeRelayContentScriptEnvironment,
+  action: Extract<RelayExecutableBrowserAction, { kind: "waitFor" }>,
+  timeoutMs: number
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const currentUrl = environment.window.location?.href ?? "";
+    const currentTitle = environment.document.title ?? "";
+    const currentBodyText = extractDocumentBodyText(environment.document);
+    if ("urlPattern" in action && matchesPattern(currentUrl, action.urlPattern)) {
+      return { urlPattern: action.urlPattern, matchedUrl: currentUrl };
+    }
+    if ("titlePattern" in action && matchesPattern(currentTitle, action.titlePattern)) {
+      return { titlePattern: action.titlePattern, matchedTitle: currentTitle.slice(0, 160) };
+    }
+    if ("bodyTextPattern" in action && matchesPattern(currentBodyText, action.bodyTextPattern)) {
+      return { bodyTextPattern: action.bodyTextPattern, bodyTextBytes: byteLength(currentBodyText) };
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      break;
+    }
+    await sleep(Math.min(100, remainingMs));
+  } while (true);
+
+  throw new Error("content script waitFor page condition timed out");
+}
+
+function isWaitForPageCondition(
+  action: Extract<RelayExecutableBrowserAction, { kind: "waitFor" }>
+): action is Extract<
+  RelayExecutableBrowserAction,
+  { kind: "waitFor"; urlPattern: string } | { kind: "waitFor"; titlePattern: string } | { kind: "waitFor"; bodyTextPattern: string }
+> {
+  return "urlPattern" in action || "titlePattern" in action || "bodyTextPattern" in action;
+}
+
+function isElementVisible(element: DocumentLikeElement): boolean {
+  const hidden = element.getAttribute?.("hidden");
+  if ((hidden !== undefined && hidden !== null) || element.getAttribute?.("aria-hidden") === "true") {
+    return false;
+  }
+  const getComputedStyleLike = (globalThis as {
+    getComputedStyle?: (element: unknown) => { display?: string; visibility?: string; opacity?: string };
+  }).getComputedStyle;
+  const style = getComputedStyleLike?.(element);
+  if (style?.display === "none" || style?.visibility === "hidden" || style?.opacity === "0") {
+    return false;
+  }
+  return element.offsetParent !== null || (element.getClientRects?.().length ?? 1) > 0;
+}
+
+function nullTagNameForWaitState(state: "hidden" | "detached"): string {
+  return state === "detached" ? "detached" : "hidden";
+}
+
 function extractElementText(element: DocumentLikeElement): string {
   return (element.innerText ?? element.textContent ?? element.getAttribute?.("aria-label") ?? "").trim().slice(0, 160);
+}
+
+function extractDocumentBodyText(documentLike: DocumentLike): string {
+  return (documentLike.body?.innerText ?? documentLike.body?.textContent ?? "").trim();
+}
+
+function matchesPattern(value: string, pattern: string): boolean {
+  const boundedPattern = pattern.slice(0, MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH);
+  if (!boundedPattern.includes("*")) {
+    return value.includes(boundedPattern);
+  }
+  const escaped = boundedPattern
+    .split("*")
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".*");
+  return new RegExp(`^${escaped}$`).test(value);
 }
 
 function selectorForElement(element: DocumentLikeElement): string | null {

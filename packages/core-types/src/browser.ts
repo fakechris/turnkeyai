@@ -78,6 +78,7 @@ export const MAX_BROWSER_CDP_EVENT_PARAMS_BYTES = 8 * 1024;
 export const MAX_BROWSER_KEY_ACTION_KEY_LENGTH = 64;
 export const DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS = 5_000;
 export const MAX_BROWSER_WAIT_FOR_TIMEOUT_MS = 60_000;
+export const MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH = 2_048;
 export const DEFAULT_BROWSER_DIALOG_TIMEOUT_MS = 5_000;
 export const MAX_BROWSER_DIALOG_TIMEOUT_MS = 60_000;
 export const DEFAULT_BROWSER_POPUP_TIMEOUT_MS = 5_000;
@@ -162,7 +163,13 @@ export type BrowserDragAction = {
   target: BrowserActionTarget;
 };
 
-export type BrowserWaitForAction = { kind: "waitFor"; timeoutMs?: number } & BrowserActionTarget;
+export type BrowserWaitForState = "visible" | "hidden" | "attached" | "detached";
+
+export type BrowserWaitForAction =
+  | ({ kind: "waitFor"; timeoutMs?: number; state?: BrowserWaitForState } & BrowserActionTarget)
+  | { kind: "waitFor"; timeoutMs?: number; urlPattern: string }
+  | { kind: "waitFor"; timeoutMs?: number; titlePattern: string }
+  | { kind: "waitFor"; timeoutMs?: number; bodyTextPattern: string };
 
 export type BrowserDialogAction = {
   kind: "dialog";

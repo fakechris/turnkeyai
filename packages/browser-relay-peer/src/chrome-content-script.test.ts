@@ -50,6 +50,7 @@ test("chrome content script executes snapshot, click, type, select, waitFor, sto
     { kind: "type", selectors: ["input"], text: "hello", submit: true },
     { kind: "select", selectors: ["select"], label: "Team" },
     { kind: "waitFor", text: "Approve", timeoutMs: 0 },
+    { kind: "waitFor", titlePattern: "Workflow", timeoutMs: 0 },
     { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
     { kind: "storage", area: "localStorage", action: "get", key: "token" },
     { kind: "scroll", direction: "down", amount: 240 },
@@ -60,7 +61,7 @@ test("chrome content script executes snapshot, click, type, select, waitFor, sto
 
   assert.equal(response.ok, true);
   assert.equal(response.page?.finalUrl, "https://example.com/workflow");
-  assert.equal(response.trace.length, 11);
+  assert.equal(response.trace.length, 12);
   assert.equal(clicked, true);
   assert.equal(input.value, "hello");
   assert.equal(select.value, "team");
@@ -68,12 +69,14 @@ test("chrome content script executes snapshot, click, type, select, waitFor, sto
   assert.equal(dispatched >= 2, true);
   assert.equal(scrollTop, 240);
   assert.equal(response.trace[4]?.kind, "waitFor");
-  assert.equal(response.trace[5]?.kind, "storage");
-  assert.equal(response.trace[6]?.output?.value, "abc");
-  assert.equal(response.trace[8]?.kind, "wait");
-  assert.equal(response.trace[9]?.kind, "console");
-  assert.equal(response.trace[10]?.kind, "probe");
-  assert.equal(Array.isArray(response.trace[10]?.output?.result), true);
+  assert.equal(response.trace[5]?.kind, "waitFor");
+  assert.equal(response.trace[5]?.output?.titlePattern, "Workflow");
+  assert.equal(response.trace[6]?.kind, "storage");
+  assert.equal(response.trace[7]?.output?.value, "abc");
+  assert.equal(response.trace[9]?.kind, "wait");
+  assert.equal(response.trace[10]?.kind, "console");
+  assert.equal(response.trace[11]?.kind, "probe");
+  assert.equal(Array.isArray(response.trace[11]?.output?.result), true);
 });
 
 test("chrome content script returns a failed response when the target element cannot be resolved", async () => {

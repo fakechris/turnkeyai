@@ -49,6 +49,7 @@ import {
   MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
   MAX_BROWSER_STORAGE_READ_ENTRIES,
   MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+  MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
@@ -1289,6 +1290,42 @@ export class ChromeSessionManager {
 
     if (action.kind === "waitFor") {
       const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS;
+      if ("urlPattern" in action) {
+        await page.waitForURL((url) => matchesUrlPattern(url.toString(), action.urlPattern), { timeout: timeoutMs });
+        return {
+          traceOutput: {
+            urlPattern: action.urlPattern,
+            timeoutMs,
+            finalUrl: page.url(),
+          },
+        };
+      }
+      if ("titlePattern" in action) {
+        await page.waitForFunction(buildPatternWaitExpression(action.titlePattern, "document.title"), undefined, {
+          timeout: timeoutMs,
+        });
+        return {
+          traceOutput: {
+            titlePattern: action.titlePattern,
+            timeoutMs,
+            finalUrl: page.url(),
+          },
+        };
+      }
+      if ("bodyTextPattern" in action) {
+        await page.waitForFunction(
+          buildPatternWaitExpression(action.bodyTextPattern, "document.body ? (document.body.innerText || document.body.textContent || '') : ''"),
+          undefined,
+          { timeout: timeoutMs }
+        );
+        return {
+          traceOutput: {
+            bodyTextPattern: action.bodyTextPattern,
+            timeoutMs,
+            finalUrl: page.url(),
+          },
+        };
+      }
       const locator = await this.resolveActionTargetLocator(
         page,
         action,
@@ -1296,11 +1333,13 @@ export class ChromeSessionManager {
         browserSessionId,
         currentTargetId
       );
-      await locator.waitFor({ state: "visible", timeout: timeoutMs });
+      const state = action.state ?? "visible";
+      await locator.waitFor({ state, timeout: timeoutMs });
 
       return {
         traceOutput: {
           ...summarizeActionTarget(action),
+          state,
           timeoutMs,
           finalUrl: page.url(),
         },
@@ -2334,6 +2373,20 @@ function matchesUrlPattern(url: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`).test(url);
 }
 
+function buildPatternWaitExpression(pattern: string, valueExpression: string): string {
+  const boundedPattern = pattern.slice(0, MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH);
+  const regexSource = JSON.stringify("[.*+?^${}()|[\\]\\\\]");
+  return [
+    "(() => {",
+    `  const pattern = ${JSON.stringify(boundedPattern)};`,
+    `  const value = String(${valueExpression} ?? "");`,
+    `  if (!pattern.includes("*")) return value.includes(pattern);`,
+    `  const escaped = pattern.split("*").map((part) => part.replace(new RegExp(${regexSource}, "g"), "\\\\$&")).join(".*");`,
+    `  return new RegExp("^" + escaped + "$").test(value);`,
+    "})()",
+  ].join("\n");
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<T>((_, reject) => {
@@ -2430,8 +2483,27 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
   }
 
   if (action.kind === "waitFor") {
+    if ("urlPattern" in action) {
+      return {
+        urlPattern: action.urlPattern,
+        timeoutMs: action.timeoutMs ?? null,
+      };
+    }
+    if ("titlePattern" in action) {
+      return {
+        titlePattern: action.titlePattern,
+        timeoutMs: action.timeoutMs ?? null,
+      };
+    }
+    if ("bodyTextPattern" in action) {
+      return {
+        bodyTextPattern: action.bodyTextPattern,
+        timeoutMs: action.timeoutMs ?? null,
+      };
+    }
     return {
       ...summarizeActionTarget(action),
+      state: action.state ?? null,
       timeoutMs: action.timeoutMs ?? null,
     };
   }

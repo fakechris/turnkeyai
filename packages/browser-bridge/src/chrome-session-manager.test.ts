@@ -693,6 +693,7 @@ test("chrome session manager executes hover key select drag and waitFor input ac
         source?: { selectors?: string[]; refId?: string; text?: string };
         target?: { selectors?: string[]; refId?: string; text?: string };
         text?: string;
+        state?: string;
         timeoutMs?: number;
       };
       stepIndex: number;
@@ -746,7 +747,7 @@ test("chrome session manager executes hover key select drag and waitFor input ac
   });
   const waitForOutput = await internal.executeAction({
     page: fakePage,
-    action: { kind: "waitFor", selectors: ["#done"], timeoutMs: 1_000 },
+    action: { kind: "waitFor", selectors: ["#done"], state: "attached", timeoutMs: 1_000 },
     stepIndex: 5,
     sessionDir: ".daemon-data/test-browser-artifacts",
     requestedUrl: "https://example.com",
@@ -760,17 +761,82 @@ test("chrome session manager executes hover key select drag and waitFor input ac
   assert.deepEqual(pressedShortcuts, ["Control+Shift+K"]);
   assert.deepEqual(selectedOptions, ["team"]);
   assert.equal(draggedTargets.length, 1);
-  assert.deepEqual(locatorWaits, [{ state: "visible", timeout: 1_000 }]);
+  assert.deepEqual(locatorWaits, [{ state: "attached", timeout: 1_000 }]);
   assert.equal(hoverOutput.traceOutput?.finalUrl, "https://example.com/menu");
   assert.equal(keyOutput.traceOutput?.shortcut, "Control+Shift+K");
   assert.deepEqual(selectOutput.traceOutput?.selectedValues, ["team"]);
   const dragSource = dragOutput.traceOutput?.source as { selectors?: string[] } | undefined;
   assert.equal(dragSource?.selectors?.[0], "#card");
   assert.equal(waitForOutput.traceOutput?.timeoutMs, 1_000);
+  assert.equal(waitForOutput.traceOutput?.state, "attached");
   assert.deepEqual(
     waits.map((wait) => wait.kind),
     ["load", "timeout", "load", "timeout", "load", "timeout", "load", "timeout"]
   );
+});
+
+test("chrome session manager executes waitFor page conditions", async () => {
+  const waitedUrls: string[] = [];
+  const waitedFunctions: string[] = [];
+  const fakePage = {
+    async waitForURL(predicate: (url: URL) => boolean, options: { timeout?: number }) {
+      assert.equal(predicate(new URL("https://example.com/done")), true);
+      waitedUrls.push(`timeout:${options.timeout}`);
+    },
+    async waitForFunction(expression: string, _arg: unknown, options: { timeout?: number }) {
+      assert.doesNotThrow(() => new Function(`return ${expression};`));
+      waitedFunctions.push(`${expression.includes("document.title") ? "title" : "body"}:${options.timeout}`);
+    },
+    url() {
+      return "https://example.com/done";
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action:
+        | { kind: "waitFor"; urlPattern: string; timeoutMs?: number }
+        | { kind: "waitFor"; titlePattern: string; timeoutMs?: number }
+        | { kind: "waitFor"; bodyTextPattern: string; timeoutMs?: number };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+  const base = {
+    page: fakePage,
+    stepIndex: 1,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map<string, unknown>(),
+    browserSessionId: "browser-session-wait",
+  };
+
+  const urlOutput = await internal.executeAction({
+    ...base,
+    action: { kind: "waitFor", urlPattern: "/done", timeoutMs: 1_000 },
+  });
+  const titleOutput = await internal.executeAction({
+    ...base,
+    action: { kind: "waitFor", titlePattern: "Done", timeoutMs: 2_000 },
+  });
+  const bodyOutput = await internal.executeAction({
+    ...base,
+    action: { kind: "waitFor", bodyTextPattern: "Submitted", timeoutMs: 3_000 },
+  });
+
+  assert.deepEqual(waitedUrls, ["timeout:1000"]);
+  assert.deepEqual(waitedFunctions, ["title:2000", "body:3000"]);
+  assert.equal(urlOutput.traceOutput?.urlPattern, "/done");
+  assert.equal(titleOutput.traceOutput?.titlePattern, "Done");
+  assert.equal(bodyOutput.traceOutput?.bodyTextPattern, "Submitted");
 });
 
 test("chrome session manager executes probe actions without exposing field values", async () => {
