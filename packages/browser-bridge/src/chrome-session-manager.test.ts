@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import type { BrowserContext, Page } from "playwright-core";
@@ -1103,6 +1106,100 @@ test("chrome session manager executes bounded storage actions", async () => {
     },
   ]);
   assert.equal(output.traceOutput?.value, "abc");
+});
+
+test("chrome session manager uploads files only from matching browser artifacts", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "chrome-session-manager-upload-"));
+
+  try {
+    const artifactRootDir = path.join(tempDir, "artifacts");
+    const uploadPath = path.join(artifactRootDir, "browser-session-upload", "upload.txt");
+    await mkdir(path.dirname(uploadPath), { recursive: true });
+    await writeFile(uploadPath, "hello upload", "utf8");
+
+    let uploadedPath = "";
+    const fakeLocator = {
+      first() {
+        return this;
+      },
+      async count() {
+        return 1;
+      },
+      async setInputFiles(filePath: string) {
+        uploadedPath = filePath;
+      },
+    };
+    const fakePage = {
+      locator(selector: string) {
+        assert.equal(selector, "input[type=file]");
+        return fakeLocator;
+      },
+      async waitForLoadState() {
+        return undefined;
+      },
+      async waitForTimeout() {
+        return undefined;
+      },
+      url() {
+        return "https://example.com/form";
+      },
+    } as unknown as Page;
+    const manager = new ChromeSessionManager({
+      artifactRootDir,
+      browserArtifactStore: {
+        async get(artifactId: string) {
+          assert.equal(artifactId, "artifact-upload");
+          return {
+            artifactId,
+            browserSessionId: "browser-session-upload",
+            type: "trace",
+            path: uploadPath,
+            createdAt: 1,
+            metadata: {
+              fileName: "upload.txt",
+              mimeType: "text/plain",
+            },
+          };
+        },
+      } as never,
+    });
+    const internal = manager as unknown as {
+      executeAction(input: {
+        page: Page;
+        action: { kind: "upload"; selectors: string[]; artifactId: string };
+        stepIndex: number;
+        sessionDir: string;
+        requestedUrl: string;
+        lastStatusCode: number;
+        knownRefs: Map<string, unknown>;
+        browserSessionId: string;
+      }): Promise<{ traceOutput?: Record<string, unknown> }>;
+    };
+
+    const output = await internal.executeAction({
+      page: fakePage,
+      action: { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
+      stepIndex: 1,
+      sessionDir: artifactRootDir,
+      requestedUrl: "https://example.com/form",
+      lastStatusCode: 200,
+      knownRefs: new Map(),
+      browserSessionId: "browser-session-upload",
+    });
+
+    assert.equal(uploadedPath, uploadPath);
+    assert.deepEqual(output.traceOutput, {
+      selectors: ["input[type=file]"],
+      refId: null,
+      text: null,
+      artifactId: "artifact-upload",
+      fileName: "upload.txt",
+      sizeBytes: 12,
+      finalUrl: "https://example.com/form",
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("chrome session manager executes bounded cookie actions through target CDP", async () => {

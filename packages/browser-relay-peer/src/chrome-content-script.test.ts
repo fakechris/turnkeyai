@@ -110,6 +110,73 @@ test("chrome content script accepts array-like DOM collections returned by query
   assert.equal(response.page?.interactives[0]?.label, "Approve");
 });
 
+test("chrome content script uploads injected file payloads to file inputs", async () => {
+  let dispatched = 0;
+  const input = createElement("input", "", {
+    dispatchEvent() {
+      dispatched += 1;
+    },
+  }) as ReturnType<typeof createElement> & { files?: Array<{ name: string; size: number; type: string }> };
+  class TestFile {
+    readonly size: number;
+    readonly type: string;
+
+    constructor(
+      readonly parts: unknown[],
+      readonly name: string,
+      options?: { type?: string }
+    ) {
+      this.type = options?.type ?? "";
+      this.size = parts.reduce<number>((total, part) => {
+        return total + (part instanceof Uint8Array ? part.byteLength : 0);
+      }, 0);
+    }
+  }
+  class TestDataTransfer {
+    readonly files: TestFile[] = [];
+    readonly items = {
+      add: (file: unknown) => {
+        this.files.push(file as TestFile);
+      },
+    };
+  }
+
+  const response = await executeChromeRelayContentScriptActions(
+    {
+      window: {
+        location: { href: "https://example.com/upload" },
+        File: TestFile,
+        DataTransfer: TestDataTransfer,
+        atob(value: string) {
+          return Buffer.from(value, "base64").toString("binary");
+        },
+      },
+      document: createDocument([input], "Upload"),
+    },
+    [
+      {
+        kind: "upload",
+        selectors: ["input"],
+        artifactId: "artifact-upload",
+        file: {
+          name: "fixture.txt",
+          mimeType: "text/plain",
+          dataBase64: "aGVsbG8=",
+          sizeBytes: 5,
+        },
+      },
+    ]
+  );
+
+  assert.equal(response.ok, true);
+  assert.equal(dispatched, 2);
+  assert.equal(input.files?.[0]?.name, "fixture.txt");
+  assert.equal(input.files?.[0]?.size, 5);
+  assert.equal(input.files?.[0]?.type, "text/plain");
+  assert.equal(response.trace[0]?.kind, "upload");
+  assert.equal(response.trace[0]?.output?.fileName, "fixture.txt");
+});
+
 function createDocument(elements: ReturnType<typeof createElement>[], title: string) {
   return {
     title,

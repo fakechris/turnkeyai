@@ -20,6 +20,7 @@ interface DocumentLikeElement {
   innerText?: string;
   textContent?: string;
   value?: string;
+  files?: unknown;
   selectedIndex?: number;
   options?: DocumentLikeOptionCollection;
   dataset?: Record<string, string | undefined>;
@@ -52,6 +53,14 @@ interface WindowLike {
   sessionStorage?: StorageLike;
   scrollY?: number;
   pageYOffset?: number;
+  File?: new (parts: unknown[], name: string, options?: { type?: string }) => unknown;
+  DataTransfer?: new () => {
+    items: {
+      add(file: unknown): void;
+    };
+    files: unknown;
+  };
+  atob?(data: string): string;
   scrollBy?(options: { top: number; behavior: "instant" | "smooth" }): void;
 }
 
@@ -294,6 +303,30 @@ export async function executeChromeRelayContentScriptActions(
         continue;
       }
 
+      if (action.kind === "upload") {
+        const result = executeUploadAction(environment, action);
+        latestSnapshot = captureSnapshot(environment);
+        trace.push({
+          stepId,
+          kind: "upload",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            refId: typeof action.refId === "string" ? action.refId : null,
+            selectors: Array.isArray(action.selectors) ? action.selectors : [],
+            text: typeof action.text === "string" ? action.text : null,
+            artifactId: action.artifactId,
+            fileName: action.file?.name ?? null,
+          },
+          output: {
+            finalUrl: latestSnapshot.finalUrl,
+            ...result,
+          },
+        });
+        continue;
+      }
+
       if (action.kind === "wait") {
         const timeoutMs =
           typeof action.timeoutMs === "number" && Number.isFinite(action.timeoutMs) && action.timeoutMs >= 0
@@ -513,6 +546,61 @@ function executeStorageAction(
     entryCount: storage.length,
     entriesTruncated: storage.length > MAX_BROWSER_STORAGE_READ_ENTRIES,
   };
+}
+
+function executeUploadAction(
+  environment: ChromeRelayContentScriptEnvironment,
+  action: Extract<RelayExecutableBrowserAction, { kind: "upload" }>
+): Record<string, unknown> {
+  if (!action.file) {
+    throw new Error("content script upload action is missing injected file payload");
+  }
+  const element = resolveElement(environment.document, action as {
+    refId?: unknown;
+    selectors?: unknown;
+    text?: unknown;
+  });
+  const FileCtor = environment.window.File ?? (globalThis as { File?: WindowLike["File"] }).File;
+  const DataTransferCtor =
+    environment.window.DataTransfer ?? (globalThis as { DataTransfer?: WindowLike["DataTransfer"] }).DataTransfer;
+  if (!FileCtor || !DataTransferCtor) {
+    throw new Error("content script upload requires File and DataTransfer support");
+  }
+  const bytes = decodeBase64(action.file.dataBase64, environment);
+  const file = new FileCtor([bytes], action.file.name, {
+    type: action.file.mimeType ?? "application/octet-stream",
+  });
+  const dataTransfer = new DataTransferCtor();
+  dataTransfer.items.add(file);
+  try {
+    element.files = dataTransfer.files;
+  } catch {
+    Object.defineProperty(element, "files", {
+      configurable: true,
+      value: dataTransfer.files,
+    });
+  }
+  element.dispatchEvent?.(createDomEvent("input"));
+  element.dispatchEvent?.(createDomEvent("change"));
+  return {
+    artifactId: action.artifactId,
+    fileName: action.file.name,
+    sizeBytes: action.file.sizeBytes,
+    mimeType: action.file.mimeType ?? null,
+  };
+}
+
+function decodeBase64(value: string, environment: ChromeRelayContentScriptEnvironment): Uint8Array {
+  const decode = environment.window.atob ?? (globalThis as { atob?: (data: string) => string }).atob;
+  if (!decode) {
+    throw new Error("content script upload requires base64 decoder support");
+  }
+  const binary = decode(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function summarizeStorageValue(value: string | null): Record<string, unknown> {

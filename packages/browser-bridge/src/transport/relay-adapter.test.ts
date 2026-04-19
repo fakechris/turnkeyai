@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import type { BrowserActionTrace } from "@turnkeyai/core-types/team";
 
+import { FileBrowserArtifactStore } from "../artifacts/file-browser-artifact-store";
 import { RelayBrowserAdapter } from "./relay-adapter";
 import { RelayGateway } from "./relay-gateway";
 import type { RelayActionRequest } from "./relay-protocol";
@@ -185,6 +186,153 @@ test("relay browser adapter persists screenshot payloads returned by a relay pee
     assert.equal(result.screenshotPaths.length, 1);
     assert.match(result.screenshotPaths[0] ?? "", /final\.png$/);
     assert.equal(result.artifactIds.some((artifactId) => artifactId.includes("relay-screenshot")), true);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("relay browser adapter injects upload payloads from session artifacts", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-upload-"));
+
+  try {
+    const artifactRootDir = path.join(tempDir, "artifacts");
+    const stateRootDir = path.join(tempDir, "state");
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir,
+      stateRootDir,
+      relay: {
+        relayPeerId: "peer-1",
+      },
+    });
+    const gateway = adapter.getRelayControlPlane();
+    gateway.registerPeer({
+      peerId: "peer-1",
+      capabilities: ["snapshot", "upload"],
+    });
+    gateway.reportTargets("peer-1", [
+      {
+        relayTargetId: "tab-upload",
+        url: "https://example.com/form",
+        title: "Upload",
+        status: "attached",
+      },
+    ]);
+
+    const spawnPromise = adapter.spawnSession({
+      taskId: "task-upload-start",
+      threadId: "thread-1",
+      instructions: "Attach upload form",
+      actions: [{ kind: "snapshot", note: "before-upload" }],
+      ownerType: "thread",
+      ownerId: "thread-1",
+      profileOwnerType: "thread",
+      profileOwnerId: "thread-1",
+    });
+    const startRequest = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-1"));
+    gateway.submitActionResult({
+      actionRequestId: startRequest.actionRequestId,
+      peerId: "peer-1",
+      browserSessionId: startRequest.browserSessionId,
+      taskId: startRequest.taskId,
+      relayTargetId: "tab-upload",
+      claimToken: startRequest.claimToken!,
+      url: "https://example.com/form",
+      title: "Upload",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/form",
+        finalUrl: "https://example.com/form",
+        title: "Upload",
+        textExcerpt: "Upload page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      artifactIds: [],
+    });
+    const startResult = await spawnPromise;
+
+    const uploadPath = path.join(artifactRootDir, startResult.sessionId, "uploads", "fixture.txt");
+    await mkdir(path.dirname(uploadPath), { recursive: true });
+    await writeFile(uploadPath, "hello relay upload", "utf8");
+    await new FileBrowserArtifactStore({
+      rootDir: path.join(stateRootDir, "artifacts"),
+    }).put({
+      artifactId: "artifact-upload",
+      browserSessionId: startResult.sessionId,
+      ...(startResult.targetId ? { targetId: startResult.targetId } : {}),
+      type: "trace",
+      path: uploadPath,
+      createdAt: 1,
+      metadata: {
+        fileName: "fixture.txt",
+        mimeType: "text/plain",
+      },
+    });
+
+    const sendPromise = adapter.sendSession({
+      taskId: "task-upload",
+      threadId: "thread-1",
+      browserSessionId: startResult.sessionId,
+      instructions: "Upload file",
+      actions: [{ kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" }],
+      ownerType: "thread",
+      ownerId: "thread-1",
+    });
+    const uploadRequest = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-1"));
+    const uploadAction = uploadRequest.actions[0];
+    assert.equal(uploadAction?.kind, "upload");
+    if (uploadAction?.kind !== "upload") {
+      throw new Error("upload action was not dispatched");
+    }
+    assert.equal(uploadAction.file?.name, "fixture.txt");
+    assert.equal(uploadAction.file?.mimeType, "text/plain");
+    assert.equal(uploadAction.file?.sizeBytes, 18);
+    assert.equal(uploadAction.file?.dataBase64, "aGVsbG8gcmVsYXkgdXBsb2Fk");
+    assert.equal((uploadAction as { path?: string }).path, undefined);
+
+    gateway.submitActionResult({
+      actionRequestId: uploadRequest.actionRequestId,
+      peerId: "peer-1",
+      browserSessionId: uploadRequest.browserSessionId,
+      taskId: uploadRequest.taskId,
+      relayTargetId: "tab-upload",
+      claimToken: uploadRequest.claimToken!,
+      url: "https://example.com/form",
+      title: "Upload",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/form",
+        finalUrl: "https://example.com/form",
+        title: "Upload",
+        textExcerpt: "Upload page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [
+        {
+          stepId: "task-upload:relay-step:1",
+          kind: "upload",
+          startedAt: 1,
+          completedAt: 2,
+          status: "ok",
+          input: { artifactId: "artifact-upload" },
+          output: { fileName: "fixture.txt", sizeBytes: 18 },
+        },
+      ],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      artifactIds: [],
+    });
+
+    const uploadResult = await sendPromise;
+    assert.equal(uploadResult.trace[0]?.kind, "upload");
+    const history = await adapter.getSessionHistory({ browserSessionId: startResult.sessionId });
+    const uploadHistory = history.find((entry) => entry.taskId === "task-upload");
+    assert.ok(uploadHistory);
+    assert.deepEqual(uploadHistory?.actionKinds, ["upload"]);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

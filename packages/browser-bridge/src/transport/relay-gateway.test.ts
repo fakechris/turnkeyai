@@ -218,7 +218,7 @@ test("relay gateway dispatches wait actions to peers that advertise wait support
   assert.equal(result.trace[0]?.kind, "wait");
 });
 
-test("relay gateway routes hover key select drag waitFor dialog popup storage cookie eval and network actions only to peers that advertise input support", async () => {
+test("relay gateway routes hover key select drag waitFor dialog popup storage cookie eval network and upload actions only to peers that advertise input support", async () => {
   const gateway = new RelayGateway({
     now: () => 1_000,
     createId: (prefix) => `${prefix}-input`,
@@ -229,7 +229,21 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
   });
   gateway.registerPeer({
     peerId: "peer-input",
-    capabilities: ["snapshot", "hover", "key", "select", "drag", "waitFor", "dialog", "popup", "storage", "cookie", "eval", "network"],
+    capabilities: [
+      "snapshot",
+      "hover",
+      "key",
+      "select",
+      "drag",
+      "waitFor",
+      "dialog",
+      "popup",
+      "storage",
+      "cookie",
+      "eval",
+      "network",
+      "upload",
+    ],
   });
 
   const dispatchPromise = gateway.dispatchActionRequest({
@@ -247,6 +261,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
       { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/" },
       { kind: "eval", expression: "document.title", awaitPromise: true },
       { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201 },
+      { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
       { kind: "snapshot", note: "after-input" },
     ],
   });
@@ -256,7 +271,21 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
   assert.ok(request);
   assert.deepEqual(
     request?.actions.map((action) => action.kind),
-    ["hover", "key", "select", "drag", "waitFor", "dialog", "popup", "storage", "cookie", "eval", "network", "snapshot"]
+    [
+      "hover",
+      "key",
+      "select",
+      "drag",
+      "waitFor",
+      "dialog",
+      "popup",
+      "storage",
+      "cookie",
+      "eval",
+      "network",
+      "upload",
+      "snapshot",
+    ]
   );
 
   gateway.submitActionResult({
@@ -366,6 +395,14 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
         status: "ok",
         input: { action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201 },
       },
+      {
+        stepId: "task-input:relay-step:12",
+        kind: "upload",
+        startedAt: 23,
+        completedAt: 24,
+        status: "ok",
+        input: { artifactId: "artifact-upload" },
+      },
     ],
     screenshotPaths: [],
     screenshotPayloads: [],
@@ -385,6 +422,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
   assert.equal(result.trace[8]?.kind, "cookie");
   assert.equal(result.trace[9]?.kind, "eval");
   assert.equal(result.trace[10]?.kind, "network");
+  assert.equal(result.trace[11]?.kind, "upload");
 });
 
 test("relay gateway routes cdp actions only to peers that advertise cdp support", async () => {

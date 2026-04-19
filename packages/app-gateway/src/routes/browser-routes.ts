@@ -26,6 +26,7 @@ import {
   MAX_BROWSER_POPUP_TIMEOUT_MS,
   MAX_BROWSER_STORAGE_KEY_LENGTH,
   MAX_BROWSER_STORAGE_VALUE_BYTES,
+  MAX_BROWSER_UPLOAD_ARTIFACT_ID_LENGTH,
   MAX_BROWSER_WAIT_FOR_TIMEOUT_MS,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
@@ -721,6 +722,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         if (networkError) return networkError;
         break;
       }
+      case "upload": {
+        const uploadError = validateUploadAction(action, `actions[${index}] upload`);
+        if (uploadError) return uploadError;
+        break;
+      }
       case "screenshot": {
         if (action.label !== undefined && !parseOptionalRouteString(action.label)) {
           return `actions[${index}] screenshot.label must be a non-empty string when provided`;
@@ -1218,6 +1224,33 @@ function validateNetworkAction(
       action.timeoutMs > MAX_BROWSER_NETWORK_TIMEOUT_MS)
   ) {
     return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_NETWORK_TIMEOUT_MS}`;
+  }
+  return null;
+}
+
+function validateUploadAction(
+  action: {
+    selectors?: unknown;
+    refId?: unknown;
+    text?: unknown;
+    artifactId?: unknown;
+    file?: unknown;
+  },
+  label: string
+): string | null {
+  const targetError = validateTargetedAction(action, label);
+  if (targetError) {
+    return targetError;
+  }
+  const artifactId = parseOptionalRouteString(action.artifactId);
+  if (!artifactId) {
+    return `${label}.artifactId must be a non-empty string`;
+  }
+  if (artifactId.length > MAX_BROWSER_UPLOAD_ARTIFACT_ID_LENGTH) {
+    return `${label}.artifactId must be <= ${MAX_BROWSER_UPLOAD_ARTIFACT_ID_LENGTH} characters`;
+  }
+  if (action.file !== undefined) {
+    return `${label}.file is injected by relay transport and is not accepted by browser routes`;
   }
   return null;
 }

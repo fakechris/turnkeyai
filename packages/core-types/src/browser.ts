@@ -28,6 +28,7 @@ export type BrowserActionKind =
   | "cookie"
   | "eval"
   | "network"
+  | "upload"
   | "screenshot"
   | "cdp";
 
@@ -86,6 +87,9 @@ export const MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH = 2_048;
 export const MAX_BROWSER_NETWORK_METHOD_LENGTH = 16;
 export const DEFAULT_BROWSER_NETWORK_TIMEOUT_MS = 10_000;
 export const MAX_BROWSER_NETWORK_TIMEOUT_MS = 60_000;
+export const MAX_BROWSER_UPLOAD_ARTIFACT_ID_LENGTH = 512;
+export const MAX_BROWSER_UPLOAD_FILE_BYTES = 10 * 1024 * 1024;
+export const MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH = 255;
 
 const BROWSER_CDP_METHOD_PATTERN = /^[A-Z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$/;
 const BLOCKED_BROWSER_CDP_METHOD_PREFIXES = ["Browser.", "Target."];
@@ -199,6 +203,19 @@ export type BrowserNetworkAction = {
   timeoutMs?: number;
 };
 
+export interface BrowserUploadFilePayload {
+  name: string;
+  mimeType?: string;
+  dataBase64: string;
+  sizeBytes: number;
+}
+
+export type BrowserUploadAction = {
+  kind: "upload";
+  artifactId: string;
+  file?: BrowserUploadFilePayload;
+} & BrowserActionTarget;
+
 export type BrowserTaskAction =
   | { kind: "open"; url: string }
   | { kind: "snapshot"; note?: string }
@@ -218,6 +235,7 @@ export type BrowserTaskAction =
   | BrowserCookieAction
   | BrowserEvalAction
   | BrowserNetworkAction
+  | BrowserUploadAction
   | { kind: "screenshot"; label?: string }
   | {
       kind: "cdp";

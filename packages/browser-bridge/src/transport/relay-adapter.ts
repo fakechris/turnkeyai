@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -17,8 +17,10 @@ import type {
   BrowserTaskAction,
   BrowserTaskRequest,
   BrowserTaskResult,
+  BrowserUploadFilePayload,
   SnapshotRefEntry,
 } from "@turnkeyai/core-types/team";
+import { MAX_BROWSER_UPLOAD_FILE_BYTES, MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH } from "@turnkeyai/core-types/team";
 
 import { FileBrowserArtifactStore } from "../artifacts/file-browser-artifact-store";
 import { FileSnapshotRefStore } from "../refs/file-snapshot-ref-store";
@@ -50,6 +52,7 @@ const RELAY_EXECUTABLE_ACTION_KINDS = new Set<string>([
   "cookie",
   "eval",
   "network",
+  "upload",
   "screenshot",
   "cdp",
 ]);
@@ -275,6 +278,8 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
     let targetResolution: NonNullable<BrowserTaskResult["targetResolution"]> = "new_target";
 
     try {
+      relayActions = await this.injectUploadPayloads(sessionId, relayActions);
+
       if (!currentTarget && relayActions[0]?.kind !== "open") {
         currentTarget = await this.attachDiscoveredTarget(sessionId, relayActions);
         currentTargetId = currentTarget.targetId;
@@ -364,7 +369,7 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
       };
       const historyEntryId = await this.appendHistoryEntry({
         dispatchMode,
-        task: relayActions === task.actions ? task : { ...task, actions: relayActions },
+        task: toHistoryTask(task, relayActions),
         sessionId,
         startedAt,
         result,
@@ -375,7 +380,7 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
     } catch (error) {
       await this.appendHistoryEntry({
         dispatchMode,
-        task: relayActions === task.actions ? task : { ...task, actions: relayActions },
+        task: toHistoryTask(task, relayActions),
         sessionId,
         startedAt,
         error,
@@ -476,6 +481,53 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
           target.relayTargetId === relayTargetId &&
           (target.status === "open" || target.status === "attached")
       );
+  }
+
+  private async injectUploadPayloads(actionsSessionId: string, actions: RelayActionRequest["actions"]): Promise<RelayActionRequest["actions"]> {
+    let changed = false;
+    const hydrated = await Promise.all(
+      actions.map(async (action) => {
+        if (action.kind !== "upload") {
+          return action;
+        }
+        changed = true;
+        return {
+          ...action,
+          file: await this.readUploadArtifactPayload(actionsSessionId, action.artifactId),
+        };
+      })
+    );
+    return changed ? hydrated : actions;
+  }
+
+  private async readUploadArtifactPayload(
+    browserSessionId: string,
+    artifactId: string
+  ): Promise<BrowserUploadFilePayload> {
+    const record = await this.artifactStore.get(artifactId);
+    if (!record) {
+      throw new Error(`browser upload artifact not found: ${artifactId}`);
+    }
+    if (record.browserSessionId !== browserSessionId) {
+      throw new Error(`browser upload artifact belongs to a different session: ${artifactId}`);
+    }
+    assertPathInsideRoot(this.artifactRootDir, record.path, "browser upload artifact");
+    const stats = await stat(record.path);
+    if (!stats.isFile()) {
+      throw new Error(`browser upload artifact is not a file: ${artifactId}`);
+    }
+    if (stats.size > MAX_BROWSER_UPLOAD_FILE_BYTES) {
+      throw new Error(`browser upload artifact exceeds ${MAX_BROWSER_UPLOAD_FILE_BYTES} bytes: ${artifactId}`);
+    }
+    const file = await readFile(record.path);
+    const metadataFileName = typeof record.metadata?.fileName === "string" ? record.metadata.fileName : "";
+    const mimeType = typeof record.metadata?.mimeType === "string" ? record.metadata.mimeType : undefined;
+    return {
+      name: sanitizeUploadFileName(metadataFileName || path.basename(record.path)),
+      ...(mimeType ? { mimeType } : {}),
+      dataBase64: file.toString("base64"),
+      sizeBytes: stats.size,
+    };
   }
 
   private async persistSnapshotArtifact(input: {
@@ -654,6 +706,36 @@ function toSnapshotRefEntry(item: BrowserSnapshotResult["interactives"][number],
 
 function sanitizeLabel(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+}
+
+function sanitizeUploadFileName(value: string): string {
+  const fileName = path.basename(value).trim().replace(/[^\w .-]+/g, "-");
+  return (fileName || "upload.bin").slice(0, MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH);
+}
+
+function assertPathInsideRoot(rootDir: string, candidatePath: string, label: string): void {
+  const root = path.resolve(rootDir);
+  const candidate = path.resolve(candidatePath);
+  const relative = path.relative(root, candidate);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return;
+  }
+  throw new Error(`${label} path escapes artifact root`);
+}
+
+function toHistoryTask(task: BrowserTaskRequest, relayActions: RelayActionRequest["actions"]): BrowserTaskRequest {
+  return {
+    ...task,
+    actions: relayActions.map(stripInjectedUploadPayload),
+  };
+}
+
+function stripInjectedUploadPayload(action: RelayActionRequest["actions"][number]): BrowserTaskAction {
+  if (action.kind !== "upload" || action.file === undefined) {
+    return action;
+  }
+  const { file: _file, ...withoutFile } = action;
+  return withoutFile;
 }
 
 function summarizeBrowserHistorySuccess(

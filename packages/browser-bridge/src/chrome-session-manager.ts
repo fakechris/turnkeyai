@@ -1,4 +1,4 @@
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -39,6 +39,8 @@ import {
   MAX_BROWSER_EVAL_TIMEOUT_MS,
   DEFAULT_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_UPLOAD_FILE_BYTES,
+  MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
   MAX_BROWSER_STORAGE_READ_ENTRIES,
   MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
   isBlockedBrowserCdpMethod,
@@ -1114,6 +1116,29 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "upload") {
+      const locator = await this.resolveActionTargetLocator(
+        page,
+        action,
+        knownRefs,
+        browserSessionId,
+        currentTargetId
+      );
+      const artifact = await this.resolveUploadArtifact(browserSessionId, action.artifactId);
+      await locator.setInputFiles(artifact.path);
+      await settle(page);
+
+      return {
+        traceOutput: {
+          ...summarizeActionTarget(action),
+          artifactId: action.artifactId,
+          fileName: artifact.fileName,
+          sizeBytes: artifact.sizeBytes,
+          finalUrl: page.url(),
+        },
+      };
+    }
+
     if (action.kind === "drag") {
       const sourceLocator = await this.resolveActionTargetLocator(
         page,
@@ -1341,6 +1366,36 @@ export class ChromeSessionManager {
     }
 
     throw new Error("drag target requires selectors, refId, or text");
+  }
+
+  private async resolveUploadArtifact(
+    browserSessionId: string,
+    artifactId: string
+  ): Promise<{ path: string; fileName: string; sizeBytes: number }> {
+    if (!this.browserArtifactStore) {
+      throw new Error("browser upload action requires an artifact store");
+    }
+    const record = await this.browserArtifactStore.get(artifactId);
+    if (!record) {
+      throw new Error(`browser upload artifact not found: ${artifactId}`);
+    }
+    if (record.browserSessionId !== browserSessionId) {
+      throw new Error(`browser upload artifact belongs to a different session: ${artifactId}`);
+    }
+    assertPathInsideRoot(this.artifactRootDir, record.path, "browser upload artifact");
+    const stats = await stat(record.path);
+    if (!stats.isFile()) {
+      throw new Error(`browser upload artifact is not a file: ${artifactId}`);
+    }
+    if (stats.size > MAX_BROWSER_UPLOAD_FILE_BYTES) {
+      throw new Error(`browser upload artifact exceeds ${MAX_BROWSER_UPLOAD_FILE_BYTES} bytes: ${artifactId}`);
+    }
+    const metadataFileName = typeof record.metadata?.fileName === "string" ? record.metadata.fileName : "";
+    return {
+      path: record.path,
+      fileName: sanitizeUploadFileName(metadataFileName || path.basename(record.path)),
+      sizeBytes: stats.size,
+    };
   }
 }
 
@@ -2261,6 +2316,13 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
     };
   }
 
+  if (action.kind === "upload") {
+    return {
+      ...summarizeActionTarget(action),
+      artifactId: action.artifactId,
+    };
+  }
+
   if (action.kind === "cdp") {
     return {
       method: action.method,
@@ -2278,6 +2340,21 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
 
 function sanitizeLabel(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+}
+
+function sanitizeUploadFileName(value: string): string {
+  const fileName = path.basename(value).trim().replace(/[^\w .-]+/g, "-");
+  return (fileName || "upload.bin").slice(0, MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH);
+}
+
+function assertPathInsideRoot(rootDir: string, candidatePath: string, label: string): void {
+  const root = path.resolve(rootDir);
+  const candidate = path.resolve(candidatePath);
+  const relative = path.relative(root, candidate);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return;
+  }
+  throw new Error(`${label} path escapes artifact root`);
 }
 
 function summarizeBrowserHistorySuccess(

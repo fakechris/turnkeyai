@@ -554,7 +554,8 @@ export class ChromeRelayActionExecutor {
       action.kind === "console" ||
       action.kind === "wait" ||
       action.kind === "waitFor" ||
-      action.kind === "storage"
+      action.kind === "storage" ||
+      action.kind === "upload"
     );
   }
 

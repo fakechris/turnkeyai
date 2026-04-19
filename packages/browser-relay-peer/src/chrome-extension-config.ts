@@ -46,6 +46,7 @@ const DEFAULT_RUNTIME_CONFIG: ChromeRelayExtensionRuntimeConfig = {
     "cookie",
     "eval",
     "network",
+    "upload",
     "screenshot",
     "cdp",
   ],
