@@ -1,20 +1,32 @@
 # Milestones
 
-> 更新日期：2026-04-01
+> 更新日期：2026-04-19
 
 ## 总览
 
-当前项目已经完成核心 runtime 机制建设，并进入同场景 end-to-end 验收与长期稳态验证阶段。
+当前项目已经完成核心 runtime 机制建设，并进入同场景 end-to-end 验收、长链 soak、failure injection 与 real-world validation 阶段。
 
-| Milestone | 主题 | 状态 | 完成度 |
+最近一轮已经把下面这些 hardening 主线合入主干：
+
+- W3 cross-store safety：ingress outbox、runtime-chain version/CAS、replay incident visibility
+- W6 canonical schema cleanup：RelayPayload / ScheduledTaskRecord canonical shape 与 legacy fallback 收窄
+- W8 browser transport sealing：relay peer identity binding、browser route validation、relay/direct-cdp smoke / soak 链路
+- W10 reliability net：truth alignment、stale marker、remediation unification 与 operator/replay 可见性
+- W4 storage shape：team message by-id projection、recovery run/event canonical projection 与 repair gating
+- W2 worker durability：startup reconcile 可看到 unrecoverable persisted worker session
+- W5 type cleanup：replay / recovery / operator / prompt / runtime support 类型边界拆细
+
+下面的“完成”只表示对应 runtime 机制已经进主线，不表示完整桌面产品或 Phase 2 kernel 已经完成。
+
+| Milestone | 主题 | 机制状态 | 产品化状态 |
 | --- | --- | --- | --- |
-| A | Runtime Foundation | 已完成 | 100% |
-| B | LLM Runtime Integration | 已完成 | 100% |
-| C | Worker Delegation Core | 已完成 | 100% |
-| D | Browser Runtime v2 | 已完成 | 100% |
-| E | Context / Memory Runtime v2 | 已完成 | 100% |
-| F | QC / Replay Runtime | 已完成 | 100% |
-| G | Desktop Product Shell | 未开始 | 0% |
+| A | Runtime Foundation | 已完成 | 稳定维护 |
+| B | LLM Runtime Integration | 已完成 | 稳定维护 |
+| C | Worker Delegation Core | 已完成 | 长链 / 并行验收继续 |
+| D | Browser Runtime v2 | 已完成 | bridge / relay / direct-cdp 长链 soak 继续 |
+| E | Context / Memory Runtime v2 | 已完成 | 高压预算与真实任务验收继续 |
+| F | QC / Replay Runtime | 已完成 | recovery / operator 可读性收尾 |
+| G | Desktop Product Shell | 未开始 | 未开始 |
 
 ## 分期策略
 
@@ -22,17 +34,18 @@
 
 ### Phase 1: Production Hardening
 
-优先做：
+机制主线已经完成，剩余优先级转为验收与收口：
 
-1. prompt / memory / compaction 稳定化
-2. sub-session / continue / re-entry / timeout summarize
-3. tool registry / permission / audit / transport hierarchy
-4. browser session / target / ownership / reconnect
-5. replay / failure analysis 第一层产品化
+1. browser bridge / relay / direct-cdp 长链真实任务验证
+2. recovery / replay / operator case 状态一致性和可读性收尾
+3. context / memory / compaction 在高压预算和真实任务下继续调优
+4. parallel orchestration / governance / permission / audit 的 contract 和 regression 扩充
+5. real-world acceptance、failure injection、transport soak 持续扩样本
 
 当前进度：
 
 - `Phase 1 / Production Hardening` 的核心机制已完成
+- W3 / W6 / W8 / W10 / W4 / W2 / W5 系列 hardening 已合入主线
 - runtime hard-points parity 的五个 pack 已全部进主干
 - `Runtime Observability v1.x` 已覆盖 flow / replay / recovery / live role/worker/browser
 - bounded regression、browser soak、runtime/operator acceptance 已覆盖 browser / recovery / context / parallel / governance / runtime 主线
@@ -125,9 +138,9 @@
 
 下一步：
 
-- 更长链的 real-world browser soak 继续扩大样本
-- reconnect / eviction / reclaim 的真实任务验证继续累计
-- target-local snapshot / ref history 的长期稳定性继续验证
+- relay / direct-cdp bridge 在真实任务里的长链验证继续扩大
+- reconnect / eviction / reclaim / owner mismatch 的组合 soak 继续累计
+- target-local snapshot / ref history 与 artifact continuity 的长期稳定性继续验证
 
 ## E. Context / Memory Runtime v2
 
@@ -187,6 +200,7 @@
 下一步：
 
 - browser / recovery / runtime 的 real-world validation 继续扩大
+- recovery / replay / operator surface 的 case state、gate、next action 术语继续统一
 - operator/runtime 主入口的长期值班易用性继续打磨
 - prompt / model / policy 对比与 compiler 级工作放到第二期
 
@@ -204,13 +218,13 @@
 
 ## 下一阶段重点
 
-当前不建议直接进入桌面壳，而建议继续推进下面几条验证主轴：
+当前不建议直接进入桌面壳，也不建议立刻切 Phase 2 kernel，而建议继续推进下面几条验证主轴：
 
-1. 同场景 end-to-end 验收
-2. Browser Runtime 长链 soak
-3. Context Runtime 真实任务验证
-4. Failure injection / regression 扩充
-5. 保持 recovery / browser / context / runtime 四条主线稳态
+1. Browser bridge / relay / direct-cdp 长链真实任务验证
+2. Recovery / replay / operator case 语义收口
+3. Context Runtime 高压预算与真实任务验证
+4. Parallel orchestration / governance contract regression 扩充
+5. Failure injection / real-world acceptance / transport soak 扩样本
 
 配套文档：
 
@@ -218,13 +232,12 @@
 - `docs/design/production-hardening-target-state.md`
 - `docs/design/production-hardening-gap-map.md`
 
-对应到 Phase 1 的优先顺序：
+对应到 Phase 1 收尾的优先顺序：
 
-1. Prompt / Context Harness Hardening
-2. Session / Worker / Browser Continuity
-3. Parallel Subagent Orchestration
-4. Tool Governance v1
-5. Browser Runtime 稳定化
-6. QC / Replay / Failure Analysis
+1. Browser bridge / relay / direct-cdp
+2. Recovery / replay / operator surface
+3. Context / memory / compaction
+4. Parallel orchestration / governance
+5. Regression / soak / failure injection
 
-先把这些生产优化主线做稳，再推进更重的 kernel 化，GUI 和业务层挂载都会顺很多。
+先把这些生产优化主线在真实长链里做稳，再推进更重的 kernel 化；GUI 和业务层挂载应放在 runtime/workbench backend 稳态之后。
