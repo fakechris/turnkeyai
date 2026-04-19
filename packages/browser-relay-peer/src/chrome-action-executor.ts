@@ -404,15 +404,26 @@ export class ChromeRelayActionExecutor {
           startedAt,
           completedAt: Date.now(),
           status: "ok",
-          input: {
-            action: action.action,
-            urlPattern: action.urlPattern ?? null,
-            method: action.method ?? null,
-            status: "status" in action ? action.status ?? null : null,
-            timeoutMs: action.timeoutMs ?? null,
-            includeHeaders: action.includeHeaders ?? false,
-            maxBodyBytes: action.maxBodyBytes ?? null,
-          },
+          input:
+            action.action === "mockResponse"
+              ? {
+                  action: action.action,
+                  urlPattern: action.urlPattern,
+                  method: action.method ?? null,
+                  status: action.status ?? null,
+                  timeoutMs: action.timeoutMs ?? null,
+                  headerNames: Object.keys(action.headers ?? {}),
+                  bodyBytes: getCdpMockResponseBodyBytes(action),
+                }
+              : {
+                  action: action.action,
+                  urlPattern: action.urlPattern ?? null,
+                  method: action.method ?? null,
+                  status: "status" in action ? action.status ?? null : null,
+                  timeoutMs: action.timeoutMs ?? null,
+                  includeHeaders: action.includeHeaders ?? false,
+                  maxBodyBytes: action.maxBodyBytes ?? null,
+                },
           output: {
             action: action.action,
             timeoutMs,
@@ -818,7 +829,7 @@ export class ChromeRelayActionExecutor {
     tabId: number,
     action: Extract<
       RelayNetworkAction,
-      { action: "blockUrls" | "clearBlockedUrls" | "setExtraHeaders" | "clearExtraHeaders" }
+      { action: "blockUrls" | "clearBlockedUrls" | "setExtraHeaders" | "clearExtraHeaders" | "clearMockResponses" }
     >,
     debuggerTabsToDetach: Set<number>
   ): Promise<Record<string, unknown>> {
@@ -826,6 +837,13 @@ export class ChromeRelayActionExecutor {
       throw new Error("relay network control action requires chrome debugger support");
     }
     debuggerTabsToDetach.add(tabId);
+    if (action.action === "clearMockResponses") {
+      await this.platform.sendDebuggerCommand(tabId, "Fetch.disable", {});
+      return {
+        action: action.action,
+        cleared: true,
+      };
+    }
     await this.platform.sendDebuggerCommand(tabId, "Network.enable", {});
     if (action.action === "blockUrls" || action.action === "clearBlockedUrls") {
       const urls = action.action === "blockUrls" ? action.urlPatterns : [];
@@ -1082,6 +1100,14 @@ export class ChromeRelayActionExecutor {
       throw new Error("relay network action requires chrome debugger event support");
     }
     debuggerTabsToDetach.add(tabId);
+    if (action.action === "mockResponse") {
+      await sendDebuggerCommand(tabId, "Fetch.enable", {
+        patterns: [{ urlPattern: "*", requestStage: "Request" }],
+      });
+      const pending = this.armNetworkMockResponse(tabId, action, traceEntry, timeoutMs, sendDebuggerCommand, waitForDebuggerEvent);
+      pending.catch(() => undefined);
+      return { pending };
+    }
     await sendDebuggerCommand(tabId, "Network.enable", {});
     const requestMethods = new Map<string, string>();
     const pending = (async () => {
@@ -1140,6 +1166,59 @@ export class ChromeRelayActionExecutor {
     })();
     pending.catch(() => undefined);
     return { pending };
+  }
+
+  private async armNetworkMockResponse(
+    tabId: number,
+    action: Extract<RelayNetworkAction, { action: "mockResponse" }>,
+    traceEntry: BrowserActionTrace,
+    timeoutMs: number,
+    sendDebuggerCommand: NonNullable<ChromeExtensionPlatform["sendDebuggerCommand"]>,
+    waitForDebuggerEvent: NonNullable<ChromeExtensionPlatform["waitForDebuggerEvent"]>
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    try {
+      while (Date.now() <= deadline) {
+        const remainingMs = Math.max(1, deadline - Date.now());
+        const event = await waitForDebuggerEvent(tabId, "Fetch.requestPaused", remainingMs);
+        const requestId = getCdpFetchRequestId(event.params);
+        if (!requestId) {
+          continue;
+        }
+        if (!matchesCdpFetchMockRequest(event, action)) {
+          await sendDebuggerCommand(tabId, "Fetch.continueRequest", { requestId });
+          continue;
+        }
+        const status = action.status ?? 200;
+        await sendDebuggerCommand(tabId, "Fetch.fulfillRequest", {
+          requestId,
+          responseCode: status,
+          responseHeaders: toCdpResponseHeaders(action.headers ?? {}),
+          body: resolveCdpMockResponseBodyBase64(action),
+        });
+        traceEntry.completedAt = Date.now();
+        traceEntry.output = {
+          action: action.action,
+          matched: true,
+          timeoutMs,
+          requestId,
+          url: getCdpFetchRequestUrl(event.params) ?? null,
+          method: getCdpFetchRequestMethod(event.params) ?? null,
+          status,
+          headerCount: Object.keys(action.headers ?? {}).length,
+          bodyBytes: getCdpMockResponseBodyBytes(action),
+        };
+        return;
+      }
+      throw new Error(`relay network mock timed out after ${timeoutMs}ms`);
+    } catch (error) {
+      traceEntry.completedAt = Date.now();
+      traceEntry.status = "failed";
+      traceEntry.errorMessage = error instanceof Error ? error.message : "relay network mock failed";
+      throw error;
+    } finally {
+      await sendDebuggerCommand(tabId, "Fetch.disable", {}).catch(() => undefined);
+    }
   }
 
   private async armDownloadAction(
@@ -1654,8 +1733,8 @@ async function waitForCdpDownloadCompletion(
 
 function isArmedNetworkAction(
   action: RelayNetworkAction
-): action is Extract<RelayNetworkAction, { action: "waitForRequest" | "waitForResponse" }> {
-  return action.action === "waitForRequest" || action.action === "waitForResponse";
+): action is Extract<RelayNetworkAction, { action: "waitForRequest" | "waitForResponse" | "mockResponse" }> {
+  return action.action === "waitForRequest" || action.action === "waitForResponse" || action.action === "mockResponse";
 }
 
 function matchesCdpNetworkRequest(
@@ -1684,6 +1763,21 @@ function matchesCdpNetworkResponse(
     return false;
   }
   if (action.status !== undefined && status !== action.status) {
+    return false;
+  }
+  if (action.method && method !== action.method) {
+    return false;
+  }
+  return true;
+}
+
+function matchesCdpFetchMockRequest(
+  event: ChromeDebuggerEventLike,
+  action: Extract<RelayNetworkAction, { action: "mockResponse" }>
+): boolean {
+  const url = getCdpFetchRequestUrl(event.params);
+  const method = getCdpFetchRequestMethod(event.params);
+  if (!url || !matchesUrlPattern(url, action.urlPattern)) {
     return false;
   }
   if (action.method && method !== action.method) {
@@ -1808,6 +1902,47 @@ function summarizeBase64NetworkBody(value: string, maxBodyBytes: number): Record
 function estimateBase64DecodedBytes(value: string): number {
   const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
   return Math.max(0, Math.floor((value.length * 3) / 4) - padding);
+}
+
+function resolveCdpMockResponseBodyBase64(action: Extract<RelayNetworkAction, { action: "mockResponse" }>): string {
+  if (action.bodyBase64 !== undefined) {
+    return action.bodyBase64;
+  }
+  return stringToBase64(action.body ?? "");
+}
+
+function getCdpMockResponseBodyBytes(action: Extract<RelayNetworkAction, { action: "mockResponse" }>): number {
+  if (action.bodyBase64 !== undefined) {
+    return estimateBase64DecodedBytes(action.bodyBase64);
+  }
+  return byteLength(action.body ?? "");
+}
+
+function stringToBase64(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+function toCdpResponseHeaders(headers: Record<string, string>): Array<{ name: string; value: string }> {
+  return Object.entries(headers).map(([name, value]) => ({ name, value }));
+}
+
+function getCdpFetchRequestId(params: Record<string, unknown> | undefined): string | null {
+  return typeof params?.requestId === "string" ? params.requestId : null;
+}
+
+function getCdpFetchRequestUrl(params: Record<string, unknown> | undefined): string | null {
+  const request = isRecord(params?.request) ? params.request : null;
+  return typeof request?.url === "string" ? request.url : null;
+}
+
+function getCdpFetchRequestMethod(params: Record<string, unknown> | undefined): string | null {
+  const request = isRecord(params?.request) ? params.request : null;
+  return typeof request?.method === "string" ? request.method : null;
 }
 
 function getCdpRequestId(params: Record<string, unknown> | undefined): string | null {

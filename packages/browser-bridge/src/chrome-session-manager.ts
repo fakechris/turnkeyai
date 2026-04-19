@@ -86,6 +86,9 @@ interface LocalDownloadArtifact {
   mimeType?: string;
 }
 
+const pageNetworkBlockHandlers = new WeakMap<Page, (route: Route) => void>();
+const pageNetworkMockHandlers = new WeakMap<Page, Set<(route: Route) => Promise<void>>>();
+
 interface LocalCdpCookie {
   name?: string;
   value?: string;
@@ -1379,17 +1382,18 @@ export class ChromeSessionManager {
     }
 
     if (action.kind === "network") {
-      if (action.action !== "blockUrls" && action.action !== "clearBlockedUrls") {
-        if (action.action === "setExtraHeaders" || action.action === "clearExtraHeaders") {
-          return {
-            traceOutput: await executeNetworkControlAction(page, action),
-          };
-        }
-        throw new Error(`${action.kind} ${action.action} actions must be armed by the browser task executor`);
+      if (
+        action.action === "blockUrls" ||
+        action.action === "clearBlockedUrls" ||
+        action.action === "setExtraHeaders" ||
+        action.action === "clearExtraHeaders" ||
+        action.action === "clearMockResponses"
+      ) {
+        return {
+          traceOutput: await executeNetworkControlAction(page, action),
+        };
       }
-      return {
-        traceOutput: await executeNetworkControlAction(page, action),
-      };
+      throw new Error(`${action.kind} ${action.action} actions must be armed by the browser task executor`);
     }
 
     if (action.kind === "download") {
@@ -1681,6 +1685,11 @@ async function armPageNetworkHandler(
       return;
     }
 
+    if (action.action === "mockResponse") {
+      await armPageMockResponseHandler(page, action, traceEntry, timeoutMs);
+      return;
+    }
+
     if (action.action !== "waitForResponse") {
       throw new Error(`browser network action cannot be armed: ${action.action}`);
     }
@@ -1782,19 +1791,26 @@ function matchesDownload(download: Download, action: Extract<BrowserTaskAction, 
 
 function isArmedNetworkAction(
   action: Extract<BrowserTaskAction, { kind: "network" }>
-): action is Extract<BrowserTaskAction, { kind: "network"; action: "waitForRequest" | "waitForResponse" }> {
-  return action.action === "waitForRequest" || action.action === "waitForResponse";
+): action is Extract<BrowserTaskAction, { kind: "network"; action: "waitForRequest" | "waitForResponse" | "mockResponse" }> {
+  return action.action === "waitForRequest" || action.action === "waitForResponse" || action.action === "mockResponse";
 }
 
 async function executeNetworkControlAction(
   page: Page,
   action: Extract<
     BrowserTaskAction,
-    { kind: "network"; action: "blockUrls" | "clearBlockedUrls" | "setExtraHeaders" | "clearExtraHeaders" }
+    { kind: "network"; action: "blockUrls" | "clearBlockedUrls" | "setExtraHeaders" | "clearExtraHeaders" | "clearMockResponses" }
   >
 ): Promise<Record<string, unknown>> {
   if (action.action === "clearBlockedUrls") {
-    await page.unroute("**/*").catch(() => undefined);
+    await clearPageNetworkBlockHandler(page);
+    return {
+      action: action.action,
+      cleared: true,
+    };
+  }
+  if (action.action === "clearMockResponses") {
+    await clearPageNetworkMockHandlers(page);
     return {
       action: action.action,
       cleared: true,
@@ -1816,13 +1832,149 @@ async function executeNetworkControlAction(
     };
   }
 
-  await page.unroute("**/*").catch(() => undefined);
-  await page.route("**/*", (route) => handleBlockedNetworkRoute(route, action.urlPatterns));
+  await clearPageNetworkBlockHandler(page);
+  const handler = (route: Route) => handleBlockedNetworkRoute(route, action.urlPatterns);
+  pageNetworkBlockHandlers.set(page, handler);
+  await page.route("**/*", handler);
   return {
     action: action.action,
     urlPatternCount: action.urlPatterns.length,
     blocked: true,
   };
+}
+
+async function armPageMockResponseHandler(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "mockResponse" }>,
+  traceEntry: BrowserActionTrace,
+  timeoutMs: number
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let routeHandler: ((route: Route) => Promise<void>) | null = null;
+    const clearTimer = () => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+    };
+    const cleanup = async () => {
+      clearTimer();
+      if (routeHandler) {
+        await page.unroute("**/*", routeHandler).catch(() => undefined);
+        pageNetworkMockHandlers.get(page)?.delete(routeHandler);
+      }
+    };
+    const fail = async (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      await cleanup();
+      traceEntry.completedAt = Date.now();
+      traceEntry.status = "failed";
+      traceEntry.errorMessage = error.message;
+      reject(error);
+    };
+
+    routeHandler = async (route: Route) => {
+      try {
+        const request = route.request();
+        if (!matchesNetworkMockRequest(request, action)) {
+          await route.fallback();
+          return;
+        }
+        const status = action.status ?? 200;
+        await route.fulfill({
+          status,
+          headers: action.headers ?? {},
+          body: resolveNetworkMockBody(action),
+        });
+        if (settled) {
+          return;
+        }
+        settled = true;
+        await cleanup();
+        traceEntry.completedAt = Date.now();
+        traceEntry.output = {
+          action: action.action,
+          matched: true,
+          timeoutMs,
+          url: request.url(),
+          method: request.method(),
+          status,
+          headerCount: Object.keys(action.headers ?? {}).length,
+          bodyBytes: getNetworkMockBodyBytes(action),
+        };
+        resolve();
+      } catch (error) {
+        await fail(error instanceof Error ? error : new Error("browser network mock failed"));
+      }
+    };
+
+    page
+      .route("**/*", routeHandler)
+      .then(() => {
+        const handlers = pageNetworkMockHandlers.get(page) ?? new Set<(route: Route) => Promise<void>>();
+        handlers.add(routeHandler);
+        pageNetworkMockHandlers.set(page, handlers);
+        timeout = setTimeout(() => {
+          void fail(new Error(`browser network mock timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      })
+      .catch((error) => {
+        void fail(error instanceof Error ? error : new Error("browser network mock could not be armed"));
+      });
+  });
+}
+
+function matchesNetworkMockRequest(
+  request: Request,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "mockResponse" }>
+): boolean {
+  if (!matchesUrlPattern(request.url(), action.urlPattern)) {
+    return false;
+  }
+  if (action.method && request.method() !== action.method) {
+    return false;
+  }
+  return true;
+}
+
+function resolveNetworkMockBody(
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "mockResponse" }>
+): string | Buffer {
+  if (action.bodyBase64 !== undefined) {
+    return Buffer.from(action.bodyBase64, "base64");
+  }
+  return action.body ?? "";
+}
+
+function getNetworkMockBodyBytes(action: Extract<BrowserTaskAction, { kind: "network"; action: "mockResponse" }>): number {
+  if (action.bodyBase64 !== undefined) {
+    return Buffer.from(action.bodyBase64, "base64").byteLength;
+  }
+  return byteLength(action.body ?? "");
+}
+
+async function clearPageNetworkBlockHandler(page: Page): Promise<void> {
+  const handler = pageNetworkBlockHandlers.get(page);
+  if (!handler) {
+    return;
+  }
+  await page.unroute("**/*", handler).catch(() => undefined);
+  pageNetworkBlockHandlers.delete(page);
+}
+
+async function clearPageNetworkMockHandlers(page: Page): Promise<void> {
+  const handlers = pageNetworkMockHandlers.get(page);
+  if (!handlers) {
+    return;
+  }
+  await Promise.all([...handlers].map((handler) => page.unroute("**/*", handler).catch(() => undefined)));
+  handlers.clear();
+  pageNetworkMockHandlers.delete(page);
 }
 
 function handleBlockedNetworkRoute(route: Route, urlPatterns: string[]): void {
@@ -2735,7 +2887,7 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
         urlPatterns: action.urlPatterns,
       };
     }
-    if (action.action === "clearBlockedUrls") {
+    if (action.action === "clearBlockedUrls" || action.action === "clearMockResponses") {
       return {
         action: action.action,
       };
@@ -2749,6 +2901,17 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
     if (action.action === "clearExtraHeaders") {
       return {
         action: action.action,
+      };
+    }
+    if (action.action === "mockResponse") {
+      return {
+        action: action.action,
+        urlPattern: action.urlPattern,
+        method: action.method ?? null,
+        status: action.status ?? null,
+        timeoutMs: action.timeoutMs ?? null,
+        headerNames: Object.keys(action.headers ?? {}),
+        bodyBytes: getNetworkMockBodyBytes(action),
       };
     }
     return {

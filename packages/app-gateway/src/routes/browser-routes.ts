@@ -521,6 +521,8 @@ const BROWSER_NETWORK_ACTIONS = new Set([
   "clearBlockedUrls",
   "setExtraHeaders",
   "clearExtraHeaders",
+  "mockResponse",
+  "clearMockResponses",
 ]);
 const BROWSER_NETWORK_METHOD_PATTERN = /^[A-Z]+$/;
 const BROWSER_NETWORK_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -1359,12 +1361,14 @@ function validateNetworkAction(
     maxBodyBytes?: unknown;
     urlPatterns?: unknown;
     headers?: unknown;
+    body?: unknown;
+    bodyBase64?: unknown;
   },
   label: string
 ): string | null {
   const networkAction = action.action as string;
   if (!BROWSER_NETWORK_ACTIONS.has(networkAction)) {
-    return `${label}.action must be waitForRequest, waitForResponse, blockUrls, clearBlockedUrls, setExtraHeaders, or clearExtraHeaders`;
+    return `${label}.action must be waitForRequest, waitForResponse, blockUrls, clearBlockedUrls, setExtraHeaders, clearExtraHeaders, mockResponse, or clearMockResponses`;
   }
   if (networkAction === "blockUrls") {
     if (
@@ -1374,7 +1378,9 @@ function validateNetworkAction(
       action.timeoutMs !== undefined ||
       action.includeHeaders !== undefined ||
       action.maxBodyBytes !== undefined ||
-      action.headers !== undefined
+      action.headers !== undefined ||
+      action.body !== undefined ||
+      action.bodyBase64 !== undefined
     ) {
       return `${label} blockUrls only accepts urlPatterns`;
     }
@@ -1388,62 +1394,84 @@ function validateNetworkAction(
       action.status !== undefined ||
       action.timeoutMs !== undefined ||
       action.includeHeaders !== undefined ||
-      action.maxBodyBytes !== undefined
+      action.maxBodyBytes !== undefined ||
+      action.body !== undefined ||
+      action.bodyBase64 !== undefined
     ) {
       return `${label} setExtraHeaders only accepts headers`;
     }
     return validateNetworkHeaders(action.headers, `${label}.headers`);
   }
-  if (networkAction === "clearBlockedUrls" || networkAction === "clearExtraHeaders") {
+  if (networkAction === "mockResponse") {
+    if (
+      action.urlPatterns !== undefined ||
+      action.includeHeaders !== undefined ||
+      action.maxBodyBytes !== undefined
+    ) {
+      return `${label} mockResponse only accepts urlPattern, method, status, timeoutMs, headers, body, or bodyBase64`;
+    }
+    const urlPatternError = validateNetworkUrlPattern(action.urlPattern, `${label}.urlPattern`, { required: true });
+    if (urlPatternError) {
+      return urlPatternError;
+    }
+    const methodError = validateNetworkMethod(action.method, `${label}.method`);
+    if (methodError) {
+      return methodError;
+    }
+    const statusError = validateNetworkStatus(action.status, `${label}.status`);
+    if (statusError) {
+      return statusError;
+    }
+    const timeoutError = validateNetworkTimeout(action.timeoutMs, `${label}.timeoutMs`);
+    if (timeoutError) {
+      return timeoutError;
+    }
+    if (action.headers !== undefined) {
+      const headerError = validateNetworkHeaders(action.headers, `${label}.headers`);
+      if (headerError) {
+        return headerError;
+      }
+    }
+    return validateNetworkMockBody(action, label);
+  }
+  if (networkAction === "clearBlockedUrls" || networkAction === "clearExtraHeaders" || networkAction === "clearMockResponses") {
     if (
       action.urlPattern !== undefined ||
       action.urlPatterns !== undefined ||
       action.headers !== undefined ||
+      action.body !== undefined ||
+      action.bodyBase64 !== undefined ||
       action.method !== undefined ||
       action.status !== undefined ||
       action.timeoutMs !== undefined ||
       action.includeHeaders !== undefined ||
       action.maxBodyBytes !== undefined
     ) {
-      return `${label} ${networkAction} does not accept filters, headers, or capture options`;
+      return `${label} ${networkAction} does not accept filters, headers, body, or capture options`;
     }
     return null;
   }
-  const urlPattern = parseOptionalRouteString(action.urlPattern);
-  if (action.urlPattern !== undefined) {
-    if (!urlPattern) {
-      return `${label}.urlPattern must be a non-empty string when provided`;
-    }
-    if (urlPattern.length > MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH) {
-      return `${label}.urlPattern must be <= ${MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH} characters`;
-    }
+  if (action.urlPatterns !== undefined || action.headers !== undefined || action.body !== undefined || action.bodyBase64 !== undefined) {
+    return `${label} ${networkAction} does not accept urlPatterns, headers, or body`;
   }
-  const method = parseOptionalRouteString(action.method);
-  if (action.method !== undefined) {
-    if (!method) {
-      return `${label}.method must be a non-empty string when provided`;
-    }
-    if (method.length > MAX_BROWSER_NETWORK_METHOD_LENGTH || !BROWSER_NETWORK_METHOD_PATTERN.test(method)) {
-      return `${label}.method must be uppercase ASCII and <= ${MAX_BROWSER_NETWORK_METHOD_LENGTH} characters`;
-    }
+  const urlPatternError = validateNetworkUrlPattern(action.urlPattern, `${label}.urlPattern`);
+  if (urlPatternError) {
+    return urlPatternError;
   }
-  if (
-    action.status !== undefined &&
-    (typeof action.status !== "number" || !Number.isInteger(action.status) || action.status < 100 || action.status > 599)
-  ) {
-    return `${label}.status must be an integer HTTP status between 100 and 599 when provided`;
+  const methodError = validateNetworkMethod(action.method, `${label}.method`);
+  if (methodError) {
+    return methodError;
+  }
+  const statusError = validateNetworkStatus(action.status, `${label}.status`);
+  if (statusError) {
+    return statusError;
   }
   if (networkAction === "waitForRequest" && action.status !== undefined) {
     return `${label}.status is only accepted for waitForResponse`;
   }
-  if (
-    action.timeoutMs !== undefined &&
-    (typeof action.timeoutMs !== "number" ||
-      !Number.isInteger(action.timeoutMs) ||
-      action.timeoutMs <= 0 ||
-      action.timeoutMs > MAX_BROWSER_NETWORK_TIMEOUT_MS)
-  ) {
-    return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_NETWORK_TIMEOUT_MS}`;
+  const timeoutError = validateNetworkTimeout(action.timeoutMs, `${label}.timeoutMs`);
+  if (timeoutError) {
+    return timeoutError;
   }
   if (action.includeHeaders !== undefined && typeof action.includeHeaders !== "boolean") {
     return `${label}.includeHeaders must be a boolean when provided`;
@@ -1458,6 +1486,98 @@ function validateNetworkAction(
     return `${label}.maxBodyBytes must be a positive integer <= ${MAX_BROWSER_NETWORK_BODY_BYTES}`;
   }
   return null;
+}
+
+function validateNetworkUrlPattern(value: unknown, label: string, options?: { required?: boolean }): string | null {
+  const urlPattern = parseOptionalRouteString(value);
+  if (value !== undefined || options?.required) {
+    if (!urlPattern) {
+      return `${label} must be a non-empty string${options?.required ? "" : " when provided"}`;
+    }
+    if (urlPattern.length > MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH) {
+      return `${label} must be <= ${MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH} characters`;
+    }
+  }
+  return null;
+}
+
+function validateNetworkMethod(value: unknown, label: string): string | null {
+  const method = parseOptionalRouteString(value);
+  if (value === undefined) {
+    return null;
+  }
+  if (!method) {
+    return `${label} must be a non-empty string when provided`;
+  }
+  if (method.length > MAX_BROWSER_NETWORK_METHOD_LENGTH || !BROWSER_NETWORK_METHOD_PATTERN.test(method)) {
+    return `${label} must be uppercase ASCII and <= ${MAX_BROWSER_NETWORK_METHOD_LENGTH} characters`;
+  }
+  return null;
+}
+
+function validateNetworkStatus(value: unknown, label: string): string | null {
+  if (
+    value !== undefined &&
+    (typeof value !== "number" || !Number.isInteger(value) || value < 100 || value > 599)
+  ) {
+    return `${label} must be an integer HTTP status between 100 and 599 when provided`;
+  }
+  return null;
+}
+
+function validateNetworkTimeout(value: unknown, label: string): string | null {
+  if (
+    value !== undefined &&
+    (typeof value !== "number" ||
+      !Number.isInteger(value) ||
+      value <= 0 ||
+      value > MAX_BROWSER_NETWORK_TIMEOUT_MS)
+  ) {
+    return `${label} must be a positive integer <= ${MAX_BROWSER_NETWORK_TIMEOUT_MS}`;
+  }
+  return null;
+}
+
+function validateNetworkMockBody(
+  action: { body?: unknown; bodyBase64?: unknown },
+  label: string
+): string | null {
+  if (action.body !== undefined && action.bodyBase64 !== undefined) {
+    return `${label} must not include both body and bodyBase64`;
+  }
+  if (action.body !== undefined) {
+    if (typeof action.body !== "string") {
+      return `${label}.body must be a string`;
+    }
+    if (Buffer.byteLength(action.body, "utf8") > MAX_BROWSER_NETWORK_BODY_BYTES) {
+      return `${label}.body must be <= ${MAX_BROWSER_NETWORK_BODY_BYTES} bytes`;
+    }
+  }
+  if (action.bodyBase64 !== undefined) {
+    if (typeof action.bodyBase64 !== "string" || !isStrictBase64(action.bodyBase64)) {
+      return `${label}.bodyBase64 must be valid base64`;
+    }
+    if (decodedBase64Bytes(action.bodyBase64) > MAX_BROWSER_NETWORK_BODY_BYTES) {
+      return `${label}.bodyBase64 must decode to <= ${MAX_BROWSER_NETWORK_BODY_BYTES} bytes`;
+    }
+  }
+  return null;
+}
+
+function isStrictBase64(value: string): boolean {
+  if (value.length === 0) {
+    return true;
+  }
+  if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    return false;
+  }
+  const firstPadding = value.indexOf("=");
+  return firstPadding === -1 || /^=+$/.test(value.slice(firstPadding));
+}
+
+function decodedBase64Bytes(value: string): number {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((value.length * 3) / 4) - padding);
 }
 
 function validateNetworkHeaders(value: unknown, label: string): string | null {

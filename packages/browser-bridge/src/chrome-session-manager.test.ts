@@ -1373,6 +1373,122 @@ test("chrome session manager captures bounded network request details", async ()
   assert.equal(result.trace[1]?.kind, "click");
 });
 
+test("chrome session manager mocks one network response around a trigger action", async () => {
+  let routeHandler: ((route: ReturnType<typeof createRoute>) => void | Promise<void>) | null = null;
+  let fallbackRoute: ReturnType<typeof createRoute> | null = null;
+  let fulfilledRoute: ReturnType<typeof createRoute> | null = null;
+  const calls: string[] = [];
+  const fakeLocator = {
+    first() {
+      return this;
+    },
+    async count() {
+      return 1;
+    },
+    async click() {
+      fallbackRoute = createRoute("https://example.com/asset.js", { method: "GET" });
+      await routeHandler?.(fallbackRoute);
+      const route = createRoute("https://example.com/api/mock", { method: "GET" });
+      fulfilledRoute = route;
+      await routeHandler?.(route);
+    },
+  };
+  const page = {
+    async route(pattern: string, handler: (route: ReturnType<typeof createRoute>) => void | Promise<void>) {
+      calls.push(`route:${pattern}`);
+      routeHandler = handler;
+    },
+    async unroute(pattern: string, handler?: unknown) {
+      calls.push(handler ? `unroute:${pattern}:handler` : `unroute:${pattern}`);
+    },
+    locator() {
+      return fakeLocator;
+    },
+    async waitForLoadState() {
+      return undefined;
+    },
+    async waitForTimeout() {
+      return undefined;
+    },
+    url() {
+      return "https://example.com/start";
+    },
+    async title() {
+      return "Start";
+    },
+  } as unknown as Page;
+  const fakeContext = {
+    pages() {
+      return [page];
+    },
+    async newPage() {
+      return page;
+    },
+    async close() {
+      return undefined;
+    },
+  } as unknown as BrowserContext;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    createEphemeralContext: async () => fakeContext,
+    captureSnapshot: async () => ({
+      requestedUrl: "https://example.com/start",
+      finalUrl: "https://example.com/start",
+      title: "Start",
+      textExcerpt: "Start page",
+      statusCode: 200,
+      interactives: [],
+    }),
+  });
+
+  const result = await manager.spawnSession({
+    taskId: "task-network-mock",
+    threadId: "thread-network-mock",
+    instructions: "Mock API response",
+    actions: [
+      {
+        kind: "network",
+        action: "mockResponse",
+        urlPattern: "/api/mock",
+        method: "GET",
+        status: 202,
+        headers: { "content-type": "application/json" },
+        body: '{"ok":true}',
+        timeoutMs: 1_000,
+      },
+      { kind: "click", selectors: ["button.submit"] },
+    ],
+  });
+
+  assert.deepEqual(calls, ["route:**/*", "unroute:**/*:handler"]);
+  const unmatchedRoute = fallbackRoute as ReturnType<typeof createRoute> | null;
+  if (!unmatchedRoute) {
+    throw new Error("expected unmatched mock route to fall back");
+  }
+  assert.deepEqual(unmatchedRoute.events, ["fallback"]);
+  const route = fulfilledRoute as ReturnType<typeof createRoute> | null;
+  if (!route) {
+    throw new Error("expected mock route to be fulfilled");
+  }
+  assert.deepEqual(route.events, ["fulfill"]);
+  assert.deepEqual(route.fulfilled, {
+    status: 202,
+    headers: { "content-type": "application/json" },
+    body: '{"ok":true}',
+  });
+  assert.deepEqual(result.trace[0]?.output, {
+    action: "mockResponse",
+    matched: true,
+    timeoutMs: 1_000,
+    url: "https://example.com/api/mock",
+    method: "GET",
+    status: 202,
+    headerCount: 1,
+    bodyBytes: 11,
+  });
+  assert.equal(result.trace[1]?.kind, "click");
+});
+
 test("chrome session manager applies and clears network URL blocks", async () => {
   let routeHandler: unknown = null;
   const calls: string[] = [];
@@ -1398,7 +1514,8 @@ test("chrome session manager applies and clears network URL blocks", async () =>
         | { kind: "network"; action: "blockUrls"; urlPatterns: string[] }
         | { kind: "network"; action: "clearBlockedUrls" }
         | { kind: "network"; action: "setExtraHeaders"; headers: Record<string, string> }
-        | { kind: "network"; action: "clearExtraHeaders" };
+        | { kind: "network"; action: "clearExtraHeaders" }
+        | { kind: "network"; action: "clearMockResponses" };
       stepIndex: number;
       sessionDir: string;
       requestedUrl: string;
@@ -1424,7 +1541,7 @@ test("chrome session manager applies and clears network URL blocks", async () =>
     urlPatternCount: 1,
     blocked: true,
   });
-  assert.deepEqual(calls, ["unroute:**/*", "route:**/*"]);
+  assert.deepEqual(calls, ["route:**/*"]);
   assert.notEqual(routeHandler, null);
   const handleRoute = routeHandler as (route: unknown) => void;
 
@@ -1450,7 +1567,7 @@ test("chrome session manager applies and clears network URL blocks", async () =>
     action: "clearBlockedUrls",
     cleared: true,
   });
-  assert.deepEqual(calls, ["unroute:**/*", "route:**/*", "unroute:**/*"]);
+  assert.deepEqual(calls, ["route:**/*", "unroute:**/*"]);
 
   const setHeadersOutput = await internal.executeAction({
     page,
@@ -1482,8 +1599,21 @@ test("chrome session manager applies and clears network URL blocks", async () =>
     action: "clearExtraHeaders",
     cleared: true,
   });
+  const clearMocksOutput = await internal.executeAction({
+    page,
+    action: { kind: "network", action: "clearMockResponses" },
+    stepIndex: 5,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-network",
+  });
+  assert.deepEqual(clearMocksOutput.traceOutput, {
+    action: "clearMockResponses",
+    cleared: true,
+  });
   assert.deepEqual(calls, [
-    "unroute:**/*",
     "route:**/*",
     "unroute:**/*",
     'headers:{"x-test":"1"}',
@@ -2086,19 +2216,33 @@ test("chrome session manager waits for target-scoped cdp events", async () => {
   ]);
 });
 
-function createRoute(url: string): {
+function createRoute(url: string, input?: { method?: string }): {
   events: string[];
-  request(): { url(): string };
+  fulfilled?: Record<string, unknown>;
+  request(): { url(): string; method(): string };
   abort(): Promise<void>;
   continue(): Promise<void>;
+  fallback(): Promise<void>;
+  fulfill(options: Record<string, unknown>): Promise<void>;
 } {
   const events: string[] = [];
-  return {
+  const route: {
+    events: string[];
+    fulfilled?: Record<string, unknown>;
+    request(): { url(): string; method(): string };
+    abort(): Promise<void>;
+    continue(): Promise<void>;
+    fallback(): Promise<void>;
+    fulfill(options: Record<string, unknown>): Promise<void>;
+  } = {
     events,
     request() {
       return {
         url() {
           return url;
+        },
+        method() {
+          return input?.method ?? "GET";
         },
       };
     },
@@ -2108,5 +2252,13 @@ function createRoute(url: string): {
     async continue() {
       events.push("continue");
     },
+    async fallback() {
+      events.push("fallback");
+    },
+    async fulfill(options: Record<string, unknown>) {
+      events.push("fulfill");
+      route.fulfilled = options;
+    },
   };
+  return route;
 }

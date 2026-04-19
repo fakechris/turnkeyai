@@ -260,6 +260,21 @@ export type BrowserNetworkAction =
   | {
       kind: "network";
       action: "clearExtraHeaders";
+    }
+  | {
+      kind: "network";
+      action: "mockResponse";
+      urlPattern: string;
+      method?: string;
+      status?: number;
+      headers?: Record<string, string>;
+      body?: string;
+      bodyBase64?: string;
+      timeoutMs?: number;
+    }
+  | {
+      kind: "network";
+      action: "clearMockResponses";
     };
 
 export type BrowserDownloadAction = {
