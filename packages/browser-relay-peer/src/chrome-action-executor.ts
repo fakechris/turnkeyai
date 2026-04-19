@@ -19,6 +19,7 @@ import {
   MAX_BROWSER_NETWORK_BODY_BYTES,
   MAX_BROWSER_NETWORK_HEADER_ENTRIES,
   MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES,
+  MAX_BROWSER_NETWORK_THROUGHPUT_BYTES_PER_SEC,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_PERMISSION_ORIGIN_LENGTH,
   MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
@@ -389,6 +390,14 @@ export class ChromeRelayActionExecutor {
                     action: action.action,
                     headerNames: Object.keys(action.headers),
                   }
+                : action.action === "emulateConditions"
+                  ? {
+                      action: action.action,
+                      offline: action.offline ?? null,
+                      latencyMs: action.latencyMs ?? null,
+                      downloadThroughputBytesPerSec: action.downloadThroughputBytesPerSec ?? null,
+                      uploadThroughputBytesPerSec: action.uploadThroughputBytesPerSec ?? null,
+                    }
                 : { action: action.action },
           output,
         });
@@ -829,7 +838,16 @@ export class ChromeRelayActionExecutor {
     tabId: number,
     action: Extract<
       RelayNetworkAction,
-      { action: "blockUrls" | "clearBlockedUrls" | "setExtraHeaders" | "clearExtraHeaders" | "clearMockResponses" }
+      {
+        action:
+          | "blockUrls"
+          | "clearBlockedUrls"
+          | "setExtraHeaders"
+          | "clearExtraHeaders"
+          | "clearMockResponses"
+          | "emulateConditions"
+          | "clearEmulation";
+      }
     >,
     debuggerTabsToDetach: Set<number>
   ): Promise<Record<string, unknown>> {
@@ -845,6 +863,22 @@ export class ChromeRelayActionExecutor {
       };
     }
     await this.platform.sendDebuggerCommand(tabId, "Network.enable", {});
+    if (action.action === "emulateConditions" || action.action === "clearEmulation") {
+      const params = buildCdpNetworkEmulationParams(action);
+      await this.platform.sendDebuggerCommand(tabId, "Network.emulateNetworkConditions", params);
+      return {
+        action: action.action,
+        ...(action.action === "clearEmulation"
+          ? { cleared: true }
+          : {
+              emulated: true,
+              offline: params.offline,
+              latencyMs: params.latency,
+              downloadThroughputBytesPerSec: normalizeTraceThroughput(params.downloadThroughput),
+              uploadThroughputBytesPerSec: normalizeTraceThroughput(params.uploadThroughput),
+            }),
+      };
+    }
     if (action.action === "blockUrls" || action.action === "clearBlockedUrls") {
       const urls = action.action === "blockUrls" ? action.urlPatterns : [];
       await this.platform.sendDebuggerCommand(tabId, "Network.setBlockedURLs", { urls });
@@ -1916,6 +1950,33 @@ function getCdpMockResponseBodyBytes(action: Extract<RelayNetworkAction, { actio
     return estimateBase64DecodedBytes(action.bodyBase64);
   }
   return byteLength(action.body ?? "");
+}
+
+function buildCdpNetworkEmulationParams(
+  action: Extract<RelayNetworkAction, { action: "emulateConditions" | "clearEmulation" }>
+): { offline: boolean; latency: number; downloadThroughput: number; uploadThroughput: number } {
+  if (action.action === "clearEmulation") {
+    return {
+      offline: false,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+    };
+  }
+  const offline = action.offline ?? false;
+  return {
+    offline,
+    latency: action.latencyMs ?? 0,
+    downloadThroughput: offline ? 0 : action.downloadThroughputBytesPerSec ?? -1,
+    uploadThroughput: offline ? 0 : action.uploadThroughputBytesPerSec ?? -1,
+  };
+}
+
+function normalizeTraceThroughput(value: number): number | null {
+  if (value < 0 || value > MAX_BROWSER_NETWORK_THROUGHPUT_BYTES_PER_SEC) {
+    return null;
+  }
+  return value;
 }
 
 function stringToBase64(value: string): string {

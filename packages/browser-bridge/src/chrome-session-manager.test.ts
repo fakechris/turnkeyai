@@ -1492,6 +1492,7 @@ test("chrome session manager mocks one network response around a trigger action"
 test("chrome session manager applies and clears network URL blocks", async () => {
   let routeHandler: unknown = null;
   const calls: string[] = [];
+  const cdpCommands: Array<{ method: string; params?: Record<string, unknown> }> = [];
   const page = {
     async unroute(pattern: string) {
       calls.push(`unroute:${pattern}`);
@@ -1502,6 +1503,20 @@ test("chrome session manager applies and clears network URL blocks", async () =>
     },
     async setExtraHTTPHeaders(headers: Record<string, string>) {
       calls.push(`headers:${JSON.stringify(headers)}`);
+    },
+    context() {
+      return {
+        async newCDPSession() {
+          return {
+            async send(method: string, params?: Record<string, unknown>) {
+              cdpCommands.push(params === undefined ? { method } : { method, params });
+            },
+            async detach() {
+              cdpCommands.push({ method: "detach" });
+            },
+          };
+        },
+      };
     },
   } as unknown as Page;
   const manager = new ChromeSessionManager({
@@ -1515,7 +1530,16 @@ test("chrome session manager applies and clears network URL blocks", async () =>
         | { kind: "network"; action: "clearBlockedUrls" }
         | { kind: "network"; action: "setExtraHeaders"; headers: Record<string, string> }
         | { kind: "network"; action: "clearExtraHeaders" }
-        | { kind: "network"; action: "clearMockResponses" };
+        | { kind: "network"; action: "clearMockResponses" }
+        | {
+            kind: "network";
+            action: "emulateConditions";
+            offline?: boolean;
+            latencyMs?: number;
+            downloadThroughputBytesPerSec?: number;
+            uploadThroughputBytesPerSec?: number;
+          }
+        | { kind: "network"; action: "clearEmulation" };
       stepIndex: number;
       sessionDir: string;
       requestedUrl: string;
@@ -1613,11 +1637,73 @@ test("chrome session manager applies and clears network URL blocks", async () =>
     action: "clearMockResponses",
     cleared: true,
   });
+  const emulateOutput = await internal.executeAction({
+    page,
+    action: {
+      kind: "network",
+      action: "emulateConditions",
+      latencyMs: 120,
+      downloadThroughputBytesPerSec: 1_000_000,
+      uploadThroughputBytesPerSec: 500_000,
+    },
+    stepIndex: 6,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-network",
+  });
+  assert.deepEqual(emulateOutput.traceOutput, {
+    action: "emulateConditions",
+    emulated: true,
+    offline: false,
+    latencyMs: 120,
+    downloadThroughputBytesPerSec: 1_000_000,
+    uploadThroughputBytesPerSec: 500_000,
+  });
+  const clearEmulationOutput = await internal.executeAction({
+    page,
+    action: { kind: "network", action: "clearEmulation" },
+    stepIndex: 7,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-network",
+  });
+  assert.deepEqual(clearEmulationOutput.traceOutput, {
+    action: "clearEmulation",
+    cleared: true,
+  });
   assert.deepEqual(calls, [
     "route:**/*",
     "unroute:**/*",
     'headers:{"x-test":"1"}',
     "headers:{}",
+  ]);
+  assert.deepEqual(cdpCommands, [
+    { method: "Network.enable", params: {} },
+    {
+      method: "Network.emulateNetworkConditions",
+      params: {
+        offline: false,
+        latency: 120,
+        downloadThroughput: 1_000_000,
+        uploadThroughput: 500_000,
+      },
+    },
+    { method: "detach" },
+    { method: "Network.enable", params: {} },
+    {
+      method: "Network.emulateNetworkConditions",
+      params: {
+        offline: false,
+        latency: 0,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+      },
+    },
+    { method: "detach" },
   ]);
 });
 

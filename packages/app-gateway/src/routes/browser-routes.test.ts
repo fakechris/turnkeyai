@@ -723,6 +723,25 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     error: "actions[0] network must not include both body and bodyBase64",
   });
 
+  const invalidNetworkEmulation = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "emulateConditions", latencyMs: 120_001 }],
+      },
+    }),
+    res: invalidNetworkEmulation.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetworkEmulation.res.statusCode, 400);
+  assert.deepEqual(invalidNetworkEmulation.json, {
+    error: "actions[0] network.latencyMs must be an integer between 0 and 120000 when provided",
+  });
+
   const invalidDownload = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -863,6 +882,15 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
             timeoutMs: 1_000,
           },
           { kind: "network", action: "clearMockResponses" },
+          {
+            kind: "network",
+            action: "emulateConditions",
+            offline: false,
+            latencyMs: 120,
+            downloadThroughputBytesPerSec: 1_000_000,
+            uploadThroughputBytesPerSec: 500_000,
+          },
+          { kind: "network", action: "clearEmulation" },
           { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
           { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
         ],
@@ -909,6 +937,15 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
       timeoutMs: 1_000,
     },
     { kind: "network", action: "clearMockResponses" },
+    {
+      kind: "network",
+      action: "emulateConditions",
+      offline: false,
+      latencyMs: 120,
+      downloadThroughputBytesPerSec: 1_000_000,
+      uploadThroughputBytesPerSec: 500_000,
+    },
+    { kind: "network", action: "clearEmulation" },
     { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
     { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
   ]);

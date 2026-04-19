@@ -46,6 +46,7 @@ import {
   MAX_BROWSER_NETWORK_BODY_BYTES,
   MAX_BROWSER_NETWORK_HEADER_ENTRIES,
   MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES,
+  MAX_BROWSER_NETWORK_THROUGHPUT_BYTES_PER_SEC,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_PERMISSION_ORIGIN_LENGTH,
   MAX_BROWSER_PROBE_ITEMS,
@@ -1387,7 +1388,9 @@ export class ChromeSessionManager {
         action.action === "clearBlockedUrls" ||
         action.action === "setExtraHeaders" ||
         action.action === "clearExtraHeaders" ||
-        action.action === "clearMockResponses"
+        action.action === "clearMockResponses" ||
+        action.action === "emulateConditions" ||
+        action.action === "clearEmulation"
       ) {
         return {
           traceOutput: await executeNetworkControlAction(page, action),
@@ -1799,7 +1802,17 @@ async function executeNetworkControlAction(
   page: Page,
   action: Extract<
     BrowserTaskAction,
-    { kind: "network"; action: "blockUrls" | "clearBlockedUrls" | "setExtraHeaders" | "clearExtraHeaders" | "clearMockResponses" }
+    {
+      kind: "network";
+      action:
+        | "blockUrls"
+        | "clearBlockedUrls"
+        | "setExtraHeaders"
+        | "clearExtraHeaders"
+        | "clearMockResponses"
+        | "emulateConditions"
+        | "clearEmulation";
+    }
   >
 ): Promise<Record<string, unknown>> {
   if (action.action === "clearBlockedUrls") {
@@ -1830,6 +1843,9 @@ async function executeNetworkControlAction(
       action: action.action,
       cleared: true,
     };
+  }
+  if (action.action === "emulateConditions" || action.action === "clearEmulation") {
+    return executeNetworkEmulationAction(page, action);
   }
 
   await clearPageNetworkBlockHandler(page);
@@ -1975,6 +1991,63 @@ async function clearPageNetworkMockHandlers(page: Page): Promise<void> {
   await Promise.all([...handlers].map((handler) => page.unroute("**/*", handler).catch(() => undefined)));
   handlers.clear();
   pageNetworkMockHandlers.delete(page);
+}
+
+async function executeNetworkEmulationAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "emulateConditions" | "clearEmulation" }>
+): Promise<Record<string, unknown>> {
+  const cdpSession = await page.context().newCDPSession(page);
+  const sendRaw = cdpSession.send as unknown as (
+    method: string,
+    params?: Record<string, unknown>
+  ) => Promise<unknown>;
+  const params = buildNetworkEmulationParams(action);
+  try {
+    await sendRaw("Network.enable", {});
+    await sendRaw("Network.emulateNetworkConditions", params);
+    return {
+      action: action.action,
+      ...(action.action === "clearEmulation"
+        ? { cleared: true }
+        : {
+            emulated: true,
+            offline: params.offline,
+            latencyMs: params.latency,
+            downloadThroughputBytesPerSec: normalizeTraceThroughput(params.downloadThroughput),
+            uploadThroughputBytesPerSec: normalizeTraceThroughput(params.uploadThroughput),
+          }),
+    };
+  } finally {
+    await cdpSession.detach().catch(() => undefined);
+  }
+}
+
+function buildNetworkEmulationParams(
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "emulateConditions" | "clearEmulation" }>
+): { offline: boolean; latency: number; downloadThroughput: number; uploadThroughput: number } {
+  if (action.action === "clearEmulation") {
+    return {
+      offline: false,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+    };
+  }
+  const offline = action.offline ?? false;
+  return {
+    offline,
+    latency: action.latencyMs ?? 0,
+    downloadThroughput: offline ? 0 : action.downloadThroughputBytesPerSec ?? -1,
+    uploadThroughput: offline ? 0 : action.uploadThroughputBytesPerSec ?? -1,
+  };
+}
+
+function normalizeTraceThroughput(value: number): number | null {
+  if (value < 0 || value > MAX_BROWSER_NETWORK_THROUGHPUT_BYTES_PER_SEC) {
+    return null;
+  }
+  return value;
 }
 
 function handleBlockedNetworkRoute(route: Route, urlPatterns: string[]): void {
@@ -2899,6 +2972,20 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
       };
     }
     if (action.action === "clearExtraHeaders") {
+      return {
+        action: action.action,
+      };
+    }
+    if (action.action === "emulateConditions") {
+      return {
+        action: action.action,
+        offline: action.offline ?? null,
+        latencyMs: action.latencyMs ?? null,
+        downloadThroughputBytesPerSec: action.downloadThroughputBytesPerSec ?? null,
+        uploadThroughputBytesPerSec: action.uploadThroughputBytesPerSec ?? null,
+      };
+    }
+    if (action.action === "clearEmulation") {
       return {
         action: action.action,
       };

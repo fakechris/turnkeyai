@@ -1132,6 +1132,14 @@ test("chrome relay action executor applies and clears network URL blocks", async
       { kind: "network", action: "setExtraHeaders", headers: { "x-test": "1" } },
       { kind: "network", action: "clearExtraHeaders" },
       { kind: "network", action: "clearMockResponses" },
+      {
+        kind: "network",
+        action: "emulateConditions",
+        latencyMs: 120,
+        downloadThroughputBytesPerSec: 1_000_000,
+        uploadThroughputBytesPerSec: 500_000,
+      },
+      { kind: "network", action: "clearEmulation" },
     ],
     createdAt: now,
     expiresAt: now + 5_000,
@@ -1148,12 +1156,34 @@ test("chrome relay action executor applies and clears network URL blocks", async
     { tabId: 7, method: "Network.enable", params: {} },
     { tabId: 7, method: "Network.setExtraHTTPHeaders", params: { headers: {} } },
     { tabId: 7, method: "Fetch.disable", params: {} },
+    { tabId: 7, method: "Network.enable", params: {} },
+    {
+      tabId: 7,
+      method: "Network.emulateNetworkConditions",
+      params: {
+        offline: false,
+        latency: 120,
+        downloadThroughput: 1_000_000,
+        uploadThroughput: 500_000,
+      },
+    },
+    { tabId: 7, method: "Network.enable", params: {} },
+    {
+      tabId: 7,
+      method: "Network.emulateNetworkConditions",
+      params: {
+        offline: false,
+        latency: 0,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+      },
+    },
   ]);
   assert.deepEqual(detachedTabs, [7]);
   assert.equal(sentMessages.length, 1);
   assert.deepEqual(
     result.trace.map((entry) => entry.kind),
-    ["network", "network", "network", "network", "network", "snapshot"]
+    ["network", "network", "network", "network", "network", "network", "network", "snapshot"]
   );
   assert.deepEqual(result.trace[0]?.output, {
     action: "blockUrls",
@@ -1175,6 +1205,18 @@ test("chrome relay action executor applies and clears network URL blocks", async
   });
   assert.deepEqual(result.trace[4]?.output, {
     action: "clearMockResponses",
+    cleared: true,
+  });
+  assert.deepEqual(result.trace[5]?.output, {
+    action: "emulateConditions",
+    emulated: true,
+    offline: false,
+    latencyMs: 120,
+    downloadThroughputBytesPerSec: 1_000_000,
+    uploadThroughputBytesPerSec: 500_000,
+  });
+  assert.deepEqual(result.trace[6]?.output, {
+    action: "clearEmulation",
     cleared: true,
   });
 });

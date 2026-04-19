@@ -25,8 +25,10 @@ import {
   MAX_BROWSER_NETWORK_HEADER_ENTRIES,
   MAX_BROWSER_NETWORK_HEADER_NAME_LENGTH,
   MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES,
+  MAX_BROWSER_NETWORK_LATENCY_MS,
   MAX_BROWSER_KEY_ACTION_KEY_LENGTH,
   MAX_BROWSER_NETWORK_METHOD_LENGTH,
+  MAX_BROWSER_NETWORK_THROUGHPUT_BYTES_PER_SEC,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH,
   MAX_BROWSER_NETWORK_URL_PATTERNS,
@@ -523,6 +525,8 @@ const BROWSER_NETWORK_ACTIONS = new Set([
   "clearExtraHeaders",
   "mockResponse",
   "clearMockResponses",
+  "emulateConditions",
+  "clearEmulation",
 ]);
 const BROWSER_NETWORK_METHOD_PATTERN = /^[A-Z]+$/;
 const BROWSER_NETWORK_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -1363,12 +1367,16 @@ function validateNetworkAction(
     headers?: unknown;
     body?: unknown;
     bodyBase64?: unknown;
+    offline?: unknown;
+    latencyMs?: unknown;
+    downloadThroughputBytesPerSec?: unknown;
+    uploadThroughputBytesPerSec?: unknown;
   },
   label: string
 ): string | null {
   const networkAction = action.action as string;
   if (!BROWSER_NETWORK_ACTIONS.has(networkAction)) {
-    return `${label}.action must be waitForRequest, waitForResponse, blockUrls, clearBlockedUrls, setExtraHeaders, clearExtraHeaders, mockResponse, or clearMockResponses`;
+    return `${label}.action must be waitForRequest, waitForResponse, blockUrls, clearBlockedUrls, setExtraHeaders, clearExtraHeaders, mockResponse, clearMockResponses, emulateConditions, or clearEmulation`;
   }
   if (networkAction === "blockUrls") {
     if (
@@ -1380,7 +1388,11 @@ function validateNetworkAction(
       action.maxBodyBytes !== undefined ||
       action.headers !== undefined ||
       action.body !== undefined ||
-      action.bodyBase64 !== undefined
+      action.bodyBase64 !== undefined ||
+      action.offline !== undefined ||
+      action.latencyMs !== undefined ||
+      action.downloadThroughputBytesPerSec !== undefined ||
+      action.uploadThroughputBytesPerSec !== undefined
     ) {
       return `${label} blockUrls only accepts urlPatterns`;
     }
@@ -1396,7 +1408,11 @@ function validateNetworkAction(
       action.includeHeaders !== undefined ||
       action.maxBodyBytes !== undefined ||
       action.body !== undefined ||
-      action.bodyBase64 !== undefined
+      action.bodyBase64 !== undefined ||
+      action.offline !== undefined ||
+      action.latencyMs !== undefined ||
+      action.downloadThroughputBytesPerSec !== undefined ||
+      action.uploadThroughputBytesPerSec !== undefined
     ) {
       return `${label} setExtraHeaders only accepts headers`;
     }
@@ -1406,7 +1422,11 @@ function validateNetworkAction(
     if (
       action.urlPatterns !== undefined ||
       action.includeHeaders !== undefined ||
-      action.maxBodyBytes !== undefined
+      action.maxBodyBytes !== undefined ||
+      action.offline !== undefined ||
+      action.latencyMs !== undefined ||
+      action.downloadThroughputBytesPerSec !== undefined ||
+      action.uploadThroughputBytesPerSec !== undefined
     ) {
       return `${label} mockResponse only accepts urlPattern, method, status, timeoutMs, headers, body, or bodyBase64`;
     }
@@ -1434,7 +1454,7 @@ function validateNetworkAction(
     }
     return validateNetworkMockBody(action, label);
   }
-  if (networkAction === "clearBlockedUrls" || networkAction === "clearExtraHeaders" || networkAction === "clearMockResponses") {
+  if (networkAction === "emulateConditions") {
     if (
       action.urlPattern !== undefined ||
       action.urlPatterns !== undefined ||
@@ -1447,12 +1467,47 @@ function validateNetworkAction(
       action.includeHeaders !== undefined ||
       action.maxBodyBytes !== undefined
     ) {
-      return `${label} ${networkAction} does not accept filters, headers, body, or capture options`;
+      return `${label} emulateConditions only accepts offline, latencyMs, downloadThroughputBytesPerSec, or uploadThroughputBytesPerSec`;
+    }
+    return validateNetworkEmulationAction(action, label);
+  }
+  if (
+    networkAction === "clearBlockedUrls" ||
+    networkAction === "clearExtraHeaders" ||
+    networkAction === "clearMockResponses" ||
+    networkAction === "clearEmulation"
+  ) {
+    if (
+      action.urlPattern !== undefined ||
+      action.urlPatterns !== undefined ||
+      action.headers !== undefined ||
+      action.body !== undefined ||
+      action.bodyBase64 !== undefined ||
+      action.method !== undefined ||
+      action.status !== undefined ||
+      action.timeoutMs !== undefined ||
+      action.includeHeaders !== undefined ||
+      action.maxBodyBytes !== undefined ||
+      action.offline !== undefined ||
+      action.latencyMs !== undefined ||
+      action.downloadThroughputBytesPerSec !== undefined ||
+      action.uploadThroughputBytesPerSec !== undefined
+    ) {
+      return `${label} ${networkAction} does not accept filters, headers, body, emulation, or capture options`;
     }
     return null;
   }
-  if (action.urlPatterns !== undefined || action.headers !== undefined || action.body !== undefined || action.bodyBase64 !== undefined) {
-    return `${label} ${networkAction} does not accept urlPatterns, headers, or body`;
+  if (
+    action.urlPatterns !== undefined ||
+    action.headers !== undefined ||
+    action.body !== undefined ||
+    action.bodyBase64 !== undefined ||
+    action.offline !== undefined ||
+    action.latencyMs !== undefined ||
+    action.downloadThroughputBytesPerSec !== undefined ||
+    action.uploadThroughputBytesPerSec !== undefined
+  ) {
+    return `${label} ${networkAction} does not accept urlPatterns, headers, body, or emulation`;
   }
   const urlPatternError = validateNetworkUrlPattern(action.urlPattern, `${label}.urlPattern`);
   if (urlPatternError) {
@@ -1560,6 +1615,59 @@ function validateNetworkMockBody(
     if (decodedBase64Bytes(action.bodyBase64) > MAX_BROWSER_NETWORK_BODY_BYTES) {
       return `${label}.bodyBase64 must decode to <= ${MAX_BROWSER_NETWORK_BODY_BYTES} bytes`;
     }
+  }
+  return null;
+}
+
+function validateNetworkEmulationAction(
+  action: {
+    offline?: unknown;
+    latencyMs?: unknown;
+    downloadThroughputBytesPerSec?: unknown;
+    uploadThroughputBytesPerSec?: unknown;
+  },
+  label: string
+): string | null {
+  if (
+    action.offline === undefined &&
+    action.latencyMs === undefined &&
+    action.downloadThroughputBytesPerSec === undefined &&
+    action.uploadThroughputBytesPerSec === undefined
+  ) {
+    return `${label} emulateConditions requires at least one emulation field`;
+  }
+  if (action.offline !== undefined && typeof action.offline !== "boolean") {
+    return `${label}.offline must be a boolean when provided`;
+  }
+  const latencyError = validateNetworkNonNegativeInteger(
+    action.latencyMs,
+    `${label}.latencyMs`,
+    MAX_BROWSER_NETWORK_LATENCY_MS
+  );
+  if (latencyError) {
+    return latencyError;
+  }
+  const downloadError = validateNetworkNonNegativeInteger(
+    action.downloadThroughputBytesPerSec,
+    `${label}.downloadThroughputBytesPerSec`,
+    MAX_BROWSER_NETWORK_THROUGHPUT_BYTES_PER_SEC
+  );
+  if (downloadError) {
+    return downloadError;
+  }
+  return validateNetworkNonNegativeInteger(
+    action.uploadThroughputBytesPerSec,
+    `${label}.uploadThroughputBytesPerSec`,
+    MAX_BROWSER_NETWORK_THROUGHPUT_BYTES_PER_SEC
+  );
+}
+
+function validateNetworkNonNegativeInteger(value: unknown, label: string, maxValue: number): string | null {
+  if (value === undefined) {
+    return null;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > maxValue) {
+    return `${label} must be an integer between 0 and ${maxValue} when provided`;
   }
   return null;
 }
