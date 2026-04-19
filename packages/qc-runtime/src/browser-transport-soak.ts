@@ -14,6 +14,21 @@ export type BrowserTransportFailureBucket =
   | "local-regression"
   | "unknown";
 
+export type BrowserTransportAcceptanceCheckId =
+  | "spawn-send-resume"
+  | "transport-label"
+  | "target-continuity"
+  | "artifact-continuity"
+  | "reconnect"
+  | "workflow-log"
+  | "relay-peer-multiplex";
+
+export interface BrowserTransportAcceptanceCheck {
+  checkId: BrowserTransportAcceptanceCheckId;
+  status: "passed" | "failed" | "skipped";
+  summary: string;
+}
+
 export interface BrowserTransportSoakRunnerInput {
   target: BrowserTransportSoakTarget;
   cycleNumber: number;
@@ -37,6 +52,10 @@ export interface BrowserTransportSoakCycleTargetResult {
   failureBucket: BrowserTransportFailureBucket;
   summary: string;
   output: string;
+  acceptanceChecks?: BrowserTransportAcceptanceCheck[];
+  passedAcceptanceChecks?: number;
+  failedAcceptanceChecks?: number;
+  skippedAcceptanceChecks?: number;
 }
 
 export interface BrowserTransportSoakCycleResult {
@@ -116,14 +135,28 @@ export async function runBrowserTransportSoak(
       });
       const durationMs = runnerResult.durationMs ?? Date.now() - targetStartedAt;
       const output = [runnerResult.stdout, runnerResult.stderr ?? ""].filter(Boolean).join("\n").trim();
-      const failureBucket = classifyBrowserTransportFailure({
+      const acceptanceChecks = evaluateBrowserTransportAcceptance({
         target,
-        exitCode: runnerResult.exitCode,
         output,
+        exitCode: runnerResult.exitCode,
+        relayPeerCount,
+        verifyReconnect,
+        verifyWorkflowLog,
       });
+      const failedAcceptanceChecks = acceptanceChecks.filter((check) => check.status === "failed").length;
+      const passedAcceptanceChecks = acceptanceChecks.filter((check) => check.status === "passed").length;
+      const skippedAcceptanceChecks = acceptanceChecks.filter((check) => check.status === "skipped").length;
+      const failureBucket = runnerResult.exitCode === 0 && failedAcceptanceChecks > 0
+        ? "local-regression"
+        : classifyBrowserTransportFailure({
+            target,
+            exitCode: runnerResult.exitCode,
+            output,
+          });
+      const status = runnerResult.exitCode === 0 && failedAcceptanceChecks === 0 ? "passed" : "failed";
       targetResults.push({
         target,
-        status: runnerResult.exitCode === 0 ? "passed" : "failed",
+        status,
         durationMs,
         failureBucket,
         summary: summarizeBrowserTransportRun({
@@ -131,8 +164,13 @@ export async function runBrowserTransportSoak(
           exitCode: runnerResult.exitCode,
           output,
           failureBucket,
+          acceptanceChecks,
         }),
         output,
+        acceptanceChecks,
+        passedAcceptanceChecks,
+        failedAcceptanceChecks,
+        skippedAcceptanceChecks,
       });
     }
 
@@ -267,6 +305,7 @@ function summarizeBrowserTransportRun(input: {
   exitCode: number;
   output: string;
   failureBucket: BrowserTransportFailureBucket;
+  acceptanceChecks?: BrowserTransportAcceptanceCheck[];
 }): string {
   if (input.exitCode === 0) {
     const lines = input.output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -274,9 +313,129 @@ function summarizeBrowserTransportRun(input: {
       ?? lines.find((line) => line.startsWith("browser-resume-final-url:"))
       ?? lines.find((line) => line.startsWith("browser-final-url:"));
     const peerCount = lines.find((line) => line.startsWith("peer-count:"));
-    return [input.target, finalUrl, peerCount].filter(Boolean).join(" | ");
+    const failedChecks = input.acceptanceChecks?.filter((check) => check.status === "failed") ?? [];
+    const acceptanceSummary = failedChecks.length > 0
+      ? `failed=${failedChecks.map((check) => check.checkId).join(",")}`
+      : input.acceptanceChecks
+        ? `acceptance=${input.acceptanceChecks.filter((check) => check.status === "passed").length}/${
+            input.acceptanceChecks.filter((check) => check.status !== "skipped").length
+          }`
+        : null;
+    return [input.target, finalUrl, peerCount, acceptanceSummary].filter(Boolean).join(" | ");
   }
   return `${input.target} failed (${input.failureBucket})`;
+}
+
+export function evaluateBrowserTransportAcceptance(input: {
+  target: BrowserTransportSoakTarget;
+  exitCode: number;
+  output: string;
+  relayPeerCount: number;
+  verifyReconnect: boolean;
+  verifyWorkflowLog: boolean;
+}): BrowserTransportAcceptanceCheck[] {
+  const expectedTransportLabel = input.target === "relay" ? "chrome-relay" : "direct-cdp";
+  const expectedTargetContinuity = input.target === "relay" ? "chrome-tab" : "direct-cdp";
+  const browserHistory = parsePositiveLineValue(input.output, "browser-history");
+  const reconnectHistory = parsePositiveLineValue(input.output, "reconnect-history");
+  const screenshotCount = parsePositiveLineValue(input.output, "browser-screenshots");
+  const artifactCount = parsePositiveLineValue(input.output, "browser-artifacts");
+  const transportLabel = findLineValue(input.output, "browser-transport");
+  const targetContinuity = findLineValue(input.output, "browser-target-continuity");
+  const reconnectFinalUrl = findLineValue(input.output, "reconnect-final-url");
+  const workflowStatus = findLineValue(input.output, "workflow-log-status");
+  const peerCount = parsePositiveLineValue(input.output, "peer-count");
+
+  return [
+    requiredCheck(
+      "spawn-send-resume",
+      browserHistory !== null && browserHistory >= 3,
+      browserHistory === null
+        ? "missing browser history marker"
+        : `browser history contains ${browserHistory} dispatches`
+    ),
+    requiredCheck(
+      "transport-label",
+      transportLabel === expectedTransportLabel,
+      `transport label ${transportLabel ?? "missing"} expected ${expectedTransportLabel}`
+    ),
+    requiredCheck(
+      "target-continuity",
+      targetContinuity === expectedTargetContinuity,
+      `target continuity ${targetContinuity ?? "missing"} expected ${expectedTargetContinuity}`
+    ),
+    requiredCheck(
+      "artifact-continuity",
+      artifactCount !== null && artifactCount >= 1,
+      `screenshots=${screenshotCount ?? "missing"} artifacts=${artifactCount ?? "missing"}`
+    ),
+    optionalCheck(
+      "reconnect",
+      input.verifyReconnect,
+      reconnectHistory !== null && reconnectHistory >= 4 && Boolean(reconnectFinalUrl?.includes("#submitted")),
+      reconnectHistory === null
+        ? "missing reconnect history marker"
+        : `reconnect history=${reconnectHistory} final=${reconnectFinalUrl ?? "missing"}`
+    ),
+    optionalCheck(
+      "workflow-log",
+      input.verifyWorkflowLog,
+      workflowStatus === "passed",
+      `workflow-log status=${workflowStatus ?? "missing"}`
+    ),
+    optionalCheck(
+      "relay-peer-multiplex",
+      input.target === "relay" && input.relayPeerCount > 1,
+      peerCount !== null && peerCount >= input.relayPeerCount,
+      `peer-count=${peerCount ?? "missing"} expected>=${input.relayPeerCount}`
+    ),
+  ];
+}
+
+function requiredCheck(
+  checkId: BrowserTransportAcceptanceCheckId,
+  passed: boolean,
+  summary: string
+): BrowserTransportAcceptanceCheck {
+  return {
+    checkId,
+    status: passed ? "passed" : "failed",
+    summary,
+  };
+}
+
+function optionalCheck(
+  checkId: BrowserTransportAcceptanceCheckId,
+  required: boolean,
+  passed: boolean,
+  summary: string
+): BrowserTransportAcceptanceCheck {
+  if (!required) {
+    return {
+      checkId,
+      status: "skipped",
+      summary: "not requested for this run",
+    };
+  }
+  return requiredCheck(checkId, passed, summary);
+}
+
+function findLineValue(output: string, key: string): string | null {
+  const prefix = `${key}:`;
+  const line = output
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(prefix));
+  return line ? line.slice(prefix.length).trim() : null;
+}
+
+function parsePositiveLineValue(output: string, key: string): number | null {
+  const value = findLineValue(output, key);
+  if (!value) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function normalizeTargets(value?: BrowserTransportSoakTarget[]): BrowserTransportSoakTarget[] {

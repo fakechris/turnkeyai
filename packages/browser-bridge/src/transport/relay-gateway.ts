@@ -30,6 +30,12 @@ interface PendingRelayActionResolution {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+interface PendingRelayPullWaiter {
+  peerId: string;
+  resolve: (request: RelayActionRequest | null) => void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
 interface RelayQueuedAction {
   actionRequestId: string;
   browserSessionId: string;
@@ -53,8 +59,8 @@ interface RelayQueuedAction {
   resolution: PendingRelayActionResolution;
 }
 
-const DEFAULT_STALE_AFTER_MS = 30_000;
-const DEFAULT_ACTION_TIMEOUT_MS = 30_000;
+const DEFAULT_STALE_AFTER_MS = 90_000;
+const DEFAULT_ACTION_TIMEOUT_MS = 90_000;
 const DEFAULT_CLAIM_LEASE_MS = 10_000;
 
 export class RelayGateway {
@@ -67,6 +73,7 @@ export class RelayGateway {
   private readonly peers = new Map<string, RelayPeerState>();
   private readonly actionRequests = new Map<string, RelayQueuedAction>();
   private readonly actionRequestOrder: string[] = [];
+  private readonly pullWaiters: PendingRelayPullWaiter[] = [];
 
   constructor(options: RelayGatewayOptions = {}) {
     this.now = options.now ?? (() => Date.now());
@@ -224,13 +231,20 @@ export class RelayGateway {
         },
       });
       this.actionRequestOrder.push(actionRequestId);
+      this.notifyPullWaiters();
     });
   }
 
   pullNextActionRequest(peerId: string): RelayActionRequest | null {
+    return this.claimNextActionRequest(peerId, true);
+  }
+
+  private claimNextActionRequest(peerId: string, reclaimExpired: boolean): RelayActionRequest | null {
     const state = this.getPeerState(peerId);
     state.registration.lastSeenAt = this.now();
-    this.reclaimExpiredActionRequests();
+    if (reclaimExpired) {
+      this.reclaimExpiredActionRequests();
+    }
 
     const peerRecord = this.toPeerRecord(state.registration);
     const action = this.findClaimableActionForPeer(peerRecord);
@@ -263,6 +277,25 @@ export class RelayGateway {
       attemptCount: action.attemptCount,
       reclaimCount: action.reclaimCount,
     };
+  }
+
+  pullNextActionRequestWait(peerId: string, waitMs: number): Promise<RelayActionRequest | null> {
+    const immediate = this.pullNextActionRequest(peerId);
+    if (immediate || waitMs <= 0) {
+      return Promise.resolve(immediate);
+    }
+
+    return new Promise<RelayActionRequest | null>((resolve) => {
+      const waiter: PendingRelayPullWaiter = {
+        peerId,
+        resolve,
+        timeout: setTimeout(() => {
+          this.removePullWaiter(waiter);
+          resolve(null);
+        }, waitMs),
+      };
+      this.pullWaiters.push(waiter);
+    });
   }
 
   submitActionResult(input: RelayActionResult): RelayActionResult {
@@ -420,6 +453,33 @@ export class RelayGateway {
     if (index >= 0) {
       this.actionRequestOrder.splice(index, 1);
     }
+  }
+
+  private notifyPullWaiters(): void {
+    this.reclaimExpiredActionRequests();
+    for (const waiter of [...this.pullWaiters]) {
+      let request: RelayActionRequest | null;
+      try {
+        request = this.claimNextActionRequest(waiter.peerId, false);
+      } catch {
+        this.removePullWaiter(waiter);
+        waiter.resolve(null);
+        continue;
+      }
+      if (!request) {
+        continue;
+      }
+      this.removePullWaiter(waiter);
+      waiter.resolve(request);
+    }
+  }
+
+  private removePullWaiter(waiter: PendingRelayPullWaiter): void {
+    const index = this.pullWaiters.indexOf(waiter);
+    if (index >= 0) {
+      this.pullWaiters.splice(index, 1);
+    }
+    clearTimeout(waiter.timeout);
   }
 
   private getPeerState(peerId: string): RelayPeerState {

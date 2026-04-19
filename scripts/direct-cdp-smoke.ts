@@ -209,6 +209,9 @@ async function main(): Promise<void> {
     console.log(`browser-final-url: ${smoke.finalUrl}`);
     console.log(`browser-history: ${smoke.historyLength}`);
     console.log(`browser-transport: ${smoke.transportLabel}`);
+    console.log(`browser-target-continuity: ${smoke.targetContinuity}`);
+    console.log(`browser-screenshots: ${smoke.screenshotCount}`);
+    console.log(`browser-artifacts: ${smoke.artifactCount}`);
     if (smoke.resumeFinalUrl) {
       console.log(`browser-resume-final-url: ${smoke.resumeFinalUrl}`);
     }
@@ -269,6 +272,9 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   resumeFinalUrl?: string;
   historyLength: number;
   transportLabel: string;
+  targetContinuity: string;
+  screenshotCount: number;
+  artifactCount: number;
 }> {
   const thread = (await postJson(`${input.daemonUrl}/threads/bootstrap-demo`, {
     variant: "default",
@@ -330,6 +336,7 @@ async function runDirectCdpBrowserSessionSmoke(input: {
       { kind: "scroll", direction: "down", amount: 240 },
       { kind: "console", probe: "interactive-summary" },
       { kind: "snapshot", note: "post-resume" },
+      { kind: "screenshot", label: "post-resume" },
     ],
   })) as BrowserSmokeResponse;
   const resumeFinalUrl = requireString(resumeResponse.page?.finalUrl, "resume final page URL");
@@ -350,6 +357,22 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   if (!Array.isArray(interactiveResult) || interactiveResult.length < 2) {
     throw new Error("direct-cdp resume smoke did not surface interactive summary results");
   }
+  if (resumeResponse.screenshotPaths !== undefined && !Array.isArray(resumeResponse.screenshotPaths)) {
+    throw new Error("direct-cdp resume smoke returned non-array screenshotPaths");
+  }
+  if (resumeResponse.artifactIds !== undefined && !Array.isArray(resumeResponse.artifactIds)) {
+    throw new Error("direct-cdp resume smoke returned non-array artifactIds");
+  }
+  const screenshotPaths = Array.isArray(resumeResponse.screenshotPaths) ? resumeResponse.screenshotPaths : [];
+  const artifactIds = Array.isArray(resumeResponse.artifactIds) ? resumeResponse.artifactIds : [];
+  const screenshotCount = screenshotPaths.length;
+  const artifactCount = artifactIds.length;
+  if (screenshotCount < 1) {
+    throw new Error("direct-cdp resume smoke did not persist a screenshot artifact path");
+  }
+  if (artifactCount < 1) {
+    throw new Error("direct-cdp resume smoke did not persist browser artifact metadata");
+  }
 
   const history = await getSessionHistory(input.daemonUrl, threadId, sessionId);
   const dispatchSequence = history.map((entry) => entry.dispatchMode).join(",");
@@ -367,6 +390,9 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     resumeFinalUrl,
     historyLength: history.length,
     transportLabel: spawnTransportLabel,
+    targetContinuity: "direct-cdp",
+    screenshotCount,
+    artifactCount,
   };
 }
 
@@ -652,6 +678,8 @@ interface BrowserSmokeResponse {
     finalUrl?: string;
     title?: string;
   };
+  screenshotPaths?: string[];
+  artifactIds?: string[];
   trace?: Array<{
     kind?: string;
     output?: Record<string, unknown>;

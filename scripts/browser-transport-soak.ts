@@ -157,6 +157,13 @@ for (const cycle of result.cycleResults) {
     console.log(
       `  ${target.target}: status=${target.status} bucket=${target.failureBucket} durationMs=${target.durationMs} summary=${target.summary}`
     );
+    if (target.acceptanceChecks?.length) {
+      console.log(
+        `    acceptance: ${target.acceptanceChecks
+          .map((check) => `${check.checkId}:${check.status}`)
+          .join(", ")}`
+      );
+    }
   }
 }
 for (const aggregate of result.targetAggregates) {

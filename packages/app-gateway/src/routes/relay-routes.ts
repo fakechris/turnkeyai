@@ -7,10 +7,11 @@ import type {
   DaemonAuthorizationResult,
   RelayPeerIdentityBindingResult,
 } from "../daemon-auth";
-import { readJsonBodySafe, sendJson } from "../http-helpers";
+import { readJsonBodySafe, readOptionalJsonBodySafe, sendJson } from "../http-helpers";
 
 const RELAY_TARGET_STATUSES = new Set(["open", "attached", "detached", "closed"]);
 const RELAY_ACTION_RESULT_STATUSES = new Set(["completed", "failed"]);
+const MAX_RELAY_PULL_WAIT_MS = 25_000;
 
 export async function handleRelayRoutes(input: {
   req: http.IncomingMessage;
@@ -212,10 +213,24 @@ export async function handleRelayRoutes(input: {
       sendJson(res, peerIdentity.statusCode ?? 403, { error: peerIdentity.error ?? "forbidden" });
       return true;
     }
+    const bodyResult = await readOptionalJsonBodySafe<{ waitMs?: number }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const waitMs = normalizeRelayPullWaitMs(bodyResult.value.waitMs);
+    if (waitMs === null) {
+      sendJson(res, 400, { error: "waitMs must be a non-negative finite number" });
+      return true;
+    }
+    const actionRequest =
+      waitMs > 0 && relayGateway.pullNextActionRequestWait
+        ? await relayGateway.pullNextActionRequestWait(peerId, waitMs)
+        : relayGateway.pullNextActionRequest(peerId);
     sendJson(
       res,
       200,
-      relayGateway.pullNextActionRequest(peerId)
+      actionRequest
     );
     return true;
   }
@@ -369,4 +384,15 @@ export async function handleRelayRoutes(input: {
   }
 
   return false;
+}
+
+function normalizeRelayPullWaitMs(value: number | undefined): number | null {
+  if (value === undefined) {
+    // Omitted waitMs preserves legacy immediate-poll behavior; clients must send a positive waitMs to long-poll.
+    return 0;
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  return Math.min(MAX_RELAY_PULL_WAIT_MS, Math.trunc(value));
 }

@@ -11,6 +11,7 @@ export class ChromeRelayActionExecutor {
   private readonly tabObserver: ChromeRelayTabObserver;
   private readonly maxWaitActionMs = 60_000;
   private readonly requestCompletionBufferMs = 500;
+  private readonly maxScreenshotCaptureMs = 5_000;
 
   constructor(private readonly platform: ChromeExtensionPlatform) {
     this.tabObserver = new ChromeRelayTabObserver(platform);
@@ -89,8 +90,30 @@ export class ChromeRelayActionExecutor {
     for (let index = 0; index < screenshotActions.length; index += 1) {
       const action = screenshotActions[index]!;
       const startedAt = Date.now();
-      const dataUrl = await this.platform.captureVisibleTab(activeTab.windowId, { format: "png" });
+      const activeTabId: number | undefined = activeTab.id;
+      if (typeof activeTabId !== "number") {
+        throw new Error("relay screenshot capture requires a target tab id");
+      }
+      const stepTimeoutMs = this.resolveScreenshotCaptureTimeoutMs(request);
+      const activationStartedAt = Date.now();
+      activeTab = await withTimeout(
+        this.platform.updateTab(activeTabId, { active: true }),
+        stepTimeoutMs,
+        `relay screenshot tab activation timed out after ${stepTimeoutMs}ms`
+      );
+      const remainingCaptureMs = stepTimeoutMs - (Date.now() - activationStartedAt);
+      if (remainingCaptureMs <= 0) {
+        throw new Error(`relay screenshot capture timed out after ${stepTimeoutMs}ms`);
+      }
+      const dataUrl = await withTimeout(
+        this.platform.captureVisibleTab(activeTab.windowId, { format: "png" }),
+        remainingCaptureMs,
+        `relay screenshot capture timed out after ${remainingCaptureMs}ms`
+      );
       const [, dataBase64 = ""] = /^data:image\/png;base64,(.+)$/.exec(dataUrl) ?? [];
+      if (!dataBase64) {
+        throw new Error("relay screenshot capture returned an empty payload");
+      }
       screenshotPayloads.push({
         ...(action.label ? { label: action.label } : {}),
         mimeType: "image/png",
@@ -112,13 +135,17 @@ export class ChromeRelayActionExecutor {
       });
     }
 
+    const finalTabId = activeTab.id;
+    if (typeof finalTabId !== "number") {
+      throw new Error("relay action executor lost the target tab id");
+    }
     const finalSnapshotResponse =
-      contentScriptResponse?.page || !activeTab.id
+      contentScriptResponse?.page
         ? contentScriptResponse
-        : await this.sendContentScriptActions(activeTab.id, request.actionRequestId, [{ kind: "snapshot", note: "final-relay-state" }]);
+        : await this.sendContentScriptActions(finalTabId, request.actionRequestId, [{ kind: "snapshot", note: "final-relay-state" }]);
 
     return {
-      relayTargetId: formatRelayTargetId(activeTab.id),
+      relayTargetId: formatRelayTargetId(finalTabId),
       url: finalSnapshotResponse?.page?.finalUrl ?? activeTab.url ?? "",
       ...(finalSnapshotResponse?.page?.title || activeTab.title
         ? { title: finalSnapshotResponse?.page?.title ?? activeTab.title }
@@ -142,6 +169,15 @@ export class ChromeRelayActionExecutor {
 
   private hasOpenAction(request: RelayActionRequest): boolean {
     return request.actions.some((action) => action.kind === "open");
+  }
+
+  private resolveScreenshotCaptureTimeoutMs(request: RelayActionRequest): number {
+    const remainingRequestBudgetMs = request.expiresAt - Date.now() - this.requestCompletionBufferMs;
+    const budgetMs =
+      Number.isFinite(remainingRequestBudgetMs) && remainingRequestBudgetMs > 0
+        ? Math.trunc(remainingRequestBudgetMs)
+        : 0;
+    return Math.max(1, Math.min(this.maxScreenshotCaptureMs, budgetMs));
   }
 
   private normalizePageActions(
@@ -199,9 +235,25 @@ export class ChromeRelayActionExecutor {
         attempts: this.contentScriptRetryAttempts,
         delayMs: this.contentScriptRetryDelayMs,
         shouldRetry: (error) => isRetryableRelayContentScriptError(error),
+        beforeRetry: async () => {
+          await this.platform.injectContentScript?.(tabId).catch(() => undefined);
+        },
       }
     );
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  promise.catch(() => undefined);
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
 }
 
 async function retryAsync<T>(
@@ -210,6 +262,7 @@ async function retryAsync<T>(
     attempts: number;
     delayMs: number;
     shouldRetry(error: unknown): boolean;
+    beforeRetry?(error: unknown): Promise<void>;
   }
 ): Promise<T> {
   let lastError: unknown;
@@ -221,6 +274,7 @@ async function retryAsync<T>(
       if (index === input.attempts - 1 || !input.shouldRetry(error)) {
         throw error;
       }
+      await input.beforeRetry?.(error);
       await sleep(input.delayMs);
     }
   }

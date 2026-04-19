@@ -41,9 +41,11 @@ test("daemon relay client sends tokenized control-plane requests", async () => {
 });
 
 test("daemon relay client can pull and submit action requests", async () => {
+  const requests: Array<{ url: string; body?: string }> = [];
   const client = new DaemonRelayClient({
     baseUrl: "http://127.0.0.1:4100",
-    fetchImpl: async (url) => {
+    fetchImpl: async (url, init) => {
+      requests.push({ url: String(url), ...(typeof init?.body === "string" ? { body: init.body } : {}) });
       if (String(url).endsWith("/pull-actions")) {
         return jsonResponse(200, {
           actionRequestId: "relay-action-1",
@@ -84,8 +86,9 @@ test("daemon relay client can pull and submit action requests", async () => {
     },
   });
 
-  const request = await client.pullNextAction("peer-1");
+  const request = await client.pullNextAction("peer-1", { waitMs: 25_000 });
   assert.equal(request?.actionRequestId, "relay-action-1");
+  assert.equal(requests[0]?.body, JSON.stringify({ waitMs: 25_000 }));
 
   const result = await client.submitActionResult("peer-1", {
     actionRequestId: "relay-action-1",

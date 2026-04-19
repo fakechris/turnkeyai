@@ -71,6 +71,9 @@ function createRelayGateway() {
     pullNextActionRequest(peerId: string) {
       return { peerId };
     },
+    async pullNextActionRequestWait(peerId: string, waitMs: number) {
+      return { peerId, waitMs };
+    },
     submitActionResult(input: unknown) {
       return input;
     },
@@ -220,6 +223,39 @@ test("relay routes trim optional peer ids and action result fields", async () =>
     screenshotPaths: [],
     screenshotPayloads: [],
     artifactIds: [],
+  });
+});
+
+test("relay pull-actions supports bounded long polling", async () => {
+  const relayPeerBindingStore = createRelayPeerIdentityBindingStore();
+  await invokeRelayRoute({
+    method: "POST",
+    url: "/relay/peers/register",
+    body: { peerId: "peer-1" },
+    relayPeerBindingStore,
+  });
+
+  const pulled = await invokeRelayRoute({
+    method: "POST",
+    url: "/relay/peers/peer-1/pull-actions",
+    body: { waitMs: 60_000 },
+    relayPeerBindingStore,
+  });
+  assert.equal(pulled.res.statusCode, 200);
+  assert.deepEqual(pulled.json, {
+    peerId: "peer-1",
+    waitMs: 25_000,
+  });
+
+  const invalid = await invokeRelayRoute({
+    method: "POST",
+    url: "/relay/peers/peer-1/pull-actions",
+    body: { waitMs: -1 },
+    relayPeerBindingStore,
+  });
+  assert.equal(invalid.res.statusCode, 400);
+  assert.deepEqual(invalid.json, {
+    error: "waitMs must be a non-negative finite number",
   });
 });
 

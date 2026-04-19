@@ -16,6 +16,7 @@ async function bootstrapChromeRelayExtensionServiceWorker(): Promise<void> {
       capabilities: config.capabilities,
       transportLabel: config.transportLabel,
     },
+    pullWaitMs: config.pullWaitMs,
     loop: {
       activeDelayMs: config.activeDelayMs,
       idleDelayMs: config.idleDelayMs,

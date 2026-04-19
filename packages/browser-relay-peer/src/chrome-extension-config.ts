@@ -10,6 +10,7 @@ export interface ChromeRelayExtensionRuntimeConfig {
   activeDelayMs: number;
   idleDelayMs: number;
   errorDelayMs: number;
+  pullWaitMs: number;
 }
 
 interface ChromeStorageLocalLike {
@@ -31,6 +32,7 @@ const DEFAULT_RUNTIME_CONFIG: ChromeRelayExtensionRuntimeConfig = {
   activeDelayMs: 25,
   idleDelayMs: 500,
   errorDelayMs: 1_000,
+  pullWaitMs: 25_000,
 };
 
 export async function loadChromeRelayExtensionRuntimeConfig(): Promise<ChromeRelayExtensionRuntimeConfig> {
@@ -56,6 +58,7 @@ export async function loadChromeRelayExtensionRuntimeConfig(): Promise<ChromeRel
     activeDelayMs: normalizePositiveInteger(stored.activeDelayMs, DEFAULT_RUNTIME_CONFIG.activeDelayMs),
     idleDelayMs: normalizePositiveInteger(stored.idleDelayMs, DEFAULT_RUNTIME_CONFIG.idleDelayMs),
     errorDelayMs: normalizePositiveInteger(stored.errorDelayMs, DEFAULT_RUNTIME_CONFIG.errorDelayMs),
+    pullWaitMs: normalizeNonNegativeInteger(stored.pullWaitMs, DEFAULT_RUNTIME_CONFIG.pullWaitMs),
   };
 }
 
@@ -90,6 +93,10 @@ function normalizeStringArray(value: unknown, fallback: string[]): string[] {
 
 function normalizePositiveInteger(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : fallback;
+}
+
+function normalizeNonNegativeInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : fallback;
 }
 
 function normalizeUrl(value: string): string {
