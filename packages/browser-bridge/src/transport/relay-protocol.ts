@@ -51,6 +51,7 @@ export interface RelayActionRequest {
   peerId: string;
   browserSessionId: string;
   taskId: string;
+  targetBehavior?: "new";
   relayTargetId?: string;
   targetId?: string;
   actions: RelayExecutableBrowserAction[];
@@ -85,6 +86,7 @@ export interface RelayActionRequestRecord {
   actionRequestId: string;
   browserSessionId: string;
   taskId: string;
+  targetBehavior?: RelayActionRequest["targetBehavior"];
   relayTargetId?: string;
   targetId?: string;
   actionKinds: RelayExecutableBrowserAction["kind"][];

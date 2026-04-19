@@ -40,6 +40,7 @@ interface RelayQueuedAction {
   actionRequestId: string;
   browserSessionId: string;
   taskId: string;
+  targetBehavior?: RelayActionRequest["targetBehavior"];
   relayTargetId?: string;
   targetId?: string;
   actions: RelayExecutableBrowserAction[];
@@ -169,6 +170,7 @@ export class RelayGateway {
   async dispatchActionRequest(input: {
     browserSessionId: string;
     taskId: string;
+    targetBehavior?: RelayActionRequest["targetBehavior"];
     relayTargetId?: string;
     targetId?: string;
     actions: RelayExecutableBrowserAction[];
@@ -213,6 +215,7 @@ export class RelayGateway {
         actionRequestId,
         browserSessionId: input.browserSessionId,
         taskId: input.taskId,
+        ...(input.targetBehavior ? { targetBehavior: input.targetBehavior } : {}),
         ...(relayTargetId ? { relayTargetId } : {}),
         ...(input.targetId ? { targetId: input.targetId } : {}),
         actions: input.actions,
@@ -266,6 +269,7 @@ export class RelayGateway {
       peerId: peerRecord.peerId,
       browserSessionId: action.browserSessionId,
       taskId: action.taskId,
+      ...(action.targetBehavior ? { targetBehavior: action.targetBehavior } : {}),
       ...(action.relayTargetId ? { relayTargetId: action.relayTargetId } : {}),
       ...(action.targetId ? { targetId: action.targetId } : {}),
       actions: action.actions,
@@ -506,6 +510,7 @@ export class RelayGateway {
       actionRequestId: action.actionRequestId,
       browserSessionId: action.browserSessionId,
       taskId: action.taskId,
+      ...(action.targetBehavior ? { targetBehavior: action.targetBehavior } : {}),
       ...(action.relayTargetId ? { relayTargetId: action.relayTargetId } : {}),
       ...(action.targetId ? { targetId: action.targetId } : {}),
       actionKinds: [...action.actionKinds],

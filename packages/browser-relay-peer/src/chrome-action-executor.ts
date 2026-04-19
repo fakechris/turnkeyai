@@ -90,7 +90,13 @@ export class ChromeRelayActionExecutor {
   async execute(request: RelayActionRequest) {
     let activeTab = request.relayTargetId
       ? await this.tabObserver.resolveObservedTarget(request.relayTargetId)
+      : request.targetBehavior === "new"
+        ? null
       : await this.resolveActiveTab();
+
+    if (request.targetBehavior === "new" && !this.hasOpenAction(request)) {
+      throw new Error("relay new-target requests require an open action");
+    }
 
     if (!activeTab?.id && !this.hasOpenAction(request)) {
       throw new Error("relay action executor requires an existing tab or an open action");
@@ -117,6 +123,7 @@ export class ChromeRelayActionExecutor {
     } = {
       latestResponse: null,
     };
+    let createTargetForNextOpen = request.targetBehavior === "new";
     let needsFinalSnapshot = false;
 
     const flushContentScriptBatch = async (): Promise<RelayContentScriptExecuteResponse | null> => {
@@ -148,15 +155,17 @@ export class ChromeRelayActionExecutor {
 
       if (action.kind === "open") {
         const startedAt = Date.now();
-        activeTab = activeTab?.id
-          ? await this.platform.updateTab(activeTab.id, {
-              url: action.url,
-              active: true,
-            })
-          : await this.platform.createTab({
-              url: action.url,
-              active: true,
-            });
+        activeTab =
+          activeTab?.id && !createTargetForNextOpen
+            ? await this.platform.updateTab(activeTab.id, {
+                url: action.url,
+                active: true,
+              })
+            : await this.platform.createTab({
+                url: action.url,
+                active: true,
+              });
+        createTargetForNextOpen = false;
         needsFinalSnapshot = true;
         trace.push({
           stepId: `${request.taskId}:relay-open:${index + 1}`,

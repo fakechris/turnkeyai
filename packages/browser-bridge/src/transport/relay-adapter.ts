@@ -156,18 +156,22 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
     url: string,
     owner?: { ownerType?: BrowserSession["ownerType"]; ownerId?: string }
   ): Promise<BrowserTarget> {
-    const result = await this.sendSession({
-      taskId: this.createId("browser-open-target"),
-      threadId: owner?.ownerId ?? browserSessionId,
-      instructions: `Open ${url}`,
-      actions: [
-        { kind: "open", url },
-        { kind: "snapshot", note: "open-target" },
-      ],
-      browserSessionId,
-      ...(owner?.ownerType ? { ownerType: owner.ownerType } : {}),
-      ...(owner?.ownerId ? { ownerId: owner.ownerId } : {}),
-    });
+    const result = await this.executeTask(
+      "send",
+      {
+        taskId: this.createId("browser-open-target"),
+        threadId: owner?.ownerId ?? browserSessionId,
+        instructions: `Open ${url}`,
+        actions: [
+          { kind: "open", url },
+          { kind: "snapshot", note: "open-target" },
+        ],
+        browserSessionId,
+        ...(owner?.ownerType ? { ownerType: owner.ownerType } : {}),
+        ...(owner?.ownerId ? { ownerId: owner.ownerId } : {}),
+      },
+      { targetBehavior: "new" }
+    );
     return this.requireTarget(result.sessionId, result.targetId);
   }
 
@@ -228,7 +232,8 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
 
   private async executeTask(
     dispatchMode: BrowserSessionDispatchMode,
-    task: BrowserTaskRequest
+    task: BrowserTaskRequest,
+    options: { targetBehavior?: RelayActionRequest["targetBehavior"] } = {}
   ): Promise<BrowserTaskResult> {
     const supportedActions = task.actions.filter(isRelayExecutableAction);
     if (supportedActions.length !== task.actions.length) {
@@ -258,7 +263,7 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
 
     const sessionId = lease.session.browserSessionId;
     const startedAt = Date.now();
-    let currentTargetId = task.targetId ?? lease.session.activeTargetId;
+    let currentTargetId = options.targetBehavior === "new" ? undefined : task.targetId ?? lease.session.activeTargetId;
     let currentTarget = currentTargetId ? await this.findTarget(sessionId, currentTargetId) : null;
     let resumeMode: NonNullable<BrowserTaskResult["resumeMode"]> = "cold";
     let targetResolution: NonNullable<BrowserTaskResult["targetResolution"]> = "new_target";
@@ -285,9 +290,13 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
         }
       }
 
+      const targetBehavior =
+        options.targetBehavior ?? (!currentTarget && relayActions[0]?.kind === "open" ? "new" : undefined);
+
       const relayResult = await this.gateway.dispatchActionRequest({
         browserSessionId: sessionId,
         taskId: task.taskId,
+        ...(targetBehavior ? { targetBehavior } : {}),
         ...(currentTarget?.transportSessionId ? { relayTargetId: currentTarget.transportSessionId } : {}),
         ...(currentTargetId ? { targetId: currentTargetId } : {}),
         actions: relayActions,

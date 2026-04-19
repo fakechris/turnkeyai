@@ -63,6 +63,54 @@ test("chrome relay action executor can open a tab and then execute content-scrip
   );
 });
 
+test("chrome relay action executor creates a new tab for new-target open requests", async () => {
+  const now = Date.now();
+  const createdTabs: Array<{ url: string; active?: boolean }> = [];
+  const sentMessages: unknown[] = [];
+  const executor = new ChromeRelayActionExecutor(
+    fakePlatform({
+      activeTab: { id: 7, windowId: 3, url: "https://example.com/start", title: "Start", status: "complete" },
+      onCreateTab(createProperties) {
+        createdTabs.push(createProperties);
+      },
+      onSendMessage(tabId, message) {
+        sentMessages.push({ tabId, message });
+        return {
+          ok: true,
+          page: {
+            requestedUrl: "https://example.com/new-target",
+            finalUrl: "https://example.com/new-target",
+            title: "New Target",
+            textExcerpt: "New target page",
+            statusCode: 200,
+            interactives: [],
+          },
+          trace: [],
+        };
+      },
+    })
+  );
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-new-target",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-new-target",
+    targetBehavior: "new",
+    actions: [
+      { kind: "open", url: "https://example.com/new-target" },
+      { kind: "snapshot", note: "new-target" },
+    ],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.relayTargetId, "chrome-tab:8");
+  assert.deepEqual(createdTabs, [{ url: "https://example.com/new-target", active: true }]);
+  assert.equal((sentMessages[0] as { tabId: number }).tabId, 8);
+});
+
 test("chrome relay action executor captures screenshot payloads through the extension platform", async () => {
   const now = Date.now();
   const activations: Array<{ tabId: number; active?: boolean }> = [];
@@ -676,6 +724,7 @@ test("chrome relay action executor rejects screenshot capture that exceeds remai
 function fakePlatform(input: {
   activeTab: { id: number; windowId?: number; url: string; title: string; status: "complete" | "loading" };
   onSendMessage(tabId: number, message: unknown): unknown;
+  onCreateTab?(createProperties: { url: string; active?: boolean }): void;
   onCaptureVisibleTab?(windowId?: number): string | Promise<string>;
   onUpdateTab?(tabId: number, updateProperties: { url?: string; active?: boolean }): void;
   onInjectContentScript?(tabId: number): void | Promise<void>;
@@ -716,6 +765,7 @@ function fakePlatform(input: {
       return currentTab;
     },
     async createTab(createProperties) {
+      input.onCreateTab?.(createProperties);
       currentTab = {
         id: currentTab.id + 1,
         ...(currentTab.windowId !== undefined ? { windowId: currentTab.windowId } : {}),

@@ -242,6 +242,7 @@ test("relay browser adapter chooses a peer whose capabilities satisfy open actio
 
     const request = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-browser"));
     assert.equal(request.peerId, "peer-browser");
+    assert.equal(request.targetBehavior, "new");
     assert.equal(gateway.pullNextActionRequest("peer-snapshot-only"), null);
 
     gateway.submitActionResult({
@@ -289,6 +290,116 @@ test("relay browser adapter chooses a peer whose capabilities satisfy open actio
     assert.equal(result.transportPeerId, "peer-browser");
     assert.equal(result.transportTargetId, "chrome-tab:1");
     assert.equal(result.page.finalUrl, "https://example.com/opened");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("relay browser adapter opens a new relay target instead of navigating the active target", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-new-target-"));
+
+  try {
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir: path.join(tempDir, "artifacts"),
+      stateRootDir: path.join(tempDir, "state"),
+      relay: {
+        relayPeerId: "peer-1",
+      },
+    });
+    const gateway = adapter.getRelayControlPlane();
+    gateway.registerPeer({
+      peerId: "peer-1",
+      capabilities: ["open", "snapshot"],
+    });
+    gateway.reportTargets("peer-1", [
+      {
+        relayTargetId: "tab-1",
+        url: "https://example.com/start",
+        title: "Start",
+        status: "attached",
+      },
+    ]);
+
+    const spawnPromise = adapter.spawnSession({
+      taskId: "task-attach-existing",
+      threadId: "thread-1",
+      instructions: "Attach current tab",
+      actions: [{ kind: "snapshot", note: "current" }],
+      ownerType: "thread",
+      ownerId: "thread-1",
+      profileOwnerType: "thread",
+      profileOwnerId: "thread-1",
+    });
+    const attachRequest = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-1"));
+    assert.equal(attachRequest.relayTargetId, "tab-1");
+    gateway.submitActionResult({
+      actionRequestId: attachRequest.actionRequestId,
+      peerId: "peer-1",
+      browserSessionId: attachRequest.browserSessionId,
+      taskId: attachRequest.taskId,
+      relayTargetId: "tab-1",
+      claimToken: attachRequest.claimToken!,
+      url: "https://example.com/start",
+      title: "Start",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/start",
+        finalUrl: "https://example.com/start",
+        title: "Start",
+        textExcerpt: "Start page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      artifactIds: [],
+    });
+    const spawned = await spawnPromise;
+
+    const openPromise = adapter.openTarget(spawned.sessionId, "https://example.com/new-target", {
+      ownerType: "thread",
+      ownerId: "thread-1",
+    });
+    const openRequest = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-1"));
+    assert.equal(openRequest.targetBehavior, "new");
+    assert.equal(openRequest.relayTargetId, undefined);
+    assert.deepEqual(
+      openRequest.actions.map((action) => action.kind),
+      ["open", "snapshot"]
+    );
+    gateway.submitActionResult({
+      actionRequestId: openRequest.actionRequestId,
+      peerId: "peer-1",
+      browserSessionId: openRequest.browserSessionId,
+      taskId: openRequest.taskId,
+      relayTargetId: "tab-2",
+      claimToken: openRequest.claimToken!,
+      url: "https://example.com/new-target",
+      title: "New Target",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/new-target",
+        finalUrl: "https://example.com/new-target",
+        title: "New Target",
+        textExcerpt: "New target page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      artifactIds: [],
+    });
+
+    const opened = await openPromise;
+    assert.equal(opened.transportSessionId, "tab-2");
+
+    const targets = await adapter.listTargets(spawned.sessionId);
+    assert.deepEqual(
+      targets.map((target) => target.transportSessionId).sort(),
+      ["tab-1", "tab-2"]
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
