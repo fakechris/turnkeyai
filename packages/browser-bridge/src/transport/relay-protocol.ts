@@ -6,13 +6,21 @@ import type {
 
 export type RelayExecutableBrowserAction = Extract<
   BrowserTaskAction,
-  { kind: "open" | "snapshot" | "click" | "type" | "hover" | "key" | "select" | "drag" | "scroll" | "console" | "wait" | "waitFor" | "dialog" | "popup" | "storage" | "cookie" | "eval" | "network" | "upload" | "screenshot" | "cdp" }
+  { kind: "open" | "snapshot" | "click" | "type" | "hover" | "key" | "select" | "drag" | "scroll" | "console" | "wait" | "waitFor" | "dialog" | "popup" | "storage" | "cookie" | "eval" | "network" | "download" | "upload" | "screenshot" | "cdp" }
 >;
 
 export interface RelayScreenshotPayload {
   label?: string;
   mimeType: string;
   dataBase64: string;
+}
+
+export interface RelayDownloadPayload {
+  url: string;
+  fileName: string;
+  mimeType?: string;
+  dataBase64: string;
+  sizeBytes: number;
 }
 
 export interface RelayPeerRegistration {
@@ -78,6 +86,7 @@ export interface RelayActionResult {
   trace: BrowserActionTrace[];
   screenshotPaths: string[];
   screenshotPayloads: RelayScreenshotPayload[];
+  downloadPayloads?: RelayDownloadPayload[];
   artifactIds: string[];
   errorMessage?: string;
 }

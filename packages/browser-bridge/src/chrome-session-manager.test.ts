@@ -1051,6 +1051,119 @@ test("chrome session manager arms network wait around a trigger action", async (
   assert.equal(result.trace[1]?.kind, "click");
 });
 
+test("chrome session manager persists downloaded files as bounded artifacts", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "chrome-session-manager-download-"));
+
+  try {
+    const artifactRecords: Array<Record<string, unknown>> = [];
+    let downloadPredicate: ((download: unknown) => boolean) | null = null;
+    let resolveDownload: ((download: unknown) => void) | null = null;
+    let savedPath = "";
+    const fakeDownload = {
+      url() {
+        return "https://example.com/export.csv";
+      },
+      suggestedFilename() {
+        return "export.csv";
+      },
+      async saveAs(filePath: string) {
+        savedPath = filePath;
+        await writeFile(filePath, "id,name\n1,Ada\n", "utf8");
+      },
+      async failure() {
+        return null;
+      },
+    };
+    const fakeLocator = {
+      first() {
+        return this;
+      },
+      async count() {
+        return 1;
+      },
+      async click() {
+        if (downloadPredicate?.(fakeDownload)) {
+          resolveDownload?.(fakeDownload);
+        }
+      },
+    };
+    const page = {
+      waitForEvent(eventName: string, options: { predicate?: (download: unknown) => boolean }) {
+        assert.equal(eventName, "download");
+        downloadPredicate = options.predicate ?? (() => true);
+        return new Promise((resolve) => {
+          resolveDownload = resolve;
+        });
+      },
+      locator() {
+        return fakeLocator;
+      },
+      async waitForLoadState() {
+        return undefined;
+      },
+      async waitForTimeout() {
+        return undefined;
+      },
+      url() {
+        return "https://example.com/report";
+      },
+      async title() {
+        return "Report";
+      },
+    } as unknown as Page;
+    const fakeContext = {
+      pages() {
+        return [page];
+      },
+      async newPage() {
+        return page;
+      },
+      async close() {
+        return undefined;
+      },
+    } as unknown as BrowserContext;
+    const manager = new ChromeSessionManager({
+      artifactRootDir: path.join(tempDir, "artifacts"),
+      createEphemeralContext: async () => fakeContext,
+      browserArtifactStore: {
+        async put(record: Record<string, unknown>) {
+          artifactRecords.push(record);
+        },
+      } as never,
+      captureSnapshot: async () => ({
+        requestedUrl: "https://example.com/report",
+        finalUrl: "https://example.com/report",
+        title: "Report",
+        textExcerpt: "Report page",
+        statusCode: 200,
+        interactives: [],
+      }),
+    });
+
+    const result = await manager.spawnSession({
+      taskId: "task-download",
+      threadId: "thread-download",
+      instructions: "Download report",
+      actions: [
+        { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
+        { kind: "click", selectors: ["a.download"] },
+      ],
+    });
+
+    assert.equal(result.trace[0]?.kind, "download");
+    assert.equal(result.trace[0]?.status, "ok");
+    assert.equal(result.trace[0]?.output?.fileName, "export.csv");
+    assert.equal(result.trace[0]?.output?.sizeBytes, 14);
+    assert.equal(result.trace[0]?.output?.path, undefined);
+    assert.equal(result.artifactIds.length, 1);
+    assert.equal(artifactRecords[0]?.type, "downloaded-file");
+    assert.equal(artifactRecords[0]?.path, savedPath);
+    assert.match(savedPath, /downloads\/task-download-browser-step-1-export\.csv$/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("chrome session manager executes bounded storage actions", async () => {
   const evaluateInputs: unknown[] = [];
   const fakePage = {

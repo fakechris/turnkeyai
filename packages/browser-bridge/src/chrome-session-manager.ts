@@ -1,4 +1,4 @@
-import { access, mkdir, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -25,6 +25,7 @@ import type {
   BrowserTaskResult,
 } from "@turnkeyai/core-types/team";
 import {
+  DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS,
   DEFAULT_BROWSER_DIALOG_TIMEOUT_MS,
   DEFAULT_BROWSER_POPUP_TIMEOUT_MS,
   DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
@@ -34,6 +35,8 @@ import {
   MAX_BROWSER_CDP_EVENT_PARAMS_BYTES,
   MAX_BROWSER_COOKIE_READ_ENTRIES,
   MAX_BROWSER_COOKIE_READ_VALUE_BYTES,
+  MAX_BROWSER_DOWNLOAD_FILE_BYTES,
+  MAX_BROWSER_DOWNLOAD_TIMEOUT_MS,
   DEFAULT_BROWSER_EVAL_TIMEOUT_MS,
   MAX_BROWSER_EVAL_RESULT_BYTES,
   MAX_BROWSER_EVAL_TIMEOUT_MS,
@@ -46,7 +49,7 @@ import {
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
-import { chromium, type Browser, type BrowserContext, type CDPSession, type Dialog, type Locator, type Page, type Response } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Dialog, type Download, type Locator, type Page, type Response } from "playwright-core";
 
 import { captureDomSnapshot } from "./dom-snapshot";
 import type { BrowserSessionManager as LocalBrowserSessionManager } from "./session/browser-session-manager";
@@ -64,6 +67,15 @@ interface LocalCdpEvent {
 interface LocalCdpActionOutput {
   result: unknown;
   events: LocalCdpEvent[];
+}
+
+interface LocalDownloadArtifact {
+  artifactId: string;
+  path: string;
+  fileName: string;
+  sizeBytes: number;
+  url: string;
+  mimeType?: string;
 }
 
 interface LocalCdpCookie {
@@ -217,6 +229,7 @@ export class ChromeSessionManager {
     const artifactIds: string[] = [];
     const pendingDialogHandlers: Promise<void>[] = [];
     const pendingNetworkHandlers: Promise<void>[] = [];
+    const pendingDownloadHandlers: Promise<LocalDownloadArtifact | null>[] = [];
 
     let requestedUrl = "";
     let lastStatusCode = 200;
@@ -358,6 +371,33 @@ export class ChromeSessionManager {
             continue;
           }
 
+          if (action.kind === "download") {
+            const timeoutMs = normalizeDownloadTimeoutMs(action.timeoutMs);
+            const traceEntry: BrowserActionTrace = {
+              stepId,
+              kind: action.kind,
+              startedAt,
+              completedAt: Date.now(),
+              status: "ok",
+              input: toTraceInput(action),
+              output: {
+                timeoutMs,
+                armed: true,
+              },
+            };
+            trace.push(traceEntry);
+            const pending = armPageDownloadHandler(page, action, traceEntry, timeoutMs, {
+              taskDir,
+              stepId,
+              browserSessionId: sessionId,
+              ...(currentTargetId ? { targetId: currentTargetId } : {}),
+              ...(this.browserArtifactStore ? { browserArtifactStore: this.browserArtifactStore } : {}),
+            });
+            pending.catch(() => undefined);
+            pendingDownloadHandlers.push(pending);
+            continue;
+          }
+
           const output = await this.executeAction({
             page,
             action,
@@ -478,6 +518,12 @@ export class ChromeSessionManager {
         }
       }
 
+      const downloadedArtifacts = await Promise.all(pendingDownloadHandlers);
+      for (const artifact of downloadedArtifacts) {
+        if (artifact) {
+          artifactIds.push(artifact.artifactId);
+        }
+      }
       await Promise.all([...pendingDialogHandlers, ...pendingNetworkHandlers]);
       await consumePendingPopup();
 
@@ -1271,6 +1317,10 @@ export class ChromeSessionManager {
       throw new Error(`${action.kind} actions must be armed by the browser task executor`);
     }
 
+    if (action.kind === "download") {
+      throw new Error(`${action.kind} actions must be armed by the browser task executor`);
+    }
+
     const screenshotPath = path.join(
       sessionDir,
       `${String(stepIndex).padStart(2, "0")}-${sanitizeLabel(action.label ?? action.kind)}.png`
@@ -1555,6 +1605,89 @@ async function armPageNetworkHandler(
     traceEntry.errorMessage = error instanceof Error ? error.message : "browser network action failed";
     throw error;
   }
+}
+
+async function armPageDownloadHandler(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "download" }>,
+  traceEntry: BrowserActionTrace,
+  timeoutMs: number,
+  options: {
+    taskDir: string;
+    stepId: string;
+    browserSessionId: string;
+    targetId?: string;
+    browserArtifactStore?: BrowserArtifactStore;
+  }
+): Promise<LocalDownloadArtifact | null> {
+  try {
+    const download = await page.waitForEvent("download", {
+      predicate: (candidate) => matchesDownload(candidate, action),
+      timeout: timeoutMs,
+    });
+    const fileName = sanitizeUploadFileName(download.suggestedFilename() || "download.bin");
+    const downloadsDir = path.join(options.taskDir, "downloads");
+    await mkdir(downloadsDir, { recursive: true });
+    const filePath = path.join(downloadsDir, `${sanitizeLabel(options.stepId)}-${fileName}`);
+    await download.saveAs(filePath);
+    const failure = await download.failure().catch(() => null);
+    if (failure) {
+      throw new Error(`browser download failed: ${failure}`);
+    }
+    const stats = await stat(filePath);
+    if (!stats.isFile()) {
+      throw new Error("browser download did not produce a file");
+    }
+    if (stats.size > MAX_BROWSER_DOWNLOAD_FILE_BYTES) {
+      await rm(filePath, { force: true });
+      throw new Error(`browser download exceeds ${MAX_BROWSER_DOWNLOAD_FILE_BYTES} bytes`);
+    }
+
+    const artifactId = options.browserArtifactStore ? `${options.stepId}:download` : "";
+    if (options.browserArtifactStore) {
+      await options.browserArtifactStore.put({
+        artifactId,
+        browserSessionId: options.browserSessionId,
+        ...(options.targetId ? { targetId: options.targetId } : {}),
+        type: "downloaded-file",
+        path: filePath,
+        createdAt: Date.now(),
+        metadata: {
+          url: download.url(),
+          fileName,
+          sizeBytes: stats.size,
+        },
+      });
+    }
+
+    traceEntry.completedAt = Date.now();
+    traceEntry.output = {
+      timeoutMs,
+      matched: true,
+      url: download.url(),
+      fileName,
+      sizeBytes: stats.size,
+      ...(artifactId ? { artifactId } : {}),
+    };
+    return artifactId
+      ? {
+          artifactId,
+          path: filePath,
+          fileName,
+          sizeBytes: stats.size,
+          url: download.url(),
+        }
+      : null;
+  } catch (error) {
+    traceEntry.completedAt = Date.now();
+    traceEntry.status = "failed";
+    traceEntry.errorMessage = error instanceof Error ? error.message : "browser download action failed";
+    throw error;
+  }
+}
+
+function matchesDownload(download: Download, action: Extract<BrowserTaskAction, { kind: "download" }>): boolean {
+  return action.urlPattern ? matchesUrlPattern(download.url(), action.urlPattern) : true;
 }
 
 function matchesNetworkResponse(
@@ -1984,6 +2117,12 @@ function normalizeNetworkTimeoutMs(value: number | undefined): number {
     : DEFAULT_BROWSER_NETWORK_TIMEOUT_MS;
 }
 
+function normalizeDownloadTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_DOWNLOAD_TIMEOUT_MS)
+    : DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS;
+}
+
 function normalizeCdpTimeoutMs(value: number | undefined): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0
     ? Math.min(value, MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
@@ -2312,6 +2451,13 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
       urlPattern: action.urlPattern ?? null,
       method: action.method ?? null,
       status: action.status ?? null,
+      timeoutMs: action.timeoutMs ?? null,
+    };
+  }
+
+  if (action.kind === "download") {
+    return {
+      urlPattern: action.urlPattern ?? null,
       timeoutMs: action.timeoutMs ?? null,
     };
   }

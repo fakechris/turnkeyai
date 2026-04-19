@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -333,6 +333,103 @@ test("relay browser adapter injects upload payloads from session artifacts", asy
     const uploadHistory = history.find((entry) => entry.taskId === "task-upload");
     assert.ok(uploadHistory);
     assert.deepEqual(uploadHistory?.actionKinds, ["upload"]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("relay browser adapter persists download payloads returned by a relay peer", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-download-"));
+
+  try {
+    const artifactRootDir = path.join(tempDir, "artifacts");
+    const stateRootDir = path.join(tempDir, "state");
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir,
+      stateRootDir,
+      relay: {
+        relayPeerId: "peer-1",
+      },
+    });
+    const gateway = adapter.getRelayControlPlane();
+    gateway.registerPeer({
+      peerId: "peer-1",
+      capabilities: ["download", "snapshot"],
+    });
+    gateway.reportTargets("peer-1", [
+      {
+        relayTargetId: "tab-download",
+        url: "https://example.com/report",
+        title: "Report",
+        status: "attached",
+      },
+    ]);
+
+    const resultPromise = adapter.spawnSession({
+      taskId: "task-download",
+      threadId: "thread-1",
+      instructions: "Download report",
+      actions: [{ kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 }],
+      ownerType: "thread",
+      ownerId: "thread-1",
+      profileOwnerType: "thread",
+      profileOwnerId: "thread-1",
+    });
+
+    const request = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-1"));
+    assert.equal(request.actions[0]?.kind, "download");
+    gateway.submitActionResult({
+      actionRequestId: request.actionRequestId,
+      peerId: "peer-1",
+      browserSessionId: request.browserSessionId,
+      taskId: request.taskId,
+      relayTargetId: "tab-download",
+      claimToken: request.claimToken!,
+      url: "https://example.com/report",
+      title: "Report",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/report",
+        finalUrl: "https://example.com/report",
+        title: "Report",
+        textExcerpt: "Report page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [
+        {
+          stepId: "task-download:relay-download:1",
+          kind: "download",
+          startedAt: 1,
+          completedAt: 2,
+          status: "ok",
+          input: { urlPattern: "/export.csv", timeoutMs: 1_000 },
+          output: { fileName: "export.csv", sizeBytes: 14 },
+        },
+      ],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      downloadPayloads: [
+        {
+          url: "https://example.com/export.csv",
+          fileName: "export.csv",
+          mimeType: "text/csv",
+          dataBase64: "aWQsbmFtZQoxLEFkYQo=",
+          sizeBytes: 14,
+        },
+      ],
+      artifactIds: [],
+    });
+
+    const result = await resultPromise;
+    const downloadArtifactId = result.artifactIds.find((artifactId) => artifactId.includes("relay-download"));
+    assert.ok(downloadArtifactId);
+    const artifact = await new FileBrowserArtifactStore({
+      rootDir: path.join(stateRootDir, "artifacts"),
+    }).get(downloadArtifactId);
+    assert.equal(artifact?.type, "downloaded-file");
+    assert.equal(artifact?.metadata?.fileName, "export.csv");
+    assert.equal(await readFile(artifact!.path, "utf8"), "id,name\n1,Ada\n");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

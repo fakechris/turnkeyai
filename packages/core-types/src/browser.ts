@@ -29,6 +29,7 @@ export type BrowserActionKind =
   | "eval"
   | "network"
   | "upload"
+  | "download"
   | "screenshot"
   | "cdp";
 
@@ -87,6 +88,10 @@ export const MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH = 2_048;
 export const MAX_BROWSER_NETWORK_METHOD_LENGTH = 16;
 export const DEFAULT_BROWSER_NETWORK_TIMEOUT_MS = 10_000;
 export const MAX_BROWSER_NETWORK_TIMEOUT_MS = 60_000;
+export const MAX_BROWSER_DOWNLOAD_URL_PATTERN_LENGTH = 2_048;
+export const DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS = 10_000;
+export const MAX_BROWSER_DOWNLOAD_TIMEOUT_MS = 120_000;
+export const MAX_BROWSER_DOWNLOAD_FILE_BYTES = 25 * 1024 * 1024;
 export const MAX_BROWSER_UPLOAD_ARTIFACT_ID_LENGTH = 512;
 export const MAX_BROWSER_UPLOAD_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH = 255;
@@ -203,6 +208,12 @@ export type BrowserNetworkAction = {
   timeoutMs?: number;
 };
 
+export type BrowserDownloadAction = {
+  kind: "download";
+  urlPattern?: string;
+  timeoutMs?: number;
+};
+
 export interface BrowserUploadFilePayload {
   name: string;
   mimeType?: string;
@@ -235,6 +246,7 @@ export type BrowserTaskAction =
   | BrowserCookieAction
   | BrowserEvalAction
   | BrowserNetworkAction
+  | BrowserDownloadAction
   | BrowserUploadAction
   | { kind: "screenshot"; label?: string }
   | {

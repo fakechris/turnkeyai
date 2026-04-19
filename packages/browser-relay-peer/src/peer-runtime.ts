@@ -1,6 +1,7 @@
 import type {
   RelayActionRequest,
   RelayActionResult,
+  RelayDownloadPayload,
   RelayPeerRecord,
   RelayPeerRegistration,
   RelayScreenshotPayload,
@@ -33,6 +34,7 @@ export interface RelayPeerExecutionResult {
   trace: RelayActionResult["trace"];
   screenshotPaths?: string[];
   screenshotPayloads?: RelayScreenshotPayload[];
+  downloadPayloads?: RelayDownloadPayload[];
   artifactIds?: string[];
   errorMessage?: string;
 }
@@ -106,11 +108,12 @@ export class BrowserRelayPeerRuntime {
         relayTargetId,
         url: "about:blank",
         status: "failed",
-        trace: [],
-        screenshotPaths: [],
-        screenshotPayloads: [],
-        artifactIds: [],
-        errorMessage: error instanceof Error ? error.message : "relay execution failed",
+      trace: [],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      downloadPayloads: [],
+      artifactIds: [],
+      errorMessage: error instanceof Error ? error.message : "relay execution failed",
       };
     } finally {
       heartbeatLease.stop();
@@ -133,6 +136,7 @@ export class BrowserRelayPeerRuntime {
       trace: execution.trace,
       screenshotPaths: execution.screenshotPaths ?? [],
       screenshotPayloads: execution.screenshotPayloads ?? [],
+      downloadPayloads: execution.downloadPayloads ?? [],
       artifactIds: execution.artifactIds ?? [],
       ...(execution.errorMessage ? { errorMessage: execution.errorMessage } : {}),
     });

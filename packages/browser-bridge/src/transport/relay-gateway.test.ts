@@ -218,7 +218,7 @@ test("relay gateway dispatches wait actions to peers that advertise wait support
   assert.equal(result.trace[0]?.kind, "wait");
 });
 
-test("relay gateway routes hover key select drag waitFor dialog popup storage cookie eval network and upload actions only to peers that advertise input support", async () => {
+test("relay gateway routes hover key select drag waitFor dialog popup storage cookie eval network download and upload actions only to peers that advertise input support", async () => {
   const gateway = new RelayGateway({
     now: () => 1_000,
     createId: (prefix) => `${prefix}-input`,
@@ -242,6 +242,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
       "cookie",
       "eval",
       "network",
+      "download",
       "upload",
     ],
   });
@@ -261,6 +262,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
       { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/" },
       { kind: "eval", expression: "document.title", awaitPromise: true },
       { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201 },
+      { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
       { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
       { kind: "snapshot", note: "after-input" },
     ],
@@ -283,6 +285,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
       "cookie",
       "eval",
       "network",
+      "download",
       "upload",
       "snapshot",
     ]
@@ -396,10 +399,18 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
         input: { action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201 },
       },
       {
-        stepId: "task-input:relay-step:12",
-        kind: "upload",
+        stepId: "task-input:relay-download:12",
+        kind: "download",
         startedAt: 23,
         completedAt: 24,
+        status: "ok",
+        input: { urlPattern: "/export.csv", timeoutMs: 1_000 },
+      },
+      {
+        stepId: "task-input:relay-step:13",
+        kind: "upload",
+        startedAt: 25,
+        completedAt: 26,
         status: "ok",
         input: { artifactId: "artifact-upload" },
       },
@@ -422,7 +433,8 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
   assert.equal(result.trace[8]?.kind, "cookie");
   assert.equal(result.trace[9]?.kind, "eval");
   assert.equal(result.trace[10]?.kind, "network");
-  assert.equal(result.trace[11]?.kind, "upload");
+  assert.equal(result.trace[11]?.kind, "download");
+  assert.equal(result.trace[12]?.kind, "upload");
 });
 
 test("relay gateway routes cdp actions only to peers that advertise cdp support", async () => {

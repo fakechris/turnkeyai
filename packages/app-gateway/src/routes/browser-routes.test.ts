@@ -334,7 +334,7 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
-test("browser task mutation routes validate key hover select drag waitFor dialog popup storage cookie eval network and upload action contracts", async () => {
+test("browser task mutation routes validate key hover select drag waitFor dialog popup storage cookie eval network download and upload action contracts", async () => {
   const invalidHover = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -544,6 +544,44 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     error: "actions[0] network.method must be uppercase ASCII and <= 16 characters",
   });
 
+  const invalidDownload = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "download", timeoutMs: 180_000 }],
+      },
+    }),
+    res: invalidDownload.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidDownload.res.statusCode, 400);
+  assert.deepEqual(invalidDownload.json, {
+    error: "actions[0] download.timeoutMs must be a positive integer <= 120000",
+  });
+
+  const rejectedDownloadPayload = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "download", artifactId: "download-1" }],
+      },
+    }),
+    res: rejectedDownloadPayload.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(rejectedDownloadPayload.res.statusCode, 400);
+  assert.deepEqual(rejectedDownloadPayload.json, {
+    error: "actions[0] download does not accept path, artifactId, file, or dataBase64 fields",
+  });
+
   const invalidUpload = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -624,6 +662,7 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
           { kind: "cookie", action: "get", name: "sid" },
           { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
           { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
+          { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
           { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
         ],
       },
@@ -647,6 +686,7 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     { kind: "cookie", action: "get", name: "sid" },
     { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
     { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
+    { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
     { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
   ]);
 });

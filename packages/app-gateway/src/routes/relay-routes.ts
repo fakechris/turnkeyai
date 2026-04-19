@@ -264,6 +264,13 @@ export async function handleRelayRoutes(input: {
         mimeType?: string;
         dataBase64?: string;
       }>;
+      downloadPayloads?: Array<{
+        url?: string;
+        fileName?: string;
+        mimeType?: string;
+        dataBase64?: string;
+        sizeBytes?: number;
+      }>;
       artifactIds?: string[];
       errorMessage?: string;
     }>(req);
@@ -334,6 +341,31 @@ export async function handleRelayRoutes(input: {
       });
       return true;
     }
+    if (
+      body.downloadPayloads !== undefined &&
+      (!Array.isArray(body.downloadPayloads) ||
+        body.downloadPayloads.some(
+          (payload) =>
+            !payload ||
+            typeof payload !== "object" ||
+            typeof payload.url !== "string" ||
+            payload.url.trim().length === 0 ||
+            typeof payload.fileName !== "string" ||
+            payload.fileName.trim().length === 0 ||
+            typeof payload.dataBase64 !== "string" ||
+            payload.dataBase64.length === 0 ||
+            typeof payload.sizeBytes !== "number" ||
+            !Number.isInteger(payload.sizeBytes) ||
+            payload.sizeBytes < 0 ||
+            (payload.mimeType !== undefined &&
+              (typeof payload.mimeType !== "string" || payload.mimeType.trim().length === 0))
+        ))
+    ) {
+      sendJson(res, 400, {
+        error: "downloadPayloads must contain objects with non-empty url, fileName, dataBase64, and sizeBytes",
+      });
+      return true;
+    }
     sendJson(
       res,
       200,
@@ -371,6 +403,34 @@ export async function handleRelayRoutes(input: {
                 dataBase64: payload.dataBase64,
               }))
           : [],
+        ...(Array.isArray(body.downloadPayloads)
+          ? {
+              downloadPayloads: body.downloadPayloads
+                .filter(
+                  (payload): payload is {
+                    url: string;
+                    fileName: string;
+                    mimeType?: string;
+                    dataBase64: string;
+                    sizeBytes: number;
+                  } =>
+                    Boolean(payload) &&
+                    typeof payload === "object" &&
+                    typeof payload.url === "string" &&
+                    typeof payload.fileName === "string" &&
+                    typeof payload.dataBase64 === "string" &&
+                    typeof payload.sizeBytes === "number" &&
+                    (payload.mimeType === undefined || typeof payload.mimeType === "string")
+                )
+                .map((payload) => ({
+                  url: payload.url.trim(),
+                  fileName: payload.fileName.trim(),
+                  ...(payload.mimeType?.trim() ? { mimeType: payload.mimeType.trim() } : {}),
+                  dataBase64: payload.dataBase64,
+                  sizeBytes: payload.sizeBytes,
+                })),
+            }
+          : {}),
         artifactIds: Array.isArray(body.artifactIds)
           ? body.artifactIds
               .filter((artifactId): artifactId is string => typeof artifactId === "string")

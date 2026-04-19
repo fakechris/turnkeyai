@@ -20,7 +20,11 @@ import type {
   BrowserUploadFilePayload,
   SnapshotRefEntry,
 } from "@turnkeyai/core-types/team";
-import { MAX_BROWSER_UPLOAD_FILE_BYTES, MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH } from "@turnkeyai/core-types/team";
+import {
+  MAX_BROWSER_DOWNLOAD_FILE_BYTES,
+  MAX_BROWSER_UPLOAD_FILE_BYTES,
+  MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
+} from "@turnkeyai/core-types/team";
 
 import { FileBrowserArtifactStore } from "../artifacts/file-browser-artifact-store";
 import { FileSnapshotRefStore } from "../refs/file-snapshot-ref-store";
@@ -30,7 +34,7 @@ import { FileBrowserProfileStore } from "../session/file-browser-profile-store";
 import { FileBrowserSessionStore } from "../session/file-browser-session-store";
 import { FileBrowserTargetStore } from "../session/file-browser-target-store";
 import { RelayGateway, isRelayExecutableAction } from "./relay-gateway";
-import type { RelayActionRequest, RelayActionResult } from "./relay-protocol";
+import type { RelayActionRequest, RelayActionResult, RelayDownloadPayload } from "./relay-protocol";
 import type { BrowserTransportAdapter, BrowserTransportFactoryOptions, RelayControlPlane, RelayTransportOptions } from "./transport-adapter";
 
 const RELAY_EXECUTABLE_ACTION_KINDS = new Set<string>([
@@ -52,6 +56,7 @@ const RELAY_EXECUTABLE_ACTION_KINDS = new Set<string>([
   "cookie",
   "eval",
   "network",
+  "download",
   "upload",
   "screenshot",
   "cdp",
@@ -342,6 +347,13 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
         screenshotPayloads: relayResult.screenshotPayloads ?? [],
       });
       artifactIds.push(...persistedScreenshots.artifactIds);
+      const persistedDownloads = await this.persistDownloadArtifacts({
+        task,
+        sessionId,
+        targetId: target.targetId,
+        downloadPayloads: relayResult.downloadPayloads ?? [],
+      });
+      artifactIds.push(...persistedDownloads.artifactIds);
       const persistedSnapshotArtifactId = await this.persistSnapshotArtifact({
         task,
         sessionId,
@@ -611,6 +623,58 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
 
     return {
       screenshotPaths,
+      artifactIds,
+    };
+  }
+
+  private async persistDownloadArtifacts(input: {
+    task: BrowserTaskRequest;
+    sessionId: string;
+    targetId: string;
+    downloadPayloads: RelayDownloadPayload[];
+  }): Promise<{ artifactIds: string[] }> {
+    if (!input.downloadPayloads.length) {
+      return {
+        artifactIds: [],
+      };
+    }
+
+    const taskDir = path.join(this.artifactRootDir, input.sessionId, encodeURIComponent(input.task.taskId), "downloads");
+    await mkdir(taskDir, { recursive: true });
+    const artifactIds: string[] = [];
+
+    for (let index = 0; index < input.downloadPayloads.length; index += 1) {
+      const payload = input.downloadPayloads[index]!;
+      if (payload.sizeBytes > MAX_BROWSER_DOWNLOAD_FILE_BYTES) {
+        throw new Error(`relay download payload exceeds ${MAX_BROWSER_DOWNLOAD_FILE_BYTES} bytes`);
+      }
+      const data = Buffer.from(payload.dataBase64, "base64");
+      if (data.byteLength !== payload.sizeBytes) {
+        throw new Error("relay download payload size does not match decoded bytes");
+      }
+      const fileName = sanitizeUploadFileName(payload.fileName);
+      const downloadPath = path.join(taskDir, `${String(index + 1).padStart(2, "0")}-${fileName}`);
+      await writeFile(downloadPath, data);
+
+      const artifactId = `${input.task.taskId}:relay-download:${index + 1}`;
+      artifactIds.push(artifactId);
+      await this.artifactStore.put({
+        artifactId,
+        browserSessionId: input.sessionId,
+        targetId: input.targetId,
+        type: "downloaded-file",
+        path: downloadPath,
+        createdAt: Date.now(),
+        metadata: {
+          url: payload.url,
+          fileName,
+          sizeBytes: payload.sizeBytes,
+          ...(payload.mimeType ? { mimeType: payload.mimeType } : {}),
+        },
+      });
+    }
+
+    return {
       artifactIds,
     };
   }

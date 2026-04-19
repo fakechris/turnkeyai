@@ -714,6 +714,124 @@ test("chrome relay action executor arms network wait around a trigger action", a
   assert.equal(result.trace[1]?.kind, "click");
 });
 
+test("chrome relay action executor proxies completed downloads as payloads without local paths", async () => {
+  const now = Date.now();
+  const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];
+  const detachedTabs: number[] = [];
+  let resolveDownloadBegin:
+    | ((event: { method: string; params: Record<string, unknown>; timestamp: number }) => void)
+    | null = null;
+  let resolveDownloadProgress:
+    | ((event: { method: string; params: Record<string, unknown>; timestamp: number }) => void)
+    | null = null;
+  const platform = fakePlatform({
+    activeTab: { id: 7, windowId: 3, url: "https://example.com/report", title: "Report", status: "complete" },
+    onDebuggerCommand(tabId, method, params) {
+      debuggerCommands.push({ tabId, method, params });
+      return {};
+    },
+    onSendMessage() {
+      resolveDownloadBegin?.({
+        method: "Page.downloadWillBegin",
+        params: {
+          guid: "download-1",
+          url: "https://example.com/export.csv",
+          suggestedFilename: "export.csv",
+        },
+        timestamp: 123,
+      });
+      setTimeout(() => {
+        resolveDownloadProgress?.({
+          method: "Page.downloadProgress",
+          params: {
+            guid: "download-1",
+            state: "completed",
+            receivedBytes: 14,
+            totalBytes: 14,
+          },
+          timestamp: 124,
+        });
+      }, 0);
+      return {
+        ok: true,
+        page: {
+          requestedUrl: "https://example.com/report",
+          finalUrl: "https://example.com/report",
+          title: "Report",
+          textExcerpt: "Report page",
+          statusCode: 200,
+          interactives: [],
+        },
+        trace: [
+          {
+            stepId: "task-download:relay-click:2",
+            kind: "click",
+            startedAt: 1,
+            completedAt: 2,
+            status: "ok",
+            input: { text: "Export" },
+          },
+        ],
+      };
+    },
+  });
+  platform.waitForDebuggerEvent = async (tabId, method, timeoutMs) => {
+    assert.equal(tabId, 7);
+    assert.equal(timeoutMs <= 1_000, true);
+    if (method === "Page.downloadWillBegin") {
+      return await new Promise((resolve) => {
+        resolveDownloadBegin = resolve;
+      });
+    }
+    assert.equal(method, "Page.downloadProgress");
+    return await new Promise((resolve) => {
+      resolveDownloadProgress = resolve;
+    });
+  };
+  platform.fetchDownload = async (url, input) => {
+    assert.equal(url, "https://example.com/export.csv");
+    assert.equal(input.maxBytes > 14, true);
+    return {
+      mimeType: "text/csv",
+      dataBase64: "aWQsbmFtZQoxLEFkYQo=",
+      sizeBytes: 14,
+    };
+  };
+  platform.detachDebugger = async (tabId) => {
+    detachedTabs.push(tabId);
+  };
+  const executor = new ChromeRelayActionExecutor(platform);
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-download",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-download",
+    actions: [
+      { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
+      { kind: "click", text: "Export" },
+    ],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(debuggerCommands, [{ tabId: 7, method: "Page.enable", params: {} }]);
+  assert.deepEqual(detachedTabs, [7]);
+  assert.equal(result.trace[0]?.kind, "download");
+  assert.equal(result.trace[0]?.output?.fileName, "export.csv");
+  assert.equal(result.trace[0]?.output?.path, undefined);
+  assert.deepEqual(result.downloadPayloads, [
+    {
+      url: "https://example.com/export.csv",
+      fileName: "export.csv",
+      mimeType: "text/csv",
+      dataBase64: "aWQsbmFtZQoxLEFkYQo=",
+      sizeBytes: 14,
+    },
+  ]);
+});
+
 test("chrome relay action executor can run typed hover and key actions through debugger input", async () => {
   const now = Date.now();
   const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];

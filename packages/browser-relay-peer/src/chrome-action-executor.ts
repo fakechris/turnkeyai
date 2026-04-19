@@ -1,5 +1,6 @@
 import type { BrowserActionTrace } from "@turnkeyai/core-types/team";
 import {
+  DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS,
   DEFAULT_BROWSER_DIALOG_TIMEOUT_MS,
   DEFAULT_BROWSER_POPUP_TIMEOUT_MS,
   DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
@@ -9,16 +10,20 @@ import {
   MAX_BROWSER_CDP_EVENT_PARAMS_BYTES,
   MAX_BROWSER_COOKIE_READ_ENTRIES,
   MAX_BROWSER_COOKIE_READ_VALUE_BYTES,
+  MAX_BROWSER_DOWNLOAD_FILE_BYTES,
+  MAX_BROWSER_DOWNLOAD_TIMEOUT_MS,
   DEFAULT_BROWSER_EVAL_TIMEOUT_MS,
   MAX_BROWSER_EVAL_RESULT_BYTES,
   MAX_BROWSER_EVAL_TIMEOUT_MS,
   DEFAULT_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
 import type {
   RelayActionRequest,
+  RelayDownloadPayload,
   RelayScreenshotPayload,
 } from "@turnkeyai/browser-bridge/transport/relay-protocol";
 
@@ -36,6 +41,7 @@ type RelayPopupAction = Extract<RelayAction, { kind: "popup" }>;
 type RelayCookieAction = Extract<RelayAction, { kind: "cookie" }>;
 type RelayEvalAction = Extract<RelayAction, { kind: "eval" }>;
 type RelayNetworkAction = Extract<RelayAction, { kind: "network" }>;
+type RelayDownloadAction = Extract<RelayAction, { kind: "download" }>;
 interface RelayCdpActionOutput {
   result: unknown;
   events: ChromeDebuggerEventLike[];
@@ -143,8 +149,10 @@ export class ChromeRelayActionExecutor {
   ) {
     const trace: BrowserActionTrace[] = [];
     const screenshotPayloads: RelayScreenshotPayload[] = [];
+    const downloadPayloads: RelayDownloadPayload[] = [];
     const pendingDialogHandlers: Promise<void>[] = [];
     const pendingNetworkHandlers: Promise<void>[] = [];
+    const pendingDownloadHandlers: Promise<RelayDownloadPayload>[] = [];
     const contentScriptBatch: RelayActionRequest["actions"] = [];
     const contentScriptState: {
       latestResponse: RelayContentScriptExecuteResponse | null;
@@ -187,7 +195,7 @@ export class ChromeRelayActionExecutor {
         if (pendingPopupWatcher) {
           const response = await flushContentScriptBatch();
           if (response && !response.ok) {
-            return this.buildFailedContentScriptResult(activeTab, trace, screenshotPayloads, response);
+            return this.buildFailedContentScriptResult(activeTab, trace, screenshotPayloads, downloadPayloads, response);
           }
           await consumePendingPopup();
         }
@@ -196,7 +204,13 @@ export class ChromeRelayActionExecutor {
 
       const contentScriptResponse = await flushContentScriptBatch();
       if (contentScriptResponse && !contentScriptResponse.ok) {
-        return this.buildFailedContentScriptResult(activeTab, trace, screenshotPayloads, contentScriptResponse);
+        return this.buildFailedContentScriptResult(
+          activeTab,
+          trace,
+          screenshotPayloads,
+          downloadPayloads,
+          contentScriptResponse
+        );
       }
 
       if (action.kind === "open") {
@@ -378,6 +392,30 @@ export class ChromeRelayActionExecutor {
         continue;
       }
 
+      if (action.kind === "download") {
+        const startedAt = Date.now();
+        const timeoutMs = normalizeDownloadTimeoutMs(action.timeoutMs);
+        const traceEntry: BrowserActionTrace = {
+          stepId: `${request.taskId}:relay-download:${index + 1}`,
+          kind: "download",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            urlPattern: action.urlPattern ?? null,
+            timeoutMs: action.timeoutMs ?? null,
+          },
+          output: {
+            timeoutMs,
+            armed: true,
+          },
+        };
+        trace.push(traceEntry);
+        const armed = await this.armDownloadAction(activeTab.id, action, debuggerTabsToDetach, traceEntry, timeoutMs);
+        pendingDownloadHandlers.push(armed.pending);
+        continue;
+      }
+
       if (action.kind === "cookie") {
         const startedAt = Date.now();
         const currentUrl = contentScriptState.latestResponse?.page?.finalUrl ?? activeTab.url ?? "";
@@ -492,9 +530,16 @@ export class ChromeRelayActionExecutor {
 
     const contentScriptResponse = await flushContentScriptBatch();
     if (contentScriptResponse && !contentScriptResponse.ok) {
-      return this.buildFailedContentScriptResult(activeTab, trace, screenshotPayloads, contentScriptResponse);
+      return this.buildFailedContentScriptResult(
+        activeTab,
+        trace,
+        screenshotPayloads,
+        downloadPayloads,
+        contentScriptResponse
+      );
     }
     await consumePendingPopup();
+    downloadPayloads.push(...(await Promise.all(pendingDownloadHandlers)));
     await Promise.all([...pendingDialogHandlers, ...pendingNetworkHandlers]);
 
     const finalTab = activeTab;
@@ -512,6 +557,7 @@ export class ChromeRelayActionExecutor {
         activeTab,
         [...trace, ...finalSnapshotResponse.trace],
         screenshotPayloads,
+        downloadPayloads,
         finalSnapshotResponse
       );
     }
@@ -528,6 +574,7 @@ export class ChromeRelayActionExecutor {
       trace: finalTrace,
       screenshotPaths: [],
       screenshotPayloads,
+      downloadPayloads,
       artifactIds: [],
     };
   }
@@ -943,6 +990,72 @@ export class ChromeRelayActionExecutor {
     return { pending };
   }
 
+  private async armDownloadAction(
+    tabId: number,
+    action: RelayDownloadAction,
+    debuggerTabsToDetach: Set<number>,
+    traceEntry: BrowserActionTrace,
+    timeoutMs: number
+  ): Promise<{ pending: Promise<RelayDownloadPayload> }> {
+    const sendDebuggerCommand = this.platform.sendDebuggerCommand;
+    const waitForDebuggerEvent = this.platform.waitForDebuggerEvent;
+    const fetchDownload = this.platform.fetchDownload;
+    if (!sendDebuggerCommand || !waitForDebuggerEvent || !fetchDownload) {
+      throw new Error("relay download action requires chrome debugger event and download fetch support");
+    }
+    debuggerTabsToDetach.add(tabId);
+    await sendDebuggerCommand(tabId, "Page.enable", {});
+    const pending = (async () => {
+      const deadline = Date.now() + timeoutMs;
+      try {
+        while (Date.now() <= deadline) {
+          const remainingMs = Math.max(1, deadline - Date.now());
+          const event = await waitForDebuggerEvent(tabId, "Page.downloadWillBegin", remainingMs);
+          const url = getCdpDownloadUrl(event.params);
+          if (!url || (action.urlPattern && !matchesUrlPattern(url, action.urlPattern))) {
+            continue;
+          }
+          if (!isHttpUrl(url)) {
+            throw new Error("relay download action can only proxy http(s) download URLs");
+          }
+          const guid = getCdpDownloadGuid(event.params);
+          const fileName = sanitizeDownloadFileName(getCdpDownloadSuggestedFilename(event.params) ?? "download.bin");
+          if (guid) {
+            await waitForCdpDownloadCompletion(tabId, guid, deadline, waitForDebuggerEvent);
+          }
+          const fetched = await fetchDownload(url, {
+            maxBytes: MAX_BROWSER_DOWNLOAD_FILE_BYTES,
+          });
+          const payload: RelayDownloadPayload = {
+            url,
+            fileName,
+            ...(fetched.mimeType ? { mimeType: fetched.mimeType } : {}),
+            dataBase64: fetched.dataBase64,
+            sizeBytes: fetched.sizeBytes,
+          };
+          traceEntry.completedAt = Date.now();
+          traceEntry.output = {
+            timeoutMs,
+            matched: true,
+            url,
+            fileName,
+            sizeBytes: fetched.sizeBytes,
+            ...(fetched.mimeType ? { mimeType: fetched.mimeType } : {}),
+          };
+          return payload;
+        }
+        throw new Error(`relay download action timed out after ${timeoutMs}ms`);
+      } catch (error) {
+        traceEntry.completedAt = Date.now();
+        traceEntry.status = "failed";
+        traceEntry.errorMessage = error instanceof Error ? error.message : "relay download action failed";
+        throw error;
+      }
+    })();
+    pending.catch(() => undefined);
+    return { pending };
+  }
+
   private async armPopupAction(
     _action: RelayPopupAction,
     traceEntry: BrowserActionTrace,
@@ -979,6 +1092,7 @@ export class ChromeRelayActionExecutor {
     activeTab: ChromeTabLike | null | undefined,
     trace: BrowserActionTrace[],
     screenshotPayloads: RelayScreenshotPayload[],
+    downloadPayloads: RelayDownloadPayload[],
     response: RelayContentScriptExecuteResponse
   ) {
     if (typeof activeTab?.id !== "number") {
@@ -992,6 +1106,7 @@ export class ChromeRelayActionExecutor {
       trace,
       screenshotPaths: [],
       screenshotPayloads,
+      downloadPayloads,
       artifactIds: [],
       errorMessage: response.errorMessage ?? "content script execution failed",
     };
@@ -1356,6 +1471,35 @@ function normalizeNetworkTimeoutMs(value: number | undefined): number {
     : DEFAULT_BROWSER_NETWORK_TIMEOUT_MS;
 }
 
+function normalizeDownloadTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_DOWNLOAD_TIMEOUT_MS)
+    : DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS;
+}
+
+async function waitForCdpDownloadCompletion(
+  tabId: number,
+  guid: string,
+  deadline: number,
+  waitForDebuggerEvent: NonNullable<ChromeExtensionPlatform["waitForDebuggerEvent"]>
+): Promise<void> {
+  while (Date.now() <= deadline) {
+    const remainingMs = Math.max(1, deadline - Date.now());
+    const event = await waitForDebuggerEvent(tabId, "Page.downloadProgress", remainingMs);
+    if (getCdpDownloadGuid(event.params) !== guid) {
+      continue;
+    }
+    const state = getCdpDownloadState(event.params);
+    if (state === "completed") {
+      return;
+    }
+    if (state === "canceled") {
+      throw new Error("relay download action observed a canceled download");
+    }
+  }
+  throw new Error("relay download action timed out waiting for completion");
+}
+
 function matchesCdpNetworkResponse(
   event: ChromeDebuggerEventLike,
   action: RelayNetworkAction,
@@ -1416,6 +1560,22 @@ function getCdpResponseStatus(params: Record<string, unknown> | undefined): numb
 function getCdpResponseMimeType(params: Record<string, unknown> | undefined): string | null {
   const response = isRecord(params?.response) ? params.response : null;
   return typeof response?.mimeType === "string" ? response.mimeType : null;
+}
+
+function getCdpDownloadGuid(params: Record<string, unknown> | undefined): string | null {
+  return typeof params?.guid === "string" ? params.guid : null;
+}
+
+function getCdpDownloadUrl(params: Record<string, unknown> | undefined): string | null {
+  return typeof params?.url === "string" ? params.url : null;
+}
+
+function getCdpDownloadSuggestedFilename(params: Record<string, unknown> | undefined): string | null {
+  return typeof params?.suggestedFilename === "string" ? params.suggestedFilename : null;
+}
+
+function getCdpDownloadState(params: Record<string, unknown> | undefined): string | null {
+  return typeof params?.state === "string" ? params.state : null;
 }
 
 async function readCdpCookiesFromDebugger(
@@ -1625,6 +1785,11 @@ function matchesUrlPattern(url: string, pattern: string): boolean {
     .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
     .join(".*");
   return new RegExp(`^${escaped}$`).test(url);
+}
+
+function sanitizeDownloadFileName(value: string): string {
+  const fileName = value.trim().split(/[\\/]+/).pop()?.replace(/[^\w .-]+/g, "-") ?? "";
+  return (fileName || "download.bin").slice(0, MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH);
 }
 
 async function retryAsync<T>(

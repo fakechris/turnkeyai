@@ -160,6 +160,11 @@ export interface ChromeExtensionPlatform {
   drainDebuggerEvents?(tabId: number, input?: { include?: string[]; maxEvents?: number }): Promise<ChromeDebuggerEventLike[]>;
   detachDebugger?(tabId: number): Promise<void>;
   captureVisibleTab(windowId?: number, options?: { format?: "png" | "jpeg" }): Promise<string>;
+  fetchDownload?(url: string, input: { maxBytes: number }): Promise<{
+    mimeType?: string;
+    dataBase64: string;
+    sizeBytes: number;
+  }>;
 }
 
 export function getChromeRuntime(): ChromeRuntimeLike {
@@ -497,9 +502,35 @@ export function getChromeExtensionPlatform(): ChromeExtensionPlatform {
         });
       });
     },
+    async fetchDownload(url, input) {
+      const response = await fetch(url, {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(`download fetch failed: ${response.status} ${response.statusText}`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      if (arrayBuffer.byteLength > input.maxBytes) {
+        throw new Error(`download fetch exceeds ${input.maxBytes} bytes`);
+      }
+      return {
+        ...(response.headers.get("content-type") ? { mimeType: response.headers.get("content-type")! } : {}),
+        dataBase64: arrayBufferToBase64(arrayBuffer),
+        sizeBytes: arrayBuffer.byteLength,
+      };
+    },
   };
 
   return platform;
+}
+
+function arrayBufferToBase64(arrayBuffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]!);
+  }
+  return btoa(binary);
 }
 
 function withChromeRuntimeCallback<T>(

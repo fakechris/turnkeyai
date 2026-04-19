@@ -17,6 +17,8 @@ import {
   MAX_BROWSER_COOKIE_NAME_LENGTH,
   MAX_BROWSER_COOKIE_VALUE_BYTES,
   MAX_BROWSER_DIALOG_TIMEOUT_MS,
+  MAX_BROWSER_DOWNLOAD_TIMEOUT_MS,
+  MAX_BROWSER_DOWNLOAD_URL_PATTERN_LENGTH,
   MAX_BROWSER_EVAL_EXPRESSION_BYTES,
   MAX_BROWSER_EVAL_TIMEOUT_MS,
   MAX_BROWSER_KEY_ACTION_KEY_LENGTH,
@@ -722,6 +724,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         if (networkError) return networkError;
         break;
       }
+      case "download": {
+        const downloadError = validateDownloadAction(action, `actions[${index}] download`);
+        if (downloadError) return downloadError;
+        break;
+      }
       case "upload": {
         const uploadError = validateUploadAction(action, `actions[${index}] upload`);
         if (uploadError) return uploadError;
@@ -1224,6 +1231,46 @@ function validateNetworkAction(
       action.timeoutMs > MAX_BROWSER_NETWORK_TIMEOUT_MS)
   ) {
     return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_NETWORK_TIMEOUT_MS}`;
+  }
+  return null;
+}
+
+function validateDownloadAction(
+  action: {
+    urlPattern?: unknown;
+    timeoutMs?: unknown;
+    path?: unknown;
+    artifactId?: unknown;
+    file?: unknown;
+    dataBase64?: unknown;
+  },
+  label: string
+): string | null {
+  const urlPattern = parseOptionalRouteString(action.urlPattern);
+  if (action.urlPattern !== undefined) {
+    if (!urlPattern) {
+      return `${label}.urlPattern must be a non-empty string when provided`;
+    }
+    if (urlPattern.length > MAX_BROWSER_DOWNLOAD_URL_PATTERN_LENGTH) {
+      return `${label}.urlPattern must be <= ${MAX_BROWSER_DOWNLOAD_URL_PATTERN_LENGTH} characters`;
+    }
+  }
+  if (
+    action.timeoutMs !== undefined &&
+    (typeof action.timeoutMs !== "number" ||
+      !Number.isInteger(action.timeoutMs) ||
+      action.timeoutMs <= 0 ||
+      action.timeoutMs > MAX_BROWSER_DOWNLOAD_TIMEOUT_MS)
+  ) {
+    return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_DOWNLOAD_TIMEOUT_MS}`;
+  }
+  if (
+    action.path !== undefined ||
+    action.artifactId !== undefined ||
+    action.file !== undefined ||
+    action.dataBase64 !== undefined
+  ) {
+    return `${label} does not accept path, artifactId, file, or dataBase64 fields`;
   }
   return null;
 }
