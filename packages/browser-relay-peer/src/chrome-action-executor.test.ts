@@ -173,6 +173,55 @@ test("chrome relay action executor arms and handles prompt dialogs around conten
   ]);
 });
 
+test("chrome relay action executor switches to a newly created popup tab", async () => {
+  const now = Date.now();
+  let platform: ChromeExtensionPlatform;
+  const sentMessages: Array<{ tabId: number; message: unknown }> = [];
+  platform = fakePlatform({
+    activeTab: { id: 7, windowId: 3, url: "https://example.com/start", title: "Start", status: "complete" },
+    async onSendMessage(tabId, message) {
+      sentMessages.push({ tabId, message });
+      if (tabId === 7) {
+        await platform.createTab({ url: "https://example.com/popup", active: true });
+      }
+      return {
+        ok: true,
+        page: {
+          requestedUrl: tabId === 7 ? "https://example.com/start" : "https://example.com/popup",
+          finalUrl: tabId === 7 ? "https://example.com/start" : "https://example.com/popup",
+          title: tabId === 7 ? "Start" : "Popup",
+          textExcerpt: tabId === 7 ? "Start page" : "Popup page",
+          statusCode: 200,
+          interactives: [],
+        },
+        trace: [],
+      };
+    },
+  });
+  const executor = new ChromeRelayActionExecutor(platform);
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-popup",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-popup",
+    actions: [
+      { kind: "popup", timeoutMs: 1_000 },
+      { kind: "click", text: "Open popup" },
+      { kind: "snapshot", note: "popup" },
+    ],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.relayTargetId, "chrome-tab:8");
+  assert.equal(result.page?.finalUrl, "https://example.com/popup");
+  assert.deepEqual(sentMessages.map((entry) => entry.tabId), [7, 8]);
+  assert.equal(result.trace[0]?.kind, "popup");
+  assert.equal(result.trace[0]?.output?.relayTargetId, "chrome-tab:8");
+});
+
 test("chrome relay action executor captures screenshot payloads through the extension platform", async () => {
   const now = Date.now();
   const activations: Array<{ tabId: number; active?: boolean }> = [];
@@ -799,6 +848,7 @@ function fakePlatform(input: {
     title: string;
     status: "complete" | "loading";
   } = { ...input.activeTab };
+  const allTabs = [currentTab];
   return {
     runtime: {
       onMessage: {
@@ -810,10 +860,10 @@ function fakePlatform(input: {
       if (query.active && query.currentWindow) {
         return [currentTab];
       }
-      return [currentTab];
+      return [...allTabs];
     },
     async getTab(tabId) {
-      return tabId === currentTab.id ? currentTab : null;
+      return allTabs.find((tab) => tab.id === tabId) ?? null;
     },
     async updateTab(tabId, updateProperties) {
       if (tabId !== currentTab.id) {
@@ -824,6 +874,10 @@ function fakePlatform(input: {
         ...currentTab,
         ...(updateProperties.url ? { url: updateProperties.url } : {}),
       };
+      const index = allTabs.findIndex((tab) => tab.id === tabId);
+      if (index >= 0) {
+        allTabs[index] = currentTab;
+      }
       return currentTab;
     },
     async createTab(createProperties) {
@@ -835,6 +889,7 @@ function fakePlatform(input: {
         title: "Created",
         status: "complete",
       };
+      allTabs.push(currentTab);
       return currentTab;
     },
     async sendTabMessage<T>(tabId: number, message: unknown) {

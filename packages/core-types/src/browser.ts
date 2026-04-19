@@ -23,6 +23,7 @@ export type BrowserActionKind =
   | "wait"
   | "waitFor"
   | "dialog"
+  | "popup"
   | "screenshot"
   | "cdp";
 
@@ -63,6 +64,8 @@ export const DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS = 5_000;
 export const MAX_BROWSER_WAIT_FOR_TIMEOUT_MS = 60_000;
 export const DEFAULT_BROWSER_DIALOG_TIMEOUT_MS = 5_000;
 export const MAX_BROWSER_DIALOG_TIMEOUT_MS = 60_000;
+export const DEFAULT_BROWSER_POPUP_TIMEOUT_MS = 5_000;
+export const MAX_BROWSER_POPUP_TIMEOUT_MS = 60_000;
 
 const BROWSER_CDP_METHOD_PATTERN = /^[A-Z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$/;
 const BLOCKED_BROWSER_CDP_METHOD_PREFIXES = ["Browser.", "Target."];
@@ -127,6 +130,11 @@ export type BrowserDialogAction = {
   timeoutMs?: number;
 };
 
+export type BrowserPopupAction = {
+  kind: "popup";
+  timeoutMs?: number;
+};
+
 export type BrowserTaskAction =
   | { kind: "open"; url: string }
   | { kind: "snapshot"; note?: string }
@@ -141,6 +149,7 @@ export type BrowserTaskAction =
   | { kind: "wait"; timeoutMs: number }
   | BrowserWaitForAction
   | BrowserDialogAction
+  | BrowserPopupAction
   | { kind: "screenshot"; label?: string }
   | {
       kind: "cdp";

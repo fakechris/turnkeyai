@@ -1,6 +1,7 @@
 import type { BrowserActionTrace } from "@turnkeyai/core-types/team";
 import {
   DEFAULT_BROWSER_DIALOG_TIMEOUT_MS,
+  DEFAULT_BROWSER_POPUP_TIMEOUT_MS,
   DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENTS,
@@ -24,6 +25,7 @@ type RelayHoverAction = Extract<RelayAction, { kind: "hover" }>;
 type RelayKeyAction = Extract<RelayAction, { kind: "key" }>;
 type RelayDragAction = Extract<RelayAction, { kind: "drag" }>;
 type RelayDialogAction = Extract<RelayAction, { kind: "dialog" }>;
+type RelayPopupAction = Extract<RelayAction, { kind: "popup" }>;
 interface RelayCdpActionOutput {
   result: unknown;
   events: ChromeDebuggerEventLike[];
@@ -127,7 +129,18 @@ export class ChromeRelayActionExecutor {
       latestResponse: null,
     };
     let createTargetForNextOpen = request.targetBehavior === "new";
+    let pendingPopupWatcher: { pending: Promise<ChromeTabLike>; traceEntry: BrowserActionTrace } | null = null;
     let needsFinalSnapshot = false;
+
+    const consumePendingPopup = async (): Promise<void> => {
+      if (!pendingPopupWatcher) {
+        return;
+      }
+      activeTab = await pendingPopupWatcher.pending;
+      pendingPopupWatcher = null;
+      contentScriptState.latestResponse = null;
+      needsFinalSnapshot = true;
+    };
 
     const flushContentScriptBatch = async (): Promise<RelayContentScriptExecuteResponse | null> => {
       if (!contentScriptBatch.length) {
@@ -148,6 +161,13 @@ export class ChromeRelayActionExecutor {
       const action = request.actions[index]!;
       if (this.isContentScriptAction(action)) {
         contentScriptBatch.push(action);
+        if (pendingPopupWatcher) {
+          const response = await flushContentScriptBatch();
+          if (response && !response.ok) {
+            return this.buildFailedContentScriptResult(activeTab, trace, screenshotPayloads, response);
+          }
+          await consumePendingPopup();
+        }
         continue;
       }
 
@@ -186,6 +206,33 @@ export class ChromeRelayActionExecutor {
 
       if (!activeTab?.id) {
         throw new Error("relay action executor could not resolve a target tab");
+      }
+
+      if (action.kind === "popup") {
+        if (pendingPopupWatcher) {
+          throw new Error("relay popup action is already armed");
+        }
+        const startedAt = Date.now();
+        const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_POPUP_TIMEOUT_MS;
+        const traceEntry: BrowserActionTrace = {
+          stepId: `${request.taskId}:relay-popup:${index + 1}`,
+          kind: "popup",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            timeoutMs: action.timeoutMs ?? null,
+          },
+          output: {
+            timeoutMs,
+            armed: true,
+          },
+        };
+        trace.push(traceEntry);
+        const pending = this.armPopupAction(action, traceEntry, timeoutMs);
+        pending.catch(() => undefined);
+        pendingPopupWatcher = { pending, traceEntry };
+        continue;
       }
 
       if (action.kind === "hover") {
@@ -354,6 +401,7 @@ export class ChromeRelayActionExecutor {
     if (contentScriptResponse && !contentScriptResponse.ok) {
       return this.buildFailedContentScriptResult(activeTab, trace, screenshotPayloads, contentScriptResponse);
     }
+    await consumePendingPopup();
     await Promise.all(pendingDialogHandlers);
 
     const finalTab = activeTab;
@@ -630,6 +678,38 @@ export class ChromeRelayActionExecutor {
     return { pending };
   }
 
+  private async armPopupAction(
+    _action: RelayPopupAction,
+    traceEntry: BrowserActionTrace,
+    timeoutMs: number
+  ): Promise<ChromeTabLike> {
+    const knownTabs = await this.platform.queryTabs({});
+    const knownTabIds = new Set(knownTabs.map((tab) => tab.id).filter((tabId): tabId is number => typeof tabId === "number"));
+    const startedAt = Date.now();
+    while (Date.now() - startedAt <= timeoutMs) {
+      const candidates = (await this.platform.queryTabs({}))
+        .filter((tab) => typeof tab.id === "number" && !knownTabIds.has(tab.id))
+        .sort((left, right) => (right.id ?? 0) - (left.id ?? 0));
+      const created = candidates[0];
+      if (created && typeof created.id === "number") {
+        traceEntry.completedAt = Date.now();
+        traceEntry.output = {
+          timeoutMs,
+          relayTargetId: formatRelayTargetId(created.id),
+          finalUrl: created.url ?? "about:blank",
+          title: created.title ?? "",
+        };
+        return created;
+      }
+      await delay(50);
+    }
+    const error = new Error(`relay popup action timed out after ${timeoutMs}ms`);
+    traceEntry.completedAt = Date.now();
+    traceEntry.status = "failed";
+    traceEntry.errorMessage = error.message;
+    throw error;
+  }
+
   private buildFailedContentScriptResult(
     activeTab: ChromeTabLike | null | undefined,
     trace: BrowserActionTrace[],
@@ -737,6 +817,10 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
       clearTimeout(timeout);
     }
   });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function buildHoverTargetExpression(action: RelayHoverAction): string {

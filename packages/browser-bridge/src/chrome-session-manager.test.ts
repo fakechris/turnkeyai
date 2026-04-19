@@ -857,6 +857,96 @@ test("chrome session manager arms and handles prompt dialogs around page actions
   assert.equal(result.trace[1]?.kind, "click");
 });
 
+test("chrome session manager switches to an armed popup page after the trigger action", async () => {
+  let resolvePopup: ((page: Page) => void) | null = null;
+  const popupPage = {
+    async waitForLoadState() {
+      return undefined;
+    },
+    async waitForTimeout() {
+      return undefined;
+    },
+    url() {
+      return "https://example.com/popup";
+    },
+    async title() {
+      return "Popup";
+    },
+  } as unknown as Page;
+  const fakeLocator = {
+    first() {
+      return this;
+    },
+    async count() {
+      return 1;
+    },
+    async click() {
+      resolvePopup?.(popupPage);
+    },
+  };
+  const openerPage = {
+    waitForEvent(eventName: string) {
+      assert.equal(eventName, "popup");
+      return new Promise<Page>((resolve) => {
+        resolvePopup = resolve;
+      });
+    },
+    locator() {
+      return fakeLocator;
+    },
+    async waitForLoadState() {
+      return undefined;
+    },
+    async waitForTimeout() {
+      return undefined;
+    },
+    url() {
+      return "https://example.com/start";
+    },
+    async title() {
+      return "Start";
+    },
+  } as unknown as Page;
+  const fakeContext = {
+    pages() {
+      return [openerPage];
+    },
+    async newPage() {
+      return openerPage;
+    },
+    async close() {
+      return undefined;
+    },
+  } as unknown as BrowserContext;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    createEphemeralContext: async () => fakeContext,
+    captureSnapshot: async ({ page }) => ({
+      requestedUrl: page.url(),
+      finalUrl: page.url(),
+      title: page === popupPage ? "Popup" : "Start",
+      textExcerpt: page === popupPage ? "Popup page" : "Start page",
+      statusCode: 200,
+      interactives: [],
+    }),
+  });
+
+  const result = await manager.spawnSession({
+    taskId: "task-popup",
+    threadId: "thread-popup",
+    instructions: "Open popup",
+    actions: [
+      { kind: "popup", timeoutMs: 1_000 },
+      { kind: "click", selectors: ["a.popup"] },
+    ],
+  });
+
+  assert.equal(result.page.finalUrl, "https://example.com/popup");
+  assert.equal(result.trace[0]?.kind, "popup");
+  assert.equal(result.trace[0]?.output?.finalUrl, "https://example.com/popup");
+  assert.equal(result.trace[1]?.kind, "click");
+});
+
 test("chrome session manager executes target-scoped cdp actions through a page CDP session", async () => {
   const commands: unknown[] = [];
   let detached = 0;

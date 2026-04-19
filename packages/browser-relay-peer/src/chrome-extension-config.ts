@@ -41,6 +41,7 @@ const DEFAULT_RUNTIME_CONFIG: ChromeRelayExtensionRuntimeConfig = {
     "wait",
     "waitFor",
     "dialog",
+    "popup",
     "screenshot",
     "cdp",
   ],

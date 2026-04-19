@@ -26,6 +26,7 @@ import type {
 } from "@turnkeyai/core-types/team";
 import {
   DEFAULT_BROWSER_DIALOG_TIMEOUT_MS,
+  DEFAULT_BROWSER_POPUP_TIMEOUT_MS,
   DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENTS,
@@ -215,9 +216,35 @@ export class ChromeSessionManager {
         actions: task.actions,
         ...(currentTargetId ? { currentTargetId } : {}),
       });
-      const page = pageResolution.page;
+      let page = pageResolution.page;
       resumeMode = pageResolution.resumeMode;
       targetResolution = pageResolution.targetResolution;
+      let pendingPopupHandler: { promise: Promise<Page>; traceEntry: BrowserActionTrace } | null = null;
+
+      const consumePendingPopup = async (): Promise<void> => {
+        if (!pendingPopupHandler) {
+          return;
+        }
+        const popupPage = await pendingPopupHandler.promise;
+        pendingPopupHandler = null;
+        page = popupPage;
+        latestSnapshot = null;
+        knownRefs = new Map<string, BrowserInteractiveElement>();
+        requestedUrl = page.url();
+        lastStatusCode = 200;
+        if (this.browserSessionManager) {
+          const target = await this.browserSessionManager.ensureTarget({
+            browserSessionId: sessionId,
+            transportSessionId: this.getOrCreatePageHandle(page),
+            url: page.url(),
+            title: await page.title().catch(() => ""),
+            status: "attached",
+            lastResumeMode: "hot",
+            createIfMissing: true,
+          });
+          currentTargetId = target.targetId;
+        }
+      };
 
       if (lease && this.browserSessionManager && currentTargetId && targetResolution !== "new_target") {
         const target = await this.browserSessionManager.ensureTarget({
@@ -257,6 +284,30 @@ export class ChromeSessionManager {
             const pending = armPageDialogHandler(page, action, traceEntry, timeoutMs);
             pending.catch(() => undefined);
             pendingDialogHandlers.push(pending);
+            continue;
+          }
+
+          if (action.kind === "popup") {
+            if (pendingPopupHandler) {
+              throw new Error("popup action is already armed");
+            }
+            const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_POPUP_TIMEOUT_MS;
+            const traceEntry: BrowserActionTrace = {
+              stepId,
+              kind: action.kind,
+              startedAt,
+              completedAt: Date.now(),
+              status: "ok",
+              input: toTraceInput(action),
+              output: {
+                timeoutMs,
+                armed: true,
+              },
+            };
+            trace.push(traceEntry);
+            const promise = armPagePopupHandler(page, action, traceEntry, timeoutMs);
+            promise.catch(() => undefined);
+            pendingPopupHandler = { promise, traceEntry };
             continue;
           }
 
@@ -365,6 +416,7 @@ export class ChromeSessionManager {
           }
 
           trace.push(traceEntry);
+          await consumePendingPopup();
         } catch (error) {
           trace.push({
             stepId,
@@ -380,6 +432,7 @@ export class ChromeSessionManager {
       }
 
       await Promise.all(pendingDialogHandlers);
+      await consumePendingPopup();
 
       if (!latestSnapshot) {
         latestSnapshot = await this.captureSnapshot({
@@ -1116,7 +1169,11 @@ export class ChromeSessionManager {
     }
 
     if (action.kind === "dialog") {
-      throw new Error("dialog actions must be armed by the browser task executor");
+      throw new Error(`${action.kind} actions must be armed by the browser task executor`);
+    }
+
+    if (action.kind === "popup") {
+      throw new Error(`${action.kind} actions must be armed by the browser task executor`);
     }
 
     const screenshotPath = path.join(
@@ -1329,6 +1386,30 @@ function armPageDialogHandler(
       fail(new Error(`browser dialog action timed out after ${timeoutMs}ms`));
     }, timeoutMs);
   });
+}
+
+async function armPagePopupHandler(
+  page: Page,
+  _action: Extract<BrowserTaskAction, { kind: "popup" }>,
+  traceEntry: BrowserActionTrace,
+  timeoutMs: number
+): Promise<Page> {
+  try {
+    const popup = await page.waitForEvent("popup", { timeout: timeoutMs });
+    await popup.waitForLoadState("domcontentloaded", { timeout: 5_000 }).catch(() => {});
+    traceEntry.completedAt = Date.now();
+    traceEntry.output = {
+      timeoutMs,
+      finalUrl: popup.url(),
+      title: await popup.title().catch(() => ""),
+    };
+    return popup;
+  } catch (error) {
+    traceEntry.completedAt = Date.now();
+    traceEntry.status = "failed";
+    traceEntry.errorMessage = error instanceof Error ? error.message : "browser popup action failed";
+    throw error;
+  }
 }
 
 function formatKeyboardShortcut(action: Extract<BrowserTaskAction, { kind: "key" }>): string {
@@ -1655,6 +1736,12 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
     return {
       action: action.action,
       promptTextLength: action.promptText?.length ?? null,
+      timeoutMs: action.timeoutMs ?? null,
+    };
+  }
+
+  if (action.kind === "popup") {
+    return {
       timeoutMs: action.timeoutMs ?? null,
     };
   }

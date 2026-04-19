@@ -334,7 +334,7 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
-test("browser task mutation routes validate key hover select drag waitFor and dialog action contracts", async () => {
+test("browser task mutation routes validate key hover select drag waitFor dialog and popup action contracts", async () => {
   const invalidHover = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -449,6 +449,25 @@ test("browser task mutation routes validate key hover select drag waitFor and di
     error: "actions[0] dialog.promptText is only supported when action is accept",
   });
 
+  const invalidPopup = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "popup", timeoutMs: 90_000 }],
+      },
+    }),
+    res: invalidPopup.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidPopup.res.statusCode, 400);
+  assert.deepEqual(invalidPopup.json, {
+    error: "actions[0] popup.timeoutMs must be a positive integer <= 60000",
+  });
+
   let capturedActions: unknown;
   const validDeps = createDeps();
   validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
@@ -477,6 +496,7 @@ test("browser task mutation routes validate key hover select drag waitFor and di
           { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
           { kind: "waitFor", text: "Done", timeoutMs: 1_000 },
           { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
+          { kind: "popup", timeoutMs: 1_000 },
         ],
       },
     }),
@@ -492,6 +512,7 @@ test("browser task mutation routes validate key hover select drag waitFor and di
     { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
     { kind: "waitFor", text: "Done", timeoutMs: 1_000 },
     { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
+    { kind: "popup", timeoutMs: 1_000 },
   ]);
 });
 

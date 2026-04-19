@@ -16,6 +16,7 @@ import {
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
   MAX_BROWSER_DIALOG_TIMEOUT_MS,
   MAX_BROWSER_KEY_ACTION_KEY_LENGTH,
+  MAX_BROWSER_POPUP_TIMEOUT_MS,
   MAX_BROWSER_WAIT_FOR_TIMEOUT_MS,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
@@ -680,6 +681,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         if (dialogError) return dialogError;
         break;
       }
+      case "popup": {
+        const popupError = validatePopupAction(action, `actions[${index}] popup`);
+        if (popupError) return popupError;
+        break;
+      }
       case "screenshot": {
         if (action.label !== undefined && !parseOptionalRouteString(action.label)) {
           return `actions[${index}] screenshot.label must be a non-empty string when provided`;
@@ -938,6 +944,21 @@ function validateDialogAction(
     (!Number.isInteger(action.timeoutMs) || action.timeoutMs <= 0 || action.timeoutMs > MAX_BROWSER_DIALOG_TIMEOUT_MS)
   ) {
     return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_DIALOG_TIMEOUT_MS}`;
+  }
+  return null;
+}
+
+function validatePopupAction(
+  action: {
+    timeoutMs?: number;
+  },
+  label: string
+): string | null {
+  if (
+    action.timeoutMs !== undefined &&
+    (!Number.isInteger(action.timeoutMs) || action.timeoutMs <= 0 || action.timeoutMs > MAX_BROWSER_POPUP_TIMEOUT_MS)
+  ) {
+    return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_POPUP_TIMEOUT_MS}`;
   }
   return null;
 }
