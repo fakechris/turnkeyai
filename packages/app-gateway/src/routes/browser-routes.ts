@@ -17,6 +17,8 @@ import {
   MAX_BROWSER_COOKIE_NAME_LENGTH,
   MAX_BROWSER_COOKIE_VALUE_BYTES,
   MAX_BROWSER_DIALOG_TIMEOUT_MS,
+  MAX_BROWSER_EVAL_EXPRESSION_BYTES,
+  MAX_BROWSER_EVAL_TIMEOUT_MS,
   MAX_BROWSER_KEY_ACTION_KEY_LENGTH,
   MAX_BROWSER_POPUP_TIMEOUT_MS,
   MAX_BROWSER_STORAGE_KEY_LENGTH,
@@ -704,6 +706,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         if (cookieError) return cookieError;
         break;
       }
+      case "eval": {
+        const evalError = validateEvalAction(action, `actions[${index}] eval`);
+        if (evalError) return evalError;
+        break;
+      }
       case "screenshot": {
         if (action.label !== undefined && !parseOptionalRouteString(action.label)) {
           return `actions[${index}] screenshot.label must be a non-empty string when provided`;
@@ -1123,6 +1130,36 @@ function validateCookieAction(
     return `${label}.name is not accepted for clear`;
   }
 
+  return null;
+}
+
+function validateEvalAction(
+  action: {
+    expression?: unknown;
+    awaitPromise?: unknown;
+    timeoutMs?: unknown;
+  },
+  label: string
+): string | null {
+  const expression = parseOptionalRouteString(action.expression);
+  if (!expression) {
+    return `${label}.expression must be a non-empty string`;
+  }
+  if (Buffer.byteLength(expression, "utf8") > MAX_BROWSER_EVAL_EXPRESSION_BYTES) {
+    return `${label}.expression exceeds ${MAX_BROWSER_EVAL_EXPRESSION_BYTES} bytes`;
+  }
+  if (action.awaitPromise !== undefined && typeof action.awaitPromise !== "boolean") {
+    return `${label}.awaitPromise must be a boolean when provided`;
+  }
+  if (
+    action.timeoutMs !== undefined &&
+    (typeof action.timeoutMs !== "number" ||
+      !Number.isInteger(action.timeoutMs) ||
+      action.timeoutMs <= 0 ||
+      action.timeoutMs > MAX_BROWSER_EVAL_TIMEOUT_MS)
+  ) {
+    return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_EVAL_TIMEOUT_MS}`;
+  }
   return null;
 }
 

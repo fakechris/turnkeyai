@@ -334,7 +334,7 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
-test("browser task mutation routes validate key hover select drag waitFor dialog popup storage and cookie action contracts", async () => {
+test("browser task mutation routes validate key hover select drag waitFor dialog popup storage cookie and eval action contracts", async () => {
   const invalidHover = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -506,6 +506,25 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     error: "actions[0] cookie.value must be a string for set",
   });
 
+  const invalidEval = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "eval", expression: " " }],
+      },
+    }),
+    res: invalidEval.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidEval.res.statusCode, 400);
+  assert.deepEqual(invalidEval.json, {
+    error: "actions[0] eval.expression must be a non-empty string",
+  });
+
   let capturedActions: unknown;
   const validDeps = createDeps();
   validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
@@ -539,6 +558,7 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
           { kind: "storage", area: "localStorage", action: "get", key: "token" },
           { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },
           { kind: "cookie", action: "get", name: "sid" },
+          { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
         ],
       },
     }),
@@ -559,6 +579,7 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     { kind: "storage", area: "localStorage", action: "get", key: "token" },
     { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },
     { kind: "cookie", action: "get", name: "sid" },
+    { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
   ]);
 });
 

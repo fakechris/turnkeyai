@@ -26,6 +26,7 @@ export type BrowserActionKind =
   | "popup"
   | "storage"
   | "cookie"
+  | "eval"
   | "screenshot"
   | "cdp";
 
@@ -76,6 +77,10 @@ export const MAX_BROWSER_COOKIE_NAME_LENGTH = 512;
 export const MAX_BROWSER_COOKIE_VALUE_BYTES = 4 * 1024;
 export const MAX_BROWSER_COOKIE_READ_VALUE_BYTES = 2 * 1024;
 export const MAX_BROWSER_COOKIE_READ_ENTRIES = 100;
+export const MAX_BROWSER_EVAL_EXPRESSION_BYTES = 16 * 1024;
+export const MAX_BROWSER_EVAL_RESULT_BYTES = 8 * 1024;
+export const DEFAULT_BROWSER_EVAL_TIMEOUT_MS = 5_000;
+export const MAX_BROWSER_EVAL_TIMEOUT_MS = 30_000;
 
 const BROWSER_CDP_METHOD_PATTERN = /^[A-Z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$/;
 const BLOCKED_BROWSER_CDP_METHOD_PREFIXES = ["Browser.", "Target."];
@@ -173,6 +178,13 @@ export type BrowserCookieAction =
   | { kind: "cookie"; action: "remove"; name: string; url?: string; domain?: string; path?: string }
   | { kind: "cookie"; action: "clear"; url?: string; domain?: string; path?: string };
 
+export type BrowserEvalAction = {
+  kind: "eval";
+  expression: string;
+  awaitPromise?: boolean;
+  timeoutMs?: number;
+};
+
 export type BrowserTaskAction =
   | { kind: "open"; url: string }
   | { kind: "snapshot"; note?: string }
@@ -190,6 +202,7 @@ export type BrowserTaskAction =
   | BrowserPopupAction
   | BrowserStorageAction
   | BrowserCookieAction
+  | BrowserEvalAction
   | { kind: "screenshot"; label?: string }
   | {
       kind: "cdp";

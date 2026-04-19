@@ -528,6 +528,74 @@ test("chrome relay action executor can run target-scoped cookie actions through 
   assert.equal(result.trace[0]?.output?.cookieCount, 1);
 });
 
+test("chrome relay action executor can run target-scoped eval actions through debugger", async () => {
+  const now = Date.now();
+  const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];
+  const detachedTabs: number[] = [];
+  const platform = fakePlatform({
+    activeTab: { id: 7, windowId: 3, url: "https://example.com/app", title: "Example", status: "complete" },
+    onDebuggerCommand(tabId, method, params) {
+      debuggerCommands.push({ tabId, method, params });
+      return {
+        result: {
+          type: "string",
+          value: "Example",
+        },
+      };
+    },
+    onSendMessage() {
+      return {
+        ok: true,
+        page: {
+          requestedUrl: "https://example.com/app",
+          finalUrl: "https://example.com/app",
+          title: "Example",
+          textExcerpt: "Example page",
+          statusCode: 200,
+          interactives: [],
+        },
+        trace: [],
+      };
+    },
+  });
+  platform.detachDebugger = async (tabId) => {
+    detachedTabs.push(tabId);
+  };
+  const executor = new ChromeRelayActionExecutor(platform);
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-eval",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-eval",
+    actions: [{ kind: "eval", expression: "document.title", timeoutMs: 1_000 }],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(debuggerCommands, [
+    {
+      tabId: 7,
+      method: "Runtime.evaluate",
+      params: {
+        expression: "document.title",
+        returnByValue: true,
+        awaitPromise: true,
+      },
+    },
+  ]);
+  assert.deepEqual(detachedTabs, [7]);
+  assert.equal(result.trace[0]?.kind, "eval");
+  assert.deepEqual(result.trace[0]?.output, {
+    exception: false,
+    timeoutMs: 1_000,
+    resultType: "string",
+    resultBytes: 9,
+    result: "Example",
+  });
+});
+
 test("chrome relay action executor can run typed hover and key actions through debugger input", async () => {
   const now = Date.now();
   const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];

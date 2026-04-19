@@ -48,6 +48,7 @@ const RELAY_EXECUTABLE_ACTION_KINDS = new Set<string>([
   "popup",
   "storage",
   "cookie",
+  "eval",
   "screenshot",
   "cdp",
 ]);

@@ -9,6 +9,9 @@ import {
   MAX_BROWSER_CDP_EVENT_PARAMS_BYTES,
   MAX_BROWSER_COOKIE_READ_ENTRIES,
   MAX_BROWSER_COOKIE_READ_VALUE_BYTES,
+  DEFAULT_BROWSER_EVAL_TIMEOUT_MS,
+  MAX_BROWSER_EVAL_RESULT_BYTES,
+  MAX_BROWSER_EVAL_TIMEOUT_MS,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
@@ -29,6 +32,7 @@ type RelayDragAction = Extract<RelayAction, { kind: "drag" }>;
 type RelayDialogAction = Extract<RelayAction, { kind: "dialog" }>;
 type RelayPopupAction = Extract<RelayAction, { kind: "popup" }>;
 type RelayCookieAction = Extract<RelayAction, { kind: "cookie" }>;
+type RelayEvalAction = Extract<RelayAction, { kind: "eval" }>;
 interface RelayCdpActionOutput {
   result: unknown;
   events: ChromeDebuggerEventLike[];
@@ -365,6 +369,25 @@ export class ChromeRelayActionExecutor {
         continue;
       }
 
+      if (action.kind === "eval") {
+        const startedAt = Date.now();
+        const output = await this.executeEvalAction(activeTab.id, action, debuggerTabsToDetach);
+        trace.push({
+          stepId: `${request.taskId}:relay-eval:${index + 1}`,
+          kind: "eval",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            expressionBytes: byteLength(action.expression),
+            awaitPromise: action.awaitPromise ?? true,
+            timeoutMs: action.timeoutMs ?? null,
+          },
+          output,
+        });
+        continue;
+      }
+
       if (action.kind === "cdp") {
         const startedAt = Date.now();
         const cdpResult = await this.executeCdpAction(activeTab.id, action, debuggerTabsToDetach);
@@ -595,6 +618,28 @@ export class ChromeRelayActionExecutor {
       cookieCount: cookies.length,
       cookiesTruncated: cookies.length > MAX_BROWSER_COOKIE_READ_ENTRIES,
     };
+  }
+
+  private async executeEvalAction(
+    tabId: number,
+    action: RelayEvalAction,
+    debuggerTabsToDetach: Set<number>
+  ): Promise<Record<string, unknown>> {
+    if (!this.platform.sendDebuggerCommand) {
+      throw new Error("relay eval action requires chrome debugger support");
+    }
+    debuggerTabsToDetach.add(tabId);
+    const timeoutMs = normalizeEvalTimeoutMs(action.timeoutMs);
+    const response = await withTimeout(
+      this.platform.sendDebuggerCommand(tabId, "Runtime.evaluate", {
+        expression: action.expression,
+        returnByValue: true,
+        awaitPromise: action.awaitPromise ?? true,
+      }),
+      timeoutMs,
+      `relay eval action timed out after ${timeoutMs}ms`
+    );
+    return summarizeEvalResponse(response, timeoutMs);
   }
 
   private async executeCdpAction(
@@ -1185,6 +1230,37 @@ function normalizeCdpTimeoutMs(value: number | undefined): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0
     ? Math.min(value, MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
     : MAX_BROWSER_CDP_ACTION_TIMEOUT_MS;
+}
+
+function summarizeEvalResponse(response: unknown, timeoutMs: number): Record<string, unknown> {
+  const responseRecord = isRecord(response) ? response : {};
+  if (isRecord(responseRecord.exceptionDetails)) {
+    return {
+      exception: true,
+      timeoutMs,
+      text: typeof responseRecord.exceptionDetails.text === "string" ? responseRecord.exceptionDetails.text : null,
+    };
+  }
+
+  const result = isRecord(responseRecord.result) ? responseRecord.result : {};
+  const value = "value" in result ? result.value : result.description ?? null;
+  const json = safeStringify(value);
+  const resultBytes = byteLength(json);
+  return {
+    exception: false,
+    timeoutMs,
+    resultType: typeof result.type === "string" ? result.type : null,
+    resultBytes,
+    ...(resultBytes <= MAX_BROWSER_EVAL_RESULT_BYTES
+      ? { result: parseSafeJson(json) }
+      : { resultTruncated: true }),
+  };
+}
+
+function normalizeEvalTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_EVAL_TIMEOUT_MS)
+    : DEFAULT_BROWSER_EVAL_TIMEOUT_MS;
 }
 
 async function readCdpCookiesFromDebugger(

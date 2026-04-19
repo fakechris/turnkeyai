@@ -34,6 +34,9 @@ import {
   MAX_BROWSER_CDP_EVENT_PARAMS_BYTES,
   MAX_BROWSER_COOKIE_READ_ENTRIES,
   MAX_BROWSER_COOKIE_READ_VALUE_BYTES,
+  DEFAULT_BROWSER_EVAL_TIMEOUT_MS,
+  MAX_BROWSER_EVAL_RESULT_BYTES,
+  MAX_BROWSER_EVAL_TIMEOUT_MS,
   MAX_BROWSER_STORAGE_READ_ENTRIES,
   MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
   isBlockedBrowserCdpMethod,
@@ -1159,6 +1162,13 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "eval") {
+      const result = await executeEvalAction(page, action);
+      return {
+        traceOutput: result,
+      };
+    }
+
     if (action.kind === "waitFor") {
       const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS;
       const locator = await this.resolveActionTargetLocator(
@@ -1775,6 +1785,64 @@ function isCdpSetCookieFailure(value: unknown): boolean {
   return isRecord(value) && value.success === false;
 }
 
+async function executeEvalAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "eval" }>
+): Promise<Record<string, unknown>> {
+  const cdpSession = await page.context().newCDPSession(page);
+  const sendRaw = cdpSession.send as unknown as (
+    method: string,
+    params?: Record<string, unknown>
+  ) => Promise<unknown>;
+  const timeoutMs = normalizeEvalTimeoutMs(action.timeoutMs);
+
+  try {
+    const response = await withTimeout(
+      sendRaw("Runtime.evaluate", {
+        expression: action.expression,
+        returnByValue: true,
+        awaitPromise: action.awaitPromise ?? true,
+      }),
+      timeoutMs,
+      `browser eval action timed out after ${timeoutMs}ms`
+    );
+    return summarizeEvalResponse(response, timeoutMs);
+  } finally {
+    await cdpSession.detach().catch(() => undefined);
+  }
+}
+
+function summarizeEvalResponse(response: unknown, timeoutMs: number): Record<string, unknown> {
+  const responseRecord = isRecord(response) ? response : {};
+  if (isRecord(responseRecord.exceptionDetails)) {
+    return {
+      exception: true,
+      timeoutMs,
+      text: typeof responseRecord.exceptionDetails.text === "string" ? responseRecord.exceptionDetails.text : null,
+    };
+  }
+
+  const result = isRecord(responseRecord.result) ? responseRecord.result : {};
+  const value = "value" in result ? result.value : result.description ?? null;
+  const json = safeStringify(value);
+  const resultBytes = byteLength(json);
+  return {
+    exception: false,
+    timeoutMs,
+    resultType: typeof result.type === "string" ? result.type : null,
+    resultBytes,
+    ...(resultBytes <= MAX_BROWSER_EVAL_RESULT_BYTES
+      ? { result: parseSafeJson(json) }
+      : { resultTruncated: true }),
+  };
+}
+
+function normalizeEvalTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_EVAL_TIMEOUT_MS)
+    : DEFAULT_BROWSER_EVAL_TIMEOUT_MS;
+}
+
 function normalizeCdpTimeoutMs(value: number | undefined): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0
     ? Math.min(value, MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
@@ -2075,6 +2143,14 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
       url: "url" in action ? action.url ?? null : null,
       domain: "domain" in action ? action.domain ?? null : null,
       path: "path" in action ? action.path ?? null : null,
+    };
+  }
+
+  if (action.kind === "eval") {
+    return {
+      expressionBytes: byteLength(action.expression),
+      awaitPromise: action.awaitPromise ?? true,
+      timeoutMs: action.timeoutMs ?? null,
     };
   }
 

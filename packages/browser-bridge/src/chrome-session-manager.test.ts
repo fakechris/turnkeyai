@@ -1097,6 +1097,83 @@ test("chrome session manager executes bounded cookie actions through target CDP"
   });
 });
 
+test("chrome session manager executes bounded eval actions through target CDP", async () => {
+  const commands: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  let detached = 0;
+  const cdpSession = {
+    async send(method: string, params?: Record<string, unknown>) {
+      commands.push({
+        method,
+        ...(params !== undefined ? { params } : {}),
+      });
+      return {
+        result: {
+          type: "string",
+          value: "Example",
+        },
+      };
+    },
+    async detach() {
+      detached += 1;
+    },
+  };
+  const fakePage = {
+    context() {
+      return {
+        async newCDPSession(page: Page) {
+          assert.equal(page, fakePage);
+          return cdpSession;
+        },
+      };
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action: { kind: "eval"; expression: string; awaitPromise?: boolean; timeoutMs?: number };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  const output = await internal.executeAction({
+    page: fakePage,
+    action: { kind: "eval", expression: "document.title", timeoutMs: 1_000 },
+    stepIndex: 1,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-eval",
+  });
+
+  assert.deepEqual(commands, [
+    {
+      method: "Runtime.evaluate",
+      params: {
+        expression: "document.title",
+        returnByValue: true,
+        awaitPromise: true,
+      },
+    },
+  ]);
+  assert.equal(detached, 1);
+  assert.deepEqual(output.traceOutput, {
+    exception: false,
+    timeoutMs: 1_000,
+    resultType: "string",
+    resultBytes: 9,
+    result: "Example",
+  });
+});
+
 test("chrome session manager executes target-scoped cdp actions through a page CDP session", async () => {
   const commands: unknown[] = [];
   let detached = 0;
