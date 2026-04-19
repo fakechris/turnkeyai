@@ -1,4 +1,5 @@
 import type { BrowserActionTrace, BrowserSnapshotResult } from "@turnkeyai/core-types/team";
+import { DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS } from "@turnkeyai/core-types/team";
 import type { RelayExecutableBrowserAction } from "@turnkeyai/browser-bridge/transport/relay-protocol";
 
 import type { ChromeRuntimeLike } from "./chrome-extension-types";
@@ -278,6 +279,34 @@ export async function executeChromeRelayContentScriptActions(
         continue;
       }
 
+      if (action.kind === "waitFor") {
+        const timeoutMs =
+          typeof action.timeoutMs === "number" && Number.isFinite(action.timeoutMs) && action.timeoutMs >= 0
+            ? Math.min(Math.trunc(action.timeoutMs), MAX_RELAY_WAIT_ACTION_MS)
+            : DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS;
+        const element = await waitForElement(environment.document, action, timeoutMs);
+        latestSnapshot = captureSnapshot(environment);
+        trace.push({
+          stepId,
+          kind: "waitFor",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            refId: typeof action.refId === "string" ? action.refId : null,
+            selectors: Array.isArray(action.selectors) ? action.selectors : [],
+            text: typeof action.text === "string" ? action.text : null,
+            timeoutMs,
+          },
+          output: {
+            finalUrl: latestSnapshot.finalUrl,
+            tagName: element.tagName ?? null,
+            label: extractElementText(element),
+          },
+        });
+        continue;
+      }
+
       if (action.kind === "open") {
         trace.push({
           stepId,
@@ -419,6 +448,29 @@ function resolveElement(
   }
 
   throw new Error("content script could not resolve target element");
+}
+
+async function waitForElement(
+  documentLike: DocumentLike,
+  action: { refId?: unknown; selectors?: unknown; text?: unknown },
+  timeoutMs: number
+): Promise<DocumentLikeElement> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  do {
+    try {
+      return resolveElement(documentLike, action);
+    } catch (error) {
+      lastError = error;
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      break;
+    }
+    await sleep(Math.min(100, remainingMs));
+  } while (true);
+
+  throw new Error(lastError instanceof Error ? lastError.message : "content script waitFor target timed out");
 }
 
 function extractElementText(element: DocumentLikeElement): string {

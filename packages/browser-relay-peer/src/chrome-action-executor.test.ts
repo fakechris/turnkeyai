@@ -44,6 +44,7 @@ test("chrome relay action executor can open a tab and then execute content-scrip
     actions: [
       { kind: "open", url: "https://example.com/new" },
       { kind: "select", selectors: ["select[name=plan]"], value: "team" },
+      { kind: "waitFor", text: "Ready", timeoutMs: 1_000 },
       { kind: "snapshot", note: "after-open" },
     ],
     createdAt: now,
@@ -58,7 +59,7 @@ test("chrome relay action executor can open a tab and then execute content-scrip
     ((sentMessages[0] as { message: { actions: Array<{ kind: string }> } }).message.actions ?? []).map(
       (action) => action.kind
     ),
-    ["select", "snapshot"]
+    ["select", "waitFor", "snapshot"]
   );
 });
 

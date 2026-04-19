@@ -1,5 +1,6 @@
 import type { BrowserActionTrace } from "@turnkeyai/core-types/team";
 import {
+  DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
@@ -371,7 +372,8 @@ export class ChromeRelayActionExecutor {
       action.kind === "select" ||
       action.kind === "scroll" ||
       action.kind === "console" ||
-      action.kind === "wait"
+      action.kind === "wait" ||
+      action.kind === "waitFor"
     );
   }
 
@@ -591,21 +593,23 @@ export class ChromeRelayActionExecutor {
     }
 
     return actions.map((action) => {
-      if (action.kind !== "wait") {
+      if (action.kind !== "wait" && action.kind !== "waitFor") {
         return action;
       }
       const timeoutMs =
         typeof action.timeoutMs === "number" && Number.isFinite(action.timeoutMs) && action.timeoutMs >= 0
           ? Math.trunc(action.timeoutMs)
-          : 0;
+          : action.kind === "waitFor"
+            ? DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS
+            : 0;
       if (timeoutMs > this.maxWaitActionMs) {
         throw new Error(
-          `relay wait action exceeds maximum supported duration: ${timeoutMs}ms > ${this.maxWaitActionMs}ms`
+          `relay ${action.kind} action exceeds maximum supported duration: ${timeoutMs}ms > ${this.maxWaitActionMs}ms`
         );
       }
       if (timeoutMs > remainingWaitBudgetMs) {
         throw new Error(
-          `relay wait action exceeds remaining request budget: ${timeoutMs}ms > ${Math.max(
+          `relay ${action.kind} action exceeds remaining request budget: ${timeoutMs}ms > ${Math.max(
             0,
             Math.trunc(remainingWaitBudgetMs)
           )}ms`

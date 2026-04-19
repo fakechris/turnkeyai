@@ -25,6 +25,7 @@ import type {
   BrowserTaskResult,
 } from "@turnkeyai/core-types/team";
 import {
+  DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS,
   MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
@@ -1048,6 +1049,26 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "waitFor") {
+      const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS;
+      const locator = await this.resolveActionTargetLocator(
+        page,
+        action,
+        knownRefs,
+        browserSessionId,
+        currentTargetId
+      );
+      await locator.waitFor({ state: "visible", timeout: timeoutMs });
+
+      return {
+        traceOutput: {
+          ...summarizeActionTarget(action),
+          timeoutMs,
+          finalUrl: page.url(),
+        },
+      };
+    }
+
     if (action.kind === "wait") {
       await page.waitForTimeout(action.timeoutMs);
       return {
@@ -1533,6 +1554,13 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
   if (action.kind === "console") {
     return {
       probe: action.probe,
+    };
+  }
+
+  if (action.kind === "waitFor") {
+    return {
+      ...summarizeActionTarget(action),
+      timeoutMs: action.timeoutMs ?? null,
     };
   }
 

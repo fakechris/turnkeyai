@@ -624,12 +624,13 @@ test("chrome session manager releases a resumed session when openTarget fails", 
   assert.equal(released, 1);
 });
 
-test("chrome session manager executes hover key select and drag input actions", async () => {
+test("chrome session manager executes hover key select drag and waitFor input actions", async () => {
   const hoverSelectors: string[] = [];
   let hoverCount = 0;
   const pressedShortcuts: string[] = [];
   const selectedOptions: unknown[] = [];
   const draggedTargets: unknown[] = [];
+  const locatorWaits: unknown[] = [];
   const waits: Array<{ kind: "load" | "timeout"; value: string | number }> = [];
   const fakeLocator = {
     first() {
@@ -647,6 +648,9 @@ test("chrome session manager executes hover key select and drag input actions", 
     },
     async dragTo(target: unknown) {
       draggedTargets.push(target);
+    },
+    async waitFor(input: unknown) {
+      locatorWaits.push(input);
     },
   };
   const fakePage = {
@@ -685,6 +689,8 @@ test("chrome session manager executes hover key select and drag input actions", 
         index?: number;
         source?: { selectors?: string[]; refId?: string; text?: string };
         target?: { selectors?: string[]; refId?: string; text?: string };
+        text?: string;
+        timeoutMs?: number;
       };
       stepIndex: number;
       sessionDir: string;
@@ -735,17 +741,29 @@ test("chrome session manager executes hover key select and drag input actions", 
     knownRefs: new Map(),
     browserSessionId: "browser-session-input",
   });
+  const waitForOutput = await internal.executeAction({
+    page: fakePage,
+    action: { kind: "waitFor", selectors: ["#done"], timeoutMs: 1_000 },
+    stepIndex: 5,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-input",
+  });
 
-  assert.deepEqual(hoverSelectors, ["button.menu", "select[name=plan]", "#card", "#lane"]);
+  assert.deepEqual(hoverSelectors, ["button.menu", "select[name=plan]", "#card", "#lane", "#done"]);
   assert.equal(hoverCount, 1);
   assert.deepEqual(pressedShortcuts, ["Control+Shift+K"]);
   assert.deepEqual(selectedOptions, ["team"]);
   assert.equal(draggedTargets.length, 1);
+  assert.deepEqual(locatorWaits, [{ state: "visible", timeout: 1_000 }]);
   assert.equal(hoverOutput.traceOutput?.finalUrl, "https://example.com/menu");
   assert.equal(keyOutput.traceOutput?.shortcut, "Control+Shift+K");
   assert.deepEqual(selectOutput.traceOutput?.selectedValues, ["team"]);
   const dragSource = dragOutput.traceOutput?.source as { selectors?: string[] } | undefined;
   assert.equal(dragSource?.selectors?.[0], "#card");
+  assert.equal(waitForOutput.traceOutput?.timeoutMs, 1_000);
   assert.deepEqual(
     waits.map((wait) => wait.kind),
     ["load", "timeout", "load", "timeout", "load", "timeout", "load", "timeout"]

@@ -334,7 +334,7 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
-test("browser task mutation routes validate key hover select and drag action contracts", async () => {
+test("browser task mutation routes validate key hover select drag and waitFor action contracts", async () => {
   const invalidHover = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -411,6 +411,25 @@ test("browser task mutation routes validate key hover select and drag action con
     error: "actions[0] drag.source requires exactly one of selectors, refId, or text",
   });
 
+  const invalidWaitFor = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "waitFor", selectors: ["#ready"], timeoutMs: 90_000 }],
+      },
+    }),
+    res: invalidWaitFor.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidWaitFor.res.statusCode, 400);
+  assert.deepEqual(invalidWaitFor.json, {
+    error: "actions[0] waitFor.timeoutMs must be a positive integer <= 60000",
+  });
+
   let capturedActions: unknown;
   const validDeps = createDeps();
   validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
@@ -437,6 +456,7 @@ test("browser task mutation routes validate key hover select and drag action con
           { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
           { kind: "select", selectors: ["select[name=plan]"], label: "Team" },
           { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
+          { kind: "waitFor", text: "Done", timeoutMs: 1_000 },
         ],
       },
     }),
@@ -450,6 +470,7 @@ test("browser task mutation routes validate key hover select and drag action con
     { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
     { kind: "select", selectors: ["select[name=plan]"], label: "Team" },
     { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
+    { kind: "waitFor", text: "Done", timeoutMs: 1_000 },
   ]);
 });
 

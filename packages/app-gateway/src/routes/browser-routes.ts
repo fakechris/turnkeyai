@@ -15,6 +15,7 @@ import {
   MAX_BROWSER_CDP_ACTION_PARAMS_BYTES,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
   MAX_BROWSER_KEY_ACTION_KEY_LENGTH,
+  MAX_BROWSER_WAIT_FOR_TIMEOUT_MS,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
@@ -668,6 +669,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         }
         break;
       }
+      case "waitFor": {
+        const waitForError = validateWaitForAction(action, `actions[${index}] waitFor`);
+        if (waitForError) return waitForError;
+        break;
+      }
       case "screenshot": {
         if (action.label !== undefined && !parseOptionalRouteString(action.label)) {
           return `actions[${index}] screenshot.label must be a non-empty string when provided`;
@@ -877,6 +883,28 @@ function validateDragAction(
   const targetError = validateTargetedAction(action.target, `${label}.target`);
   if (targetError) {
     return targetError;
+  }
+  return null;
+}
+
+function validateWaitForAction(
+  action: {
+    selectors?: unknown;
+    refId?: unknown;
+    text?: unknown;
+    timeoutMs?: number;
+  },
+  label: string
+): string | null {
+  const targetError = validateTargetedAction(action, label);
+  if (targetError) {
+    return targetError;
+  }
+  if (
+    action.timeoutMs !== undefined &&
+    (!Number.isInteger(action.timeoutMs) || action.timeoutMs <= 0 || action.timeoutMs > MAX_BROWSER_WAIT_FOR_TIMEOUT_MS)
+  ) {
+    return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_WAIT_FOR_TIMEOUT_MS}`;
   }
   return null;
 }

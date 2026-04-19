@@ -544,6 +544,7 @@ export function isRelayExecutableAction(
     action.kind === "scroll" ||
     action.kind === "console" ||
     action.kind === "wait" ||
+    action.kind === "waitFor" ||
     action.kind === "screenshot" ||
     action.kind === "cdp"
   );
