@@ -7,6 +7,8 @@ import {
   MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
   MAX_BROWSER_CDP_EVENT_PARAMS_BYTES,
+  MAX_BROWSER_COOKIE_READ_ENTRIES,
+  MAX_BROWSER_COOKIE_READ_VALUE_BYTES,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
@@ -26,9 +28,22 @@ type RelayKeyAction = Extract<RelayAction, { kind: "key" }>;
 type RelayDragAction = Extract<RelayAction, { kind: "drag" }>;
 type RelayDialogAction = Extract<RelayAction, { kind: "dialog" }>;
 type RelayPopupAction = Extract<RelayAction, { kind: "popup" }>;
+type RelayCookieAction = Extract<RelayAction, { kind: "cookie" }>;
 interface RelayCdpActionOutput {
   result: unknown;
   events: ChromeDebuggerEventLike[];
+}
+interface RelayCdpCookie {
+  name?: string;
+  value?: string;
+  domain?: string;
+  path?: string;
+  expires?: number;
+  size?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  session?: boolean;
+  sameSite?: string;
 }
 interface RelayHoverPoint {
   x: number;
@@ -327,6 +342,29 @@ export class ChromeRelayActionExecutor {
         continue;
       }
 
+      if (action.kind === "cookie") {
+        const startedAt = Date.now();
+        const currentUrl = contentScriptState.latestResponse?.page?.finalUrl ?? activeTab.url ?? "";
+        const output = await this.executeCookieAction(activeTab.id, action, currentUrl, debuggerTabsToDetach);
+        trace.push({
+          stepId: `${request.taskId}:relay-cookie:${index + 1}`,
+          kind: "cookie",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            action: action.action,
+            name: "name" in action ? action.name : null,
+            valueBytes: "value" in action ? byteLength(action.value) : null,
+            url: "url" in action ? action.url ?? null : null,
+            domain: "domain" in action ? action.domain ?? null : null,
+            path: "path" in action ? action.path ?? null : null,
+          },
+          output,
+        });
+        continue;
+      }
+
       if (action.kind === "cdp") {
         const startedAt = Date.now();
         const cdpResult = await this.executeCdpAction(activeTab.id, action, debuggerTabsToDetach);
@@ -463,6 +501,100 @@ export class ChromeRelayActionExecutor {
       action.kind === "waitFor" ||
       action.kind === "storage"
     );
+  }
+
+  private async executeCookieAction(
+    tabId: number,
+    action: RelayCookieAction,
+    currentUrl: string,
+    debuggerTabsToDetach: Set<number>
+  ): Promise<Record<string, unknown>> {
+    if (!this.platform.sendDebuggerCommand) {
+      throw new Error("relay cookie action requires chrome debugger support");
+    }
+    debuggerTabsToDetach.add(tabId);
+    const actionUrl = "url" in action ? action.url : undefined;
+    const resolvedUrl = resolveCookieUrl(actionUrl, currentUrl);
+    await this.platform.sendDebuggerCommand(tabId, "Network.enable", {});
+
+    if (action.action === "get") {
+      const cookies = await readCdpCookiesFromDebugger(this.platform, tabId, resolvedUrl);
+      const filteredCookies = action.name ? cookies.filter((cookie) => cookie.name === action.name) : cookies;
+      return {
+        action: action.action,
+        name: action.name ?? null,
+        url: resolvedUrl ?? null,
+        ...summarizeCdpCookies(filteredCookies),
+      };
+    }
+
+    if (action.action === "set") {
+      if (!resolvedUrl && !action.domain) {
+        throw new Error("relay cookie set requires an http(s) target URL or explicit domain");
+      }
+      const result = await this.platform.sendDebuggerCommand(tabId, "Network.setCookie", {
+        name: action.name,
+        value: action.value,
+        ...(resolvedUrl ? { url: resolvedUrl } : {}),
+        ...(action.domain ? { domain: action.domain } : {}),
+        ...(action.path ? { path: action.path } : {}),
+        ...(action.secure !== undefined ? { secure: action.secure } : {}),
+        ...(action.httpOnly !== undefined ? { httpOnly: action.httpOnly } : {}),
+        ...(action.sameSite ? { sameSite: action.sameSite } : {}),
+        ...(action.expires !== undefined ? { expires: action.expires } : {}),
+      });
+      if (isCdpSetCookieFailure(result)) {
+        throw new Error(`relay cookie set failed: ${action.name}`);
+      }
+      return {
+        action: action.action,
+        name: action.name,
+        valueBytes: byteLength(action.value),
+        url: resolvedUrl ?? null,
+        domain: action.domain ?? null,
+        path: action.path ?? null,
+        set: true,
+      };
+    }
+
+    if (action.action === "remove") {
+      const params = buildCdpDeleteCookieParams(action.name, resolvedUrl, action.domain, action.path);
+      await this.platform.sendDebuggerCommand(tabId, "Network.deleteCookies", params);
+      return {
+        action: action.action,
+        name: action.name,
+        url: resolvedUrl ?? null,
+        domain: action.domain ?? null,
+        path: action.path ?? null,
+        removed: true,
+      };
+    }
+
+    const cookies = filterCdpCookiesByScope(
+      await readCdpCookiesFromDebugger(this.platform, tabId, resolvedUrl),
+      action.domain,
+      action.path
+    );
+    const boundedCookies = cookies.slice(0, MAX_BROWSER_COOKIE_READ_ENTRIES);
+    for (const cookie of boundedCookies) {
+      if (!cookie.name) {
+        continue;
+      }
+      await this.platform.sendDebuggerCommand(
+        tabId,
+        "Network.deleteCookies",
+        buildCdpDeleteCookieParams(cookie.name, resolvedUrl, cookie.domain, cookie.path)
+      );
+    }
+    return {
+      action: action.action,
+      url: resolvedUrl ?? null,
+      domain: action.domain ?? null,
+      path: action.path ?? null,
+      clearedCount: boundedCookies.length,
+      cookieCount: cookies.length,
+      cookiesTruncated: cookies.length > MAX_BROWSER_COOKIE_READ_ENTRIES,
+    };
   }
 
   private async executeCdpAction(
@@ -1055,6 +1187,88 @@ function normalizeCdpTimeoutMs(value: number | undefined): number {
     : MAX_BROWSER_CDP_ACTION_TIMEOUT_MS;
 }
 
+async function readCdpCookiesFromDebugger(
+  platform: ChromeExtensionPlatform,
+  tabId: number,
+  url: string | undefined
+): Promise<RelayCdpCookie[]> {
+  const response = await platform.sendDebuggerCommand?.(tabId, "Network.getCookies", url ? { urls: [url] } : {});
+  if (!isRecord(response) || !Array.isArray(response.cookies)) {
+    return [];
+  }
+  return response.cookies.filter(isRecord).map((cookie) => cookie as RelayCdpCookie);
+}
+
+function summarizeCdpCookies(cookies: RelayCdpCookie[]): Record<string, unknown> {
+  const boundedCookies = cookies.slice(0, MAX_BROWSER_COOKIE_READ_ENTRIES);
+  return {
+    cookies: boundedCookies.map((cookie) => ({
+      name: cookie.name ?? "",
+      domain: cookie.domain ?? "",
+      path: cookie.path ?? "",
+      secure: cookie.secure ?? false,
+      httpOnly: cookie.httpOnly ?? false,
+      session: cookie.session ?? false,
+      sameSite: cookie.sameSite ?? null,
+      expires: typeof cookie.expires === "number" ? cookie.expires : null,
+      ...summarizeCookieValue(cookie.value ?? ""),
+    })),
+    cookieCount: cookies.length,
+    cookiesTruncated: cookies.length > MAX_BROWSER_COOKIE_READ_ENTRIES,
+  };
+}
+
+function summarizeCookieValue(value: string): Record<string, unknown> {
+  const valueBytes = byteLength(value);
+  return {
+    value: valueBytes <= MAX_BROWSER_COOKIE_READ_VALUE_BYTES ? value : value.slice(0, MAX_BROWSER_COOKIE_READ_VALUE_BYTES),
+    valueBytes,
+    valueTruncated: valueBytes > MAX_BROWSER_COOKIE_READ_VALUE_BYTES,
+  };
+}
+
+function filterCdpCookiesByScope(
+  cookies: RelayCdpCookie[],
+  domain: string | undefined,
+  path: string | undefined
+): RelayCdpCookie[] {
+  return cookies.filter((cookie) => {
+    if (domain && cookie.domain !== domain) {
+      return false;
+    }
+    if (path && cookie.path !== path) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function buildCdpDeleteCookieParams(
+  name: string,
+  url: string | undefined,
+  domain: string | undefined,
+  path: string | undefined
+): Record<string, unknown> {
+  if (!url && !domain) {
+    throw new Error("relay cookie remove requires an http(s) target URL or explicit domain");
+  }
+  return {
+    name,
+    ...(url ? { url } : {}),
+    ...(domain ? { domain } : {}),
+    ...(path ? { path } : {}),
+  };
+}
+
+function resolveCookieUrl(actionUrl: string | undefined, currentUrl: string): string | undefined {
+  const candidate = actionUrl ?? currentUrl;
+  return isHttpUrl(candidate) ? candidate : undefined;
+}
+
+function isCdpSetCookieFailure(value: unknown): boolean {
+  return isRecord(value) && value.success === false;
+}
+
 function normalizeCdpEventOptions(events: RelayCdpAction["events"]): {
   waitFor?: string;
   include?: string[];
@@ -1156,6 +1370,19 @@ function jsonByteLength(value: unknown): number {
 
 function byteLength(value: string): number {
   return new TextEncoder().encode(value).length;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 async function retryAsync<T>(

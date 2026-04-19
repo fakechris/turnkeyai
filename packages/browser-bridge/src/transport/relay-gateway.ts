@@ -553,6 +553,7 @@ export function isRelayExecutableAction(
     action.kind === "dialog" ||
     action.kind === "popup" ||
     action.kind === "storage" ||
+    action.kind === "cookie" ||
     action.kind === "screenshot" ||
     action.kind === "cdp"
   );

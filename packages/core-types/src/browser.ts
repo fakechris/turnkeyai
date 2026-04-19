@@ -25,6 +25,7 @@ export type BrowserActionKind =
   | "dialog"
   | "popup"
   | "storage"
+  | "cookie"
   | "screenshot"
   | "cdp";
 
@@ -71,6 +72,10 @@ export const MAX_BROWSER_STORAGE_KEY_LENGTH = 1_024;
 export const MAX_BROWSER_STORAGE_VALUE_BYTES = 64 * 1024;
 export const MAX_BROWSER_STORAGE_READ_VALUE_BYTES = 8 * 1024;
 export const MAX_BROWSER_STORAGE_READ_ENTRIES = 100;
+export const MAX_BROWSER_COOKIE_NAME_LENGTH = 512;
+export const MAX_BROWSER_COOKIE_VALUE_BYTES = 4 * 1024;
+export const MAX_BROWSER_COOKIE_READ_VALUE_BYTES = 2 * 1024;
+export const MAX_BROWSER_COOKIE_READ_ENTRIES = 100;
 
 const BROWSER_CDP_METHOD_PATTERN = /^[A-Z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$/;
 const BLOCKED_BROWSER_CDP_METHOD_PREFIXES = ["Browser.", "Target."];
@@ -148,6 +153,26 @@ export type BrowserStorageAction =
   | { kind: "storage"; area: BrowserStorageArea; action: "remove"; key: string }
   | { kind: "storage"; area: BrowserStorageArea; action: "clear" };
 
+export type BrowserCookieSameSite = "Strict" | "Lax" | "None";
+
+export type BrowserCookieAction =
+  | { kind: "cookie"; action: "get"; name?: string; url?: string }
+  | {
+      kind: "cookie";
+      action: "set";
+      name: string;
+      value: string;
+      url?: string;
+      domain?: string;
+      path?: string;
+      secure?: boolean;
+      httpOnly?: boolean;
+      sameSite?: BrowserCookieSameSite;
+      expires?: number;
+    }
+  | { kind: "cookie"; action: "remove"; name: string; url?: string; domain?: string; path?: string }
+  | { kind: "cookie"; action: "clear"; url?: string; domain?: string; path?: string };
+
 export type BrowserTaskAction =
   | { kind: "open"; url: string }
   | { kind: "snapshot"; note?: string }
@@ -164,6 +189,7 @@ export type BrowserTaskAction =
   | BrowserDialogAction
   | BrowserPopupAction
   | BrowserStorageAction
+  | BrowserCookieAction
   | { kind: "screenshot"; label?: string }
   | {
       kind: "cdp";

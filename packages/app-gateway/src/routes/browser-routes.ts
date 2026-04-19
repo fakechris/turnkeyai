@@ -14,6 +14,8 @@ import {
   MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_PARAMS_BYTES,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
+  MAX_BROWSER_COOKIE_NAME_LENGTH,
+  MAX_BROWSER_COOKIE_VALUE_BYTES,
   MAX_BROWSER_DIALOG_TIMEOUT_MS,
   MAX_BROWSER_KEY_ACTION_KEY_LENGTH,
   MAX_BROWSER_POPUP_TIMEOUT_MS,
@@ -478,6 +480,8 @@ const BROWSER_SCROLL_DIRECTIONS = new Set<Extract<BrowserTaskAction, { kind: "sc
 const BROWSER_KEY_MODIFIERS = new Set(["Alt", "Control", "Meta", "Shift"]);
 const BROWSER_STORAGE_AREAS = new Set(["localStorage", "sessionStorage"]);
 const BROWSER_STORAGE_ACTIONS = new Set(["get", "set", "remove", "clear"]);
+const BROWSER_COOKIE_ACTIONS = new Set(["get", "set", "remove", "clear"]);
+const BROWSER_COOKIE_SAME_SITE_VALUES = new Set(["Strict", "Lax", "None"]);
 
 function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: BrowserTaskMutationRoute): string | null {
   if ((route === "send" || route === "resume") && (body.ownerType !== undefined || body.ownerId !== undefined)) {
@@ -693,6 +697,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
       case "storage": {
         const storageError = validateStorageAction(action, `actions[${index}] storage`);
         if (storageError) return storageError;
+        break;
+      }
+      case "cookie": {
+        const cookieError = validateCookieAction(action, `actions[${index}] cookie`);
+        if (cookieError) return cookieError;
         break;
       }
       case "screenshot": {
@@ -1014,6 +1023,104 @@ function validateStorageAction(
     }
   } else if (action.value !== undefined) {
     return `${label}.value is only accepted for set`;
+  }
+
+  return null;
+}
+
+function validateCookieAction(
+  action: {
+    action?: unknown;
+    name?: unknown;
+    value?: unknown;
+    url?: unknown;
+    domain?: unknown;
+    path?: unknown;
+    secure?: unknown;
+    httpOnly?: unknown;
+    sameSite?: unknown;
+    expires?: unknown;
+  },
+  label: string
+): string | null {
+  if (!BROWSER_COOKIE_ACTIONS.has(action.action as string)) {
+    return `${label}.action must be get, set, remove, or clear`;
+  }
+
+  const cookieAction = action.action as string;
+  const name = parseOptionalRouteString(action.name);
+  if ((cookieAction === "set" || cookieAction === "remove") && !name) {
+    return `${label}.name must be a non-empty string for ${cookieAction}`;
+  }
+  if (action.name !== undefined) {
+    if (!name) {
+      return `${label}.name must be a non-empty string when provided`;
+    }
+    if (name.length > MAX_BROWSER_COOKIE_NAME_LENGTH) {
+      return `${label}.name must be <= ${MAX_BROWSER_COOKIE_NAME_LENGTH} characters`;
+    }
+  }
+
+  const url = parseOptionalRouteString(action.url);
+  if (action.url !== undefined) {
+    if (!url) {
+      return `${label}.url must be a non-empty string when provided`;
+    }
+    if (!isHttpUrl(url)) {
+      return `${label}.url must be an http(s) URL`;
+    }
+  }
+
+  const domain = parseOptionalRouteString(action.domain);
+  if (action.domain !== undefined && !domain) {
+    return `${label}.domain must be a non-empty string when provided`;
+  }
+  const path = parseOptionalRouteString(action.path);
+  if (action.path !== undefined) {
+    if (!path) {
+      return `${label}.path must be a non-empty string when provided`;
+    }
+    if (!path.startsWith("/")) {
+      return `${label}.path must start with /`;
+    }
+  }
+
+  if (cookieAction === "set") {
+    if (typeof action.value !== "string") {
+      return `${label}.value must be a string for set`;
+    }
+    if (Buffer.byteLength(action.value, "utf8") > MAX_BROWSER_COOKIE_VALUE_BYTES) {
+      return `${label}.value exceeds ${MAX_BROWSER_COOKIE_VALUE_BYTES} bytes`;
+    }
+    if (action.secure !== undefined && typeof action.secure !== "boolean") {
+      return `${label}.secure must be a boolean when provided`;
+    }
+    if (action.httpOnly !== undefined && typeof action.httpOnly !== "boolean") {
+      return `${label}.httpOnly must be a boolean when provided`;
+    }
+    if (action.sameSite !== undefined && !BROWSER_COOKIE_SAME_SITE_VALUES.has(action.sameSite as string)) {
+      return `${label}.sameSite must be Strict, Lax, or None`;
+    }
+    if (
+      action.expires !== undefined &&
+      (typeof action.expires !== "number" || !Number.isInteger(action.expires) || action.expires <= 0)
+    ) {
+      return `${label}.expires must be a positive integer unix timestamp when provided`;
+    }
+  } else {
+    if (action.value !== undefined) {
+      return `${label}.value is only accepted for set`;
+    }
+    if (action.secure !== undefined || action.httpOnly !== undefined || action.sameSite !== undefined || action.expires !== undefined) {
+      return `${label}.set-only fields are only accepted for set`;
+    }
+  }
+
+  if (cookieAction === "get" && (action.domain !== undefined || action.path !== undefined)) {
+    return `${label}.domain and .path are not accepted for get`;
+  }
+  if (cookieAction === "clear" && action.name !== undefined) {
+    return `${label}.name is not accepted for clear`;
   }
 
   return null;

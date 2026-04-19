@@ -32,6 +32,8 @@ import {
   MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
   MAX_BROWSER_CDP_EVENT_PARAMS_BYTES,
+  MAX_BROWSER_COOKIE_READ_ENTRIES,
+  MAX_BROWSER_COOKIE_READ_VALUE_BYTES,
   MAX_BROWSER_STORAGE_READ_ENTRIES,
   MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
   isBlockedBrowserCdpMethod,
@@ -55,6 +57,19 @@ interface LocalCdpEvent {
 interface LocalCdpActionOutput {
   result: unknown;
   events: LocalCdpEvent[];
+}
+
+interface LocalCdpCookie {
+  name?: string;
+  value?: string;
+  domain?: string;
+  path?: string;
+  expires?: number;
+  size?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  session?: boolean;
+  sameSite?: string;
 }
 
 export class ChromeSessionManager {
@@ -1137,6 +1152,13 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "cookie") {
+      const result = await executeCookieAction(page, action);
+      return {
+        traceOutput: result,
+      };
+    }
+
     if (action.kind === "waitFor") {
       const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS;
       const locator = await this.resolveActionTargetLocator(
@@ -1578,6 +1600,181 @@ async function executeStorageAction(
   );
 }
 
+async function executeCookieAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "cookie" }>
+): Promise<Record<string, unknown>> {
+  const pageUrl = page.url();
+  const actionUrl = "url" in action ? action.url : undefined;
+  const resolvedUrl = resolveCookieUrl(actionUrl, pageUrl);
+  const cdpSession = await page.context().newCDPSession(page);
+  const sendRaw = cdpSession.send as unknown as (
+    method: string,
+    params?: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  try {
+    await sendRaw("Network.enable", {});
+    if (action.action === "get") {
+      const cookies = await readCdpCookies(sendRaw, resolvedUrl);
+      const filteredCookies = action.name ? cookies.filter((cookie) => cookie.name === action.name) : cookies;
+      return {
+        action: action.action,
+        name: action.name ?? null,
+        url: resolvedUrl ?? null,
+        ...summarizeCdpCookies(filteredCookies),
+      };
+    }
+
+    if (action.action === "set") {
+      if (!resolvedUrl && !action.domain) {
+        throw new Error("browser cookie set requires an http(s) page URL or explicit domain");
+      }
+      const params = {
+        name: action.name,
+        value: action.value,
+        ...(resolvedUrl ? { url: resolvedUrl } : {}),
+        ...(action.domain ? { domain: action.domain } : {}),
+        ...(action.path ? { path: action.path } : {}),
+        ...(action.secure !== undefined ? { secure: action.secure } : {}),
+        ...(action.httpOnly !== undefined ? { httpOnly: action.httpOnly } : {}),
+        ...(action.sameSite ? { sameSite: action.sameSite } : {}),
+        ...(action.expires !== undefined ? { expires: action.expires } : {}),
+      };
+      const result = await sendRaw("Network.setCookie", params);
+      if (isCdpSetCookieFailure(result)) {
+        throw new Error(`browser cookie set failed: ${action.name}`);
+      }
+      return {
+        action: action.action,
+        name: action.name,
+        valueBytes: byteLength(action.value),
+        url: resolvedUrl ?? null,
+        domain: action.domain ?? null,
+        path: action.path ?? null,
+        set: true,
+      };
+    }
+
+    if (action.action === "remove") {
+      const params = buildCdpDeleteCookieParams(action.name, resolvedUrl, action.domain, action.path);
+      await sendRaw("Network.deleteCookies", params);
+      return {
+        action: action.action,
+        name: action.name,
+        url: resolvedUrl ?? null,
+        domain: action.domain ?? null,
+        path: action.path ?? null,
+        removed: true,
+      };
+    }
+
+    const cookies = filterCdpCookiesByScope(await readCdpCookies(sendRaw, resolvedUrl), action.domain, action.path);
+    const boundedCookies = cookies.slice(0, MAX_BROWSER_COOKIE_READ_ENTRIES);
+    for (const cookie of boundedCookies) {
+      if (!cookie.name) {
+        continue;
+      }
+      await sendRaw(
+        "Network.deleteCookies",
+        buildCdpDeleteCookieParams(cookie.name, resolvedUrl, cookie.domain, cookie.path)
+      );
+    }
+    return {
+      action: action.action,
+      url: resolvedUrl ?? null,
+      domain: action.domain ?? null,
+      path: action.path ?? null,
+      clearedCount: boundedCookies.length,
+      cookieCount: cookies.length,
+      cookiesTruncated: cookies.length > MAX_BROWSER_COOKIE_READ_ENTRIES,
+    };
+  } finally {
+    await cdpSession.detach().catch(() => undefined);
+  }
+}
+
+async function readCdpCookies(
+  sendRaw: (method: string, params?: Record<string, unknown>) => Promise<unknown>,
+  url: string | undefined
+): Promise<LocalCdpCookie[]> {
+  const response = await sendRaw("Network.getCookies", url ? { urls: [url] } : {});
+  if (!isRecord(response) || !Array.isArray(response.cookies)) {
+    return [];
+  }
+  return response.cookies.filter(isRecord).map((cookie) => cookie as LocalCdpCookie);
+}
+
+function summarizeCdpCookies(cookies: LocalCdpCookie[]): Record<string, unknown> {
+  const boundedCookies = cookies.slice(0, MAX_BROWSER_COOKIE_READ_ENTRIES);
+  return {
+    cookies: boundedCookies.map((cookie) => ({
+      name: cookie.name ?? "",
+      domain: cookie.domain ?? "",
+      path: cookie.path ?? "",
+      secure: cookie.secure ?? false,
+      httpOnly: cookie.httpOnly ?? false,
+      session: cookie.session ?? false,
+      sameSite: cookie.sameSite ?? null,
+      expires: typeof cookie.expires === "number" ? cookie.expires : null,
+      ...summarizeCookieValue(cookie.value ?? ""),
+    })),
+    cookieCount: cookies.length,
+    cookiesTruncated: cookies.length > MAX_BROWSER_COOKIE_READ_ENTRIES,
+  };
+}
+
+function summarizeCookieValue(value: string): Record<string, unknown> {
+  const valueBytes = byteLength(value);
+  return {
+    value: valueBytes <= MAX_BROWSER_COOKIE_READ_VALUE_BYTES ? value : value.slice(0, MAX_BROWSER_COOKIE_READ_VALUE_BYTES),
+    valueBytes,
+    valueTruncated: valueBytes > MAX_BROWSER_COOKIE_READ_VALUE_BYTES,
+  };
+}
+
+function filterCdpCookiesByScope(
+  cookies: LocalCdpCookie[],
+  domain: string | undefined,
+  path: string | undefined
+): LocalCdpCookie[] {
+  return cookies.filter((cookie) => {
+    if (domain && cookie.domain !== domain) {
+      return false;
+    }
+    if (path && cookie.path !== path) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function buildCdpDeleteCookieParams(
+  name: string,
+  url: string | undefined,
+  domain: string | undefined,
+  path: string | undefined
+): Record<string, unknown> {
+  if (!url && !domain) {
+    throw new Error("browser cookie remove requires an http(s) page URL or explicit domain");
+  }
+  return {
+    name,
+    ...(url ? { url } : {}),
+    ...(domain ? { domain } : {}),
+    ...(path ? { path } : {}),
+  };
+}
+
+function resolveCookieUrl(actionUrl: string | undefined, pageUrl: string): string | undefined {
+  const candidate = actionUrl ?? pageUrl;
+  return isHttpUrl(candidate) ? candidate : undefined;
+}
+
+function isCdpSetCookieFailure(value: unknown): boolean {
+  return isRecord(value) && value.success === false;
+}
+
 function normalizeCdpTimeoutMs(value: number | undefined): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0
     ? Math.min(value, MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
@@ -1743,6 +1940,19 @@ function byteLength(value: string): number {
   return new TextEncoder().encode(value).length;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<T>((_, reject) => {
@@ -1854,6 +2064,17 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
       action: action.action,
       key: "key" in action ? action.key : null,
       valueBytes: "value" in action ? byteLength(action.value) : null,
+    };
+  }
+
+  if (action.kind === "cookie") {
+    return {
+      action: action.action,
+      name: "name" in action ? action.name : null,
+      valueBytes: "value" in action ? byteLength(action.value) : null,
+      url: "url" in action ? action.url ?? null : null,
+      domain: "domain" in action ? action.domain ?? null : null,
+      path: "path" in action ? action.path ?? null : null,
     };
   }
 

@@ -334,7 +334,7 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
-test("browser task mutation routes validate key hover select drag waitFor dialog popup and storage action contracts", async () => {
+test("browser task mutation routes validate key hover select drag waitFor dialog popup storage and cookie action contracts", async () => {
   const invalidHover = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -487,6 +487,25 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     error: "actions[0] storage.value must be a string for set",
   });
 
+  const invalidCookie = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cookie", action: "set", name: "sid" }],
+      },
+    }),
+    res: invalidCookie.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidCookie.res.statusCode, 400);
+  assert.deepEqual(invalidCookie.json, {
+    error: "actions[0] cookie.value must be a string for set",
+  });
+
   let capturedActions: unknown;
   const validDeps = createDeps();
   validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
@@ -518,6 +537,8 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
           { kind: "popup", timeoutMs: 1_000 },
           { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
           { kind: "storage", area: "localStorage", action: "get", key: "token" },
+          { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },
+          { kind: "cookie", action: "get", name: "sid" },
         ],
       },
     }),
@@ -536,6 +557,8 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     { kind: "popup", timeoutMs: 1_000 },
     { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
     { kind: "storage", area: "localStorage", action: "get", key: "token" },
+    { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },
+    { kind: "cookie", action: "get", name: "sid" },
   ]);
 });
 

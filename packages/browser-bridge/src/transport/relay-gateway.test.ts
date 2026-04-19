@@ -218,7 +218,7 @@ test("relay gateway dispatches wait actions to peers that advertise wait support
   assert.equal(result.trace[0]?.kind, "wait");
 });
 
-test("relay gateway routes hover key select drag waitFor dialog popup and storage actions only to peers that advertise input support", async () => {
+test("relay gateway routes hover key select drag waitFor dialog popup storage and cookie actions only to peers that advertise input support", async () => {
   const gateway = new RelayGateway({
     now: () => 1_000,
     createId: (prefix) => `${prefix}-input`,
@@ -229,7 +229,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup and storag
   });
   gateway.registerPeer({
     peerId: "peer-input",
-    capabilities: ["snapshot", "hover", "key", "select", "drag", "waitFor", "dialog", "popup", "storage"],
+    capabilities: ["snapshot", "hover", "key", "select", "drag", "waitFor", "dialog", "popup", "storage", "cookie"],
   });
 
   const dispatchPromise = gateway.dispatchActionRequest({
@@ -244,6 +244,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup and storag
       { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
       { kind: "popup", timeoutMs: 1_000 },
       { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
+      { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/" },
       { kind: "snapshot", note: "after-input" },
     ],
   });
@@ -253,7 +254,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup and storag
   assert.ok(request);
   assert.deepEqual(
     request?.actions.map((action) => action.kind),
-    ["hover", "key", "select", "drag", "waitFor", "dialog", "popup", "storage", "snapshot"]
+    ["hover", "key", "select", "drag", "waitFor", "dialog", "popup", "storage", "cookie", "snapshot"]
   );
 
   gateway.submitActionResult({
@@ -339,6 +340,14 @@ test("relay gateway routes hover key select drag waitFor dialog popup and storag
         status: "ok",
         input: { action: "set", area: "localStorage", key: "token", valueBytes: 3 },
       },
+      {
+        stepId: "task-input:relay-cookie:9",
+        kind: "cookie",
+        startedAt: 17,
+        completedAt: 18,
+        status: "ok",
+        input: { action: "set", name: "sid", valueBytes: 3, path: "/" },
+      },
     ],
     screenshotPaths: [],
     screenshotPayloads: [],
@@ -355,6 +364,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup and storag
   assert.equal(result.trace[5]?.kind, "dialog");
   assert.equal(result.trace[6]?.kind, "popup");
   assert.equal(result.trace[7]?.kind, "storage");
+  assert.equal(result.trace[8]?.kind, "cookie");
 });
 
 test("relay gateway routes cdp actions only to peers that advertise cdp support", async () => {

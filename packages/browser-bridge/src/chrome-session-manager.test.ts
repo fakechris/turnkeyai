@@ -1004,6 +1004,99 @@ test("chrome session manager executes bounded storage actions", async () => {
   assert.equal(output.traceOutput?.value, "abc");
 });
 
+test("chrome session manager executes bounded cookie actions through target CDP", async () => {
+  const commands: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  let detached = 0;
+  const cdpSession = {
+    async send(method: string, params?: Record<string, unknown>) {
+      commands.push({
+        method,
+        ...(params !== undefined ? { params } : {}),
+      });
+      if (method === "Network.getCookies") {
+        return {
+          cookies: [
+            {
+              name: "sid",
+              value: "abc",
+              domain: "example.com",
+              path: "/",
+              secure: true,
+              httpOnly: true,
+              session: false,
+              sameSite: "Lax",
+              expires: 1_900_000_000,
+            },
+          ],
+        };
+      }
+      return {};
+    },
+    async detach() {
+      detached += 1;
+    },
+  };
+  const fakePage = {
+    url() {
+      return "https://example.com/app";
+    },
+    context() {
+      return {
+        async newCDPSession(page: Page) {
+          assert.equal(page, fakePage);
+          return cdpSession;
+        },
+      };
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action: { kind: "cookie"; action: "get"; name: string };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  const output = await internal.executeAction({
+    page: fakePage,
+    action: { kind: "cookie", action: "get", name: "sid" },
+    stepIndex: 1,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-cookie",
+  });
+
+  assert.deepEqual(commands, [
+    { method: "Network.enable", params: {} },
+    { method: "Network.getCookies", params: { urls: ["https://example.com/app"] } },
+  ]);
+  assert.equal(detached, 1);
+  assert.equal(output.traceOutput?.cookieCount, 1);
+  assert.deepEqual((output.traceOutput?.cookies as Array<Record<string, unknown>>)[0], {
+    name: "sid",
+    domain: "example.com",
+    path: "/",
+    secure: true,
+    httpOnly: true,
+    session: false,
+    sameSite: "Lax",
+    expires: 1_900_000_000,
+    value: "abc",
+    valueBytes: 3,
+    valueTruncated: false,
+  });
+});
+
 test("chrome session manager executes target-scoped cdp actions through a page CDP session", async () => {
   const commands: unknown[] = [];
   let detached = 0;

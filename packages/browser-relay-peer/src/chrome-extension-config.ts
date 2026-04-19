@@ -43,6 +43,7 @@ const DEFAULT_RUNTIME_CONFIG: ChromeRelayExtensionRuntimeConfig = {
     "dialog",
     "popup",
     "storage",
+    "cookie",
     "screenshot",
     "cdp",
   ],

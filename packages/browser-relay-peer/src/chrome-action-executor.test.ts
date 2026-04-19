@@ -461,6 +461,73 @@ test("chrome relay action executor can run target-scoped cdp commands", async ()
   assert.equal(sentMessages.length, 1);
 });
 
+test("chrome relay action executor can run target-scoped cookie actions through debugger", async () => {
+  const now = Date.now();
+  const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];
+  const detachedTabs: number[] = [];
+  const platform = fakePlatform({
+    activeTab: { id: 7, windowId: 3, url: "https://example.com/app", title: "Example", status: "complete" },
+    onDebuggerCommand(tabId, method, params) {
+      debuggerCommands.push({ tabId, method, params });
+      if (method === "Network.getCookies") {
+        return {
+          cookies: [
+            {
+              name: "sid",
+              value: "abc",
+              domain: "example.com",
+              path: "/",
+              secure: true,
+              httpOnly: true,
+              session: false,
+              sameSite: "Lax",
+              expires: 1_900_000_000,
+            },
+          ],
+        };
+      }
+      return {};
+    },
+    onSendMessage() {
+      return {
+        ok: true,
+        page: {
+          requestedUrl: "https://example.com/app",
+          finalUrl: "https://example.com/app",
+          title: "Example",
+          textExcerpt: "Example page",
+          statusCode: 200,
+          interactives: [],
+        },
+        trace: [],
+      };
+    },
+  });
+  platform.detachDebugger = async (tabId) => {
+    detachedTabs.push(tabId);
+  };
+  const executor = new ChromeRelayActionExecutor(platform);
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-cookie",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-cookie",
+    actions: [{ kind: "cookie", action: "get", name: "sid" }],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(debuggerCommands, [
+    { tabId: 7, method: "Network.enable", params: {} },
+    { tabId: 7, method: "Network.getCookies", params: { urls: ["https://example.com/app"] } },
+  ]);
+  assert.deepEqual(detachedTabs, [7]);
+  assert.equal(result.trace[0]?.kind, "cookie");
+  assert.equal(result.trace[0]?.output?.cookieCount, 1);
+});
+
 test("chrome relay action executor can run typed hover and key actions through debugger input", async () => {
   const now = Date.now();
   const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];
