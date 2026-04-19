@@ -25,6 +25,7 @@ export interface RelayControlPlane {
   listTargets(input?: { peerId?: string }): RelayTargetRecord[];
   listActionRequests(): RelayActionRequestRecord[];
   pullNextActionRequest(peerId: string): RelayActionRequest | null;
+  pullNextActionRequestWait?(peerId: string, waitMs: number): Promise<RelayActionRequest | null>;
   submitActionResult(input: RelayActionResult): RelayActionResult;
 }
 

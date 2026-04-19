@@ -14,6 +14,7 @@ test("chrome relay extension config falls back to default loopback daemon settin
     assert.equal(config.daemonBaseUrl.startsWith("http://127.0.0.1:"), true);
     assert.equal(config.peerId, "turnkeyai-relay-peer:ext-123");
     assert.deepEqual(config.capabilities, ["open", "snapshot", "click", "type", "scroll", "console", "wait", "screenshot"]);
+    assert.equal(config.pullWaitMs, 25_000);
   } finally {
     (globalThis as Record<string, unknown>).chrome = previousChrome;
   }
@@ -37,6 +38,7 @@ test("chrome relay extension config merges stored overrides", async () => {
               activeDelayMs: 10,
               idleDelayMs: 800,
               errorDelayMs: 1200,
+              pullWaitMs: 20_000,
             },
           });
         },
@@ -55,6 +57,7 @@ test("chrome relay extension config merges stored overrides", async () => {
     assert.equal(config.activeDelayMs, 10);
     assert.equal(config.idleDelayMs, 800);
     assert.equal(config.errorDelayMs, 1200);
+    assert.equal(config.pullWaitMs, 20_000);
   } finally {
     (globalThis as Record<string, unknown>).chrome = previousChrome;
   }

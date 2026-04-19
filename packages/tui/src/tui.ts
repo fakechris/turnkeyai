@@ -1879,6 +1879,10 @@ function printBrowserTransportSoakResult(result: {
       durationMs: number;
       failureBucket: string;
       summary: string;
+      acceptanceChecks?: Array<{
+        checkId: string;
+        status: "passed" | "failed" | "skipped";
+      }>;
     }>;
   }>;
   targetAggregates: Array<{
@@ -1907,6 +1911,13 @@ function printBrowserTransportSoakResult(result: {
         `    - ${target.target}  status=${target.status}  bucket=${target.failureBucket}  durationMs=${target.durationMs}`
       );
       console.log(`      ${target.summary}`);
+      if (target.acceptanceChecks?.length) {
+        console.log(
+          `      acceptance=${target.acceptanceChecks
+            .map((check) => `${check.checkId}:${check.status}`)
+            .join(", ")}`
+        );
+      }
     }
   }
   for (const aggregate of result.targetAggregates) {

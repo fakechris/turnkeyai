@@ -28,6 +28,7 @@ export interface ChromeExtensionServiceWorkerOptions {
   client: DaemonRelayClientOptions;
   peer: RelayPeerRegistration;
   hooks: ChromeExtensionServiceWorkerHooks;
+  pullWaitMs?: number;
 }
 
 export interface ChromeExtensionServiceWorkerLifecycleController {
@@ -49,6 +50,7 @@ export function createChromeExtensionServiceWorkerRuntime(
       listTargets: () => options.hooks.listObservedTargets(),
     },
     actionExecutor,
+    ...(options.pullWaitMs !== undefined ? { pullWaitMs: options.pullWaitMs } : {}),
   });
 }
 
@@ -108,6 +110,7 @@ export function installChromeExtensionPlatformLifecycle(
   const loop = createChromeExtensionServiceWorkerLoop({
     client: options.client,
     peer: options.peer,
+    ...(options.pullWaitMs !== undefined ? { pullWaitMs: options.pullWaitMs } : {}),
     ...(options.loop ? { loop: options.loop } : {}),
     hooks: createChromeExtensionPlatformHooks(platform),
   });

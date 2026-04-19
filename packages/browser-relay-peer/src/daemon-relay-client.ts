@@ -37,8 +37,10 @@ export class DaemonRelayClient {
     return this.postJson(`/relay/peers/${encodeURIComponent(peerId)}/targets/report`, { targets });
   }
 
-  async pullNextAction(peerId: string): Promise<RelayActionRequest | null> {
-    return this.postJson(`/relay/peers/${encodeURIComponent(peerId)}/pull-actions`, {});
+  async pullNextAction(peerId: string, options: { waitMs?: number } = {}): Promise<RelayActionRequest | null> {
+    return this.postJson(`/relay/peers/${encodeURIComponent(peerId)}/pull-actions`, {
+      ...(options.waitMs !== undefined ? { waitMs: options.waitMs } : {}),
+    });
   }
 
   async submitActionResult(peerId: string, result: Omit<RelayActionResult, "peerId">): Promise<RelayActionResult> {

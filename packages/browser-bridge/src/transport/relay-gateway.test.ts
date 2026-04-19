@@ -104,6 +104,55 @@ test("relay gateway dispatches queued action requests and resolves submitted res
   assert.equal(gateway.listTargets({ peerId: "peer-1" })[0]?.relayTargetId, "tab-1");
 });
 
+test("relay gateway long-polls pull requests until an action is queued", async () => {
+  let now = 1_000;
+  const gateway = new RelayGateway({
+    now: () => now,
+    createId: (prefix) => `${prefix}-${++now}`,
+  });
+  gateway.registerPeer({
+    peerId: "peer-1",
+    capabilities: ["snapshot"],
+  });
+
+  const pullPromise = gateway.pullNextActionRequestWait("peer-1", 1_000);
+  const dispatchPromise = gateway.dispatchActionRequest({
+    browserSessionId: "browser-session-1",
+    taskId: "task-1",
+    actions: [{ kind: "snapshot", note: "inspect" }],
+  });
+
+  const request = await pullPromise;
+  assert.equal(request?.actionRequestId, "relay-action-1001");
+  assert.equal(request?.claimToken, "relay-claim-1002");
+
+  gateway.submitActionResult({
+    actionRequestId: request!.actionRequestId,
+    peerId: "peer-1",
+    browserSessionId: request!.browserSessionId,
+    taskId: request!.taskId,
+    relayTargetId: "tab-1",
+    claimToken: request!.claimToken!,
+    url: "https://example.com",
+    status: "completed",
+    page: {
+      requestedUrl: "https://example.com",
+      finalUrl: "https://example.com",
+      title: "Example Domain",
+      textExcerpt: "Example Domain",
+      statusCode: 200,
+      interactives: [],
+    },
+    trace: [],
+    screenshotPaths: [],
+    screenshotPayloads: [],
+    artifactIds: [],
+  });
+
+  const result = await dispatchPromise;
+  assert.equal(result.status, "completed");
+});
+
 test("relay gateway dispatches wait actions to peers that advertise wait support", async () => {
   const gateway = new RelayGateway({
     now: () => 1_000,

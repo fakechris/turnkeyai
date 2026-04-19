@@ -12,7 +12,7 @@ export interface RelayPeerClient {
   registerPeer(input: RelayPeerRegistration): Promise<RelayPeerRecord>;
   heartbeatPeer(peerId: string): Promise<RelayPeerRecord>;
   reportTargets(peerId: string, targets: RelayTargetReport[]): Promise<RelayTargetRecord[]>;
-  pullNextAction(peerId: string): Promise<RelayActionRequest | null>;
+  pullNextAction(peerId: string, options?: { waitMs?: number }): Promise<RelayActionRequest | null>;
   submitActionResult(peerId: string, result: Omit<RelayActionResult, "peerId">): Promise<RelayActionResult>;
 }
 
@@ -43,6 +43,7 @@ export interface BrowserRelayPeerRuntimeOptions {
   targetObserver: RelayPeerTargetObserver;
   actionExecutor: RelayPeerActionExecutor;
   executionHeartbeatIntervalMs?: number;
+  pullWaitMs?: number;
 }
 
 export class BrowserRelayPeerRuntime {
@@ -51,6 +52,7 @@ export class BrowserRelayPeerRuntime {
   private readonly targetObserver: RelayPeerTargetObserver;
   private readonly actionExecutor: RelayPeerActionExecutor;
   private readonly executionHeartbeatIntervalMs: number;
+  private readonly pullWaitMs: number;
   private started = false;
 
   constructor(options: BrowserRelayPeerRuntimeOptions) {
@@ -59,6 +61,7 @@ export class BrowserRelayPeerRuntime {
     this.targetObserver = options.targetObserver;
     this.actionExecutor = options.actionExecutor;
     this.executionHeartbeatIntervalMs = Math.max(250, options.executionHeartbeatIntervalMs ?? 2_000);
+    this.pullWaitMs = Math.max(0, Math.trunc(options.pullWaitMs ?? 25_000));
   }
 
   async start(): Promise<RelayPeerRecord> {
@@ -81,7 +84,7 @@ export class BrowserRelayPeerRuntime {
     await this.ensureStarted();
     await this.syncTargets();
     await this.heartbeat();
-    const request = await this.client.pullNextAction(this.peer.peerId);
+    const request = await this.client.pullNextAction(this.peer.peerId, { waitMs: this.pullWaitMs });
     if (!request) {
       return null;
     }
@@ -95,11 +98,12 @@ export class BrowserRelayPeerRuntime {
     try {
       execution = await this.actionExecutor.execute(request);
     } catch (error) {
-      if (!request.relayTargetId) {
+      const relayTargetId = request.relayTargetId ?? (await this.resolveFallbackRelayTargetId());
+      if (!relayTargetId) {
         throw error;
       }
       execution = {
-        relayTargetId: request.relayTargetId,
+        relayTargetId,
         url: "",
         status: "failed",
         trace: [],
@@ -174,5 +178,10 @@ export class BrowserRelayPeerRuntime {
         clearInterval(timer);
       },
     };
+  }
+
+  private async resolveFallbackRelayTargetId(): Promise<string | undefined> {
+    const targets = await this.targetObserver.listTargets().catch(() => []);
+    return targets.find((target) => target.status !== "detached")?.relayTargetId ?? targets[0]?.relayTargetId;
   }
 }

@@ -11,6 +11,7 @@ export class ChromeRelayActionExecutor {
   private readonly tabObserver: ChromeRelayTabObserver;
   private readonly maxWaitActionMs = 60_000;
   private readonly requestCompletionBufferMs = 500;
+  private readonly maxScreenshotCaptureMs = 5_000;
 
   constructor(private readonly platform: ChromeExtensionPlatform) {
     this.tabObserver = new ChromeRelayTabObserver(platform);
@@ -89,8 +90,25 @@ export class ChromeRelayActionExecutor {
     for (let index = 0; index < screenshotActions.length; index += 1) {
       const action = screenshotActions[index]!;
       const startedAt = Date.now();
-      const dataUrl = await this.platform.captureVisibleTab(activeTab.windowId, { format: "png" });
+      const activeTabId: number | undefined = activeTab.id;
+      if (typeof activeTabId !== "number") {
+        throw new Error("relay screenshot capture requires a target tab id");
+      }
+      const captureTimeoutMs = this.resolveScreenshotCaptureTimeoutMs(request);
+      activeTab = await withTimeout(
+        this.platform.updateTab(activeTabId, { active: true }),
+        captureTimeoutMs,
+        `relay screenshot tab activation timed out after ${captureTimeoutMs}ms`
+      );
+      const dataUrl = await withTimeout(
+        this.platform.captureVisibleTab(activeTab.windowId, { format: "png" }),
+        captureTimeoutMs,
+        `relay screenshot capture timed out after ${captureTimeoutMs}ms`
+      );
       const [, dataBase64 = ""] = /^data:image\/png;base64,(.+)$/.exec(dataUrl) ?? [];
+      if (!dataBase64) {
+        throw new Error("relay screenshot capture returned an empty payload");
+      }
       screenshotPayloads.push({
         ...(action.label ? { label: action.label } : {}),
         mimeType: "image/png",
@@ -112,13 +130,17 @@ export class ChromeRelayActionExecutor {
       });
     }
 
+    const finalTabId = activeTab.id;
+    if (typeof finalTabId !== "number") {
+      throw new Error("relay action executor lost the target tab id");
+    }
     const finalSnapshotResponse =
-      contentScriptResponse?.page || !activeTab.id
+      contentScriptResponse?.page
         ? contentScriptResponse
-        : await this.sendContentScriptActions(activeTab.id, request.actionRequestId, [{ kind: "snapshot", note: "final-relay-state" }]);
+        : await this.sendContentScriptActions(finalTabId, request.actionRequestId, [{ kind: "snapshot", note: "final-relay-state" }]);
 
     return {
-      relayTargetId: formatRelayTargetId(activeTab.id),
+      relayTargetId: formatRelayTargetId(finalTabId),
       url: finalSnapshotResponse?.page?.finalUrl ?? activeTab.url ?? "",
       ...(finalSnapshotResponse?.page?.title || activeTab.title
         ? { title: finalSnapshotResponse?.page?.title ?? activeTab.title }
@@ -142,6 +164,14 @@ export class ChromeRelayActionExecutor {
 
   private hasOpenAction(request: RelayActionRequest): boolean {
     return request.actions.some((action) => action.kind === "open");
+  }
+
+  private resolveScreenshotCaptureTimeoutMs(request: RelayActionRequest): number {
+    const remainingRequestBudgetMs = request.expiresAt - Date.now() - this.requestCompletionBufferMs;
+    if (Number.isFinite(remainingRequestBudgetMs) && remainingRequestBudgetMs > 0) {
+      return Math.max(1, Math.min(this.maxScreenshotCaptureMs, Math.trunc(remainingRequestBudgetMs)));
+    }
+    return this.maxScreenshotCaptureMs;
   }
 
   private normalizePageActions(
@@ -202,6 +232,18 @@ export class ChromeRelayActionExecutor {
       }
     );
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
 }
 
 async function retryAsync<T>(

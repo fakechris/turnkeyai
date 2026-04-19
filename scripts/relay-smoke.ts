@@ -250,6 +250,9 @@ async function main(): Promise<void> {
       console.log(`browser-final-url: ${browserSmoke.finalUrl}`);
       console.log(`browser-history: ${browserSmoke.historyLength}`);
       console.log(`browser-transport: ${browserSmoke.transportLabel}`);
+      console.log(`browser-target-continuity: ${browserSmoke.targetContinuity}`);
+      console.log(`browser-screenshots: ${browserSmoke.screenshotCount}`);
+      console.log(`browser-artifacts: ${browserSmoke.artifactCount}`);
       if (browserSmoke.resumeFinalUrl) {
         console.log(`browser-resume-final-url: ${browserSmoke.resumeFinalUrl}`);
       }
@@ -456,6 +459,9 @@ async function runBrowserSessionSmoke(input: {
   resumeFinalUrl?: string;
   historyLength: number;
   transportLabel: string;
+  targetContinuity: string;
+  screenshotCount: number;
+  artifactCount: number;
 }> {
   const thread = (await postJson(`${input.daemonUrl}/threads/bootstrap-demo`, {
     variant: "default",
@@ -504,6 +510,9 @@ async function runBrowserSessionSmoke(input: {
       finalUrl,
       historyLength: history.length,
       transportLabel,
+      targetContinuity: "not-verified",
+      screenshotCount: 0,
+      artifactCount: 0,
     };
   }
 
@@ -575,6 +584,11 @@ async function runBrowserSessionSmoke(input: {
   if (!Array.isArray(interactiveResult) || interactiveResult.length < 2) {
     throw new Error("relay resume smoke did not surface interactive summary results");
   }
+  const screenshotCount = resumeResponse.screenshotPaths?.length ?? 0;
+  const artifactCount = resumeResponse.artifactIds?.length ?? 0;
+  if (artifactCount < 1) {
+    throw new Error("relay resume smoke did not persist browser artifact metadata");
+  }
 
   const history = await getSessionHistory(input.daemonUrl, threadId, sessionId);
   const dispatchSequence = history.map((entry) => entry.dispatchMode).join(",");
@@ -595,6 +609,9 @@ async function runBrowserSessionSmoke(input: {
     resumeFinalUrl,
     historyLength: history.length,
     transportLabel: sendTransportLabel,
+    targetContinuity: "chrome-tab",
+    screenshotCount,
+    artifactCount,
   };
 }
 
@@ -922,6 +939,7 @@ interface BrowserSmokeResponse {
     title?: string;
   };
   screenshotPaths?: string[];
+  artifactIds?: string[];
   trace?: Array<{
     kind?: string;
     output?: Record<string, unknown>;

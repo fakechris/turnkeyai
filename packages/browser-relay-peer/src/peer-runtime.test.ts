@@ -208,6 +208,70 @@ test("browser relay peer runtime submits a failed result when execution throws f
   assert.equal(submitted.length, 1);
 });
 
+test("browser relay peer runtime submits a failed result with an observed target when execution throws before target lock", async () => {
+  const submitted: RelayActionResult[] = [];
+  const runtime = new BrowserRelayPeerRuntime({
+    peer: {
+      peerId: "peer-1",
+      capabilities: ["screenshot"],
+    },
+    client: {
+      async registerPeer() {
+        return peerRecord();
+      },
+      async heartbeatPeer() {
+        return peerRecord();
+      },
+      async reportTargets(peerId, targets) {
+        return targets.map((target) => toTargetRecord(peerId, target));
+      },
+      async pullNextAction() {
+        return {
+          actionRequestId: "relay-action-1",
+          peerId: "peer-1",
+          browserSessionId: "browser-session-1",
+          taskId: "task-1",
+          actions: [{ kind: "screenshot", label: "final" }],
+          createdAt: 1,
+          expiresAt: 2,
+          claimToken: "claim-1",
+        };
+      },
+      async submitActionResult(peerId, result) {
+        const payload: RelayActionResult = {
+          peerId,
+          ...result,
+        };
+        submitted.push(payload);
+        return payload;
+      },
+    },
+    targetObserver: {
+      async listTargets() {
+        return [
+          {
+            relayTargetId: "chrome-tab:9",
+            url: "https://example.com",
+            title: "Example",
+            status: "attached",
+          },
+        ];
+      },
+    },
+    actionExecutor: {
+      async execute() {
+        throw new Error("screenshot capture timed out");
+      },
+    },
+  });
+
+  const result = await runtime.runCycle();
+  assert.equal(result?.status, "failed");
+  assert.match(result?.errorMessage ?? "", /screenshot capture timed out/);
+  assert.equal(result?.relayTargetId, "chrome-tab:9");
+  assert.equal(submitted.length, 1);
+});
+
 test("browser relay peer runtime rejects action requests without claim tokens", async () => {
   let executed = false;
   const runtime = new BrowserRelayPeerRuntime({
