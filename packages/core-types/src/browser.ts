@@ -20,6 +20,7 @@ export type BrowserActionKind =
   | "drag"
   | "scroll"
   | "console"
+  | "probe"
   | "wait"
   | "waitFor"
   | "dialog"
@@ -58,6 +59,7 @@ export interface BrowserSnapshotResult extends BrowserPageResult {
 }
 
 export type BrowserConsoleProbe = "page-metadata" | "interactive-summary";
+export type BrowserProbeKind = "page-state" | "forms" | "links" | "downloads";
 
 export const MAX_BROWSER_CDP_ACTION_TIMEOUT_MS = 30_000;
 export const MAX_BROWSER_CDP_ACTION_PARAMS_BYTES = 64 * 1024;
@@ -95,6 +97,7 @@ export const MAX_BROWSER_DOWNLOAD_FILE_BYTES = 25 * 1024 * 1024;
 export const MAX_BROWSER_UPLOAD_ARTIFACT_ID_LENGTH = 512;
 export const MAX_BROWSER_UPLOAD_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH = 255;
+export const MAX_BROWSER_PROBE_ITEMS = 50;
 
 const BROWSER_CDP_METHOD_PATTERN = /^[A-Z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$/;
 const BLOCKED_BROWSER_CDP_METHOD_PREFIXES = ["Browser.", "Target."];
@@ -227,6 +230,12 @@ export type BrowserUploadAction = {
   file?: BrowserUploadFilePayload;
 } & BrowserActionTarget;
 
+export type BrowserProbeAction = {
+  kind: "probe";
+  probe: BrowserProbeKind;
+  maxItems?: number;
+};
+
 export type BrowserTaskAction =
   | { kind: "open"; url: string }
   | { kind: "snapshot"; note?: string }
@@ -238,6 +247,7 @@ export type BrowserTaskAction =
   | BrowserDragAction
   | { kind: "scroll"; direction: "up" | "down"; amount?: number }
   | { kind: "console"; probe: BrowserConsoleProbe }
+  | BrowserProbeAction
   | { kind: "wait"; timeoutMs: number }
   | BrowserWaitForAction
   | BrowserDialogAction

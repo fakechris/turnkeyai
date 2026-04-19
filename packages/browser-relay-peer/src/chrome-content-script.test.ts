@@ -55,11 +55,12 @@ test("chrome content script executes snapshot, click, type, select, waitFor, sto
     { kind: "scroll", direction: "down", amount: 240 },
     { kind: "wait", timeoutMs: 0 },
     { kind: "console", probe: "page-metadata" },
+    { kind: "probe", probe: "forms", maxItems: 2 },
   ]);
 
   assert.equal(response.ok, true);
   assert.equal(response.page?.finalUrl, "https://example.com/workflow");
-  assert.equal(response.trace.length, 10);
+  assert.equal(response.trace.length, 11);
   assert.equal(clicked, true);
   assert.equal(input.value, "hello");
   assert.equal(select.value, "team");
@@ -71,6 +72,8 @@ test("chrome content script executes snapshot, click, type, select, waitFor, sto
   assert.equal(response.trace[6]?.output?.value, "abc");
   assert.equal(response.trace[8]?.kind, "wait");
   assert.equal(response.trace[9]?.kind, "console");
+  assert.equal(response.trace[10]?.kind, "probe");
+  assert.equal(Array.isArray(response.trace[10]?.output?.result), true);
 });
 
 test("chrome content script returns a failed response when the target element cannot be resolved", async () => {
@@ -184,6 +187,26 @@ function createDocument(elements: ReturnType<typeof createElement>[], title: str
       if (selector === "a,button,input,textarea,select,[role='button'],[contenteditable='true']") {
         return elements;
       }
+      if (selector === "input,textarea,select,button") {
+        return elements.filter((element) => ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(element.tagName));
+      }
+      if (selector === "a,button,[role='button']") {
+        return elements.filter((element) => element.tagName === "A" || element.tagName === "BUTTON" || element.getAttribute("role") === "button");
+      }
+      if (selector === "a[download]") {
+        return elements.filter((element) => element.tagName === "A" && Boolean(element.download || element.getAttribute("download")));
+      }
+      if (
+        selector ===
+        "a[download],a[href$='.csv'],a[href$='.pdf'],a[href$='.zip'],a[href$='.xlsx'],a[href$='.json']"
+      ) {
+        return elements.filter(
+          (element) =>
+            element.tagName === "A" &&
+            (Boolean(element.download || element.getAttribute("download")) ||
+              /\.(csv|pdf|zip|xlsx|json)$/i.test(element.href ?? element.getAttribute("href") ?? ""))
+        );
+      }
       if (selector === "input") {
         return elements.filter((element) => element.tagName === "INPUT");
       }
@@ -204,6 +227,16 @@ function createElement(
   text: string,
   overrides: Partial<{
     value: string;
+    id: string;
+    name: string;
+    type: string;
+    placeholder: string;
+    href: string;
+    target: string;
+    download: string;
+    checked: boolean;
+    disabled: boolean;
+    required: boolean;
     selectedIndex: number;
     options: Array<{ value?: string; label?: string; text?: string; selected?: boolean }>;
     click(): void;
@@ -214,9 +247,19 @@ function createElement(
   const attributes = new Map<string, string>();
   const element = {
     tagName: tagName.toUpperCase(),
+    id: overrides.id ?? "",
+    name: overrides.name ?? "",
+    type: overrides.type ?? "",
+    placeholder: overrides.placeholder ?? "",
+    href: overrides.href ?? "",
+    target: overrides.target ?? "",
+    download: overrides.download ?? "",
     innerText: text,
     textContent: text,
     value: overrides.value ?? "",
+    checked: Boolean(overrides.checked),
+    disabled: Boolean(overrides.disabled),
+    required: Boolean(overrides.required),
     ...(overrides.selectedIndex !== undefined ? { selectedIndex: overrides.selectedIndex } : {}),
     ...(overrides.options !== undefined ? { options: overrides.options } : {}),
     dataset: {} as Record<string, string | undefined>,

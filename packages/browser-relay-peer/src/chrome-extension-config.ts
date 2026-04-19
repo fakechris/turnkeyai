@@ -38,6 +38,7 @@ const DEFAULT_RUNTIME_CONFIG: ChromeRelayExtensionRuntimeConfig = {
     "drag",
     "scroll",
     "console",
+    "probe",
     "wait",
     "waitFor",
     "dialog",

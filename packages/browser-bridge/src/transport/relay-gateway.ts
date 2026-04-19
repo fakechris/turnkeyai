@@ -548,6 +548,7 @@ export function isRelayExecutableAction(
     action.kind === "drag" ||
     action.kind === "scroll" ||
     action.kind === "console" ||
+    action.kind === "probe" ||
     action.kind === "wait" ||
     action.kind === "waitFor" ||
     action.kind === "dialog" ||

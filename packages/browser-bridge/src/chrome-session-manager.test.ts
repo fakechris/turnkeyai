@@ -773,6 +773,48 @@ test("chrome session manager executes hover key select drag and waitFor input ac
   );
 });
 
+test("chrome session manager executes probe actions without exposing field values", async () => {
+  let evaluateScript = "";
+  const fakePage = {
+    async evaluate(script: string) {
+      evaluateScript = script;
+      return [{ tagName: "input", name: "email", valueLength: 17 }];
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action: { kind: "probe"; probe: "forms"; maxItems?: number };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  const output = await internal.executeAction({
+    page: fakePage,
+    action: { kind: "probe", probe: "forms", maxItems: 3 },
+    stepIndex: 1,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-probe",
+  });
+
+  assert.match(evaluateScript, /const probe = "forms"/);
+  assert.match(evaluateScript, /Math\.min\(3, 50\)/);
+  assert.doesNotThrow(() => new Function(`return ${evaluateScript};`));
+  assert.equal(output.traceOutput?.probe, "forms");
+  assert.deepEqual(output.traceOutput?.result, [{ tagName: "input", name: "email", valueLength: 17 }]);
+});
+
 test("chrome session manager arms and handles prompt dialogs around page actions", async () => {
   let dialogHandler: ((dialog: unknown) => void | Promise<void>) | null = null;
   let acceptedPrompt: string | undefined;

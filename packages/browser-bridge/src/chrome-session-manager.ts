@@ -42,6 +42,7 @@ import {
   MAX_BROWSER_EVAL_TIMEOUT_MS,
   DEFAULT_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_PROBE_ITEMS,
   MAX_BROWSER_UPLOAD_FILE_BYTES,
   MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
   MAX_BROWSER_STORAGE_READ_ENTRIES,
@@ -1244,6 +1245,17 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "probe") {
+      const result = await executeProbeAction(page, action);
+
+      return {
+        traceOutput: {
+          probe: action.probe,
+          result: serializeConsoleResult(result),
+        },
+      };
+    }
+
     if (action.kind === "storage") {
       const result = await executeStorageAction(page, action);
       return {
@@ -2392,6 +2404,13 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
     };
   }
 
+  if (action.kind === "probe") {
+    return {
+      probe: action.probe,
+      maxItems: action.maxItems ?? null,
+    };
+  }
+
   if (action.kind === "waitFor") {
     return {
       ...summarizeActionTarget(action),
@@ -2573,8 +2592,98 @@ async function executeConsoleProbe(page: Page, probe: BrowserConsoleProbe): Prom
   throw new Error(`unsupported console probe: ${probe}`);
 }
 
+async function executeProbeAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "probe" }>
+): Promise<unknown> {
+  const probe = JSON.stringify(action.probe);
+  const maxItems = JSON.stringify(normalizeProbeMaxItems(action.maxItems));
+  return page.evaluate(`(() => {
+    const probe = ${probe};
+    const itemLimit = Math.max(1, Math.min(${maxItems}, 50));
+    const textOf = (element) => [
+      element.innerText,
+      element.textContent,
+      element.getAttribute && element.getAttribute("aria-label"),
+      element.getAttribute && element.getAttribute("title")
+    ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim().slice(0, 160);
+    const cssEscape = (value) =>
+      globalThis.CSS && typeof globalThis.CSS.escape === "function"
+        ? globalThis.CSS.escape(value)
+        : value.replace(/[^a-zA-Z0-9_-]/g, "\\\\$&");
+    const selectorOf = (element) => {
+      if (element.id) return "#" + cssEscape(element.id);
+      const name = element.getAttribute && element.getAttribute("name");
+      if (name) return element.tagName.toLowerCase() + "[name=" + JSON.stringify(name) + "]";
+      return null;
+    };
+
+    if (probe === "page-state") {
+      return {
+        href: location.href,
+        title: document.title,
+        readyState: document.readyState,
+        visibilityState: document.visibilityState,
+        focused: document.hasFocus(),
+        activeElement: document.activeElement ? {
+          tagName: document.activeElement.tagName.toLowerCase(),
+          role: document.activeElement.getAttribute("role"),
+          text: textOf(document.activeElement),
+          selector: selectorOf(document.activeElement)
+        } : null,
+        interactiveCount: document.querySelectorAll("a,button,input,textarea,select,[role='button'],[contenteditable='true']").length,
+        formControlCount: document.querySelectorAll("input,textarea,select,button").length,
+        downloadLinkCount: document.querySelectorAll("a[download]").length
+      };
+    }
+
+    if (probe === "forms") {
+      return Array.from(document.querySelectorAll("input,textarea,select,button")).slice(0, itemLimit).map((element) => ({
+        tagName: element.tagName.toLowerCase(),
+        type: element.type || (element.getAttribute && element.getAttribute("type")) || null,
+        name: element.name || (element.getAttribute && element.getAttribute("name")) || null,
+        id: element.id || null,
+        placeholder: element.placeholder || (element.getAttribute && element.getAttribute("placeholder")) || null,
+        label: textOf(element),
+        valueLength: typeof element.value === "string" ? element.value.length : null,
+        checked: typeof element.checked === "boolean" ? element.checked : null,
+        disabled: Boolean(element.disabled),
+        required: Boolean(element.required),
+        selector: selectorOf(element)
+      }));
+    }
+
+    if (probe === "links") {
+      return Array.from(document.querySelectorAll("a,button,[role='button']")).slice(0, itemLimit).map((element) => ({
+        tagName: element.tagName.toLowerCase(),
+        text: textOf(element),
+        href: element.href || (element.getAttribute && element.getAttribute("href")) || null,
+        target: element.target || (element.getAttribute && element.getAttribute("target")) || null,
+        role: element.getAttribute && element.getAttribute("role"),
+        disabled: Boolean(element.disabled),
+        selector: selectorOf(element)
+      }));
+    }
+
+    return Array.from(document.querySelectorAll(
+      "a[download],a[href$='.csv'],a[href$='.pdf'],a[href$='.zip'],a[href$='.xlsx'],a[href$='.json']"
+    )).slice(0, itemLimit).map((element) => ({
+      text: textOf(element),
+      href: element.href || (element.getAttribute && element.getAttribute("href")) || null,
+      download: element.download || (element.getAttribute && element.getAttribute("download")) || null,
+      selector: selectorOf(element)
+    }));
+  })()`);
+}
+
 function buildRefMap(interactives: BrowserInteractiveElement[]): Map<string, BrowserInteractiveElement> {
   return new Map(interactives.map((item) => [item.refId, item]));
+}
+
+function normalizeProbeMaxItems(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_PROBE_ITEMS)
+    : MAX_BROWSER_PROBE_ITEMS;
 }
 
 function serializeConsoleResult(result: unknown): unknown {

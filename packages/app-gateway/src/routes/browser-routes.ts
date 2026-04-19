@@ -26,6 +26,7 @@ import {
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH,
   MAX_BROWSER_POPUP_TIMEOUT_MS,
+  MAX_BROWSER_PROBE_ITEMS,
   MAX_BROWSER_STORAGE_KEY_LENGTH,
   MAX_BROWSER_STORAGE_VALUE_BYTES,
   MAX_BROWSER_UPLOAD_ARTIFACT_ID_LENGTH,
@@ -481,6 +482,12 @@ const BROWSER_CONSOLE_PROBES = new Set<Extract<BrowserTaskAction, { kind: "conso
   "page-metadata",
   "interactive-summary",
 ]);
+const BROWSER_PROBES = new Set<Extract<BrowserTaskAction, { kind: "probe" }>["probe"]>([
+  "page-state",
+  "forms",
+  "links",
+  "downloads",
+]);
 const BROWSER_SCROLL_DIRECTIONS = new Set<Extract<BrowserTaskAction, { kind: "scroll" }>["direction"]>([
   "up",
   "down",
@@ -681,6 +688,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         if (!BROWSER_CONSOLE_PROBES.has(action.probe)) {
           return `actions[${index}] console.probe is invalid`;
         }
+        break;
+      }
+      case "probe": {
+        const probeError = validateProbeAction(action, `actions[${index}] probe`);
+        if (probeError) return probeError;
         break;
       }
       case "wait": {
@@ -1055,6 +1067,28 @@ function validateStorageAction(
     return `${label}.value is only accepted for set`;
   }
 
+  return null;
+}
+
+function validateProbeAction(
+  action: {
+    probe?: unknown;
+    maxItems?: unknown;
+  },
+  label: string
+): string | null {
+  if (!BROWSER_PROBES.has(action.probe as Extract<BrowserTaskAction, { kind: "probe" }>["probe"])) {
+    return `${label}.probe is invalid`;
+  }
+  if (
+    action.maxItems !== undefined &&
+    (typeof action.maxItems !== "number" ||
+      !Number.isInteger(action.maxItems) ||
+      action.maxItems <= 0 ||
+      action.maxItems > MAX_BROWSER_PROBE_ITEMS)
+  ) {
+    return `${label}.maxItems must be a positive integer <= ${MAX_BROWSER_PROBE_ITEMS}`;
+  }
   return null;
 }
 

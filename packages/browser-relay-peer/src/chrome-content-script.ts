@@ -1,6 +1,7 @@
 import type { BrowserActionTrace, BrowserSnapshotResult } from "@turnkeyai/core-types/team";
 import {
   DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
+  MAX_BROWSER_PROBE_ITEMS,
   MAX_BROWSER_STORAGE_READ_ENTRIES,
   MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
 } from "@turnkeyai/core-types/team";
@@ -17,9 +18,19 @@ type DocumentLikeOptionCollection = DocumentLikeOption[] | ArrayLike<DocumentLik
 
 interface DocumentLikeElement {
   tagName?: string;
+  id?: string;
+  name?: string;
+  type?: string;
+  placeholder?: string;
+  href?: string;
+  target?: string;
+  download?: string;
   innerText?: string;
   textContent?: string;
   value?: string;
+  checked?: boolean;
+  disabled?: boolean;
+  required?: boolean;
   files?: unknown;
   selectedIndex?: number;
   options?: DocumentLikeOptionCollection;
@@ -42,6 +53,14 @@ interface DocumentLikeOption {
 
 interface DocumentLike {
   title?: string;
+  readyState?: string;
+  visibilityState?: string;
+  activeElement?: DocumentLikeElement | null;
+  body?: {
+    innerText?: string;
+    textContent?: string;
+  };
+  hasFocus?(): boolean;
   querySelectorAll?(selector: string): DocumentLikeCollection;
 }
 
@@ -280,6 +299,27 @@ export async function executeChromeRelayContentScriptActions(
         continue;
       }
 
+      if (action.kind === "probe") {
+        const result = executeProbeAction(environment, action);
+        latestSnapshot = captureSnapshot(environment);
+        trace.push({
+          stepId,
+          kind: "probe",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            probe: action.probe,
+            maxItems: action.maxItems ?? null,
+          },
+          output: {
+            finalUrl: latestSnapshot.finalUrl,
+            result,
+          },
+        });
+        continue;
+      }
+
       if (action.kind === "storage") {
         const result = executeStorageAction(environment, action);
         latestSnapshot = captureSnapshot(environment);
@@ -483,6 +523,85 @@ function executeConsoleProbe(
       }));
 }
 
+function executeProbeAction(
+  environment: ChromeRelayContentScriptEnvironment,
+  action: Extract<RelayExecutableBrowserAction, { kind: "probe" }>
+): unknown {
+  const limit = normalizeProbeMaxItems(action.maxItems);
+  const href = environment.window.location?.href ?? "";
+
+  if (action.probe === "page-state") {
+    const activeElement = environment.document.activeElement ?? null;
+    return {
+      href,
+      title: environment.document.title ?? "",
+      readyState: environment.document.readyState ?? null,
+      visibilityState: environment.document.visibilityState ?? null,
+      focused: environment.document.hasFocus?.() ?? null,
+      activeElement: activeElement
+        ? {
+            tagName: (activeElement.tagName ?? "div").toLowerCase(),
+            role: activeElement.getAttribute?.("role") ?? null,
+            text: extractElementText(activeElement),
+            selector: selectorForElement(activeElement),
+          }
+        : null,
+      interactiveCount: toElementArray(
+        environment.document.querySelectorAll?.(
+          "a,button,input,textarea,select,[role='button'],[contenteditable='true']"
+        )
+      ).length,
+      formControlCount: toElementArray(environment.document.querySelectorAll?.("input,textarea,select,button")).length,
+      downloadLinkCount: toElementArray(environment.document.querySelectorAll?.("a[download]")).length,
+    };
+  }
+
+  if (action.probe === "forms") {
+    return toElementArray(environment.document.querySelectorAll?.("input,textarea,select,button"))
+      .slice(0, limit)
+      .map((element) => ({
+        tagName: (element.tagName ?? "div").toLowerCase(),
+        type: element.type ?? element.getAttribute?.("type") ?? null,
+        name: element.name ?? element.getAttribute?.("name") ?? null,
+        id: element.id ?? null,
+        placeholder: element.placeholder ?? element.getAttribute?.("placeholder") ?? null,
+        label: extractElementText(element),
+        valueLength: typeof element.value === "string" ? element.value.length : null,
+        checked: typeof element.checked === "boolean" ? element.checked : null,
+        disabled: Boolean(element.disabled),
+        required: Boolean(element.required),
+        selector: selectorForElement(element),
+      }));
+  }
+
+  if (action.probe === "links") {
+    return toElementArray(environment.document.querySelectorAll?.("a,button,[role='button']"))
+      .slice(0, limit)
+      .map((element) => ({
+        tagName: (element.tagName ?? "div").toLowerCase(),
+        text: extractElementText(element),
+        href: element.href ?? element.getAttribute?.("href") ?? null,
+        target: element.target ?? element.getAttribute?.("target") ?? null,
+        role: element.getAttribute?.("role") ?? null,
+        disabled: Boolean(element.disabled),
+        selector: selectorForElement(element),
+      }));
+  }
+
+  return toElementArray(
+    environment.document.querySelectorAll?.(
+      "a[download],a[href$='.csv'],a[href$='.pdf'],a[href$='.zip'],a[href$='.xlsx'],a[href$='.json']"
+    )
+  )
+    .slice(0, limit)
+    .map((element) => ({
+      text: extractElementText(element),
+      href: element.href ?? element.getAttribute?.("href") ?? null,
+      download: element.download ?? element.getAttribute?.("download") ?? null,
+      selector: selectorForElement(element),
+    }));
+}
+
 function executeStorageAction(
   environment: ChromeRelayContentScriptEnvironment,
   action: Extract<RelayExecutableBrowserAction, { kind: "storage" }>
@@ -684,6 +803,25 @@ async function waitForElement(
 
 function extractElementText(element: DocumentLikeElement): string {
   return (element.innerText ?? element.textContent ?? element.getAttribute?.("aria-label") ?? "").trim().slice(0, 160);
+}
+
+function selectorForElement(element: DocumentLikeElement): string | null {
+  const id = element.id ?? element.getAttribute?.("id");
+  if (id) {
+    return `#${id}`;
+  }
+  const name = element.name ?? element.getAttribute?.("name");
+  if (name) {
+    return `${(element.tagName ?? "div").toLowerCase()}[name="${name.replace(/"/g, '\\"')}"]`;
+  }
+  const refId = element.dataset?.turnkeyaiRef ?? element.getAttribute?.("data-turnkeyai-ref");
+  return refId ? `[data-turnkeyai-ref="${refId}"]` : null;
+}
+
+function normalizeProbeMaxItems(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_PROBE_ITEMS)
+    : MAX_BROWSER_PROBE_ITEMS;
 }
 
 function selectElementOption(

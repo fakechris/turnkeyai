@@ -24,6 +24,7 @@ test("chrome relay extension config falls back to default loopback daemon settin
       "drag",
       "scroll",
       "console",
+      "probe",
       "wait",
       "waitFor",
       "dialog",
