@@ -8,6 +8,12 @@ import type {
   Clock,
   IdGenerator,
 } from "@turnkeyai/core-types/team";
+import {
+  MAX_BROWSER_CDP_ACTION_PARAMS_BYTES,
+  MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
+  isBlockedBrowserCdpMethod,
+  normalizeBrowserCdpMethod,
+} from "@turnkeyai/core-types/team";
 
 import {
   parsePositiveLimit,
@@ -639,6 +645,33 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         }
         break;
       }
+      case "cdp": {
+        const method = normalizeBrowserCdpMethod(action.method);
+        if (!method) {
+          return `actions[${index}] cdp.method must be a valid CDP Domain.method string`;
+        }
+        if (isBlockedBrowserCdpMethod(method)) {
+          return `actions[${index}] cdp.method is not allowed on browser task routes`;
+        }
+        if (action.params !== undefined) {
+          if (!isPlainRecord(action.params)) {
+            return `actions[${index}] cdp.params must be an object when provided`;
+          }
+          const byteLength = Buffer.byteLength(JSON.stringify(action.params), "utf8");
+          if (byteLength > MAX_BROWSER_CDP_ACTION_PARAMS_BYTES) {
+            return `actions[${index}] cdp.params exceeds ${MAX_BROWSER_CDP_ACTION_PARAMS_BYTES} bytes`;
+          }
+        }
+        if (
+          action.timeoutMs !== undefined &&
+          (!Number.isInteger(action.timeoutMs) ||
+            action.timeoutMs <= 0 ||
+            action.timeoutMs > MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
+        ) {
+          return `actions[${index}] cdp.timeoutMs must be a positive integer <= ${MAX_BROWSER_CDP_ACTION_TIMEOUT_MS}`;
+        }
+        break;
+      }
       default:
         return `actions[${index}] kind is invalid`;
     }
@@ -658,6 +691,10 @@ function validateActionSelectors(selectors: string[] | undefined, label: string)
     return `${label} must contain non-empty strings`;
   }
   return null;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function parseOptionalRouteString(value: unknown): string | null {

@@ -40,6 +40,7 @@ const RELAY_EXECUTABLE_ACTION_KINDS = new Set<string>([
   "console",
   "wait",
   "screenshot",
+  "cdp",
 ]);
 
 export class RelayBrowserAdapter implements BrowserTransportAdapter {

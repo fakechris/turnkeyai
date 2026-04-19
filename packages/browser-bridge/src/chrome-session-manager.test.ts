@@ -623,3 +623,73 @@ test("chrome session manager releases a resumed session when openTarget fails", 
   await assert.rejects(() => manager.openTarget("browser-session-5", "https://example.com"));
   assert.equal(released, 1);
 });
+
+test("chrome session manager executes target-scoped cdp actions through a page CDP session", async () => {
+  const commands: unknown[] = [];
+  let detached = 0;
+  const cdpSession = {
+    async send(method: string, params: Record<string, unknown>) {
+      commands.push({ method, params });
+      return { result: { value: "Example" } };
+    },
+    async detach() {
+      detached += 1;
+    },
+  };
+  const fakePage = {
+    context() {
+      return {
+        async newCDPSession(page: Page) {
+          assert.equal(page, fakePage);
+          return cdpSession;
+        },
+      };
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action: { kind: "cdp"; method: string; params?: Record<string, unknown> };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  const output = await internal.executeAction({
+    page: fakePage,
+    action: {
+      kind: "cdp",
+      method: "Runtime.evaluate",
+      params: {
+        expression: "document.title",
+        returnByValue: true,
+      },
+    },
+    stepIndex: 1,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-cdp",
+  });
+
+  assert.deepEqual(commands, [
+    {
+      method: "Runtime.evaluate",
+      params: {
+        expression: "document.title",
+        returnByValue: true,
+      },
+    },
+  ]);
+  assert.equal(detached, 1);
+  assert.equal(output.traceOutput?.method, "Runtime.evaluate");
+  assert.deepEqual(output.traceOutput?.result, { result: { value: "Example" } });
+});

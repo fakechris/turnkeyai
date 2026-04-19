@@ -93,6 +93,21 @@ export interface ChromeScriptingLike {
   ): void;
 }
 
+export interface ChromeDebuggerTargetLike {
+  tabId: number;
+}
+
+export interface ChromeDebuggerLike {
+  attach(target: ChromeDebuggerTargetLike, requiredVersion: string, callback: () => void): void;
+  sendCommand(
+    target: ChromeDebuggerTargetLike,
+    method: string,
+    commandParams: Record<string, unknown>,
+    callback: (result?: unknown) => void
+  ): void;
+  detach(target: ChromeDebuggerTargetLike, callback: () => void): void;
+}
+
 export interface ChromeExtensionPlatform {
   runtime: ChromeRuntimeLike;
   tabs: ChromeTabsLike;
@@ -112,6 +127,7 @@ export interface ChromeExtensionPlatform {
   }): Promise<ChromeTabLike>;
   sendTabMessage<T>(tabId: number, message: unknown): Promise<T>;
   injectContentScript?(tabId: number): Promise<void>;
+  sendDebuggerCommand?(tabId: number, method: string, params?: Record<string, unknown>): Promise<unknown>;
   captureVisibleTab(windowId?: number, options?: { format?: "png" | "jpeg" }): Promise<string>;
 }
 
@@ -193,6 +209,7 @@ export function getChromeExtensionPlatform(): ChromeExtensionPlatform {
       onAlarm?: ChromeAlarmEventLike;
     };
     scripting?: ChromeScriptingLike;
+    debugger?: ChromeDebuggerLike;
   } | undefined;
 
   if (!chromeLike?.tabs) {
@@ -300,6 +317,29 @@ export function getChromeExtensionPlatform(): ChromeExtensionPlatform {
           },
         }
       : {}),
+    ...(chromeLike.debugger
+      ? {
+          async sendDebuggerCommand(
+            tabId: number,
+            method: string,
+            params: Record<string, unknown> = {}
+          ): Promise<unknown> {
+            const target = { tabId };
+            await withChromeRuntimeCallback<void>((callback) =>
+              chromeLike.debugger!.attach(target, "1.3", callback)
+            );
+            try {
+              return await withChromeRuntimeCallback<unknown>((callback) =>
+                chromeLike.debugger!.sendCommand(target, method, params, callback)
+              );
+            } finally {
+              await withChromeRuntimeCallback<void>((callback) =>
+                chromeLike.debugger!.detach(target, callback)
+              ).catch(() => undefined);
+            }
+          },
+        }
+      : {}),
     captureVisibleTab(windowId, options) {
       return new Promise<string>((resolve, reject) => {
         chromeLike.tabs!.captureVisibleTab(windowId, options, (dataUrl) => {
@@ -315,4 +355,25 @@ export function getChromeExtensionPlatform(): ChromeExtensionPlatform {
   };
 
   return platform;
+}
+
+function withChromeRuntimeCallback<T>(
+  work: (callback: (value: T) => void) => void
+): Promise<T> {
+  const chromeLike = (globalThis as Record<string, unknown>).chrome as {
+    runtime?: {
+      lastError?: { message?: string };
+    };
+  } | undefined;
+
+  return new Promise<T>((resolve, reject) => {
+    work((value) => {
+      const runtimeError = chromeLike?.runtime?.lastError;
+      if (runtimeError?.message) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+      resolve(value);
+    });
+  });
 }

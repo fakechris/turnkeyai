@@ -1,9 +1,22 @@
 import type { BrowserActionTrace } from "@turnkeyai/core-types/team";
-import type { RelayActionRequest } from "@turnkeyai/browser-bridge/transport/relay-protocol";
+import {
+  MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
+  isBlockedBrowserCdpMethod,
+  normalizeBrowserCdpMethod,
+} from "@turnkeyai/core-types/team";
+import type {
+  RelayActionRequest,
+  RelayScreenshotPayload,
+} from "@turnkeyai/browser-bridge/transport/relay-protocol";
 
-import type { ChromeExtensionPlatform } from "./chrome-extension-types";
+import type { ChromeExtensionPlatform, ChromeTabLike } from "./chrome-extension-types";
 import type { RelayContentScriptExecuteResponse } from "./chrome-content-script-protocol";
 import { ChromeRelayTabObserver, formatRelayTargetId } from "./chrome-tab-observer";
+
+type RelayAction = RelayActionRequest["actions"][number];
+type RelayCdpAction = Extract<RelayAction, { kind: "cdp" }>;
+
+const MAX_CDP_TRACE_RESULT_BYTES = 4_096;
 
 export class ChromeRelayActionExecutor {
   private readonly contentScriptRetryAttempts = 20;
@@ -27,132 +40,176 @@ export class ChromeRelayActionExecutor {
     }
 
     const trace: BrowserActionTrace[] = [];
-    const pendingActions = [];
-    const screenshotPayloads = [];
+    const screenshotPayloads: RelayScreenshotPayload[] = [];
+    const contentScriptBatch: RelayActionRequest["actions"] = [];
+    const contentScriptState: {
+      latestResponse: RelayContentScriptExecuteResponse | null;
+    } = {
+      latestResponse: null,
+    };
+    let needsFinalSnapshot = false;
+
+    const flushContentScriptBatch = async (): Promise<RelayContentScriptExecuteResponse | null> => {
+      if (!contentScriptBatch.length) {
+        return null;
+      }
+      if (!activeTab?.id) {
+        throw new Error("relay action executor could not resolve a target tab");
+      }
+      const normalizedBatch = this.normalizePageActions(request, contentScriptBatch.splice(0));
+      const response = await this.sendContentScriptActions(activeTab.id, request.actionRequestId, normalizedBatch);
+      trace.push(...response.trace);
+      contentScriptState.latestResponse = response;
+      needsFinalSnapshot = !response.page;
+      return response;
+    };
 
     for (let index = 0; index < request.actions.length; index += 1) {
       const action = request.actions[index]!;
-      if (action.kind !== "open") {
-        pendingActions.push(action);
+      if (this.isContentScriptAction(action)) {
+        contentScriptBatch.push(action);
         continue;
       }
-      const startedAt = Date.now();
-      activeTab = activeTab?.id
-        ? await this.platform.updateTab(activeTab.id, {
-            url: action.url,
-            active: true,
-          })
-        : await this.platform.createTab({
-            url: action.url,
-            active: true,
-          });
-      trace.push({
-        stepId: `${request.taskId}:relay-open:${index + 1}`,
-        kind: "open",
-        startedAt,
-        completedAt: Date.now(),
-        status: "ok",
-        input: { url: action.url },
-        output: {
-          finalUrl: activeTab.url ?? action.url,
-        },
-      });
-    }
 
-    if (!activeTab?.id) {
-      throw new Error("relay action executor could not resolve a target tab");
-    }
-
-    const pageActions = this.normalizePageActions(
-      request,
-      pendingActions.filter((action) => action.kind !== "screenshot")
-    );
-    const screenshotActions = pendingActions.filter((action) => action.kind === "screenshot");
-
-    const contentScriptResponse = pageActions.length
-      ? await this.sendContentScriptActions(activeTab.id, request.actionRequestId, pageActions)
-      : null;
-
-    if (contentScriptResponse && !contentScriptResponse.ok) {
-      return {
-        relayTargetId: formatRelayTargetId(activeTab.id),
-        url: activeTab.url ?? "",
-        ...(activeTab.title ? { title: activeTab.title } : {}),
-        status: "failed" as const,
-        trace: [...trace, ...contentScriptResponse.trace],
-        screenshotPaths: [],
-        screenshotPayloads: [],
-        artifactIds: [],
-        errorMessage: contentScriptResponse.errorMessage ?? "content script execution failed",
-      };
-    }
-
-    for (let index = 0; index < screenshotActions.length; index += 1) {
-      const action = screenshotActions[index]!;
-      const startedAt = Date.now();
-      const activeTabId: number | undefined = activeTab.id;
-      if (typeof activeTabId !== "number") {
-        throw new Error("relay screenshot capture requires a target tab id");
+      const contentScriptResponse = await flushContentScriptBatch();
+      if (contentScriptResponse && !contentScriptResponse.ok) {
+        return this.buildFailedContentScriptResult(activeTab, trace, screenshotPayloads, contentScriptResponse);
       }
-      const stepTimeoutMs = this.resolveScreenshotCaptureTimeoutMs(request);
-      const activationStartedAt = Date.now();
-      activeTab = await withTimeout(
-        this.platform.updateTab(activeTabId, { active: true }),
-        stepTimeoutMs,
-        `relay screenshot tab activation timed out after ${stepTimeoutMs}ms`
-      );
-      const remainingCaptureMs = stepTimeoutMs - (Date.now() - activationStartedAt);
-      if (remainingCaptureMs <= 0) {
-        throw new Error(`relay screenshot capture timed out after ${stepTimeoutMs}ms`);
+
+      if (action.kind === "open") {
+        const startedAt = Date.now();
+        activeTab = activeTab?.id
+          ? await this.platform.updateTab(activeTab.id, {
+              url: action.url,
+              active: true,
+            })
+          : await this.platform.createTab({
+              url: action.url,
+              active: true,
+            });
+        needsFinalSnapshot = true;
+        trace.push({
+          stepId: `${request.taskId}:relay-open:${index + 1}`,
+          kind: "open",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: { url: action.url },
+          output: {
+            finalUrl: activeTab.url ?? action.url,
+          },
+        });
+        continue;
       }
-      const dataUrl = await withTimeout(
-        this.platform.captureVisibleTab(activeTab.windowId, { format: "png" }),
-        remainingCaptureMs,
-        `relay screenshot capture timed out after ${remainingCaptureMs}ms`
-      );
-      const [, dataBase64 = ""] = /^data:image\/png;base64,(.+)$/.exec(dataUrl) ?? [];
-      if (!dataBase64) {
-        throw new Error("relay screenshot capture returned an empty payload");
+
+      if (!activeTab?.id) {
+        throw new Error("relay action executor could not resolve a target tab");
       }
-      screenshotPayloads.push({
-        ...(action.label ? { label: action.label } : {}),
-        mimeType: "image/png",
-        dataBase64,
-      });
-      trace.push({
-        stepId: `${request.taskId}:relay-screenshot:${index + 1}`,
-        kind: "screenshot",
-        startedAt,
-        completedAt: Date.now(),
-        status: "ok",
-        input: {
-          label: action.label ?? null,
-        },
-        output: {
+
+      if (action.kind === "cdp") {
+        const startedAt = Date.now();
+        const cdpResult = await this.executeCdpAction(activeTab.id, action);
+        needsFinalSnapshot = true;
+        trace.push({
+          stepId: `${request.taskId}:relay-cdp:${index + 1}`,
+          kind: "cdp",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            method: action.method,
+            paramsBytes: jsonByteLength(action.params),
+          },
+          output: {
+            method: action.method,
+            ...summarizeCdpResult(cdpResult),
+          },
+        });
+        continue;
+      }
+
+      if (action.kind === "screenshot") {
+        const startedAt = Date.now();
+        const activeTabId: number | undefined = activeTab.id;
+        if (typeof activeTabId !== "number") {
+          throw new Error("relay screenshot capture requires a target tab id");
+        }
+        const stepTimeoutMs = this.resolveScreenshotCaptureTimeoutMs(request);
+        const activationStartedAt = Date.now();
+        activeTab = await withTimeout(
+          this.platform.updateTab(activeTabId, { active: true }),
+          stepTimeoutMs,
+          `relay screenshot tab activation timed out after ${stepTimeoutMs}ms`
+        );
+        const remainingCaptureMs = stepTimeoutMs - (Date.now() - activationStartedAt);
+        if (remainingCaptureMs <= 0) {
+          throw new Error(`relay screenshot capture timed out after ${stepTimeoutMs}ms`);
+        }
+        const dataUrl = await withTimeout(
+          this.platform.captureVisibleTab(activeTab.windowId, { format: "png" }),
+          remainingCaptureMs,
+          `relay screenshot capture timed out after ${remainingCaptureMs}ms`
+        );
+        const [, dataBase64 = ""] = /^data:image\/png;base64,(.+)$/.exec(dataUrl) ?? [];
+        if (!dataBase64) {
+          throw new Error("relay screenshot capture returned an empty payload");
+        }
+        screenshotPayloads.push({
+          ...(action.label ? { label: action.label } : {}),
           mimeType: "image/png",
-          dataBase64Length: dataBase64.length,
-        },
-      });
+          dataBase64,
+        });
+        trace.push({
+          stepId: `${request.taskId}:relay-screenshot:${index + 1}`,
+          kind: "screenshot",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            label: action.label ?? null,
+          },
+          output: {
+            mimeType: "image/png",
+            dataBase64Length: dataBase64.length,
+          },
+        });
+      }
     }
 
-    const finalTabId = activeTab.id;
-    if (typeof finalTabId !== "number") {
+    const contentScriptResponse = await flushContentScriptBatch();
+    if (contentScriptResponse && !contentScriptResponse.ok) {
+      return this.buildFailedContentScriptResult(activeTab, trace, screenshotPayloads, contentScriptResponse);
+    }
+
+    const finalTab = activeTab;
+    if (!finalTab || typeof finalTab.id !== "number") {
       throw new Error("relay action executor lost the target tab id");
     }
+    const finalTabId = finalTab.id;
+    const latestContentScriptResponse = contentScriptState.latestResponse;
     const finalSnapshotResponse =
-      contentScriptResponse?.page
-        ? contentScriptResponse
+      latestContentScriptResponse?.page && !needsFinalSnapshot
+        ? latestContentScriptResponse
         : await this.sendContentScriptActions(finalTabId, request.actionRequestId, [{ kind: "snapshot", note: "final-relay-state" }]);
+    if (!finalSnapshotResponse.ok) {
+      return this.buildFailedContentScriptResult(
+        activeTab,
+        [...trace, ...finalSnapshotResponse.trace],
+        screenshotPayloads,
+        finalSnapshotResponse
+      );
+    }
+    const finalTrace = finalSnapshotResponse === latestContentScriptResponse ? trace : [...trace, ...finalSnapshotResponse.trace];
 
     return {
       relayTargetId: formatRelayTargetId(finalTabId),
-      url: finalSnapshotResponse?.page?.finalUrl ?? activeTab.url ?? "",
-      ...(finalSnapshotResponse?.page?.title || activeTab.title
-        ? { title: finalSnapshotResponse?.page?.title ?? activeTab.title }
+      url: finalSnapshotResponse?.page?.finalUrl ?? finalTab.url ?? "",
+      ...(finalSnapshotResponse?.page?.title || finalTab.title
+        ? { title: finalSnapshotResponse?.page?.title ?? finalTab.title }
         : {}),
       status: "completed" as const,
       ...(finalSnapshotResponse?.page ? { page: finalSnapshotResponse.page } : {}),
-      trace: [...trace, ...(finalSnapshotResponse?.trace ?? [])],
+      trace: finalTrace,
       screenshotPaths: [],
       screenshotPayloads,
       artifactIds: [],
@@ -169,6 +226,55 @@ export class ChromeRelayActionExecutor {
 
   private hasOpenAction(request: RelayActionRequest): boolean {
     return request.actions.some((action) => action.kind === "open");
+  }
+
+  private isContentScriptAction(action: RelayAction): boolean {
+    return (
+      action.kind === "snapshot" ||
+      action.kind === "click" ||
+      action.kind === "type" ||
+      action.kind === "scroll" ||
+      action.kind === "console" ||
+      action.kind === "wait"
+    );
+  }
+
+  private async executeCdpAction(tabId: number, action: RelayCdpAction): Promise<unknown> {
+    const method = normalizeBrowserCdpMethod(action.method);
+    if (!method || isBlockedBrowserCdpMethod(method)) {
+      throw new Error(`relay cdp action method is not allowed: ${action.method}`);
+    }
+    if (!this.platform.sendDebuggerCommand) {
+      throw new Error("relay cdp action requires chrome debugger support");
+    }
+    const timeoutMs = normalizeCdpTimeoutMs(action.timeoutMs);
+    return withTimeout(
+      this.platform.sendDebuggerCommand(tabId, method, action.params ?? {}),
+      timeoutMs,
+      `relay cdp action timed out after ${timeoutMs}ms: ${method}`
+    );
+  }
+
+  private buildFailedContentScriptResult(
+    activeTab: ChromeTabLike | null | undefined,
+    trace: BrowserActionTrace[],
+    screenshotPayloads: RelayScreenshotPayload[],
+    response: RelayContentScriptExecuteResponse
+  ) {
+    if (typeof activeTab?.id !== "number") {
+      throw new Error("relay content script failure lost the target tab id");
+    }
+    return {
+      relayTargetId: formatRelayTargetId(activeTab.id),
+      url: activeTab.url ?? "about:blank",
+      ...(activeTab.title ? { title: activeTab.title } : {}),
+      status: "failed" as const,
+      trace,
+      screenshotPaths: [],
+      screenshotPayloads,
+      artifactIds: [],
+      errorMessage: response.errorMessage ?? "content script execution failed",
+    };
   }
 
   private resolveScreenshotCaptureTimeoutMs(request: RelayActionRequest): number {
@@ -254,6 +360,49 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
       clearTimeout(timeout);
     }
   });
+}
+
+function normalizeCdpTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
+    : MAX_BROWSER_CDP_ACTION_TIMEOUT_MS;
+}
+
+function summarizeCdpResult(result: unknown): Record<string, unknown> {
+  const json = safeStringify(result);
+  const resultJsonBytes = byteLength(json);
+  if (resultJsonBytes <= MAX_CDP_TRACE_RESULT_BYTES) {
+    return { result: parseSafeJson(json) };
+  }
+  return {
+    resultTruncated: true,
+    resultJsonBytes,
+  };
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    const json = JSON.stringify(value ?? null);
+    return typeof json === "string" ? json : "null";
+  } catch {
+    return JSON.stringify(String(value));
+  }
+}
+
+function parseSafeJson(json: string): unknown {
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function jsonByteLength(value: unknown): number {
+  return value === undefined ? 0 : byteLength(safeStringify(value));
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
 }
 
 async function retryAsync<T>(

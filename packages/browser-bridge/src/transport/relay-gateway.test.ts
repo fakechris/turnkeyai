@@ -218,6 +218,82 @@ test("relay gateway dispatches wait actions to peers that advertise wait support
   assert.equal(result.trace[0]?.kind, "wait");
 });
 
+test("relay gateway routes cdp actions only to peers that advertise cdp support", async () => {
+  const gateway = new RelayGateway({
+    now: () => 1_000,
+    createId: (prefix) => `${prefix}-cdp`,
+  });
+  gateway.registerPeer({
+    peerId: "peer-snapshot",
+    capabilities: ["snapshot"],
+  });
+  gateway.registerPeer({
+    peerId: "peer-cdp",
+    capabilities: ["snapshot", "cdp"],
+  });
+
+  const dispatchPromise = gateway.dispatchActionRequest({
+    browserSessionId: "browser-session-1",
+    taskId: "task-cdp",
+    actions: [
+      {
+        kind: "cdp",
+        method: "Runtime.evaluate",
+        params: {
+          expression: "document.title",
+          returnByValue: true,
+        },
+      },
+      { kind: "snapshot", note: "after-cdp" },
+    ],
+  });
+
+  assert.equal(gateway.pullNextActionRequest("peer-snapshot"), null);
+  const request = gateway.pullNextActionRequest("peer-cdp");
+  assert.ok(request);
+  assert.deepEqual(
+    request?.actions.map((action) => action.kind),
+    ["cdp", "snapshot"]
+  );
+
+  gateway.submitActionResult({
+    actionRequestId: request!.actionRequestId,
+    peerId: "peer-cdp",
+    browserSessionId: request!.browserSessionId,
+    taskId: request!.taskId,
+    relayTargetId: "tab-1",
+    claimToken: request!.claimToken!,
+    url: "https://example.com",
+    title: "Example Domain",
+    status: "completed",
+    page: {
+      requestedUrl: "https://example.com",
+      finalUrl: "https://example.com",
+      title: "Example Domain",
+      textExcerpt: "Example Domain",
+      statusCode: 200,
+      interactives: [],
+    },
+    trace: [
+      {
+        stepId: "task-cdp:relay-cdp:1",
+        kind: "cdp",
+        startedAt: 1,
+        completedAt: 2,
+        status: "ok",
+        input: { method: "Runtime.evaluate" },
+      },
+    ],
+    screenshotPaths: [],
+    screenshotPayloads: [],
+    artifactIds: [],
+  });
+
+  const result = await dispatchPromise;
+  assert.equal(result.taskId, "task-cdp");
+  assert.equal(result.trace[0]?.kind, "cdp");
+});
+
 test("relay gateway drops timed out action requests from the pending queue", async () => {
   const gateway = new RelayGateway({
     now: () => Date.now(),

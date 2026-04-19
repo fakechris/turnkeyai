@@ -24,6 +24,11 @@ import type {
   BrowserTaskRequest,
   BrowserTaskResult,
 } from "@turnkeyai/core-types/team";
+import {
+  MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
+  isBlockedBrowserCdpMethod,
+  normalizeBrowserCdpMethod,
+} from "@turnkeyai/core-types/team";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
 
 import { captureDomSnapshot } from "./dom-snapshot";
@@ -31,6 +36,7 @@ import type { BrowserSessionManager as LocalBrowserSessionManager } from "./sess
 
 const DEFAULT_VIEWPORT = { width: 1440, height: 960 };
 const DEFAULT_WAIT_MS = 800;
+const MAX_CDP_TRACE_RESULT_BYTES = 4_096;
 
 export class ChromeSessionManager {
   private readonly artifactRootDir: string;
@@ -963,6 +969,17 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "cdp") {
+      const result = await executeTargetCdpAction(page, action);
+      return {
+        traceOutput: {
+          method: action.method,
+          paramsBytes: jsonByteLength(action.params),
+          ...summarizeCdpResult(result),
+        },
+      };
+    }
+
     const screenshotPath = path.join(
       sessionDir,
       `${String(stepIndex).padStart(2, "0")}-${sanitizeLabel(action.label ?? action.kind)}.png`
@@ -1082,6 +1099,87 @@ async function settle(page: Page): Promise<void> {
   await page.waitForTimeout(DEFAULT_WAIT_MS);
 }
 
+async function executeTargetCdpAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "cdp" }>
+): Promise<unknown> {
+  const method = normalizeBrowserCdpMethod(action.method);
+  if (!method || isBlockedBrowserCdpMethod(method)) {
+    throw new Error(`browser cdp action method is not allowed: ${action.method}`);
+  }
+
+  const cdpSession = await page.context().newCDPSession(page);
+  const sendRaw = cdpSession.send as unknown as (
+    method: string,
+    params?: Record<string, unknown>
+  ) => Promise<unknown>;
+  try {
+    return await withTimeout(
+      sendRaw(method, action.params ?? {}),
+      normalizeCdpTimeoutMs(action.timeoutMs),
+      `browser cdp action timed out: ${method}`
+    );
+  } finally {
+    await cdpSession.detach().catch(() => undefined);
+  }
+}
+
+function normalizeCdpTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
+    : MAX_BROWSER_CDP_ACTION_TIMEOUT_MS;
+}
+
+function summarizeCdpResult(result: unknown): Record<string, unknown> {
+  const json = safeStringify(result);
+  const resultJsonBytes = byteLength(json);
+  if (resultJsonBytes <= MAX_CDP_TRACE_RESULT_BYTES) {
+    return { result: parseSafeJson(json) };
+  }
+  return {
+    resultTruncated: true,
+    resultJsonBytes,
+  };
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    const json = JSON.stringify(value ?? null);
+    return typeof json === "string" ? json : "null";
+  } catch {
+    return JSON.stringify(String(value));
+  }
+}
+
+function parseSafeJson(json: string): unknown {
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function jsonByteLength(value: unknown): number {
+  return value === undefined ? 0 : byteLength(safeStringify(value));
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  promise.catch(() => undefined);
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
+}
+
 function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
   if (action.kind === "open") {
     return { url: action.url };
@@ -1119,6 +1217,14 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
 
   if (action.kind === "wait") {
     return { timeoutMs: action.timeoutMs };
+  }
+
+  if (action.kind === "cdp") {
+    return {
+      method: action.method,
+      paramsBytes: jsonByteLength(action.params),
+      timeoutMs: action.timeoutMs ?? null,
+    };
   }
 
   if (action.kind === "screenshot") {

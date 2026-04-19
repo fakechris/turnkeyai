@@ -26,7 +26,7 @@ export interface ChromeExtensionManifest {
   }>;
 }
 
-const DEFAULT_PERMISSIONS = ["storage", "tabs", "scripting", "activeTab", "alarms"];
+const DEFAULT_PERMISSIONS = ["storage", "tabs", "scripting", "activeTab", "alarms", "debugger"];
 const DEFAULT_DAEMON_ORIGINS = ["http://127.0.0.1:4100/*", "http://localhost:4100/*"];
 
 export function buildChromeRelayExtensionManifest(

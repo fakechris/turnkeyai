@@ -83,3 +83,80 @@ test("getChromeExtensionPlatform exposes content script injection when scripting
     (globalThis as Record<string, unknown>).chrome = previousChrome;
   }
 });
+
+test("getChromeExtensionPlatform sends debugger commands through an attached tab target", async () => {
+  const previousChrome = (globalThis as Record<string, unknown>).chrome;
+  const calls: unknown[] = [];
+  (globalThis as Record<string, unknown>).chrome = {
+    runtime: {
+      onMessage: {
+        addListener() {},
+      },
+    },
+    tabs: {
+      query(_query: unknown, callback: (tabs: unknown[]) => void) {
+        callback([]);
+      },
+      get(_tabId: number, callback: (tab?: unknown) => void) {
+        callback(undefined);
+      },
+      update(_tabId: number, _properties: unknown, callback: (tab?: unknown) => void) {
+        callback(undefined);
+      },
+      create(_properties: unknown, callback: (tab?: unknown) => void) {
+        callback(undefined);
+      },
+      sendMessage(_tabId: number, _message: unknown, callback: (response: unknown) => void) {
+        callback({ ok: true });
+      },
+      captureVisibleTab(_windowId: number | undefined, _options: unknown, callback: (dataUrl?: string) => void) {
+        callback("data:image/png;base64,");
+      },
+    },
+    debugger: {
+      attach(target: unknown, requiredVersion: string, callback: () => void) {
+        calls.push({ type: "attach", target, requiredVersion });
+        callback();
+      },
+      sendCommand(target: unknown, method: string, params: unknown, callback: (result?: unknown) => void) {
+        calls.push({ type: "sendCommand", target, method, params });
+        callback({ result: { value: "ok" } });
+      },
+      detach(target: unknown, callback: () => void) {
+        calls.push({ type: "detach", target });
+        callback();
+      },
+    },
+  };
+
+  try {
+    const platform = getChromeExtensionPlatform();
+    const result = await platform.sendDebuggerCommand?.(42, "Runtime.evaluate", {
+      expression: "document.title",
+      returnByValue: true,
+    });
+    assert.deepEqual(result, { result: { value: "ok" } });
+    assert.deepEqual(calls, [
+      {
+        type: "attach",
+        target: { tabId: 42 },
+        requiredVersion: "1.3",
+      },
+      {
+        type: "sendCommand",
+        target: { tabId: 42 },
+        method: "Runtime.evaluate",
+        params: {
+          expression: "document.title",
+          returnByValue: true,
+        },
+      },
+      {
+        type: "detach",
+        target: { tabId: 42 },
+      },
+    ]);
+  } finally {
+    (globalThis as Record<string, unknown>).chrome = previousChrome;
+  }
+});

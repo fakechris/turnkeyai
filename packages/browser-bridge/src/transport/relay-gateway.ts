@@ -540,6 +540,7 @@ export function isRelayExecutableAction(
     action.kind === "scroll" ||
     action.kind === "console" ||
     action.kind === "wait" ||
-    action.kind === "screenshot"
+    action.kind === "screenshot" ||
+    action.kind === "cdp"
   );
 }

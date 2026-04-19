@@ -27,7 +27,7 @@ const DEFAULT_RUNTIME_CONFIG: ChromeRelayExtensionRuntimeConfig = {
   daemonBaseUrl: DEFAULT_DAEMON_BASE_URL,
   peerId: "turnkeyai-relay-peer",
   peerLabel: "TurnkeyAI Chrome Relay",
-  capabilities: ["open", "snapshot", "click", "type", "scroll", "console", "wait", "screenshot"],
+  capabilities: ["open", "snapshot", "click", "type", "scroll", "console", "wait", "screenshot", "cdp"],
   transportLabel: "chrome-extension-relay",
   activeDelayMs: 25,
   idleDelayMs: 500,

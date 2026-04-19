@@ -334,6 +334,135 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
+test("browser task mutation routes validate cdp action contracts", async () => {
+  const invalidMethod = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cdp", method: "Runtime" }],
+      },
+    }),
+    res: invalidMethod.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidMethod.res.statusCode, 400);
+  assert.deepEqual(invalidMethod.json, {
+    error: "actions[0] cdp.method must be a valid CDP Domain.method string",
+  });
+
+  const blockedMethod = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cdp", method: "Target.closeTarget", params: { targetId: "target-1" } }],
+      },
+    }),
+    res: blockedMethod.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(blockedMethod.res.statusCode, 400);
+  assert.deepEqual(blockedMethod.json, {
+    error: "actions[0] cdp.method is not allowed on browser task routes",
+  });
+
+  const invalidParams = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cdp", method: "Runtime.evaluate", params: [] }],
+      },
+    }),
+    res: invalidParams.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidParams.res.statusCode, 400);
+  assert.deepEqual(invalidParams.json, {
+    error: "actions[0] cdp.params must be an object when provided",
+  });
+
+  const invalidTimeout = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cdp", method: "Runtime.evaluate", timeoutMs: 30_001 }],
+      },
+    }),
+    res: invalidTimeout.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidTimeout.res.statusCode, 400);
+  assert.deepEqual(invalidTimeout.json, {
+    error: "actions[0] cdp.timeoutMs must be a positive integer <= 30000",
+  });
+
+  let capturedActions: unknown;
+  const validDeps = createDeps();
+  validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
+    ({
+      threadId: "thread-1",
+      taskId: "task-1",
+      instructions: "inspect",
+      actions: body.actions,
+      ...owner,
+    }) as any;
+  validDeps.browserBridge.spawnSession = async (input) => {
+    capturedActions = input.actions;
+    return {
+      status: "completed",
+      browserSessionId: "session-1",
+      taskId: input.taskId,
+      page: null,
+      trace: [],
+    } as any;
+  };
+  const valid = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [
+          {
+            kind: "cdp",
+            method: "Runtime.evaluate",
+            params: { expression: "document.title", returnByValue: true },
+            timeoutMs: 1_000,
+          },
+        ],
+      },
+    }),
+    res: valid.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: validDeps,
+  });
+  assert.equal(valid.res.statusCode, 201);
+  assert.deepEqual(capturedActions, [
+    {
+      kind: "cdp",
+      method: "Runtime.evaluate",
+      params: { expression: "document.title", returnByValue: true },
+      timeoutMs: 1_000,
+    },
+  ]);
+});
+
 test("browser task mutation routes reject explicit actions mixed with url or foreign profile owner", async () => {
   const mixedUrl = createResponse();
   await handleBrowserRoutes({

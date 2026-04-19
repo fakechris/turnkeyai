@@ -221,6 +221,122 @@ test("chrome relay action executor injects content script before retrying a miss
   assert.deepEqual(injectedTabs, [7]);
 });
 
+test("chrome relay action executor can run target-scoped cdp commands", async () => {
+  const now = Date.now();
+  const debuggerCommands: unknown[] = [];
+  const sentMessages: unknown[] = [];
+  const executor = new ChromeRelayActionExecutor(
+    fakePlatform({
+      activeTab: { id: 7, windowId: 3, url: "https://example.com", title: "Example", status: "complete" },
+      onDebuggerCommand(tabId, method, params) {
+        debuggerCommands.push({ tabId, method, params });
+        return { result: { value: "Example" } };
+      },
+      onSendMessage(tabId, message) {
+        sentMessages.push({ tabId, message });
+        return {
+          ok: true,
+          page: {
+            requestedUrl: "https://example.com",
+            finalUrl: "https://example.com",
+            title: "Example",
+            textExcerpt: "Example page",
+            statusCode: 200,
+            interactives: [],
+          },
+          trace: [
+            {
+              stepId: "relay-step:1",
+              kind: "snapshot",
+              startedAt: 1,
+              completedAt: 2,
+              status: "ok",
+              input: {},
+            },
+          ],
+        };
+      },
+    })
+  );
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-cdp",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-1",
+    actions: [
+      {
+        kind: "cdp",
+        method: "Runtime.evaluate",
+        params: {
+          expression: "document.title",
+          returnByValue: true,
+        },
+      },
+    ],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(debuggerCommands, [
+    {
+      tabId: 7,
+      method: "Runtime.evaluate",
+      params: {
+        expression: "document.title",
+        returnByValue: true,
+      },
+    },
+  ]);
+  assert.equal(result.trace[0]?.kind, "cdp");
+  assert.equal(result.trace.at(-1)?.kind, "snapshot");
+  assert.equal(sentMessages.length, 1);
+});
+
+test("chrome relay action executor rejects blocked cdp methods before debugger dispatch", async () => {
+  const now = Date.now();
+  let debuggerCommands = 0;
+  const executor = new ChromeRelayActionExecutor(
+    fakePlatform({
+      activeTab: { id: 7, windowId: 3, url: "https://example.com", title: "Example", status: "complete" },
+      onDebuggerCommand() {
+        debuggerCommands += 1;
+        return {};
+      },
+      onSendMessage() {
+        return {
+          ok: true,
+          page: {
+            requestedUrl: "https://example.com",
+            finalUrl: "https://example.com",
+            title: "Example",
+            textExcerpt: "Example page",
+            statusCode: 200,
+            interactives: [],
+          },
+          trace: [],
+        };
+      },
+    })
+  );
+
+  await assert.rejects(
+    () =>
+      executor.execute({
+        actionRequestId: "relay-action-cdp-blocked",
+        peerId: "peer-1",
+        browserSessionId: "browser-session-1",
+        taskId: "task-1",
+        actions: [{ kind: "cdp", method: "Target.closeTarget", params: { targetId: "target-1" } }],
+        createdAt: now,
+        expiresAt: now + 5_000,
+      }),
+    /relay cdp action method is not allowed/
+  );
+  assert.equal(debuggerCommands, 0);
+});
+
 test("chrome relay action executor rejects wait actions that exceed the remaining request budget", async () => {
   const now = Date.now();
   let sentMessages = 0;
@@ -307,6 +423,7 @@ function fakePlatform(input: {
   onCaptureVisibleTab?(windowId?: number): string | Promise<string>;
   onUpdateTab?(tabId: number, updateProperties: { url?: string; active?: boolean }): void;
   onInjectContentScript?(tabId: number): void | Promise<void>;
+  onDebuggerCommand?(tabId: number, method: string, params: Record<string, unknown>): unknown | Promise<unknown>;
 }): ChromeExtensionPlatform {
   let currentTab: {
     id: number;
@@ -359,6 +476,13 @@ function fakePlatform(input: {
       ? {
           async injectContentScript(tabId: number) {
             await input.onInjectContentScript?.(tabId);
+          },
+        }
+      : {}),
+    ...(input.onDebuggerCommand
+      ? {
+          async sendDebuggerCommand(tabId: number, method: string, params: Record<string, unknown> = {}) {
+            return input.onDebuggerCommand?.(tabId, method, params);
           },
         }
       : {}),

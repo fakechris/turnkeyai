@@ -17,7 +17,8 @@ export type BrowserActionKind =
   | "scroll"
   | "console"
   | "wait"
-  | "screenshot";
+  | "screenshot"
+  | "cdp";
 
 export interface BrowserActionTrace {
   stepId: string;
@@ -45,6 +46,24 @@ export interface BrowserSnapshotResult extends BrowserPageResult {
 
 export type BrowserConsoleProbe = "page-metadata" | "interactive-summary";
 
+export const MAX_BROWSER_CDP_ACTION_TIMEOUT_MS = 30_000;
+export const MAX_BROWSER_CDP_ACTION_PARAMS_BYTES = 64 * 1024;
+
+const BROWSER_CDP_METHOD_PATTERN = /^[A-Z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$/;
+const BLOCKED_BROWSER_CDP_METHOD_PREFIXES = ["Browser.", "Target."];
+
+export function normalizeBrowserCdpMethod(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return BROWSER_CDP_METHOD_PATTERN.test(trimmed) ? trimmed : null;
+}
+
+export function isBlockedBrowserCdpMethod(method: string): boolean {
+  return BLOCKED_BROWSER_CDP_METHOD_PREFIXES.some((prefix) => method.startsWith(prefix));
+}
+
 export type BrowserClickAction =
   | { kind: "click"; selectors: string[]; refId?: never; text?: never }
   | { kind: "click"; refId: string; selectors?: never; text?: never }
@@ -58,7 +77,8 @@ export type BrowserTaskAction =
   | { kind: "scroll"; direction: "up" | "down"; amount?: number }
   | { kind: "console"; probe: BrowserConsoleProbe }
   | { kind: "wait"; timeoutMs: number }
-  | { kind: "screenshot"; label?: string };
+  | { kind: "screenshot"; label?: string }
+  | { kind: "cdp"; method: string; params?: Record<string, unknown>; timeoutMs?: number };
 
 export interface BrowserTaskRequest {
   taskId: string;
