@@ -1998,7 +1998,7 @@ async function executeNetworkEmulationAction(
   action: Extract<BrowserTaskAction, { kind: "network"; action: "emulateConditions" | "clearEmulation" }>
 ): Promise<Record<string, unknown>> {
   const cdpSession = await page.context().newCDPSession(page);
-  const sendRaw = cdpSession.send as unknown as (
+  const sendRaw = cdpSession.send.bind(cdpSession) as unknown as (
     method: string,
     params?: Record<string, unknown>
   ) => Promise<unknown>;
@@ -2198,7 +2198,7 @@ async function executeTargetCdpAction(
   }
 
   const cdpSession = await page.context().newCDPSession(page);
-  const sendRaw = cdpSession.send as unknown as (
+  const sendRaw = cdpSession.send.bind(cdpSession) as unknown as (
     method: string,
     params?: Record<string, unknown>
   ) => Promise<unknown>;
@@ -2329,7 +2329,7 @@ async function executeCookieAction(
   const actionUrl = "url" in action ? action.url : undefined;
   const resolvedUrl = resolveCookieUrl(actionUrl, pageUrl);
   const cdpSession = await page.context().newCDPSession(page);
-  const sendRaw = cdpSession.send as unknown as (
+  const sendRaw = cdpSession.send.bind(cdpSession) as unknown as (
     method: string,
     params?: Record<string, unknown>
   ) => Promise<unknown>;
@@ -2501,7 +2501,7 @@ async function executeEvalAction(
   action: Extract<BrowserTaskAction, { kind: "eval" }>
 ): Promise<Record<string, unknown>> {
   const cdpSession = await page.context().newCDPSession(page);
-  const sendRaw = cdpSession.send as unknown as (
+  const sendRaw = cdpSession.send.bind(cdpSession) as unknown as (
     method: string,
     params?: Record<string, unknown>
   ) => Promise<unknown>;

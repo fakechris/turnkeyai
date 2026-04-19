@@ -1508,8 +1508,13 @@ test("chrome session manager applies and clears network URL blocks", async () =>
       return {
         async newCDPSession() {
           return {
-            async send(method: string, params?: Record<string, unknown>) {
-              cdpCommands.push(params === undefined ? { method } : { method, params });
+            commands: cdpCommands,
+            async send(
+              this: { commands: Array<{ method: string; params?: Record<string, unknown> }> },
+              method: string,
+              params?: Record<string, unknown>
+            ) {
+              this.commands.push(params === undefined ? { method } : { method, params });
             },
             async detach() {
               cdpCommands.push({ method: "detach" });
@@ -1975,8 +1980,13 @@ test("chrome session manager executes bounded cookie actions through target CDP"
   const commands: Array<{ method: string; params?: Record<string, unknown> }> = [];
   let detached = 0;
   const cdpSession = {
-    async send(method: string, params?: Record<string, unknown>) {
-      commands.push({
+    commands,
+    async send(
+      this: { commands: Array<{ method: string; params?: Record<string, unknown> }> },
+      method: string,
+      params?: Record<string, unknown>
+    ) {
+      this.commands.push({
         method,
         ...(params !== undefined ? { params } : {}),
       });
@@ -2068,8 +2078,13 @@ test("chrome session manager executes bounded eval actions through target CDP", 
   const commands: Array<{ method: string; params?: Record<string, unknown> }> = [];
   let detached = 0;
   const cdpSession = {
-    async send(method: string, params?: Record<string, unknown>) {
-      commands.push({
+    commands,
+    async send(
+      this: { commands: Array<{ method: string; params?: Record<string, unknown> }> },
+      method: string,
+      params?: Record<string, unknown>
+    ) {
+      this.commands.push({
         method,
         ...(params !== undefined ? { params } : {}),
       });
@@ -2145,8 +2160,9 @@ test("chrome session manager executes target-scoped cdp actions through a page C
   const commands: unknown[] = [];
   let detached = 0;
   const cdpSession = {
-    async send(method: string, params: Record<string, unknown>) {
-      commands.push({ method, params });
+    commands,
+    async send(this: { commands: unknown[] }, method: string, params: Record<string, unknown>) {
+      this.commands.push({ method, params });
       return { result: { value: "Example" } };
     },
     async detach() {
@@ -2215,6 +2231,7 @@ test("chrome session manager waits for target-scoped cdp events", async () => {
   const listeners = new Map<string, Set<(params?: Record<string, unknown>) => void>>();
   let detached = 0;
   const cdpSession = {
+    listeners,
     on(method: string, listener: (params?: Record<string, unknown>) => void) {
       const set = listeners.get(method) ?? new Set();
       set.add(listener);
@@ -2223,8 +2240,8 @@ test("chrome session manager waits for target-scoped cdp events", async () => {
     off(method: string, listener: (params?: Record<string, unknown>) => void) {
       listeners.get(method)?.delete(listener);
     },
-    async send() {
-      for (const listener of listeners.get("Runtime.consoleAPICalled") ?? []) {
+    async send(this: { listeners: Map<string, Set<(params?: Record<string, unknown>) => void>> }) {
+      for (const listener of this.listeners.get("Runtime.consoleAPICalled") ?? []) {
         listener({ type: "log" });
       }
       return { result: { value: "ok" } };
