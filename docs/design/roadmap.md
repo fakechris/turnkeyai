@@ -1,11 +1,13 @@
 # 项目进度与路线图
 
-> 更新日期：2026-04-01  
+> 更新日期：2026-04-19
 > 范围：当前代码库真实状态、下一阶段优先级、阶段性交付策略
 
 ## 1. 当前阶段判断
 
 项目已经跨过“纯设计”和“核心机制补齐”阶段，当前处在 `Phase 1 / Production Hardening` 的同场景 end-to-end 验收与长期稳态验证阶段。
+
+最近一轮已经合入 W3 / W6 / W8 / W10 / W4 / W2 / W5 系列 hardening：cross-store safety、canonical schema cleanup、browser transport sealing、reliability net、storage shape、worker durability 和 core type boundary cleanup 已进入主线。
 
 当前已经具备：
 
@@ -39,22 +41,30 @@
 28. operator summary / operator attention / replay bundle 的统一 case 语义与首页级摘要
 29. browser continuity 已进入 replay / bundle / console / TUI / operator attention 视图
 30. context runtime 的 approval / merge / continuation 语义 recall 与 salience compaction 强化
+31. W3 cross-store safety 第一版：ingress outbox、runtime-chain version/CAS、dropped/retry-exhausted replay incident 可见性
+32. W6 canonical schema cleanup：RelayPayload / ScheduledTaskRecord canonical shape 与 legacy fallback 收窄
+33. W8 browser transport sealing：relay peer identity binding、browser route validation、relay/direct-cdp smoke / soak 链路
+34. W10 reliability net：truth alignment、stale marker、remediation unification 与 operator/replay 可见性
+35. W4 storage shape：team message by-id projection、recovery run/event canonical projection 与 repair gating
+36. W2 worker durability：startup reconcile 可看到 unrecoverable persisted worker session
+37. W5 type cleanup：replay / recovery / operator / prompt / runtime support 类型边界拆细
 
 当前仍未具备：
 
 1. durable execution core
 2. 通用 subagent runtime v2
-3. 产品级的并行 sub-agent orchestration / merge-synthesis 控制
+3. durable / typed 的并行 sub-agent kernel 与 work package
 4. 稳定的 context compiler / memory hierarchy / cache
-5. tool policy / approval / trust 分层
-6. 产品级长期 browser runtime
-7. 完整的 replay / evaluation harness
+5. 完整 tool policy kernel / approval / trust 分层
+6. 更大规模、长期运行下的 browser bridge / relay / direct-cdp real-world soak 结论
+7. 更系统化的 replay / evaluation / real-world acceptance harness
 8. Electron GUI
 
 一句话判断：
 
-- 运行内核：第一版已经成熟
+- runtime/workbench backend：核心机制已经基本成熟
 - 当前主线：不再是补核心机制，而是验证这些机制在复杂真实链路里持续稳定
+- 桌面产品壳：仍未开始
 
 ## 2. 当前规划修正
 
@@ -84,23 +94,24 @@
 
 ## 3. 高层完成度
 
-| 方向 | 状态 | 完成度 |
+| 方向 | 机制状态 | 产品化状态 |
 | --- | --- | --- |
-| Runtime Foundation | 已完成 | 100% |
-| LLM Runtime Integration | 已完成 | 100% |
-| Worker Delegation Core | 已完成 | 100% |
-| Browser Runtime v2 | 已完成 | 100% |
-| Context / Memory Runtime v2 | 已完成 | 100% |
-| QC / Replay Runtime | 已完成 | 100% |
-| Desktop Product Shell | 未开始 | 0% |
+| Runtime Foundation | 已完成 | 稳定维护 |
+| LLM Runtime Integration | 已完成 | 稳定维护 |
+| Worker Delegation Core | 已完成 | 长链 / 并行验收继续 |
+| Browser Runtime v2 | 已完成 | bridge / relay / direct-cdp 长链 soak 继续 |
+| Context / Memory Runtime v2 | 已完成 | 高压预算与真实任务验收继续 |
+| QC / Replay Runtime | 已完成 | recovery / operator 可读性收尾 |
+| Desktop Product Shell | 未开始 | 未开始 |
 
 如果把目标定义为“本地可跑的多角色 runtime 骨架”，当前大致在：
 
 - `95%+`
 
-如果把目标定义为“可日常使用的协作式 agent 工作台”，当前大致在：
+如果把目标定义为“可日常使用的协作式 agent 工作台”，当前更准确的判断是：
 
-- `70%`
+- runtime/workbench backend 接近可用，但仍在验收
+- 桌面产品 shell 尚未开始
 
 ## 4. 下一阶段的主线重排
 
@@ -136,13 +147,14 @@ Phase 1 的细化执行清单见：
 
 - Batch 1 已完成
 - Batch 2 的 Parallel Subagent Orchestration、Tool Governance、Browser ownership/re-entry、Replay/Recovery 主块已完成
+- W3 / W6 / W8 / W10 / W4 / W2 / W5 系列 hardening 已合入主线
 - Browser session runtime 已进入显式 `spawn / send / history / resume` 形态
 - bounded regression harness 与 browser reliability soak 已覆盖 browser / recovery / context / parallel / governance 主线
 - Recovery runtime 已进入产品级第一版，并带 case / timeline / operator 视图
 - browser continuity 已进入 replay / bundle / console / TUI / operator attention 视图
 - flow / governance / replay / recovery 已有统一的 operator summary / attention / case semantics
 - 当前判断：`Phase 1 / Production Hardening` 的核心机制已完成
-- 下一步不进入 `Phase 2 / Runtime Kernel Lift`，而是按相同场景的 acceptance / soak / failure injection 继续验收
+- 下一步不进入 `Phase 2 / Runtime Kernel Lift`，而是按 browser bridge/relay 长链、recovery/operator 收口、context/parallel/governance 真实任务验证继续验收
 
 配套文档：
 
@@ -192,9 +204,9 @@ Phase 1 的细化执行清单见：
 
 下一步重点：
 
-1. retrieval / packing / pruning 策略调优
-2. long-running task compression 与 replay / recovery 对齐
-3. 让 bounded task 的上下文延续继续稳定，但不再把这块作为 Phase 1 第一优先级
+1. retrieval / packing / pruning 策略在真实任务下继续调优
+2. long-running task compression 与 replay / recovery / operator 查询继续对齐
+3. 高压预算下保住 pending work、open question、关键 evidence
 
 ### B. Session / Worker / Browser Continuity
 
@@ -221,9 +233,10 @@ Phase 1 的细化执行清单见：
 
 下一步重点：
 
-1. 并行场景下的 worker continuity 语义继续收尾
-2. browser session / profile / target 的 soak 与 reliability matrix
-3. 把“可续跑”能力继续做成产品级，而不是先做成最强通用抽象
+1. browser bridge / relay / direct-cdp 的真实长链验证
+2. session / profile / target / lease / owner mismatch 的组合 soak
+3. 并行场景下的 worker continuity 语义继续收尾
+4. 把“可续跑”能力继续做成产品级，而不是先做成最强通用抽象
 
 ### C. Parallel Subagent Orchestration
 
@@ -238,14 +251,14 @@ Phase 1 的细化执行清单见：
 
 当前差距：
 
-- 还缺更强的 shard timeout taxonomy 和跨重启恢复演练
-- 还缺 wider research UI / replay / shard inspection 视图
+- shard timeout / cancel / retry 的真实长链样本还需要继续扩大
+- replay / inspection 视图已经有基础入口，但需要更多 case 验证
 - 还缺更重的 typed work package，作为第二期 kernel 能力推进
 
 下一步重点：
 
-1. 把 shard timeout / cancel / retry taxonomy 继续补齐
-2. 给 parallel orchestration 接 replay / inspection 视图
+1. 把 shard timeout / cancel / retry 的 regression 样本继续补齐
+2. 给 parallel orchestration 的 replay / inspection 增加更真实的失败样本
 3. 在第二期里把 research shard 提升成更 typed 的 work package
 
 ### D. Tool Governance v1
@@ -264,7 +277,7 @@ Phase 1 的细化执行清单见：
 当前差距：
 
 - 还是 registry + permission gate，不是完整 policy engine
-- transport hierarchy 还需要更强的 runtime 约束
+- transport hierarchy 已进入 relay/direct-cdp 运行链路，但还需要更多真实任务验证
 - browser fallback / API / tool 的 trust level 还可以继续细化到更多 handler
 - approval / audit 与 recovery / memory admission 的产品化面还不够完整
 
@@ -272,11 +285,11 @@ Phase 1 的细化执行清单见：
 
 1. official API -> business tool -> browser fallback 做成稳定主路径
 2. 强化 tool retry / timeout / concurrency guard
-3. 把治理模型扩展到更多 worker / browser side-effect 场景
+3. 把治理模型扩展到更多 worker / browser side-effect contract tests
 4. 补 permission / approval / audit 的产品化 surface
 5. 把 tool 层先做成“可信可控”，第二期再升格成更完整 policy kernel
 
-### E. Browser Runtime v2.5
+### E. Browser Runtime v2.x
 
 当前已完成：
 
@@ -289,20 +302,22 @@ Phase 1 的细化执行清单见：
 - ownership-aware re-entry / lease / hot-warm-cold resume matrix
 - target-local snapshot/ref history
 - browser continuity matrix：lease reclaim / wrong-owner denial / reopen/new-target 长链验证
+- relay peer identity binding 与 browser route input hardening
+- relay / direct-cdp launch / wait / smoke / transport soak 链路
 
 当前差距：
 
-- browser trust integration 与长期 soak 还需要继续做实
-- attach / reconnect / reopen matrix 还需要更长链验证
+- browser bridge / relay 在真实长链任务里的能力边界还需要继续验证
+- attach / reconnect / reopen / direct-cdp matrix 还需要更长链验证
 - idle eviction / lease / detached target 的协同行为还需继续收尾
 - browser continuity 的 replay / incident 呈现还可以继续更清楚
 
 下一步重点：
 
-1. attach / reconnect / reopen matrix 的 soak 验证
-2. browser trust integration
-3. target-local snapshot/ref cache 的进一步稳定性验证
-4. browser continuity 与 recovery surface 的对齐继续完善
+1. relay / direct-cdp bridge 的真实任务长链 soak
+2. attach / reconnect / reopen / owner mismatch / lease reclaim matrix 的组合验证
+3. target-local snapshot/ref/artifact cache 的进一步稳定性验证
+4. browser continuity 与 recovery/operator surface 的对齐继续完善
 
 ### F. QC / Replay / Failure Analysis
 
@@ -325,13 +340,13 @@ Phase 1 的细化执行清单见：
 
 - 缺统一 trace/span 语义
 - 缺 prompt / model / policy 对比能力
-- recovery/operator surface 只剩轻量 polish
+- recovery/operator surface 还需要 case state、gate、next action 术语统一
 - browser reliability soak 还需要和 recovery 主链一起做更长链验证
 
 下一步重点：
 
 1. browser reliability 与 recovery 主链的更长链 soak / regression 样本
-2. recovery action / console / workflow-log surface 的 polish
+2. recovery action / console / workflow-log / operator surface 的 case 语义收口
 3. prompt / model / policy 对比
 4. 为第二期的 trace / compiler / policy diff 打基础
 
@@ -351,9 +366,10 @@ Phase 1 的细化执行清单见：
 验收标准：
 
 1. 真实日常任务可以在 bounded 范围内稳定完成
-2. timeout / continue / sessions_send / re-entry 行为基本一致
-3. approval / audit / browser fallback 都有清晰护栏
-4. memory flush / compaction / diary/MEMORY 写入不会明显污染后续会话
+2. timeout / continue / resume / re-entry 行为基本一致
+3. approval / audit / browser fallback / relay transport 都有清晰护栏
+4. memory / compaction / evidence admission 不会明显污染后续会话
+5. recovery / replay / operator surface 能把失败主链呈现成可操作 case
 
 ### Phase 2
 

@@ -9,7 +9,9 @@
 
 ## 当前状态
 
-当前仓库已经完成 `Phase 1 / Production Hardening` 的核心机制建设，并进入同场景 end-to-end 验收与长期稳态验证阶段。
+当前仓库已经完成 `Phase 1 / Production Hardening` 的核心机制建设。最近一轮已把 cross-store safety、canonical schema cleanup、browser transport sealing、reliability net、storage shape、worker durability 和 core type boundary cleanup 合入主线。
+
+当前阶段不再是补核心机制，而是进入同场景 end-to-end 验收、长链 soak、failure injection 与 real-world validation。
 
 已经具备：
 
@@ -60,35 +62,44 @@
 - failure/acceptance 现已覆盖 compound incident triage：browser manual follow-up、runtime waiting、prompt pressure 同页收敛
 - real-world runbook suite 第一版已接入，覆盖 browser research、governed publish、parallel follow-up、runtime observability 等真实任务组合样本
 - release readiness 已进入主线，可验证 packed CLI、bin smoke、dry-run publish 和 release artifact 元数据
+- cross-store safety 第一版：ingress outbox、runtime-chain projection version/CAS、dropped/retry-exhausted replay incident 可见性
+- canonical schema cleanup：RelayPayload / ScheduledTaskRecord 读路径已收敛到 canonical shape，legacy fallback 面继续缩小
+- browser transport sealing：relay peer identity binding、browser route validation、relay/direct-cdp launch / wait / smoke / soak 链路已进主线
+- truth alignment / remediation unification / stale marker / reliability net 已进入 replay、recovery、operator 查询面
+- storage shape hardening：team message by-id projection、recovery run/event canonical projection 与 legacy repair gating 已进入 store 层
+- worker durability：持久化 worker session 的 unrecoverable state 已能被 startup reconcile 与 operator 查询看到
+- core type boundary cleanup：replay / recovery / operator / prompt / runtime support 类型边界已拆细
 
 还没有具备：
 
 - 通用 subagent runtime v2
-- durable execution 级别的 subagent kernel
+- durable execution 级别的 worker/subagent kernel
+- 事务级 WAL / outbox / cross-store commit protocol
 - context / memory / compression v2 的完整 compiler 形态
-- 更大规模、长期运行下的 real-world soak 结论
-- 更完整的 real-world acceptance / evaluation harness
+- 更大规模、长期运行下的 browser bridge / relay / direct-cdp real-world soak 结论
+- 更系统化的 real-world acceptance / evaluation harness
 - Electron GUI
 
 一句话判断：
 
-- 核心执行内核：已经基本成熟
-- 产品级协作桌面：还没到
+- runtime/workbench backend：核心机制已经基本成熟，正在做产品化验收
+- 产品级协作桌面：还没开始
 
 ## 当前优先级
 
-现在最重要的不是继续补新的 runtime 机制，也不是立刻进入 Phase 2，而是把现有主线压到同场景 end-to-end 验收和长期稳态。
+现在最重要的不是继续补新的 runtime 机制，也不是立刻进入 Phase 2，而是把现有主线压到同场景 end-to-end 验收、真实 browser bridge/relay 长链、长期稳态和 operator 可诊断性。
 
 接下来的优先级明确分成两期：
 
 ### Phase 1: Production Hardening
 
-1. prompt / memory / compaction 稳定化
-2. sub-session / continue / re-entry / timeout summarize
-3. 并行 sub-agent orchestration / fan-out / merge-synthesis 稳定化
-4. tool registry / permission / audit / transport hierarchy
-5. browser session / target / ownership / reconnect
-6. replay / failure analysis 第一层产品化
+Phase 1 的机制主线已经完成。剩余工作按验收顺序推进：
+
+1. browser bridge / relay / direct-cdp 长链真实任务验证
+2. recovery / replay / operator surface 的 case 状态一致性和可读性收尾
+3. context / memory / compaction 在高压预算和真实任务下继续调优
+4. parallel orchestration / governance / permission / audit 的 contract 和 regression 扩充
+5. real-world acceptance、failure injection、transport soak 持续扩样本
 
 ### Phase 2: Runtime Kernel Lift
 
@@ -103,6 +114,7 @@
 当前状态：
 
 - `Phase 1 / Production Hardening` 的核心机制已完成
+- W3 / W6 / W8 / W10 / W4 / W2 / W5 系列 hardening 已合入主线
 - runtime hard-points parity 的五个 pack 已完成：
   - session continuity
   - progress event
@@ -113,6 +125,7 @@
 - bounded regression、browser soak、runtime/operator acceptance 已覆盖 browser / recovery / context / parallel / governance / runtime 主线
 - 当前主线转为：
   - 同场景 end-to-end 验收
+  - browser bridge / relay / direct-cdp 长链验证
   - 长链 soak
   - failure injection
   - real-world validation
@@ -369,16 +382,17 @@ npm run daemon
 
 - `95%+`
 
-如果把目标定义为“可日常使用的协作式 agent 桌面工作台”，当前大致在：
+如果把目标定义为“可日常使用的协作式 agent 桌面工作台”，当前更准确的判断是：
 
-- `70%`
+- runtime/workbench backend 接近可用，但仍在验收
+- 桌面产品 shell 尚未开始
 
 剩余差距主要集中在：
 
-- 更长链、更真实任务的 soak / acceptance 覆盖
+- browser bridge / relay / direct-cdp 的更长链真实任务 soak / acceptance 覆盖
 - runtime/operator 在真实排障过程里的易用性继续打磨
 - real-world failure injection 下的长期稳态
-- 真实 release / public npm 发布闭环验证
+- real-world acceptance / evaluation harness 的系统化
 - GUI
 
 ## 开源阶段说明
