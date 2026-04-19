@@ -1373,6 +1373,81 @@ test("chrome session manager captures bounded network request details", async ()
   assert.equal(result.trace[1]?.kind, "click");
 });
 
+test("chrome session manager applies and clears network URL blocks", async () => {
+  let routeHandler: unknown = null;
+  const calls: string[] = [];
+  const page = {
+    async unroute(pattern: string) {
+      calls.push(`unroute:${pattern}`);
+    },
+    async route(pattern: string, handler: (route: unknown) => void) {
+      calls.push(`route:${pattern}`);
+      routeHandler = handler;
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action:
+        | { kind: "network"; action: "blockUrls"; urlPatterns: string[] }
+        | { kind: "network"; action: "clearBlockedUrls" };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  const blockOutput = await internal.executeAction({
+    page,
+    action: { kind: "network", action: "blockUrls", urlPatterns: ["*://*/analytics/*"] },
+    stepIndex: 1,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-network",
+  });
+
+  assert.deepEqual(blockOutput.traceOutput, {
+    action: "blockUrls",
+    urlPatternCount: 1,
+    blocked: true,
+  });
+  assert.deepEqual(calls, ["unroute:**/*", "route:**/*"]);
+  assert.notEqual(routeHandler, null);
+  const handleRoute = routeHandler as (route: unknown) => void;
+
+  const blockedRoute = createRoute("https://example.com/analytics/pixel");
+  handleRoute(blockedRoute);
+  assert.deepEqual(blockedRoute.events, ["abort"]);
+  const allowedRoute = createRoute("https://example.com/app");
+  handleRoute(allowedRoute);
+  assert.deepEqual(allowedRoute.events, ["continue"]);
+
+  const clearOutput = await internal.executeAction({
+    page,
+    action: { kind: "network", action: "clearBlockedUrls" },
+    stepIndex: 2,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-network",
+  });
+
+  assert.deepEqual(clearOutput.traceOutput, {
+    action: "clearBlockedUrls",
+    cleared: true,
+  });
+  assert.deepEqual(calls, ["unroute:**/*", "route:**/*", "unroute:**/*"]);
+});
+
 test("chrome session manager persists downloaded files as bounded artifacts", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "chrome-session-manager-download-"));
 
@@ -1967,3 +2042,28 @@ test("chrome session manager waits for target-scoped cdp events", async () => {
     },
   ]);
 });
+
+function createRoute(url: string): {
+  events: string[];
+  request(): { url(): string };
+  abort(): Promise<void>;
+  continue(): Promise<void>;
+} {
+  const events: string[] = [];
+  return {
+    events,
+    request() {
+      return {
+        url() {
+          return url;
+        },
+      };
+    },
+    async abort() {
+      events.push("abort");
+    },
+    async continue() {
+      events.push("continue");
+    },
+  };
+}

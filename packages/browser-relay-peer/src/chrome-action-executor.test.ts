@@ -943,6 +943,84 @@ test("chrome relay action executor captures bounded network request details", as
   assert.equal(result.trace[1]?.kind, "click");
 });
 
+test("chrome relay action executor applies and clears network URL blocks", async () => {
+  const now = Date.now();
+  const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];
+  const sentMessages: unknown[] = [];
+  const detachedTabs: number[] = [];
+  const platform = fakePlatform({
+    activeTab: { id: 7, windowId: 3, url: "https://example.com/app", title: "Example", status: "complete" },
+    onDebuggerCommand(tabId, method, params) {
+      debuggerCommands.push({ tabId, method, params });
+      return {};
+    },
+    onSendMessage(tabId, message) {
+      sentMessages.push({ tabId, message });
+      return {
+        ok: true,
+        page: {
+          requestedUrl: "https://example.com/app",
+          finalUrl: "https://example.com/app",
+          title: "Example",
+          textExcerpt: "Example page",
+          statusCode: 200,
+          interactives: [],
+        },
+        trace: [
+          {
+            stepId: "task-network-control:relay-snapshot:3",
+            kind: "snapshot",
+            startedAt: 1,
+            completedAt: 2,
+            status: "ok",
+            input: { note: "final-relay-state" },
+          },
+        ],
+      };
+    },
+  });
+  platform.detachDebugger = async (tabId) => {
+    detachedTabs.push(tabId);
+  };
+  const executor = new ChromeRelayActionExecutor(platform);
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-network-control",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-network-control",
+    actions: [
+      { kind: "network", action: "blockUrls", urlPatterns: ["*://*/analytics/*"] },
+      { kind: "network", action: "clearBlockedUrls" },
+    ],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(debuggerCommands, [
+    { tabId: 7, method: "Network.enable", params: {} },
+    { tabId: 7, method: "Network.setBlockedURLs", params: { urls: ["*://*/analytics/*"] } },
+    { tabId: 7, method: "Network.enable", params: {} },
+    { tabId: 7, method: "Network.setBlockedURLs", params: { urls: [] } },
+  ]);
+  assert.deepEqual(detachedTabs, [7]);
+  assert.equal(sentMessages.length, 1);
+  assert.deepEqual(
+    result.trace.map((entry) => entry.kind),
+    ["network", "network", "snapshot"]
+  );
+  assert.deepEqual(result.trace[0]?.output, {
+    action: "blockUrls",
+    urlPatternCount: 1,
+    blocked: true,
+  });
+  assert.deepEqual(result.trace[1]?.output, {
+    action: "clearBlockedUrls",
+    cleared: true,
+  });
+});
+
 test("chrome relay action executor proxies completed downloads as payloads without local paths", async () => {
   const now = Date.now();
   const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];

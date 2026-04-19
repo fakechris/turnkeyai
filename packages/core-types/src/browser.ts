@@ -96,6 +96,7 @@ export const MAX_BROWSER_EVAL_RESULT_BYTES = 8 * 1024;
 export const DEFAULT_BROWSER_EVAL_TIMEOUT_MS = 5_000;
 export const MAX_BROWSER_EVAL_TIMEOUT_MS = 30_000;
 export const MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH = 2_048;
+export const MAX_BROWSER_NETWORK_URL_PATTERNS = 20;
 export const MAX_BROWSER_NETWORK_METHOD_LENGTH = 16;
 export const DEFAULT_BROWSER_NETWORK_TIMEOUT_MS = 10_000;
 export const MAX_BROWSER_NETWORK_TIMEOUT_MS = 60_000;
@@ -240,6 +241,15 @@ export type BrowserNetworkAction =
       timeoutMs?: number;
       includeHeaders?: boolean;
       maxBodyBytes?: number;
+    }
+  | {
+      kind: "network";
+      action: "blockUrls";
+      urlPatterns: string[];
+    }
+  | {
+      kind: "network";
+      action: "clearBlockedUrls";
     };
 
 export type BrowserDownloadAction = {

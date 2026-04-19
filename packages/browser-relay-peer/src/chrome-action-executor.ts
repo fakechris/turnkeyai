@@ -369,7 +369,28 @@ export class ChromeRelayActionExecutor {
         continue;
       }
 
-      if (action.kind === "network") {
+      if (action.kind === "network" && !isArmedNetworkAction(action)) {
+        const startedAt = Date.now();
+        const output = await this.executeNetworkControlAction(activeTab.id, action, debuggerTabsToDetach);
+        trace.push({
+          stepId: `${request.taskId}:relay-network:${index + 1}`,
+          kind: "network",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input:
+            action.action === "blockUrls"
+              ? {
+                  action: action.action,
+                  urlPatterns: action.urlPatterns,
+                }
+              : { action: action.action },
+          output,
+        });
+        continue;
+      }
+
+      if (action.kind === "network" && isArmedNetworkAction(action)) {
         const startedAt = Date.now();
         const timeoutMs = normalizeNetworkTimeoutMs(action.timeoutMs);
         const traceEntry: BrowserActionTrace = {
@@ -788,6 +809,30 @@ export class ChromeRelayActionExecutor {
     return summarizeEvalResponse(response, timeoutMs);
   }
 
+  private async executeNetworkControlAction(
+    tabId: number,
+    action: Extract<RelayNetworkAction, { action: "blockUrls" | "clearBlockedUrls" }>,
+    debuggerTabsToDetach: Set<number>
+  ): Promise<Record<string, unknown>> {
+    if (!this.platform.sendDebuggerCommand) {
+      throw new Error("relay network control action requires chrome debugger support");
+    }
+    debuggerTabsToDetach.add(tabId);
+    await this.platform.sendDebuggerCommand(tabId, "Network.enable", {});
+    const urls = action.action === "blockUrls" ? action.urlPatterns : [];
+    await this.platform.sendDebuggerCommand(tabId, "Network.setBlockedURLs", { urls });
+    return action.action === "blockUrls"
+      ? {
+          action: action.action,
+          urlPatternCount: action.urlPatterns.length,
+          blocked: true,
+        }
+      : {
+          action: action.action,
+          cleared: true,
+        };
+  }
+
   private async executeCdpAction(
     tabId: number,
     action: RelayCdpAction,
@@ -1032,6 +1077,9 @@ export class ChromeRelayActionExecutor {
             return;
           }
 
+          if (action.action !== "waitForResponse") {
+            throw new Error(`relay network action cannot be armed: ${action.action}`);
+          }
           const event = await waitForDebuggerEvent(tabId, "Network.responseReceived", remainingMs);
           const requestEvents =
             (await this.platform.drainDebuggerEvents?.(tabId, {
@@ -1580,6 +1628,12 @@ async function waitForCdpDownloadCompletion(
     }
   }
   throw new Error("relay download action timed out waiting for completion");
+}
+
+function isArmedNetworkAction(
+  action: RelayNetworkAction
+): action is Extract<RelayNetworkAction, { action: "waitForRequest" | "waitForResponse" }> {
+  return action.action === "waitForRequest" || action.action === "waitForResponse";
 }
 
 function matchesCdpNetworkRequest(

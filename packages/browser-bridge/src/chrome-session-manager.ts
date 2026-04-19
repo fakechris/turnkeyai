@@ -57,7 +57,7 @@ import {
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
-import { chromium, type Browser, type BrowserContext, type CDPSession, type Dialog, type Download, type Locator, type Page, type Request, type Response } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Dialog, type Download, type Locator, type Page, type Request, type Response, type Route } from "playwright-core";
 
 import { captureDomSnapshot } from "./dom-snapshot";
 import type { BrowserSessionManager as LocalBrowserSessionManager } from "./session/browser-session-manager";
@@ -357,7 +357,7 @@ export class ChromeSessionManager {
             continue;
           }
 
-          if (action.kind === "network") {
+          if (action.kind === "network" && isArmedNetworkAction(action)) {
             const timeoutMs = normalizeNetworkTimeoutMs(action.timeoutMs);
             const traceEntry: BrowserActionTrace = {
               stepId,
@@ -1379,7 +1379,12 @@ export class ChromeSessionManager {
     }
 
     if (action.kind === "network") {
-      throw new Error(`${action.kind} actions must be armed by the browser task executor`);
+      if (action.action !== "blockUrls" && action.action !== "clearBlockedUrls") {
+        throw new Error(`${action.kind} ${action.action} actions must be armed by the browser task executor`);
+      }
+      return {
+        traceOutput: await executeNetworkControlAction(page, action),
+      };
     }
 
     if (action.kind === "download") {
@@ -1671,6 +1676,9 @@ async function armPageNetworkHandler(
       return;
     }
 
+    if (action.action !== "waitForResponse") {
+      throw new Error(`browser network action cannot be armed: ${action.action}`);
+    }
     const response = await page.waitForResponse((candidate) => matchesNetworkResponse(candidate, action), {
       timeout: timeoutMs,
     });
@@ -1765,6 +1773,42 @@ async function armPageDownloadHandler(
 
 function matchesDownload(download: Download, action: Extract<BrowserTaskAction, { kind: "download" }>): boolean {
   return action.urlPattern ? matchesUrlPattern(download.url(), action.urlPattern) : true;
+}
+
+function isArmedNetworkAction(
+  action: Extract<BrowserTaskAction, { kind: "network" }>
+): action is Extract<BrowserTaskAction, { kind: "network"; action: "waitForRequest" | "waitForResponse" }> {
+  return action.action === "waitForRequest" || action.action === "waitForResponse";
+}
+
+async function executeNetworkControlAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "blockUrls" | "clearBlockedUrls" }>
+): Promise<Record<string, unknown>> {
+  if (action.action === "clearBlockedUrls") {
+    await page.unroute("**/*").catch(() => undefined);
+    return {
+      action: action.action,
+      cleared: true,
+    };
+  }
+
+  await page.unroute("**/*").catch(() => undefined);
+  await page.route("**/*", (route) => handleBlockedNetworkRoute(route, action.urlPatterns));
+  return {
+    action: action.action,
+    urlPatternCount: action.urlPatterns.length,
+    blocked: true,
+  };
+}
+
+function handleBlockedNetworkRoute(route: Route, urlPatterns: string[]): void {
+  const url = route.request().url();
+  if (urlPatterns.some((pattern) => matchesUrlPattern(url, pattern))) {
+    route.abort().catch(() => undefined);
+    return;
+  }
+  route.continue().catch(() => undefined);
 }
 
 function matchesNetworkRequest(
@@ -2662,6 +2706,17 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
   }
 
   if (action.kind === "network") {
+    if (action.action === "blockUrls") {
+      return {
+        action: action.action,
+        urlPatterns: action.urlPatterns,
+      };
+    }
+    if (action.action === "clearBlockedUrls") {
+      return {
+        action: action.action,
+      };
+    }
     return {
       action: action.action,
       urlPattern: action.urlPattern ?? null,

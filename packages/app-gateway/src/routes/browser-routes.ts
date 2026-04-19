@@ -26,6 +26,7 @@ import {
   MAX_BROWSER_NETWORK_METHOD_LENGTH,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH,
+  MAX_BROWSER_NETWORK_URL_PATTERNS,
   MAX_BROWSER_PERMISSION_ORIGIN_LENGTH,
   MAX_BROWSER_POPUP_TIMEOUT_MS,
   MAX_BROWSER_PROBE_ITEMS,
@@ -510,7 +511,7 @@ const BROWSER_STORAGE_AREAS = new Set(["localStorage", "sessionStorage"]);
 const BROWSER_STORAGE_ACTIONS = new Set(["get", "set", "remove", "clear"]);
 const BROWSER_COOKIE_ACTIONS = new Set(["get", "set", "remove", "clear"]);
 const BROWSER_COOKIE_SAME_SITE_VALUES = new Set(["Strict", "Lax", "None"]);
-const BROWSER_NETWORK_ACTIONS = new Set(["waitForRequest", "waitForResponse"]);
+const BROWSER_NETWORK_ACTIONS = new Set(["waitForRequest", "waitForResponse", "blockUrls", "clearBlockedUrls"]);
 const BROWSER_NETWORK_METHOD_PATTERN = /^[A-Z]+$/;
 
 function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: BrowserTaskMutationRoute): string | null {
@@ -1345,12 +1346,40 @@ function validateNetworkAction(
     timeoutMs?: unknown;
     includeHeaders?: unknown;
     maxBodyBytes?: unknown;
+    urlPatterns?: unknown;
   },
   label: string
 ): string | null {
   const networkAction = action.action as string;
   if (!BROWSER_NETWORK_ACTIONS.has(networkAction)) {
-    return `${label}.action must be waitForRequest or waitForResponse`;
+    return `${label}.action must be waitForRequest, waitForResponse, blockUrls, or clearBlockedUrls`;
+  }
+  if (networkAction === "blockUrls") {
+    if (
+      action.urlPattern !== undefined ||
+      action.method !== undefined ||
+      action.status !== undefined ||
+      action.timeoutMs !== undefined ||
+      action.includeHeaders !== undefined ||
+      action.maxBodyBytes !== undefined
+    ) {
+      return `${label} blockUrls only accepts urlPatterns`;
+    }
+    return validateNetworkUrlPatterns(action.urlPatterns, `${label}.urlPatterns`);
+  }
+  if (networkAction === "clearBlockedUrls") {
+    if (
+      action.urlPattern !== undefined ||
+      action.urlPatterns !== undefined ||
+      action.method !== undefined ||
+      action.status !== undefined ||
+      action.timeoutMs !== undefined ||
+      action.includeHeaders !== undefined ||
+      action.maxBodyBytes !== undefined
+    ) {
+      return `${label} clearBlockedUrls does not accept filters or capture options`;
+    }
+    return null;
   }
   const urlPattern = parseOptionalRouteString(action.urlPattern);
   if (action.urlPattern !== undefined) {
@@ -1399,6 +1428,25 @@ function validateNetworkAction(
       action.maxBodyBytes > MAX_BROWSER_NETWORK_BODY_BYTES)
   ) {
     return `${label}.maxBodyBytes must be a positive integer <= ${MAX_BROWSER_NETWORK_BODY_BYTES}`;
+  }
+  return null;
+}
+
+function validateNetworkUrlPatterns(value: unknown, label: string): string | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return `${label} must be a non-empty array`;
+  }
+  if (value.length > MAX_BROWSER_NETWORK_URL_PATTERNS) {
+    return `${label} must contain <= ${MAX_BROWSER_NETWORK_URL_PATTERNS} entries`;
+  }
+  for (const [index, item] of value.entries()) {
+    const pattern = parseOptionalRouteString(item);
+    if (!pattern) {
+      return `${label}[${index}] must be a non-empty string`;
+    }
+    if (pattern.length > MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH) {
+      return `${label}[${index}] must be <= ${MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH} characters`;
+    }
   }
   return null;
 }

@@ -658,6 +658,25 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     error: "actions[0] network.maxBodyBytes must be a positive integer <= 65536",
   });
 
+  const invalidNetworkBlock = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "blockUrls", urlPatterns: [] }],
+      },
+    }),
+    res: invalidNetworkBlock.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetworkBlock.res.statusCode, 400);
+  assert.deepEqual(invalidNetworkBlock.json, {
+    error: "actions[0] network.urlPatterns must be a non-empty array",
+  });
+
   const invalidDownload = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -783,6 +802,8 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
           { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
           { kind: "network", action: "waitForRequest", urlPattern: "/api", method: "POST", includeHeaders: true, maxBodyBytes: 128 },
           { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
+          { kind: "network", action: "blockUrls", urlPatterns: ["*://*/analytics/*"] },
+          { kind: "network", action: "clearBlockedUrls" },
           { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
           { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
         ],
@@ -814,6 +835,8 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
     { kind: "network", action: "waitForRequest", urlPattern: "/api", method: "POST", includeHeaders: true, maxBodyBytes: 128 },
     { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
+    { kind: "network", action: "blockUrls", urlPatterns: ["*://*/analytics/*"] },
+    { kind: "network", action: "clearBlockedUrls" },
     { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
     { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
   ]);
