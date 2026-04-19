@@ -8,12 +8,15 @@ import {
 } from "./chrome-content-script-protocol";
 
 type DocumentLikeCollection = DocumentLikeElement[] | ArrayLike<DocumentLikeElement>;
+type DocumentLikeOptionCollection = DocumentLikeOption[] | ArrayLike<DocumentLikeOption>;
 
 interface DocumentLikeElement {
   tagName?: string;
   innerText?: string;
   textContent?: string;
   value?: string;
+  selectedIndex?: number;
+  options?: DocumentLikeOptionCollection;
   dataset?: Record<string, string | undefined>;
   getAttribute?(name: string): string | null;
   setAttribute?(name: string, value: string): void;
@@ -21,6 +24,14 @@ interface DocumentLikeElement {
   focus?(): void;
   dispatchEvent?(event: unknown): void;
   querySelectorAll?(selector: string): DocumentLikeCollection;
+}
+
+interface DocumentLikeOption {
+  value?: string;
+  label?: string;
+  text?: string;
+  textContent?: string;
+  selected?: boolean;
 }
 
 interface DocumentLike {
@@ -153,6 +164,42 @@ export async function executeChromeRelayContentScriptActions(
           },
           output: {
             finalUrl: latestSnapshot.finalUrl,
+          },
+        });
+        continue;
+      }
+
+      if (action.kind === "select") {
+        const element = resolveElement(environment.document, action as {
+          refId?: unknown;
+          selectors?: unknown;
+        });
+        const selected = selectElementOption(element, action as {
+          value?: unknown;
+          label?: unknown;
+          index?: unknown;
+        });
+        element.dispatchEvent?.(createDomEvent("input"));
+        element.dispatchEvent?.(createDomEvent("change"));
+        latestSnapshot = captureSnapshot(environment);
+        trace.push({
+          stepId,
+          kind: "select",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            refId: typeof action.refId === "string" ? action.refId : null,
+            selectors: Array.isArray(action.selectors) ? action.selectors : [],
+            value: typeof action.value === "string" ? action.value : null,
+            label: typeof action.label === "string" ? action.label : null,
+            index: typeof action.index === "number" ? action.index : null,
+          },
+          output: {
+            finalUrl: latestSnapshot.finalUrl,
+            selectedValue: selected.value,
+            selectedLabel: selected.label,
+            selectedIndex: selected.index,
           },
         });
         continue;
@@ -378,6 +425,49 @@ function extractElementText(element: DocumentLikeElement): string {
   return (element.innerText ?? element.textContent ?? element.getAttribute?.("aria-label") ?? "").trim().slice(0, 160);
 }
 
+function selectElementOption(
+  element: DocumentLikeElement,
+  action: { value?: unknown; label?: unknown; index?: unknown }
+): { value: string | null; label: string | null; index: number | null } {
+  if (!("value" in element) && !("selectedIndex" in element)) {
+    throw new Error("content script select target must be a select-like element");
+  }
+
+  const options = toOptionArray(element.options);
+  const matched =
+    typeof action.value === "string"
+      ? options.find((option) => option.value === action.value) ?? { value: action.value }
+      : typeof action.label === "string"
+        ? options.find((option) => optionLabel(option) === action.label)
+        : typeof action.index === "number"
+          ? options[action.index]
+          : null;
+  if (!matched) {
+    throw new Error("content script could not resolve select option");
+  }
+
+  const selectedIndex = options.indexOf(matched);
+  if (selectedIndex >= 0 && typeof element.selectedIndex === "number") {
+    element.selectedIndex = selectedIndex;
+    for (const option of options) {
+      option.selected = option === matched;
+    }
+  }
+  if (matched.value !== undefined) {
+    element.value = matched.value;
+  }
+
+  return {
+    value: element.value ?? matched.value ?? null,
+    label: optionLabel(matched) || null,
+    index: selectedIndex >= 0 ? selectedIndex : typeof element.selectedIndex === "number" ? element.selectedIndex : null,
+  };
+}
+
+function optionLabel(option: DocumentLikeOption): string {
+  return (option.label ?? option.text ?? option.textContent ?? option.value ?? "").trim();
+}
+
 function inferRoleFromTag(tagName: string): string {
   const normalized = tagName.toLowerCase();
   if (normalized === "a") {
@@ -395,6 +485,10 @@ function inferRoleFromTag(tagName: string): string {
 function toElementArray(
   collection: DocumentLikeCollection | undefined
 ): DocumentLikeElement[] {
+  return collection ? Array.from(collection) : [];
+}
+
+function toOptionArray(collection: DocumentLikeOptionCollection | undefined): DocumentLikeOption[] {
   return collection ? Array.from(collection) : [];
 }
 

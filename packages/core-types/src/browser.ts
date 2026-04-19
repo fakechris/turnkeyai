@@ -16,6 +16,7 @@ export type BrowserActionKind =
   | "click"
   | "hover"
   | "key"
+  | "select"
   | "scroll"
   | "console"
   | "wait"
@@ -90,6 +91,15 @@ export type BrowserHoverAction =
 
 export type BrowserKeyModifier = "Alt" | "Control" | "Meta" | "Shift";
 
+export type BrowserSelectOption =
+  | { value: string; label?: never; index?: never }
+  | { label: string; value?: never; index?: never }
+  | { index: number; value?: never; label?: never };
+
+export type BrowserSelectAction =
+  | ({ kind: "select"; selectors: string[]; refId?: never } & BrowserSelectOption)
+  | ({ kind: "select"; refId: string; selectors?: never } & BrowserSelectOption);
+
 export type BrowserTaskAction =
   | { kind: "open"; url: string }
   | { kind: "snapshot"; note?: string }
@@ -97,6 +107,7 @@ export type BrowserTaskAction =
   | BrowserClickAction
   | BrowserHoverAction
   | { kind: "key"; key: string; modifiers?: BrowserKeyModifier[] }
+  | BrowserSelectAction
   | { kind: "scroll"; direction: "up" | "down"; amount?: number }
   | { kind: "console"; probe: BrowserConsoleProbe }
   | { kind: "wait"; timeoutMs: number }

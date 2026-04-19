@@ -637,6 +637,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         }
         break;
       }
+      case "select": {
+        const selectError = validateSelectAction(action, `actions[${index}] select`);
+        if (selectError) return selectError;
+        break;
+      }
       case "scroll": {
         if (!BROWSER_SCROLL_DIRECTIONS.has(action.direction)) {
           return `actions[${index}] scroll.direction must be up or down`;
@@ -799,6 +804,49 @@ function validateTargetedAction(
   }
   if (action.text !== undefined && !text) {
     return `${label}.text must be a non-empty string when provided`;
+  }
+  return null;
+}
+
+function validateSelectAction(
+  action: {
+    selectors?: string[];
+    refId?: string;
+    value?: string;
+    label?: string;
+    index?: number;
+  },
+  label: string
+): string | null {
+  const selectorError = validateActionSelectors(action.selectors, `${label}.selectors`);
+  if (selectorError) {
+    return selectorError;
+  }
+  const refId = parseOptionalRouteString(action.refId);
+  const targetVariants = Number(Boolean(action.selectors?.length)) + Number(Boolean(refId));
+  if (targetVariants !== 1) {
+    return `${label} requires exactly one of selectors or refId`;
+  }
+  if (action.refId !== undefined && !refId) {
+    return `${label}.refId must be a non-empty string when provided`;
+  }
+
+  const value = parseOptionalRouteString(action.value);
+  const optionLabel = parseOptionalRouteString(action.label);
+  const indexValue = action.index;
+  const hasIndex = indexValue !== undefined;
+  const optionVariants = Number(Boolean(value)) + Number(Boolean(optionLabel)) + Number(hasIndex);
+  if (optionVariants !== 1) {
+    return `${label} requires exactly one of value, label, or index`;
+  }
+  if (action.value !== undefined && !value) {
+    return `${label}.value must be a non-empty string when provided`;
+  }
+  if (action.label !== undefined && !optionLabel) {
+    return `${label}.label must be a non-empty string when provided`;
+  }
+  if (hasIndex && (!Number.isInteger(indexValue) || indexValue < 0)) {
+    return `${label}.index must be a non-negative integer`;
   }
   return null;
 }

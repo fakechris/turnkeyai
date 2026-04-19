@@ -43,6 +43,7 @@ test("chrome relay action executor can open a tab and then execute content-scrip
     taskId: "task-1",
     actions: [
       { kind: "open", url: "https://example.com/new" },
+      { kind: "select", selectors: ["select[name=plan]"], value: "team" },
       { kind: "snapshot", note: "after-open" },
     ],
     createdAt: now,
@@ -53,6 +54,12 @@ test("chrome relay action executor can open a tab and then execute content-scrip
   assert.equal(result.relayTargetId, "chrome-tab:7");
   assert.equal(result.page?.finalUrl, "https://example.com/new");
   assert.equal(sentMessages.length, 1);
+  assert.deepEqual(
+    ((sentMessages[0] as { message: { actions: Array<{ kind: string }> } }).message.actions ?? []).map(
+      (action) => action.kind
+    ),
+    ["select", "snapshot"]
+  );
 });
 
 test("chrome relay action executor captures screenshot payloads through the extension platform", async () => {

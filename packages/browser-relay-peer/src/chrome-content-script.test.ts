@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { executeChromeRelayContentScriptActions } from "./chrome-content-script";
 
-test("chrome content script executes snapshot, click, type, scroll, wait, and console actions against a document-like environment", async () => {
+test("chrome content script executes snapshot, click, type, select, scroll, wait, and console actions against a document-like environment", async () => {
   let clicked = false;
   let dispatched = 0;
   let scrollTop = 0;
@@ -14,6 +14,17 @@ test("chrome content script executes snapshot, click, type, scroll, wait, and co
   });
   const input = createElement("input", "", {
     value: "",
+    dispatchEvent() {
+      dispatched += 1;
+    },
+  });
+  const select = createElement("select", "Plan", {
+    value: "",
+    selectedIndex: -1,
+    options: [
+      { value: "basic", label: "Basic" },
+      { value: "team", label: "Team" },
+    ],
     dispatchEvent() {
       dispatched += 1;
     },
@@ -29,13 +40,14 @@ test("chrome content script executes snapshot, click, type, scroll, wait, and co
         this.scrollY = scrollTop;
       },
     },
-    document: createDocument([button, input], "Workflow"),
+    document: createDocument([button, input, select], "Workflow"),
   };
 
   const response = await executeChromeRelayContentScriptActions(environment, [
     { kind: "snapshot", note: "before" },
     { kind: "click", text: "Approve" },
     { kind: "type", selectors: ["input"], text: "hello", submit: true },
+    { kind: "select", selectors: ["select"], label: "Team" },
     { kind: "scroll", direction: "down", amount: 240 },
     { kind: "wait", timeoutMs: 0 },
     { kind: "console", probe: "page-metadata" },
@@ -43,13 +55,15 @@ test("chrome content script executes snapshot, click, type, scroll, wait, and co
 
   assert.equal(response.ok, true);
   assert.equal(response.page?.finalUrl, "https://example.com/workflow");
-  assert.equal(response.trace.length, 6);
+  assert.equal(response.trace.length, 7);
   assert.equal(clicked, true);
   assert.equal(input.value, "hello");
+  assert.equal(select.value, "team");
+  assert.equal(select.selectedIndex, 1);
   assert.equal(dispatched >= 2, true);
   assert.equal(scrollTop, 240);
-  assert.equal(response.trace[4]?.kind, "wait");
-  assert.equal(response.trace[5]?.kind, "console");
+  assert.equal(response.trace[5]?.kind, "wait");
+  assert.equal(response.trace[6]?.kind, "console");
 });
 
 test("chrome content script returns a failed response when the target element cannot be resolved", async () => {
@@ -99,6 +113,9 @@ function createDocument(elements: ReturnType<typeof createElement>[], title: str
       if (selector === "input") {
         return elements.filter((element) => element.tagName === "INPUT");
       }
+      if (selector === "select") {
+        return elements.filter((element) => element.tagName === "SELECT");
+      }
       const refMatch = /^\[data-turnkeyai-ref="(.+)"\]$/.exec(selector);
       if (refMatch) {
         return elements.filter((element) => element.dataset.turnkeyaiRef === refMatch[1]);
@@ -113,6 +130,8 @@ function createElement(
   text: string,
   overrides: Partial<{
     value: string;
+    selectedIndex: number;
+    options: Array<{ value?: string; label?: string; text?: string; selected?: boolean }>;
     click(): void;
     focus(): void;
     dispatchEvent(event: unknown): void;
@@ -124,6 +143,8 @@ function createElement(
     innerText: text,
     textContent: text,
     value: overrides.value ?? "",
+    ...(overrides.selectedIndex !== undefined ? { selectedIndex: overrides.selectedIndex } : {}),
+    ...(overrides.options !== undefined ? { options: overrides.options } : {}),
     dataset: {} as Record<string, string | undefined>,
     getAttribute(name: string) {
       return attributes.get(name) ?? null;

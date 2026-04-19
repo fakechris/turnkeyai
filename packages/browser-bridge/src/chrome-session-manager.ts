@@ -971,6 +971,24 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "select") {
+      const locator = await this.resolveActionLocator(page, action, knownRefs, browserSessionId, currentTargetId);
+      const selectedValues = await locator.selectOption(toPlaywrightSelectOption(action));
+      await settle(page);
+
+      return {
+        traceOutput: {
+          selectors: action.selectors ?? [],
+          refId: action.refId ?? null,
+          value: action.value ?? null,
+          label: action.label ?? null,
+          index: action.index ?? null,
+          selectedValues,
+          finalUrl: page.url(),
+        },
+      };
+    }
+
     if (action.kind === "scroll") {
       const amount = action.amount ?? 800;
       const scrollY = await page.evaluate(
@@ -1042,7 +1060,7 @@ export class ChromeSessionManager {
 
   private async resolveActionLocator(
     page: Page,
-    action: Extract<BrowserTaskAction, { kind: "click" | "type" | "hover" }>,
+    action: Extract<BrowserTaskAction, { kind: "click" | "type" | "hover" | "select" }>,
     knownRefs: Map<string, BrowserInteractiveElement>,
     browserSessionId: string,
     currentTargetId?: string
@@ -1077,7 +1095,7 @@ export class ChromeSessionManager {
       return resolveTextLocator(page, action.text ?? "");
     }
 
-    throw new Error("type action requires selectors or refId");
+    throw new Error(`${action.kind} action requires selectors or refId`);
   }
 }
 
@@ -1144,6 +1162,18 @@ async function settle(page: Page): Promise<void> {
 
 function formatKeyboardShortcut(action: Extract<BrowserTaskAction, { kind: "key" }>): string {
   return [...new Set(action.modifiers ?? []), action.key].join("+");
+}
+
+function toPlaywrightSelectOption(
+  action: Extract<BrowserTaskAction, { kind: "select" }>
+): string | { label: string } | { index: number } {
+  if (action.value !== undefined) {
+    return action.value;
+  }
+  if (action.label !== undefined) {
+    return { label: action.label };
+  }
+  return { index: action.index };
 }
 
 async function executeTargetCdpAction(
@@ -1398,6 +1428,16 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
     return {
       key: action.key,
       modifiers: action.modifiers ?? [],
+    };
+  }
+
+  if (action.kind === "select") {
+    return {
+      selectors: action.selectors ?? [],
+      refId: action.refId ?? null,
+      value: action.value ?? null,
+      label: action.label ?? null,
+      index: action.index ?? null,
     };
   }
 

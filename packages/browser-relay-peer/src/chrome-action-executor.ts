@@ -341,6 +341,7 @@ export class ChromeRelayActionExecutor {
       action.kind === "snapshot" ||
       action.kind === "click" ||
       action.kind === "type" ||
+      action.kind === "select" ||
       action.kind === "scroll" ||
       action.kind === "console" ||
       action.kind === "wait"
