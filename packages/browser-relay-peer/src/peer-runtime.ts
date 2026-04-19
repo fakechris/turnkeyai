@@ -104,7 +104,7 @@ export class BrowserRelayPeerRuntime {
       }
       execution = {
         relayTargetId,
-        url: "",
+        url: "about:blank",
         status: "failed",
         trace: [],
         screenshotPaths: [],

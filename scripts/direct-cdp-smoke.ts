@@ -357,8 +357,16 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   if (!Array.isArray(interactiveResult) || interactiveResult.length < 2) {
     throw new Error("direct-cdp resume smoke did not surface interactive summary results");
   }
-  const screenshotCount = resumeResponse.screenshotPaths?.length ?? 0;
-  const artifactCount = resumeResponse.artifactIds?.length ?? 0;
+  if (resumeResponse.screenshotPaths !== undefined && !Array.isArray(resumeResponse.screenshotPaths)) {
+    throw new Error("direct-cdp resume smoke returned non-array screenshotPaths");
+  }
+  if (resumeResponse.artifactIds !== undefined && !Array.isArray(resumeResponse.artifactIds)) {
+    throw new Error("direct-cdp resume smoke returned non-array artifactIds");
+  }
+  const screenshotPaths = Array.isArray(resumeResponse.screenshotPaths) ? resumeResponse.screenshotPaths : [];
+  const artifactIds = Array.isArray(resumeResponse.artifactIds) ? resumeResponse.artifactIds : [];
+  const screenshotCount = screenshotPaths.length;
+  const artifactCount = artifactIds.length;
   if (screenshotCount < 1) {
     throw new Error("direct-cdp resume smoke did not persist a screenshot artifact path");
   }

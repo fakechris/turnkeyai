@@ -160,7 +160,7 @@ for (const cycle of result.cycleResults) {
     if (target.acceptanceChecks?.length) {
       console.log(
         `    acceptance: ${target.acceptanceChecks
-          .map((check) => `${check.checkId}=${check.status}`)
+          .map((check) => `${check.checkId}:${check.status}`)
           .join(", ")}`
       );
     }

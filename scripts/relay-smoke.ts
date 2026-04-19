@@ -584,8 +584,16 @@ async function runBrowserSessionSmoke(input: {
   if (!Array.isArray(interactiveResult) || interactiveResult.length < 2) {
     throw new Error("relay resume smoke did not surface interactive summary results");
   }
-  const screenshotCount = resumeResponse.screenshotPaths?.length ?? 0;
-  const artifactCount = resumeResponse.artifactIds?.length ?? 0;
+  if (resumeResponse.screenshotPaths !== undefined && !Array.isArray(resumeResponse.screenshotPaths)) {
+    throw new Error("relay resume smoke returned non-array screenshotPaths");
+  }
+  if (resumeResponse.artifactIds !== undefined && !Array.isArray(resumeResponse.artifactIds)) {
+    throw new Error("relay resume smoke returned non-array artifactIds");
+  }
+  const screenshotPaths = Array.isArray(resumeResponse.screenshotPaths) ? resumeResponse.screenshotPaths : [];
+  const artifactIds = Array.isArray(resumeResponse.artifactIds) ? resumeResponse.artifactIds : [];
+  const screenshotCount = screenshotPaths.length;
+  const artifactCount = artifactIds.length;
   if (artifactCount < 1) {
     throw new Error("relay resume smoke did not persist browser artifact metadata");
   }

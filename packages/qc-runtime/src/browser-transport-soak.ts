@@ -315,7 +315,7 @@ function summarizeBrowserTransportRun(input: {
     const peerCount = lines.find((line) => line.startsWith("peer-count:"));
     const failedChecks = input.acceptanceChecks?.filter((check) => check.status === "failed") ?? [];
     const acceptanceSummary = failedChecks.length > 0
-      ? `missing=${failedChecks.map((check) => check.checkId).join(",")}`
+      ? `failed=${failedChecks.map((check) => check.checkId).join(",")}`
       : input.acceptanceChecks
         ? `acceptance=${input.acceptanceChecks.filter((check) => check.status === "passed").length}/${
             input.acceptanceChecks.filter((check) => check.status !== "skipped").length

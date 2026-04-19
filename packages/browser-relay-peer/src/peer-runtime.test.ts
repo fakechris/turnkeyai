@@ -269,6 +269,7 @@ test("browser relay peer runtime submits a failed result with an observed target
   assert.equal(result?.status, "failed");
   assert.match(result?.errorMessage ?? "", /screenshot capture timed out/);
   assert.equal(result?.relayTargetId, "chrome-tab:9");
+  assert.equal(result?.url, "about:blank");
   assert.equal(submitted.length, 1);
 });
 

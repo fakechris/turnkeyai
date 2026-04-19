@@ -80,6 +80,19 @@ export interface ChromeAlarmsLike {
   onAlarm: ChromeAlarmEventLike;
 }
 
+export interface ChromeScriptingLike {
+  executeScript(
+    injection: {
+      target: {
+        tabId: number;
+        allFrames?: boolean;
+      };
+      files: string[];
+    },
+    callback: (results?: unknown[]) => void
+  ): void;
+}
+
 export interface ChromeExtensionPlatform {
   runtime: ChromeRuntimeLike;
   tabs: ChromeTabsLike;
@@ -98,6 +111,7 @@ export interface ChromeExtensionPlatform {
     active?: boolean;
   }): Promise<ChromeTabLike>;
   sendTabMessage<T>(tabId: number, message: unknown): Promise<T>;
+  injectContentScript?(tabId: number): Promise<void>;
   captureVisibleTab(windowId?: number, options?: { format?: "png" | "jpeg" }): Promise<string>;
 }
 
@@ -178,6 +192,7 @@ export function getChromeExtensionPlatform(): ChromeExtensionPlatform {
       create(name: string, alarmInfo?: { delayInMinutes?: number; periodInMinutes?: number }): void;
       onAlarm?: ChromeAlarmEventLike;
     };
+    scripting?: ChromeScriptingLike;
   } | undefined;
 
   if (!chromeLike?.tabs) {
@@ -260,6 +275,31 @@ export function getChromeExtensionPlatform(): ChromeExtensionPlatform {
         });
       }).then((response) => response as T);
     },
+    ...(chromeLike.scripting
+      ? {
+          injectContentScript(tabId: number): Promise<void> {
+            return new Promise<void>((resolve, reject) => {
+              chromeLike.scripting!.executeScript(
+                {
+                  target: {
+                    tabId,
+                    allFrames: true,
+                  },
+                  files: ["content-script.js"],
+                },
+                () => {
+                  const runtimeError = chromeLike.runtime?.lastError;
+                  if (runtimeError?.message) {
+                    reject(new Error(runtimeError.message));
+                    return;
+                  }
+                  resolve();
+                }
+              );
+            });
+          },
+        }
+      : {}),
     captureVisibleTab(windowId, options) {
       return new Promise<string>((resolve, reject) => {
         chromeLike.tabs!.captureVisibleTab(windowId, options, (dataUrl) => {

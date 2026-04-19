@@ -236,9 +236,15 @@ export class RelayGateway {
   }
 
   pullNextActionRequest(peerId: string): RelayActionRequest | null {
+    return this.claimNextActionRequest(peerId, true);
+  }
+
+  private claimNextActionRequest(peerId: string, reclaimExpired: boolean): RelayActionRequest | null {
     const state = this.getPeerState(peerId);
     state.registration.lastSeenAt = this.now();
-    this.reclaimExpiredActionRequests();
+    if (reclaimExpired) {
+      this.reclaimExpiredActionRequests();
+    }
 
     const peerRecord = this.toPeerRecord(state.registration);
     const action = this.findClaimableActionForPeer(peerRecord);
@@ -450,8 +456,16 @@ export class RelayGateway {
   }
 
   private notifyPullWaiters(): void {
+    this.reclaimExpiredActionRequests();
     for (const waiter of [...this.pullWaiters]) {
-      const request = this.pullNextActionRequest(waiter.peerId);
+      let request: RelayActionRequest | null;
+      try {
+        request = this.claimNextActionRequest(waiter.peerId, false);
+      } catch {
+        this.removePullWaiter(waiter);
+        waiter.resolve(null);
+        continue;
+      }
       if (!request) {
         continue;
       }

@@ -175,6 +175,52 @@ test("chrome relay action executor retries transient content-script startup erro
   assert.equal(attempts, 3);
 });
 
+test("chrome relay action executor injects content script before retrying a missing receiver", async () => {
+  const now = Date.now();
+  let attempts = 0;
+  const injectedTabs: number[] = [];
+  const executor = new ChromeRelayActionExecutor(
+    fakePlatform({
+      activeTab: { id: 7, windowId: 3, url: "https://example.com", title: "Example", status: "complete" },
+      onInjectContentScript(tabId) {
+        injectedTabs.push(tabId);
+      },
+      onSendMessage() {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("Could not establish connection. Receiving end does not exist.");
+        }
+        return {
+          ok: true,
+          page: {
+            requestedUrl: "https://example.com",
+            finalUrl: "https://example.com",
+            title: "Example",
+            textExcerpt: "Example page",
+            statusCode: 200,
+            interactives: [],
+          },
+          trace: [],
+        };
+      },
+    })
+  );
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-inject",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-1",
+    actions: [{ kind: "snapshot", note: "inspect" }],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(attempts, 2);
+  assert.deepEqual(injectedTabs, [7]);
+});
+
 test("chrome relay action executor rejects wait actions that exceed the remaining request budget", async () => {
   const now = Date.now();
   let sentMessages = 0;
@@ -260,6 +306,7 @@ function fakePlatform(input: {
   onSendMessage(tabId: number, message: unknown): unknown;
   onCaptureVisibleTab?(windowId?: number): string | Promise<string>;
   onUpdateTab?(tabId: number, updateProperties: { url?: string; active?: boolean }): void;
+  onInjectContentScript?(tabId: number): void | Promise<void>;
 }): ChromeExtensionPlatform {
   let currentTab: {
     id: number;
@@ -308,6 +355,13 @@ function fakePlatform(input: {
     async sendTabMessage<T>(tabId: number, message: unknown) {
       return input.onSendMessage(tabId, message) as T;
     },
+    ...(input.onInjectContentScript
+      ? {
+          async injectContentScript(tabId: number) {
+            await input.onInjectContentScript?.(tabId);
+          },
+        }
+      : {}),
     async captureVisibleTab(windowId) {
       return input.onCaptureVisibleTab?.(windowId) ?? "data:image/png;base64,";
     },

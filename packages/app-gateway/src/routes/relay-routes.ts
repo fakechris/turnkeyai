@@ -388,6 +388,7 @@ export async function handleRelayRoutes(input: {
 
 function normalizeRelayPullWaitMs(value: number | undefined): number | null {
   if (value === undefined) {
+    // Omitted waitMs preserves legacy immediate-poll behavior; clients must send a positive waitMs to long-poll.
     return 0;
   }
   if (!Number.isFinite(value) || value < 0) {
