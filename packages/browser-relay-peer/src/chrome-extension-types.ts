@@ -291,6 +291,7 @@ export function getChromeExtensionPlatform(): ChromeExtensionPlatform {
       chromeLike.debugger!.detach({ tabId }, callback)
     ).catch(() => undefined);
     debuggerAttachedTabs.delete(tabId);
+    debuggerEventBuffers.delete(tabId);
     const waiters = debuggerEventWaiters.get(tabId);
     if (!waiters) {
       return;
