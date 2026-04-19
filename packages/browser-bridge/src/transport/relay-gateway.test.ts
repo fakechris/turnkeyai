@@ -218,7 +218,7 @@ test("relay gateway dispatches wait actions to peers that advertise wait support
   assert.equal(result.trace[0]?.kind, "wait");
 });
 
-test("relay gateway routes hover key select drag waitFor dialog popup probe storage cookie eval network download and upload actions only to peers that advertise input support", async () => {
+test("relay gateway routes hover key select drag waitFor dialog popup probe permission storage cookie eval network download and upload actions only to peers that advertise input support", async () => {
   const gateway = new RelayGateway({
     now: () => 1_000,
     createId: (prefix) => `${prefix}-input`,
@@ -239,6 +239,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup probe stor
       "dialog",
       "popup",
       "probe",
+      "permission",
       "storage",
       "cookie",
       "eval",
@@ -260,6 +261,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup probe stor
       { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
       { kind: "popup", timeoutMs: 1_000 },
       { kind: "probe", probe: "links", maxItems: 5 },
+      { kind: "permission", action: "grant", permissions: ["notifications"], origin: "https://example.com" },
       { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
       { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/" },
       { kind: "eval", expression: "document.title", awaitPromise: true },
@@ -284,6 +286,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup probe stor
       "dialog",
       "popup",
       "probe",
+      "permission",
       "storage",
       "cookie",
       "eval",
@@ -379,49 +382,57 @@ test("relay gateway routes hover key select drag waitFor dialog popup probe stor
       },
       {
         stepId: "task-input:relay-step:9",
-        kind: "storage",
+        kind: "permission",
         startedAt: 17,
         completedAt: 18,
+        status: "ok",
+        input: { action: "grant", permissions: ["notifications"], origin: "https://example.com" },
+      },
+      {
+        stepId: "task-input:relay-step:10",
+        kind: "storage",
+        startedAt: 19,
+        completedAt: 20,
         status: "ok",
         input: { action: "set", area: "localStorage", key: "token", valueBytes: 3 },
       },
       {
-        stepId: "task-input:relay-cookie:10",
+        stepId: "task-input:relay-cookie:11",
         kind: "cookie",
-        startedAt: 19,
-        completedAt: 20,
+        startedAt: 21,
+        completedAt: 22,
         status: "ok",
         input: { action: "set", name: "sid", valueBytes: 3, path: "/" },
       },
       {
-        stepId: "task-input:relay-eval:11",
+        stepId: "task-input:relay-eval:12",
         kind: "eval",
-        startedAt: 21,
-        completedAt: 22,
+        startedAt: 23,
+        completedAt: 24,
         status: "ok",
         input: { expressionBytes: 14, awaitPromise: true },
       },
       {
-        stepId: "task-input:relay-network:12",
+        stepId: "task-input:relay-network:13",
         kind: "network",
-        startedAt: 23,
-        completedAt: 24,
+        startedAt: 25,
+        completedAt: 26,
         status: "ok",
         input: { action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201 },
       },
       {
-        stepId: "task-input:relay-download:13",
+        stepId: "task-input:relay-download:14",
         kind: "download",
-        startedAt: 25,
-        completedAt: 26,
+        startedAt: 27,
+        completedAt: 28,
         status: "ok",
         input: { urlPattern: "/export.csv", timeoutMs: 1_000 },
       },
       {
-        stepId: "task-input:relay-step:14",
+        stepId: "task-input:relay-step:15",
         kind: "upload",
-        startedAt: 27,
-        completedAt: 28,
+        startedAt: 29,
+        completedAt: 30,
         status: "ok",
         input: { artifactId: "artifact-upload" },
       },
@@ -441,12 +452,13 @@ test("relay gateway routes hover key select drag waitFor dialog popup probe stor
   assert.equal(result.trace[5]?.kind, "dialog");
   assert.equal(result.trace[6]?.kind, "popup");
   assert.equal(result.trace[7]?.kind, "probe");
-  assert.equal(result.trace[8]?.kind, "storage");
-  assert.equal(result.trace[9]?.kind, "cookie");
-  assert.equal(result.trace[10]?.kind, "eval");
-  assert.equal(result.trace[11]?.kind, "network");
-  assert.equal(result.trace[12]?.kind, "download");
-  assert.equal(result.trace[13]?.kind, "upload");
+  assert.equal(result.trace[8]?.kind, "permission");
+  assert.equal(result.trace[9]?.kind, "storage");
+  assert.equal(result.trace[10]?.kind, "cookie");
+  assert.equal(result.trace[11]?.kind, "eval");
+  assert.equal(result.trace[12]?.kind, "network");
+  assert.equal(result.trace[13]?.kind, "download");
+  assert.equal(result.trace[14]?.kind, "upload");
 });
 
 test("relay gateway routes cdp actions only to peers that advertise cdp support", async () => {

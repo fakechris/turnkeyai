@@ -7,6 +7,7 @@ import type {
   BrowserConsoleProbe,
   BrowserInteractiveElement,
   BrowserOwnerType,
+  BrowserPermissionName,
   BrowserTransportMode,
   BrowserSnapshotResult,
   BrowserSessionDispatchMode,
@@ -42,6 +43,7 @@ import {
   MAX_BROWSER_EVAL_TIMEOUT_MS,
   DEFAULT_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_PERMISSION_ORIGIN_LENGTH,
   MAX_BROWSER_PROBE_ITEMS,
   MAX_BROWSER_UPLOAD_FILE_BYTES,
   MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
@@ -1256,6 +1258,14 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "permission") {
+      const result = await executePermissionAction(page, action);
+
+      return {
+        traceOutput: result,
+      };
+    }
+
     if (action.kind === "storage") {
       const result = await executeStorageAction(page, action);
       return {
@@ -2411,6 +2421,14 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
     };
   }
 
+  if (action.kind === "permission") {
+    return {
+      action: action.action,
+      permissions: "permissions" in action ? action.permissions : [],
+      origin: "origin" in action ? action.origin ?? null : null,
+    };
+  }
+
   if (action.kind === "waitFor") {
     return {
       ...summarizeActionTarget(action),
@@ -2684,6 +2702,80 @@ function normalizeProbeMaxItems(value: number | undefined): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0
     ? Math.min(value, MAX_BROWSER_PROBE_ITEMS)
     : MAX_BROWSER_PROBE_ITEMS;
+}
+
+async function executePermissionAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "permission" }>
+): Promise<Record<string, unknown>> {
+  if (action.action === "reset") {
+    await page.context().clearPermissions();
+    return {
+      action: action.action,
+      resetAll: true,
+    };
+  }
+
+  const permissions = [...new Set(action.permissions)];
+  const origin = resolvePermissionOrigin(action.origin, page.url());
+  if (action.action === "grant") {
+    await page.context().grantPermissions(permissions, { origin });
+  } else {
+    await setPagePermissionsViaCdp(page, permissions, "denied", origin);
+  }
+
+  return {
+    action: action.action,
+    permissions,
+    origin,
+  };
+}
+
+async function setPagePermissionsViaCdp(
+  page: Page,
+  permissions: BrowserPermissionName[],
+  setting: "denied",
+  origin: string
+): Promise<void> {
+  const cdpSession = await page.context().newCDPSession(page);
+  try {
+    for (const permission of permissions) {
+      await cdpSession.send("Browser.setPermission", {
+        permission: toCdpPermissionDescriptor(permission),
+        setting,
+        origin,
+      });
+    }
+  } finally {
+    await cdpSession.detach().catch(() => {});
+  }
+}
+
+function toCdpPermissionDescriptor(permission: BrowserPermissionName): { name: string; allowWithoutSanitization?: boolean } {
+  if (permission === "clipboard-read") {
+    return { name: "clipboardReadWrite", allowWithoutSanitization: true };
+  }
+  if (permission === "clipboard-write") {
+    return { name: "clipboardSanitizedWrite" };
+  }
+  return { name: permission };
+}
+
+function resolvePermissionOrigin(origin: string | undefined, currentUrl: string): string {
+  const candidate = origin ?? currentUrl;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("not http");
+    }
+    const resolved = parsed.origin;
+    if (resolved.length > MAX_BROWSER_PERMISSION_ORIGIN_LENGTH) {
+      throw new Error("too long");
+    }
+    return resolved;
+  } catch {
+    throw new Error("browser permission action requires an explicit http(s) origin or current page URL");
+  }
 }
 
 function serializeConsoleResult(result: unknown): unknown {

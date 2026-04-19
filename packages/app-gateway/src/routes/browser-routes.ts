@@ -25,6 +25,7 @@ import {
   MAX_BROWSER_NETWORK_METHOD_LENGTH,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH,
+  MAX_BROWSER_PERMISSION_ORIGIN_LENGTH,
   MAX_BROWSER_POPUP_TIMEOUT_MS,
   MAX_BROWSER_PROBE_ITEMS,
   MAX_BROWSER_STORAGE_KEY_LENGTH,
@@ -488,6 +489,15 @@ const BROWSER_PROBES = new Set<Extract<BrowserTaskAction, { kind: "probe" }>["pr
   "links",
   "downloads",
 ]);
+const BROWSER_PERMISSION_ACTIONS = new Set(["grant", "deny", "reset"]);
+const BROWSER_PERMISSION_NAMES = new Set<Extract<BrowserTaskAction, { kind: "permission"; action: "grant" | "deny" }>["permissions"][number]>([
+  "geolocation",
+  "notifications",
+  "camera",
+  "microphone",
+  "clipboard-read",
+  "clipboard-write",
+]);
 const BROWSER_SCROLL_DIRECTIONS = new Set<Extract<BrowserTaskAction, { kind: "scroll" }>["direction"]>([
   "up",
   "down",
@@ -693,6 +703,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
       case "probe": {
         const probeError = validateProbeAction(action, `actions[${index}] probe`);
         if (probeError) return probeError;
+        break;
+      }
+      case "permission": {
+        const permissionError = validatePermissionAction(action, `actions[${index}] permission`);
+        if (permissionError) return permissionError;
         break;
       }
       case "wait": {
@@ -1089,6 +1104,56 @@ function validateProbeAction(
   ) {
     return `${label}.maxItems must be a positive integer <= ${MAX_BROWSER_PROBE_ITEMS}`;
   }
+  return null;
+}
+
+function validatePermissionAction(
+  action: {
+    action?: unknown;
+    permissions?: unknown;
+    origin?: unknown;
+  },
+  label: string
+): string | null {
+  if (!BROWSER_PERMISSION_ACTIONS.has(action.action as string)) {
+    return `${label}.action must be grant, deny, or reset`;
+  }
+  if (action.action === "reset") {
+    if (action.permissions !== undefined || action.origin !== undefined) {
+      return `${label}.permissions and .origin are not accepted for reset`;
+    }
+    return null;
+  }
+
+  if (!Array.isArray(action.permissions) || action.permissions.length === 0) {
+    return `${label}.permissions must be a non-empty array for ${String(action.action)}`;
+  }
+  if (action.permissions.length > BROWSER_PERMISSION_NAMES.size) {
+    return `${label}.permissions has too many entries`;
+  }
+  for (const permission of action.permissions) {
+    if (
+      !BROWSER_PERMISSION_NAMES.has(
+        permission as Extract<BrowserTaskAction, { kind: "permission"; action: "grant" | "deny" }>["permissions"][number]
+      )
+    ) {
+      return `${label}.permissions contains an invalid permission`;
+    }
+  }
+
+  const origin = parseOptionalRouteString(action.origin);
+  if (action.origin !== undefined) {
+    if (!origin) {
+      return `${label}.origin must be a non-empty string when provided`;
+    }
+    if (origin.length > MAX_BROWSER_PERMISSION_ORIGIN_LENGTH) {
+      return `${label}.origin must be <= ${MAX_BROWSER_PERMISSION_ORIGIN_LENGTH} characters`;
+    }
+    if (!isHttpUrl(origin)) {
+      return `${label}.origin must be an http(s) URL`;
+    }
+  }
+
   return null;
 }
 

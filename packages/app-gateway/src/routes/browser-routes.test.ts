@@ -334,7 +334,7 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
-test("browser task mutation routes validate key hover select drag waitFor dialog popup probe storage cookie eval network download and upload action contracts", async () => {
+test("browser task mutation routes validate key hover select drag waitFor dialog popup probe permission storage cookie eval network download and upload action contracts", async () => {
   const invalidHover = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -485,6 +485,44 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
   assert.equal(invalidProbe.res.statusCode, 400);
   assert.deepEqual(invalidProbe.json, {
     error: "actions[0] probe.maxItems must be a positive integer <= 50",
+  });
+
+  const invalidPermission = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "permission", action: "grant", permissions: ["notifications"], origin: "chrome://settings" }],
+      },
+    }),
+    res: invalidPermission.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidPermission.res.statusCode, 400);
+  assert.deepEqual(invalidPermission.json, {
+    error: "actions[0] permission.origin must be an http(s) URL",
+  });
+
+  const invalidPermissionReset = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "permission", action: "reset", permissions: ["notifications"] }],
+      },
+    }),
+    res: invalidPermissionReset.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidPermissionReset.res.statusCode, 400);
+  assert.deepEqual(invalidPermissionReset.json, {
+    error: "actions[0] permission.permissions and .origin are not accepted for reset",
   });
 
   const invalidStorage = createResponse();
@@ -676,6 +714,8 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
           { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
           { kind: "popup", timeoutMs: 1_000 },
           { kind: "probe", probe: "forms", maxItems: 10 },
+          { kind: "permission", action: "grant", permissions: ["notifications"], origin: "https://example.com" },
+          { kind: "permission", action: "reset" },
           { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
           { kind: "storage", area: "localStorage", action: "get", key: "token" },
           { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },
@@ -701,6 +741,8 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
     { kind: "popup", timeoutMs: 1_000 },
     { kind: "probe", probe: "forms", maxItems: 10 },
+    { kind: "permission", action: "grant", permissions: ["notifications"], origin: "https://example.com" },
+    { kind: "permission", action: "reset" },
     { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
     { kind: "storage", area: "localStorage", action: "get", key: "token" },
     { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },

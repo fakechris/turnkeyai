@@ -39,6 +39,7 @@ const DEFAULT_RUNTIME_CONFIG: ChromeRelayExtensionRuntimeConfig = {
     "scroll",
     "console",
     "probe",
+    "permission",
     "wait",
     "waitFor",
     "dialog",

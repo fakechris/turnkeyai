@@ -597,6 +597,83 @@ test("chrome relay action executor can run target-scoped eval actions through de
   });
 });
 
+test("chrome relay action executor can control permission prompts through debugger", async () => {
+  const now = Date.now();
+  const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];
+  const detachedTabs: number[] = [];
+  const platform = fakePlatform({
+    activeTab: { id: 7, windowId: 3, url: "https://example.com/app", title: "Example", status: "complete" },
+    onDebuggerCommand(tabId, method, params) {
+      debuggerCommands.push({ tabId, method, params });
+      return {};
+    },
+    onSendMessage() {
+      return {
+        ok: true,
+        page: {
+          requestedUrl: "https://example.com/app",
+          finalUrl: "https://example.com/app",
+          title: "Example",
+          textExcerpt: "Example page",
+          statusCode: 200,
+          interactives: [],
+        },
+        trace: [],
+      };
+    },
+  });
+  platform.detachDebugger = async (tabId) => {
+    detachedTabs.push(tabId);
+  };
+  const executor = new ChromeRelayActionExecutor(platform);
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-permission",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-permission",
+    actions: [
+      { kind: "permission", action: "grant", permissions: ["notifications"], origin: "https://app.example.com/page" },
+      { kind: "permission", action: "deny", permissions: ["camera"] },
+      { kind: "permission", action: "reset" },
+    ],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(debuggerCommands, [
+    {
+      tabId: 7,
+      method: "Browser.setPermission",
+      params: {
+        permission: { name: "notifications" },
+        setting: "granted",
+        origin: "https://app.example.com",
+      },
+    },
+    {
+      tabId: 7,
+      method: "Browser.setPermission",
+      params: {
+        permission: { name: "camera" },
+        setting: "denied",
+        origin: "https://example.com",
+      },
+    },
+    {
+      tabId: 7,
+      method: "Browser.resetPermissions",
+      params: {},
+    },
+  ]);
+  assert.deepEqual(detachedTabs, [7]);
+  assert.deepEqual(
+    result.trace.map((entry) => entry.kind),
+    ["permission", "permission", "permission"]
+  );
+});
+
 test("chrome relay action executor arms network wait around a trigger action", async () => {
   const now = Date.now();
   const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];

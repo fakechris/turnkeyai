@@ -1,4 +1,4 @@
-import type { BrowserActionTrace } from "@turnkeyai/core-types/team";
+import type { BrowserActionTrace, BrowserPermissionName } from "@turnkeyai/core-types/team";
 import {
   DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS,
   DEFAULT_BROWSER_DIALOG_TIMEOUT_MS,
@@ -17,6 +17,7 @@ import {
   MAX_BROWSER_EVAL_TIMEOUT_MS,
   DEFAULT_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_PERMISSION_ORIGIN_LENGTH,
   MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
@@ -42,6 +43,7 @@ type RelayCookieAction = Extract<RelayAction, { kind: "cookie" }>;
 type RelayEvalAction = Extract<RelayAction, { kind: "eval" }>;
 type RelayNetworkAction = Extract<RelayAction, { kind: "network" }>;
 type RelayDownloadAction = Extract<RelayAction, { kind: "download" }>;
+type RelayPermissionAction = Extract<RelayAction, { kind: "permission" }>;
 interface RelayCdpActionOutput {
   result: unknown;
   events: ChromeDebuggerEventLike[];
@@ -416,6 +418,26 @@ export class ChromeRelayActionExecutor {
         continue;
       }
 
+      if (action.kind === "permission") {
+        const startedAt = Date.now();
+        const currentUrl = contentScriptState.latestResponse?.page?.finalUrl ?? activeTab.url ?? "";
+        const output = await this.executePermissionAction(activeTab.id, action, currentUrl, debuggerTabsToDetach);
+        trace.push({
+          stepId: `${request.taskId}:relay-permission:${index + 1}`,
+          kind: "permission",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            action: action.action,
+            permissions: "permissions" in action ? action.permissions : [],
+            origin: "origin" in action ? action.origin ?? null : null,
+          },
+          output,
+        });
+        continue;
+      }
+
       if (action.kind === "cookie") {
         const startedAt = Date.now();
         const currentUrl = contentScriptState.latestResponse?.page?.finalUrl ?? activeTab.url ?? "";
@@ -605,6 +627,44 @@ export class ChromeRelayActionExecutor {
       action.kind === "storage" ||
       action.kind === "upload"
     );
+  }
+
+  private async executePermissionAction(
+    tabId: number,
+    action: RelayPermissionAction,
+    currentUrl: string,
+    debuggerTabsToDetach: Set<number>
+  ): Promise<Record<string, unknown>> {
+    if (!this.platform.sendDebuggerCommand) {
+      throw new Error("relay permission action requires chrome debugger support");
+    }
+    debuggerTabsToDetach.add(tabId);
+
+    if (action.action === "reset") {
+      await this.platform.sendDebuggerCommand(tabId, "Browser.resetPermissions", {});
+      return {
+        action: action.action,
+        resetAll: true,
+      };
+    }
+
+    const permissions = [...new Set(action.permissions)];
+    const origin = resolvePermissionOrigin("origin" in action ? action.origin : undefined, currentUrl);
+    const setting = action.action === "grant" ? "granted" : "denied";
+    for (const permission of permissions) {
+      await this.platform.sendDebuggerCommand(tabId, "Browser.setPermission", {
+        permission: toCdpPermissionDescriptor(permission),
+        setting,
+        origin,
+      });
+    }
+
+    return {
+      action: action.action,
+      permissions,
+      origin,
+      setting,
+    };
   }
 
   private async executeCookieAction(
@@ -1655,6 +1715,33 @@ function buildCdpDeleteCookieParams(
 function resolveCookieUrl(actionUrl: string | undefined, currentUrl: string): string | undefined {
   const candidate = actionUrl ?? currentUrl;
   return isHttpUrl(candidate) ? candidate : undefined;
+}
+
+function resolvePermissionOrigin(actionOrigin: string | undefined, currentUrl: string): string {
+  const candidate = actionOrigin ?? currentUrl;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("not http");
+    }
+    const origin = parsed.origin;
+    if (origin.length > MAX_BROWSER_PERMISSION_ORIGIN_LENGTH) {
+      throw new Error("too long");
+    }
+    return origin;
+  } catch {
+    throw new Error("relay permission action requires an explicit http(s) origin or current tab URL");
+  }
+}
+
+function toCdpPermissionDescriptor(permission: BrowserPermissionName): Record<string, unknown> {
+  if (permission === "clipboard-read") {
+    return { name: "clipboardReadWrite", allowWithoutSanitization: true };
+  }
+  if (permission === "clipboard-write") {
+    return { name: "clipboardSanitizedWrite" };
+  }
+  return { name: permission };
 }
 
 function isCdpSetCookieFailure(value: unknown): boolean {

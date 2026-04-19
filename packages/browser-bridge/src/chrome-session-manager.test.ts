@@ -815,6 +815,99 @@ test("chrome session manager executes probe actions without exposing field value
   assert.deepEqual(output.traceOutput?.result, [{ tagName: "input", name: "email", valueLength: 17 }]);
 });
 
+test("chrome session manager executes permission grant deny and reset actions", async () => {
+  const granted: unknown[] = [];
+  const cdpCommands: Array<{ method: string; params: unknown }> = [];
+  let cleared = 0;
+  const context = {
+    async grantPermissions(permissions: string[], options: unknown) {
+      granted.push({ permissions, options });
+    },
+    async clearPermissions() {
+      cleared += 1;
+    },
+    async newCDPSession() {
+      return {
+        async send(method: string, params: unknown) {
+          cdpCommands.push({ method, params });
+        },
+        async detach() {
+          return undefined;
+        },
+      };
+    },
+  };
+  const fakePage = {
+    context() {
+      return context;
+    },
+    url() {
+      return "https://example.com/request";
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action:
+        | { kind: "permission"; action: "grant"; permissions: ["notifications"]; origin?: string }
+        | { kind: "permission"; action: "deny"; permissions: ["camera"] }
+        | { kind: "permission"; action: "reset" };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  const base = {
+    page: fakePage,
+    stepIndex: 1,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map<string, unknown>(),
+    browserSessionId: "browser-session-permission",
+  };
+  const grantOutput = await internal.executeAction({
+    ...base,
+    action: { kind: "permission", action: "grant", permissions: ["notifications"], origin: "https://app.example.com/page" },
+  });
+  const denyOutput = await internal.executeAction({
+    ...base,
+    action: { kind: "permission", action: "deny", permissions: ["camera"] },
+  });
+  const resetOutput = await internal.executeAction({
+    ...base,
+    action: { kind: "permission", action: "reset" },
+  });
+
+  assert.deepEqual(granted, [
+    {
+      permissions: ["notifications"],
+      options: { origin: "https://app.example.com" },
+    },
+  ]);
+  assert.deepEqual(cdpCommands, [
+    {
+      method: "Browser.setPermission",
+      params: {
+        permission: { name: "camera" },
+        setting: "denied",
+        origin: "https://example.com",
+      },
+    },
+  ]);
+  assert.equal(cleared, 1);
+  assert.equal(grantOutput.traceOutput?.origin, "https://app.example.com");
+  assert.equal(denyOutput.traceOutput?.action, "deny");
+  assert.equal(resetOutput.traceOutput?.resetAll, true);
+});
+
 test("chrome session manager arms and handles prompt dialogs around page actions", async () => {
   let dialogHandler: ((dialog: unknown) => void | Promise<void>) | null = null;
   let acceptedPrompt: string | undefined;
