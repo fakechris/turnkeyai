@@ -1587,7 +1587,7 @@ test("chrome session manager uploads files only from matching browser artifacts"
           return {
             artifactId,
             browserSessionId: "browser-session-upload",
-            type: "trace",
+            type: "upload-file",
             path: uploadPath,
             createdAt: 1,
             metadata: {

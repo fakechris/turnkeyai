@@ -183,6 +183,48 @@ test("chrome content script uploads injected file payloads to file inputs", asyn
   assert.equal(response.trace[0]?.output?.fileName, "fixture.txt");
 });
 
+test("chrome content script rejects upload payload size mismatches", async () => {
+  const input = createElement("input", "", {});
+
+  const response = await executeChromeRelayContentScriptActions(
+    {
+      window: {
+        location: { href: "https://example.com/upload" },
+        File: class TestFile {
+          constructor() {}
+        },
+        DataTransfer: class TestDataTransfer {
+          readonly files: unknown[] = [];
+          readonly items = {
+            add: (file: unknown) => {
+              this.files.push(file);
+            },
+          };
+        },
+        atob(value: string) {
+          return Buffer.from(value, "base64").toString("binary");
+        },
+      },
+      document: createDocument([input], "Upload"),
+    },
+    [
+      {
+        kind: "upload",
+        selectors: ["input"],
+        artifactId: "artifact-upload",
+        file: {
+          name: "fixture.txt",
+          dataBase64: "aGVsbG8=",
+          sizeBytes: 6,
+        },
+      },
+    ]
+  );
+
+  assert.equal(response.ok, false);
+  assert.match(response.errorMessage ?? "", /upload payload size does not match decoded bytes/);
+});
+
 function createDocument(elements: ReturnType<typeof createElement>[], title: string) {
   return {
     title,

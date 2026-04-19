@@ -4,12 +4,41 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { BrowserActionTrace } from "@turnkeyai/core-types/team";
+import type { BrowserActionTrace, BrowserTaskRequest } from "@turnkeyai/core-types/team";
 
 import { FileBrowserArtifactStore } from "../artifacts/file-browser-artifact-store";
 import { RelayBrowserAdapter } from "./relay-adapter";
 import { RelayGateway } from "./relay-gateway";
 import type { RelayActionRequest } from "./relay-protocol";
+
+test("file browser artifact store rejects artifact id reuse across sessions", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "browser-artifact-store-"));
+
+  try {
+    const store = new FileBrowserArtifactStore({ rootDir: path.join(tempDir, "artifacts") });
+    await store.put({
+      artifactId: "artifact-shared",
+      browserSessionId: "browser-session-1",
+      type: "upload-file",
+      path: path.join(tempDir, "session-1", "fixture.txt"),
+      createdAt: 1,
+    });
+
+    await assert.rejects(
+      () =>
+        store.put({
+          artifactId: "artifact-shared",
+          browserSessionId: "browser-session-2",
+          type: "upload-file",
+          path: path.join(tempDir, "session-2", "fixture.txt"),
+          createdAt: 2,
+        }),
+      /browser artifact id already belongs to another session/
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
 
 test("relay browser adapter can attach to a reported target and execute snapshot actions", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-"));
@@ -263,7 +292,7 @@ test("relay browser adapter injects upload payloads from session artifacts", asy
       artifactId: "artifact-upload",
       browserSessionId: startResult.sessionId,
       ...(startResult.targetId ? { targetId: startResult.targetId } : {}),
-      type: "trace",
+      type: "upload-file",
       path: uploadPath,
       createdAt: 1,
       metadata: {
@@ -333,6 +362,102 @@ test("relay browser adapter injects upload payloads from session artifacts", asy
     const uploadHistory = history.find((entry) => entry.taskId === "task-upload");
     assert.ok(uploadHistory);
     assert.deepEqual(uploadHistory?.actionKinds, ["upload"]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("relay browser adapter rejects upload artifacts outside the session artifact root", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-upload-scope-"));
+
+  try {
+    const artifactRootDir = path.join(tempDir, "artifacts");
+    const stateRootDir = path.join(tempDir, "state");
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir,
+      stateRootDir,
+      relay: {
+        relayPeerId: "peer-1",
+      },
+    });
+    const uploadPath = path.join(artifactRootDir, "browser-session-other", "leak.txt");
+    await mkdir(path.dirname(uploadPath), { recursive: true });
+    await writeFile(uploadPath, "not this session", "utf8");
+    await new FileBrowserArtifactStore({
+      rootDir: path.join(stateRootDir, "artifacts"),
+    }).put({
+      artifactId: "artifact-leak",
+      browserSessionId: "browser-session-1",
+      type: "upload-file",
+      path: uploadPath,
+      createdAt: 1,
+      metadata: {
+        fileName: "leak.txt",
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        (
+          adapter as unknown as {
+            readUploadArtifactPayload(browserSessionId: string, artifactId: string): Promise<unknown>;
+          }
+        ).readUploadArtifactPayload("browser-session-1", "artifact-leak"),
+      /browser upload artifact path escapes artifact root/
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("relay browser adapter rejects malformed download payload base64", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-download-payload-"));
+
+  try {
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir: path.join(tempDir, "artifacts"),
+      stateRootDir: path.join(tempDir, "state"),
+      relay: {
+        relayPeerId: "peer-1",
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        (
+          adapter as unknown as {
+            persistDownloadArtifacts(input: {
+              task: BrowserTaskRequest;
+              sessionId: string;
+              targetId: string;
+              downloadPayloads: Array<{
+                url: string;
+                fileName: string;
+                dataBase64: string;
+                sizeBytes: number;
+              }>;
+            }): Promise<unknown>;
+          }
+        ).persistDownloadArtifacts({
+          task: {
+            taskId: "task-download",
+            threadId: "thread-1",
+            instructions: "Download",
+            actions: [{ kind: "download" }],
+          },
+          sessionId: "browser-session-1",
+          targetId: "target-1",
+          downloadPayloads: [
+            {
+              url: "https://example.com/export.csv",
+              fileName: "export.csv",
+              dataBase64: "not-base64!",
+              sizeBytes: 0,
+            },
+          ],
+        }),
+      /relay download payload has invalid base64 data/
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

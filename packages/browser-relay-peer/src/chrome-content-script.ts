@@ -4,6 +4,8 @@ import {
   MAX_BROWSER_PROBE_ITEMS,
   MAX_BROWSER_STORAGE_READ_ENTRIES,
   MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+  MAX_BROWSER_UPLOAD_FILE_BYTES,
+  MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
   MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH,
 } from "@turnkeyai/core-types/team";
 import type { RelayExecutableBrowserAction } from "@turnkeyai/browser-bridge/transport/relay-protocol";
@@ -713,7 +715,14 @@ function executeUploadAction(
     throw new Error("content script upload requires File and DataTransfer support");
   }
   const bytes = decodeBase64(action.file.dataBase64, environment);
-  const file = new FileCtor([bytes], action.file.name, {
+  if (action.file.sizeBytes > MAX_BROWSER_UPLOAD_FILE_BYTES) {
+    throw new Error(`content script upload exceeds ${MAX_BROWSER_UPLOAD_FILE_BYTES} bytes`);
+  }
+  if (bytes.byteLength !== action.file.sizeBytes) {
+    throw new Error("content script upload payload size does not match decoded bytes");
+  }
+  const fileName = sanitizeUploadFileName(action.file.name);
+  const file = new FileCtor([bytes], fileName, {
     type: action.file.mimeType ?? "application/octet-stream",
   });
   const dataTransfer = new DataTransferCtor();
@@ -730,7 +739,7 @@ function executeUploadAction(
   element.dispatchEvent?.(createDomEvent("change"));
   return {
     artifactId: action.artifactId,
-    fileName: action.file.name,
+    fileName,
     sizeBytes: action.file.sizeBytes,
     mimeType: action.file.mimeType ?? null,
   };
@@ -747,6 +756,11 @@ function decodeBase64(value: string, environment: ChromeRelayContentScriptEnviro
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
+}
+
+function sanitizeUploadFileName(value: string): string {
+  const fileName = value.trim().split(/[\\/]+/).pop()?.replace(/[^\w .-]+/g, "-") ?? "";
+  return (fileName || "upload.bin").slice(0, MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH);
 }
 
 function summarizeStorageValue(value: string | null): Record<string, unknown> {

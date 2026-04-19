@@ -1497,7 +1497,10 @@ export class ChromeSessionManager {
     if (record.browserSessionId !== browserSessionId) {
       throw new Error(`browser upload artifact belongs to a different session: ${artifactId}`);
     }
-    assertPathInsideRoot(this.artifactRootDir, record.path, "browser upload artifact");
+    if (!isUploadableArtifactType(record.type)) {
+      throw new Error(`browser upload artifact has unsupported type: ${record.type}`);
+    }
+    assertPathInsideRoot(path.join(this.artifactRootDir, browserSessionId), record.path, "browser upload artifact");
     const stats = await stat(record.path);
     if (!stats.isFile()) {
       throw new Error(`browser upload artifact is not a file: ${artifactId}`);
@@ -2716,6 +2719,10 @@ function assertPathInsideRoot(rootDir: string, candidatePath: string, label: str
     return;
   }
   throw new Error(`${label} path escapes artifact root`);
+}
+
+function isUploadableArtifactType(type: string): boolean {
+  return type === "upload-file" || type === "downloaded-file";
 }
 
 function summarizeBrowserHistorySuccess(

@@ -455,7 +455,7 @@ export interface BrowserArtifactRecord {
   artifactId: string;
   browserSessionId: string;
   targetId?: string;
-  type: "snapshot" | "screenshot" | "console-result" | "downloaded-file" | "trace";
+  type: "snapshot" | "screenshot" | "console-result" | "downloaded-file" | "upload-file" | "trace";
   path: string;
   createdAt: number;
   metadata?: Record<string, unknown>;

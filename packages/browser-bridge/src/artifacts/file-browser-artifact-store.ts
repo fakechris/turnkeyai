@@ -15,6 +15,10 @@ export class FileBrowserArtifactStore implements BrowserArtifactStore {
   }
 
   async put(record: BrowserArtifactRecord): Promise<void> {
+    const existing = await this.get(record.artifactId);
+    if (existing && existing.browserSessionId !== record.browserSessionId) {
+      throw new Error(`browser artifact id already belongs to another session: ${record.artifactId}`);
+    }
     await writeJsonFileAtomic(this.filePath(record.artifactId), record);
   }
 
