@@ -627,7 +627,7 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
       url: "/browser-sessions/spawn",
       body: {
         threadId: "thread-1",
-        actions: [{ kind: "network", action: "waitForRequest", status: 201 }],
+        actions: [{ kind: "network", action: "waitForRequest", status: 50 }],
       },
     }),
     res: invalidNetworkStatus.res,

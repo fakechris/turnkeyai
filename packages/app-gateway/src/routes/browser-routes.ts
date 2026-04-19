@@ -1517,12 +1517,12 @@ function validateNetworkAction(
   if (methodError) {
     return methodError;
   }
+  if (networkAction === "waitForRequest" && action.status !== undefined) {
+    return `${label}.status is only accepted for waitForResponse`;
+  }
   const statusError = validateNetworkStatus(action.status, `${label}.status`);
   if (statusError) {
     return statusError;
-  }
-  if (networkAction === "waitForRequest" && action.status !== undefined) {
-    return `${label}.status is only accepted for waitForResponse`;
   }
   const timeoutError = validateNetworkTimeout(action.timeoutMs, `${label}.timeoutMs`);
   if (timeoutError) {
