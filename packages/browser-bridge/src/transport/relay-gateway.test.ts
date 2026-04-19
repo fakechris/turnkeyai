@@ -218,7 +218,7 @@ test("relay gateway dispatches wait actions to peers that advertise wait support
   assert.equal(result.trace[0]?.kind, "wait");
 });
 
-test("relay gateway routes hover key select drag waitFor dialog popup storage cookie and eval actions only to peers that advertise input support", async () => {
+test("relay gateway routes hover key select drag waitFor dialog popup storage cookie eval and network actions only to peers that advertise input support", async () => {
   const gateway = new RelayGateway({
     now: () => 1_000,
     createId: (prefix) => `${prefix}-input`,
@@ -229,7 +229,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
   });
   gateway.registerPeer({
     peerId: "peer-input",
-    capabilities: ["snapshot", "hover", "key", "select", "drag", "waitFor", "dialog", "popup", "storage", "cookie", "eval"],
+    capabilities: ["snapshot", "hover", "key", "select", "drag", "waitFor", "dialog", "popup", "storage", "cookie", "eval", "network"],
   });
 
   const dispatchPromise = gateway.dispatchActionRequest({
@@ -246,6 +246,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
       { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
       { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/" },
       { kind: "eval", expression: "document.title", awaitPromise: true },
+      { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201 },
       { kind: "snapshot", note: "after-input" },
     ],
   });
@@ -255,7 +256,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
   assert.ok(request);
   assert.deepEqual(
     request?.actions.map((action) => action.kind),
-    ["hover", "key", "select", "drag", "waitFor", "dialog", "popup", "storage", "cookie", "eval", "snapshot"]
+    ["hover", "key", "select", "drag", "waitFor", "dialog", "popup", "storage", "cookie", "eval", "network", "snapshot"]
   );
 
   gateway.submitActionResult({
@@ -357,6 +358,14 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
         status: "ok",
         input: { expressionBytes: 14, awaitPromise: true },
       },
+      {
+        stepId: "task-input:relay-network:11",
+        kind: "network",
+        startedAt: 21,
+        completedAt: 22,
+        status: "ok",
+        input: { action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201 },
+      },
     ],
     screenshotPaths: [],
     screenshotPayloads: [],
@@ -375,6 +384,7 @@ test("relay gateway routes hover key select drag waitFor dialog popup storage co
   assert.equal(result.trace[7]?.kind, "storage");
   assert.equal(result.trace[8]?.kind, "cookie");
   assert.equal(result.trace[9]?.kind, "eval");
+  assert.equal(result.trace[10]?.kind, "network");
 });
 
 test("relay gateway routes cdp actions only to peers that advertise cdp support", async () => {

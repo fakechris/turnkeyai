@@ -555,6 +555,7 @@ export function isRelayExecutableAction(
     action.kind === "storage" ||
     action.kind === "cookie" ||
     action.kind === "eval" ||
+    action.kind === "network" ||
     action.kind === "screenshot" ||
     action.kind === "cdp"
   );

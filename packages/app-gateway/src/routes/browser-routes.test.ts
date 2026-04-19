@@ -334,7 +334,7 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
-test("browser task mutation routes validate key hover select drag waitFor dialog popup storage cookie and eval action contracts", async () => {
+test("browser task mutation routes validate key hover select drag waitFor dialog popup storage cookie eval and network action contracts", async () => {
   const invalidHover = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -525,6 +525,25 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     error: "actions[0] eval.expression must be a non-empty string",
   });
 
+  const invalidNetwork = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "waitForResponse", method: "post" }],
+      },
+    }),
+    res: invalidNetwork.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetwork.res.statusCode, 400);
+  assert.deepEqual(invalidNetwork.json, {
+    error: "actions[0] network.method must be uppercase ASCII and <= 16 characters",
+  });
+
   let capturedActions: unknown;
   const validDeps = createDeps();
   validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
@@ -559,6 +578,7 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
           { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },
           { kind: "cookie", action: "get", name: "sid" },
           { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
+          { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
         ],
       },
     }),
@@ -580,6 +600,7 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },
     { kind: "cookie", action: "get", name: "sid" },
     { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
+    { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
   ]);
 });
 

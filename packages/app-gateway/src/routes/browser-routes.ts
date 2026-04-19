@@ -20,6 +20,9 @@ import {
   MAX_BROWSER_EVAL_EXPRESSION_BYTES,
   MAX_BROWSER_EVAL_TIMEOUT_MS,
   MAX_BROWSER_KEY_ACTION_KEY_LENGTH,
+  MAX_BROWSER_NETWORK_METHOD_LENGTH,
+  MAX_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH,
   MAX_BROWSER_POPUP_TIMEOUT_MS,
   MAX_BROWSER_STORAGE_KEY_LENGTH,
   MAX_BROWSER_STORAGE_VALUE_BYTES,
@@ -484,6 +487,8 @@ const BROWSER_STORAGE_AREAS = new Set(["localStorage", "sessionStorage"]);
 const BROWSER_STORAGE_ACTIONS = new Set(["get", "set", "remove", "clear"]);
 const BROWSER_COOKIE_ACTIONS = new Set(["get", "set", "remove", "clear"]);
 const BROWSER_COOKIE_SAME_SITE_VALUES = new Set(["Strict", "Lax", "None"]);
+const BROWSER_NETWORK_ACTIONS = new Set(["waitForResponse"]);
+const BROWSER_NETWORK_METHOD_PATTERN = /^[A-Z]+$/;
 
 function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: BrowserTaskMutationRoute): string | null {
   if ((route === "send" || route === "resume") && (body.ownerType !== undefined || body.ownerId !== undefined)) {
@@ -709,6 +714,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
       case "eval": {
         const evalError = validateEvalAction(action, `actions[${index}] eval`);
         if (evalError) return evalError;
+        break;
+      }
+      case "network": {
+        const networkError = validateNetworkAction(action, `actions[${index}] network`);
+        if (networkError) return networkError;
         break;
       }
       case "screenshot": {
@@ -1159,6 +1169,55 @@ function validateEvalAction(
       action.timeoutMs > MAX_BROWSER_EVAL_TIMEOUT_MS)
   ) {
     return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_EVAL_TIMEOUT_MS}`;
+  }
+  return null;
+}
+
+function validateNetworkAction(
+  action: {
+    action?: unknown;
+    urlPattern?: unknown;
+    method?: unknown;
+    status?: unknown;
+    timeoutMs?: unknown;
+  },
+  label: string
+): string | null {
+  if (!BROWSER_NETWORK_ACTIONS.has(action.action as string)) {
+    return `${label}.action must be waitForResponse`;
+  }
+  const urlPattern = parseOptionalRouteString(action.urlPattern);
+  if (action.urlPattern !== undefined) {
+    if (!urlPattern) {
+      return `${label}.urlPattern must be a non-empty string when provided`;
+    }
+    if (urlPattern.length > MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH) {
+      return `${label}.urlPattern must be <= ${MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH} characters`;
+    }
+  }
+  const method = parseOptionalRouteString(action.method);
+  if (action.method !== undefined) {
+    if (!method) {
+      return `${label}.method must be a non-empty string when provided`;
+    }
+    if (method.length > MAX_BROWSER_NETWORK_METHOD_LENGTH || !BROWSER_NETWORK_METHOD_PATTERN.test(method)) {
+      return `${label}.method must be uppercase ASCII and <= ${MAX_BROWSER_NETWORK_METHOD_LENGTH} characters`;
+    }
+  }
+  if (
+    action.status !== undefined &&
+    (typeof action.status !== "number" || !Number.isInteger(action.status) || action.status < 100 || action.status > 599)
+  ) {
+    return `${label}.status must be an integer HTTP status between 100 and 599 when provided`;
+  }
+  if (
+    action.timeoutMs !== undefined &&
+    (typeof action.timeoutMs !== "number" ||
+      !Number.isInteger(action.timeoutMs) ||
+      action.timeoutMs <= 0 ||
+      action.timeoutMs > MAX_BROWSER_NETWORK_TIMEOUT_MS)
+  ) {
+    return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_NETWORK_TIMEOUT_MS}`;
   }
   return null;
 }

@@ -596,6 +596,124 @@ test("chrome relay action executor can run target-scoped eval actions through de
   });
 });
 
+test("chrome relay action executor arms network wait around a trigger action", async () => {
+  const now = Date.now();
+  const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];
+  const detachedTabs: number[] = [];
+  let resolveNetwork:
+    | ((event: { method: string; params: Record<string, unknown>; timestamp: number }) => void)
+    | null = null;
+  const sentMessages: unknown[] = [];
+  const platform = fakePlatform({
+    activeTab: { id: 7, windowId: 3, url: "https://example.com/app", title: "Example", status: "complete" },
+    onDebuggerCommand(tabId, method, params) {
+      debuggerCommands.push({ tabId, method, params });
+      return {};
+    },
+    onSendMessage(tabId, message) {
+      sentMessages.push({ tabId, message });
+      resolveNetwork?.({
+        method: "Network.responseReceived",
+        params: {
+          requestId: "request-1",
+          type: "Fetch",
+          response: {
+            url: "https://example.com/api/items",
+            status: 201,
+            mimeType: "application/json",
+          },
+        },
+        timestamp: 123,
+      });
+      return {
+        ok: true,
+        page: {
+          requestedUrl: "https://example.com/app",
+          finalUrl: "https://example.com/app",
+          title: "Example",
+          textExcerpt: "Example page",
+          statusCode: 200,
+          interactives: [],
+        },
+        trace: [
+          {
+            stepId: "task-network:relay-click:2",
+            kind: "click",
+            startedAt: 1,
+            completedAt: 2,
+            status: "ok",
+            input: { text: "Submit" },
+          },
+        ],
+      };
+    },
+  });
+  platform.waitForDebuggerEvent = async (tabId, method, timeoutMs) => {
+    assert.equal(tabId, 7);
+    assert.equal(method, "Network.responseReceived");
+    assert.equal(timeoutMs <= 1_000, true);
+    return await new Promise((resolve) => {
+      resolveNetwork = resolve;
+    });
+  };
+  platform.drainDebuggerEvents = async (tabId, input) => {
+    assert.equal(tabId, 7);
+    assert.deepEqual(input, {
+      include: ["Network.requestWillBeSent"],
+      maxEvents: 100,
+    });
+    return [
+      {
+        method: "Network.requestWillBeSent",
+        params: {
+          requestId: "request-1",
+          request: {
+            method: "POST",
+            url: "https://example.com/api/items",
+          },
+        },
+        timestamp: 122,
+      },
+    ];
+  };
+  platform.detachDebugger = async (tabId) => {
+    detachedTabs.push(tabId);
+  };
+  const executor = new ChromeRelayActionExecutor(platform);
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-network",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-network",
+    actions: [
+      { kind: "network", action: "waitForResponse", urlPattern: "/api/items", method: "POST", status: 201, timeoutMs: 1_000 },
+      { kind: "click", text: "Submit" },
+    ],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(debuggerCommands, [{ tabId: 7, method: "Network.enable", params: {} }]);
+  assert.deepEqual(detachedTabs, [7]);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(result.trace[0]?.kind, "network");
+  assert.equal(result.trace[0]?.status, "ok");
+  assert.deepEqual(result.trace[0]?.output, {
+    action: "waitForResponse",
+    matched: true,
+    timeoutMs: 1_000,
+    requestId: "request-1",
+    url: "https://example.com/api/items",
+    status: 201,
+    method: "POST",
+    resourceType: "Fetch",
+    mimeType: "application/json",
+  });
+  assert.equal(result.trace[1]?.kind, "click");
+});
+
 test("chrome relay action executor can run typed hover and key actions through debugger input", async () => {
   const now = Date.now();
   const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];

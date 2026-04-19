@@ -12,6 +12,8 @@ import {
   DEFAULT_BROWSER_EVAL_TIMEOUT_MS,
   MAX_BROWSER_EVAL_RESULT_BYTES,
   MAX_BROWSER_EVAL_TIMEOUT_MS,
+  DEFAULT_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_NETWORK_TIMEOUT_MS,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
@@ -33,6 +35,7 @@ type RelayDialogAction = Extract<RelayAction, { kind: "dialog" }>;
 type RelayPopupAction = Extract<RelayAction, { kind: "popup" }>;
 type RelayCookieAction = Extract<RelayAction, { kind: "cookie" }>;
 type RelayEvalAction = Extract<RelayAction, { kind: "eval" }>;
+type RelayNetworkAction = Extract<RelayAction, { kind: "network" }>;
 interface RelayCdpActionOutput {
   result: unknown;
   events: ChromeDebuggerEventLike[];
@@ -141,6 +144,7 @@ export class ChromeRelayActionExecutor {
     const trace: BrowserActionTrace[] = [];
     const screenshotPayloads: RelayScreenshotPayload[] = [];
     const pendingDialogHandlers: Promise<void>[] = [];
+    const pendingNetworkHandlers: Promise<void>[] = [];
     const contentScriptBatch: RelayActionRequest["actions"] = [];
     const contentScriptState: {
       latestResponse: RelayContentScriptExecuteResponse | null;
@@ -346,6 +350,34 @@ export class ChromeRelayActionExecutor {
         continue;
       }
 
+      if (action.kind === "network") {
+        const startedAt = Date.now();
+        const timeoutMs = normalizeNetworkTimeoutMs(action.timeoutMs);
+        const traceEntry: BrowserActionTrace = {
+          stepId: `${request.taskId}:relay-network:${index + 1}`,
+          kind: "network",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            action: action.action,
+            urlPattern: action.urlPattern ?? null,
+            method: action.method ?? null,
+            status: action.status ?? null,
+            timeoutMs: action.timeoutMs ?? null,
+          },
+          output: {
+            action: action.action,
+            timeoutMs,
+            armed: true,
+          },
+        };
+        trace.push(traceEntry);
+        const armed = await this.armNetworkAction(activeTab.id, action, debuggerTabsToDetach, traceEntry, timeoutMs);
+        pendingNetworkHandlers.push(armed.pending);
+        continue;
+      }
+
       if (action.kind === "cookie") {
         const startedAt = Date.now();
         const currentUrl = contentScriptState.latestResponse?.page?.finalUrl ?? activeTab.url ?? "";
@@ -463,7 +495,7 @@ export class ChromeRelayActionExecutor {
       return this.buildFailedContentScriptResult(activeTab, trace, screenshotPayloads, contentScriptResponse);
     }
     await consumePendingPopup();
-    await Promise.all(pendingDialogHandlers);
+    await Promise.all([...pendingDialogHandlers, ...pendingNetworkHandlers]);
 
     const finalTab = activeTab;
     if (!finalTab || typeof finalTab.id !== "number") {
@@ -849,6 +881,60 @@ export class ChromeRelayActionExecutor {
         traceEntry.completedAt = Date.now();
         traceEntry.status = "failed";
         traceEntry.errorMessage = error instanceof Error ? error.message : "relay dialog action failed";
+        throw error;
+      }
+    })();
+    pending.catch(() => undefined);
+    return { pending };
+  }
+
+  private async armNetworkAction(
+    tabId: number,
+    action: RelayNetworkAction,
+    debuggerTabsToDetach: Set<number>,
+    traceEntry: BrowserActionTrace,
+    timeoutMs: number
+  ): Promise<{ pending: Promise<void> }> {
+    const sendDebuggerCommand = this.platform.sendDebuggerCommand;
+    const waitForDebuggerEvent = this.platform.waitForDebuggerEvent;
+    if (!sendDebuggerCommand || !waitForDebuggerEvent) {
+      throw new Error("relay network action requires chrome debugger event support");
+    }
+    debuggerTabsToDetach.add(tabId);
+    await sendDebuggerCommand(tabId, "Network.enable", {});
+    const requestMethods = new Map<string, string>();
+    const pending = (async () => {
+      const deadline = Date.now() + timeoutMs;
+      try {
+        while (Date.now() <= deadline) {
+          const remainingMs = Math.max(1, deadline - Date.now());
+          const event = await waitForDebuggerEvent(tabId, "Network.responseReceived", remainingMs);
+          const requestEvents =
+            (await this.platform.drainDebuggerEvents?.(tabId, {
+              include: ["Network.requestWillBeSent"],
+              maxEvents: 100,
+            })) ?? [];
+          for (const requestEvent of requestEvents) {
+            const requestId = getCdpRequestId(requestEvent.params);
+            const method = getCdpRequestMethod(requestEvent.params);
+            if (requestId && method) {
+              requestMethods.set(requestId, method);
+            }
+          }
+          const requestId = getCdpRequestId(event.params);
+          const method = requestId ? requestMethods.get(requestId) : undefined;
+          if (!matchesCdpNetworkResponse(event, action, method)) {
+            continue;
+          }
+          traceEntry.completedAt = Date.now();
+          traceEntry.output = summarizeCdpNetworkResponse(event, action, method, timeoutMs);
+          return;
+        }
+        throw new Error(`relay network action timed out after ${timeoutMs}ms`);
+      } catch (error) {
+        traceEntry.completedAt = Date.now();
+        traceEntry.status = "failed";
+        traceEntry.errorMessage = error instanceof Error ? error.message : "relay network action failed";
         throw error;
       }
     })();
@@ -1263,6 +1349,74 @@ function normalizeEvalTimeoutMs(value: number | undefined): number {
     : DEFAULT_BROWSER_EVAL_TIMEOUT_MS;
 }
 
+function normalizeNetworkTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_NETWORK_TIMEOUT_MS)
+    : DEFAULT_BROWSER_NETWORK_TIMEOUT_MS;
+}
+
+function matchesCdpNetworkResponse(
+  event: ChromeDebuggerEventLike,
+  action: RelayNetworkAction,
+  method: string | undefined
+): boolean {
+  const url = getCdpResponseUrl(event.params);
+  const status = getCdpResponseStatus(event.params);
+  if (action.urlPattern && (!url || !matchesUrlPattern(url, action.urlPattern))) {
+    return false;
+  }
+  if (action.status !== undefined && status !== action.status) {
+    return false;
+  }
+  if (action.method && method !== action.method) {
+    return false;
+  }
+  return true;
+}
+
+function summarizeCdpNetworkResponse(
+  event: ChromeDebuggerEventLike,
+  action: RelayNetworkAction,
+  method: string | undefined,
+  timeoutMs: number
+): Record<string, unknown> {
+  return {
+    action: action.action,
+    matched: true,
+    timeoutMs,
+    requestId: getCdpRequestId(event.params) ?? null,
+    url: getCdpResponseUrl(event.params) ?? null,
+    status: getCdpResponseStatus(event.params) ?? null,
+    method: method ?? null,
+    resourceType: typeof event.params?.type === "string" ? event.params.type : null,
+    mimeType: getCdpResponseMimeType(event.params) ?? null,
+  };
+}
+
+function getCdpRequestId(params: Record<string, unknown> | undefined): string | null {
+  return typeof params?.requestId === "string" ? params.requestId : null;
+}
+
+function getCdpRequestMethod(params: Record<string, unknown> | undefined): string | null {
+  const request = isRecord(params?.request) ? params.request : null;
+  return typeof request?.method === "string" ? request.method : null;
+}
+
+function getCdpResponseUrl(params: Record<string, unknown> | undefined): string | null {
+  const response = isRecord(params?.response) ? params.response : null;
+  return typeof response?.url === "string" ? response.url : null;
+}
+
+function getCdpResponseStatus(params: Record<string, unknown> | undefined): number | null {
+  const response = isRecord(params?.response) ? params.response : null;
+  return typeof response?.status === "number" ? response.status : null;
+}
+
+function getCdpResponseMimeType(params: Record<string, unknown> | undefined): string | null {
+  const response = isRecord(params?.response) ? params.response : null;
+  return typeof response?.mimeType === "string" ? response.mimeType : null;
+}
+
 async function readCdpCookiesFromDebugger(
   platform: ChromeExtensionPlatform,
   tabId: number,
@@ -1459,6 +1613,17 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function matchesUrlPattern(url: string, pattern: string): boolean {
+  if (!pattern.includes("*")) {
+    return url.includes(pattern);
+  }
+  const escaped = pattern
+    .split("*")
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".*");
+  return new RegExp(`^${escaped}$`).test(url);
 }
 
 async function retryAsync<T>(

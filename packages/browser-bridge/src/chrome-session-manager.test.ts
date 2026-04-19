@@ -947,6 +947,107 @@ test("chrome session manager switches to an armed popup page after the trigger a
   assert.equal(result.trace[1]?.kind, "click");
 });
 
+test("chrome session manager arms network wait around a trigger action", async () => {
+  let responsePredicate: ((response: unknown) => boolean) | null = null;
+  let resolveNetwork: ((response: unknown) => void) | null = null;
+  const response = {
+    url() {
+      return "https://example.com/api/items";
+    },
+    status() {
+      return 201;
+    },
+    request() {
+      return {
+        method() {
+          return "POST";
+        },
+      };
+    },
+  };
+  const fakeLocator = {
+    first() {
+      return this;
+    },
+    async count() {
+      return 1;
+    },
+    async click() {
+      if (responsePredicate?.(response)) {
+        resolveNetwork?.(response);
+      }
+    },
+  };
+  const page = {
+    waitForResponse(predicate: (response: unknown) => boolean) {
+      responsePredicate = predicate;
+      return new Promise((resolve) => {
+        resolveNetwork = resolve;
+      });
+    },
+    locator() {
+      return fakeLocator;
+    },
+    async waitForLoadState() {
+      return undefined;
+    },
+    async waitForTimeout() {
+      return undefined;
+    },
+    url() {
+      return "https://example.com/start";
+    },
+    async title() {
+      return "Start";
+    },
+  } as unknown as Page;
+  const fakeContext = {
+    pages() {
+      return [page];
+    },
+    async newPage() {
+      return page;
+    },
+    async close() {
+      return undefined;
+    },
+  } as unknown as BrowserContext;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    createEphemeralContext: async () => fakeContext,
+    captureSnapshot: async () => ({
+      requestedUrl: "https://example.com/start",
+      finalUrl: "https://example.com/start",
+      title: "Start",
+      textExcerpt: "Start page",
+      statusCode: 200,
+      interactives: [],
+    }),
+  });
+
+  const result = await manager.spawnSession({
+    taskId: "task-network",
+    threadId: "thread-network",
+    instructions: "Wait for API",
+    actions: [
+      { kind: "network", action: "waitForResponse", urlPattern: "/api/items", method: "POST", status: 201, timeoutMs: 1_000 },
+      { kind: "click", selectors: ["button.submit"] },
+    ],
+  });
+
+  assert.equal(result.trace[0]?.kind, "network");
+  assert.equal(result.trace[0]?.status, "ok");
+  assert.deepEqual(result.trace[0]?.output, {
+    action: "waitForResponse",
+    matched: true,
+    timeoutMs: 1_000,
+    url: "https://example.com/api/items",
+    status: 201,
+    method: "POST",
+  });
+  assert.equal(result.trace[1]?.kind, "click");
+});
+
 test("chrome session manager executes bounded storage actions", async () => {
   const evaluateInputs: unknown[] = [];
   const fakePage = {

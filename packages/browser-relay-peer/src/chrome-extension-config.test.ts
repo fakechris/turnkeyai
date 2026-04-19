@@ -31,6 +31,7 @@ test("chrome relay extension config falls back to default loopback daemon settin
       "storage",
       "cookie",
       "eval",
+      "network",
       "screenshot",
       "cdp",
     ]);

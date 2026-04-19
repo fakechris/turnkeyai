@@ -37,12 +37,14 @@ import {
   DEFAULT_BROWSER_EVAL_TIMEOUT_MS,
   MAX_BROWSER_EVAL_RESULT_BYTES,
   MAX_BROWSER_EVAL_TIMEOUT_MS,
+  DEFAULT_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_STORAGE_READ_ENTRIES,
   MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
-import { chromium, type Browser, type BrowserContext, type CDPSession, type Dialog, type Locator, type Page } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Dialog, type Locator, type Page, type Response } from "playwright-core";
 
 import { captureDomSnapshot } from "./dom-snapshot";
 import type { BrowserSessionManager as LocalBrowserSessionManager } from "./session/browser-session-manager";
@@ -212,6 +214,7 @@ export class ChromeSessionManager {
     const screenshotPaths: string[] = [];
     const artifactIds: string[] = [];
     const pendingDialogHandlers: Promise<void>[] = [];
+    const pendingNetworkHandlers: Promise<void>[] = [];
 
     let requestedUrl = "";
     let lastStatusCode = 200;
@@ -328,6 +331,28 @@ export class ChromeSessionManager {
             const promise = armPagePopupHandler(page, action, traceEntry, timeoutMs);
             promise.catch(() => undefined);
             pendingPopupHandler = { promise, traceEntry };
+            continue;
+          }
+
+          if (action.kind === "network") {
+            const timeoutMs = normalizeNetworkTimeoutMs(action.timeoutMs);
+            const traceEntry: BrowserActionTrace = {
+              stepId,
+              kind: action.kind,
+              startedAt,
+              completedAt: Date.now(),
+              status: "ok",
+              input: toTraceInput(action),
+              output: {
+                action: action.action,
+                timeoutMs,
+                armed: true,
+              },
+            };
+            trace.push(traceEntry);
+            const pending = armPageNetworkHandler(page, action, traceEntry, timeoutMs);
+            pending.catch(() => undefined);
+            pendingNetworkHandlers.push(pending);
             continue;
           }
 
@@ -451,7 +476,7 @@ export class ChromeSessionManager {
         }
       }
 
-      await Promise.all(pendingDialogHandlers);
+      await Promise.all([...pendingDialogHandlers, ...pendingNetworkHandlers]);
       await consumePendingPopup();
 
       if (!latestSnapshot) {
@@ -1217,6 +1242,10 @@ export class ChromeSessionManager {
       throw new Error(`${action.kind} actions must be armed by the browser task executor`);
     }
 
+    if (action.kind === "network") {
+      throw new Error(`${action.kind} actions must be armed by the browser task executor`);
+    }
+
     const screenshotPath = path.join(
       sessionDir,
       `${String(stepIndex).padStart(2, "0")}-${sanitizeLabel(action.label ?? action.kind)}.png`
@@ -1451,6 +1480,57 @@ async function armPagePopupHandler(
     traceEntry.errorMessage = error instanceof Error ? error.message : "browser popup action failed";
     throw error;
   }
+}
+
+async function armPageNetworkHandler(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "network" }>,
+  traceEntry: BrowserActionTrace,
+  timeoutMs: number
+): Promise<void> {
+  try {
+    const response = await page.waitForResponse((candidate) => matchesNetworkResponse(candidate, action), {
+      timeout: timeoutMs,
+    });
+    traceEntry.completedAt = Date.now();
+    traceEntry.output = summarizeNetworkResponse(response, action, timeoutMs);
+  } catch (error) {
+    traceEntry.completedAt = Date.now();
+    traceEntry.status = "failed";
+    traceEntry.errorMessage = error instanceof Error ? error.message : "browser network action failed";
+    throw error;
+  }
+}
+
+function matchesNetworkResponse(
+  response: Response,
+  action: Extract<BrowserTaskAction, { kind: "network" }>
+): boolean {
+  if (action.urlPattern && !matchesUrlPattern(response.url(), action.urlPattern)) {
+    return false;
+  }
+  if (action.status !== undefined && response.status() !== action.status) {
+    return false;
+  }
+  if (action.method && response.request().method() !== action.method) {
+    return false;
+  }
+  return true;
+}
+
+function summarizeNetworkResponse(
+  response: Response,
+  action: Extract<BrowserTaskAction, { kind: "network" }>,
+  timeoutMs: number
+): Record<string, unknown> {
+  return {
+    action: action.action,
+    matched: true,
+    timeoutMs,
+    url: response.url(),
+    status: response.status(),
+    method: response.request().method(),
+  };
 }
 
 function formatKeyboardShortcut(action: Extract<BrowserTaskAction, { kind: "key" }>): string {
@@ -1843,6 +1923,12 @@ function normalizeEvalTimeoutMs(value: number | undefined): number {
     : DEFAULT_BROWSER_EVAL_TIMEOUT_MS;
 }
 
+function normalizeNetworkTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_NETWORK_TIMEOUT_MS)
+    : DEFAULT_BROWSER_NETWORK_TIMEOUT_MS;
+}
+
 function normalizeCdpTimeoutMs(value: number | undefined): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0
     ? Math.min(value, MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
@@ -2021,6 +2107,17 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+function matchesUrlPattern(url: string, pattern: string): boolean {
+  if (!pattern.includes("*")) {
+    return url.includes(pattern);
+  }
+  const escaped = pattern
+    .split("*")
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".*");
+  return new RegExp(`^${escaped}$`).test(url);
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<T>((_, reject) => {
@@ -2150,6 +2247,16 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
     return {
       expressionBytes: byteLength(action.expression),
       awaitPromise: action.awaitPromise ?? true,
+      timeoutMs: action.timeoutMs ?? null,
+    };
+  }
+
+  if (action.kind === "network") {
+    return {
+      action: action.action,
+      urlPattern: action.urlPattern ?? null,
+      method: action.method ?? null,
+      status: action.status ?? null,
       timeoutMs: action.timeoutMs ?? null,
     };
   }
