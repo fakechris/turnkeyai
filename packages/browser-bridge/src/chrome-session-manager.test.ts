@@ -624,6 +624,90 @@ test("chrome session manager releases a resumed session when openTarget fails", 
   assert.equal(released, 1);
 });
 
+test("chrome session manager executes hover and key input actions", async () => {
+  const hoverSelectors: string[] = [];
+  let hoverCount = 0;
+  const pressedShortcuts: string[] = [];
+  const waits: Array<{ kind: "load" | "timeout"; value: string | number }> = [];
+  const fakeLocator = {
+    first() {
+      return this;
+    },
+    async count() {
+      return 1;
+    },
+    async hover() {
+      hoverCount += 1;
+    },
+  };
+  const fakePage = {
+    locator(selector: string) {
+      hoverSelectors.push(selector);
+      return fakeLocator;
+    },
+    keyboard: {
+      async press(shortcut: string) {
+        pressedShortcuts.push(shortcut);
+      },
+    },
+    async waitForLoadState(state: string) {
+      waits.push({ kind: "load", value: state });
+    },
+    async waitForTimeout(timeoutMs: number) {
+      waits.push({ kind: "timeout", value: timeoutMs });
+    },
+    url() {
+      return "https://example.com/menu";
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action: { kind: string; selectors?: string[]; key?: string; modifiers?: string[] };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  const hoverOutput = await internal.executeAction({
+    page: fakePage,
+    action: { kind: "hover", selectors: ["button.menu"] },
+    stepIndex: 1,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-input",
+  });
+  const keyOutput = await internal.executeAction({
+    page: fakePage,
+    action: { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
+    stepIndex: 2,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-input",
+  });
+
+  assert.deepEqual(hoverSelectors, ["button.menu"]);
+  assert.equal(hoverCount, 1);
+  assert.deepEqual(pressedShortcuts, ["Control+Shift+K"]);
+  assert.equal(hoverOutput.traceOutput?.finalUrl, "https://example.com/menu");
+  assert.equal(keyOutput.traceOutput?.shortcut, "Control+Shift+K");
+  assert.deepEqual(
+    waits.map((wait) => wait.kind),
+    ["load", "timeout", "load", "timeout"]
+  );
+});
+
 test("chrome session manager executes target-scoped cdp actions through a page CDP session", async () => {
   const commands: unknown[] = [];
   let detached = 0;

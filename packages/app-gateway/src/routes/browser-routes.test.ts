@@ -334,6 +334,83 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
+test("browser task mutation routes validate key and hover action contracts", async () => {
+  const invalidHover = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "hover", selectors: ["button"], text: "Open" }],
+      },
+    }),
+    res: invalidHover.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidHover.res.statusCode, 400);
+  assert.deepEqual(invalidHover.json, {
+    error: "actions[0] hover requires exactly one of selectors, refId, or text",
+  });
+
+  const invalidKey = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "key", key: "K", modifiers: ["Control", "Hyper"] }],
+      },
+    }),
+    res: invalidKey.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidKey.res.statusCode, 400);
+  assert.deepEqual(invalidKey.json, {
+    error: "actions[0] key.modifiers contains an invalid modifier",
+  });
+
+  let capturedActions: unknown;
+  const validDeps = createDeps();
+  validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
+    ({
+      threadId: "thread-1",
+      taskId: "task-1",
+      instructions: "inspect",
+      actions: body.actions,
+      ...owner,
+    }) as any;
+  validDeps.browserBridge.spawnSession = async (input) => {
+    capturedActions = input.actions;
+    return { status: "completed", browserSessionId: "session-1", taskId: input.taskId, page: null, trace: [] } as any;
+  };
+  const valid = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [
+          { kind: "hover", refId: "ref-1" },
+          { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
+        ],
+      },
+    }),
+    res: valid.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: validDeps,
+  });
+  assert.equal(valid.res.statusCode, 201);
+  assert.deepEqual(capturedActions, [
+    { kind: "hover", refId: "ref-1" },
+    { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
+  ]);
+});
+
 test("browser task mutation routes validate cdp action contracts", async () => {
   const invalidMethod = createResponse();
   await handleBrowserRoutes({

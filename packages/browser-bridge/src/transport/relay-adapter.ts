@@ -36,6 +36,8 @@ const RELAY_EXECUTABLE_ACTION_KINDS = new Set<string>([
   "snapshot",
   "click",
   "type",
+  "hover",
+  "key",
   "scroll",
   "console",
   "wait",

@@ -14,6 +14,7 @@ import {
   MAX_BROWSER_CDP_ACTION_EVENTS,
   MAX_BROWSER_CDP_ACTION_PARAMS_BYTES,
   MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
+  MAX_BROWSER_KEY_ACTION_KEY_LENGTH,
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
@@ -469,6 +470,7 @@ const BROWSER_SCROLL_DIRECTIONS = new Set<Extract<BrowserTaskAction, { kind: "sc
   "up",
   "down",
 ]);
+const BROWSER_KEY_MODIFIERS = new Set(["Alt", "Control", "Meta", "Shift"]);
 
 function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: BrowserTaskMutationRoute): string | null {
   if ((route === "send" || route === "resume") && (body.ownerType !== undefined || body.ownerId !== undefined)) {
@@ -603,21 +605,35 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         break;
       }
       case "click": {
-        const selectorError = validateActionSelectors(action.selectors, `actions[${index}] click.selectors`);
-        if (selectorError) {
-          return selectorError;
+        const targetError = validateTargetedAction(action, `actions[${index}] click`);
+        if (targetError) return targetError;
+        break;
+      }
+      case "hover": {
+        const targetError = validateTargetedAction(action, `actions[${index}] hover`);
+        if (targetError) return targetError;
+        break;
+      }
+      case "key": {
+        const key = parseOptionalRouteString(action.key);
+        if (!key) {
+          return `actions[${index}] key.key must be a non-empty string`;
         }
-        const refId = parseOptionalRouteString(action.refId);
-        const text = parseOptionalRouteString(action.text);
-        const variants = Number(Boolean(action.selectors?.length)) + Number(Boolean(refId)) + Number(Boolean(text));
-        if (variants !== 1) {
-          return `actions[${index}] click requires exactly one of selectors, refId, or text`;
+        if (key.length > MAX_BROWSER_KEY_ACTION_KEY_LENGTH) {
+          return `actions[${index}] key.key must be <= ${MAX_BROWSER_KEY_ACTION_KEY_LENGTH} characters`;
         }
-        if (action.refId !== undefined && !refId) {
-          return `actions[${index}] click.refId must be a non-empty string when provided`;
-        }
-        if (action.text !== undefined && !text) {
-          return `actions[${index}] click.text must be a non-empty string when provided`;
+        if (action.modifiers !== undefined) {
+          if (!Array.isArray(action.modifiers)) {
+            return `actions[${index}] key.modifiers must be an array when provided`;
+          }
+          if (action.modifiers.length > BROWSER_KEY_MODIFIERS.size) {
+            return `actions[${index}] key.modifiers has too many entries`;
+          }
+          for (const modifier of action.modifiers) {
+            if (!BROWSER_KEY_MODIFIERS.has(modifier)) {
+              return `actions[${index}] key.modifiers contains an invalid modifier`;
+            }
+          }
         }
         break;
       }
@@ -756,6 +772,33 @@ function validateActionSelectors(selectors: string[] | undefined, label: string)
   }
   if (selectors.some((selector) => !parseOptionalRouteString(selector))) {
     return `${label} must contain non-empty strings`;
+  }
+  return null;
+}
+
+function validateTargetedAction(
+  action: {
+    selectors?: string[];
+    refId?: string;
+    text?: string;
+  },
+  label: string
+): string | null {
+  const selectorError = validateActionSelectors(action.selectors, `${label}.selectors`);
+  if (selectorError) {
+    return selectorError;
+  }
+  const refId = parseOptionalRouteString(action.refId);
+  const text = parseOptionalRouteString(action.text);
+  const variants = Number(Boolean(action.selectors?.length)) + Number(Boolean(refId)) + Number(Boolean(text));
+  if (variants !== 1) {
+    return `${label} requires exactly one of selectors, refId, or text`;
+  }
+  if (action.refId !== undefined && !refId) {
+    return `${label}.refId must be a non-empty string when provided`;
+  }
+  if (action.text !== undefined && !text) {
+    return `${label}.text must be a non-empty string when provided`;
   }
   return null;
 }

@@ -18,12 +18,56 @@ import { ChromeRelayTabObserver, formatRelayTargetId } from "./chrome-tab-observ
 
 type RelayAction = RelayActionRequest["actions"][number];
 type RelayCdpAction = Extract<RelayAction, { kind: "cdp" }>;
+type RelayHoverAction = Extract<RelayAction, { kind: "hover" }>;
+type RelayKeyAction = Extract<RelayAction, { kind: "key" }>;
 interface RelayCdpActionOutput {
   result: unknown;
   events: ChromeDebuggerEventLike[];
 }
+interface RelayHoverPoint {
+  x: number;
+  y: number;
+  label?: string;
+  tagName?: string;
+}
+interface CdpKeyDescriptor {
+  key: string;
+  code: string;
+  keyCode: number;
+  text?: string;
+  location?: number;
+}
 
 const MAX_CDP_TRACE_RESULT_BYTES = 4_096;
+const BROWSER_KEY_MODIFIER_BITS: Record<string, number> = {
+  Alt: 1,
+  Control: 2,
+  Meta: 4,
+  Shift: 8,
+};
+const BROWSER_MODIFIER_KEY_DESCRIPTORS: Record<string, CdpKeyDescriptor> = {
+  Alt: { key: "Alt", code: "AltLeft", keyCode: 18, location: 1 },
+  Control: { key: "Control", code: "ControlLeft", keyCode: 17, location: 1 },
+  Meta: { key: "Meta", code: "MetaLeft", keyCode: 91, location: 1 },
+  Shift: { key: "Shift", code: "ShiftLeft", keyCode: 16, location: 1 },
+};
+const BROWSER_SPECIAL_KEY_DESCRIPTORS: Record<string, CdpKeyDescriptor> = {
+  Enter: { key: "Enter", code: "Enter", keyCode: 13 },
+  Escape: { key: "Escape", code: "Escape", keyCode: 27 },
+  Esc: { key: "Escape", code: "Escape", keyCode: 27 },
+  Tab: { key: "Tab", code: "Tab", keyCode: 9 },
+  Backspace: { key: "Backspace", code: "Backspace", keyCode: 8 },
+  Delete: { key: "Delete", code: "Delete", keyCode: 46 },
+  Space: { key: " ", code: "Space", keyCode: 32, text: " " },
+  ArrowUp: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+  ArrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+  ArrowRight: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+  Home: { key: "Home", code: "Home", keyCode: 36 },
+  End: { key: "End", code: "End", keyCode: 35 },
+  PageUp: { key: "PageUp", code: "PageUp", keyCode: 33 },
+  PageDown: { key: "PageDown", code: "PageDown", keyCode: 34 },
+};
 
 export class ChromeRelayActionExecutor {
   private readonly contentScriptRetryAttempts = 20;
@@ -124,6 +168,50 @@ export class ChromeRelayActionExecutor {
 
       if (!activeTab?.id) {
         throw new Error("relay action executor could not resolve a target tab");
+      }
+
+      if (action.kind === "hover") {
+        const startedAt = Date.now();
+        const point = await this.executeHoverAction(activeTab.id, action, debuggerTabsToDetach);
+        needsFinalSnapshot = true;
+        trace.push({
+          stepId: `${request.taskId}:relay-hover:${index + 1}`,
+          kind: "hover",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            selectors: action.selectors ?? [],
+            refId: action.refId ?? null,
+            text: action.text ?? null,
+          },
+          output: {
+            x: point.x,
+            y: point.y,
+            label: point.label ?? null,
+            tagName: point.tagName ?? null,
+          },
+        });
+        continue;
+      }
+
+      if (action.kind === "key") {
+        const startedAt = Date.now();
+        const output = await this.executeKeyAction(activeTab.id, action, debuggerTabsToDetach);
+        needsFinalSnapshot = true;
+        trace.push({
+          stepId: `${request.taskId}:relay-key:${index + 1}`,
+          kind: "key",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            key: action.key,
+            modifiers: action.modifiers ?? [],
+          },
+          output,
+        });
+        continue;
       }
 
       if (action.kind === "cdp") {
@@ -299,6 +387,91 @@ export class ChromeRelayActionExecutor {
     };
   }
 
+  private async executeHoverAction(
+    tabId: number,
+    action: RelayHoverAction,
+    debuggerTabsToDetach: Set<number>
+  ): Promise<RelayHoverPoint> {
+    if (!this.platform.sendDebuggerCommand) {
+      throw new Error("relay hover action requires chrome debugger support");
+    }
+    debuggerTabsToDetach.add(tabId);
+    const evaluated = await this.platform.sendDebuggerCommand(tabId, "Runtime.evaluate", {
+      expression: buildHoverTargetExpression(action),
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    const point = extractHoverPoint(evaluated);
+    await this.platform.sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: point.x,
+      y: point.y,
+      button: "none",
+    });
+    return point;
+  }
+
+  private async executeKeyAction(
+    tabId: number,
+    action: RelayKeyAction,
+    debuggerTabsToDetach: Set<number>
+  ): Promise<Record<string, unknown>> {
+    if (!this.platform.sendDebuggerCommand) {
+      throw new Error("relay key action requires chrome debugger support");
+    }
+    debuggerTabsToDetach.add(tabId);
+    const modifiers = [...new Set(action.modifiers ?? [])];
+    const modifierMask = modifiers.reduce((mask, modifier) => mask | (BROWSER_KEY_MODIFIER_BITS[modifier] ?? 0), 0);
+    let activeModifierMask = 0;
+    let commandCount = 0;
+
+    for (const modifier of modifiers) {
+      activeModifierMask |= BROWSER_KEY_MODIFIER_BITS[modifier] ?? 0;
+      await this.platform.sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+        type: "keyDown",
+        ...buildCdpKeyEventParams(
+          BROWSER_MODIFIER_KEY_DESCRIPTORS[modifier] ?? toCdpKeyDescriptor(modifier),
+          activeModifierMask
+        ),
+        modifiers: activeModifierMask,
+      });
+      commandCount += 1;
+    }
+
+    const keyDescriptor = toCdpKeyDescriptor(action.key);
+    await this.platform.sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+      type: "keyDown",
+      ...buildCdpKeyEventParams(keyDescriptor, modifierMask),
+      modifiers: modifierMask,
+    });
+    await this.platform.sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      ...buildCdpKeyEventParams(keyDescriptor, modifierMask),
+      modifiers: modifierMask,
+    });
+    commandCount += 2;
+
+    for (const modifier of [...modifiers].reverse()) {
+      activeModifierMask &= ~(BROWSER_KEY_MODIFIER_BITS[modifier] ?? 0);
+      await this.platform.sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        ...buildCdpKeyEventParams(
+          BROWSER_MODIFIER_KEY_DESCRIPTORS[modifier] ?? toCdpKeyDescriptor(modifier),
+          activeModifierMask
+        ),
+        modifiers: activeModifierMask,
+      });
+      commandCount += 1;
+    }
+
+    return {
+      key: action.key,
+      modifiers,
+      modifierMask,
+      commandCount,
+    };
+  }
+
   private buildFailedContentScriptResult(
     activeTab: ChromeTabLike | null | undefined,
     trace: BrowserActionTrace[],
@@ -404,6 +577,133 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
       clearTimeout(timeout);
     }
   });
+}
+
+function buildHoverTargetExpression(action: RelayHoverAction): string {
+  const target = {
+    selectors: action.selectors ?? [],
+    refId: action.refId ?? null,
+    text: action.text ?? null,
+  };
+  return `(() => {
+    const target = ${JSON.stringify(target)};
+    const textOf = (element) => [
+      element.innerText,
+      element.textContent,
+      element.getAttribute && element.getAttribute("aria-label"),
+      "value" in element ? element.value : ""
+    ].filter(Boolean).join(" ").trim();
+    const bySelectors = () => {
+      for (const selector of target.selectors) {
+        try {
+          const found = document.querySelector(selector);
+          if (found) return found;
+        } catch {}
+      }
+      return null;
+    };
+    const byRef = () => {
+      if (!target.refId) return null;
+      return Array.from(document.querySelectorAll("[data-turnkeyai-ref]"))
+        .find((element) => element.getAttribute("data-turnkeyai-ref") === target.refId) || null;
+    };
+    const byText = () => {
+      if (!target.text) return null;
+      const needle = target.text.trim().toLowerCase();
+      const preferred = "button,a,input,textarea,select,label,[role],[data-turnkeyai-ref]";
+      const candidates = [
+        ...Array.from(document.querySelectorAll(preferred)),
+        ...Array.from(document.querySelectorAll("body *")),
+      ];
+      return candidates.find((element) => textOf(element).toLowerCase().includes(needle)) || null;
+    };
+    const element = byRef() || bySelectors() || byText();
+    if (!element) {
+      return { ok: false, error: "hover target not found" };
+    }
+    const rect = element.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) {
+      return { ok: false, error: "hover target has empty bounds" };
+    }
+    return {
+      ok: true,
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      tagName: element.tagName || null,
+      label: textOf(element).slice(0, 120) || null
+    };
+  })()`;
+}
+
+function extractHoverPoint(value: unknown): RelayHoverPoint {
+  const result = extractRuntimeResultValue(value);
+  if (!result || typeof result !== "object") {
+    throw new Error("relay hover target evaluation returned no value");
+  }
+  const record = result as Record<string, unknown>;
+  if (record.ok !== true) {
+    throw new Error(typeof record.error === "string" ? record.error : "relay hover target could not be resolved");
+  }
+  if (typeof record.x !== "number" || typeof record.y !== "number") {
+    throw new Error("relay hover target evaluation returned invalid coordinates");
+  }
+  return {
+    x: record.x,
+    y: record.y,
+    ...(typeof record.label === "string" ? { label: record.label } : {}),
+    ...(typeof record.tagName === "string" ? { tagName: record.tagName } : {}),
+  };
+}
+
+function extractRuntimeResultValue(value: unknown): unknown {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const result = (value as { result?: unknown }).result;
+  if (result && typeof result === "object" && "value" in result) {
+    return (result as { value?: unknown }).value;
+  }
+  return null;
+}
+
+function toCdpKeyDescriptor(key: string): CdpKeyDescriptor {
+  const special = BROWSER_SPECIAL_KEY_DESCRIPTORS[key];
+  if (special) {
+    return special;
+  }
+  if (/^[a-z]$/i.test(key)) {
+    const upper = key.toUpperCase();
+    return {
+      key,
+      code: `Key${upper}`,
+      keyCode: upper.charCodeAt(0),
+      text: key,
+    };
+  }
+  if (/^[0-9]$/.test(key)) {
+    return {
+      key,
+      code: `Digit${key}`,
+      keyCode: key.charCodeAt(0),
+      text: key,
+    };
+  }
+  return {
+    key,
+    code: key,
+    keyCode: 0,
+  };
+}
+
+function buildCdpKeyEventParams(descriptor: CdpKeyDescriptor, modifiers: number): Record<string, unknown> {
+  return {
+    key: descriptor.key,
+    code: descriptor.code,
+    windowsVirtualKeyCode: descriptor.keyCode,
+    nativeVirtualKeyCode: descriptor.keyCode,
+    ...(descriptor.location !== undefined ? { location: descriptor.location } : {}),
+    ...(descriptor.text && modifiers === 0 ? { text: descriptor.text, unmodifiedText: descriptor.text } : {}),
+  };
 }
 
 function normalizeCdpTimeoutMs(value: number | undefined): number {

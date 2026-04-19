@@ -6,7 +6,7 @@ import type {
 
 export type RelayExecutableBrowserAction = Extract<
   BrowserTaskAction,
-  { kind: "open" | "snapshot" | "click" | "type" | "scroll" | "console" | "wait" | "screenshot" | "cdp" }
+  { kind: "open" | "snapshot" | "click" | "type" | "hover" | "key" | "scroll" | "console" | "wait" | "screenshot" | "cdp" }
 >;
 
 export interface RelayScreenshotPayload {

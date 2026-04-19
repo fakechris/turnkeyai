@@ -218,6 +218,85 @@ test("relay gateway dispatches wait actions to peers that advertise wait support
   assert.equal(result.trace[0]?.kind, "wait");
 });
 
+test("relay gateway routes hover and key actions only to peers that advertise input support", async () => {
+  const gateway = new RelayGateway({
+    now: () => 1_000,
+    createId: (prefix) => `${prefix}-input`,
+  });
+  gateway.registerPeer({
+    peerId: "peer-snapshot",
+    capabilities: ["snapshot"],
+  });
+  gateway.registerPeer({
+    peerId: "peer-input",
+    capabilities: ["snapshot", "hover", "key"],
+  });
+
+  const dispatchPromise = gateway.dispatchActionRequest({
+    browserSessionId: "browser-session-1",
+    taskId: "task-input",
+    actions: [
+      { kind: "hover", text: "Open menu" },
+      { kind: "key", key: "K", modifiers: ["Control"] },
+      { kind: "snapshot", note: "after-input" },
+    ],
+  });
+
+  assert.equal(gateway.pullNextActionRequest("peer-snapshot"), null);
+  const request = gateway.pullNextActionRequest("peer-input");
+  assert.ok(request);
+  assert.deepEqual(
+    request?.actions.map((action) => action.kind),
+    ["hover", "key", "snapshot"]
+  );
+
+  gateway.submitActionResult({
+    actionRequestId: request!.actionRequestId,
+    peerId: "peer-input",
+    browserSessionId: request!.browserSessionId,
+    taskId: request!.taskId,
+    relayTargetId: "tab-1",
+    claimToken: request!.claimToken!,
+    url: "https://example.com",
+    title: "Example Domain",
+    status: "completed",
+    page: {
+      requestedUrl: "https://example.com",
+      finalUrl: "https://example.com",
+      title: "Example Domain",
+      textExcerpt: "Example Domain",
+      statusCode: 200,
+      interactives: [],
+    },
+    trace: [
+      {
+        stepId: "task-input:relay-hover:1",
+        kind: "hover",
+        startedAt: 1,
+        completedAt: 2,
+        status: "ok",
+        input: { text: "Open menu" },
+      },
+      {
+        stepId: "task-input:relay-key:2",
+        kind: "key",
+        startedAt: 3,
+        completedAt: 4,
+        status: "ok",
+        input: { key: "K", modifiers: ["Control"] },
+      },
+    ],
+    screenshotPaths: [],
+    screenshotPayloads: [],
+    artifactIds: [],
+  });
+
+  const result = await dispatchPromise;
+  assert.equal(result.taskId, "task-input");
+  assert.equal(result.trace[0]?.kind, "hover");
+  assert.equal(result.trace[1]?.kind, "key");
+});
+
 test("relay gateway routes cdp actions only to peers that advertise cdp support", async () => {
   const gateway = new RelayGateway({
     now: () => 1_000,

@@ -14,6 +14,8 @@ export type BrowserActionKind =
   | "snapshot"
   | "type"
   | "click"
+  | "hover"
+  | "key"
   | "scroll"
   | "console"
   | "wait"
@@ -52,6 +54,7 @@ export const MAX_BROWSER_CDP_ACTION_EVENT_NAMES = 20;
 export const MAX_BROWSER_CDP_ACTION_EVENTS = 20;
 export const MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS = 30_000;
 export const MAX_BROWSER_CDP_EVENT_PARAMS_BYTES = 8 * 1024;
+export const MAX_BROWSER_KEY_ACTION_KEY_LENGTH = 64;
 
 const BROWSER_CDP_METHOD_PATTERN = /^[A-Z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9]*$/;
 const BLOCKED_BROWSER_CDP_METHOD_PREFIXES = ["Browser.", "Target."];
@@ -80,11 +83,20 @@ export type BrowserClickAction =
   | { kind: "click"; refId: string; selectors?: never; text?: never }
   | { kind: "click"; text: string; selectors?: never; refId?: never };
 
+export type BrowserHoverAction =
+  | { kind: "hover"; selectors: string[]; refId?: never; text?: never }
+  | { kind: "hover"; refId: string; selectors?: never; text?: never }
+  | { kind: "hover"; text: string; selectors?: never; refId?: never };
+
+export type BrowserKeyModifier = "Alt" | "Control" | "Meta" | "Shift";
+
 export type BrowserTaskAction =
   | { kind: "open"; url: string }
   | { kind: "snapshot"; note?: string }
   | { kind: "type"; selectors?: string[]; refId?: string; text: string; submit?: boolean }
   | BrowserClickAction
+  | BrowserHoverAction
+  | { kind: "key"; key: string; modifiers?: BrowserKeyModifier[] }
   | { kind: "scroll"; direction: "up" | "down"; amount?: number }
   | { kind: "console"; probe: BrowserConsoleProbe }
   | { kind: "wait"; timeoutMs: number }

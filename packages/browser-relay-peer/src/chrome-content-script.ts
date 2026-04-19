@@ -247,6 +247,8 @@ export async function executeChromeRelayContentScriptActions(
         });
         continue;
       }
+
+      throw new Error(`unsupported content script action: ${action.kind}`);
     } catch (error) {
       trace.push({
         stepId,

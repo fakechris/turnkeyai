@@ -537,6 +537,8 @@ export function isRelayExecutableAction(
     action.kind === "snapshot" ||
     action.kind === "click" ||
     action.kind === "type" ||
+    action.kind === "hover" ||
+    action.kind === "key" ||
     action.kind === "scroll" ||
     action.kind === "console" ||
     action.kind === "wait" ||

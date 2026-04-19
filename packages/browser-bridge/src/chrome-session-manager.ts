@@ -942,6 +942,35 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "hover") {
+      const locator = await this.resolveActionLocator(page, action, knownRefs, browserSessionId, currentTargetId);
+      await locator.hover();
+      await settle(page);
+
+      return {
+        traceOutput: {
+          selectors: action.selectors ?? [],
+          refId: action.refId ?? null,
+          text: action.text ?? null,
+          finalUrl: page.url(),
+        },
+      };
+    }
+
+    if (action.kind === "key") {
+      const shortcut = formatKeyboardShortcut(action);
+      await page.keyboard.press(shortcut);
+      await settle(page);
+
+      return {
+        traceOutput: {
+          key: action.key,
+          modifiers: action.modifiers ?? [],
+          shortcut,
+        },
+      };
+    }
+
     if (action.kind === "scroll") {
       const amount = action.amount ?? 800;
       const scrollY = await page.evaluate(
@@ -1013,7 +1042,7 @@ export class ChromeSessionManager {
 
   private async resolveActionLocator(
     page: Page,
-    action: Extract<BrowserTaskAction, { kind: "click" | "type" }>,
+    action: Extract<BrowserTaskAction, { kind: "click" | "type" | "hover" }>,
     knownRefs: Map<string, BrowserInteractiveElement>,
     browserSessionId: string,
     currentTargetId?: string
@@ -1044,7 +1073,7 @@ export class ChromeSessionManager {
       return resolveLocator(page, action.selectors);
     }
 
-    if (action.kind === "click") {
+    if (action.kind === "click" || action.kind === "hover") {
       return resolveTextLocator(page, action.text ?? "");
     }
 
@@ -1111,6 +1140,10 @@ async function resolveTextLocator(page: Page, text: string): Promise<Locator> {
 async function settle(page: Page): Promise<void> {
   await page.waitForLoadState("domcontentloaded", { timeout: 5_000 }).catch(() => {});
   await page.waitForTimeout(DEFAULT_WAIT_MS);
+}
+
+function formatKeyboardShortcut(action: Extract<BrowserTaskAction, { kind: "key" }>): string {
+  return [...new Set(action.modifiers ?? []), action.key].join("+");
 }
 
 async function executeTargetCdpAction(
@@ -1350,6 +1383,21 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
       selectors: action.selectors ?? [],
       refId: action.refId ?? null,
       text: action.text ?? null,
+    };
+  }
+
+  if (action.kind === "hover") {
+    return {
+      selectors: action.selectors ?? [],
+      refId: action.refId ?? null,
+      text: action.text ?? null,
+    };
+  }
+
+  if (action.kind === "key") {
+    return {
+      key: action.key,
+      modifiers: action.modifiers ?? [],
     };
   }
 

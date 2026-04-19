@@ -294,6 +294,88 @@ test("chrome relay action executor can run target-scoped cdp commands", async ()
   assert.equal(sentMessages.length, 1);
 });
 
+test("chrome relay action executor can run typed hover and key actions through debugger input", async () => {
+  const now = Date.now();
+  const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];
+  const executor = new ChromeRelayActionExecutor(
+    fakePlatform({
+      activeTab: { id: 7, windowId: 3, url: "https://example.com", title: "Example", status: "complete" },
+      onDebuggerCommand(tabId, method, params) {
+        debuggerCommands.push({ tabId, method, params });
+        if (method === "Runtime.evaluate") {
+          return {
+            result: {
+              value: {
+                ok: true,
+                x: 25,
+                y: 50,
+                tagName: "BUTTON",
+                label: "Open",
+              },
+            },
+          };
+        }
+        return {};
+      },
+      onSendMessage() {
+        return {
+          ok: true,
+          page: {
+            requestedUrl: "https://example.com",
+            finalUrl: "https://example.com",
+            title: "Example",
+            textExcerpt: "Example page",
+            statusCode: 200,
+            interactives: [],
+          },
+          trace: [],
+        };
+      },
+    })
+  );
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-input",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-1",
+    actions: [
+      { kind: "hover", text: "Open" },
+      { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
+    ],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.trace[0]?.kind, "hover");
+  assert.equal(result.trace[1]?.kind, "key");
+  assert.deepEqual(
+    debuggerCommands.map((command) => command.method),
+    [
+      "Runtime.evaluate",
+      "Input.dispatchMouseEvent",
+      "Input.dispatchKeyEvent",
+      "Input.dispatchKeyEvent",
+      "Input.dispatchKeyEvent",
+      "Input.dispatchKeyEvent",
+      "Input.dispatchKeyEvent",
+      "Input.dispatchKeyEvent",
+    ]
+  );
+  assert.deepEqual(debuggerCommands[1]?.params, {
+    type: "mouseMoved",
+    x: 25,
+    y: 50,
+    button: "none",
+  });
+  assert.equal(debuggerCommands[4]?.params.type, "keyDown");
+  assert.equal(debuggerCommands[4]?.params.key, "K");
+  assert.equal(debuggerCommands[4]?.params.code, "KeyK");
+  assert.equal(debuggerCommands[4]?.params.windowsVirtualKeyCode, 75);
+  assert.equal(debuggerCommands[4]?.params.modifiers, 10);
+});
+
 test("chrome relay action executor can wait for and trace cdp events", async () => {
   const now = Date.now();
   const debuggerCommands: unknown[] = [];
