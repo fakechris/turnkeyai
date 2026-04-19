@@ -518,8 +518,9 @@ async function runBrowserSessionSmoke(input: {
 
   const sendResponse = (await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/send`, {
     threadId,
-    instructions: "Type into the relay form, submit it, and inspect page metadata.",
+    instructions: "Exercise relay network controls, type into the relay form, submit it, and inspect page metadata.",
     actions: [
+      ...buildNetworkSmokeActions("chrome-relay"),
       { kind: "type", selectors: ["#relay-input"], text: "turnkey relay" },
       { kind: "click", selectors: ["#relay-submit"] },
       { kind: "wait", timeoutMs: 50 },
@@ -539,6 +540,7 @@ async function runBrowserSessionSmoke(input: {
   if (sendTransportLabel !== "chrome-relay") {
     throw new Error(`relay send smoke returned unexpected transport label: ${sendTransportLabel}`);
   }
+  assertNetworkSmokeTrace(sendResponse, "chrome-relay");
   const waitTrace = sendResponse.trace?.find((entry) => entry.kind === "wait");
   if (!waitTrace) {
     throw new Error("relay send smoke did not record wait trace");
@@ -865,7 +867,15 @@ function requireString(value: unknown, label: string): string {
 async function startRelaySmokeFixture(): Promise<{ url: string; close(): Promise<void> }> {
   const html = buildRelaySmokeFixtureHtml();
   const server = createServer((req, res) => {
-    if ((req.url ?? "/") !== "/") {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    if (url.pathname === "/headers-smoke") {
+      const header = req.headers["x-turnkeyai-smoke"];
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      res.end(JSON.stringify({ header: Array.isArray(header) ? header.join(",") : header ?? null }));
+      return;
+    }
+    if (url.pathname !== "/") {
       res.statusCode = 404;
       res.setHeader("content-type", "text/plain; charset=utf-8");
       res.end("not found");
@@ -935,6 +945,168 @@ function buildRelaySmokeFixtureHtml(): string {
 </html>`;
 }
 
+function buildNetworkSmokeActions(label: string): Array<Record<string, unknown>> {
+  const mockBody = JSON.stringify({ ok: true, transport: label });
+  return [
+    { kind: "network", action: "setExtraHeaders", headers: { "x-turnkeyai-smoke": label } },
+    {
+      kind: "eval",
+      expression: buildHeaderProbeExpression("header"),
+      awaitPromise: true,
+      timeoutMs: 5_000,
+    },
+    {
+      kind: "network",
+      action: "emulateConditions",
+      latencyMs: 0,
+      downloadThroughputBytesPerSec: 1_000_000,
+      uploadThroughputBytesPerSec: 500_000,
+    },
+    {
+      kind: "network",
+      action: "mockResponse",
+      urlPattern: "/mock-smoke",
+      method: "GET",
+      status: 201,
+      headers: { "content-type": "application/json" },
+      body: mockBody,
+      timeoutMs: 5_000,
+    },
+    {
+      kind: "eval",
+      expression: [
+        "(async () => {",
+        "  const response = await fetch('/mock-smoke');",
+        "  const body = await response.json();",
+        "  window.__turnkeyNetworkSmoke = { ...(window.__turnkeyNetworkSmoke || {}), mockStatus: response.status, mockTransport: body.transport };",
+        "  return window.__turnkeyNetworkSmoke;",
+        "})()",
+      ].join("\n"),
+      awaitPromise: true,
+      timeoutMs: 5_000,
+    },
+    { kind: "network", action: "blockUrls", urlPatterns: ["*://*/blocked-smoke*"] },
+    {
+      kind: "eval",
+      expression: [
+        "(async () => {",
+        "  let blocked = false;",
+        "  try {",
+        "    await fetch('/blocked-smoke?phase=blocked');",
+        "  } catch {",
+        "    blocked = true;",
+        "  }",
+        "  window.__turnkeyNetworkSmoke = { ...(window.__turnkeyNetworkSmoke || {}), blocked };",
+        "  return window.__turnkeyNetworkSmoke;",
+        "})()",
+      ].join("\n"),
+      awaitPromise: true,
+      timeoutMs: 5_000,
+    },
+    { kind: "network", action: "clearBlockedUrls" },
+    {
+      kind: "eval",
+      expression: [
+        "(async () => {",
+        "  const response = await fetch('/blocked-smoke?phase=clear');",
+        "  window.__turnkeyNetworkSmoke = { ...(window.__turnkeyNetworkSmoke || {}), unblockedStatus: response.status };",
+        "  return window.__turnkeyNetworkSmoke;",
+        "})()",
+      ].join("\n"),
+      awaitPromise: true,
+      timeoutMs: 5_000,
+    },
+    { kind: "network", action: "clearMockResponses" },
+    {
+      kind: "eval",
+      expression: [
+        "(async () => {",
+        "  const response = await fetch('/mock-smoke?phase=cleared');",
+        "  window.__turnkeyNetworkSmoke = { ...(window.__turnkeyNetworkSmoke || {}), postMockStatus: response.status };",
+        "  return window.__turnkeyNetworkSmoke;",
+        "})()",
+      ].join("\n"),
+      awaitPromise: true,
+      timeoutMs: 5_000,
+    },
+    { kind: "network", action: "clearEmulation" },
+    { kind: "network", action: "clearExtraHeaders" },
+    {
+      kind: "eval",
+      expression: buildHeaderProbeExpression("clearedHeader"),
+      awaitPromise: true,
+      timeoutMs: 5_000,
+    },
+  ];
+}
+
+function buildHeaderProbeExpression(field: "header" | "clearedHeader"): string {
+  return [
+    "(async () => {",
+    `  const response = await fetch('/headers-smoke?field=${field}');`,
+    "  const body = await response.json();",
+    `  window.__turnkeyNetworkSmoke = { ...(window.__turnkeyNetworkSmoke || {}), ${field}: body.header ?? null };`,
+    "  return window.__turnkeyNetworkSmoke;",
+    "})()",
+  ].join("\n");
+}
+
+function assertNetworkSmokeTrace(response: BrowserSmokeResponse, label: string): void {
+  const networkOutput = (action: string): Record<string, unknown> | null => {
+    const entry = response.trace?.find((candidate) =>
+      candidate.kind === "network" &&
+      candidate.output &&
+      typeof candidate.output === "object" &&
+      candidate.output.action === action
+    );
+    return entry?.output ?? null;
+  };
+
+  const headersOutput = networkOutput("setExtraHeaders");
+  if (!headersOutput || headersOutput.set !== true || headersOutput.headerCount !== 1) {
+    throw new Error("relay network smoke did not set extra headers");
+  }
+  const emulationOutput = networkOutput("emulateConditions");
+  if (!emulationOutput || emulationOutput.emulated !== true || emulationOutput.latencyMs !== 0) {
+    throw new Error("relay network smoke did not emulate network conditions");
+  }
+  const mockOutput = networkOutput("mockResponse");
+  if (!mockOutput || mockOutput.matched !== true || mockOutput.status !== 201) {
+    throw new Error("relay network smoke did not match mock response");
+  }
+  const blockOutput = networkOutput("blockUrls");
+  if (!blockOutput || blockOutput.blocked !== true || blockOutput.urlPatternCount !== 1) {
+    throw new Error("relay network smoke did not block URLs");
+  }
+  for (const action of ["clearBlockedUrls", "clearMockResponses", "clearEmulation", "clearExtraHeaders"]) {
+    const output = networkOutput(action);
+    if (!output || output.cleared !== true) {
+      throw new Error(`relay network smoke did not clear ${action}`);
+    }
+  }
+
+  const finalResult = response.trace
+    ?.filter((entry) => entry.kind === "eval")
+    .map((entry) => entry.output?.result)
+    .find((result): result is Record<string, unknown> =>
+      isRecord(result) &&
+      result.header === label &&
+      result.mockStatus === 201 &&
+      result.mockTransport === label &&
+      result.blocked === true &&
+      result.unblockedStatus === 404 &&
+      result.postMockStatus === 404 &&
+      result.clearedHeader === null
+    );
+  if (!finalResult) {
+    throw new Error("relay network smoke did not observe expected network side effects");
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 interface BrowserSmokeResponse {
   sessionId?: string;
   dispatchMode?: string;
@@ -950,6 +1122,7 @@ interface BrowserSmokeResponse {
   artifactIds?: string[];
   trace?: Array<{
     kind?: string;
+    input?: Record<string, unknown>;
     output?: Record<string, unknown>;
   }>;
 }

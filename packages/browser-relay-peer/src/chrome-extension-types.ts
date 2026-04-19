@@ -93,6 +93,49 @@ export interface ChromeScriptingLike {
   ): void;
 }
 
+export interface ChromeDebuggerTargetLike {
+  tabId: number;
+}
+
+export interface ChromeDebuggerEventLike {
+  method: string;
+  params?: Record<string, unknown>;
+  timestamp: number;
+}
+
+export interface ChromeDebuggerEventSourceLike {
+  tabId?: number;
+}
+
+export interface ChromeDebuggerEventListenerLike {
+  addListener(
+    listener: (
+      source: ChromeDebuggerEventSourceLike,
+      method: string,
+      params?: Record<string, unknown>
+    ) => void
+  ): void;
+  removeListener?(
+    listener: (
+      source: ChromeDebuggerEventSourceLike,
+      method: string,
+      params?: Record<string, unknown>
+    ) => void
+  ): void;
+}
+
+export interface ChromeDebuggerLike {
+  attach(target: ChromeDebuggerTargetLike, requiredVersion: string, callback: () => void): void;
+  sendCommand(
+    target: ChromeDebuggerTargetLike,
+    method: string,
+    commandParams: Record<string, unknown>,
+    callback: (result?: unknown) => void
+  ): void;
+  detach(target: ChromeDebuggerTargetLike, callback: () => void): void;
+  onEvent?: ChromeDebuggerEventListenerLike;
+}
+
 export interface ChromeExtensionPlatform {
   runtime: ChromeRuntimeLike;
   tabs: ChromeTabsLike;
@@ -112,7 +155,16 @@ export interface ChromeExtensionPlatform {
   }): Promise<ChromeTabLike>;
   sendTabMessage<T>(tabId: number, message: unknown): Promise<T>;
   injectContentScript?(tabId: number): Promise<void>;
+  sendDebuggerCommand?(tabId: number, method: string, params?: Record<string, unknown>): Promise<unknown>;
+  waitForDebuggerEvent?(tabId: number, method: string, timeoutMs: number): Promise<ChromeDebuggerEventLike>;
+  drainDebuggerEvents?(tabId: number, input?: { include?: string[]; maxEvents?: number }): Promise<ChromeDebuggerEventLike[]>;
+  detachDebugger?(tabId: number): Promise<void>;
   captureVisibleTab(windowId?: number, options?: { format?: "png" | "jpeg" }): Promise<string>;
+  fetchDownload?(url: string, input: { maxBytes: number }): Promise<{
+    mimeType?: string;
+    dataBase64: string;
+    sizeBytes: number;
+  }>;
 }
 
 export function getChromeRuntime(): ChromeRuntimeLike {
@@ -193,11 +245,101 @@ export function getChromeExtensionPlatform(): ChromeExtensionPlatform {
       onAlarm?: ChromeAlarmEventLike;
     };
     scripting?: ChromeScriptingLike;
+    debugger?: ChromeDebuggerLike;
   } | undefined;
 
   if (!chromeLike?.tabs) {
     throw new Error("chrome extension APIs are not available in this runtime");
   }
+
+  const debuggerAttachedTabs = new Set<number>();
+  const debuggerAttachPromises = new Map<number, Promise<void>>();
+  const debuggerEventBuffers = new Map<number, ChromeDebuggerEventLike[]>();
+  const debuggerEventWaiters = new Map<
+    number,
+    Set<{
+      method: string;
+      resolve(event: ChromeDebuggerEventLike): void;
+      reject(error: Error): void;
+      timeout: ReturnType<typeof setTimeout>;
+    }>
+  >();
+  const maxBufferedDebuggerEventsPerTab = 100;
+
+  const ensureDebuggerAttached = async (tabId: number): Promise<void> => {
+    if (!chromeLike.debugger || debuggerAttachedTabs.has(tabId)) {
+      return;
+    }
+    const existingAttach = debuggerAttachPromises.get(tabId);
+    if (existingAttach) {
+      await existingAttach;
+      return;
+    }
+    const attach = withChromeRuntimeCallback<void>((callback) =>
+      chromeLike.debugger!.attach({ tabId }, "1.3", callback)
+    )
+      .then(() => {
+        debuggerAttachedTabs.add(tabId);
+      })
+      .finally(() => {
+        debuggerAttachPromises.delete(tabId);
+      });
+    debuggerAttachPromises.set(tabId, attach);
+    await attach;
+  };
+
+  const detachDebugger = async (tabId: number): Promise<void> => {
+    if (!chromeLike.debugger || !debuggerAttachedTabs.has(tabId)) {
+      return;
+    }
+    await withChromeRuntimeCallback<void>((callback) =>
+      chromeLike.debugger!.detach({ tabId }, callback)
+    ).catch(() => undefined);
+    debuggerAttachedTabs.delete(tabId);
+    debuggerEventBuffers.delete(tabId);
+    const waiters = debuggerEventWaiters.get(tabId);
+    if (!waiters) {
+      return;
+    }
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error(`chrome debugger detached before event arrived: ${waiter.method}`));
+    }
+    debuggerEventWaiters.delete(tabId);
+  };
+
+  chromeLike.debugger?.onEvent?.addListener((source, method, params) => {
+    if (typeof source.tabId !== "number") {
+      return;
+    }
+    const event: ChromeDebuggerEventLike = {
+      method,
+      ...(params ? { params } : {}),
+      timestamp: Date.now(),
+    };
+    const buffer = debuggerEventBuffers.get(source.tabId) ?? [];
+    buffer.push(event);
+    if (buffer.length > maxBufferedDebuggerEventsPerTab) {
+      buffer.splice(0, buffer.length - maxBufferedDebuggerEventsPerTab);
+    }
+    debuggerEventBuffers.set(source.tabId, buffer);
+
+    const waiters = debuggerEventWaiters.get(source.tabId);
+    if (!waiters) {
+      return;
+    }
+    for (const waiter of [...waiters]) {
+      if (waiter.method !== method) {
+        continue;
+      }
+      clearTimeout(waiter.timeout);
+      waiters.delete(waiter);
+      waiter.resolve(event);
+    }
+    if (!waiters.size) {
+      debuggerEventWaiters.delete(source.tabId);
+    }
+  });
 
   const platform: ChromeExtensionPlatform = {
     runtime: getChromeRuntime(),
@@ -300,6 +442,54 @@ export function getChromeExtensionPlatform(): ChromeExtensionPlatform {
           },
         }
       : {}),
+    ...(chromeLike.debugger
+      ? {
+          async sendDebuggerCommand(
+            tabId: number,
+            method: string,
+            params: Record<string, unknown> = {}
+          ): Promise<unknown> {
+            await ensureDebuggerAttached(tabId);
+            return await withChromeRuntimeCallback<unknown>((callback) =>
+              chromeLike.debugger!.sendCommand({ tabId }, method, params, callback)
+            );
+          },
+          async waitForDebuggerEvent(tabId: number, method: string, timeoutMs: number): Promise<ChromeDebuggerEventLike> {
+            if (!chromeLike.debugger!.onEvent) {
+              throw new Error("chrome debugger event stream is not available");
+            }
+            await ensureDebuggerAttached(tabId);
+            return await new Promise<ChromeDebuggerEventLike>((resolve, reject) => {
+              const timeout = setTimeout(() => {
+                const waiters = debuggerEventWaiters.get(tabId);
+                if (waiters) {
+                  for (const waiter of [...waiters]) {
+                    if (waiter.method === method && waiter.reject === reject) {
+                      waiters.delete(waiter);
+                    }
+                  }
+                  if (!waiters.size) {
+                    debuggerEventWaiters.delete(tabId);
+                  }
+                }
+                reject(new Error(`chrome debugger event timed out after ${timeoutMs}ms: ${method}`));
+              }, timeoutMs);
+              const waiter = { method, resolve, reject, timeout };
+              const waiters = debuggerEventWaiters.get(tabId) ?? new Set<typeof waiter>();
+              waiters.add(waiter);
+              debuggerEventWaiters.set(tabId, waiters);
+            });
+          },
+          async drainDebuggerEvents(tabId: number, input: { include?: string[]; maxEvents?: number } = {}) {
+            const events = debuggerEventBuffers.get(tabId) ?? [];
+            debuggerEventBuffers.set(tabId, []);
+            const include = input.include?.length ? new Set(input.include) : null;
+            const filtered = include ? events.filter((event) => include.has(event.method)) : events;
+            return filtered.slice(-(input.maxEvents ?? filtered.length));
+          },
+          detachDebugger,
+        }
+      : {}),
     captureVisibleTab(windowId, options) {
       return new Promise<string>((resolve, reject) => {
         chromeLike.tabs!.captureVisibleTab(windowId, options, (dataUrl) => {
@@ -312,7 +502,54 @@ export function getChromeExtensionPlatform(): ChromeExtensionPlatform {
         });
       });
     },
+    async fetchDownload(url, input) {
+      const response = await fetch(url, {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(`download fetch failed: ${response.status} ${response.statusText}`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      if (arrayBuffer.byteLength > input.maxBytes) {
+        throw new Error(`download fetch exceeds ${input.maxBytes} bytes`);
+      }
+      return {
+        ...(response.headers.get("content-type") ? { mimeType: response.headers.get("content-type")! } : {}),
+        dataBase64: arrayBufferToBase64(arrayBuffer),
+        sizeBytes: arrayBuffer.byteLength,
+      };
+    },
   };
 
   return platform;
+}
+
+function arrayBufferToBase64(arrayBuffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]!);
+  }
+  return btoa(binary);
+}
+
+function withChromeRuntimeCallback<T>(
+  work: (callback: (value: T) => void) => void
+): Promise<T> {
+  const chromeLike = (globalThis as Record<string, unknown>).chrome as {
+    runtime?: {
+      lastError?: { message?: string };
+    };
+  } | undefined;
+
+  return new Promise<T>((resolve, reject) => {
+    work((value) => {
+      const runtimeError = chromeLike?.runtime?.lastError;
+      if (runtimeError?.message) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+      resolve(value);
+    });
+  });
 }

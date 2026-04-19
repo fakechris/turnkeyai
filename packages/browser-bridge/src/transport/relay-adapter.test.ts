@@ -1,14 +1,44 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { BrowserActionTrace } from "@turnkeyai/core-types/team";
+import type { BrowserActionTrace, BrowserTaskRequest } from "@turnkeyai/core-types/team";
 
+import { FileBrowserArtifactStore } from "../artifacts/file-browser-artifact-store";
 import { RelayBrowserAdapter } from "./relay-adapter";
 import { RelayGateway } from "./relay-gateway";
 import type { RelayActionRequest } from "./relay-protocol";
+
+test("file browser artifact store rejects artifact id reuse across sessions", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "browser-artifact-store-"));
+
+  try {
+    const store = new FileBrowserArtifactStore({ rootDir: path.join(tempDir, "artifacts") });
+    await store.put({
+      artifactId: "artifact-shared",
+      browserSessionId: "browser-session-1",
+      type: "upload-file",
+      path: path.join(tempDir, "session-1", "fixture.txt"),
+      createdAt: 1,
+    });
+
+    await assert.rejects(
+      () =>
+        store.put({
+          artifactId: "artifact-shared",
+          browserSessionId: "browser-session-2",
+          type: "upload-file",
+          path: path.join(tempDir, "session-2", "fixture.txt"),
+          createdAt: 2,
+        }),
+      /browser artifact id already belongs to another session/
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
 
 test("relay browser adapter can attach to a reported target and execute snapshot actions", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-"));
@@ -190,6 +220,346 @@ test("relay browser adapter persists screenshot payloads returned by a relay pee
   }
 });
 
+test("relay browser adapter injects upload payloads from session artifacts", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-upload-"));
+
+  try {
+    const artifactRootDir = path.join(tempDir, "artifacts");
+    const stateRootDir = path.join(tempDir, "state");
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir,
+      stateRootDir,
+      relay: {
+        relayPeerId: "peer-1",
+      },
+    });
+    const gateway = adapter.getRelayControlPlane();
+    gateway.registerPeer({
+      peerId: "peer-1",
+      capabilities: ["snapshot", "upload"],
+    });
+    gateway.reportTargets("peer-1", [
+      {
+        relayTargetId: "tab-upload",
+        url: "https://example.com/form",
+        title: "Upload",
+        status: "attached",
+      },
+    ]);
+
+    const spawnPromise = adapter.spawnSession({
+      taskId: "task-upload-start",
+      threadId: "thread-1",
+      instructions: "Attach upload form",
+      actions: [{ kind: "snapshot", note: "before-upload" }],
+      ownerType: "thread",
+      ownerId: "thread-1",
+      profileOwnerType: "thread",
+      profileOwnerId: "thread-1",
+    });
+    const startRequest = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-1"));
+    gateway.submitActionResult({
+      actionRequestId: startRequest.actionRequestId,
+      peerId: "peer-1",
+      browserSessionId: startRequest.browserSessionId,
+      taskId: startRequest.taskId,
+      relayTargetId: "tab-upload",
+      claimToken: startRequest.claimToken!,
+      url: "https://example.com/form",
+      title: "Upload",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/form",
+        finalUrl: "https://example.com/form",
+        title: "Upload",
+        textExcerpt: "Upload page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      artifactIds: [],
+    });
+    const startResult = await spawnPromise;
+
+    const uploadPath = path.join(artifactRootDir, startResult.sessionId, "uploads", "fixture.txt");
+    await mkdir(path.dirname(uploadPath), { recursive: true });
+    await writeFile(uploadPath, "hello relay upload", "utf8");
+    await new FileBrowserArtifactStore({
+      rootDir: path.join(stateRootDir, "artifacts"),
+    }).put({
+      artifactId: "artifact-upload",
+      browserSessionId: startResult.sessionId,
+      ...(startResult.targetId ? { targetId: startResult.targetId } : {}),
+      type: "upload-file",
+      path: uploadPath,
+      createdAt: 1,
+      metadata: {
+        fileName: "fixture.txt",
+        mimeType: "text/plain",
+      },
+    });
+
+    const sendPromise = adapter.sendSession({
+      taskId: "task-upload",
+      threadId: "thread-1",
+      browserSessionId: startResult.sessionId,
+      instructions: "Upload file",
+      actions: [{ kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" }],
+      ownerType: "thread",
+      ownerId: "thread-1",
+    });
+    const uploadRequest = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-1"));
+    const uploadAction = uploadRequest.actions[0];
+    assert.equal(uploadAction?.kind, "upload");
+    if (uploadAction?.kind !== "upload") {
+      throw new Error("upload action was not dispatched");
+    }
+    assert.equal(uploadAction.file?.name, "fixture.txt");
+    assert.equal(uploadAction.file?.mimeType, "text/plain");
+    assert.equal(uploadAction.file?.sizeBytes, 18);
+    assert.equal(uploadAction.file?.dataBase64, "aGVsbG8gcmVsYXkgdXBsb2Fk");
+    assert.equal((uploadAction as { path?: string }).path, undefined);
+
+    gateway.submitActionResult({
+      actionRequestId: uploadRequest.actionRequestId,
+      peerId: "peer-1",
+      browserSessionId: uploadRequest.browserSessionId,
+      taskId: uploadRequest.taskId,
+      relayTargetId: "tab-upload",
+      claimToken: uploadRequest.claimToken!,
+      url: "https://example.com/form",
+      title: "Upload",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/form",
+        finalUrl: "https://example.com/form",
+        title: "Upload",
+        textExcerpt: "Upload page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [
+        {
+          stepId: "task-upload:relay-step:1",
+          kind: "upload",
+          startedAt: 1,
+          completedAt: 2,
+          status: "ok",
+          input: { artifactId: "artifact-upload" },
+          output: { fileName: "fixture.txt", sizeBytes: 18 },
+        },
+      ],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      artifactIds: [],
+    });
+
+    const uploadResult = await sendPromise;
+    assert.equal(uploadResult.trace[0]?.kind, "upload");
+    const history = await adapter.getSessionHistory({ browserSessionId: startResult.sessionId });
+    const uploadHistory = history.find((entry) => entry.taskId === "task-upload");
+    assert.ok(uploadHistory);
+    assert.deepEqual(uploadHistory?.actionKinds, ["upload"]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("relay browser adapter rejects upload artifacts outside the session artifact root", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-upload-scope-"));
+
+  try {
+    const artifactRootDir = path.join(tempDir, "artifacts");
+    const stateRootDir = path.join(tempDir, "state");
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir,
+      stateRootDir,
+      relay: {
+        relayPeerId: "peer-1",
+      },
+    });
+    const uploadPath = path.join(artifactRootDir, "browser-session-other", "leak.txt");
+    await mkdir(path.dirname(uploadPath), { recursive: true });
+    await writeFile(uploadPath, "not this session", "utf8");
+    await new FileBrowserArtifactStore({
+      rootDir: path.join(stateRootDir, "artifacts"),
+    }).put({
+      artifactId: "artifact-leak",
+      browserSessionId: "browser-session-1",
+      type: "upload-file",
+      path: uploadPath,
+      createdAt: 1,
+      metadata: {
+        fileName: "leak.txt",
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        (
+          adapter as unknown as {
+            readUploadArtifactPayload(browserSessionId: string, artifactId: string): Promise<unknown>;
+          }
+        ).readUploadArtifactPayload("browser-session-1", "artifact-leak"),
+      /browser upload artifact path escapes artifact root/
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("relay browser adapter rejects malformed download payload base64", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-download-payload-"));
+
+  try {
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir: path.join(tempDir, "artifacts"),
+      stateRootDir: path.join(tempDir, "state"),
+      relay: {
+        relayPeerId: "peer-1",
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        (
+          adapter as unknown as {
+            persistDownloadArtifacts(input: {
+              task: BrowserTaskRequest;
+              sessionId: string;
+              targetId: string;
+              downloadPayloads: Array<{
+                url: string;
+                fileName: string;
+                dataBase64: string;
+                sizeBytes: number;
+              }>;
+            }): Promise<unknown>;
+          }
+        ).persistDownloadArtifacts({
+          task: {
+            taskId: "task-download",
+            threadId: "thread-1",
+            instructions: "Download",
+            actions: [{ kind: "download" }],
+          },
+          sessionId: "browser-session-1",
+          targetId: "target-1",
+          downloadPayloads: [
+            {
+              url: "https://example.com/export.csv",
+              fileName: "export.csv",
+              dataBase64: "not-base64!",
+              sizeBytes: 0,
+            },
+          ],
+        }),
+      /relay download payload has invalid base64 data/
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("relay browser adapter persists download payloads returned by a relay peer", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-download-"));
+
+  try {
+    const artifactRootDir = path.join(tempDir, "artifacts");
+    const stateRootDir = path.join(tempDir, "state");
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir,
+      stateRootDir,
+      relay: {
+        relayPeerId: "peer-1",
+      },
+    });
+    const gateway = adapter.getRelayControlPlane();
+    gateway.registerPeer({
+      peerId: "peer-1",
+      capabilities: ["download", "snapshot"],
+    });
+    gateway.reportTargets("peer-1", [
+      {
+        relayTargetId: "tab-download",
+        url: "https://example.com/report",
+        title: "Report",
+        status: "attached",
+      },
+    ]);
+
+    const resultPromise = adapter.spawnSession({
+      taskId: "task-download",
+      threadId: "thread-1",
+      instructions: "Download report",
+      actions: [{ kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 }],
+      ownerType: "thread",
+      ownerId: "thread-1",
+      profileOwnerType: "thread",
+      profileOwnerId: "thread-1",
+    });
+
+    const request = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-1"));
+    assert.equal(request.actions[0]?.kind, "download");
+    gateway.submitActionResult({
+      actionRequestId: request.actionRequestId,
+      peerId: "peer-1",
+      browserSessionId: request.browserSessionId,
+      taskId: request.taskId,
+      relayTargetId: "tab-download",
+      claimToken: request.claimToken!,
+      url: "https://example.com/report",
+      title: "Report",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/report",
+        finalUrl: "https://example.com/report",
+        title: "Report",
+        textExcerpt: "Report page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [
+        {
+          stepId: "task-download:relay-download:1",
+          kind: "download",
+          startedAt: 1,
+          completedAt: 2,
+          status: "ok",
+          input: { urlPattern: "/export.csv", timeoutMs: 1_000 },
+          output: { fileName: "export.csv", sizeBytes: 14 },
+        },
+      ],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      downloadPayloads: [
+        {
+          url: "https://example.com/export.csv",
+          fileName: "export.csv",
+          mimeType: "text/csv",
+          dataBase64: "aWQsbmFtZQoxLEFkYQo=",
+          sizeBytes: 14,
+        },
+      ],
+      artifactIds: [],
+    });
+
+    const result = await resultPromise;
+    const downloadArtifactId = result.artifactIds.find((artifactId) => artifactId.includes("relay-download"));
+    assert.ok(downloadArtifactId);
+    const artifact = await new FileBrowserArtifactStore({
+      rootDir: path.join(stateRootDir, "artifacts"),
+    }).get(downloadArtifactId);
+    assert.equal(artifact?.type, "downloaded-file");
+    assert.equal(artifact?.metadata?.fileName, "export.csv");
+    assert.equal(await readFile(artifact!.path, "utf8"), "id,name\n1,Ada\n");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("relay browser adapter chooses a peer whose capabilities satisfy open actions", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-"));
 
@@ -242,6 +612,7 @@ test("relay browser adapter chooses a peer whose capabilities satisfy open actio
 
     const request = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-browser"));
     assert.equal(request.peerId, "peer-browser");
+    assert.equal(request.targetBehavior, "new");
     assert.equal(gateway.pullNextActionRequest("peer-snapshot-only"), null);
 
     gateway.submitActionResult({
@@ -289,6 +660,116 @@ test("relay browser adapter chooses a peer whose capabilities satisfy open actio
     assert.equal(result.transportPeerId, "peer-browser");
     assert.equal(result.transportTargetId, "chrome-tab:1");
     assert.equal(result.page.finalUrl, "https://example.com/opened");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("relay browser adapter opens a new relay target instead of navigating the active target", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "relay-browser-adapter-new-target-"));
+
+  try {
+    const adapter = new RelayBrowserAdapter({
+      artifactRootDir: path.join(tempDir, "artifacts"),
+      stateRootDir: path.join(tempDir, "state"),
+      relay: {
+        relayPeerId: "peer-1",
+      },
+    });
+    const gateway = adapter.getRelayControlPlane();
+    gateway.registerPeer({
+      peerId: "peer-1",
+      capabilities: ["open", "snapshot"],
+    });
+    gateway.reportTargets("peer-1", [
+      {
+        relayTargetId: "tab-1",
+        url: "https://example.com/start",
+        title: "Start",
+        status: "attached",
+      },
+    ]);
+
+    const spawnPromise = adapter.spawnSession({
+      taskId: "task-attach-existing",
+      threadId: "thread-1",
+      instructions: "Attach current tab",
+      actions: [{ kind: "snapshot", note: "current" }],
+      ownerType: "thread",
+      ownerId: "thread-1",
+      profileOwnerType: "thread",
+      profileOwnerId: "thread-1",
+    });
+    const attachRequest = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-1"));
+    assert.equal(attachRequest.relayTargetId, "tab-1");
+    gateway.submitActionResult({
+      actionRequestId: attachRequest.actionRequestId,
+      peerId: "peer-1",
+      browserSessionId: attachRequest.browserSessionId,
+      taskId: attachRequest.taskId,
+      relayTargetId: "tab-1",
+      claimToken: attachRequest.claimToken!,
+      url: "https://example.com/start",
+      title: "Start",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/start",
+        finalUrl: "https://example.com/start",
+        title: "Start",
+        textExcerpt: "Start page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      artifactIds: [],
+    });
+    const spawned = await spawnPromise;
+
+    const openPromise = adapter.openTarget(spawned.sessionId, "https://example.com/new-target", {
+      ownerType: "thread",
+      ownerId: "thread-1",
+    });
+    const openRequest = await waitForActionRequest(() => gateway.pullNextActionRequest("peer-1"));
+    assert.equal(openRequest.targetBehavior, "new");
+    assert.equal(openRequest.relayTargetId, undefined);
+    assert.deepEqual(
+      openRequest.actions.map((action) => action.kind),
+      ["open", "snapshot"]
+    );
+    gateway.submitActionResult({
+      actionRequestId: openRequest.actionRequestId,
+      peerId: "peer-1",
+      browserSessionId: openRequest.browserSessionId,
+      taskId: openRequest.taskId,
+      relayTargetId: "tab-2",
+      claimToken: openRequest.claimToken!,
+      url: "https://example.com/new-target",
+      title: "New Target",
+      status: "completed",
+      page: {
+        requestedUrl: "https://example.com/new-target",
+        finalUrl: "https://example.com/new-target",
+        title: "New Target",
+        textExcerpt: "New target page",
+        statusCode: 200,
+        interactives: [],
+      },
+      trace: [],
+      screenshotPaths: [],
+      screenshotPayloads: [],
+      artifactIds: [],
+    });
+
+    const opened = await openPromise;
+    assert.equal(opened.transportSessionId, "tab-2");
+
+    const targets = await adapter.listTargets(spawned.sessionId);
+    assert.deepEqual(
+      targets.map((target) => target.transportSessionId).sort(),
+      ["tab-1", "tab-2"]
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -17,7 +17,13 @@ import type {
   BrowserTaskAction,
   BrowserTaskRequest,
   BrowserTaskResult,
+  BrowserUploadFilePayload,
   SnapshotRefEntry,
+} from "@turnkeyai/core-types/team";
+import {
+  MAX_BROWSER_DOWNLOAD_FILE_BYTES,
+  MAX_BROWSER_UPLOAD_FILE_BYTES,
+  MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
 } from "@turnkeyai/core-types/team";
 
 import { FileBrowserArtifactStore } from "../artifacts/file-browser-artifact-store";
@@ -28,7 +34,7 @@ import { FileBrowserProfileStore } from "../session/file-browser-profile-store";
 import { FileBrowserSessionStore } from "../session/file-browser-session-store";
 import { FileBrowserTargetStore } from "../session/file-browser-target-store";
 import { RelayGateway, isRelayExecutableAction } from "./relay-gateway";
-import type { RelayActionRequest, RelayActionResult } from "./relay-protocol";
+import type { RelayActionRequest, RelayActionResult, RelayDownloadPayload } from "./relay-protocol";
 import type { BrowserTransportAdapter, BrowserTransportFactoryOptions, RelayControlPlane, RelayTransportOptions } from "./transport-adapter";
 
 const RELAY_EXECUTABLE_ACTION_KINDS = new Set<string>([
@@ -36,10 +42,26 @@ const RELAY_EXECUTABLE_ACTION_KINDS = new Set<string>([
   "snapshot",
   "click",
   "type",
+  "hover",
+  "key",
+  "select",
+  "drag",
   "scroll",
   "console",
+  "probe",
+  "permission",
   "wait",
+  "waitFor",
+  "dialog",
+  "popup",
+  "storage",
+  "cookie",
+  "eval",
+  "network",
+  "download",
+  "upload",
   "screenshot",
+  "cdp",
 ]);
 
 export class RelayBrowserAdapter implements BrowserTransportAdapter {
@@ -150,18 +172,22 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
     url: string,
     owner?: { ownerType?: BrowserSession["ownerType"]; ownerId?: string }
   ): Promise<BrowserTarget> {
-    const result = await this.sendSession({
-      taskId: this.createId("browser-open-target"),
-      threadId: owner?.ownerId ?? browserSessionId,
-      instructions: `Open ${url}`,
-      actions: [
-        { kind: "open", url },
-        { kind: "snapshot", note: "open-target" },
-      ],
-      browserSessionId,
-      ...(owner?.ownerType ? { ownerType: owner.ownerType } : {}),
-      ...(owner?.ownerId ? { ownerId: owner.ownerId } : {}),
-    });
+    const result = await this.executeTask(
+      "send",
+      {
+        taskId: this.createId("browser-open-target"),
+        threadId: owner?.ownerId ?? browserSessionId,
+        instructions: `Open ${url}`,
+        actions: [
+          { kind: "open", url },
+          { kind: "snapshot", note: "open-target" },
+        ],
+        browserSessionId,
+        ...(owner?.ownerType ? { ownerType: owner.ownerType } : {}),
+        ...(owner?.ownerId ? { ownerId: owner.ownerId } : {}),
+      },
+      { targetBehavior: "new" }
+    );
     return this.requireTarget(result.sessionId, result.targetId);
   }
 
@@ -222,7 +248,8 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
 
   private async executeTask(
     dispatchMode: BrowserSessionDispatchMode,
-    task: BrowserTaskRequest
+    task: BrowserTaskRequest,
+    options: { targetBehavior?: RelayActionRequest["targetBehavior"] } = {}
   ): Promise<BrowserTaskResult> {
     const supportedActions = task.actions.filter(isRelayExecutableAction);
     if (supportedActions.length !== task.actions.length) {
@@ -252,12 +279,14 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
 
     const sessionId = lease.session.browserSessionId;
     const startedAt = Date.now();
-    let currentTargetId = task.targetId ?? lease.session.activeTargetId;
+    let currentTargetId = options.targetBehavior === "new" ? undefined : task.targetId ?? lease.session.activeTargetId;
     let currentTarget = currentTargetId ? await this.findTarget(sessionId, currentTargetId) : null;
     let resumeMode: NonNullable<BrowserTaskResult["resumeMode"]> = "cold";
     let targetResolution: NonNullable<BrowserTaskResult["targetResolution"]> = "new_target";
 
     try {
+      relayActions = await this.injectUploadPayloads(sessionId, relayActions);
+
       if (!currentTarget && relayActions[0]?.kind !== "open") {
         currentTarget = await this.attachDiscoveredTarget(sessionId, relayActions);
         currentTargetId = currentTarget.targetId;
@@ -279,9 +308,13 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
         }
       }
 
+      const targetBehavior =
+        options.targetBehavior ?? (!currentTarget && relayActions[0]?.kind === "open" ? "new" : undefined);
+
       const relayResult = await this.gateway.dispatchActionRequest({
         browserSessionId: sessionId,
         taskId: task.taskId,
+        ...(targetBehavior ? { targetBehavior } : {}),
         ...(currentTarget?.transportSessionId ? { relayTargetId: currentTarget.transportSessionId } : {}),
         ...(currentTargetId ? { targetId: currentTargetId } : {}),
         actions: relayActions,
@@ -316,6 +349,13 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
         screenshotPayloads: relayResult.screenshotPayloads ?? [],
       });
       artifactIds.push(...persistedScreenshots.artifactIds);
+      const persistedDownloads = await this.persistDownloadArtifacts({
+        task,
+        sessionId,
+        targetId: target.targetId,
+        downloadPayloads: relayResult.downloadPayloads ?? [],
+      });
+      artifactIds.push(...persistedDownloads.artifactIds);
       const persistedSnapshotArtifactId = await this.persistSnapshotArtifact({
         task,
         sessionId,
@@ -343,7 +383,7 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
       };
       const historyEntryId = await this.appendHistoryEntry({
         dispatchMode,
-        task: relayActions === task.actions ? task : { ...task, actions: relayActions },
+        task: toHistoryTask(task, relayActions),
         sessionId,
         startedAt,
         result,
@@ -354,7 +394,7 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
     } catch (error) {
       await this.appendHistoryEntry({
         dispatchMode,
-        task: relayActions === task.actions ? task : { ...task, actions: relayActions },
+        task: toHistoryTask(task, relayActions),
         sessionId,
         startedAt,
         error,
@@ -457,6 +497,56 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
       );
   }
 
+  private async injectUploadPayloads(actionsSessionId: string, actions: RelayActionRequest["actions"]): Promise<RelayActionRequest["actions"]> {
+    let changed = false;
+    const hydrated = await Promise.all(
+      actions.map(async (action) => {
+        if (action.kind !== "upload") {
+          return action;
+        }
+        changed = true;
+        return {
+          ...action,
+          file: await this.readUploadArtifactPayload(actionsSessionId, action.artifactId),
+        };
+      })
+    );
+    return changed ? hydrated : actions;
+  }
+
+  private async readUploadArtifactPayload(
+    browserSessionId: string,
+    artifactId: string
+  ): Promise<BrowserUploadFilePayload> {
+    const record = await this.artifactStore.get(artifactId);
+    if (!record) {
+      throw new Error(`browser upload artifact not found: ${artifactId}`);
+    }
+    if (record.browserSessionId !== browserSessionId) {
+      throw new Error(`browser upload artifact belongs to a different session: ${artifactId}`);
+    }
+    if (!isUploadableArtifactType(record.type)) {
+      throw new Error(`browser upload artifact has unsupported type: ${record.type}`);
+    }
+    assertPathInsideRoot(path.join(this.artifactRootDir, browserSessionId), record.path, "browser upload artifact");
+    const stats = await stat(record.path);
+    if (!stats.isFile()) {
+      throw new Error(`browser upload artifact is not a file: ${artifactId}`);
+    }
+    if (stats.size > MAX_BROWSER_UPLOAD_FILE_BYTES) {
+      throw new Error(`browser upload artifact exceeds ${MAX_BROWSER_UPLOAD_FILE_BYTES} bytes: ${artifactId}`);
+    }
+    const file = await readFile(record.path);
+    const metadataFileName = typeof record.metadata?.fileName === "string" ? record.metadata.fileName : "";
+    const mimeType = typeof record.metadata?.mimeType === "string" ? record.metadata.mimeType : undefined;
+    return {
+      name: sanitizeUploadFileName(metadataFileName || path.basename(record.path)),
+      ...(mimeType ? { mimeType } : {}),
+      dataBase64: file.toString("base64"),
+      sizeBytes: stats.size,
+    };
+  }
+
   private async persistSnapshotArtifact(input: {
     task: BrowserTaskRequest;
     sessionId: string;
@@ -538,6 +628,58 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
 
     return {
       screenshotPaths,
+      artifactIds,
+    };
+  }
+
+  private async persistDownloadArtifacts(input: {
+    task: BrowserTaskRequest;
+    sessionId: string;
+    targetId: string;
+    downloadPayloads: RelayDownloadPayload[];
+  }): Promise<{ artifactIds: string[] }> {
+    if (!input.downloadPayloads.length) {
+      return {
+        artifactIds: [],
+      };
+    }
+
+    const taskDir = path.join(this.artifactRootDir, input.sessionId, encodeURIComponent(input.task.taskId), "downloads");
+    await mkdir(taskDir, { recursive: true });
+    const artifactIds: string[] = [];
+
+    for (let index = 0; index < input.downloadPayloads.length; index += 1) {
+      const payload = input.downloadPayloads[index]!;
+      if (payload.sizeBytes > MAX_BROWSER_DOWNLOAD_FILE_BYTES) {
+        throw new Error(`relay download payload exceeds ${MAX_BROWSER_DOWNLOAD_FILE_BYTES} bytes`);
+      }
+      const data = decodeBase64Payload(payload.dataBase64, payload.sizeBytes, "relay download payload");
+      if (data.byteLength !== payload.sizeBytes) {
+        throw new Error("relay download payload size does not match decoded bytes");
+      }
+      const fileName = sanitizeUploadFileName(payload.fileName);
+      const downloadPath = path.join(taskDir, `${String(index + 1).padStart(2, "0")}-${fileName}`);
+      await writeFile(downloadPath, data);
+
+      const artifactId = `${input.task.taskId}:relay-download:${index + 1}`;
+      artifactIds.push(artifactId);
+      await this.artifactStore.put({
+        artifactId,
+        browserSessionId: input.sessionId,
+        targetId: input.targetId,
+        type: "downloaded-file",
+        path: downloadPath,
+        createdAt: Date.now(),
+        metadata: {
+          url: payload.url,
+          fileName,
+          sizeBytes: payload.sizeBytes,
+          ...(payload.mimeType ? { mimeType: payload.mimeType } : {}),
+        },
+      });
+    }
+
+    return {
       artifactIds,
     };
   }
@@ -633,6 +775,65 @@ function toSnapshotRefEntry(item: BrowserSnapshotResult["interactives"][number],
 
 function sanitizeLabel(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+}
+
+function sanitizeUploadFileName(value: string): string {
+  const fileName = path.basename(value).trim().replace(/[^\w .-]+/g, "-");
+  return (fileName || "upload.bin").slice(0, MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH);
+}
+
+function assertPathInsideRoot(rootDir: string, candidatePath: string, label: string): void {
+  const root = path.resolve(rootDir);
+  const candidate = path.resolve(candidatePath);
+  const relative = path.relative(root, candidate);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return;
+  }
+  throw new Error(`${label} path escapes artifact root`);
+}
+
+function isUploadableArtifactType(type: string): boolean {
+  return type === "upload-file" || type === "downloaded-file";
+}
+
+function decodeBase64Payload(value: string, expectedBytes: number, label: string): Buffer {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || expectedBytes > MAX_BROWSER_DOWNLOAD_FILE_BYTES) {
+    throw new Error(`${label} has invalid sizeBytes`);
+  }
+  if (!isStrictBase64(value)) {
+    throw new Error(`${label} has invalid base64 data`);
+  }
+  const data = Buffer.from(value, "base64");
+  if (data.byteLength !== expectedBytes) {
+    throw new Error(`${label} size does not match decoded bytes`);
+  }
+  return data;
+}
+
+function isStrictBase64(value: string): boolean {
+  if (value.length === 0) {
+    return true;
+  }
+  if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    return false;
+  }
+  const firstPadding = value.indexOf("=");
+  return firstPadding === -1 || /^=+$/.test(value.slice(firstPadding));
+}
+
+function toHistoryTask(task: BrowserTaskRequest, relayActions: RelayActionRequest["actions"]): BrowserTaskRequest {
+  return {
+    ...task,
+    actions: relayActions.map(stripInjectedUploadPayload),
+  };
+}
+
+function stripInjectedUploadPayload(action: RelayActionRequest["actions"][number]): BrowserTaskAction {
+  if (action.kind !== "upload" || action.file === undefined) {
+    return action;
+  }
+  const { file: _file, ...withoutFile } = action;
+  return withoutFile;
 }
 
 function summarizeBrowserHistorySuccess(

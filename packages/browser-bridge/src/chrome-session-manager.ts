@@ -1,4 +1,5 @@
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { Buffer } from "node:buffer";
 import path from "node:path";
 
 import type {
@@ -7,6 +8,7 @@ import type {
   BrowserConsoleProbe,
   BrowserInteractiveElement,
   BrowserOwnerType,
+  BrowserPermissionName,
   BrowserTransportMode,
   BrowserSnapshotResult,
   BrowserSessionDispatchMode,
@@ -24,13 +26,82 @@ import type {
   BrowserTaskRequest,
   BrowserTaskResult,
 } from "@turnkeyai/core-types/team";
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
+import {
+  DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS,
+  DEFAULT_BROWSER_DIALOG_TIMEOUT_MS,
+  DEFAULT_BROWSER_POPUP_TIMEOUT_MS,
+  DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
+  MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS,
+  MAX_BROWSER_CDP_ACTION_EVENTS,
+  MAX_BROWSER_CDP_ACTION_TIMEOUT_MS,
+  MAX_BROWSER_CDP_EVENT_PARAMS_BYTES,
+  MAX_BROWSER_COOKIE_READ_ENTRIES,
+  MAX_BROWSER_COOKIE_READ_VALUE_BYTES,
+  MAX_BROWSER_DOWNLOAD_FILE_BYTES,
+  MAX_BROWSER_DOWNLOAD_TIMEOUT_MS,
+  DEFAULT_BROWSER_EVAL_TIMEOUT_MS,
+  MAX_BROWSER_EVAL_RESULT_BYTES,
+  MAX_BROWSER_EVAL_TIMEOUT_MS,
+  DEFAULT_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_NETWORK_BODY_BYTES,
+  MAX_BROWSER_NETWORK_HEADER_ENTRIES,
+  MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES,
+  MAX_BROWSER_NETWORK_THROUGHPUT_BYTES_PER_SEC,
+  MAX_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_PERMISSION_ORIGIN_LENGTH,
+  MAX_BROWSER_PROBE_ITEMS,
+  MAX_BROWSER_UPLOAD_FILE_BYTES,
+  MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
+  MAX_BROWSER_STORAGE_READ_ENTRIES,
+  MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+  MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH,
+  isBlockedBrowserCdpMethod,
+  normalizeBrowserCdpMethod,
+} from "@turnkeyai/core-types/team";
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Dialog, type Download, type Locator, type Page, type Request, type Response, type Route } from "playwright-core";
 
 import { captureDomSnapshot } from "./dom-snapshot";
 import type { BrowserSessionManager as LocalBrowserSessionManager } from "./session/browser-session-manager";
 
 const DEFAULT_VIEWPORT = { width: 1440, height: 960 };
 const DEFAULT_WAIT_MS = 800;
+const MAX_CDP_TRACE_RESULT_BYTES = 4_096;
+
+interface LocalCdpEvent {
+  method: string;
+  params?: Record<string, unknown>;
+  timestamp: number;
+}
+
+interface LocalCdpActionOutput {
+  result: unknown;
+  events: LocalCdpEvent[];
+}
+
+interface LocalDownloadArtifact {
+  artifactId: string;
+  path: string;
+  fileName: string;
+  sizeBytes: number;
+  url: string;
+  mimeType?: string;
+}
+
+const pageNetworkBlockHandlers = new WeakMap<Page, (route: Route) => void>();
+const pageNetworkMockHandlers = new WeakMap<Page, Set<(route: Route) => Promise<void>>>();
+
+interface LocalCdpCookie {
+  name?: string;
+  value?: string;
+  domain?: string;
+  path?: string;
+  expires?: number;
+  size?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  session?: boolean;
+  sameSite?: string;
+}
 
 export class ChromeSessionManager {
   private readonly artifactRootDir: string;
@@ -168,6 +239,9 @@ export class ChromeSessionManager {
     const trace: BrowserActionTrace[] = [];
     const screenshotPaths: string[] = [];
     const artifactIds: string[] = [];
+    const pendingDialogHandlers: Promise<void>[] = [];
+    const pendingNetworkHandlers: Promise<void>[] = [];
+    const pendingDownloadHandlers: Promise<LocalDownloadArtifact | null>[] = [];
 
     let requestedUrl = "";
     let lastStatusCode = 200;
@@ -192,9 +266,35 @@ export class ChromeSessionManager {
         actions: task.actions,
         ...(currentTargetId ? { currentTargetId } : {}),
       });
-      const page = pageResolution.page;
+      let page = pageResolution.page;
       resumeMode = pageResolution.resumeMode;
       targetResolution = pageResolution.targetResolution;
+      let pendingPopupHandler: { promise: Promise<Page>; traceEntry: BrowserActionTrace } | null = null;
+
+      const consumePendingPopup = async (): Promise<void> => {
+        if (!pendingPopupHandler) {
+          return;
+        }
+        const popupPage = await pendingPopupHandler.promise;
+        pendingPopupHandler = null;
+        page = popupPage;
+        latestSnapshot = null;
+        knownRefs = new Map<string, BrowserInteractiveElement>();
+        requestedUrl = page.url();
+        lastStatusCode = 200;
+        if (this.browserSessionManager) {
+          const target = await this.browserSessionManager.ensureTarget({
+            browserSessionId: sessionId,
+            transportSessionId: this.getOrCreatePageHandle(page),
+            url: page.url(),
+            title: await page.title().catch(() => ""),
+            status: "attached",
+            lastResumeMode: "hot",
+            createIfMissing: true,
+          });
+          currentTargetId = target.targetId;
+        }
+      };
 
       if (lease && this.browserSessionManager && currentTargetId && targetResolution !== "new_target") {
         const target = await this.browserSessionManager.ensureTarget({
@@ -215,6 +315,101 @@ export class ChromeSessionManager {
         const startedAt = Date.now();
 
         try {
+          if (action.kind === "dialog") {
+            const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_DIALOG_TIMEOUT_MS;
+            const traceEntry: BrowserActionTrace = {
+              stepId,
+              kind: action.kind,
+              startedAt,
+              completedAt: Date.now(),
+              status: "ok",
+              input: toTraceInput(action),
+              output: {
+                action: action.action,
+                timeoutMs,
+                armed: true,
+              },
+            };
+            trace.push(traceEntry);
+            const pending = armPageDialogHandler(page, action, traceEntry, timeoutMs);
+            pending.catch(() => undefined);
+            pendingDialogHandlers.push(pending);
+            continue;
+          }
+
+          if (action.kind === "popup") {
+            if (pendingPopupHandler) {
+              throw new Error("popup action is already armed");
+            }
+            const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_POPUP_TIMEOUT_MS;
+            const traceEntry: BrowserActionTrace = {
+              stepId,
+              kind: action.kind,
+              startedAt,
+              completedAt: Date.now(),
+              status: "ok",
+              input: toTraceInput(action),
+              output: {
+                timeoutMs,
+                armed: true,
+              },
+            };
+            trace.push(traceEntry);
+            const promise = armPagePopupHandler(page, action, traceEntry, timeoutMs);
+            promise.catch(() => undefined);
+            pendingPopupHandler = { promise, traceEntry };
+            continue;
+          }
+
+          if (action.kind === "network" && isArmedNetworkAction(action)) {
+            const timeoutMs = normalizeNetworkTimeoutMs(action.timeoutMs);
+            const traceEntry: BrowserActionTrace = {
+              stepId,
+              kind: action.kind,
+              startedAt,
+              completedAt: Date.now(),
+              status: "ok",
+              input: toTraceInput(action),
+              output: {
+                action: action.action,
+                timeoutMs,
+                armed: true,
+              },
+            };
+            trace.push(traceEntry);
+            const pending = armPageNetworkHandler(page, action, traceEntry, timeoutMs);
+            pending.catch(() => undefined);
+            pendingNetworkHandlers.push(pending);
+            continue;
+          }
+
+          if (action.kind === "download") {
+            const timeoutMs = normalizeDownloadTimeoutMs(action.timeoutMs);
+            const traceEntry: BrowserActionTrace = {
+              stepId,
+              kind: action.kind,
+              startedAt,
+              completedAt: Date.now(),
+              status: "ok",
+              input: toTraceInput(action),
+              output: {
+                timeoutMs,
+                armed: true,
+              },
+            };
+            trace.push(traceEntry);
+            const pending = armPageDownloadHandler(page, action, traceEntry, timeoutMs, {
+              taskDir,
+              stepId,
+              browserSessionId: sessionId,
+              ...(currentTargetId ? { targetId: currentTargetId } : {}),
+              ...(this.browserArtifactStore ? { browserArtifactStore: this.browserArtifactStore } : {}),
+            });
+            pending.catch(() => undefined);
+            pendingDownloadHandlers.push(pending);
+            continue;
+          }
+
           const output = await this.executeAction({
             page,
             action,
@@ -320,6 +515,7 @@ export class ChromeSessionManager {
           }
 
           trace.push(traceEntry);
+          await consumePendingPopup();
         } catch (error) {
           trace.push({
             stepId,
@@ -333,6 +529,15 @@ export class ChromeSessionManager {
           throw error;
         }
       }
+
+      const downloadedArtifacts = await Promise.all(pendingDownloadHandlers);
+      for (const artifact of downloadedArtifacts) {
+        if (artifact) {
+          artifactIds.push(artifact.artifactId);
+        }
+      }
+      await Promise.all([...pendingDialogHandlers, ...pendingNetworkHandlers]);
+      await consumePendingPopup();
 
       if (!latestSnapshot) {
         latestSnapshot = await this.captureSnapshot({
@@ -922,6 +1127,103 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "hover") {
+      const locator = await this.resolveActionLocator(page, action, knownRefs, browserSessionId, currentTargetId);
+      await locator.hover();
+      await settle(page);
+
+      return {
+        traceOutput: {
+          selectors: action.selectors ?? [],
+          refId: action.refId ?? null,
+          text: action.text ?? null,
+          finalUrl: page.url(),
+        },
+      };
+    }
+
+    if (action.kind === "key") {
+      const shortcut = formatKeyboardShortcut(action);
+      await page.keyboard.press(shortcut);
+      await settle(page);
+
+      return {
+        traceOutput: {
+          key: action.key,
+          modifiers: action.modifiers ?? [],
+          shortcut,
+        },
+      };
+    }
+
+    if (action.kind === "select") {
+      const locator = await this.resolveActionLocator(page, action, knownRefs, browserSessionId, currentTargetId);
+      const selectedValues = await locator.selectOption(toPlaywrightSelectOption(action));
+      await settle(page);
+
+      return {
+        traceOutput: {
+          selectors: action.selectors ?? [],
+          refId: action.refId ?? null,
+          value: action.value ?? null,
+          label: action.label ?? null,
+          index: action.index ?? null,
+          selectedValues,
+          finalUrl: page.url(),
+        },
+      };
+    }
+
+    if (action.kind === "upload") {
+      const locator = await this.resolveActionTargetLocator(
+        page,
+        action,
+        knownRefs,
+        browserSessionId,
+        currentTargetId
+      );
+      const artifact = await this.resolveUploadArtifact(browserSessionId, action.artifactId);
+      await locator.setInputFiles(artifact.path);
+      await settle(page);
+
+      return {
+        traceOutput: {
+          ...summarizeActionTarget(action),
+          artifactId: action.artifactId,
+          fileName: artifact.fileName,
+          sizeBytes: artifact.sizeBytes,
+          finalUrl: page.url(),
+        },
+      };
+    }
+
+    if (action.kind === "drag") {
+      const sourceLocator = await this.resolveActionTargetLocator(
+        page,
+        action.source,
+        knownRefs,
+        browserSessionId,
+        currentTargetId
+      );
+      const targetLocator = await this.resolveActionTargetLocator(
+        page,
+        action.target,
+        knownRefs,
+        browserSessionId,
+        currentTargetId
+      );
+      await sourceLocator.dragTo(targetLocator);
+      await settle(page);
+
+      return {
+        traceOutput: {
+          source: summarizeActionTarget(action.source),
+          target: summarizeActionTarget(action.target),
+          finalUrl: page.url(),
+        },
+      };
+    }
+
     if (action.kind === "scroll") {
       const amount = action.amount ?? 800;
       const scrollY = await page.evaluate(
@@ -954,6 +1256,104 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "probe") {
+      const result = await executeProbeAction(page, action);
+
+      return {
+        traceOutput: {
+          probe: action.probe,
+          result: serializeConsoleResult(result),
+        },
+      };
+    }
+
+    if (action.kind === "permission") {
+      const result = await executePermissionAction(page, action);
+
+      return {
+        traceOutput: result,
+      };
+    }
+
+    if (action.kind === "storage") {
+      const result = await executeStorageAction(page, action);
+      return {
+        traceOutput: result,
+      };
+    }
+
+    if (action.kind === "cookie") {
+      const result = await executeCookieAction(page, action);
+      return {
+        traceOutput: result,
+      };
+    }
+
+    if (action.kind === "eval") {
+      const result = await executeEvalAction(page, action);
+      return {
+        traceOutput: result,
+      };
+    }
+
+    if (action.kind === "waitFor") {
+      const timeoutMs = action.timeoutMs ?? DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS;
+      if ("urlPattern" in action) {
+        await page.waitForURL((url) => matchesUrlPattern(url.toString(), action.urlPattern), { timeout: timeoutMs });
+        return {
+          traceOutput: {
+            urlPattern: action.urlPattern,
+            timeoutMs,
+            finalUrl: page.url(),
+          },
+        };
+      }
+      if ("titlePattern" in action) {
+        await page.waitForFunction(buildPatternWaitExpression(action.titlePattern, "document.title"), undefined, {
+          timeout: timeoutMs,
+        });
+        return {
+          traceOutput: {
+            titlePattern: action.titlePattern,
+            timeoutMs,
+            finalUrl: page.url(),
+          },
+        };
+      }
+      if ("bodyTextPattern" in action) {
+        await page.waitForFunction(
+          buildPatternWaitExpression(action.bodyTextPattern, "document.body ? (document.body.innerText || document.body.textContent || '') : ''"),
+          undefined,
+          { timeout: timeoutMs }
+        );
+        return {
+          traceOutput: {
+            bodyTextPattern: action.bodyTextPattern,
+            timeoutMs,
+            finalUrl: page.url(),
+          },
+        };
+      }
+      const locator = await this.resolveActionTargetLocator(
+        page,
+        action,
+        knownRefs,
+        browserSessionId,
+        currentTargetId
+      );
+      const state = action.state ?? "visible";
+      await locator.waitFor({ state, timeout: timeoutMs });
+
+      return {
+        traceOutput: {
+          ...summarizeActionTarget(action),
+          state,
+          timeoutMs,
+          finalUrl: page.url(),
+        },
+      };
+    }
+
     if (action.kind === "wait") {
       await page.waitForTimeout(action.timeoutMs);
       return {
@@ -961,6 +1361,46 @@ export class ChromeSessionManager {
           timeoutMs: action.timeoutMs,
         },
       };
+    }
+
+    if (action.kind === "cdp") {
+      const result = await executeTargetCdpAction(page, action);
+      return {
+        traceOutput: {
+          method: action.method,
+          paramsBytes: jsonByteLength(action.params),
+          ...summarizeCdpActionOutput(result),
+        },
+      };
+    }
+
+    if (action.kind === "dialog") {
+      throw new Error(`${action.kind} actions must be armed by the browser task executor`);
+    }
+
+    if (action.kind === "popup") {
+      throw new Error(`${action.kind} actions must be armed by the browser task executor`);
+    }
+
+    if (action.kind === "network") {
+      if (
+        action.action === "blockUrls" ||
+        action.action === "clearBlockedUrls" ||
+        action.action === "setExtraHeaders" ||
+        action.action === "clearExtraHeaders" ||
+        action.action === "clearMockResponses" ||
+        action.action === "emulateConditions" ||
+        action.action === "clearEmulation"
+      ) {
+        return {
+          traceOutput: await executeNetworkControlAction(page, action),
+        };
+      }
+      throw new Error(`${action.kind} ${action.action} actions must be armed by the browser task executor`);
+    }
+
+    if (action.kind === "download") {
+      throw new Error(`${action.kind} actions must be armed by the browser task executor`);
     }
 
     const screenshotPath = path.join(
@@ -982,7 +1422,7 @@ export class ChromeSessionManager {
 
   private async resolveActionLocator(
     page: Page,
-    action: Extract<BrowserTaskAction, { kind: "click" | "type" }>,
+    action: Extract<BrowserTaskAction, { kind: "click" | "type" | "hover" | "select" }>,
     knownRefs: Map<string, BrowserInteractiveElement>,
     browserSessionId: string,
     currentTargetId?: string
@@ -1013,11 +1453,84 @@ export class ChromeSessionManager {
       return resolveLocator(page, action.selectors);
     }
 
-    if (action.kind === "click") {
+    if (action.kind === "click" || action.kind === "hover") {
       return resolveTextLocator(page, action.text ?? "");
     }
 
-    throw new Error("type action requires selectors or refId");
+    throw new Error(`${action.kind} action requires selectors or refId`);
+  }
+
+  private async resolveActionTargetLocator(
+    page: Page,
+    target: { selectors?: string[]; refId?: string; text?: string },
+    knownRefs: Map<string, BrowserInteractiveElement>,
+    browserSessionId: string,
+    currentTargetId?: string
+  ): Promise<Locator> {
+    if (target.refId) {
+      if (knownRefs.has(target.refId)) {
+        return resolveRefLocator(page, target.refId);
+      }
+
+      if (currentTargetId && this.snapshotRefStore) {
+        const resolved = await this.snapshotRefStore.resolve({
+          browserSessionId,
+          targetId: currentTargetId,
+          refId: target.refId,
+        });
+        if (resolved?.selectors?.length) {
+          return resolveLocator(page, resolved.selectors);
+        }
+        if (resolved?.label) {
+          return resolveTextLocator(page, resolved.label);
+        }
+      }
+
+      throw new Error(`unknown snapshot ref requested: ${target.refId}`);
+    }
+
+    if (target.selectors?.length) {
+      return resolveLocator(page, target.selectors);
+    }
+
+    if (target.text) {
+      return resolveTextLocator(page, target.text);
+    }
+
+    throw new Error("drag target requires selectors, refId, or text");
+  }
+
+  private async resolveUploadArtifact(
+    browserSessionId: string,
+    artifactId: string
+  ): Promise<{ path: string; fileName: string; sizeBytes: number }> {
+    if (!this.browserArtifactStore) {
+      throw new Error("browser upload action requires an artifact store");
+    }
+    const record = await this.browserArtifactStore.get(artifactId);
+    if (!record) {
+      throw new Error(`browser upload artifact not found: ${artifactId}`);
+    }
+    if (record.browserSessionId !== browserSessionId) {
+      throw new Error(`browser upload artifact belongs to a different session: ${artifactId}`);
+    }
+    if (!isUploadableArtifactType(record.type)) {
+      throw new Error(`browser upload artifact has unsupported type: ${record.type}`);
+    }
+    assertPathInsideRoot(path.join(this.artifactRootDir, browserSessionId), record.path, "browser upload artifact");
+    const stats = await stat(record.path);
+    if (!stats.isFile()) {
+      throw new Error(`browser upload artifact is not a file: ${artifactId}`);
+    }
+    if (stats.size > MAX_BROWSER_UPLOAD_FILE_BYTES) {
+      throw new Error(`browser upload artifact exceeds ${MAX_BROWSER_UPLOAD_FILE_BYTES} bytes: ${artifactId}`);
+    }
+    const metadataFileName = typeof record.metadata?.fileName === "string" ? record.metadata.fileName : "";
+    return {
+      path: record.path,
+      fileName: sanitizeUploadFileName(metadataFileName || path.basename(record.path)),
+      sizeBytes: stats.size,
+    };
   }
 }
 
@@ -1082,6 +1595,1210 @@ async function settle(page: Page): Promise<void> {
   await page.waitForTimeout(DEFAULT_WAIT_MS);
 }
 
+function armPageDialogHandler(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "dialog" }>,
+  traceEntry: BrowserActionTrace,
+  timeoutMs: number
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const clear = () => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+    };
+    const fail = (error: Error) => {
+      traceEntry.completedAt = Date.now();
+      traceEntry.status = "failed";
+      traceEntry.errorMessage = error.message;
+      reject(error);
+    };
+    const handler = async (dialog: Dialog) => {
+      clear();
+      try {
+        const dialogType = dialog.type();
+        const message = dialog.message();
+        if (action.action === "accept") {
+          await dialog.accept(action.promptText);
+        } else {
+          await dialog.dismiss();
+        }
+        traceEntry.completedAt = Date.now();
+        traceEntry.output = {
+          action: action.action,
+          timeoutMs,
+          type: dialogType,
+          message,
+          ...(action.promptText !== undefined ? { promptTextLength: action.promptText.length } : {}),
+        };
+        resolve();
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error("browser dialog handler failed"));
+      }
+    };
+
+    page.once("dialog", handler);
+    timeout = setTimeout(() => {
+      const off = (page as unknown as { off?: (eventName: string, listener: (dialog: Dialog) => void) => void }).off;
+      off?.call(page, "dialog", handler);
+      fail(new Error(`browser dialog action timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+}
+
+async function armPagePopupHandler(
+  page: Page,
+  _action: Extract<BrowserTaskAction, { kind: "popup" }>,
+  traceEntry: BrowserActionTrace,
+  timeoutMs: number
+): Promise<Page> {
+  try {
+    const popup = await page.waitForEvent("popup", { timeout: timeoutMs });
+    await popup.waitForLoadState("domcontentloaded", { timeout: 5_000 }).catch(() => {});
+    traceEntry.completedAt = Date.now();
+    traceEntry.output = {
+      timeoutMs,
+      finalUrl: popup.url(),
+      title: await popup.title().catch(() => ""),
+    };
+    return popup;
+  } catch (error) {
+    traceEntry.completedAt = Date.now();
+    traceEntry.status = "failed";
+    traceEntry.errorMessage = error instanceof Error ? error.message : "browser popup action failed";
+    throw error;
+  }
+}
+
+async function armPageNetworkHandler(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "network" }>,
+  traceEntry: BrowserActionTrace,
+  timeoutMs: number
+): Promise<void> {
+  try {
+    if (action.action === "waitForRequest") {
+      const request = await page.waitForRequest((candidate) => matchesNetworkRequest(candidate, action), {
+        timeout: timeoutMs,
+      });
+      traceEntry.completedAt = Date.now();
+      traceEntry.output = summarizeNetworkRequest(request, action, timeoutMs);
+      return;
+    }
+
+    if (action.action === "mockResponse") {
+      await armPageMockResponseHandler(page, action, traceEntry, timeoutMs);
+      return;
+    }
+
+    if (action.action !== "waitForResponse") {
+      throw new Error(`browser network action cannot be armed: ${action.action}`);
+    }
+    const response = await page.waitForResponse((candidate) => matchesNetworkResponse(candidate, action), {
+      timeout: timeoutMs,
+    });
+    traceEntry.completedAt = Date.now();
+    traceEntry.output = await summarizeNetworkResponse(response, action, timeoutMs);
+  } catch (error) {
+    traceEntry.completedAt = Date.now();
+    traceEntry.status = "failed";
+    traceEntry.errorMessage = error instanceof Error ? error.message : "browser network action failed";
+    throw error;
+  }
+}
+
+async function armPageDownloadHandler(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "download" }>,
+  traceEntry: BrowserActionTrace,
+  timeoutMs: number,
+  options: {
+    taskDir: string;
+    stepId: string;
+    browserSessionId: string;
+    targetId?: string;
+    browserArtifactStore?: BrowserArtifactStore;
+  }
+): Promise<LocalDownloadArtifact | null> {
+  try {
+    const download = await page.waitForEvent("download", {
+      predicate: (candidate) => matchesDownload(candidate, action),
+      timeout: timeoutMs,
+    });
+    const fileName = sanitizeUploadFileName(download.suggestedFilename() || "download.bin");
+    const downloadsDir = path.join(options.taskDir, "downloads");
+    await mkdir(downloadsDir, { recursive: true });
+    const filePath = path.join(downloadsDir, `${sanitizeLabel(options.stepId)}-${fileName}`);
+    await download.saveAs(filePath);
+    const failure = await download.failure().catch(() => null);
+    if (failure) {
+      throw new Error(`browser download failed: ${failure}`);
+    }
+    const stats = await stat(filePath);
+    if (!stats.isFile()) {
+      throw new Error("browser download did not produce a file");
+    }
+    if (stats.size > MAX_BROWSER_DOWNLOAD_FILE_BYTES) {
+      await rm(filePath, { force: true });
+      throw new Error(`browser download exceeds ${MAX_BROWSER_DOWNLOAD_FILE_BYTES} bytes`);
+    }
+
+    const artifactId = options.browserArtifactStore ? `${options.stepId}:download` : "";
+    if (options.browserArtifactStore) {
+      await options.browserArtifactStore.put({
+        artifactId,
+        browserSessionId: options.browserSessionId,
+        ...(options.targetId ? { targetId: options.targetId } : {}),
+        type: "downloaded-file",
+        path: filePath,
+        createdAt: Date.now(),
+        metadata: {
+          url: download.url(),
+          fileName,
+          sizeBytes: stats.size,
+        },
+      });
+    }
+
+    traceEntry.completedAt = Date.now();
+    traceEntry.output = {
+      timeoutMs,
+      matched: true,
+      url: download.url(),
+      fileName,
+      sizeBytes: stats.size,
+      ...(artifactId ? { artifactId } : {}),
+    };
+    return artifactId
+      ? {
+          artifactId,
+          path: filePath,
+          fileName,
+          sizeBytes: stats.size,
+          url: download.url(),
+        }
+      : null;
+  } catch (error) {
+    traceEntry.completedAt = Date.now();
+    traceEntry.status = "failed";
+    traceEntry.errorMessage = error instanceof Error ? error.message : "browser download action failed";
+    throw error;
+  }
+}
+
+function matchesDownload(download: Download, action: Extract<BrowserTaskAction, { kind: "download" }>): boolean {
+  return action.urlPattern ? matchesUrlPattern(download.url(), action.urlPattern) : true;
+}
+
+function isArmedNetworkAction(
+  action: Extract<BrowserTaskAction, { kind: "network" }>
+): action is Extract<BrowserTaskAction, { kind: "network"; action: "waitForRequest" | "waitForResponse" | "mockResponse" }> {
+  return action.action === "waitForRequest" || action.action === "waitForResponse" || action.action === "mockResponse";
+}
+
+async function executeNetworkControlAction(
+  page: Page,
+  action: Extract<
+    BrowserTaskAction,
+    {
+      kind: "network";
+      action:
+        | "blockUrls"
+        | "clearBlockedUrls"
+        | "setExtraHeaders"
+        | "clearExtraHeaders"
+        | "clearMockResponses"
+        | "emulateConditions"
+        | "clearEmulation";
+    }
+  >
+): Promise<Record<string, unknown>> {
+  if (action.action === "clearBlockedUrls") {
+    await clearPageNetworkBlockHandler(page);
+    return {
+      action: action.action,
+      cleared: true,
+    };
+  }
+  if (action.action === "clearMockResponses") {
+    await clearPageNetworkMockHandlers(page);
+    return {
+      action: action.action,
+      cleared: true,
+    };
+  }
+  if (action.action === "setExtraHeaders") {
+    await page.setExtraHTTPHeaders(action.headers);
+    return {
+      action: action.action,
+      headerCount: Object.keys(action.headers).length,
+      set: true,
+    };
+  }
+  if (action.action === "clearExtraHeaders") {
+    await page.setExtraHTTPHeaders({});
+    return {
+      action: action.action,
+      cleared: true,
+    };
+  }
+  if (action.action === "emulateConditions" || action.action === "clearEmulation") {
+    return executeNetworkEmulationAction(page, action);
+  }
+
+  await clearPageNetworkBlockHandler(page);
+  const handler = (route: Route) => handleBlockedNetworkRoute(route, action.urlPatterns);
+  pageNetworkBlockHandlers.set(page, handler);
+  await page.route("**/*", handler);
+  return {
+    action: action.action,
+    urlPatternCount: action.urlPatterns.length,
+    blocked: true,
+  };
+}
+
+async function armPageMockResponseHandler(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "mockResponse" }>,
+  traceEntry: BrowserActionTrace,
+  timeoutMs: number
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let routeHandler: ((route: Route) => Promise<void>) | null = null;
+    const clearTimer = () => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+    };
+    const cleanup = async () => {
+      clearTimer();
+      if (routeHandler) {
+        await page.unroute("**/*", routeHandler).catch(() => undefined);
+        pageNetworkMockHandlers.get(page)?.delete(routeHandler);
+      }
+    };
+    const fail = async (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      await cleanup();
+      traceEntry.completedAt = Date.now();
+      traceEntry.status = "failed";
+      traceEntry.errorMessage = error.message;
+      reject(error);
+    };
+
+    routeHandler = async (route: Route) => {
+      try {
+        const request = route.request();
+        if (!matchesNetworkMockRequest(request, action)) {
+          await route.fallback();
+          return;
+        }
+        const status = action.status ?? 200;
+        await route.fulfill({
+          status,
+          headers: action.headers ?? {},
+          body: resolveNetworkMockBody(action),
+        });
+        if (settled) {
+          return;
+        }
+        settled = true;
+        await cleanup();
+        traceEntry.completedAt = Date.now();
+        traceEntry.output = {
+          action: action.action,
+          matched: true,
+          timeoutMs,
+          url: request.url(),
+          method: request.method(),
+          status,
+          headerCount: Object.keys(action.headers ?? {}).length,
+          bodyBytes: getNetworkMockBodyBytes(action),
+        };
+        resolve();
+      } catch (error) {
+        await fail(error instanceof Error ? error : new Error("browser network mock failed"));
+      }
+    };
+
+    page
+      .route("**/*", routeHandler)
+      .then(() => {
+        const handlers = pageNetworkMockHandlers.get(page) ?? new Set<(route: Route) => Promise<void>>();
+        handlers.add(routeHandler);
+        pageNetworkMockHandlers.set(page, handlers);
+        timeout = setTimeout(() => {
+          void fail(new Error(`browser network mock timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      })
+      .catch((error) => {
+        void fail(error instanceof Error ? error : new Error("browser network mock could not be armed"));
+      });
+  });
+}
+
+function matchesNetworkMockRequest(
+  request: Request,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "mockResponse" }>
+): boolean {
+  if (!matchesUrlPattern(request.url(), action.urlPattern)) {
+    return false;
+  }
+  if (action.method && request.method() !== action.method) {
+    return false;
+  }
+  return true;
+}
+
+function resolveNetworkMockBody(
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "mockResponse" }>
+): string | Buffer {
+  if (action.bodyBase64 !== undefined) {
+    return Buffer.from(action.bodyBase64, "base64");
+  }
+  return action.body ?? "";
+}
+
+function getNetworkMockBodyBytes(action: Extract<BrowserTaskAction, { kind: "network"; action: "mockResponse" }>): number {
+  if (action.bodyBase64 !== undefined) {
+    return Buffer.from(action.bodyBase64, "base64").byteLength;
+  }
+  return byteLength(action.body ?? "");
+}
+
+async function clearPageNetworkBlockHandler(page: Page): Promise<void> {
+  const handler = pageNetworkBlockHandlers.get(page);
+  if (!handler) {
+    return;
+  }
+  await page.unroute("**/*", handler).catch(() => undefined);
+  pageNetworkBlockHandlers.delete(page);
+}
+
+async function clearPageNetworkMockHandlers(page: Page): Promise<void> {
+  const handlers = pageNetworkMockHandlers.get(page);
+  if (!handlers) {
+    return;
+  }
+  await Promise.all([...handlers].map((handler) => page.unroute("**/*", handler).catch(() => undefined)));
+  handlers.clear();
+  pageNetworkMockHandlers.delete(page);
+}
+
+async function executeNetworkEmulationAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "emulateConditions" | "clearEmulation" }>
+): Promise<Record<string, unknown>> {
+  const cdpSession = await page.context().newCDPSession(page);
+  const sendRaw = cdpSession.send.bind(cdpSession) as unknown as (
+    method: string,
+    params?: Record<string, unknown>
+  ) => Promise<unknown>;
+  const params = buildNetworkEmulationParams(action);
+  try {
+    await sendRaw("Network.enable", {});
+    await sendRaw("Network.emulateNetworkConditions", params);
+    return {
+      action: action.action,
+      ...(action.action === "clearEmulation"
+        ? { cleared: true }
+        : {
+            emulated: true,
+            offline: params.offline,
+            latencyMs: params.latency,
+            downloadThroughputBytesPerSec: normalizeTraceThroughput(params.downloadThroughput),
+            uploadThroughputBytesPerSec: normalizeTraceThroughput(params.uploadThroughput),
+          }),
+    };
+  } finally {
+    await cdpSession.detach().catch(() => undefined);
+  }
+}
+
+function buildNetworkEmulationParams(
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "emulateConditions" | "clearEmulation" }>
+): { offline: boolean; latency: number; downloadThroughput: number; uploadThroughput: number } {
+  if (action.action === "clearEmulation") {
+    return {
+      offline: false,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+    };
+  }
+  const offline = action.offline ?? false;
+  return {
+    offline,
+    latency: action.latencyMs ?? 0,
+    downloadThroughput: offline ? 0 : action.downloadThroughputBytesPerSec ?? -1,
+    uploadThroughput: offline ? 0 : action.uploadThroughputBytesPerSec ?? -1,
+  };
+}
+
+function normalizeTraceThroughput(value: number): number | null {
+  if (value < 0 || value > MAX_BROWSER_NETWORK_THROUGHPUT_BYTES_PER_SEC) {
+    return null;
+  }
+  return value;
+}
+
+function handleBlockedNetworkRoute(route: Route, urlPatterns: string[]): void {
+  const url = route.request().url();
+  if (urlPatterns.some((pattern) => matchesUrlPattern(url, pattern))) {
+    route.abort().catch(() => undefined);
+    return;
+  }
+  route.continue().catch(() => undefined);
+}
+
+function matchesNetworkRequest(
+  request: Request,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "waitForRequest" }>
+): boolean {
+  if (action.urlPattern && !matchesUrlPattern(request.url(), action.urlPattern)) {
+    return false;
+  }
+  if (action.method && request.method() !== action.method) {
+    return false;
+  }
+  return true;
+}
+
+function matchesNetworkResponse(
+  response: Response,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "waitForResponse" }>
+): boolean {
+  if (action.urlPattern && !matchesUrlPattern(response.url(), action.urlPattern)) {
+    return false;
+  }
+  if (action.status !== undefined && response.status() !== action.status) {
+    return false;
+  }
+  if (action.method && response.request().method() !== action.method) {
+    return false;
+  }
+  return true;
+}
+
+function summarizeNetworkRequest(
+  request: Request,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "waitForRequest" }>,
+  timeoutMs: number
+): Record<string, unknown> {
+  const postData = action.maxBodyBytes ? request.postDataBuffer() : null;
+  return {
+    action: action.action,
+    matched: true,
+    timeoutMs,
+    url: request.url(),
+    method: request.method(),
+    ...(action.includeHeaders ? summarizeNetworkHeaders(request.headers()) : {}),
+    ...(postData ? summarizeNetworkBodyBuffer(postData, action.maxBodyBytes ?? MAX_BROWSER_NETWORK_BODY_BYTES) : {}),
+  };
+}
+
+async function summarizeNetworkResponse(
+  response: Response,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "waitForResponse" }>,
+  timeoutMs: number
+): Promise<Record<string, unknown>> {
+  const output: Record<string, unknown> = {
+    action: action.action,
+    matched: true,
+    timeoutMs,
+    url: response.url(),
+    status: response.status(),
+    method: response.request().method(),
+    ...(action.includeHeaders ? summarizeNetworkHeaders(response.headers()) : {}),
+  };
+
+  if (action.maxBodyBytes) {
+    try {
+      Object.assign(output, summarizeNetworkBodyBuffer(await response.body(), action.maxBodyBytes));
+    } catch (error) {
+      output.bodyUnavailable = true;
+      output.bodyError = error instanceof Error ? error.message : "response body unavailable";
+    }
+  }
+
+  return output;
+}
+
+function summarizeNetworkHeaders(headers: Record<string, string>): Record<string, unknown> {
+  const entries = Object.entries(headers);
+  const boundedEntries = entries.slice(0, MAX_BROWSER_NETWORK_HEADER_ENTRIES);
+  return {
+    headers: boundedEntries.map(([name, value]) => ({
+      name,
+      ...summarizeNetworkHeaderValue(value),
+    })),
+    headerCount: entries.length,
+    headersTruncated: entries.length > MAX_BROWSER_NETWORK_HEADER_ENTRIES,
+  };
+}
+
+function summarizeNetworkHeaderValue(value: string): Record<string, unknown> {
+  const valueBytes = byteLength(value);
+  return {
+    value: valueBytes <= MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES ? value : truncateUtf8(value, MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES),
+    valueBytes,
+    valueTruncated: valueBytes > MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES,
+  };
+}
+
+function summarizeNetworkBodyBuffer(body: Buffer, maxBodyBytes: number): Record<string, unknown> {
+  const boundedBytes = Math.min(maxBodyBytes, MAX_BROWSER_NETWORK_BODY_BYTES);
+  const preview = body.subarray(0, boundedBytes);
+  return {
+    bodyBytes: body.byteLength,
+    bodyPreviewBase64: preview.toString("base64"),
+    bodyTruncated: body.byteLength > boundedBytes,
+  };
+}
+
+function formatKeyboardShortcut(action: Extract<BrowserTaskAction, { kind: "key" }>): string {
+  return [...new Set(action.modifiers ?? []), action.key].join("+");
+}
+
+function toPlaywrightSelectOption(
+  action: Extract<BrowserTaskAction, { kind: "select" }>
+): string | { label: string } | { index: number } {
+  if (action.value !== undefined) {
+    return action.value;
+  }
+  if (action.label !== undefined) {
+    return { label: action.label };
+  }
+  return { index: action.index };
+}
+
+function summarizeActionTarget(target: { selectors?: string[]; refId?: string; text?: string }): Record<string, unknown> {
+  return {
+    selectors: target.selectors ?? [],
+    refId: target.refId ?? null,
+    text: target.text ?? null,
+  };
+}
+
+async function executeTargetCdpAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "cdp" }>
+): Promise<LocalCdpActionOutput> {
+  const method = normalizeBrowserCdpMethod(action.method);
+  if (!method || isBlockedBrowserCdpMethod(method)) {
+    throw new Error(`browser cdp action method is not allowed: ${action.method}`);
+  }
+
+  const cdpSession = await page.context().newCDPSession(page);
+  const sendRaw = cdpSession.send.bind(cdpSession) as unknown as (
+    method: string,
+    params?: Record<string, unknown>
+  ) => Promise<unknown>;
+  const eventOptions = normalizeCdpEventOptions(action.events);
+  const capturedEvents: LocalCdpEvent[] = [];
+  const passiveEventNames = (eventOptions.include ?? []).filter((eventName) => eventName !== eventOptions.waitFor);
+  const removeListeners = attachCdpEventListeners(cdpSession, passiveEventNames, capturedEvents);
+  const waitForEvent = eventOptions.waitFor
+    ? waitForCdpEvent(cdpSession, eventOptions.waitFor, eventOptions.timeoutMs, capturedEvents)
+    : null;
+  try {
+    const result = await withTimeout(
+      sendRaw(method, action.params ?? {}),
+      normalizeCdpTimeoutMs(action.timeoutMs),
+      `browser cdp action timed out: ${method}`
+    );
+    if (waitForEvent) {
+      await waitForEvent;
+    }
+    return {
+      result,
+      events: dedupeLocalCdpEvents(capturedEvents, eventOptions.maxEvents),
+    };
+  } finally {
+    removeListeners();
+    await cdpSession.detach().catch(() => undefined);
+  }
+}
+
+async function executeStorageAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "storage" }>
+): Promise<Record<string, unknown>> {
+  return await page.evaluate(
+    ({ area, action: storageAction, key, value, maxEntries, maxValueBytes }) => {
+      const storage = area === "localStorage" ? window.localStorage : window.sessionStorage;
+      const summarizeValue = (rawValue: string | null) => {
+        if (rawValue === null) {
+          return {
+            found: false,
+            value: null,
+            valueBytes: 0,
+            valueTruncated: false,
+          };
+        }
+        const valueBytes = new TextEncoder().encode(rawValue).length;
+        return {
+          found: true,
+          value: valueBytes <= maxValueBytes ? rawValue : rawValue.slice(0, maxValueBytes),
+          valueBytes,
+          valueTruncated: valueBytes > maxValueBytes,
+        };
+      };
+
+      if (storageAction === "set") {
+        storage.setItem(key!, value ?? "");
+        return {
+          area,
+          action: storageAction,
+          key,
+          valueBytes: new TextEncoder().encode(value ?? "").length,
+          entryCount: storage.length,
+        };
+      }
+      if (storageAction === "remove") {
+        const existed = storage.getItem(key!) !== null;
+        storage.removeItem(key!);
+        return {
+          area,
+          action: storageAction,
+          key,
+          removed: existed,
+          entryCount: storage.length,
+        };
+      }
+      if (storageAction === "clear") {
+        const clearedCount = storage.length;
+        storage.clear();
+        return {
+          area,
+          action: storageAction,
+          clearedCount,
+          entryCount: storage.length,
+        };
+      }
+
+      if (key) {
+        return {
+          area,
+          action: storageAction,
+          key,
+          ...summarizeValue(storage.getItem(key)),
+          entryCount: storage.length,
+        };
+      }
+
+      const entries = Array.from({ length: Math.min(storage.length, maxEntries) }, (_, index) => {
+        const entryKey = storage.key(index) ?? "";
+        return {
+          key: entryKey,
+          ...summarizeValue(storage.getItem(entryKey)),
+        };
+      });
+      return {
+        area,
+        action: storageAction,
+        entries,
+        entryCount: storage.length,
+        entriesTruncated: storage.length > maxEntries,
+      };
+    },
+    {
+      area: action.area,
+      action: action.action,
+      key: "key" in action ? action.key : undefined,
+      value: "value" in action ? action.value : undefined,
+      maxEntries: MAX_BROWSER_STORAGE_READ_ENTRIES,
+      maxValueBytes: MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+    }
+  );
+}
+
+async function executeCookieAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "cookie" }>
+): Promise<Record<string, unknown>> {
+  const pageUrl = page.url();
+  const actionUrl = "url" in action ? action.url : undefined;
+  const resolvedUrl = resolveCookieUrl(actionUrl, pageUrl);
+  const cdpSession = await page.context().newCDPSession(page);
+  const sendRaw = cdpSession.send.bind(cdpSession) as unknown as (
+    method: string,
+    params?: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  try {
+    await sendRaw("Network.enable", {});
+    if (action.action === "get") {
+      const cookies = await readCdpCookies(sendRaw, resolvedUrl);
+      const filteredCookies = action.name ? cookies.filter((cookie) => cookie.name === action.name) : cookies;
+      return {
+        action: action.action,
+        name: action.name ?? null,
+        url: resolvedUrl ?? null,
+        ...summarizeCdpCookies(filteredCookies),
+      };
+    }
+
+    if (action.action === "set") {
+      if (!resolvedUrl && !action.domain) {
+        throw new Error("browser cookie set requires an http(s) page URL or explicit domain");
+      }
+      const params = {
+        name: action.name,
+        value: action.value,
+        ...(resolvedUrl ? { url: resolvedUrl } : {}),
+        ...(action.domain ? { domain: action.domain } : {}),
+        ...(action.path ? { path: action.path } : {}),
+        ...(action.secure !== undefined ? { secure: action.secure } : {}),
+        ...(action.httpOnly !== undefined ? { httpOnly: action.httpOnly } : {}),
+        ...(action.sameSite ? { sameSite: action.sameSite } : {}),
+        ...(action.expires !== undefined ? { expires: action.expires } : {}),
+      };
+      const result = await sendRaw("Network.setCookie", params);
+      if (isCdpSetCookieFailure(result)) {
+        throw new Error(`browser cookie set failed: ${action.name}`);
+      }
+      return {
+        action: action.action,
+        name: action.name,
+        valueBytes: byteLength(action.value),
+        url: resolvedUrl ?? null,
+        domain: action.domain ?? null,
+        path: action.path ?? null,
+        set: true,
+      };
+    }
+
+    if (action.action === "remove") {
+      const params = buildCdpDeleteCookieParams(action.name, resolvedUrl, action.domain, action.path);
+      await sendRaw("Network.deleteCookies", params);
+      return {
+        action: action.action,
+        name: action.name,
+        url: resolvedUrl ?? null,
+        domain: action.domain ?? null,
+        path: action.path ?? null,
+        removed: true,
+      };
+    }
+
+    const cookies = filterCdpCookiesByScope(await readCdpCookies(sendRaw, resolvedUrl), action.domain, action.path);
+    const boundedCookies = cookies.slice(0, MAX_BROWSER_COOKIE_READ_ENTRIES);
+    for (const cookie of boundedCookies) {
+      if (!cookie.name) {
+        continue;
+      }
+      await sendRaw(
+        "Network.deleteCookies",
+        buildCdpDeleteCookieParams(cookie.name, resolvedUrl, cookie.domain, cookie.path)
+      );
+    }
+    return {
+      action: action.action,
+      url: resolvedUrl ?? null,
+      domain: action.domain ?? null,
+      path: action.path ?? null,
+      clearedCount: boundedCookies.length,
+      cookieCount: cookies.length,
+      cookiesTruncated: cookies.length > MAX_BROWSER_COOKIE_READ_ENTRIES,
+    };
+  } finally {
+    await cdpSession.detach().catch(() => undefined);
+  }
+}
+
+async function readCdpCookies(
+  sendRaw: (method: string, params?: Record<string, unknown>) => Promise<unknown>,
+  url: string | undefined
+): Promise<LocalCdpCookie[]> {
+  const response = await sendRaw("Network.getCookies", url ? { urls: [url] } : {});
+  if (!isRecord(response) || !Array.isArray(response.cookies)) {
+    return [];
+  }
+  return response.cookies.filter(isRecord).map((cookie) => cookie as LocalCdpCookie);
+}
+
+function summarizeCdpCookies(cookies: LocalCdpCookie[]): Record<string, unknown> {
+  const boundedCookies = cookies.slice(0, MAX_BROWSER_COOKIE_READ_ENTRIES);
+  return {
+    cookies: boundedCookies.map((cookie) => ({
+      name: cookie.name ?? "",
+      domain: cookie.domain ?? "",
+      path: cookie.path ?? "",
+      secure: cookie.secure ?? false,
+      httpOnly: cookie.httpOnly ?? false,
+      session: cookie.session ?? false,
+      sameSite: cookie.sameSite ?? null,
+      expires: typeof cookie.expires === "number" ? cookie.expires : null,
+      ...summarizeCookieValue(cookie.value ?? ""),
+    })),
+    cookieCount: cookies.length,
+    cookiesTruncated: cookies.length > MAX_BROWSER_COOKIE_READ_ENTRIES,
+  };
+}
+
+function summarizeCookieValue(value: string): Record<string, unknown> {
+  const valueBytes = byteLength(value);
+  return {
+    value: valueBytes <= MAX_BROWSER_COOKIE_READ_VALUE_BYTES ? value : value.slice(0, MAX_BROWSER_COOKIE_READ_VALUE_BYTES),
+    valueBytes,
+    valueTruncated: valueBytes > MAX_BROWSER_COOKIE_READ_VALUE_BYTES,
+  };
+}
+
+function filterCdpCookiesByScope(
+  cookies: LocalCdpCookie[],
+  domain: string | undefined,
+  path: string | undefined
+): LocalCdpCookie[] {
+  return cookies.filter((cookie) => {
+    if (domain && cookie.domain !== domain) {
+      return false;
+    }
+    if (path && cookie.path !== path) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function buildCdpDeleteCookieParams(
+  name: string,
+  url: string | undefined,
+  domain: string | undefined,
+  path: string | undefined
+): Record<string, unknown> {
+  if (!url && !domain) {
+    throw new Error("browser cookie remove requires an http(s) page URL or explicit domain");
+  }
+  return {
+    name,
+    ...(url ? { url } : {}),
+    ...(domain ? { domain } : {}),
+    ...(path ? { path } : {}),
+  };
+}
+
+function resolveCookieUrl(actionUrl: string | undefined, pageUrl: string): string | undefined {
+  const candidate = actionUrl ?? pageUrl;
+  return isHttpUrl(candidate) ? candidate : undefined;
+}
+
+function isCdpSetCookieFailure(value: unknown): boolean {
+  return isRecord(value) && value.success === false;
+}
+
+async function executeEvalAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "eval" }>
+): Promise<Record<string, unknown>> {
+  const cdpSession = await page.context().newCDPSession(page);
+  const sendRaw = cdpSession.send.bind(cdpSession) as unknown as (
+    method: string,
+    params?: Record<string, unknown>
+  ) => Promise<unknown>;
+  const timeoutMs = normalizeEvalTimeoutMs(action.timeoutMs);
+
+  try {
+    const response = await withTimeout(
+      sendRaw("Runtime.evaluate", {
+        expression: action.expression,
+        returnByValue: true,
+        awaitPromise: action.awaitPromise ?? true,
+      }),
+      timeoutMs,
+      `browser eval action timed out after ${timeoutMs}ms`
+    );
+    return summarizeEvalResponse(response, timeoutMs);
+  } finally {
+    await cdpSession.detach().catch(() => undefined);
+  }
+}
+
+function summarizeEvalResponse(response: unknown, timeoutMs: number): Record<string, unknown> {
+  const responseRecord = isRecord(response) ? response : {};
+  if (isRecord(responseRecord.exceptionDetails)) {
+    return {
+      exception: true,
+      timeoutMs,
+      text: typeof responseRecord.exceptionDetails.text === "string" ? responseRecord.exceptionDetails.text : null,
+    };
+  }
+
+  const result = isRecord(responseRecord.result) ? responseRecord.result : {};
+  const value = "value" in result ? result.value : result.description ?? null;
+  const json = safeStringify(value);
+  const resultBytes = byteLength(json);
+  return {
+    exception: false,
+    timeoutMs,
+    resultType: typeof result.type === "string" ? result.type : null,
+    resultBytes,
+    ...(resultBytes <= MAX_BROWSER_EVAL_RESULT_BYTES
+      ? { result: parseSafeJson(json) }
+      : { resultTruncated: true }),
+  };
+}
+
+function normalizeEvalTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_EVAL_TIMEOUT_MS)
+    : DEFAULT_BROWSER_EVAL_TIMEOUT_MS;
+}
+
+function normalizeNetworkTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_NETWORK_TIMEOUT_MS)
+    : DEFAULT_BROWSER_NETWORK_TIMEOUT_MS;
+}
+
+function normalizeDownloadTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_DOWNLOAD_TIMEOUT_MS)
+    : DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS;
+}
+
+function normalizeCdpTimeoutMs(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
+    : MAX_BROWSER_CDP_ACTION_TIMEOUT_MS;
+}
+
+function normalizeCdpEventOptions(events: Extract<BrowserTaskAction, { kind: "cdp" }>["events"]): {
+  waitFor?: string;
+  include?: string[];
+  timeoutMs: number;
+  maxEvents: number;
+} {
+  const waitFor = normalizeBrowserCdpMethod(events?.waitFor);
+  const include = [...new Set([...(events?.include ?? []), ...(waitFor ? [waitFor] : [])])]
+    .map((eventName) => normalizeBrowserCdpMethod(eventName))
+    .filter((eventName): eventName is string => Boolean(eventName && !isBlockedBrowserCdpMethod(eventName)));
+  const timeoutMs =
+    typeof events?.timeoutMs === "number" && Number.isInteger(events.timeoutMs) && events.timeoutMs > 0
+      ? Math.min(events.timeoutMs, MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS)
+      : MAX_BROWSER_CDP_ACTION_EVENT_TIMEOUT_MS;
+  const maxEvents =
+    typeof events?.maxEvents === "number" && Number.isInteger(events.maxEvents) && events.maxEvents > 0
+      ? Math.min(events.maxEvents, MAX_BROWSER_CDP_ACTION_EVENTS)
+      : MAX_BROWSER_CDP_ACTION_EVENTS;
+  return {
+    ...(waitFor && !isBlockedBrowserCdpMethod(waitFor) ? { waitFor } : {}),
+    ...(include.length ? { include } : {}),
+    timeoutMs,
+    maxEvents,
+  };
+}
+
+function attachCdpEventListeners(
+  cdpSession: CDPSession,
+  eventNames: string[],
+  capturedEvents: LocalCdpEvent[]
+): () => void {
+  const eventSource = cdpSession as unknown as {
+    on(eventName: string, listener: (params?: Record<string, unknown>) => void): void;
+    off(eventName: string, listener: (params?: Record<string, unknown>) => void): void;
+  };
+  const listeners = eventNames.map((eventName) => {
+    const listener = (params?: Record<string, unknown>) => {
+      capturedEvents.push({
+        method: eventName,
+        ...(params ? { params } : {}),
+        timestamp: Date.now(),
+      });
+    };
+    eventSource.on(eventName, listener);
+    return { eventName, listener };
+  });
+  return () => {
+    for (const { eventName, listener } of listeners) {
+      eventSource.off(eventName, listener);
+    }
+  };
+}
+
+function waitForCdpEvent(
+  cdpSession: CDPSession,
+  eventName: string,
+  timeoutMs: number,
+  capturedEvents: LocalCdpEvent[]
+): Promise<LocalCdpEvent> {
+  const eventSource = cdpSession as unknown as {
+    on(eventName: string, listener: (params?: Record<string, unknown>) => void): void;
+    off(eventName: string, listener: (params?: Record<string, unknown>) => void): void;
+  };
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const listener = (params?: Record<string, unknown>) => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      const event: LocalCdpEvent = {
+        method: eventName,
+        ...(params ? { params } : {}),
+        timestamp: Date.now(),
+      };
+      capturedEvents.push(event);
+      eventSource.off(eventName, listener);
+      resolve(event);
+    };
+    timeout = setTimeout(() => {
+      eventSource.off(eventName, listener);
+      reject(new Error(`browser cdp event timed out after ${timeoutMs}ms: ${eventName}`));
+    }, timeoutMs);
+    eventSource.on(eventName, listener);
+  });
+}
+
+function summarizeCdpActionOutput(output: LocalCdpActionOutput): Record<string, unknown> {
+  return {
+    ...summarizeCdpResult(output.result),
+    ...(output.events.length ? { events: summarizeLocalCdpEvents(output.events) } : {}),
+  };
+}
+
+function summarizeCdpResult(result: unknown): Record<string, unknown> {
+  const json = safeStringify(result);
+  const resultJsonBytes = byteLength(json);
+  if (resultJsonBytes <= MAX_CDP_TRACE_RESULT_BYTES) {
+    return { result: parseSafeJson(json) };
+  }
+  return {
+    resultTruncated: true,
+    resultJsonBytes,
+  };
+}
+
+function summarizeLocalCdpEvents(events: LocalCdpEvent[]): Array<Record<string, unknown>> {
+  return events.map((event) => {
+    const paramsJson = safeStringify(event.params ?? null);
+    const paramsBytes = byteLength(paramsJson);
+    return {
+      method: event.method,
+      timestamp: event.timestamp,
+      paramsBytes,
+      ...(paramsBytes <= MAX_BROWSER_CDP_EVENT_PARAMS_BYTES
+        ? { params: parseSafeJson(paramsJson) }
+        : { paramsTruncated: true }),
+    };
+  });
+}
+
+function dedupeLocalCdpEvents(events: LocalCdpEvent[], maxEvents: number): LocalCdpEvent[] {
+  const seen = new Set<string>();
+  const deduped: LocalCdpEvent[] = [];
+  for (const event of events) {
+    const key = `${event.timestamp}:${event.method}:${safeStringify(event.params ?? null)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped.slice(-maxEvents);
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    const json = JSON.stringify(value ?? null);
+    return typeof json === "string" ? json : "null";
+  } catch {
+    return JSON.stringify(String(value));
+  }
+}
+
+function parseSafeJson(json: string): unknown {
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function jsonByteLength(value: unknown): number {
+  return value === undefined ? 0 : byteLength(safeStringify(value));
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (byteLength(value) <= maxBytes) {
+    return value;
+  }
+  let output = "";
+  let outputBytes = 0;
+  for (const character of value) {
+    const characterBytes = byteLength(character);
+    if (outputBytes + characterBytes > maxBytes) {
+      break;
+    }
+    output += character;
+    outputBytes += characterBytes;
+  }
+  return output;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function matchesUrlPattern(url: string, pattern: string): boolean {
+  if (!pattern.includes("*")) {
+    return url.includes(pattern);
+  }
+  const escaped = pattern
+    .split("*")
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".*");
+  return new RegExp(`^${escaped}$`).test(url);
+}
+
+function buildPatternWaitExpression(pattern: string, valueExpression: string): string {
+  const boundedPattern = pattern.slice(0, MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH);
+  const regexSource = JSON.stringify("[.*+?^${}()|[\\]\\\\]");
+  return [
+    "(() => {",
+    `  const pattern = ${JSON.stringify(boundedPattern)};`,
+    `  const value = String(${valueExpression} ?? "");`,
+    `  if (!pattern.includes("*")) return value.includes(pattern);`,
+    `  const escaped = pattern.split("*").map((part) => part.replace(new RegExp(${regexSource}, "g"), "\\\\$&")).join(".*");`,
+    `  return new RegExp("^" + escaped + "$").test(value);`,
+    "})()",
+  ].join("\n");
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  promise.catch(() => undefined);
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
+}
+
 function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
   if (action.kind === "open") {
     return { url: action.url };
@@ -1104,6 +2821,38 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
     };
   }
 
+  if (action.kind === "hover") {
+    return {
+      selectors: action.selectors ?? [],
+      refId: action.refId ?? null,
+      text: action.text ?? null,
+    };
+  }
+
+  if (action.kind === "key") {
+    return {
+      key: action.key,
+      modifiers: action.modifiers ?? [],
+    };
+  }
+
+  if (action.kind === "select") {
+    return {
+      selectors: action.selectors ?? [],
+      refId: action.refId ?? null,
+      value: action.value ?? null,
+      label: action.label ?? null,
+      index: action.index ?? null,
+    };
+  }
+
+  if (action.kind === "drag") {
+    return {
+      source: summarizeActionTarget(action.source),
+      target: summarizeActionTarget(action.target),
+    };
+  }
+
   if (action.kind === "scroll") {
     return {
       direction: action.direction,
@@ -1117,8 +2866,172 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
     };
   }
 
+  if (action.kind === "probe") {
+    return {
+      probe: action.probe,
+      maxItems: action.maxItems ?? null,
+    };
+  }
+
+  if (action.kind === "permission") {
+    return {
+      action: action.action,
+      permissions: "permissions" in action ? action.permissions : [],
+      origin: "origin" in action ? action.origin ?? null : null,
+    };
+  }
+
+  if (action.kind === "waitFor") {
+    if ("urlPattern" in action) {
+      return {
+        urlPattern: action.urlPattern,
+        timeoutMs: action.timeoutMs ?? null,
+      };
+    }
+    if ("titlePattern" in action) {
+      return {
+        titlePattern: action.titlePattern,
+        timeoutMs: action.timeoutMs ?? null,
+      };
+    }
+    if ("bodyTextPattern" in action) {
+      return {
+        bodyTextPattern: action.bodyTextPattern,
+        timeoutMs: action.timeoutMs ?? null,
+      };
+    }
+    return {
+      ...summarizeActionTarget(action),
+      state: action.state ?? null,
+      timeoutMs: action.timeoutMs ?? null,
+    };
+  }
+
   if (action.kind === "wait") {
     return { timeoutMs: action.timeoutMs };
+  }
+
+  if (action.kind === "dialog") {
+    return {
+      action: action.action,
+      promptTextLength: action.promptText?.length ?? null,
+      timeoutMs: action.timeoutMs ?? null,
+    };
+  }
+
+  if (action.kind === "popup") {
+    return {
+      timeoutMs: action.timeoutMs ?? null,
+    };
+  }
+
+  if (action.kind === "storage") {
+    return {
+      area: action.area,
+      action: action.action,
+      key: "key" in action ? action.key : null,
+      valueBytes: "value" in action ? byteLength(action.value) : null,
+    };
+  }
+
+  if (action.kind === "cookie") {
+    return {
+      action: action.action,
+      name: "name" in action ? action.name : null,
+      valueBytes: "value" in action ? byteLength(action.value) : null,
+      url: "url" in action ? action.url ?? null : null,
+      domain: "domain" in action ? action.domain ?? null : null,
+      path: "path" in action ? action.path ?? null : null,
+    };
+  }
+
+  if (action.kind === "eval") {
+    return {
+      expressionBytes: byteLength(action.expression),
+      awaitPromise: action.awaitPromise ?? true,
+      timeoutMs: action.timeoutMs ?? null,
+    };
+  }
+
+  if (action.kind === "network") {
+    if (action.action === "blockUrls") {
+      return {
+        action: action.action,
+        urlPatterns: action.urlPatterns,
+      };
+    }
+    if (action.action === "clearBlockedUrls" || action.action === "clearMockResponses") {
+      return {
+        action: action.action,
+      };
+    }
+    if (action.action === "setExtraHeaders") {
+      return {
+        action: action.action,
+        headerNames: Object.keys(action.headers),
+      };
+    }
+    if (action.action === "clearExtraHeaders") {
+      return {
+        action: action.action,
+      };
+    }
+    if (action.action === "emulateConditions") {
+      return {
+        action: action.action,
+        offline: action.offline ?? null,
+        latencyMs: action.latencyMs ?? null,
+        downloadThroughputBytesPerSec: action.downloadThroughputBytesPerSec ?? null,
+        uploadThroughputBytesPerSec: action.uploadThroughputBytesPerSec ?? null,
+      };
+    }
+    if (action.action === "clearEmulation") {
+      return {
+        action: action.action,
+      };
+    }
+    if (action.action === "mockResponse") {
+      return {
+        action: action.action,
+        urlPattern: action.urlPattern,
+        method: action.method ?? null,
+        status: action.status ?? null,
+        timeoutMs: action.timeoutMs ?? null,
+        headerNames: Object.keys(action.headers ?? {}),
+        bodyBytes: getNetworkMockBodyBytes(action),
+      };
+    }
+    return {
+      action: action.action,
+      urlPattern: action.urlPattern ?? null,
+      method: action.method ?? null,
+      status: "status" in action ? action.status ?? null : null,
+      timeoutMs: action.timeoutMs ?? null,
+      includeHeaders: action.includeHeaders ?? false,
+      maxBodyBytes: action.maxBodyBytes ?? null,
+    };
+  }
+
+  if (action.kind === "download") {
+    return {
+      urlPattern: action.urlPattern ?? null,
+      timeoutMs: action.timeoutMs ?? null,
+    };
+  }
+
+  if (action.kind === "upload") {
+    return {
+      ...summarizeActionTarget(action),
+      artifactId: action.artifactId,
+    };
+  }
+
+  if (action.kind === "cdp") {
+    return {
+      method: action.method,
+      paramsBytes: jsonByteLength(action.params),
+      timeoutMs: action.timeoutMs ?? null,
+    };
   }
 
   if (action.kind === "screenshot") {
@@ -1130,6 +3043,25 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
 
 function sanitizeLabel(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+}
+
+function sanitizeUploadFileName(value: string): string {
+  const fileName = path.basename(value).trim().replace(/[^\w .-]+/g, "-");
+  return (fileName || "upload.bin").slice(0, MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH);
+}
+
+function assertPathInsideRoot(rootDir: string, candidatePath: string, label: string): void {
+  const root = path.resolve(rootDir);
+  const candidate = path.resolve(candidatePath);
+  const relative = path.relative(root, candidate);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return;
+  }
+  throw new Error(`${label} path escapes artifact root`);
+}
+
+function isUploadableArtifactType(type: string): boolean {
+  return type === "upload-file" || type === "downloaded-file";
 }
 
 function summarizeBrowserHistorySuccess(
@@ -1202,8 +3134,172 @@ async function executeConsoleProbe(page: Page, probe: BrowserConsoleProbe): Prom
   throw new Error(`unsupported console probe: ${probe}`);
 }
 
+async function executeProbeAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "probe" }>
+): Promise<unknown> {
+  const probe = JSON.stringify(action.probe);
+  const maxItems = JSON.stringify(normalizeProbeMaxItems(action.maxItems));
+  return page.evaluate(`(() => {
+    const probe = ${probe};
+    const itemLimit = Math.max(1, Math.min(${maxItems}, 50));
+    const textOf = (element) => [
+      element.innerText,
+      element.textContent,
+      element.getAttribute && element.getAttribute("aria-label"),
+      element.getAttribute && element.getAttribute("title")
+    ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim().slice(0, 160);
+    const cssEscape = (value) =>
+      globalThis.CSS && typeof globalThis.CSS.escape === "function"
+        ? globalThis.CSS.escape(value)
+        : value.replace(/[^a-zA-Z0-9_-]/g, "\\\\$&");
+    const selectorOf = (element) => {
+      if (element.id) return "#" + cssEscape(element.id);
+      const name = element.getAttribute && element.getAttribute("name");
+      if (name) return element.tagName.toLowerCase() + "[name=" + JSON.stringify(name) + "]";
+      return null;
+    };
+
+    if (probe === "page-state") {
+      return {
+        href: location.href,
+        title: document.title,
+        readyState: document.readyState,
+        visibilityState: document.visibilityState,
+        focused: document.hasFocus(),
+        activeElement: document.activeElement ? {
+          tagName: document.activeElement.tagName.toLowerCase(),
+          role: document.activeElement.getAttribute("role"),
+          text: textOf(document.activeElement),
+          selector: selectorOf(document.activeElement)
+        } : null,
+        interactiveCount: document.querySelectorAll("a,button,input,textarea,select,[role='button'],[contenteditable='true']").length,
+        formControlCount: document.querySelectorAll("input,textarea,select,button").length,
+        downloadLinkCount: document.querySelectorAll("a[download]").length
+      };
+    }
+
+    if (probe === "forms") {
+      return Array.from(document.querySelectorAll("input,textarea,select,button")).slice(0, itemLimit).map((element) => ({
+        tagName: element.tagName.toLowerCase(),
+        type: element.type || (element.getAttribute && element.getAttribute("type")) || null,
+        name: element.name || (element.getAttribute && element.getAttribute("name")) || null,
+        id: element.id || null,
+        placeholder: element.placeholder || (element.getAttribute && element.getAttribute("placeholder")) || null,
+        label: textOf(element),
+        valueLength: typeof element.value === "string" ? element.value.length : null,
+        checked: typeof element.checked === "boolean" ? element.checked : null,
+        disabled: Boolean(element.disabled),
+        required: Boolean(element.required),
+        selector: selectorOf(element)
+      }));
+    }
+
+    if (probe === "links") {
+      return Array.from(document.querySelectorAll("a,button,[role='button']")).slice(0, itemLimit).map((element) => ({
+        tagName: element.tagName.toLowerCase(),
+        text: textOf(element),
+        href: element.href || (element.getAttribute && element.getAttribute("href")) || null,
+        target: element.target || (element.getAttribute && element.getAttribute("target")) || null,
+        role: element.getAttribute && element.getAttribute("role"),
+        disabled: Boolean(element.disabled),
+        selector: selectorOf(element)
+      }));
+    }
+
+    return Array.from(document.querySelectorAll(
+      "a[download],a[href$='.csv'],a[href$='.pdf'],a[href$='.zip'],a[href$='.xlsx'],a[href$='.json']"
+    )).slice(0, itemLimit).map((element) => ({
+      text: textOf(element),
+      href: element.href || (element.getAttribute && element.getAttribute("href")) || null,
+      download: element.download || (element.getAttribute && element.getAttribute("download")) || null,
+      selector: selectorOf(element)
+    }));
+  })()`);
+}
+
 function buildRefMap(interactives: BrowserInteractiveElement[]): Map<string, BrowserInteractiveElement> {
   return new Map(interactives.map((item) => [item.refId, item]));
+}
+
+function normalizeProbeMaxItems(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_PROBE_ITEMS)
+    : MAX_BROWSER_PROBE_ITEMS;
+}
+
+async function executePermissionAction(
+  page: Page,
+  action: Extract<BrowserTaskAction, { kind: "permission" }>
+): Promise<Record<string, unknown>> {
+  if (action.action === "reset") {
+    await page.context().clearPermissions();
+    return {
+      action: action.action,
+      resetAll: true,
+    };
+  }
+
+  const permissions = [...new Set(action.permissions)];
+  const origin = resolvePermissionOrigin(action.origin, page.url());
+  if (action.action === "grant") {
+    await page.context().grantPermissions(permissions, { origin });
+  } else {
+    await setPagePermissionsViaCdp(page, permissions, "denied", origin);
+  }
+
+  return {
+    action: action.action,
+    permissions,
+    origin,
+  };
+}
+
+async function setPagePermissionsViaCdp(
+  page: Page,
+  permissions: BrowserPermissionName[],
+  setting: "denied",
+  origin: string
+): Promise<void> {
+  const cdpSession = await page.context().newCDPSession(page);
+  try {
+    for (const permission of permissions) {
+      await cdpSession.send("Browser.setPermission", {
+        permission: toCdpPermissionDescriptor(permission),
+        setting,
+        origin,
+      });
+    }
+  } finally {
+    await cdpSession.detach().catch(() => {});
+  }
+}
+
+function toCdpPermissionDescriptor(permission: BrowserPermissionName): { name: string; allowWithoutSanitization?: boolean } {
+  if (permission === "clipboard-read") {
+    return { name: "clipboardReadWrite", allowWithoutSanitization: true };
+  }
+  if (permission === "clipboard-write") {
+    return { name: "clipboardSanitizedWrite" };
+  }
+  return { name: permission };
+}
+
+function resolvePermissionOrigin(origin: string | undefined, currentUrl: string): string {
+  const candidate = origin ?? currentUrl;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("not http");
+    }
+    const resolved = parsed.origin;
+    if (resolved.length > MAX_BROWSER_PERMISSION_ORIGIN_LENGTH) {
+      throw new Error("too long");
+    }
+    return resolved;
+  } catch {
+    throw new Error("browser permission action requires an explicit http(s) origin or current page URL");
+  }
 }
 
 function serializeConsoleResult(result: unknown): unknown {

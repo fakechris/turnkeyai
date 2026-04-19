@@ -295,6 +295,15 @@ test("relay routes reject malformed target reports and trim nested action result
       screenshotPaths: [" shot-1.png "],
       artifactIds: [" artifact-1 "],
       screenshotPayloads: [{ label: " before ", mimeType: " image/png ", dataBase64: "abc123" }],
+      downloadPayloads: [
+        {
+          url: " https://example.com/export.csv ",
+          fileName: " export.csv ",
+          mimeType: " text/csv ",
+          dataBase64: "aWQsbmFtZQoxLEFkYQo=",
+          sizeBytes: 14,
+        },
+      ],
       errorMessage: " timed out ",
     },
     relayPeerBindingStore,
@@ -313,6 +322,15 @@ test("relay routes reject malformed target reports and trim nested action result
     trace: [],
     screenshotPaths: ["shot-1.png"],
     screenshotPayloads: [{ label: "before", mimeType: "image/png", dataBase64: "abc123" }],
+    downloadPayloads: [
+      {
+        url: "https://example.com/export.csv",
+        fileName: "export.csv",
+        mimeType: "text/csv",
+        dataBase64: "aWQsbmFtZQoxLEFkYQo=",
+        sizeBytes: 14,
+      },
+    ],
     artifactIds: ["artifact-1"],
     errorMessage: "timed out",
   });
@@ -358,6 +376,26 @@ test("relay routes reject invalid registration metadata and malformed action-res
   assert.equal(invalidActionResult.res.statusCode, 400);
   assert.deepEqual(invalidActionResult.json, {
     error: "screenshotPaths must contain non-empty strings",
+  });
+
+  const invalidDownloadPayload = await invokeRelayRoute({
+    method: "POST",
+    url: "/relay/peers/peer-1/action-results",
+    body: {
+      actionRequestId: "request-4",
+      browserSessionId: "session-4",
+      taskId: "task-4",
+      relayTargetId: "target-4",
+      claimToken: "claim-4",
+      url: "https://example.com",
+      status: "completed",
+      downloadPayloads: [{ url: "https://example.com/export.csv", fileName: " ", dataBase64: "abc", sizeBytes: 3 }],
+    },
+    relayPeerBindingStore,
+  });
+  assert.equal(invalidDownloadPayload.res.statusCode, 400);
+  assert.deepEqual(invalidDownloadPayload.json, {
+    error: "downloadPayloads must contain objects with non-empty url, fileName, dataBase64, and sizeBytes",
   });
 });
 

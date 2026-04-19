@@ -1,4 +1,13 @@
 import type { BrowserActionTrace, BrowserSnapshotResult } from "@turnkeyai/core-types/team";
+import {
+  DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS,
+  MAX_BROWSER_PROBE_ITEMS,
+  MAX_BROWSER_STORAGE_READ_ENTRIES,
+  MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+  MAX_BROWSER_UPLOAD_FILE_BYTES,
+  MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
+  MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH,
+} from "@turnkeyai/core-types/team";
 import type { RelayExecutableBrowserAction } from "@turnkeyai/browser-bridge/transport/relay-protocol";
 
 import type { ChromeRuntimeLike } from "./chrome-extension-types";
@@ -8,23 +17,55 @@ import {
 } from "./chrome-content-script-protocol";
 
 type DocumentLikeCollection = DocumentLikeElement[] | ArrayLike<DocumentLikeElement>;
+type DocumentLikeOptionCollection = DocumentLikeOption[] | ArrayLike<DocumentLikeOption>;
 
 interface DocumentLikeElement {
   tagName?: string;
+  id?: string;
+  name?: string;
+  type?: string;
+  placeholder?: string;
+  href?: string;
+  target?: string;
+  download?: string;
   innerText?: string;
   textContent?: string;
   value?: string;
+  checked?: boolean;
+  disabled?: boolean;
+  required?: boolean;
+  offsetParent?: unknown;
+  files?: unknown;
+  selectedIndex?: number;
+  options?: DocumentLikeOptionCollection;
   dataset?: Record<string, string | undefined>;
   getAttribute?(name: string): string | null;
   setAttribute?(name: string, value: string): void;
   click?(): void;
   focus?(): void;
   dispatchEvent?(event: unknown): void;
+  getClientRects?(): { length: number };
   querySelectorAll?(selector: string): DocumentLikeCollection;
+}
+
+interface DocumentLikeOption {
+  value?: string;
+  label?: string;
+  text?: string;
+  textContent?: string;
+  selected?: boolean;
 }
 
 interface DocumentLike {
   title?: string;
+  readyState?: string;
+  visibilityState?: string;
+  activeElement?: DocumentLikeElement | null;
+  body?: {
+    innerText?: string;
+    textContent?: string;
+  };
+  hasFocus?(): boolean;
   querySelectorAll?(selector: string): DocumentLikeCollection;
 }
 
@@ -32,9 +73,28 @@ interface WindowLike {
   location?: {
     href?: string;
   };
+  localStorage?: StorageLike;
+  sessionStorage?: StorageLike;
   scrollY?: number;
   pageYOffset?: number;
+  File?: new (parts: unknown[], name: string, options?: { type?: string }) => unknown;
+  DataTransfer?: new () => {
+    items: {
+      add(file: unknown): void;
+    };
+    files: unknown;
+  };
+  atob?(data: string): string;
   scrollBy?(options: { top: number; behavior: "instant" | "smooth" }): void;
+}
+
+interface StorageLike {
+  readonly length: number;
+  key(index: number): string | null;
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+  clear(): void;
 }
 
 export interface ChromeRelayContentScriptEnvironment {
@@ -158,6 +218,42 @@ export async function executeChromeRelayContentScriptActions(
         continue;
       }
 
+      if (action.kind === "select") {
+        const element = resolveElement(environment.document, action as {
+          refId?: unknown;
+          selectors?: unknown;
+        });
+        const selected = selectElementOption(element, action as {
+          value?: unknown;
+          label?: unknown;
+          index?: unknown;
+        });
+        element.dispatchEvent?.(createDomEvent("input"));
+        element.dispatchEvent?.(createDomEvent("change"));
+        latestSnapshot = captureSnapshot(environment);
+        trace.push({
+          stepId,
+          kind: "select",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            refId: typeof action.refId === "string" ? action.refId : null,
+            selectors: Array.isArray(action.selectors) ? action.selectors : [],
+            value: typeof action.value === "string" ? action.value : null,
+            label: typeof action.label === "string" ? action.label : null,
+            index: typeof action.index === "number" ? action.index : null,
+          },
+          output: {
+            finalUrl: latestSnapshot.finalUrl,
+            selectedValue: selected.value,
+            selectedLabel: selected.label,
+            selectedIndex: selected.index,
+          },
+        });
+        continue;
+      }
+
       if (action.kind === "scroll") {
         const amount = typeof action.amount === "number" && Number.isFinite(action.amount) ? action.amount : 800;
         const delta = action.direction === "up" ? amount * -1 : amount;
@@ -208,6 +304,74 @@ export async function executeChromeRelayContentScriptActions(
         continue;
       }
 
+      if (action.kind === "probe") {
+        const result = executeProbeAction(environment, action);
+        latestSnapshot = captureSnapshot(environment);
+        trace.push({
+          stepId,
+          kind: "probe",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            probe: action.probe,
+            maxItems: action.maxItems ?? null,
+          },
+          output: {
+            finalUrl: latestSnapshot.finalUrl,
+            result,
+          },
+        });
+        continue;
+      }
+
+      if (action.kind === "storage") {
+        const result = executeStorageAction(environment, action);
+        latestSnapshot = captureSnapshot(environment);
+        trace.push({
+          stepId,
+          kind: "storage",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            area: action.area,
+            action: action.action,
+            key: "key" in action ? action.key : null,
+            valueBytes: "value" in action ? byteLength(action.value) : null,
+          },
+          output: {
+            finalUrl: latestSnapshot.finalUrl,
+            ...result,
+          },
+        });
+        continue;
+      }
+
+      if (action.kind === "upload") {
+        const result = executeUploadAction(environment, action);
+        latestSnapshot = captureSnapshot(environment);
+        trace.push({
+          stepId,
+          kind: "upload",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            refId: typeof action.refId === "string" ? action.refId : null,
+            selectors: Array.isArray(action.selectors) ? action.selectors : [],
+            text: typeof action.text === "string" ? action.text : null,
+            artifactId: action.artifactId,
+            fileName: action.file?.name ?? null,
+          },
+          output: {
+            finalUrl: latestSnapshot.finalUrl,
+            ...result,
+          },
+        });
+        continue;
+      }
+
       if (action.kind === "wait") {
         const timeoutMs =
           typeof action.timeoutMs === "number" && Number.isFinite(action.timeoutMs) && action.timeoutMs >= 0
@@ -231,6 +395,58 @@ export async function executeChromeRelayContentScriptActions(
         continue;
       }
 
+      if (action.kind === "waitFor") {
+        const timeoutMs =
+          typeof action.timeoutMs === "number" && Number.isFinite(action.timeoutMs) && action.timeoutMs >= 0
+            ? Math.min(Math.trunc(action.timeoutMs), MAX_RELAY_WAIT_ACTION_MS)
+            : DEFAULT_BROWSER_WAIT_FOR_TIMEOUT_MS;
+        if (isWaitForPageCondition(action)) {
+          const result = await waitForPageCondition(environment, action, timeoutMs);
+          latestSnapshot = captureSnapshot(environment);
+          trace.push({
+            stepId,
+            kind: "waitFor",
+            startedAt,
+            completedAt: Date.now(),
+            status: "ok",
+            input: {
+              urlPattern: "urlPattern" in action ? action.urlPattern : null,
+              titlePattern: "titlePattern" in action ? action.titlePattern : null,
+              bodyTextPattern: "bodyTextPattern" in action ? action.bodyTextPattern : null,
+              timeoutMs,
+            },
+            output: {
+              finalUrl: latestSnapshot.finalUrl,
+              ...result,
+            },
+          });
+          continue;
+        }
+        const state = action.state ?? "visible";
+        const element = await waitForElement(environment.document, action, timeoutMs, state);
+        latestSnapshot = captureSnapshot(environment);
+        trace.push({
+          stepId,
+          kind: "waitFor",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            refId: typeof action.refId === "string" ? action.refId : null,
+            selectors: Array.isArray(action.selectors) ? action.selectors : [],
+            text: typeof action.text === "string" ? action.text : null,
+            state,
+            timeoutMs,
+          },
+          output: {
+            finalUrl: latestSnapshot.finalUrl,
+            tagName: element.tagName ?? null,
+            label: extractElementText(element),
+          },
+        });
+        continue;
+      }
+
       if (action.kind === "open") {
         trace.push({
           stepId,
@@ -247,6 +463,8 @@ export async function executeChromeRelayContentScriptActions(
         });
         continue;
       }
+
+      throw new Error(`unsupported content script action: ${action.kind}`);
     } catch (error) {
       trace.push({
         stepId,
@@ -334,6 +552,235 @@ function executeConsoleProbe(
       }));
 }
 
+function executeProbeAction(
+  environment: ChromeRelayContentScriptEnvironment,
+  action: Extract<RelayExecutableBrowserAction, { kind: "probe" }>
+): unknown {
+  const limit = normalizeProbeMaxItems(action.maxItems);
+  const href = environment.window.location?.href ?? "";
+
+  if (action.probe === "page-state") {
+    const activeElement = environment.document.activeElement ?? null;
+    return {
+      href,
+      title: environment.document.title ?? "",
+      readyState: environment.document.readyState ?? null,
+      visibilityState: environment.document.visibilityState ?? null,
+      focused: environment.document.hasFocus?.() ?? null,
+      activeElement: activeElement
+        ? {
+            tagName: (activeElement.tagName ?? "div").toLowerCase(),
+            role: activeElement.getAttribute?.("role") ?? null,
+            text: extractElementText(activeElement),
+            selector: selectorForElement(activeElement),
+          }
+        : null,
+      interactiveCount: toElementArray(
+        environment.document.querySelectorAll?.(
+          "a,button,input,textarea,select,[role='button'],[contenteditable='true']"
+        )
+      ).length,
+      formControlCount: toElementArray(environment.document.querySelectorAll?.("input,textarea,select,button")).length,
+      downloadLinkCount: toElementArray(environment.document.querySelectorAll?.("a[download]")).length,
+    };
+  }
+
+  if (action.probe === "forms") {
+    return toElementArray(environment.document.querySelectorAll?.("input,textarea,select,button"))
+      .slice(0, limit)
+      .map((element) => ({
+        tagName: (element.tagName ?? "div").toLowerCase(),
+        type: element.type ?? element.getAttribute?.("type") ?? null,
+        name: element.name ?? element.getAttribute?.("name") ?? null,
+        id: element.id ?? null,
+        placeholder: element.placeholder ?? element.getAttribute?.("placeholder") ?? null,
+        label: extractElementText(element),
+        valueLength: typeof element.value === "string" ? element.value.length : null,
+        checked: typeof element.checked === "boolean" ? element.checked : null,
+        disabled: Boolean(element.disabled),
+        required: Boolean(element.required),
+        selector: selectorForElement(element),
+      }));
+  }
+
+  if (action.probe === "links") {
+    return toElementArray(environment.document.querySelectorAll?.("a,button,[role='button']"))
+      .slice(0, limit)
+      .map((element) => ({
+        tagName: (element.tagName ?? "div").toLowerCase(),
+        text: extractElementText(element),
+        href: element.href ?? element.getAttribute?.("href") ?? null,
+        target: element.target ?? element.getAttribute?.("target") ?? null,
+        role: element.getAttribute?.("role") ?? null,
+        disabled: Boolean(element.disabled),
+        selector: selectorForElement(element),
+      }));
+  }
+
+  return toElementArray(
+    environment.document.querySelectorAll?.(
+      "a[download],a[href$='.csv'],a[href$='.pdf'],a[href$='.zip'],a[href$='.xlsx'],a[href$='.json']"
+    )
+  )
+    .slice(0, limit)
+    .map((element) => ({
+      text: extractElementText(element),
+      href: element.href ?? element.getAttribute?.("href") ?? null,
+      download: element.download ?? element.getAttribute?.("download") ?? null,
+      selector: selectorForElement(element),
+    }));
+}
+
+function executeStorageAction(
+  environment: ChromeRelayContentScriptEnvironment,
+  action: Extract<RelayExecutableBrowserAction, { kind: "storage" }>
+): Record<string, unknown> {
+  const storage = action.area === "localStorage" ? environment.window.localStorage : environment.window.sessionStorage;
+  if (!storage) {
+    throw new Error(`content script storage area is unavailable: ${action.area}`);
+  }
+  if (action.action === "set") {
+    storage.setItem(action.key, action.value);
+    return {
+      area: action.area,
+      action: action.action,
+      key: action.key,
+      valueBytes: byteLength(action.value),
+      entryCount: storage.length,
+    };
+  }
+  if (action.action === "remove") {
+    const removed = storage.getItem(action.key) !== null;
+    storage.removeItem(action.key);
+    return {
+      area: action.area,
+      action: action.action,
+      key: action.key,
+      removed,
+      entryCount: storage.length,
+    };
+  }
+  if (action.action === "clear") {
+    const clearedCount = storage.length;
+    storage.clear();
+    return {
+      area: action.area,
+      action: action.action,
+      clearedCount,
+      entryCount: storage.length,
+    };
+  }
+  if (action.key) {
+    return {
+      area: action.area,
+      action: action.action,
+      key: action.key,
+      ...summarizeStorageValue(storage.getItem(action.key)),
+      entryCount: storage.length,
+    };
+  }
+
+  const entries = Array.from({ length: Math.min(storage.length, MAX_BROWSER_STORAGE_READ_ENTRIES) }, (_, index) => {
+    const key = storage.key(index) ?? "";
+    return {
+      key,
+      ...summarizeStorageValue(storage.getItem(key)),
+    };
+  });
+  return {
+    area: action.area,
+    action: action.action,
+    entries,
+    entryCount: storage.length,
+    entriesTruncated: storage.length > MAX_BROWSER_STORAGE_READ_ENTRIES,
+  };
+}
+
+function executeUploadAction(
+  environment: ChromeRelayContentScriptEnvironment,
+  action: Extract<RelayExecutableBrowserAction, { kind: "upload" }>
+): Record<string, unknown> {
+  if (!action.file) {
+    throw new Error("content script upload action is missing injected file payload");
+  }
+  const element = resolveElement(environment.document, action as {
+    refId?: unknown;
+    selectors?: unknown;
+    text?: unknown;
+  });
+  const FileCtor = environment.window.File ?? (globalThis as { File?: WindowLike["File"] }).File;
+  const DataTransferCtor =
+    environment.window.DataTransfer ?? (globalThis as { DataTransfer?: WindowLike["DataTransfer"] }).DataTransfer;
+  if (!FileCtor || !DataTransferCtor) {
+    throw new Error("content script upload requires File and DataTransfer support");
+  }
+  const bytes = decodeBase64(action.file.dataBase64, environment);
+  if (action.file.sizeBytes > MAX_BROWSER_UPLOAD_FILE_BYTES) {
+    throw new Error(`content script upload exceeds ${MAX_BROWSER_UPLOAD_FILE_BYTES} bytes`);
+  }
+  if (bytes.byteLength !== action.file.sizeBytes) {
+    throw new Error("content script upload payload size does not match decoded bytes");
+  }
+  const fileName = sanitizeUploadFileName(action.file.name);
+  const file = new FileCtor([bytes], fileName, {
+    type: action.file.mimeType ?? "application/octet-stream",
+  });
+  const dataTransfer = new DataTransferCtor();
+  dataTransfer.items.add(file);
+  try {
+    element.files = dataTransfer.files;
+  } catch {
+    Object.defineProperty(element, "files", {
+      configurable: true,
+      value: dataTransfer.files,
+    });
+  }
+  element.dispatchEvent?.(createDomEvent("input"));
+  element.dispatchEvent?.(createDomEvent("change"));
+  return {
+    artifactId: action.artifactId,
+    fileName,
+    sizeBytes: action.file.sizeBytes,
+    mimeType: action.file.mimeType ?? null,
+  };
+}
+
+function decodeBase64(value: string, environment: ChromeRelayContentScriptEnvironment): Uint8Array {
+  const decode = environment.window.atob ?? (globalThis as { atob?: (data: string) => string }).atob;
+  if (!decode) {
+    throw new Error("content script upload requires base64 decoder support");
+  }
+  const binary = decode(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function sanitizeUploadFileName(value: string): string {
+  const fileName = value.trim().split(/[\\/]+/).pop()?.replace(/[^\w .-]+/g, "-") ?? "";
+  return (fileName || "upload.bin").slice(0, MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH);
+}
+
+function summarizeStorageValue(value: string | null): Record<string, unknown> {
+  if (value === null) {
+    return {
+      found: false,
+      value: null,
+      valueBytes: 0,
+      valueTruncated: false,
+    };
+  }
+  const valueBytes = byteLength(value);
+  return {
+    found: true,
+    value: valueBytes <= MAX_BROWSER_STORAGE_READ_VALUE_BYTES ? value : value.slice(0, MAX_BROWSER_STORAGE_READ_VALUE_BYTES),
+    valueBytes,
+    valueTruncated: valueBytes > MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+  };
+}
+
 function resolveElement(
   documentLike: DocumentLike,
   action: { refId?: unknown; selectors?: unknown; text?: unknown }
@@ -372,8 +819,179 @@ function resolveElement(
   throw new Error("content script could not resolve target element");
 }
 
+async function waitForElement(
+  documentLike: DocumentLike,
+  action: { refId?: unknown; selectors?: unknown; text?: unknown },
+  timeoutMs: number,
+  state: "visible" | "hidden" | "attached" | "detached"
+): Promise<DocumentLikeElement> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  do {
+    try {
+      const element = resolveElement(documentLike, action);
+      const visible = isElementVisible(element);
+      if (state === "attached" || (state === "visible" && visible)) {
+        return element;
+      }
+      if (state === "hidden" && !visible) {
+        return element;
+      }
+      lastError = new Error(`content script waitFor target is not ${state}`);
+    } catch (error) {
+      lastError = error;
+      if (state === "detached" || state === "hidden") {
+        return { tagName: nullTagNameForWaitState(state), innerText: "" };
+      }
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      break;
+    }
+    await sleep(Math.min(100, remainingMs));
+  } while (true);
+
+  throw new Error(lastError instanceof Error ? lastError.message : "content script waitFor target timed out");
+}
+
+async function waitForPageCondition(
+  environment: ChromeRelayContentScriptEnvironment,
+  action: Extract<RelayExecutableBrowserAction, { kind: "waitFor" }>,
+  timeoutMs: number
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const currentUrl = environment.window.location?.href ?? "";
+    const currentTitle = environment.document.title ?? "";
+    const currentBodyText = extractDocumentBodyText(environment.document);
+    if ("urlPattern" in action && matchesPattern(currentUrl, action.urlPattern)) {
+      return { urlPattern: action.urlPattern, matchedUrl: currentUrl };
+    }
+    if ("titlePattern" in action && matchesPattern(currentTitle, action.titlePattern)) {
+      return { titlePattern: action.titlePattern, matchedTitle: currentTitle.slice(0, 160) };
+    }
+    if ("bodyTextPattern" in action && matchesPattern(currentBodyText, action.bodyTextPattern)) {
+      return { bodyTextPattern: action.bodyTextPattern, bodyTextBytes: byteLength(currentBodyText) };
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      break;
+    }
+    await sleep(Math.min(100, remainingMs));
+  } while (true);
+
+  throw new Error("content script waitFor page condition timed out");
+}
+
+function isWaitForPageCondition(
+  action: Extract<RelayExecutableBrowserAction, { kind: "waitFor" }>
+): action is Extract<
+  RelayExecutableBrowserAction,
+  { kind: "waitFor"; urlPattern: string } | { kind: "waitFor"; titlePattern: string } | { kind: "waitFor"; bodyTextPattern: string }
+> {
+  return "urlPattern" in action || "titlePattern" in action || "bodyTextPattern" in action;
+}
+
+function isElementVisible(element: DocumentLikeElement): boolean {
+  const hidden = element.getAttribute?.("hidden");
+  if ((hidden !== undefined && hidden !== null) || element.getAttribute?.("aria-hidden") === "true") {
+    return false;
+  }
+  const getComputedStyleLike = (globalThis as {
+    getComputedStyle?: (element: unknown) => { display?: string; visibility?: string; opacity?: string };
+  }).getComputedStyle;
+  const style = getComputedStyleLike?.(element);
+  if (style?.display === "none" || style?.visibility === "hidden" || style?.opacity === "0") {
+    return false;
+  }
+  return element.offsetParent !== null || (element.getClientRects?.().length ?? 1) > 0;
+}
+
+function nullTagNameForWaitState(state: "hidden" | "detached"): string {
+  return state === "detached" ? "detached" : "hidden";
+}
+
 function extractElementText(element: DocumentLikeElement): string {
   return (element.innerText ?? element.textContent ?? element.getAttribute?.("aria-label") ?? "").trim().slice(0, 160);
+}
+
+function extractDocumentBodyText(documentLike: DocumentLike): string {
+  return (documentLike.body?.innerText ?? documentLike.body?.textContent ?? "").trim();
+}
+
+function matchesPattern(value: string, pattern: string): boolean {
+  const boundedPattern = pattern.slice(0, MAX_BROWSER_WAIT_FOR_PATTERN_LENGTH);
+  if (!boundedPattern.includes("*")) {
+    return value.includes(boundedPattern);
+  }
+  const escaped = boundedPattern
+    .split("*")
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".*");
+  return new RegExp(`^${escaped}$`).test(value);
+}
+
+function selectorForElement(element: DocumentLikeElement): string | null {
+  const id = element.id ?? element.getAttribute?.("id");
+  if (id) {
+    return `#${id}`;
+  }
+  const name = element.name ?? element.getAttribute?.("name");
+  if (name) {
+    return `${(element.tagName ?? "div").toLowerCase()}[name="${name.replace(/"/g, '\\"')}"]`;
+  }
+  const refId = element.dataset?.turnkeyaiRef ?? element.getAttribute?.("data-turnkeyai-ref");
+  return refId ? `[data-turnkeyai-ref="${refId}"]` : null;
+}
+
+function normalizeProbeMaxItems(value: number | undefined): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? Math.min(value, MAX_BROWSER_PROBE_ITEMS)
+    : MAX_BROWSER_PROBE_ITEMS;
+}
+
+function selectElementOption(
+  element: DocumentLikeElement,
+  action: { value?: unknown; label?: unknown; index?: unknown }
+): { value: string | null; label: string | null; index: number | null } {
+  if (!("value" in element) && !("selectedIndex" in element)) {
+    throw new Error("content script select target must be a select-like element");
+  }
+
+  const options = toOptionArray(element.options);
+  const matched =
+    typeof action.value === "string"
+      ? options.find((option) => option.value === action.value) ?? { value: action.value }
+      : typeof action.label === "string"
+        ? options.find((option) => optionLabel(option) === action.label)
+        : typeof action.index === "number"
+          ? options[action.index]
+          : null;
+  if (!matched) {
+    throw new Error("content script could not resolve select option");
+  }
+
+  const selectedIndex = options.indexOf(matched);
+  if (selectedIndex >= 0 && typeof element.selectedIndex === "number") {
+    element.selectedIndex = selectedIndex;
+    for (const option of options) {
+      option.selected = option === matched;
+    }
+  }
+  if (matched.value !== undefined) {
+    element.value = matched.value;
+  }
+
+  return {
+    value: element.value ?? matched.value ?? null,
+    label: optionLabel(matched) || null,
+    index: selectedIndex >= 0 ? selectedIndex : typeof element.selectedIndex === "number" ? element.selectedIndex : null,
+  };
+}
+
+function optionLabel(option: DocumentLikeOption): string {
+  return (option.label ?? option.text ?? option.textContent ?? option.value ?? "").trim();
 }
 
 function inferRoleFromTag(tagName: string): string {
@@ -396,6 +1014,10 @@ function toElementArray(
   return collection ? Array.from(collection) : [];
 }
 
+function toOptionArray(collection: DocumentLikeOptionCollection | undefined): DocumentLikeOption[] {
+  return collection ? Array.from(collection) : [];
+}
+
 function createDomEvent(type: string): unknown {
   if (typeof Event === "function") {
     return new Event(type, { bubbles: true, cancelable: true });
@@ -405,6 +1027,10 @@ function createDomEvent(type: string): unknown {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
 }
 
 function getDefaultContentScriptEnvironment(): ChromeRelayContentScriptEnvironment {

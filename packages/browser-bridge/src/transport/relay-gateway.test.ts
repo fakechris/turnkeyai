@@ -218,6 +218,325 @@ test("relay gateway dispatches wait actions to peers that advertise wait support
   assert.equal(result.trace[0]?.kind, "wait");
 });
 
+test("relay gateway routes hover key select drag waitFor dialog popup probe permission storage cookie eval network download and upload actions only to peers that advertise input support", async () => {
+  const gateway = new RelayGateway({
+    now: () => 1_000,
+    createId: (prefix) => `${prefix}-input`,
+  });
+  gateway.registerPeer({
+    peerId: "peer-snapshot",
+    capabilities: ["snapshot"],
+  });
+  gateway.registerPeer({
+    peerId: "peer-input",
+    capabilities: [
+      "snapshot",
+      "hover",
+      "key",
+      "select",
+      "drag",
+      "waitFor",
+      "dialog",
+      "popup",
+      "probe",
+      "permission",
+      "storage",
+      "cookie",
+      "eval",
+      "network",
+      "download",
+      "upload",
+    ],
+  });
+
+  const dispatchPromise = gateway.dispatchActionRequest({
+    browserSessionId: "browser-session-1",
+    taskId: "task-input",
+    actions: [
+      { kind: "hover", text: "Open menu" },
+      { kind: "key", key: "K", modifiers: ["Control"] },
+      { kind: "select", selectors: ["select[name=plan]"], value: "team" },
+      { kind: "drag", source: { text: "Card" }, target: { text: "Lane" } },
+      { kind: "waitFor", text: "Done", timeoutMs: 1_000 },
+      { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
+      { kind: "popup", timeoutMs: 1_000 },
+      { kind: "probe", probe: "links", maxItems: 5 },
+      { kind: "permission", action: "grant", permissions: ["notifications"], origin: "https://example.com" },
+      { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
+      { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/" },
+      { kind: "eval", expression: "document.title", awaitPromise: true },
+      { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201 },
+      { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
+      { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
+      { kind: "snapshot", note: "after-input" },
+    ],
+  });
+
+  assert.equal(gateway.pullNextActionRequest("peer-snapshot"), null);
+  const request = gateway.pullNextActionRequest("peer-input");
+  assert.ok(request);
+  assert.deepEqual(
+    request?.actions.map((action) => action.kind),
+    [
+      "hover",
+      "key",
+      "select",
+      "drag",
+      "waitFor",
+      "dialog",
+      "popup",
+      "probe",
+      "permission",
+      "storage",
+      "cookie",
+      "eval",
+      "network",
+      "download",
+      "upload",
+      "snapshot",
+    ]
+  );
+
+  gateway.submitActionResult({
+    actionRequestId: request!.actionRequestId,
+    peerId: "peer-input",
+    browserSessionId: request!.browserSessionId,
+    taskId: request!.taskId,
+    relayTargetId: "tab-1",
+    claimToken: request!.claimToken!,
+    url: "https://example.com",
+    title: "Example Domain",
+    status: "completed",
+    page: {
+      requestedUrl: "https://example.com",
+      finalUrl: "https://example.com",
+      title: "Example Domain",
+      textExcerpt: "Example Domain",
+      statusCode: 200,
+      interactives: [],
+    },
+    trace: [
+      {
+        stepId: "task-input:relay-hover:1",
+        kind: "hover",
+        startedAt: 1,
+        completedAt: 2,
+        status: "ok",
+        input: { text: "Open menu" },
+      },
+      {
+        stepId: "task-input:relay-key:2",
+        kind: "key",
+        startedAt: 3,
+        completedAt: 4,
+        status: "ok",
+        input: { key: "K", modifiers: ["Control"] },
+      },
+      {
+        stepId: "task-input:relay-step:3",
+        kind: "select",
+        startedAt: 5,
+        completedAt: 6,
+        status: "ok",
+        input: { value: "team" },
+      },
+      {
+        stepId: "task-input:relay-drag:4",
+        kind: "drag",
+        startedAt: 7,
+        completedAt: 8,
+        status: "ok",
+        input: { source: { text: "Card" }, target: { text: "Lane" } },
+      },
+      {
+        stepId: "task-input:relay-step:5",
+        kind: "waitFor",
+        startedAt: 9,
+        completedAt: 10,
+        status: "ok",
+        input: { text: "Done", timeoutMs: 1_000 },
+      },
+      {
+        stepId: "task-input:relay-dialog:6",
+        kind: "dialog",
+        startedAt: 11,
+        completedAt: 12,
+        status: "ok",
+        input: { action: "accept", promptTextLength: 3, timeoutMs: 1_000 },
+      },
+      {
+        stepId: "task-input:relay-popup:7",
+        kind: "popup",
+        startedAt: 13,
+        completedAt: 14,
+        status: "ok",
+        input: { timeoutMs: 1_000 },
+      },
+      {
+        stepId: "task-input:relay-step:8",
+        kind: "probe",
+        startedAt: 15,
+        completedAt: 16,
+        status: "ok",
+        input: { probe: "links", maxItems: 5 },
+      },
+      {
+        stepId: "task-input:relay-step:9",
+        kind: "permission",
+        startedAt: 17,
+        completedAt: 18,
+        status: "ok",
+        input: { action: "grant", permissions: ["notifications"], origin: "https://example.com" },
+      },
+      {
+        stepId: "task-input:relay-step:10",
+        kind: "storage",
+        startedAt: 19,
+        completedAt: 20,
+        status: "ok",
+        input: { action: "set", area: "localStorage", key: "token", valueBytes: 3 },
+      },
+      {
+        stepId: "task-input:relay-cookie:11",
+        kind: "cookie",
+        startedAt: 21,
+        completedAt: 22,
+        status: "ok",
+        input: { action: "set", name: "sid", valueBytes: 3, path: "/" },
+      },
+      {
+        stepId: "task-input:relay-eval:12",
+        kind: "eval",
+        startedAt: 23,
+        completedAt: 24,
+        status: "ok",
+        input: { expressionBytes: 14, awaitPromise: true },
+      },
+      {
+        stepId: "task-input:relay-network:13",
+        kind: "network",
+        startedAt: 25,
+        completedAt: 26,
+        status: "ok",
+        input: { action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201 },
+      },
+      {
+        stepId: "task-input:relay-download:14",
+        kind: "download",
+        startedAt: 27,
+        completedAt: 28,
+        status: "ok",
+        input: { urlPattern: "/export.csv", timeoutMs: 1_000 },
+      },
+      {
+        stepId: "task-input:relay-step:15",
+        kind: "upload",
+        startedAt: 29,
+        completedAt: 30,
+        status: "ok",
+        input: { artifactId: "artifact-upload" },
+      },
+    ],
+    screenshotPaths: [],
+    screenshotPayloads: [],
+    artifactIds: [],
+  });
+
+  const result = await dispatchPromise;
+  assert.equal(result.taskId, "task-input");
+  assert.equal(result.trace[0]?.kind, "hover");
+  assert.equal(result.trace[1]?.kind, "key");
+  assert.equal(result.trace[2]?.kind, "select");
+  assert.equal(result.trace[3]?.kind, "drag");
+  assert.equal(result.trace[4]?.kind, "waitFor");
+  assert.equal(result.trace[5]?.kind, "dialog");
+  assert.equal(result.trace[6]?.kind, "popup");
+  assert.equal(result.trace[7]?.kind, "probe");
+  assert.equal(result.trace[8]?.kind, "permission");
+  assert.equal(result.trace[9]?.kind, "storage");
+  assert.equal(result.trace[10]?.kind, "cookie");
+  assert.equal(result.trace[11]?.kind, "eval");
+  assert.equal(result.trace[12]?.kind, "network");
+  assert.equal(result.trace[13]?.kind, "download");
+  assert.equal(result.trace[14]?.kind, "upload");
+});
+
+test("relay gateway routes cdp actions only to peers that advertise cdp support", async () => {
+  const gateway = new RelayGateway({
+    now: () => 1_000,
+    createId: (prefix) => `${prefix}-cdp`,
+  });
+  gateway.registerPeer({
+    peerId: "peer-snapshot",
+    capabilities: ["snapshot"],
+  });
+  gateway.registerPeer({
+    peerId: "peer-cdp",
+    capabilities: ["snapshot", "cdp"],
+  });
+
+  const dispatchPromise = gateway.dispatchActionRequest({
+    browserSessionId: "browser-session-1",
+    taskId: "task-cdp",
+    actions: [
+      {
+        kind: "cdp",
+        method: "Runtime.evaluate",
+        params: {
+          expression: "document.title",
+          returnByValue: true,
+        },
+      },
+      { kind: "snapshot", note: "after-cdp" },
+    ],
+  });
+
+  assert.equal(gateway.pullNextActionRequest("peer-snapshot"), null);
+  const request = gateway.pullNextActionRequest("peer-cdp");
+  assert.ok(request);
+  assert.deepEqual(
+    request?.actions.map((action) => action.kind),
+    ["cdp", "snapshot"]
+  );
+
+  gateway.submitActionResult({
+    actionRequestId: request!.actionRequestId,
+    peerId: "peer-cdp",
+    browserSessionId: request!.browserSessionId,
+    taskId: request!.taskId,
+    relayTargetId: "tab-1",
+    claimToken: request!.claimToken!,
+    url: "https://example.com",
+    title: "Example Domain",
+    status: "completed",
+    page: {
+      requestedUrl: "https://example.com",
+      finalUrl: "https://example.com",
+      title: "Example Domain",
+      textExcerpt: "Example Domain",
+      statusCode: 200,
+      interactives: [],
+    },
+    trace: [
+      {
+        stepId: "task-cdp:relay-cdp:1",
+        kind: "cdp",
+        startedAt: 1,
+        completedAt: 2,
+        status: "ok",
+        input: { method: "Runtime.evaluate" },
+      },
+    ],
+    screenshotPaths: [],
+    screenshotPayloads: [],
+    artifactIds: [],
+  });
+
+  const result = await dispatchPromise;
+  assert.equal(result.taskId, "task-cdp");
+  assert.equal(result.trace[0]?.kind, "cdp");
+});
+
 test("relay gateway drops timed out action requests from the pending queue", async () => {
   const gateway = new RelayGateway({
     now: () => Date.now(),

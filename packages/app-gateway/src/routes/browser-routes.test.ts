@@ -334,6 +334,783 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
+test("browser task mutation routes validate key hover select drag waitFor dialog popup probe permission storage cookie eval network download and upload action contracts", async () => {
+  const invalidHover = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "hover", selectors: ["button"], text: "Open" }],
+      },
+    }),
+    res: invalidHover.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidHover.res.statusCode, 400);
+  assert.deepEqual(invalidHover.json, {
+    error: "actions[0] hover requires exactly one of selectors, refId, or text",
+  });
+
+  const invalidKey = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "key", key: "K", modifiers: ["Control", "Hyper"] }],
+      },
+    }),
+    res: invalidKey.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidKey.res.statusCode, 400);
+  assert.deepEqual(invalidKey.json, {
+    error: "actions[0] key.modifiers contains an invalid modifier",
+  });
+
+  const invalidSelect = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "select", selectors: ["select"], value: "basic", label: "Basic" }],
+      },
+    }),
+    res: invalidSelect.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidSelect.res.statusCode, 400);
+  assert.deepEqual(invalidSelect.json, {
+    error: "actions[0] select requires exactly one of value, label, or index",
+  });
+
+  const invalidDrag = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "drag", source: { selectors: ["#card"], text: "Card" }, target: { selectors: ["#lane"] } }],
+      },
+    }),
+    res: invalidDrag.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidDrag.res.statusCode, 400);
+  assert.deepEqual(invalidDrag.json, {
+    error: "actions[0] drag.source requires exactly one of selectors, refId, or text",
+  });
+
+  const invalidWaitFor = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "waitFor", selectors: ["#ready"], timeoutMs: 90_000 }],
+      },
+    }),
+    res: invalidWaitFor.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidWaitFor.res.statusCode, 400);
+  assert.deepEqual(invalidWaitFor.json, {
+    error: "actions[0] waitFor.timeoutMs must be a positive integer <= 60000",
+  });
+
+  const invalidWaitForCombination = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "waitFor", text: "Done", urlPattern: "/done" }],
+      },
+    }),
+    res: invalidWaitForCombination.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidWaitForCombination.res.statusCode, 400);
+  assert.deepEqual(invalidWaitForCombination.json, {
+    error: "actions[0] waitFor requires exactly one of selectors, refId, text, urlPattern, titlePattern, or bodyTextPattern",
+  });
+
+  const invalidDialog = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "dialog", action: "dismiss", promptText: "ignored" }],
+      },
+    }),
+    res: invalidDialog.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidDialog.res.statusCode, 400);
+  assert.deepEqual(invalidDialog.json, {
+    error: "actions[0] dialog.promptText is only supported when action is accept",
+  });
+
+  const invalidPopup = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "popup", timeoutMs: 90_000 }],
+      },
+    }),
+    res: invalidPopup.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidPopup.res.statusCode, 400);
+  assert.deepEqual(invalidPopup.json, {
+    error: "actions[0] popup.timeoutMs must be a positive integer <= 60000",
+  });
+
+  const invalidProbe = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "probe", probe: "forms", maxItems: 100 }],
+      },
+    }),
+    res: invalidProbe.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidProbe.res.statusCode, 400);
+  assert.deepEqual(invalidProbe.json, {
+    error: "actions[0] probe.maxItems must be a positive integer <= 50",
+  });
+
+  const invalidPermission = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "permission", action: "grant", permissions: ["notifications"], origin: "chrome://settings" }],
+      },
+    }),
+    res: invalidPermission.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidPermission.res.statusCode, 400);
+  assert.deepEqual(invalidPermission.json, {
+    error: "actions[0] permission.origin must be an http(s) URL",
+  });
+
+  const invalidPermissionReset = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "permission", action: "reset", permissions: ["notifications"] }],
+      },
+    }),
+    res: invalidPermissionReset.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidPermissionReset.res.statusCode, 400);
+  assert.deepEqual(invalidPermissionReset.json, {
+    error: "actions[0] permission.permissions and .origin are not accepted for reset",
+  });
+
+  const invalidStorage = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "storage", area: "localStorage", action: "set", key: "token" }],
+      },
+    }),
+    res: invalidStorage.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidStorage.res.statusCode, 400);
+  assert.deepEqual(invalidStorage.json, {
+    error: "actions[0] storage.value must be a string for set",
+  });
+
+  const invalidCookie = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cookie", action: "set", name: "sid" }],
+      },
+    }),
+    res: invalidCookie.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidCookie.res.statusCode, 400);
+  assert.deepEqual(invalidCookie.json, {
+    error: "actions[0] cookie.value must be a string for set",
+  });
+
+  const invalidEval = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "eval", expression: " " }],
+      },
+    }),
+    res: invalidEval.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidEval.res.statusCode, 400);
+  assert.deepEqual(invalidEval.json, {
+    error: "actions[0] eval.expression must be a non-empty string",
+  });
+
+  const invalidNetwork = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "waitForResponse", method: "post" }],
+      },
+    }),
+    res: invalidNetwork.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetwork.res.statusCode, 400);
+  assert.deepEqual(invalidNetwork.json, {
+    error: "actions[0] network.method must be uppercase ASCII and <= 16 characters",
+  });
+
+  const invalidNetworkStatus = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "waitForRequest", status: 50 }],
+      },
+    }),
+    res: invalidNetworkStatus.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetworkStatus.res.statusCode, 400);
+  assert.deepEqual(invalidNetworkStatus.json, {
+    error: "actions[0] network.status is only accepted for waitForResponse",
+  });
+
+  const invalidNetworkBodyLimit = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "waitForResponse", maxBodyBytes: 65_537 }],
+      },
+    }),
+    res: invalidNetworkBodyLimit.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetworkBodyLimit.res.statusCode, 400);
+  assert.deepEqual(invalidNetworkBodyLimit.json, {
+    error: "actions[0] network.maxBodyBytes must be a positive integer <= 65536",
+  });
+
+  const invalidNetworkBlock = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "blockUrls", urlPatterns: [] }],
+      },
+    }),
+    res: invalidNetworkBlock.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetworkBlock.res.statusCode, 400);
+  assert.deepEqual(invalidNetworkBlock.json, {
+    error: "actions[0] network.urlPatterns must be a non-empty array",
+  });
+
+  const invalidNetworkHeader = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "setExtraHeaders", headers: { "bad header": "value" } }],
+      },
+    }),
+    res: invalidNetworkHeader.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetworkHeader.res.statusCode, 400);
+  assert.deepEqual(invalidNetworkHeader.json, {
+    error: "actions[0] network.headers.bad header must be a valid HTTP header name <= 128 characters",
+  });
+
+  const invalidNetworkMockBody = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [
+          {
+            kind: "network",
+            action: "mockResponse",
+            urlPattern: "/api/mock",
+            body: "text",
+            bodyBase64: "dGV4dA==",
+          },
+        ],
+      },
+    }),
+    res: invalidNetworkMockBody.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetworkMockBody.res.statusCode, 400);
+  assert.deepEqual(invalidNetworkMockBody.json, {
+    error: "actions[0] network must not include both body and bodyBase64",
+  });
+
+  const invalidNetworkEmulation = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "emulateConditions", latencyMs: 120_001 }],
+      },
+    }),
+    res: invalidNetworkEmulation.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetworkEmulation.res.statusCode, 400);
+  assert.deepEqual(invalidNetworkEmulation.json, {
+    error: "actions[0] network.latencyMs must be an integer between 0 and 120000 when provided",
+  });
+
+  const invalidDownload = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "download", timeoutMs: 180_000 }],
+      },
+    }),
+    res: invalidDownload.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidDownload.res.statusCode, 400);
+  assert.deepEqual(invalidDownload.json, {
+    error: "actions[0] download.timeoutMs must be a positive integer <= 120000",
+  });
+
+  const rejectedDownloadPayload = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "download", artifactId: "download-1" }],
+      },
+    }),
+    res: rejectedDownloadPayload.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(rejectedDownloadPayload.res.statusCode, 400);
+  assert.deepEqual(rejectedDownloadPayload.json, {
+    error: "actions[0] download does not accept path, artifactId, file, or dataBase64 fields",
+  });
+
+  const invalidUpload = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "upload", selectors: ["input[type=file]"], artifactId: " " }],
+      },
+    }),
+    res: invalidUpload.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidUpload.res.statusCode, 400);
+  assert.deepEqual(invalidUpload.json, {
+    error: "actions[0] upload.artifactId must be a non-empty string",
+  });
+
+  const rejectedUploadPayload = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [
+          {
+            kind: "upload",
+            selectors: ["input[type=file]"],
+            artifactId: "artifact-upload",
+            file: { name: "secret.txt", dataBase64: "c2VjcmV0", sizeBytes: 6 },
+          },
+        ],
+      },
+    }),
+    res: rejectedUploadPayload.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(rejectedUploadPayload.res.statusCode, 400);
+  assert.deepEqual(rejectedUploadPayload.json, {
+    error: "actions[0] upload.file is injected by relay transport and is not accepted by browser routes",
+  });
+
+  let capturedActions: unknown;
+  const validDeps = createDeps();
+  validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
+    ({
+      threadId: "thread-1",
+      taskId: "task-1",
+      instructions: "inspect",
+      actions: body.actions,
+      ...owner,
+    }) as any;
+  validDeps.browserBridge.spawnSession = async (input) => {
+    capturedActions = input.actions;
+    return { status: "completed", browserSessionId: "session-1", taskId: input.taskId, page: null, trace: [] } as any;
+  };
+  const valid = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [
+          { kind: "hover", refId: "ref-1" },
+          { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
+          { kind: "select", selectors: ["select[name=plan]"], label: "Team" },
+          { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
+          { kind: "waitFor", text: "Done", state: "attached", timeoutMs: 1_000 },
+          { kind: "waitFor", urlPattern: "/done", timeoutMs: 1_000 },
+          { kind: "waitFor", titlePattern: "Done", timeoutMs: 1_000 },
+          { kind: "waitFor", bodyTextPattern: "Submitted", timeoutMs: 1_000 },
+          { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
+          { kind: "popup", timeoutMs: 1_000 },
+          { kind: "probe", probe: "forms", maxItems: 10 },
+          { kind: "permission", action: "grant", permissions: ["notifications"], origin: "https://example.com" },
+          { kind: "permission", action: "reset" },
+          { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
+          { kind: "storage", area: "localStorage", action: "get", key: "token" },
+          { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },
+          { kind: "cookie", action: "get", name: "sid" },
+          { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
+          { kind: "network", action: "waitForRequest", urlPattern: "/api", method: "POST", includeHeaders: true, maxBodyBytes: 128 },
+          { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
+          { kind: "network", action: "blockUrls", urlPatterns: ["*://*/analytics/*"] },
+          { kind: "network", action: "clearBlockedUrls" },
+          { kind: "network", action: "setExtraHeaders", headers: { "x-test": "1" } },
+          { kind: "network", action: "clearExtraHeaders" },
+          {
+            kind: "network",
+            action: "mockResponse",
+            urlPattern: "/api/mock",
+            method: "GET",
+            status: 202,
+            headers: { "content-type": "application/json" },
+            body: '{"ok":true}',
+            timeoutMs: 1_000,
+          },
+          { kind: "network", action: "clearMockResponses" },
+          {
+            kind: "network",
+            action: "emulateConditions",
+            offline: false,
+            latencyMs: 120,
+            downloadThroughputBytesPerSec: 1_000_000,
+            uploadThroughputBytesPerSec: 500_000,
+          },
+          { kind: "network", action: "clearEmulation" },
+          { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
+          { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
+        ],
+      },
+    }),
+    res: valid.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: validDeps,
+  });
+  assert.equal(valid.res.statusCode, 201);
+  assert.deepEqual(capturedActions, [
+    { kind: "hover", refId: "ref-1" },
+    { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
+    { kind: "select", selectors: ["select[name=plan]"], label: "Team" },
+    { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
+    { kind: "waitFor", text: "Done", state: "attached", timeoutMs: 1_000 },
+    { kind: "waitFor", urlPattern: "/done", timeoutMs: 1_000 },
+    { kind: "waitFor", titlePattern: "Done", timeoutMs: 1_000 },
+    { kind: "waitFor", bodyTextPattern: "Submitted", timeoutMs: 1_000 },
+    { kind: "dialog", action: "accept", promptText: "yes", timeoutMs: 1_000 },
+    { kind: "popup", timeoutMs: 1_000 },
+    { kind: "probe", probe: "forms", maxItems: 10 },
+    { kind: "permission", action: "grant", permissions: ["notifications"], origin: "https://example.com" },
+    { kind: "permission", action: "reset" },
+    { kind: "storage", area: "localStorage", action: "set", key: "token", value: "abc" },
+    { kind: "storage", area: "localStorage", action: "get", key: "token" },
+    { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },
+    { kind: "cookie", action: "get", name: "sid" },
+    { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
+    { kind: "network", action: "waitForRequest", urlPattern: "/api", method: "POST", includeHeaders: true, maxBodyBytes: 128 },
+    { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
+    { kind: "network", action: "blockUrls", urlPatterns: ["*://*/analytics/*"] },
+    { kind: "network", action: "clearBlockedUrls" },
+    { kind: "network", action: "setExtraHeaders", headers: { "x-test": "1" } },
+    { kind: "network", action: "clearExtraHeaders" },
+    {
+      kind: "network",
+      action: "mockResponse",
+      urlPattern: "/api/mock",
+      method: "GET",
+      status: 202,
+      headers: { "content-type": "application/json" },
+      body: '{"ok":true}',
+      timeoutMs: 1_000,
+    },
+    { kind: "network", action: "clearMockResponses" },
+    {
+      kind: "network",
+      action: "emulateConditions",
+      offline: false,
+      latencyMs: 120,
+      downloadThroughputBytesPerSec: 1_000_000,
+      uploadThroughputBytesPerSec: 500_000,
+    },
+    { kind: "network", action: "clearEmulation" },
+    { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
+    { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
+  ]);
+});
+
+test("browser task mutation routes validate cdp action contracts", async () => {
+  const invalidMethod = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cdp", method: "Runtime" }],
+      },
+    }),
+    res: invalidMethod.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidMethod.res.statusCode, 400);
+  assert.deepEqual(invalidMethod.json, {
+    error: "actions[0] cdp.method must be a valid CDP Domain.method string",
+  });
+
+  const blockedMethod = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cdp", method: "Target.closeTarget", params: { targetId: "target-1" } }],
+      },
+    }),
+    res: blockedMethod.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(blockedMethod.res.statusCode, 400);
+  assert.deepEqual(blockedMethod.json, {
+    error: "actions[0] cdp.method is not allowed on browser task routes",
+  });
+
+  const invalidParams = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cdp", method: "Runtime.evaluate", params: [] }],
+      },
+    }),
+    res: invalidParams.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidParams.res.statusCode, 400);
+  assert.deepEqual(invalidParams.json, {
+    error: "actions[0] cdp.params must be an object when provided",
+  });
+
+  const invalidTimeout = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cdp", method: "Runtime.evaluate", timeoutMs: 30_001 }],
+      },
+    }),
+    res: invalidTimeout.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidTimeout.res.statusCode, 400);
+  assert.deepEqual(invalidTimeout.json, {
+    error: "actions[0] cdp.timeoutMs must be a positive integer <= 30000",
+  });
+
+  const invalidEvents = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "cdp", method: "Runtime.evaluate", events: { waitFor: "Target.attachedToTarget" } }],
+      },
+    }),
+    res: invalidEvents.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidEvents.res.statusCode, 400);
+  assert.deepEqual(invalidEvents.json, {
+    error: "actions[0] cdp.events.waitFor is not allowed on browser task routes",
+  });
+
+  let capturedActions: unknown;
+  const validDeps = createDeps();
+  validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
+    ({
+      threadId: "thread-1",
+      taskId: "task-1",
+      instructions: "inspect",
+      actions: body.actions,
+      ...owner,
+    }) as any;
+  validDeps.browserBridge.spawnSession = async (input) => {
+    capturedActions = input.actions;
+    return {
+      status: "completed",
+      browserSessionId: "session-1",
+      taskId: input.taskId,
+      page: null,
+      trace: [],
+    } as any;
+  };
+  const valid = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [
+          {
+            kind: "cdp",
+            method: "Runtime.evaluate",
+            params: { expression: "document.title", returnByValue: true },
+            timeoutMs: 1_000,
+            events: {
+              waitFor: "Runtime.consoleAPICalled",
+              include: ["Runtime.exceptionThrown"],
+              timeoutMs: 1_000,
+              maxEvents: 2,
+            },
+          },
+        ],
+      },
+    }),
+    res: valid.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: validDeps,
+  });
+  assert.equal(valid.res.statusCode, 201);
+  assert.deepEqual(capturedActions, [
+    {
+      kind: "cdp",
+      method: "Runtime.evaluate",
+      params: { expression: "document.title", returnByValue: true },
+      timeoutMs: 1_000,
+      events: {
+        waitFor: "Runtime.consoleAPICalled",
+        include: ["Runtime.exceptionThrown"],
+        timeoutMs: 1_000,
+        maxEvents: 2,
+      },
+    },
+  ]);
+});
+
 test("browser task mutation routes reject explicit actions mixed with url or foreign profile owner", async () => {
   const mixedUrl = createResponse();
   await handleBrowserRoutes({

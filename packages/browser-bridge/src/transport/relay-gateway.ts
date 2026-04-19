@@ -40,6 +40,7 @@ interface RelayQueuedAction {
   actionRequestId: string;
   browserSessionId: string;
   taskId: string;
+  targetBehavior?: RelayActionRequest["targetBehavior"];
   relayTargetId?: string;
   targetId?: string;
   actions: RelayExecutableBrowserAction[];
@@ -169,6 +170,7 @@ export class RelayGateway {
   async dispatchActionRequest(input: {
     browserSessionId: string;
     taskId: string;
+    targetBehavior?: RelayActionRequest["targetBehavior"];
     relayTargetId?: string;
     targetId?: string;
     actions: RelayExecutableBrowserAction[];
@@ -213,6 +215,7 @@ export class RelayGateway {
         actionRequestId,
         browserSessionId: input.browserSessionId,
         taskId: input.taskId,
+        ...(input.targetBehavior ? { targetBehavior: input.targetBehavior } : {}),
         ...(relayTargetId ? { relayTargetId } : {}),
         ...(input.targetId ? { targetId: input.targetId } : {}),
         actions: input.actions,
@@ -266,6 +269,7 @@ export class RelayGateway {
       peerId: peerRecord.peerId,
       browserSessionId: action.browserSessionId,
       taskId: action.taskId,
+      ...(action.targetBehavior ? { targetBehavior: action.targetBehavior } : {}),
       ...(action.relayTargetId ? { relayTargetId: action.relayTargetId } : {}),
       ...(action.targetId ? { targetId: action.targetId } : {}),
       actions: action.actions,
@@ -506,6 +510,7 @@ export class RelayGateway {
       actionRequestId: action.actionRequestId,
       browserSessionId: action.browserSessionId,
       taskId: action.taskId,
+      ...(action.targetBehavior ? { targetBehavior: action.targetBehavior } : {}),
       ...(action.relayTargetId ? { relayTargetId: action.relayTargetId } : {}),
       ...(action.targetId ? { targetId: action.targetId } : {}),
       actionKinds: [...action.actionKinds],
@@ -537,9 +542,25 @@ export function isRelayExecutableAction(
     action.kind === "snapshot" ||
     action.kind === "click" ||
     action.kind === "type" ||
+    action.kind === "hover" ||
+    action.kind === "key" ||
+    action.kind === "select" ||
+    action.kind === "drag" ||
     action.kind === "scroll" ||
     action.kind === "console" ||
+    action.kind === "probe" ||
+    action.kind === "permission" ||
     action.kind === "wait" ||
-    action.kind === "screenshot"
+    action.kind === "waitFor" ||
+    action.kind === "dialog" ||
+    action.kind === "popup" ||
+    action.kind === "storage" ||
+    action.kind === "cookie" ||
+    action.kind === "eval" ||
+    action.kind === "network" ||
+    action.kind === "download" ||
+    action.kind === "upload" ||
+    action.kind === "screenshot" ||
+    action.kind === "cdp"
   );
 }

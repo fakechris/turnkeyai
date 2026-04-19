@@ -6,13 +6,21 @@ import type {
 
 export type RelayExecutableBrowserAction = Extract<
   BrowserTaskAction,
-  { kind: "open" | "snapshot" | "click" | "type" | "scroll" | "console" | "wait" | "screenshot" }
+  { kind: "open" | "snapshot" | "click" | "type" | "hover" | "key" | "select" | "drag" | "scroll" | "console" | "probe" | "permission" | "wait" | "waitFor" | "dialog" | "popup" | "storage" | "cookie" | "eval" | "network" | "download" | "upload" | "screenshot" | "cdp" }
 >;
 
 export interface RelayScreenshotPayload {
   label?: string;
   mimeType: string;
   dataBase64: string;
+}
+
+export interface RelayDownloadPayload {
+  url: string;
+  fileName: string;
+  mimeType?: string;
+  dataBase64: string;
+  sizeBytes: number;
 }
 
 export interface RelayPeerRegistration {
@@ -51,6 +59,7 @@ export interface RelayActionRequest {
   peerId: string;
   browserSessionId: string;
   taskId: string;
+  targetBehavior?: "new";
   relayTargetId?: string;
   targetId?: string;
   actions: RelayExecutableBrowserAction[];
@@ -77,6 +86,7 @@ export interface RelayActionResult {
   trace: BrowserActionTrace[];
   screenshotPaths: string[];
   screenshotPayloads: RelayScreenshotPayload[];
+  downloadPayloads?: RelayDownloadPayload[];
   artifactIds: string[];
   errorMessage?: string;
 }
@@ -85,6 +95,7 @@ export interface RelayActionRequestRecord {
   actionRequestId: string;
   browserSessionId: string;
   taskId: string;
+  targetBehavior?: RelayActionRequest["targetBehavior"];
   relayTargetId?: string;
   targetId?: string;
   actionKinds: RelayExecutableBrowserAction["kind"][];
