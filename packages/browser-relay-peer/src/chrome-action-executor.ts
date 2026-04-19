@@ -20,6 +20,7 @@ type RelayAction = RelayActionRequest["actions"][number];
 type RelayCdpAction = Extract<RelayAction, { kind: "cdp" }>;
 type RelayHoverAction = Extract<RelayAction, { kind: "hover" }>;
 type RelayKeyAction = Extract<RelayAction, { kind: "key" }>;
+type RelayDragAction = Extract<RelayAction, { kind: "drag" }>;
 interface RelayCdpActionOutput {
   result: unknown;
   events: ChromeDebuggerEventLike[];
@@ -29,6 +30,10 @@ interface RelayHoverPoint {
   y: number;
   label?: string;
   tagName?: string;
+}
+interface RelayDragPoints {
+  source: RelayHoverPoint;
+  target: RelayHoverPoint;
 }
 interface CdpKeyDescriptor {
   key: string;
@@ -214,6 +219,28 @@ export class ChromeRelayActionExecutor {
         continue;
       }
 
+      if (action.kind === "drag") {
+        const startedAt = Date.now();
+        const points = await this.executeDragAction(activeTab.id, action, debuggerTabsToDetach);
+        needsFinalSnapshot = true;
+        trace.push({
+          stepId: `${request.taskId}:relay-drag:${index + 1}`,
+          kind: "drag",
+          startedAt,
+          completedAt: Date.now(),
+          status: "ok",
+          input: {
+            source: summarizeRelayActionTarget(action.source),
+            target: summarizeRelayActionTarget(action.target),
+          },
+          output: {
+            source: points.source,
+            target: points.target,
+          },
+        });
+        continue;
+      }
+
       if (action.kind === "cdp") {
         const startedAt = Date.now();
         const cdpResult = await this.executeCdpAction(activeTab.id, action, debuggerTabsToDetach);
@@ -386,6 +413,55 @@ export class ChromeRelayActionExecutor {
       result,
       events: dedupeCdpEvents([...(waitedEvent ? [waitedEvent] : []), ...drainedEvents], events.maxEvents),
     };
+  }
+
+  private async executeDragAction(
+    tabId: number,
+    action: RelayDragAction,
+    debuggerTabsToDetach: Set<number>
+  ): Promise<RelayDragPoints> {
+    if (!this.platform.sendDebuggerCommand) {
+      throw new Error("relay drag action requires chrome debugger support");
+    }
+    debuggerTabsToDetach.add(tabId);
+    const evaluated = await this.platform.sendDebuggerCommand(tabId, "Runtime.evaluate", {
+      expression: buildDragTargetExpression(action),
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    const points = extractDragPoints(evaluated);
+    await this.platform.sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: points.source.x,
+      y: points.source.y,
+      button: "none",
+    });
+    await this.platform.sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: points.source.x,
+      y: points.source.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    for (const point of interpolateDragPoints(points.source, points.target, 6).slice(1)) {
+      await this.platform.sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        buttons: 1,
+      });
+    }
+    await this.platform.sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: points.target.x,
+      y: points.target.y,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    return points;
   }
 
   private async executeHoverAction(
@@ -581,11 +657,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
 }
 
 function buildHoverTargetExpression(action: RelayHoverAction): string {
-  const target = {
-    selectors: action.selectors ?? [],
-    refId: action.refId ?? null,
-    text: action.text ?? null,
-  };
+  const target = summarizeRelayActionTarget(action);
   return `(() => {
     const target = ${JSON.stringify(target)};
     const textOf = (element) => [
@@ -636,6 +708,75 @@ function buildHoverTargetExpression(action: RelayHoverAction): string {
   })()`;
 }
 
+function buildDragTargetExpression(action: RelayDragAction): string {
+  const source = summarizeRelayActionTarget(action.source);
+  const target = summarizeRelayActionTarget(action.target);
+  return `(() => {
+    const source = ${JSON.stringify(source)};
+    const target = ${JSON.stringify(target)};
+    const textOf = (element) => [
+      element.innerText,
+      element.textContent,
+      element.getAttribute && element.getAttribute("aria-label"),
+      "value" in element ? element.value : ""
+    ].filter(Boolean).join(" ").trim();
+    const resolve = (input, label) => {
+      const bySelectors = () => {
+        for (const selector of input.selectors) {
+          try {
+            const found = document.querySelector(selector);
+            if (found) return found;
+          } catch {}
+        }
+        return null;
+      };
+      const byRef = () => {
+        if (!input.refId) return null;
+        return Array.from(document.querySelectorAll("[data-turnkeyai-ref]"))
+          .find((element) => element.getAttribute("data-turnkeyai-ref") === input.refId) || null;
+      };
+      const byText = () => {
+        if (!input.text) return null;
+        const needle = input.text.trim().toLowerCase();
+        const preferred = "button,a,input,textarea,select,label,[role],[data-turnkeyai-ref]";
+        const candidates = [
+          ...Array.from(document.querySelectorAll(preferred)),
+          ...Array.from(document.querySelectorAll("body *")),
+        ];
+        return candidates.find((element) => textOf(element).toLowerCase().includes(needle)) || null;
+      };
+      const element = byRef() || bySelectors() || byText();
+      if (!element) {
+        return { ok: false, error: "drag " + label + " target not found" };
+      }
+      const rect = element.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) {
+        return { ok: false, error: "drag " + label + " target has empty bounds" };
+      }
+      return {
+        ok: true,
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        tagName: element.tagName || null,
+        label: textOf(element).slice(0, 120) || null
+      };
+    };
+    const sourcePoint = resolve(source, "source");
+    if (!sourcePoint.ok) return sourcePoint;
+    const targetPoint = resolve(target, "target");
+    if (!targetPoint.ok) return targetPoint;
+    return { ok: true, source: sourcePoint, target: targetPoint };
+  })()`;
+}
+
+function summarizeRelayActionTarget(target: { selectors?: string[]; refId?: string; text?: string }): Record<string, unknown> {
+  return {
+    selectors: target.selectors ?? [],
+    refId: target.refId ?? null,
+    text: target.text ?? null,
+  };
+}
+
 function extractHoverPoint(value: unknown): RelayHoverPoint {
   const result = extractRuntimeResultValue(value);
   if (!result || typeof result !== "object") {
@@ -645,8 +786,31 @@ function extractHoverPoint(value: unknown): RelayHoverPoint {
   if (record.ok !== true) {
     throw new Error(typeof record.error === "string" ? record.error : "relay hover target could not be resolved");
   }
+  return extractRelayPoint(record, "relay hover target");
+}
+
+function extractDragPoints(value: unknown): RelayDragPoints {
+  const result = extractRuntimeResultValue(value);
+  if (!result || typeof result !== "object") {
+    throw new Error("relay drag target evaluation returned no value");
+  }
+  const record = result as Record<string, unknown>;
+  if (record.ok !== true) {
+    throw new Error(typeof record.error === "string" ? record.error : "relay drag target could not be resolved");
+  }
+  return {
+    source: extractRelayPoint(record.source, "relay drag source target"),
+    target: extractRelayPoint(record.target, "relay drag destination target"),
+  };
+}
+
+function extractRelayPoint(value: unknown, label: string): RelayHoverPoint {
+  if (!value || typeof value !== "object") {
+    throw new Error(`${label} evaluation returned no value`);
+  }
+  const record = value as Record<string, unknown>;
   if (typeof record.x !== "number" || typeof record.y !== "number") {
-    throw new Error("relay hover target evaluation returned invalid coordinates");
+    throw new Error(`${label} evaluation returned invalid coordinates`);
   }
   return {
     x: record.x,
@@ -654,6 +818,16 @@ function extractHoverPoint(value: unknown): RelayHoverPoint {
     ...(typeof record.label === "string" ? { label: record.label } : {}),
     ...(typeof record.tagName === "string" ? { tagName: record.tagName } : {}),
   };
+}
+
+function interpolateDragPoints(source: RelayHoverPoint, target: RelayHoverPoint, steps: number): Array<{ x: number; y: number }> {
+  return Array.from({ length: steps }, (_, index) => {
+    const ratio = steps <= 1 ? 1 : index / (steps - 1);
+    return {
+      x: source.x + (target.x - source.x) * ratio,
+      y: source.y + (target.y - source.y) * ratio,
+    };
+  });
 }
 
 function extractRuntimeResultValue(value: unknown): unknown {

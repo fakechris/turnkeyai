@@ -642,6 +642,11 @@ function validateBrowserTaskActions(actions: BrowserTaskAction[]): string | null
         if (selectError) return selectError;
         break;
       }
+      case "drag": {
+        const dragError = validateDragAction(action, `actions[${index}] drag`);
+        if (dragError) return dragError;
+        break;
+      }
       case "scroll": {
         if (!BROWSER_SCROLL_DIRECTIONS.has(action.direction)) {
           return `actions[${index}] scroll.direction must be up or down`;
@@ -768,7 +773,7 @@ function validateBrowserCdpEvents(events: unknown, label: string): string | null
   return null;
 }
 
-function validateActionSelectors(selectors: string[] | undefined, label: string): string | null {
+function validateActionSelectors(selectors: unknown, label: string): string | null {
   if (selectors === undefined) {
     return null;
   }
@@ -783,9 +788,9 @@ function validateActionSelectors(selectors: string[] | undefined, label: string)
 
 function validateTargetedAction(
   action: {
-    selectors?: string[];
-    refId?: string;
-    text?: string;
+    selectors?: unknown;
+    refId?: unknown;
+    text?: unknown;
   },
   label: string
 ): string | null {
@@ -795,7 +800,8 @@ function validateTargetedAction(
   }
   const refId = parseOptionalRouteString(action.refId);
   const text = parseOptionalRouteString(action.text);
-  const variants = Number(Boolean(action.selectors?.length)) + Number(Boolean(refId)) + Number(Boolean(text));
+  const hasSelectors = Array.isArray(action.selectors) && action.selectors.length > 0;
+  const variants = Number(hasSelectors) + Number(Boolean(refId)) + Number(Boolean(text));
   if (variants !== 1) {
     return `${label} requires exactly one of selectors, refId, or text`;
   }
@@ -847,6 +853,30 @@ function validateSelectAction(
   }
   if (hasIndex && (!Number.isInteger(indexValue) || indexValue < 0)) {
     return `${label}.index must be a non-negative integer`;
+  }
+  return null;
+}
+
+function validateDragAction(
+  action: {
+    source?: unknown;
+    target?: unknown;
+  },
+  label: string
+): string | null {
+  if (!isPlainRecord(action.source)) {
+    return `${label}.source must be an object`;
+  }
+  if (!isPlainRecord(action.target)) {
+    return `${label}.target must be an object`;
+  }
+  const sourceError = validateTargetedAction(action.source, `${label}.source`);
+  if (sourceError) {
+    return sourceError;
+  }
+  const targetError = validateTargetedAction(action.target, `${label}.target`);
+  if (targetError) {
+    return targetError;
   }
   return null;
 }

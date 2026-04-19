@@ -383,6 +383,75 @@ test("chrome relay action executor can run typed hover and key actions through d
   assert.equal(debuggerCommands[4]?.params.modifiers, 10);
 });
 
+test("chrome relay action executor can run typed drag actions through debugger input", async () => {
+  const now = Date.now();
+  const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];
+  const executor = new ChromeRelayActionExecutor(
+    fakePlatform({
+      activeTab: { id: 7, windowId: 3, url: "https://example.com", title: "Example", status: "complete" },
+      onDebuggerCommand(tabId, method, params) {
+        debuggerCommands.push({ tabId, method, params });
+        if (method === "Runtime.evaluate") {
+          return {
+            result: {
+              value: {
+                ok: true,
+                source: { ok: true, x: 10, y: 20, tagName: "DIV", label: "Card" },
+                target: { ok: true, x: 110, y: 120, tagName: "DIV", label: "Lane" },
+              },
+            },
+          };
+        }
+        return {};
+      },
+      onSendMessage() {
+        return {
+          ok: true,
+          page: {
+            requestedUrl: "https://example.com",
+            finalUrl: "https://example.com",
+            title: "Example",
+            textExcerpt: "Example page",
+            statusCode: 200,
+            interactives: [],
+          },
+          trace: [],
+        };
+      },
+    })
+  );
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-drag",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-1",
+    actions: [{ kind: "drag", source: { text: "Card" }, target: { text: "Lane" } }],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.trace[0]?.kind, "drag");
+  assert.equal(debuggerCommands[0]?.method, "Runtime.evaluate");
+  assert.deepEqual(debuggerCommands[2]?.params, {
+    type: "mousePressed",
+    x: 10,
+    y: 20,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+  });
+  assert.deepEqual(debuggerCommands.at(-1)?.params, {
+    type: "mouseReleased",
+    x: 110,
+    y: 120,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  });
+});
+
 test("chrome relay action executor can wait for and trace cdp events", async () => {
   const now = Date.now();
   const debuggerCommands: unknown[] = [];

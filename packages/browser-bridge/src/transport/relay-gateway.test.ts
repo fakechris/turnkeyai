@@ -218,7 +218,7 @@ test("relay gateway dispatches wait actions to peers that advertise wait support
   assert.equal(result.trace[0]?.kind, "wait");
 });
 
-test("relay gateway routes hover key and select actions only to peers that advertise input support", async () => {
+test("relay gateway routes hover key select and drag actions only to peers that advertise input support", async () => {
   const gateway = new RelayGateway({
     now: () => 1_000,
     createId: (prefix) => `${prefix}-input`,
@@ -229,7 +229,7 @@ test("relay gateway routes hover key and select actions only to peers that adver
   });
   gateway.registerPeer({
     peerId: "peer-input",
-    capabilities: ["snapshot", "hover", "key", "select"],
+    capabilities: ["snapshot", "hover", "key", "select", "drag"],
   });
 
   const dispatchPromise = gateway.dispatchActionRequest({
@@ -239,6 +239,7 @@ test("relay gateway routes hover key and select actions only to peers that adver
       { kind: "hover", text: "Open menu" },
       { kind: "key", key: "K", modifiers: ["Control"] },
       { kind: "select", selectors: ["select[name=plan]"], value: "team" },
+      { kind: "drag", source: { text: "Card" }, target: { text: "Lane" } },
       { kind: "snapshot", note: "after-input" },
     ],
   });
@@ -248,7 +249,7 @@ test("relay gateway routes hover key and select actions only to peers that adver
   assert.ok(request);
   assert.deepEqual(
     request?.actions.map((action) => action.kind),
-    ["hover", "key", "select", "snapshot"]
+    ["hover", "key", "select", "drag", "snapshot"]
   );
 
   gateway.submitActionResult({
@@ -294,6 +295,14 @@ test("relay gateway routes hover key and select actions only to peers that adver
         status: "ok",
         input: { value: "team" },
       },
+      {
+        stepId: "task-input:relay-drag:4",
+        kind: "drag",
+        startedAt: 7,
+        completedAt: 8,
+        status: "ok",
+        input: { source: { text: "Card" }, target: { text: "Lane" } },
+      },
     ],
     screenshotPaths: [],
     screenshotPayloads: [],
@@ -305,6 +314,7 @@ test("relay gateway routes hover key and select actions only to peers that adver
   assert.equal(result.trace[0]?.kind, "hover");
   assert.equal(result.trace[1]?.kind, "key");
   assert.equal(result.trace[2]?.kind, "select");
+  assert.equal(result.trace[3]?.kind, "drag");
 });
 
 test("relay gateway routes cdp actions only to peers that advertise cdp support", async () => {

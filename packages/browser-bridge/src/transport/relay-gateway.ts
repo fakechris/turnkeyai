@@ -540,6 +540,7 @@ export function isRelayExecutableAction(
     action.kind === "hover" ||
     action.kind === "key" ||
     action.kind === "select" ||
+    action.kind === "drag" ||
     action.kind === "scroll" ||
     action.kind === "console" ||
     action.kind === "wait" ||

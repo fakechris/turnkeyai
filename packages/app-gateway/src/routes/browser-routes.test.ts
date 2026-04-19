@@ -334,7 +334,7 @@ test("browser task mutation routes reject invalid actions and target combination
   });
 });
 
-test("browser task mutation routes validate key hover and select action contracts", async () => {
+test("browser task mutation routes validate key hover select and drag action contracts", async () => {
   const invalidHover = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -392,6 +392,25 @@ test("browser task mutation routes validate key hover and select action contract
     error: "actions[0] select requires exactly one of value, label, or index",
   });
 
+  const invalidDrag = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "drag", source: { selectors: ["#card"], text: "Card" }, target: { selectors: ["#lane"] } }],
+      },
+    }),
+    res: invalidDrag.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidDrag.res.statusCode, 400);
+  assert.deepEqual(invalidDrag.json, {
+    error: "actions[0] drag.source requires exactly one of selectors, refId, or text",
+  });
+
   let capturedActions: unknown;
   const validDeps = createDeps();
   validDeps.buildBrowserTaskRequest = ({ body, owner }) =>
@@ -417,6 +436,7 @@ test("browser task mutation routes validate key hover and select action contract
           { kind: "hover", refId: "ref-1" },
           { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
           { kind: "select", selectors: ["select[name=plan]"], label: "Team" },
+          { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
         ],
       },
     }),
@@ -429,6 +449,7 @@ test("browser task mutation routes validate key hover and select action contract
     { kind: "hover", refId: "ref-1" },
     { kind: "key", key: "K", modifiers: ["Control", "Shift"] },
     { kind: "select", selectors: ["select[name=plan]"], label: "Team" },
+    { kind: "drag", source: { text: "Card" }, target: { refId: "lane-1" } },
   ]);
 });
 

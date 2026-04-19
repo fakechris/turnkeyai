@@ -989,6 +989,33 @@ export class ChromeSessionManager {
       };
     }
 
+    if (action.kind === "drag") {
+      const sourceLocator = await this.resolveActionTargetLocator(
+        page,
+        action.source,
+        knownRefs,
+        browserSessionId,
+        currentTargetId
+      );
+      const targetLocator = await this.resolveActionTargetLocator(
+        page,
+        action.target,
+        knownRefs,
+        browserSessionId,
+        currentTargetId
+      );
+      await sourceLocator.dragTo(targetLocator);
+      await settle(page);
+
+      return {
+        traceOutput: {
+          source: summarizeActionTarget(action.source),
+          target: summarizeActionTarget(action.target),
+          finalUrl: page.url(),
+        },
+      };
+    }
+
     if (action.kind === "scroll") {
       const amount = action.amount ?? 800;
       const scrollY = await page.evaluate(
@@ -1097,6 +1124,46 @@ export class ChromeSessionManager {
 
     throw new Error(`${action.kind} action requires selectors or refId`);
   }
+
+  private async resolveActionTargetLocator(
+    page: Page,
+    target: { selectors?: string[]; refId?: string; text?: string },
+    knownRefs: Map<string, BrowserInteractiveElement>,
+    browserSessionId: string,
+    currentTargetId?: string
+  ): Promise<Locator> {
+    if (target.refId) {
+      if (knownRefs.has(target.refId)) {
+        return resolveRefLocator(page, target.refId);
+      }
+
+      if (currentTargetId && this.snapshotRefStore) {
+        const resolved = await this.snapshotRefStore.resolve({
+          browserSessionId,
+          targetId: currentTargetId,
+          refId: target.refId,
+        });
+        if (resolved?.selectors?.length) {
+          return resolveLocator(page, resolved.selectors);
+        }
+        if (resolved?.label) {
+          return resolveTextLocator(page, resolved.label);
+        }
+      }
+
+      throw new Error(`unknown snapshot ref requested: ${target.refId}`);
+    }
+
+    if (target.selectors?.length) {
+      return resolveLocator(page, target.selectors);
+    }
+
+    if (target.text) {
+      return resolveTextLocator(page, target.text);
+    }
+
+    throw new Error("drag target requires selectors, refId, or text");
+  }
 }
 
 async function resolveChromeExecutablePath(explicitPath?: string): Promise<string> {
@@ -1174,6 +1241,14 @@ function toPlaywrightSelectOption(
     return { label: action.label };
   }
   return { index: action.index };
+}
+
+function summarizeActionTarget(target: { selectors?: string[]; refId?: string; text?: string }): Record<string, unknown> {
+  return {
+    selectors: target.selectors ?? [],
+    refId: target.refId ?? null,
+    text: target.text ?? null,
+  };
 }
 
 async function executeTargetCdpAction(
@@ -1438,6 +1513,13 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
       value: action.value ?? null,
       label: action.label ?? null,
       index: action.index ?? null,
+    };
+  }
+
+  if (action.kind === "drag") {
+    return {
+      source: summarizeActionTarget(action.source),
+      target: summarizeActionTarget(action.target),
     };
   }
 

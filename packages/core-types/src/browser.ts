@@ -17,6 +17,7 @@ export type BrowserActionKind =
   | "hover"
   | "key"
   | "select"
+  | "drag"
   | "scroll"
   | "console"
   | "wait"
@@ -100,6 +101,17 @@ export type BrowserSelectAction =
   | ({ kind: "select"; selectors: string[]; refId?: never } & BrowserSelectOption)
   | ({ kind: "select"; refId: string; selectors?: never } & BrowserSelectOption);
 
+export type BrowserActionTarget =
+  | { selectors: string[]; refId?: never; text?: never }
+  | { refId: string; selectors?: never; text?: never }
+  | { text: string; selectors?: never; refId?: never };
+
+export type BrowserDragAction = {
+  kind: "drag";
+  source: BrowserActionTarget;
+  target: BrowserActionTarget;
+};
+
 export type BrowserTaskAction =
   | { kind: "open"; url: string }
   | { kind: "snapshot"; note?: string }
@@ -108,6 +120,7 @@ export type BrowserTaskAction =
   | BrowserHoverAction
   | { kind: "key"; key: string; modifiers?: BrowserKeyModifier[] }
   | BrowserSelectAction
+  | BrowserDragAction
   | { kind: "scroll"; direction: "up" | "down"; amount?: number }
   | { kind: "console"; probe: BrowserConsoleProbe }
   | { kind: "wait"; timeoutMs: number }
