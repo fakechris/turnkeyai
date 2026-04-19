@@ -992,6 +992,8 @@ test("chrome relay action executor applies and clears network URL blocks", async
     actions: [
       { kind: "network", action: "blockUrls", urlPatterns: ["*://*/analytics/*"] },
       { kind: "network", action: "clearBlockedUrls" },
+      { kind: "network", action: "setExtraHeaders", headers: { "x-test": "1" } },
+      { kind: "network", action: "clearExtraHeaders" },
     ],
     createdAt: now,
     expiresAt: now + 5_000,
@@ -1003,12 +1005,16 @@ test("chrome relay action executor applies and clears network URL blocks", async
     { tabId: 7, method: "Network.setBlockedURLs", params: { urls: ["*://*/analytics/*"] } },
     { tabId: 7, method: "Network.enable", params: {} },
     { tabId: 7, method: "Network.setBlockedURLs", params: { urls: [] } },
+    { tabId: 7, method: "Network.enable", params: {} },
+    { tabId: 7, method: "Network.setExtraHTTPHeaders", params: { headers: { "x-test": "1" } } },
+    { tabId: 7, method: "Network.enable", params: {} },
+    { tabId: 7, method: "Network.setExtraHTTPHeaders", params: { headers: {} } },
   ]);
   assert.deepEqual(detachedTabs, [7]);
   assert.equal(sentMessages.length, 1);
   assert.deepEqual(
     result.trace.map((entry) => entry.kind),
-    ["network", "network", "snapshot"]
+    ["network", "network", "network", "network", "snapshot"]
   );
   assert.deepEqual(result.trace[0]?.output, {
     action: "blockUrls",
@@ -1017,6 +1023,15 @@ test("chrome relay action executor applies and clears network URL blocks", async
   });
   assert.deepEqual(result.trace[1]?.output, {
     action: "clearBlockedUrls",
+    cleared: true,
+  });
+  assert.deepEqual(result.trace[2]?.output, {
+    action: "setExtraHeaders",
+    headerCount: 1,
+    set: true,
+  });
+  assert.deepEqual(result.trace[3]?.output, {
+    action: "clearExtraHeaders",
     cleared: true,
   });
 });

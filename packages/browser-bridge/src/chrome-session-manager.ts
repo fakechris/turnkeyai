@@ -1380,6 +1380,11 @@ export class ChromeSessionManager {
 
     if (action.kind === "network") {
       if (action.action !== "blockUrls" && action.action !== "clearBlockedUrls") {
+        if (action.action === "setExtraHeaders" || action.action === "clearExtraHeaders") {
+          return {
+            traceOutput: await executeNetworkControlAction(page, action),
+          };
+        }
         throw new Error(`${action.kind} ${action.action} actions must be armed by the browser task executor`);
       }
       return {
@@ -1783,10 +1788,28 @@ function isArmedNetworkAction(
 
 async function executeNetworkControlAction(
   page: Page,
-  action: Extract<BrowserTaskAction, { kind: "network"; action: "blockUrls" | "clearBlockedUrls" }>
+  action: Extract<
+    BrowserTaskAction,
+    { kind: "network"; action: "blockUrls" | "clearBlockedUrls" | "setExtraHeaders" | "clearExtraHeaders" }
+  >
 ): Promise<Record<string, unknown>> {
   if (action.action === "clearBlockedUrls") {
     await page.unroute("**/*").catch(() => undefined);
+    return {
+      action: action.action,
+      cleared: true,
+    };
+  }
+  if (action.action === "setExtraHeaders") {
+    await page.setExtraHTTPHeaders(action.headers);
+    return {
+      action: action.action,
+      headerCount: Object.keys(action.headers).length,
+      set: true,
+    };
+  }
+  if (action.action === "clearExtraHeaders") {
+    await page.setExtraHTTPHeaders({});
     return {
       action: action.action,
       cleared: true,
@@ -2713,6 +2736,17 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
       };
     }
     if (action.action === "clearBlockedUrls") {
+      return {
+        action: action.action,
+      };
+    }
+    if (action.action === "setExtraHeaders") {
+      return {
+        action: action.action,
+        headerNames: Object.keys(action.headers),
+      };
+    }
+    if (action.action === "clearExtraHeaders") {
       return {
         action: action.action,
       };

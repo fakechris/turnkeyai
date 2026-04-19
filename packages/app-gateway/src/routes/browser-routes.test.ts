@@ -677,6 +677,25 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     error: "actions[0] network.urlPatterns must be a non-empty array",
   });
 
+  const invalidNetworkHeader = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "setExtraHeaders", headers: { "bad header": "value" } }],
+      },
+    }),
+    res: invalidNetworkHeader.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetworkHeader.res.statusCode, 400);
+  assert.deepEqual(invalidNetworkHeader.json, {
+    error: "actions[0] network.headers.bad header must be a valid HTTP header name <= 128 characters",
+  });
+
   const invalidDownload = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -804,6 +823,8 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
           { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
           { kind: "network", action: "blockUrls", urlPatterns: ["*://*/analytics/*"] },
           { kind: "network", action: "clearBlockedUrls" },
+          { kind: "network", action: "setExtraHeaders", headers: { "x-test": "1" } },
+          { kind: "network", action: "clearExtraHeaders" },
           { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
           { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
         ],
@@ -837,6 +858,8 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
     { kind: "network", action: "blockUrls", urlPatterns: ["*://*/analytics/*"] },
     { kind: "network", action: "clearBlockedUrls" },
+    { kind: "network", action: "setExtraHeaders", headers: { "x-test": "1" } },
+    { kind: "network", action: "clearExtraHeaders" },
     { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
     { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
   ]);

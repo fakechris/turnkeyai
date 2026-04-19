@@ -1384,6 +1384,9 @@ test("chrome session manager applies and clears network URL blocks", async () =>
       calls.push(`route:${pattern}`);
       routeHandler = handler;
     },
+    async setExtraHTTPHeaders(headers: Record<string, string>) {
+      calls.push(`headers:${JSON.stringify(headers)}`);
+    },
   } as unknown as Page;
   const manager = new ChromeSessionManager({
     artifactRootDir: ".daemon-data/test-browser-artifacts",
@@ -1393,7 +1396,9 @@ test("chrome session manager applies and clears network URL blocks", async () =>
       page: Page;
       action:
         | { kind: "network"; action: "blockUrls"; urlPatterns: string[] }
-        | { kind: "network"; action: "clearBlockedUrls" };
+        | { kind: "network"; action: "clearBlockedUrls" }
+        | { kind: "network"; action: "setExtraHeaders"; headers: Record<string, string> }
+        | { kind: "network"; action: "clearExtraHeaders" };
       stepIndex: number;
       sessionDir: string;
       requestedUrl: string;
@@ -1446,6 +1451,44 @@ test("chrome session manager applies and clears network URL blocks", async () =>
     cleared: true,
   });
   assert.deepEqual(calls, ["unroute:**/*", "route:**/*", "unroute:**/*"]);
+
+  const setHeadersOutput = await internal.executeAction({
+    page,
+    action: { kind: "network", action: "setExtraHeaders", headers: { "x-test": "1" } },
+    stepIndex: 3,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-network",
+  });
+  assert.deepEqual(setHeadersOutput.traceOutput, {
+    action: "setExtraHeaders",
+    headerCount: 1,
+    set: true,
+  });
+
+  const clearHeadersOutput = await internal.executeAction({
+    page,
+    action: { kind: "network", action: "clearExtraHeaders" },
+    stepIndex: 4,
+    sessionDir: ".daemon-data/test-browser-artifacts",
+    requestedUrl: "https://example.com",
+    lastStatusCode: 200,
+    knownRefs: new Map(),
+    browserSessionId: "browser-session-network",
+  });
+  assert.deepEqual(clearHeadersOutput.traceOutput, {
+    action: "clearExtraHeaders",
+    cleared: true,
+  });
+  assert.deepEqual(calls, [
+    "unroute:**/*",
+    "route:**/*",
+    "unroute:**/*",
+    'headers:{"x-test":"1"}',
+    "headers:{}",
+  ]);
 });
 
 test("chrome session manager persists downloaded files as bounded artifacts", async () => {

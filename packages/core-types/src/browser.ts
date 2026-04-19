@@ -102,6 +102,7 @@ export const DEFAULT_BROWSER_NETWORK_TIMEOUT_MS = 10_000;
 export const MAX_BROWSER_NETWORK_TIMEOUT_MS = 60_000;
 export const MAX_BROWSER_NETWORK_BODY_BYTES = 64 * 1024;
 export const MAX_BROWSER_NETWORK_HEADER_ENTRIES = 100;
+export const MAX_BROWSER_NETWORK_HEADER_NAME_LENGTH = 128;
 export const MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES = 2 * 1024;
 export const MAX_BROWSER_DOWNLOAD_URL_PATTERN_LENGTH = 2_048;
 export const DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS = 10_000;
@@ -250,6 +251,15 @@ export type BrowserNetworkAction =
   | {
       kind: "network";
       action: "clearBlockedUrls";
+    }
+  | {
+      kind: "network";
+      action: "setExtraHeaders";
+      headers: Record<string, string>;
+    }
+  | {
+      kind: "network";
+      action: "clearExtraHeaders";
     };
 
 export type BrowserDownloadAction = {

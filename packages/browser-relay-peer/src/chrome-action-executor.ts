@@ -384,7 +384,12 @@ export class ChromeRelayActionExecutor {
                   action: action.action,
                   urlPatterns: action.urlPatterns,
                 }
-              : { action: action.action },
+              : action.action === "setExtraHeaders"
+                ? {
+                    action: action.action,
+                    headerNames: Object.keys(action.headers),
+                  }
+                : { action: action.action },
           output,
         });
         continue;
@@ -811,7 +816,10 @@ export class ChromeRelayActionExecutor {
 
   private async executeNetworkControlAction(
     tabId: number,
-    action: Extract<RelayNetworkAction, { action: "blockUrls" | "clearBlockedUrls" }>,
+    action: Extract<
+      RelayNetworkAction,
+      { action: "blockUrls" | "clearBlockedUrls" | "setExtraHeaders" | "clearExtraHeaders" }
+    >,
     debuggerTabsToDetach: Set<number>
   ): Promise<Record<string, unknown>> {
     if (!this.platform.sendDebuggerCommand) {
@@ -819,13 +827,27 @@ export class ChromeRelayActionExecutor {
     }
     debuggerTabsToDetach.add(tabId);
     await this.platform.sendDebuggerCommand(tabId, "Network.enable", {});
-    const urls = action.action === "blockUrls" ? action.urlPatterns : [];
-    await this.platform.sendDebuggerCommand(tabId, "Network.setBlockedURLs", { urls });
-    return action.action === "blockUrls"
+    if (action.action === "blockUrls" || action.action === "clearBlockedUrls") {
+      const urls = action.action === "blockUrls" ? action.urlPatterns : [];
+      await this.platform.sendDebuggerCommand(tabId, "Network.setBlockedURLs", { urls });
+      return action.action === "blockUrls"
+        ? {
+            action: action.action,
+            urlPatternCount: action.urlPatterns.length,
+            blocked: true,
+          }
+        : {
+            action: action.action,
+            cleared: true,
+          };
+    }
+    const headers = action.action === "setExtraHeaders" ? action.headers : {};
+    await this.platform.sendDebuggerCommand(tabId, "Network.setExtraHTTPHeaders", { headers });
+    return action.action === "setExtraHeaders"
       ? {
           action: action.action,
-          urlPatternCount: action.urlPatterns.length,
-          blocked: true,
+          headerCount: Object.keys(action.headers).length,
+          set: true,
         }
       : {
           action: action.action,
