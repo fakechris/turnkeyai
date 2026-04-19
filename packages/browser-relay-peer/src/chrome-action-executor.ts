@@ -16,6 +16,9 @@ import {
   MAX_BROWSER_EVAL_RESULT_BYTES,
   MAX_BROWSER_EVAL_TIMEOUT_MS,
   DEFAULT_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_NETWORK_BODY_BYTES,
+  MAX_BROWSER_NETWORK_HEADER_ENTRIES,
+  MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_PERMISSION_ORIGIN_LENGTH,
   MAX_BROWSER_UPLOAD_FILE_NAME_LENGTH,
@@ -379,8 +382,10 @@ export class ChromeRelayActionExecutor {
             action: action.action,
             urlPattern: action.urlPattern ?? null,
             method: action.method ?? null,
-            status: action.status ?? null,
+            status: "status" in action ? action.status ?? null : null,
             timeoutMs: action.timeoutMs ?? null,
+            includeHeaders: action.includeHeaders ?? false,
+            maxBodyBytes: action.maxBodyBytes ?? null,
           },
           output: {
             action: action.action,
@@ -1017,6 +1022,16 @@ export class ChromeRelayActionExecutor {
       try {
         while (Date.now() <= deadline) {
           const remainingMs = Math.max(1, deadline - Date.now());
+          if (action.action === "waitForRequest") {
+            const event = await waitForDebuggerEvent(tabId, "Network.requestWillBeSent", remainingMs);
+            if (!matchesCdpNetworkRequest(event, action)) {
+              continue;
+            }
+            traceEntry.completedAt = Date.now();
+            traceEntry.output = summarizeCdpNetworkRequest(event, action, timeoutMs);
+            return;
+          }
+
           const event = await waitForDebuggerEvent(tabId, "Network.responseReceived", remainingMs);
           const requestEvents =
             (await this.platform.drainDebuggerEvents?.(tabId, {
@@ -1035,8 +1050,14 @@ export class ChromeRelayActionExecutor {
           if (!matchesCdpNetworkResponse(event, action, method)) {
             continue;
           }
+          const bodySummary = action.maxBodyBytes
+            ? await readCdpResponseBodySummary(sendDebuggerCommand, tabId, requestId, action.maxBodyBytes)
+            : {};
           traceEntry.completedAt = Date.now();
-          traceEntry.output = summarizeCdpNetworkResponse(event, action, method, timeoutMs);
+          traceEntry.output = {
+            ...summarizeCdpNetworkResponse(event, action, method, timeoutMs),
+            ...bodySummary,
+          };
           return;
         }
         throw new Error(`relay network action timed out after ${timeoutMs}ms`);
@@ -1561,9 +1582,24 @@ async function waitForCdpDownloadCompletion(
   throw new Error("relay download action timed out waiting for completion");
 }
 
+function matchesCdpNetworkRequest(
+  event: ChromeDebuggerEventLike,
+  action: Extract<RelayNetworkAction, { action: "waitForRequest" }>
+): boolean {
+  const url = getCdpRequestUrl(event.params);
+  const method = getCdpRequestMethod(event.params);
+  if (action.urlPattern && (!url || !matchesUrlPattern(url, action.urlPattern))) {
+    return false;
+  }
+  if (action.method && method !== action.method) {
+    return false;
+  }
+  return true;
+}
+
 function matchesCdpNetworkResponse(
   event: ChromeDebuggerEventLike,
-  action: RelayNetworkAction,
+  action: Extract<RelayNetworkAction, { action: "waitForResponse" }>,
   method: string | undefined
 ): boolean {
   const url = getCdpResponseUrl(event.params);
@@ -1580,9 +1616,33 @@ function matchesCdpNetworkResponse(
   return true;
 }
 
+function summarizeCdpNetworkRequest(
+  event: ChromeDebuggerEventLike,
+  action: Extract<RelayNetworkAction, { action: "waitForRequest" }>,
+  timeoutMs: number
+): Record<string, unknown> {
+  const postData = action.maxBodyBytes ? getCdpRequestPostData(event.params) : null;
+  const hasPostData = getCdpRequestHasPostData(event.params);
+  return {
+    action: action.action,
+    matched: true,
+    timeoutMs,
+    requestId: getCdpRequestId(event.params) ?? null,
+    url: getCdpRequestUrl(event.params) ?? null,
+    method: getCdpRequestMethod(event.params) ?? null,
+    resourceType: typeof event.params?.type === "string" ? event.params.type : null,
+    ...(action.includeHeaders ? summarizeCdpNetworkHeaders(getCdpRequestHeaders(event.params)) : {}),
+    ...(postData !== null
+      ? summarizeTextNetworkBody(postData, action.maxBodyBytes ?? MAX_BROWSER_NETWORK_BODY_BYTES)
+      : action.maxBodyBytes && hasPostData
+        ? { bodyUnavailable: true }
+        : {}),
+  };
+}
+
 function summarizeCdpNetworkResponse(
   event: ChromeDebuggerEventLike,
-  action: RelayNetworkAction,
+  action: Extract<RelayNetworkAction, { action: "waitForResponse" }>,
   method: string | undefined,
   timeoutMs: number
 ): Record<string, unknown> {
@@ -1596,11 +1656,91 @@ function summarizeCdpNetworkResponse(
     method: method ?? null,
     resourceType: typeof event.params?.type === "string" ? event.params.type : null,
     mimeType: getCdpResponseMimeType(event.params) ?? null,
+    ...(action.includeHeaders ? summarizeCdpNetworkHeaders(getCdpResponseHeaders(event.params)) : {}),
   };
+}
+
+async function readCdpResponseBodySummary(
+  sendDebuggerCommand: NonNullable<ChromeExtensionPlatform["sendDebuggerCommand"]>,
+  tabId: number,
+  requestId: string | null,
+  maxBodyBytes: number
+): Promise<Record<string, unknown>> {
+  if (!requestId) {
+    return { bodyUnavailable: true, bodyError: "missing requestId" };
+  }
+  try {
+    const response = await sendDebuggerCommand(tabId, "Network.getResponseBody", { requestId });
+    if (!isRecord(response) || typeof response.body !== "string") {
+      return { bodyUnavailable: true, bodyError: "Network.getResponseBody returned no body" };
+    }
+    const base64Encoded = response.base64Encoded === true;
+    return base64Encoded
+      ? summarizeBase64NetworkBody(response.body, maxBodyBytes)
+      : summarizeTextNetworkBody(response.body, maxBodyBytes);
+  } catch (error) {
+    return {
+      bodyUnavailable: true,
+      bodyError: error instanceof Error ? error.message : "response body unavailable",
+    };
+  }
+}
+
+function summarizeCdpNetworkHeaders(headers: Record<string, unknown>): Record<string, unknown> {
+  const entries = Object.entries(headers);
+  const boundedEntries = entries.slice(0, MAX_BROWSER_NETWORK_HEADER_ENTRIES);
+  return {
+    headers: boundedEntries.map(([name, rawValue]) => ({
+      name,
+      ...summarizeNetworkHeaderValue(String(rawValue)),
+    })),
+    headerCount: entries.length,
+    headersTruncated: entries.length > MAX_BROWSER_NETWORK_HEADER_ENTRIES,
+  };
+}
+
+function summarizeNetworkHeaderValue(value: string): Record<string, unknown> {
+  const valueBytes = byteLength(value);
+  return {
+    value: valueBytes <= MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES ? value : truncateUtf8(value, MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES),
+    valueBytes,
+    valueTruncated: valueBytes > MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES,
+  };
+}
+
+function summarizeTextNetworkBody(value: string, maxBodyBytes: number): Record<string, unknown> {
+  const boundedBytes = Math.min(maxBodyBytes, MAX_BROWSER_NETWORK_BODY_BYTES);
+  const bodyBytes = byteLength(value);
+  return {
+    bodyBytes,
+    bodyPreview: bodyBytes <= boundedBytes ? value : truncateUtf8(value, boundedBytes),
+    bodyTruncated: bodyBytes > boundedBytes,
+  };
+}
+
+function summarizeBase64NetworkBody(value: string, maxBodyBytes: number): Record<string, unknown> {
+  const boundedBytes = Math.min(maxBodyBytes, MAX_BROWSER_NETWORK_BODY_BYTES);
+  const sanitized = value.replace(/\s+/g, "");
+  const bodyBytes = estimateBase64DecodedBytes(sanitized);
+  return {
+    bodyBytes,
+    bodyPreviewBase64: sanitized.slice(0, Math.ceil(boundedBytes / 3) * 4),
+    bodyTruncated: bodyBytes > boundedBytes,
+  };
+}
+
+function estimateBase64DecodedBytes(value: string): number {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((value.length * 3) / 4) - padding);
 }
 
 function getCdpRequestId(params: Record<string, unknown> | undefined): string | null {
   return typeof params?.requestId === "string" ? params.requestId : null;
+}
+
+function getCdpRequestUrl(params: Record<string, unknown> | undefined): string | null {
+  const request = isRecord(params?.request) ? params.request : null;
+  return typeof request?.url === "string" ? request.url : null;
 }
 
 function getCdpRequestMethod(params: Record<string, unknown> | undefined): string | null {
@@ -1608,9 +1748,29 @@ function getCdpRequestMethod(params: Record<string, unknown> | undefined): strin
   return typeof request?.method === "string" ? request.method : null;
 }
 
+function getCdpRequestHeaders(params: Record<string, unknown> | undefined): Record<string, unknown> {
+  const request = isRecord(params?.request) ? params.request : null;
+  return isRecord(request?.headers) ? request.headers : {};
+}
+
+function getCdpRequestPostData(params: Record<string, unknown> | undefined): string | null {
+  const request = isRecord(params?.request) ? params.request : null;
+  return typeof request?.postData === "string" ? request.postData : null;
+}
+
+function getCdpRequestHasPostData(params: Record<string, unknown> | undefined): boolean {
+  const request = isRecord(params?.request) ? params.request : null;
+  return request?.hasPostData === true;
+}
+
 function getCdpResponseUrl(params: Record<string, unknown> | undefined): string | null {
   const response = isRecord(params?.response) ? params.response : null;
   return typeof response?.url === "string" ? response.url : null;
+}
+
+function getCdpResponseHeaders(params: Record<string, unknown> | undefined): Record<string, unknown> {
+  const response = isRecord(params?.response) ? params.response : null;
+  return isRecord(response?.headers) ? response.headers : {};
 }
 
 function getCdpResponseStatus(params: Record<string, unknown> | undefined): number | null {
@@ -1849,6 +2009,23 @@ function jsonByteLength(value: unknown): number {
 
 function byteLength(value: string): number {
   return new TextEncoder().encode(value).length;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (byteLength(value) <= maxBytes) {
+    return value;
+  }
+  let output = "";
+  let outputBytes = 0;
+  for (const character of value) {
+    const characterBytes = byteLength(character);
+    if (outputBytes + characterBytes > maxBytes) {
+      break;
+    }
+    output += character;
+    outputBytes += characterBytes;
+  }
+  return output;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

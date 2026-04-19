@@ -99,6 +99,9 @@ export const MAX_BROWSER_NETWORK_URL_PATTERN_LENGTH = 2_048;
 export const MAX_BROWSER_NETWORK_METHOD_LENGTH = 16;
 export const DEFAULT_BROWSER_NETWORK_TIMEOUT_MS = 10_000;
 export const MAX_BROWSER_NETWORK_TIMEOUT_MS = 60_000;
+export const MAX_BROWSER_NETWORK_BODY_BYTES = 64 * 1024;
+export const MAX_BROWSER_NETWORK_HEADER_ENTRIES = 100;
+export const MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES = 2 * 1024;
 export const MAX_BROWSER_DOWNLOAD_URL_PATTERN_LENGTH = 2_048;
 export const DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS = 10_000;
 export const MAX_BROWSER_DOWNLOAD_TIMEOUT_MS = 120_000;
@@ -218,14 +221,26 @@ export type BrowserEvalAction = {
   timeoutMs?: number;
 };
 
-export type BrowserNetworkAction = {
-  kind: "network";
-  action: "waitForResponse";
-  urlPattern?: string;
-  method?: string;
-  status?: number;
-  timeoutMs?: number;
-};
+export type BrowserNetworkAction =
+  | {
+      kind: "network";
+      action: "waitForRequest";
+      urlPattern?: string;
+      method?: string;
+      timeoutMs?: number;
+      includeHeaders?: boolean;
+      maxBodyBytes?: number;
+    }
+  | {
+      kind: "network";
+      action: "waitForResponse";
+      urlPattern?: string;
+      method?: string;
+      status?: number;
+      timeoutMs?: number;
+      includeHeaders?: boolean;
+      maxBodyBytes?: number;
+    };
 
 export type BrowserDownloadAction = {
   kind: "download";

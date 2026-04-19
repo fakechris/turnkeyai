@@ -620,6 +620,44 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     error: "actions[0] network.method must be uppercase ASCII and <= 16 characters",
   });
 
+  const invalidNetworkStatus = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "waitForRequest", status: 201 }],
+      },
+    }),
+    res: invalidNetworkStatus.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetworkStatus.res.statusCode, 400);
+  assert.deepEqual(invalidNetworkStatus.json, {
+    error: "actions[0] network.status is only accepted for waitForResponse",
+  });
+
+  const invalidNetworkBodyLimit = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: {
+        threadId: "thread-1",
+        actions: [{ kind: "network", action: "waitForResponse", maxBodyBytes: 65_537 }],
+      },
+    }),
+    res: invalidNetworkBodyLimit.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps: createDeps(),
+  });
+  assert.equal(invalidNetworkBodyLimit.res.statusCode, 400);
+  assert.deepEqual(invalidNetworkBodyLimit.json, {
+    error: "actions[0] network.maxBodyBytes must be a positive integer <= 65536",
+  });
+
   const invalidDownload = createResponse();
   await handleBrowserRoutes({
     req: createRequest({
@@ -743,6 +781,7 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
           { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },
           { kind: "cookie", action: "get", name: "sid" },
           { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
+          { kind: "network", action: "waitForRequest", urlPattern: "/api", method: "POST", includeHeaders: true, maxBodyBytes: 128 },
           { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
           { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
           { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },
@@ -773,6 +812,7 @@ test("browser task mutation routes validate key hover select drag waitFor dialog
     { kind: "cookie", action: "set", name: "sid", value: "abc", path: "/", sameSite: "Lax" },
     { kind: "cookie", action: "get", name: "sid" },
     { kind: "eval", expression: "document.title", awaitPromise: true, timeoutMs: 1_000 },
+    { kind: "network", action: "waitForRequest", urlPattern: "/api", method: "POST", includeHeaders: true, maxBodyBytes: 128 },
     { kind: "network", action: "waitForResponse", urlPattern: "/api", method: "POST", status: 201, timeoutMs: 1_000 },
     { kind: "download", urlPattern: "/export.csv", timeoutMs: 1_000 },
     { kind: "upload", selectors: ["input[type=file]"], artifactId: "artifact-upload" },

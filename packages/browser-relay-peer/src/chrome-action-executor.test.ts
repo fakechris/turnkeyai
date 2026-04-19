@@ -686,6 +686,9 @@ test("chrome relay action executor arms network wait around a trigger action", a
     activeTab: { id: 7, windowId: 3, url: "https://example.com/app", title: "Example", status: "complete" },
     onDebuggerCommand(tabId, method, params) {
       debuggerCommands.push({ tabId, method, params });
+      if (method === "Network.getResponseBody") {
+        return { body: '{"ok":true}', base64Encoded: false };
+      }
       return {};
     },
     onSendMessage(tabId, message) {
@@ -699,6 +702,9 @@ test("chrome relay action executor arms network wait around a trigger action", a
             url: "https://example.com/api/items",
             status: 201,
             mimeType: "application/json",
+            headers: {
+              "content-type": "application/json",
+            },
           },
         },
         timestamp: 123,
@@ -765,7 +771,16 @@ test("chrome relay action executor arms network wait around a trigger action", a
     browserSessionId: "browser-session-1",
     taskId: "task-network",
     actions: [
-      { kind: "network", action: "waitForResponse", urlPattern: "/api/items", method: "POST", status: 201, timeoutMs: 1_000 },
+      {
+        kind: "network",
+        action: "waitForResponse",
+        urlPattern: "/api/items",
+        method: "POST",
+        status: 201,
+        includeHeaders: true,
+        maxBodyBytes: 64,
+        timeoutMs: 1_000,
+      },
       { kind: "click", text: "Submit" },
     ],
     createdAt: now,
@@ -773,7 +788,10 @@ test("chrome relay action executor arms network wait around a trigger action", a
   });
 
   assert.equal(result.status, "completed");
-  assert.deepEqual(debuggerCommands, [{ tabId: 7, method: "Network.enable", params: {} }]);
+  assert.deepEqual(debuggerCommands, [
+    { tabId: 7, method: "Network.enable", params: {} },
+    { tabId: 7, method: "Network.getResponseBody", params: { requestId: "request-1" } },
+  ]);
   assert.deepEqual(detachedTabs, [7]);
   assert.equal(sentMessages.length, 1);
   assert.equal(result.trace[0]?.kind, "network");
@@ -788,6 +806,139 @@ test("chrome relay action executor arms network wait around a trigger action", a
     method: "POST",
     resourceType: "Fetch",
     mimeType: "application/json",
+    headers: [
+      {
+        name: "content-type",
+        value: "application/json",
+        valueBytes: 16,
+        valueTruncated: false,
+      },
+    ],
+    headerCount: 1,
+    headersTruncated: false,
+    bodyBytes: 11,
+    bodyPreview: '{"ok":true}',
+    bodyTruncated: false,
+  });
+  assert.equal(result.trace[1]?.kind, "click");
+});
+
+test("chrome relay action executor captures bounded network request details", async () => {
+  const now = Date.now();
+  const debuggerCommands: Array<{ tabId: number; method: string; params: Record<string, unknown> }> = [];
+  const detachedTabs: number[] = [];
+  let resolveNetwork:
+    | ((event: { method: string; params: Record<string, unknown>; timestamp: number }) => void)
+    | null = null;
+  const sentMessages: unknown[] = [];
+  const platform = fakePlatform({
+    activeTab: { id: 7, windowId: 3, url: "https://example.com/app", title: "Example", status: "complete" },
+    onDebuggerCommand(tabId, method, params) {
+      debuggerCommands.push({ tabId, method, params });
+      return {};
+    },
+    onSendMessage(tabId, message) {
+      sentMessages.push({ tabId, message });
+      resolveNetwork?.({
+        method: "Network.requestWillBeSent",
+        params: {
+          requestId: "request-1",
+          type: "Fetch",
+          request: {
+            method: "POST",
+            url: "https://example.com/api/items",
+            headers: {
+              "content-type": "application/json",
+            },
+            postData: '{"name":"Ada"}',
+          },
+        },
+        timestamp: 123,
+      });
+      return {
+        ok: true,
+        page: {
+          requestedUrl: "https://example.com/app",
+          finalUrl: "https://example.com/app",
+          title: "Example",
+          textExcerpt: "Example page",
+          statusCode: 200,
+          interactives: [],
+        },
+        trace: [
+          {
+            stepId: "task-network-request:relay-click:2",
+            kind: "click",
+            startedAt: 1,
+            completedAt: 2,
+            status: "ok",
+            input: { text: "Submit" },
+          },
+        ],
+      };
+    },
+  });
+  platform.waitForDebuggerEvent = async (tabId, method, timeoutMs) => {
+    assert.equal(tabId, 7);
+    assert.equal(method, "Network.requestWillBeSent");
+    assert.equal(timeoutMs <= 1_000, true);
+    return await new Promise((resolve) => {
+      resolveNetwork = resolve;
+    });
+  };
+  platform.detachDebugger = async (tabId) => {
+    detachedTabs.push(tabId);
+  };
+  const executor = new ChromeRelayActionExecutor(platform);
+
+  const result = await executor.execute({
+    actionRequestId: "relay-action-network-request",
+    peerId: "peer-1",
+    browserSessionId: "browser-session-1",
+    taskId: "task-network-request",
+    actions: [
+      {
+        kind: "network",
+        action: "waitForRequest",
+        urlPattern: "/api/items",
+        method: "POST",
+        includeHeaders: true,
+        maxBodyBytes: 64,
+        timeoutMs: 1_000,
+      },
+      { kind: "click", text: "Submit" },
+    ],
+    createdAt: now,
+    expiresAt: now + 5_000,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(debuggerCommands, [{ tabId: 7, method: "Network.enable", params: {} }]);
+  assert.deepEqual(detachedTabs, [7]);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(result.trace[0]?.kind, "network");
+  assert.equal(result.trace[0]?.status, "ok");
+  assert.deepEqual(result.trace[0]?.output, {
+    action: "waitForRequest",
+    matched: true,
+    timeoutMs: 1_000,
+    requestId: "request-1",
+    url: "https://example.com/api/items",
+    method: "POST",
+    resourceType: "Fetch",
+    headers: [
+      {
+        name: "content-type",
+        value: "application/json",
+        valueBytes: 16,
+        valueTruncated: false,
+      },
+    ],
+    headerCount: 1,
+    headersTruncated: false,
+    bodyBytes: 14,
+    bodyPreview: '{"name":"Ada"}',
+    bodyTruncated: false,
   });
   assert.equal(result.trace[1]?.kind, "click");
 });

@@ -1,4 +1,5 @@
 import { access, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { Buffer } from "node:buffer";
 import path from "node:path";
 
 import type {
@@ -42,6 +43,9 @@ import {
   MAX_BROWSER_EVAL_RESULT_BYTES,
   MAX_BROWSER_EVAL_TIMEOUT_MS,
   DEFAULT_BROWSER_NETWORK_TIMEOUT_MS,
+  MAX_BROWSER_NETWORK_BODY_BYTES,
+  MAX_BROWSER_NETWORK_HEADER_ENTRIES,
+  MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
   MAX_BROWSER_PERMISSION_ORIGIN_LENGTH,
   MAX_BROWSER_PROBE_ITEMS,
@@ -53,7 +57,7 @@ import {
   isBlockedBrowserCdpMethod,
   normalizeBrowserCdpMethod,
 } from "@turnkeyai/core-types/team";
-import { chromium, type Browser, type BrowserContext, type CDPSession, type Dialog, type Download, type Locator, type Page, type Response } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Dialog, type Download, type Locator, type Page, type Request, type Response } from "playwright-core";
 
 import { captureDomSnapshot } from "./dom-snapshot";
 import type { BrowserSessionManager as LocalBrowserSessionManager } from "./session/browser-session-manager";
@@ -1655,11 +1659,20 @@ async function armPageNetworkHandler(
   timeoutMs: number
 ): Promise<void> {
   try {
+    if (action.action === "waitForRequest") {
+      const request = await page.waitForRequest((candidate) => matchesNetworkRequest(candidate, action), {
+        timeout: timeoutMs,
+      });
+      traceEntry.completedAt = Date.now();
+      traceEntry.output = summarizeNetworkRequest(request, action, timeoutMs);
+      return;
+    }
+
     const response = await page.waitForResponse((candidate) => matchesNetworkResponse(candidate, action), {
       timeout: timeoutMs,
     });
     traceEntry.completedAt = Date.now();
-    traceEntry.output = summarizeNetworkResponse(response, action, timeoutMs);
+    traceEntry.output = await summarizeNetworkResponse(response, action, timeoutMs);
   } catch (error) {
     traceEntry.completedAt = Date.now();
     traceEntry.status = "failed";
@@ -1751,9 +1764,22 @@ function matchesDownload(download: Download, action: Extract<BrowserTaskAction, 
   return action.urlPattern ? matchesUrlPattern(download.url(), action.urlPattern) : true;
 }
 
+function matchesNetworkRequest(
+  request: Request,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "waitForRequest" }>
+): boolean {
+  if (action.urlPattern && !matchesUrlPattern(request.url(), action.urlPattern)) {
+    return false;
+  }
+  if (action.method && request.method() !== action.method) {
+    return false;
+  }
+  return true;
+}
+
 function matchesNetworkResponse(
   response: Response,
-  action: Extract<BrowserTaskAction, { kind: "network" }>
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "waitForResponse" }>
 ): boolean {
   if (action.urlPattern && !matchesUrlPattern(response.url(), action.urlPattern)) {
     return false;
@@ -1767,18 +1793,79 @@ function matchesNetworkResponse(
   return true;
 }
 
-function summarizeNetworkResponse(
-  response: Response,
-  action: Extract<BrowserTaskAction, { kind: "network" }>,
+function summarizeNetworkRequest(
+  request: Request,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "waitForRequest" }>,
   timeoutMs: number
 ): Record<string, unknown> {
+  const postData = action.maxBodyBytes ? request.postDataBuffer() : null;
   return {
+    action: action.action,
+    matched: true,
+    timeoutMs,
+    url: request.url(),
+    method: request.method(),
+    ...(action.includeHeaders ? summarizeNetworkHeaders(request.headers()) : {}),
+    ...(postData ? summarizeNetworkBodyBuffer(postData, action.maxBodyBytes ?? MAX_BROWSER_NETWORK_BODY_BYTES) : {}),
+  };
+}
+
+async function summarizeNetworkResponse(
+  response: Response,
+  action: Extract<BrowserTaskAction, { kind: "network"; action: "waitForResponse" }>,
+  timeoutMs: number
+): Promise<Record<string, unknown>> {
+  const output: Record<string, unknown> = {
     action: action.action,
     matched: true,
     timeoutMs,
     url: response.url(),
     status: response.status(),
     method: response.request().method(),
+    ...(action.includeHeaders ? summarizeNetworkHeaders(response.headers()) : {}),
+  };
+
+  if (action.maxBodyBytes) {
+    try {
+      Object.assign(output, summarizeNetworkBodyBuffer(await response.body(), action.maxBodyBytes));
+    } catch (error) {
+      output.bodyUnavailable = true;
+      output.bodyError = error instanceof Error ? error.message : "response body unavailable";
+    }
+  }
+
+  return output;
+}
+
+function summarizeNetworkHeaders(headers: Record<string, string>): Record<string, unknown> {
+  const entries = Object.entries(headers);
+  const boundedEntries = entries.slice(0, MAX_BROWSER_NETWORK_HEADER_ENTRIES);
+  return {
+    headers: boundedEntries.map(([name, value]) => ({
+      name,
+      ...summarizeNetworkHeaderValue(value),
+    })),
+    headerCount: entries.length,
+    headersTruncated: entries.length > MAX_BROWSER_NETWORK_HEADER_ENTRIES,
+  };
+}
+
+function summarizeNetworkHeaderValue(value: string): Record<string, unknown> {
+  const valueBytes = byteLength(value);
+  return {
+    value: valueBytes <= MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES ? value : truncateUtf8(value, MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES),
+    valueBytes,
+    valueTruncated: valueBytes > MAX_BROWSER_NETWORK_HEADER_VALUE_BYTES,
+  };
+}
+
+function summarizeNetworkBodyBuffer(body: Buffer, maxBodyBytes: number): Record<string, unknown> {
+  const boundedBytes = Math.min(maxBodyBytes, MAX_BROWSER_NETWORK_BODY_BYTES);
+  const preview = body.subarray(0, boundedBytes);
+  return {
+    bodyBytes: body.byteLength,
+    bodyPreviewBase64: preview.toString("base64"),
+    bodyTruncated: body.byteLength > boundedBytes,
   };
 }
 
@@ -2349,6 +2436,23 @@ function byteLength(value: string): number {
   return new TextEncoder().encode(value).length;
 }
 
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (byteLength(value) <= maxBytes) {
+    return value;
+  }
+  let output = "";
+  let outputBytes = 0;
+  for (const character of value) {
+    const characterBytes = byteLength(character);
+    if (outputBytes + characterBytes > maxBytes) {
+      break;
+    }
+    output += character;
+    outputBytes += characterBytes;
+  }
+  return output;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -2559,8 +2663,10 @@ function toTraceInput(action: BrowserTaskAction): Record<string, unknown> {
       action: action.action,
       urlPattern: action.urlPattern ?? null,
       method: action.method ?? null,
-      status: action.status ?? null,
+      status: "status" in action ? action.status ?? null : null,
       timeoutMs: action.timeoutMs ?? null,
+      includeHeaders: action.includeHeaders ?? false,
+      maxBodyBytes: action.maxBodyBytes ?? null,
     };
   }
 

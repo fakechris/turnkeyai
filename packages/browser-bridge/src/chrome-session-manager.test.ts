@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1248,6 +1249,126 @@ test("chrome session manager arms network wait around a trigger action", async (
     url: "https://example.com/api/items",
     status: 201,
     method: "POST",
+  });
+  assert.equal(result.trace[1]?.kind, "click");
+});
+
+test("chrome session manager captures bounded network request details", async () => {
+  let requestPredicate: ((request: unknown) => boolean) | null = null;
+  let resolveNetwork: ((request: unknown) => void) | null = null;
+  const request = {
+    url() {
+      return "https://example.com/api/items";
+    },
+    method() {
+      return "POST";
+    },
+    headers() {
+      return { "content-type": "application/json" };
+    },
+    postDataBuffer() {
+      return Buffer.from('{"name":"Ada"}', "utf8");
+    },
+  };
+  const fakeLocator = {
+    first() {
+      return this;
+    },
+    async count() {
+      return 1;
+    },
+    async click() {
+      if (requestPredicate?.(request)) {
+        resolveNetwork?.(request);
+      }
+    },
+  };
+  const page = {
+    waitForRequest(predicate: (request: unknown) => boolean) {
+      requestPredicate = predicate;
+      return new Promise((resolve) => {
+        resolveNetwork = resolve;
+      });
+    },
+    locator() {
+      return fakeLocator;
+    },
+    async waitForLoadState() {
+      return undefined;
+    },
+    async waitForTimeout() {
+      return undefined;
+    },
+    url() {
+      return "https://example.com/start";
+    },
+    async title() {
+      return "Start";
+    },
+  } as unknown as Page;
+  const fakeContext = {
+    pages() {
+      return [page];
+    },
+    async newPage() {
+      return page;
+    },
+    async close() {
+      return undefined;
+    },
+  } as unknown as BrowserContext;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    createEphemeralContext: async () => fakeContext,
+    captureSnapshot: async () => ({
+      requestedUrl: "https://example.com/start",
+      finalUrl: "https://example.com/start",
+      title: "Start",
+      textExcerpt: "Start page",
+      statusCode: 200,
+      interactives: [],
+    }),
+  });
+
+  const result = await manager.spawnSession({
+    taskId: "task-network-request",
+    threadId: "thread-network-request",
+    instructions: "Wait for API request",
+    actions: [
+      {
+        kind: "network",
+        action: "waitForRequest",
+        urlPattern: "/api/items",
+        method: "POST",
+        includeHeaders: true,
+        maxBodyBytes: 64,
+        timeoutMs: 1_000,
+      },
+      { kind: "click", selectors: ["button.submit"] },
+    ],
+  });
+
+  assert.equal(result.trace[0]?.kind, "network");
+  assert.equal(result.trace[0]?.status, "ok");
+  assert.deepEqual(result.trace[0]?.output, {
+    action: "waitForRequest",
+    matched: true,
+    timeoutMs: 1_000,
+    url: "https://example.com/api/items",
+    method: "POST",
+    headers: [
+      {
+        name: "content-type",
+        value: "application/json",
+        valueBytes: 16,
+        valueTruncated: false,
+      },
+    ],
+    headerCount: 1,
+    headersTruncated: false,
+    bodyBytes: 14,
+    bodyPreviewBase64: "eyJuYW1lIjoiQWRhIn0=",
+    bodyTruncated: false,
   });
   assert.equal(result.trace[1]?.kind, "click");
 });

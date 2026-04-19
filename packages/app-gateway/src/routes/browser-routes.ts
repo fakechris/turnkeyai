@@ -21,6 +21,7 @@ import {
   MAX_BROWSER_DOWNLOAD_URL_PATTERN_LENGTH,
   MAX_BROWSER_EVAL_EXPRESSION_BYTES,
   MAX_BROWSER_EVAL_TIMEOUT_MS,
+  MAX_BROWSER_NETWORK_BODY_BYTES,
   MAX_BROWSER_KEY_ACTION_KEY_LENGTH,
   MAX_BROWSER_NETWORK_METHOD_LENGTH,
   MAX_BROWSER_NETWORK_TIMEOUT_MS,
@@ -509,7 +510,7 @@ const BROWSER_STORAGE_AREAS = new Set(["localStorage", "sessionStorage"]);
 const BROWSER_STORAGE_ACTIONS = new Set(["get", "set", "remove", "clear"]);
 const BROWSER_COOKIE_ACTIONS = new Set(["get", "set", "remove", "clear"]);
 const BROWSER_COOKIE_SAME_SITE_VALUES = new Set(["Strict", "Lax", "None"]);
-const BROWSER_NETWORK_ACTIONS = new Set(["waitForResponse"]);
+const BROWSER_NETWORK_ACTIONS = new Set(["waitForRequest", "waitForResponse"]);
 const BROWSER_NETWORK_METHOD_PATTERN = /^[A-Z]+$/;
 
 function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: BrowserTaskMutationRoute): string | null {
@@ -1342,11 +1343,14 @@ function validateNetworkAction(
     method?: unknown;
     status?: unknown;
     timeoutMs?: unknown;
+    includeHeaders?: unknown;
+    maxBodyBytes?: unknown;
   },
   label: string
 ): string | null {
-  if (!BROWSER_NETWORK_ACTIONS.has(action.action as string)) {
-    return `${label}.action must be waitForResponse`;
+  const networkAction = action.action as string;
+  if (!BROWSER_NETWORK_ACTIONS.has(networkAction)) {
+    return `${label}.action must be waitForRequest or waitForResponse`;
   }
   const urlPattern = parseOptionalRouteString(action.urlPattern);
   if (action.urlPattern !== undefined) {
@@ -1372,6 +1376,9 @@ function validateNetworkAction(
   ) {
     return `${label}.status must be an integer HTTP status between 100 and 599 when provided`;
   }
+  if (networkAction === "waitForRequest" && action.status !== undefined) {
+    return `${label}.status is only accepted for waitForResponse`;
+  }
   if (
     action.timeoutMs !== undefined &&
     (typeof action.timeoutMs !== "number" ||
@@ -1380,6 +1387,18 @@ function validateNetworkAction(
       action.timeoutMs > MAX_BROWSER_NETWORK_TIMEOUT_MS)
   ) {
     return `${label}.timeoutMs must be a positive integer <= ${MAX_BROWSER_NETWORK_TIMEOUT_MS}`;
+  }
+  if (action.includeHeaders !== undefined && typeof action.includeHeaders !== "boolean") {
+    return `${label}.includeHeaders must be a boolean when provided`;
+  }
+  if (
+    action.maxBodyBytes !== undefined &&
+    (typeof action.maxBodyBytes !== "number" ||
+      !Number.isInteger(action.maxBodyBytes) ||
+      action.maxBodyBytes <= 0 ||
+      action.maxBodyBytes > MAX_BROWSER_NETWORK_BODY_BYTES)
+  ) {
+    return `${label}.maxBodyBytes must be a positive integer <= ${MAX_BROWSER_NETWORK_BODY_BYTES}`;
   }
   return null;
 }
