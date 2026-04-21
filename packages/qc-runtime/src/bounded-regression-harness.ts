@@ -2756,7 +2756,7 @@ const BUILT_IN_CASES: RegressionCase[] = [
         attention.sourceCounts.replay === 1 &&
         attention.sourceCounts.governance === 1 &&
         attention.sourceCounts.recovery === 1 &&
-        casesByKey["governance:evt-op"]?.caseState === "blocked" &&
+        casesByKey["governance:thread-1:event:evt-op"]?.caseState === "blocked" &&
         casesByKey["flow:flow-op:group-op"]?.caseState === "recovering" &&
         casesByKey["incident:task-op"]?.caseState === "waiting_manual" &&
         casesByKey["incident:task-op"]?.itemCount === 2 &&
@@ -2934,7 +2934,7 @@ const BUILT_IN_CASES: RegressionCase[] = [
         `browser=${summary.attentionOverview?.resolvedRecentCases?.[0]?.browserContinuityState ?? "none"}`,
       ];
       const passed =
-        summary.attentionOverview?.activeCases?.[0]?.caseKey === "governance:evt-card" &&
+        summary.attentionOverview?.activeCases?.[0]?.caseKey === "governance:thread-1:event:evt-card" &&
         summary.attentionOverview?.activeCases?.[0]?.gate === "fallback_browser" &&
         summary.attentionOverview?.activeCases?.[0]?.action === "fallback_browser" &&
         summary.attentionOverview?.activeCases?.[0]?.reasonPreview === "browser" &&
@@ -5703,9 +5703,11 @@ const BUILT_IN_CASES: RegressionCase[] = [
       );
       const relayPassed = relayChecks.filter((check) => check.status === "passed").length;
       const directPassed = directChecks.filter((check) => check.status === "passed").length;
+      const directSkipped = directChecks.filter((check) => check.status === "skipped").length;
       const details = [
         `relayChecks=${relayPassed}/${relayChecks.length}`,
         `directChecks=${directPassed}/${directChecks.length}`,
+        `directSkipped=${directSkipped}`,
         `open=${replayConsole.openIncidents}`,
         `resolved=${replayConsole.recoveredGroups}`,
         `relayWorkflow=${relayBundle?.recoveryWorkflow?.status ?? "-"}`,
@@ -5714,8 +5716,8 @@ const BUILT_IN_CASES: RegressionCase[] = [
       ];
       const passed =
         relayPassed === relayChecks.length &&
-        directPassed === 8 &&
-        directChecks.filter((check) => check.status === "skipped").length === 2 &&
+        directSkipped === 2 &&
+        directPassed === directChecks.length - directSkipped &&
         replayConsole.openIncidents === 0 &&
         replayConsole.recoveredGroups === 2 &&
         relayBundle?.recoveryWorkflow?.status === "recovered" &&
@@ -6187,13 +6189,13 @@ const BUILT_IN_CASES: RegressionCase[] = [
           kind: "audit.logged",
           createdAt: 30,
           payload: {
-            governanceCaseKey: "parallel-contract",
             workerType: "explore",
             status: "blocked",
             transport: "browser",
             trustLevel: "observational",
             admissionMode: "summary_only",
             permission: {
+              cacheKey: "parallel-contract",
               recommendedAction: "request_approval",
             },
           },

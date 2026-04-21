@@ -203,8 +203,7 @@ function resolveGovernanceAuditCaseKey(event: TeamEvent): string {
 }
 
 function buildGovernanceAttentionCaseKey(event: TeamEvent): string {
-  const explicitCaseKey = readExplicitGovernanceAuditCaseKey(event);
-  return explicitCaseKey ? `governance:${event.threadId}:${explicitCaseKey}` : `governance:${event.eventId}`;
+  return `governance:${resolveGovernanceAuditCaseKey(event)}`;
 }
 
 function readExplicitGovernanceAuditCaseKey(event: TeamEvent): string | null {
