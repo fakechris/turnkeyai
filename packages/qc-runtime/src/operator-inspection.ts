@@ -137,7 +137,6 @@ export function buildGovernanceConsoleReport(
   const auditEvents = events
     .filter((event) => event.kind === "audit.logged")
     .sort((left, right) => right.createdAt - left.createdAt);
-  let attentionCount = 0;
 
   for (const event of auditEvents) {
     const payload = event.payload ?? {};
@@ -162,13 +161,11 @@ export function buildGovernanceConsoleReport(
     transportCounts[transport] = (transportCounts[transport] ?? 0) + 1;
     admissionCounts[admission] = (admissionCounts[admission] ?? 0) + 1;
     recommendedActionCounts[recommendedAction] = (recommendedActionCounts[recommendedAction] ?? 0) + 1;
-    if (recommendedAction !== "proceed" && recommendedAction !== "unknown") {
-      attentionCount += 1;
-    }
     if (trust) {
       trustCounts[trust] = (trustCounts[trust] ?? 0) + 1;
     }
   }
+  const attentionCount = listLatestGovernanceAuditEvents(auditEvents).filter(isGovernanceAttentionAudit).length;
 
   return {
     totalPermissionRecords: permissionRecords.length,
@@ -183,6 +180,72 @@ export function buildGovernanceConsoleReport(
     recommendedActionCounts,
     latestAudits: auditEvents.slice(0, limit),
   };
+}
+
+function listLatestGovernanceAuditEvents(auditEvents: TeamEvent[]): TeamEvent[] {
+  const latestByCaseKey = new Map<string, TeamEvent>();
+  for (const event of auditEvents) {
+    const caseKey = resolveGovernanceAuditCaseKey(event);
+    const existing = latestByCaseKey.get(caseKey);
+    if (!existing || compareGovernanceAuditRecency(event, existing) > 0) {
+      latestByCaseKey.set(caseKey, event);
+    }
+  }
+  return [...latestByCaseKey.values()].sort((left, right) => compareGovernanceAuditRecency(right, left));
+}
+
+function resolveGovernanceAuditCaseKey(event: TeamEvent): string {
+  const payload = event.payload ?? {};
+  const permission = isUnknownRecord(payload.permission) ? payload.permission : null;
+  const requirement = permission && isUnknownRecord(permission.requirement) ? permission.requirement : null;
+  const explicitCaseKey = firstNonEmptyString(
+    payload.governanceCaseKey,
+    payload.governanceCaseId,
+    payload.caseKey,
+    payload.caseId,
+    payload.auditCaseKey,
+    payload.cacheKey,
+    permission?.cacheKey,
+    requirement?.cacheKey
+  );
+  if (explicitCaseKey) {
+    return `${event.threadId}:${explicitCaseKey}`;
+  }
+  return `${event.threadId}:event:${event.eventId}`;
+}
+
+function isGovernanceAttentionAudit(event: TeamEvent): boolean {
+  const action = readGovernanceRecommendedAction(event);
+  return action !== null && action !== "proceed";
+}
+
+function readGovernanceRecommendedAction(event: TeamEvent): string | null {
+  const permission = isUnknownRecord(event.payload.permission) ? event.payload.permission : null;
+  return typeof permission?.recommendedAction === "string" ? permission.recommendedAction : null;
+}
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+function compareGovernanceAuditRecency(left: TeamEvent, right: TeamEvent): number {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt - right.createdAt;
+  }
+  return left.eventId.localeCompare(right.eventId);
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): RecoveryConsoleReport {
@@ -216,10 +279,14 @@ export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): Rec
 
     if (isRecoveryRunAttention(run)) {
       attentionCount += 1;
+      const orderedAttempts = [...run.attempts].sort((left, right) => right.updatedAt - left.updatedAt);
+      const currentAttempt = run.currentAttemptId
+        ? orderedAttempts.find((attempt) => attempt.attemptId === run.currentAttemptId)
+        : undefined;
       const latestBrowserAttempt =
-        [...run.attempts]
-          .sort((left, right) => right.updatedAt - left.updatedAt)
-          .find((attempt) => attempt.browserOutcome || attempt.browserOutcomeSummary) ?? null;
+        currentAttempt && (currentAttempt.browserOutcome || currentAttempt.browserOutcomeSummary)
+          ? currentAttempt
+          : orderedAttempts.find((attempt) => attempt.browserOutcome || attempt.browserOutcomeSummary) ?? null;
       attentionRuns.push({
         recoveryRunId: run.recoveryRunId,
         sourceGroupId: run.sourceGroupId,
@@ -377,13 +444,7 @@ export function buildOperatorAttentionReport(input: {
   );
 
   const flowUpdatedAtById = new Map(input.flows.map((flow) => [flow.flowId, flow.updatedAt]));
-  const governanceAttentionEvents = governance.latestAudits.filter((event) => {
-    const payload = event.payload ?? {};
-    const permission = typeof payload.permission === "object" && payload.permission
-      ? (payload.permission as { recommendedAction?: unknown })
-      : null;
-    return typeof permission?.recommendedAction === "string" && permission.recommendedAction !== "proceed";
-  });
+  const governanceAttentionEvents = listLatestGovernanceAuditEvents(governance.latestAudits).filter(isGovernanceAttentionAudit);
   const recoveryAttentionRuns = recovery.latestRuns.filter(isRecoveryRunAttention);
 
   const allItems: OperatorAttentionItem[] = [

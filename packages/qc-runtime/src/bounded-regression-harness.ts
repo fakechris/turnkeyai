@@ -2112,6 +2112,7 @@ const BUILT_IN_CASES: RegressionCase[] = [
           kind: "audit.logged",
           createdAt: 20,
           payload: {
+            governanceCaseKey: "parallel-publish",
             workerType: "explore",
             status: "blocked",
             transport: "browser",
@@ -2177,11 +2178,29 @@ const BUILT_IN_CASES: RegressionCase[] = [
       const flows = [buildReadyParallelPublishFlow()];
       const events: TeamEvent[] = [
         {
+          eventId: "evt-parallel-publish-blocked",
+          threadId: "thread-1",
+          kind: "audit.logged",
+          createdAt: 20,
+          payload: {
+            governanceCaseKey: "parallel-publish",
+            workerType: "explore",
+            status: "blocked",
+            transport: "browser",
+            trustLevel: "observational",
+            admissionMode: "summary_only",
+            permission: {
+              recommendedAction: "request_approval",
+            },
+          },
+        },
+        {
           eventId: "evt-parallel-publish-readback",
           threadId: "thread-1",
           kind: "audit.logged",
           createdAt: 30,
           payload: {
+            governanceCaseKey: "parallel-publish",
             workerType: "explore",
             status: "completed",
             transport: "official_api",
@@ -2215,6 +2234,7 @@ const BUILT_IN_CASES: RegressionCase[] = [
         `flowAttention=${summary.flow.attentionCount}`,
         `ready=${summary.flow.shardStatusCounts.ready_to_merge ?? 0}`,
         `governance=${summary.governance.attentionCount}`,
+        `blocked=${summary.governance.recommendedActionCounts.request_approval ?? 0}`,
         `transport=${summary.governance.transportCounts.official_api ?? 0}`,
         `total=${summary.totalAttentionCount}`,
         `cases=${attention.uniqueCaseCount}`,
@@ -2223,6 +2243,7 @@ const BUILT_IN_CASES: RegressionCase[] = [
         summary.flow.attentionCount === 0 &&
         summary.flow.shardStatusCounts.ready_to_merge === 1 &&
         summary.governance.attentionCount === 0 &&
+        summary.governance.recommendedActionCounts.request_approval === 1 &&
         summary.governance.transportCounts.official_api === 1 &&
         summary.governance.trustCounts.promotable === 1 &&
         summary.governance.recommendedActionCounts.proceed === 1 &&

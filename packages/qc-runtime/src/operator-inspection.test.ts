@@ -203,6 +203,62 @@ test("operator inspection summarizes governance transport and admission state", 
   assert.equal(report.latestAudits[0]?.eventId, "evt-2");
 });
 
+test("operator inspection clears governance attention when a newer audit proceeds for the same case", () => {
+  const events: TeamEvent[] = [
+    {
+      eventId: "evt-governance-blocked",
+      threadId: "thread-1",
+      kind: "audit.logged",
+      createdAt: 10,
+      payload: {
+        governanceCaseKey: "publish:task-1",
+        workerType: "explore",
+        status: "blocked",
+        transport: "browser",
+        trustLevel: "observational",
+        admissionMode: "summary_only",
+        permission: {
+          recommendedAction: "request_approval",
+        },
+      },
+    },
+    {
+      eventId: "evt-governance-readback",
+      threadId: "thread-1",
+      kind: "audit.logged",
+      createdAt: 20,
+      payload: {
+        governanceCaseKey: "publish:task-1",
+        workerType: "explore",
+        status: "completed",
+        transport: "official_api",
+        trustLevel: "promotable",
+        admissionMode: "full",
+        permission: {
+          recommendedAction: "proceed",
+        },
+      },
+    },
+  ];
+
+  const report = buildGovernanceConsoleReport([], events);
+  const attention = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events,
+    replays: [],
+    recoveryRuns: [],
+  });
+
+  assert.equal(report.totalAuditEvents, 2);
+  assert.equal(report.attentionCount, 0);
+  assert.equal(report.recommendedActionCounts.request_approval, 1);
+  assert.equal(report.recommendedActionCounts.proceed, 1);
+  assert.equal(report.latestAudits[0]?.eventId, "evt-governance-readback");
+  assert.equal(attention.sourceCounts.governance, 0);
+  assert.equal(attention.uniqueCaseCount, 0);
+});
+
 test("operator inspection does not keep merge-ready retries in attention groups", () => {
   const flows: FlowLedger[] = [
     {
@@ -816,6 +872,56 @@ test("operator inspection summarizes recovery run phases and browser outcomes", 
   assert.deepEqual(report.attentionRuns[0]?.allowedActions, ["approve", "reject"]);
   assert.equal(report.attentionRuns[0]?.browserResumeMode, "warm");
   assert.equal(report.attentionRuns[0]?.browserOutcome, "warm_attach");
+});
+
+test("operator inspection prefers the current recovery attempt browser summary over stale outcome", () => {
+  const report = buildRecoveryConsoleReport([
+    {
+      recoveryRunId: buildRecoveryRunId("group-current"),
+      threadId: "thread-1",
+      sourceGroupId: "group-current",
+      latestStatus: "partial",
+      status: "waiting_external",
+      nextAction: "inspect_then_resume",
+      autoDispatchReady: false,
+      requiresManualIntervention: true,
+      latestSummary: "Waiting on current attempt follow-up.",
+      waitingReason: "manual follow-up pending",
+      currentAttemptId: "attempt-current",
+      attempts: [
+        {
+          attemptId: "attempt-old",
+          action: "resume",
+          requestedAt: 10,
+          updatedAt: 12,
+          status: "recovered",
+          nextAction: "none",
+          summary: "Older browser reuse succeeded.",
+          browserOutcome: "hot_reuse",
+          browserOutcomeSummary: "Older hot reuse succeeded.",
+          completedAt: 12,
+        },
+        {
+          attemptId: "attempt-current",
+          action: "resume",
+          requestedAt: 20,
+          updatedAt: 21,
+          status: "waiting_external",
+          nextAction: "inspect_then_resume",
+          summary: "Current attempt needs manual inspection.",
+          browserOutcomeSummary: "Current browser resume is waiting for manual inspection.",
+        },
+      ],
+      createdAt: 10,
+      updatedAt: 21,
+    },
+  ]);
+
+  assert.equal(report.attentionCount, 1);
+  assert.equal(report.browserOutcomeCounts.hot_reuse, 1);
+  assert.equal(report.attentionRuns[0]?.currentAttemptId, "attempt-current");
+  assert.equal(report.attentionRuns[0]?.browserOutcome, undefined);
+  assert.equal(report.attentionRuns[0]?.browserOutcomeSummary, "Current browser resume is waiting for manual inspection.");
 });
 
 test("operator inspection flattens cross-surface attention items", () => {
