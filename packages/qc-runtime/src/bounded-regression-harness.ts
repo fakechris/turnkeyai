@@ -1416,6 +1416,194 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
   {
+    caseId: "context-high-pressure-real-task-keeps-operator-runbook",
+    title: "Context high-pressure real task keeps operator runbook intact",
+    area: "context",
+    summary:
+      "A real task under heavy prompt pressure should keep pending work, waiting points, open questions, and operator triage entry points aligned.",
+    run() {
+      const progressEvents: RuntimeProgressEvent[] = [
+        {
+          progressId: "progress:context-real-task:reduction",
+          threadId: "thread-1",
+          chainId: "flow:context-real-task",
+          spanId: "role:role-lead",
+          subjectKind: "role_run",
+          subjectId: "role:role-lead",
+          phase: "degraded",
+          progressKind: "boundary",
+          summary:
+            "High-pressure research task reduced the request envelope but preserved pending browser verification, waiting point, open question, and decision constraints.",
+          recordedAt: 45,
+          flowId: "context-real-task",
+          taskId: "task-context-real",
+          roleId: "role-lead",
+          metadata: {
+            boundaryKind: "request_envelope_reduction",
+            modelId: "gpt-5",
+            modelChainId: "real_task_pressure",
+            assemblyFingerprint: "fp-context-real-task",
+            reductionLevel: "reference-only",
+            sectionOrder: ["system", "continuity", "recent-turns", "retrieved-memory", "worker-evidence"],
+            compactedSegments: ["recent-turns", "retrieved-memory", "worker-evidence"],
+            omittedSections: ["raw-worker-evidence", "inline-attachments"],
+            usedArtifacts: ["artifact:browser-pricing-snapshot", "artifact:competitor-diff"],
+            tokenEstimate: {
+              inputTokens: 124_000,
+              outputTokensReserved: 6_000,
+              totalProjectedTokens: 130_000,
+              overBudget: true,
+            },
+            envelopeHint: {
+              toolResultCount: 24,
+              toolResultBytes: 880_000,
+              inlineAttachmentBytes: 320_000,
+              inlineImageCount: 3,
+              inlineImageBytes: 180_000,
+              inlinePdfCount: 1,
+              inlinePdfBytes: 140_000,
+              multimodalPartCount: 4,
+            },
+            contextDiagnostics: {
+              continuity: {
+                hasThreadSummary: true,
+                hasSessionMemory: true,
+                hasRoleScratchpad: true,
+                hasContinuationContext: true,
+                carriesPendingWork: true,
+                carriesWaitingOn: true,
+                carriesOpenQuestions: true,
+                carriesDecisionOrConstraint: true,
+              },
+              recentTurns: {
+                availableCount: 96,
+                selectedCount: 28,
+                packedCount: 7,
+                salientEarlierCount: 14,
+                compacted: true,
+              },
+              retrievedMemory: {
+                availableCount: 42,
+                selectedCount: 18,
+                packedCount: 5,
+                compacted: true,
+                userPreferenceCount: 3,
+                threadMemoryCount: 7,
+                sessionMemoryCount: 5,
+                knowledgeNoteCount: 2,
+                journalNoteCount: 1,
+              },
+              workerEvidence: {
+                totalCount: 58,
+                admittedCount: 41,
+                selectedCount: 22,
+                packedCount: 4,
+                compacted: true,
+                promotableCount: 9,
+                observationalCount: 32,
+                fullCount: 8,
+                summaryOnlyCount: 33,
+                continuationRelevantCount: 11,
+              },
+            },
+          },
+        },
+      ];
+      const promptReport = buildPromptConsoleReport(progressEvents);
+      const chain: RuntimeChain = {
+        chainId: "flow:context-real-task",
+        threadId: "thread-1",
+        rootKind: "flow",
+        rootId: "context-real-task",
+        flowId: "context-real-task",
+        createdAt: 1,
+        updatedAt: 45,
+      };
+      const status: RuntimeChainStatus = {
+        chainId: chain.chainId,
+        threadId: chain.threadId,
+        activeSpanId: "role:role-lead",
+        activeSubjectKind: "role_run",
+        activeSubjectId: "role:role-lead",
+        phase: "waiting",
+        continuityState: "waiting",
+        waitingReason: "waiting on browser pricing verification after prompt reduction",
+        currentWaitingPoint: "Verify the browser pricing snapshot and answer the enterprise-tier gap before final synthesis.",
+        latestSummary: "Context pressure preserved the active browser verification task.",
+        attention: true,
+        updatedAt: 45,
+      };
+      const runtimeSummary = buildRuntimeSummaryReport({
+        entries: [{ chain, status }],
+        limit: 5,
+        now: 45,
+      });
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: [],
+        recoveryRuns: [],
+        progressEvents,
+        runtimeSummary,
+        limit: 5,
+      });
+      const operatorAttention = buildOperatorAttentionReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: [],
+        recoveryRuns: [],
+        progressEvents,
+        limit: 5,
+      });
+      const operatorTriage = buildOperatorTriageReport({
+        summary: operatorSummary,
+        attention: operatorAttention,
+        runtime: runtimeSummary,
+        limit: 5,
+      });
+      const promptCase = operatorAttention.cases.find((entry) => entry.caseKey === "prompt:task-context-real");
+      const latestBoundary = promptReport.latestBoundaries[0];
+      const details = [
+        `boundaries=${promptReport.totalBoundaries}`,
+        `reduction=${promptReport.reductionLevelCounts["reference-only"] ?? 0}`,
+        `overBudget=${latestBoundary?.tokenEstimate?.overBudget ? "yes" : "no"}`,
+        `pending=${promptReport.continuityCarryForwardCounts.pendingWork}`,
+        `waiting=${promptReport.continuityCarryForwardCounts.waitingOn}`,
+        `questions=${promptReport.continuityCarryForwardCounts.openQuestions}`,
+        `decisions=${promptReport.continuityCarryForwardCounts.decisionsOrConstraints}`,
+        `runtime=${runtimeSummary.waitingCount}`,
+        `promptAttention=${operatorSummary.promptAttentionCount}`,
+        `promptCase=${promptCase?.caseState ?? "-"}`,
+        `entry=${operatorTriage.recommendedEntryPoint ?? "-"}`,
+      ];
+      const passed =
+        promptReport.totalBoundaries === 1 &&
+        promptReport.reductionCount === 1 &&
+        promptReport.reductionLevelCounts["reference-only"] === 1 &&
+        latestBoundary?.tokenEstimate?.overBudget === true &&
+        latestBoundary?.envelopeHint?.toolResultCount === 24 &&
+        latestBoundary?.usedArtifacts?.includes("artifact:browser-pricing-snapshot") === true &&
+        promptReport.continuityCarryForwardCounts.pendingWork === 1 &&
+        promptReport.continuityCarryForwardCounts.waitingOn === 1 &&
+        promptReport.continuityCarryForwardCounts.openQuestions === 1 &&
+        promptReport.continuityCarryForwardCounts.decisionsOrConstraints === 1 &&
+        promptReport.totalRecentTurnsPacked < promptReport.totalRecentTurnsSelected &&
+        promptReport.totalRetrievedMemoryPacked < promptReport.totalRetrievedMemoryCandidates &&
+        promptReport.totalWorkerEvidencePacked < promptReport.totalWorkerEvidenceCandidates &&
+        runtimeSummary.waitingCount === 1 &&
+        runtimeSummary.activeChains[0]?.currentWaitingPoint ===
+          "Verify the browser pricing snapshot and answer the enterprise-tier gap before final synthesis." &&
+        operatorSummary.promptAttentionCount === 1 &&
+        promptCase?.caseState === "blocked" &&
+        promptCase?.nextStep === "inspect_prompt_boundary" &&
+        operatorTriage.focusAreas.some((area) => area.commandHint === "prompt-console 10") &&
+        operatorTriage.focusAreas.some((area) => area.commandHint === "runtime-waiting 10");
+      return buildResult(this, Boolean(passed), details);
+    },
+  },
+  {
     caseId: "parallel-three-shard-success-ready-to-merge",
     title: "Parallel shard success reaches merge-ready state",
     area: "parallel",
@@ -1890,6 +2078,156 @@ const BUILT_IN_CASES: RegressionCase[] = [
         report.transportCounts.browser === 1 &&
         report.admissionCounts.summary_only === 1 &&
         report.recommendedActionCounts.fallback_browser === 1;
+      return buildResult(this, passed, details);
+    },
+  },
+  {
+    caseId: "parallel-governed-merge-waits-for-approval",
+    title: "Parallel governed merge waits for approval",
+    area: "governance",
+    summary:
+      "A merge-ready parallel publish flow should remain blocked by governance approval until the publish side effect is authorized.",
+    run() {
+      const flows = [buildReadyParallelPublishFlow()];
+      const permissionRecords: PermissionCacheRecord[] = [
+        {
+          cacheKey: "perm-parallel-publish",
+          threadId: "thread-1",
+          workerType: "explore",
+          requirement: {
+            level: "approval",
+            scope: "publish",
+            rationale: "publishing merged synthesis requires approval",
+            cacheKey: "perm-parallel-publish",
+          },
+          decision: "prompt_required",
+          createdAt: 18,
+          updatedAt: 19,
+        },
+      ];
+      const events: TeamEvent[] = [
+        {
+          eventId: "evt-parallel-publish-approval",
+          threadId: "thread-1",
+          kind: "audit.logged",
+          createdAt: 20,
+          payload: {
+            workerType: "explore",
+            status: "blocked",
+            transport: "browser",
+            trustLevel: "observational",
+            admissionMode: "summary_only",
+            permission: {
+              recommendedAction: "request_approval",
+            },
+          },
+        },
+      ];
+      const runtime = buildRuntimeSummaryReport({ entries: [], limit: 5, now: 20 });
+      const summary = buildOperatorSummaryReport({
+        flows,
+        permissionRecords,
+        events,
+        replays: [],
+        recoveryRuns: [],
+        runtimeSummary: runtime,
+        limit: 5,
+      });
+      const attention = buildOperatorAttentionReport({
+        flows,
+        permissionRecords,
+        events,
+        replays: [],
+        recoveryRuns: [],
+        limit: 5,
+      });
+      const triage = buildOperatorTriageReport({
+        summary,
+        attention,
+        runtime,
+        limit: 5,
+      });
+      const details = [
+        `flowAttention=${summary.flow.attentionCount}`,
+        `ready=${summary.flow.shardStatusCounts.ready_to_merge ?? 0}`,
+        `governance=${summary.governance.attentionCount}`,
+        `total=${summary.totalAttentionCount}`,
+        `case=${attention.cases[0]?.caseKey ?? "-"}`,
+        `entry=${triage.recommendedEntryPoint ?? "-"}`,
+      ];
+      const passed =
+        summary.flow.attentionCount === 0 &&
+        summary.flow.shardStatusCounts.ready_to_merge === 1 &&
+        summary.governance.attentionCount === 1 &&
+        summary.governance.recommendedActionCounts.request_approval === 1 &&
+        summary.totalAttentionCount === 1 &&
+        attention.cases[0]?.caseKey === "governance:evt-parallel-publish-approval" &&
+        attention.cases[0]?.nextStep === "request_approval" &&
+        triage.recommendedEntryPoint === "governance workers 20";
+      return buildResult(this, passed, details);
+    },
+  },
+  {
+    caseId: "parallel-governed-merge-closes-after-readback",
+    title: "Parallel governed merge closes after read-back",
+    area: "governance",
+    summary:
+      "Once the publish read-back verifies through the official API, the merge-ready parallel flow should not leave governance or operator attention behind.",
+    run() {
+      const flows = [buildReadyParallelPublishFlow()];
+      const events: TeamEvent[] = [
+        {
+          eventId: "evt-parallel-publish-readback",
+          threadId: "thread-1",
+          kind: "audit.logged",
+          createdAt: 30,
+          payload: {
+            workerType: "explore",
+            status: "completed",
+            transport: "official_api",
+            trustLevel: "promotable",
+            admissionMode: "full",
+            permission: {
+              recommendedAction: "proceed",
+            },
+          },
+        },
+      ];
+      const runtime = buildRuntimeSummaryReport({ entries: [], limit: 5, now: 30 });
+      const summary = buildOperatorSummaryReport({
+        flows,
+        permissionRecords: [],
+        events,
+        replays: [],
+        recoveryRuns: [],
+        runtimeSummary: runtime,
+        limit: 5,
+      });
+      const attention = buildOperatorAttentionReport({
+        flows,
+        permissionRecords: [],
+        events,
+        replays: [],
+        recoveryRuns: [],
+        limit: 5,
+      });
+      const details = [
+        `flowAttention=${summary.flow.attentionCount}`,
+        `ready=${summary.flow.shardStatusCounts.ready_to_merge ?? 0}`,
+        `governance=${summary.governance.attentionCount}`,
+        `transport=${summary.governance.transportCounts.official_api ?? 0}`,
+        `total=${summary.totalAttentionCount}`,
+        `cases=${attention.uniqueCaseCount}`,
+      ];
+      const passed =
+        summary.flow.attentionCount === 0 &&
+        summary.flow.shardStatusCounts.ready_to_merge === 1 &&
+        summary.governance.attentionCount === 0 &&
+        summary.governance.transportCounts.official_api === 1 &&
+        summary.governance.trustCounts.promotable === 1 &&
+        summary.governance.recommendedActionCounts.proceed === 1 &&
+        summary.totalAttentionCount === 0 &&
+        attention.uniqueCaseCount === 0;
       return buildResult(this, passed, details);
     },
   },
@@ -5185,6 +5523,65 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
 ];
+
+function buildReadyParallelPublishFlow(): FlowLedger {
+  return {
+    flowId: "flow-parallel-publish",
+    threadId: "thread-1",
+    rootMessageId: "msg-parallel-publish",
+    mode: "parallel",
+    status: "running",
+    currentStageIndex: 1,
+    activeRoleIds: ["lead"],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    hopCount: 2,
+    maxHops: 6,
+    edges: [],
+    shardGroups: [
+      {
+        groupId: "group-parallel-publish",
+        parentTaskId: "task-parallel-publish",
+        sourceMessageId: "msg-parallel-publish",
+        mergeBackToRoleId: "lead",
+        kind: "research",
+        status: "ready_to_merge",
+        expectedRoleIds: ["research", "browser", "finance"],
+        completedRoleIds: ["research", "browser", "finance"],
+        failedRoleIds: [],
+        cancelledRoleIds: [],
+        retryCounts: {},
+        shardResults: [
+          {
+            roleId: "research",
+            status: "completed",
+            summary: "Market findings are ready for publish.",
+            summaryDigest: "research-ready",
+            updatedAt: 10,
+          },
+          {
+            roleId: "browser",
+            status: "completed",
+            summary: "Browser read-back candidate captured.",
+            summaryDigest: "browser-ready",
+            updatedAt: 11,
+          },
+          {
+            roleId: "finance",
+            status: "completed",
+            summary: "Financial constraints are satisfied.",
+            summaryDigest: "finance-ready",
+            updatedAt: 12,
+          },
+        ],
+        createdAt: 1,
+        updatedAt: 12,
+      },
+    ],
+    createdAt: 1,
+    updatedAt: 12,
+  };
+}
 
 function buildResult(
   item: BoundedRegressionCaseDescriptor,

@@ -809,6 +809,13 @@ test("operator inspection summarizes recovery run phases and browser outcomes", 
   assert.equal(report.browserResumeCounts.warm, 1);
   assert.equal(report.browserOutcomeCounts.warm_attach, 1);
   assert.equal(report.browserOutcomeCounts.hot_reuse, 1);
+  assert.equal(report.attentionRuns.length, 1);
+  assert.equal(report.attentionRuns[0]?.recoveryRunId, buildRecoveryRunId("group-1"));
+  assert.equal(report.attentionRuns[0]?.phase, "awaiting_approval");
+  assert.equal(report.attentionRuns[0]?.gate, "waiting for approval");
+  assert.deepEqual(report.attentionRuns[0]?.allowedActions, ["approve", "reject"]);
+  assert.equal(report.attentionRuns[0]?.browserResumeMode, "warm");
+  assert.equal(report.attentionRuns[0]?.browserOutcome, "warm_attach");
 });
 
 test("operator inspection flattens cross-surface attention items", () => {

@@ -212,6 +212,9 @@ async function main(): Promise<void> {
     console.log(`browser-target-continuity: ${smoke.targetContinuity}`);
     console.log(`browser-screenshots: ${smoke.screenshotCount}`);
     console.log(`browser-artifacts: ${smoke.artifactCount}`);
+    if (smoke.networkControlsPassed) {
+      console.log("browser-network-controls: passed");
+    }
     if (smoke.resumeFinalUrl) {
       console.log(`browser-resume-final-url: ${smoke.resumeFinalUrl}`);
     }
@@ -275,6 +278,7 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   targetContinuity: string;
   screenshotCount: number;
   artifactCount: number;
+  networkControlsPassed: boolean;
 }> {
   const thread = (await postJson(`${input.daemonUrl}/threads/bootstrap-demo`, {
     variant: "default",
@@ -395,6 +399,7 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     targetContinuity: "direct-cdp",
     screenshotCount,
     artifactCount,
+    networkControlsPassed: true,
   };
 }
 

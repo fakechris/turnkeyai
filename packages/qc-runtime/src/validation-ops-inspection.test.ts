@@ -118,6 +118,10 @@ test("validation ops inspection derives operator-facing records and report count
             { bucket: "reconnect-failure", count: 1 },
             { bucket: "none", count: 2 },
           ],
+          acceptanceChecks: [
+            { checkId: "reconnect", passed: 2, failed: 1, skipped: 0 },
+            { checkId: "network-controls", passed: 3, failed: 0, skipped: 0 },
+          ],
         },
         {
           target: "direct-cdp",
@@ -125,6 +129,10 @@ test("validation ops inspection derives operator-facing records and report count
           passedCycles: 3,
           failedCycles: 0,
           failureBuckets: [{ bucket: "none", count: 3 }],
+          acceptanceChecks: [
+            { checkId: "reconnect", passed: 3, failed: 0, skipped: 0 },
+            { checkId: "network-controls", passed: 3, failed: 0, skipped: 0 },
+          ],
         },
       ],
     },
@@ -148,6 +156,7 @@ test("validation ops inspection derives operator-facing records and report count
   assert.equal(report.recommendedActionCounts["rerun-transport-soak"], 1);
   assert.ok(report.activeIssues.some((issue) => issue.kind === "validation-item" && issue.commandHint === "validation-profile-run nightly"));
   assert.ok(report.activeIssues.some((issue) => issue.kind === "transport-target" && issue.commandHint === "transport-soak 3 relay"));
+  assert.ok(report.activeIssues.some((issue) => issue.kind === "transport-target" && issue.summary.includes("failed checks: reconnect x1")));
   assert.equal(report.latestRuns[0]?.artifactPath, ".daemon-data/validation-artifacts/transport-soak/transport-1.json");
   assert.deepEqual(report.latestRuns.find((run) => run.runType === "validation-profile")?.targets, ["relay", "direct-cdp"]);
 });

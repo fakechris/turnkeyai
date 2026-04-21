@@ -16,11 +16,14 @@ export type BrowserTransportFailureBucket =
 
 export type BrowserTransportAcceptanceCheckId =
   | "spawn-send-resume"
+  | "final-url-continuity"
   | "transport-label"
   | "target-continuity"
   | "artifact-continuity"
+  | "network-controls"
   | "reconnect"
   | "workflow-log"
+  | "relay-target-discovery"
   | "relay-peer-multiplex";
 
 export interface BrowserTransportAcceptanceCheck {
@@ -70,12 +73,20 @@ export interface BrowserTransportSoakBucketAggregate {
   count: number;
 }
 
+export interface BrowserTransportAcceptanceAggregate {
+  checkId: BrowserTransportAcceptanceCheckId;
+  passed: number;
+  failed: number;
+  skipped: number;
+}
+
 export interface BrowserTransportSoakTargetAggregate {
   target: BrowserTransportSoakTarget;
   cycles: number;
   passedCycles: number;
   failedCycles: number;
   failureBuckets: BrowserTransportSoakBucketAggregate[];
+  acceptanceChecks: BrowserTransportAcceptanceAggregate[];
 }
 
 export interface BrowserTransportSoakResult {
@@ -105,6 +116,18 @@ export interface BrowserTransportSoakDeps {
 }
 
 const DEFAULT_TARGETS: BrowserTransportSoakTarget[] = ["relay", "direct-cdp"];
+const ACCEPTANCE_CHECK_IDS: BrowserTransportAcceptanceCheckId[] = [
+  "spawn-send-resume",
+  "final-url-continuity",
+  "transport-label",
+  "target-continuity",
+  "artifact-continuity",
+  "network-controls",
+  "reconnect",
+  "workflow-log",
+  "relay-target-discovery",
+  "relay-peer-multiplex",
+];
 
 export async function runBrowserTransportSoak(
   options: BrowserTransportSoakOptions,
@@ -185,8 +208,17 @@ export async function runBrowserTransportSoak(
   const targetAggregates = targets.map((target) => {
     const runs = cycleResults.flatMap((cycle) => cycle.targets.filter((result) => result.target === target));
     const bucketCounts = new Map<BrowserTransportFailureBucket, number>();
+    const acceptanceCounts = new Map<
+      BrowserTransportAcceptanceCheckId,
+      { passed: number; failed: number; skipped: number }
+    >();
     for (const result of runs) {
       bucketCounts.set(result.failureBucket, (bucketCounts.get(result.failureBucket) ?? 0) + 1);
+      for (const check of result.acceptanceChecks ?? []) {
+        const counts = acceptanceCounts.get(check.checkId) ?? { passed: 0, failed: 0, skipped: 0 };
+        counts[check.status] += 1;
+        acceptanceCounts.set(check.checkId, counts);
+      }
     }
     return {
       target,
@@ -194,6 +226,10 @@ export async function runBrowserTransportSoak(
       passedCycles: runs.filter((result) => result.status === "passed").length,
       failedCycles: runs.filter((result) => result.status === "failed").length,
       failureBuckets: [...bucketCounts.entries()].map(([bucket, count]) => ({ bucket, count })),
+      acceptanceChecks: ACCEPTANCE_CHECK_IDS.map((checkId) => ({
+        checkId,
+        ...(acceptanceCounts.get(checkId) ?? { passed: 0, failed: 0, skipped: 0 }),
+      })),
     };
   });
 
@@ -340,10 +376,14 @@ export function evaluateBrowserTransportAcceptance(input: {
   const reconnectHistory = parsePositiveLineValue(input.output, "reconnect-history");
   const screenshotCount = parsePositiveLineValue(input.output, "browser-screenshots");
   const artifactCount = parsePositiveLineValue(input.output, "browser-artifacts");
+  const browserFinalUrl = findLineValue(input.output, "browser-final-url");
+  const browserResumeFinalUrl = findLineValue(input.output, "browser-resume-final-url");
   const transportLabel = findLineValue(input.output, "browser-transport");
   const targetContinuity = findLineValue(input.output, "browser-target-continuity");
+  const networkControls = findLineValue(input.output, "browser-network-controls");
   const reconnectFinalUrl = findLineValue(input.output, "reconnect-final-url");
   const workflowStatus = findLineValue(input.output, "workflow-log-status");
+  const targetCount = parsePositiveLineValue(input.output, "targets");
   const peerCount = parsePositiveLineValue(input.output, "peer-count");
 
   return [
@@ -353,6 +393,11 @@ export function evaluateBrowserTransportAcceptance(input: {
       browserHistory === null
         ? "missing browser history marker"
         : `browser history contains ${browserHistory} dispatches`
+    ),
+    requiredCheck(
+      "final-url-continuity",
+      Boolean(browserFinalUrl?.includes("#submitted")) && Boolean(browserResumeFinalUrl?.includes("#submitted")),
+      `final=${browserFinalUrl ?? "missing"} resume=${browserResumeFinalUrl ?? "missing"}`
     ),
     requiredCheck(
       "transport-label",
@@ -369,6 +414,11 @@ export function evaluateBrowserTransportAcceptance(input: {
       artifactCount !== null && artifactCount >= 1,
       `screenshots=${screenshotCount ?? "missing"} artifacts=${artifactCount ?? "missing"}`
     ),
+    requiredCheck(
+      "network-controls",
+      networkControls === "passed",
+      `network-controls=${networkControls ?? "missing"}`
+    ),
     optionalCheck(
       "reconnect",
       input.verifyReconnect,
@@ -382,6 +432,12 @@ export function evaluateBrowserTransportAcceptance(input: {
       input.verifyWorkflowLog,
       workflowStatus === "passed",
       `workflow-log status=${workflowStatus ?? "missing"}`
+    ),
+    optionalCheck(
+      "relay-target-discovery",
+      input.target === "relay",
+      targetCount !== null && targetCount >= 1,
+      `targets=${targetCount ?? "missing"} expected>=1`
     ),
     optionalCheck(
       "relay-peer-multiplex",

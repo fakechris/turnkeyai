@@ -120,6 +120,7 @@ test("nightly validation profile aggregates validation, release, and soak failur
               passedCycles: 0,
               failedCycles: 1,
               failureBuckets: [{ bucket: "peer-timeout", count: 1 }],
+              acceptanceChecks: [{ checkId: "relay-peer-multiplex", passed: 0, failed: 1, skipped: 0 }],
             },
             {
               target: "direct-cdp",
@@ -127,6 +128,7 @@ test("nightly validation profile aggregates validation, release, and soak failur
               passedCycles: 1,
               failedCycles: 0,
               failureBuckets: [{ bucket: "none", count: 1 }],
+              acceptanceChecks: [{ checkId: "network-controls", passed: 1, failed: 0, skipped: 0 }],
             },
           ],
         });
@@ -282,6 +284,7 @@ function makeTransportSoakResult(
         passedCycles: 1,
         failedCycles: 0,
         failureBuckets: [{ bucket: "none", count: 1 }],
+        acceptanceChecks: [{ checkId: "network-controls", passed: 1, failed: 0, skipped: 0 }],
       },
       {
         target: "direct-cdp",
@@ -289,6 +292,7 @@ function makeTransportSoakResult(
         passedCycles: 1,
         failedCycles: 0,
         failureBuckets: [{ bucket: "none", count: 1 }],
+        acceptanceChecks: [{ checkId: "network-controls", passed: 1, failed: 0, skipped: 0 }],
       },
     ],
     ...overrides,

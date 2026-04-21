@@ -1894,6 +1894,12 @@ function printBrowserTransportSoakResult(result: {
       bucket: string;
       count: number;
     }>;
+    acceptanceChecks: Array<{
+      checkId: string;
+      passed: number;
+      failed: number;
+      skipped: number;
+    }>;
   }>;
 }): void {
   console.log("Browser Transport Soak");
@@ -1927,6 +1933,13 @@ function printBrowserTransportSoakResult(result: {
     if (aggregate.failureBuckets.length > 0) {
       console.log(
         `    buckets: ${aggregate.failureBuckets.map((bucket) => `${bucket.bucket}=${bucket.count}`).join(", ")}`
+      );
+    }
+    if (aggregate.acceptanceChecks.length > 0) {
+      console.log(
+        `    acceptance: ${aggregate.acceptanceChecks
+          .map((check) => `${check.checkId}=passed:${check.passed}/failed:${check.failed}/skipped:${check.skipped}`)
+          .join(", ")}`
       );
     }
   }
@@ -2767,6 +2780,12 @@ async function handleTransportSoakCommand(raw: string): Promise<void> {
             bucket: string;
             count: number;
           }>;
+          acceptanceChecks: Array<{
+            checkId: string;
+            passed: number;
+            failed: number;
+            skipped: number;
+          }>;
         }>;
       }
     );
@@ -3057,6 +3076,38 @@ function printRecoveryConsole(report: RecoveryConsoleReport): void {
         .map(([outcome, count]) => `${outcome}=${count}`)
         .join(", ")}`
     );
+  }
+  if (report.attentionRuns.length > 0) {
+    console.log("  attention runs:");
+    for (const run of report.attentionRuns) {
+      const parts = [
+        run.recoveryRunId,
+        `status=${run.status}`,
+        `phase=${run.phase}`,
+        `gate=${run.gate}`,
+        `next=${describeRecoveryAction(run.nextAction)}`,
+      ];
+      if (run.allowedActions.length > 0) {
+        parts.push(`allowed=${run.allowedActions.map(describeAttemptAction).join("/")}`);
+      }
+      if (run.currentAttemptId) {
+        parts.push(`active=${run.currentAttemptId}`);
+      }
+      if (run.browserResumeMode) {
+        parts.push(`browser=${run.browserResumeMode}`);
+      }
+      if (run.browserOutcome) {
+        parts.push(`outcome=${run.browserOutcome}`);
+      }
+      console.log(`    - ${parts.join("  ")}`);
+      if (run.waitingReason) {
+        console.log(`      waiting: ${run.waitingReason}`);
+      }
+      if (run.browserOutcomeSummary) {
+        console.log(`      browser outcome: ${run.browserOutcomeSummary}`);
+      }
+      console.log(`      ${run.summary}`);
+    }
   }
   if (report.latestRuns.length > 0) {
     console.log("  latest runs:");
