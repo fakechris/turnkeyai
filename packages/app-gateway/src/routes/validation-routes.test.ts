@@ -64,6 +64,7 @@ function createDeps(overrides: Partial<ValidationRouteDeps> = {}): ValidationRou
           passedCycles: options?.cycles ?? 1,
           failedCycles: 0,
           failureBuckets: [{ bucket: "none", count: options?.cycles ?? 1 }],
+          acceptanceChecks: [{ checkId: "network-controls", passed: options?.cycles ?? 1, failed: 0, skipped: 0 }],
         })),
       } as any;
     },

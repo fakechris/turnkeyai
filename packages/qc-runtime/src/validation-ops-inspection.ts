@@ -122,11 +122,17 @@ export function buildValidationOpsRecordFromTransportSoak(input: {
         .filter((bucket) => bucket.bucket !== "none")
         .sort((left, right) => right.count - left.count || left.bucket.localeCompare(right.bucket))[0];
       const bucketSummary = topFailureBucket ? `${topFailureBucket.bucket} x${topFailureBucket.count}` : "unknown";
+      const failedChecks = aggregate.acceptanceChecks
+        .filter((check) => check.failed > 0)
+        .sort((left, right) => right.failed - left.failed || left.checkId.localeCompare(right.checkId));
+      const acceptanceSummary = failedChecks.length > 0
+        ? `; failed checks: ${failedChecks.map((check) => `${check.checkId} x${check.failed}`).join(", ")}`
+        : "";
       return buildValidationOpsIssue({
         issueId: `${input.runId}:${aggregate.target}`,
         kind: "transport-target",
         scope: aggregate.target,
-        summary: `${aggregate.target} transport soak failed ${aggregate.failedCycles}/${aggregate.cycles} cycles (${bucketSummary})`,
+        summary: `${aggregate.target} transport soak failed ${aggregate.failedCycles}/${aggregate.cycles} cycles (${bucketSummary}${acceptanceSummary})`,
         commandHint: `transport-soak ${input.result.totalCycles} ${aggregate.target}`.trim(),
       });
     });

@@ -137,7 +137,6 @@ export function buildGovernanceConsoleReport(
   const auditEvents = events
     .filter((event) => event.kind === "audit.logged")
     .sort((left, right) => right.createdAt - left.createdAt);
-  let attentionCount = 0;
 
   for (const event of auditEvents) {
     const payload = event.payload ?? {};
@@ -162,13 +161,11 @@ export function buildGovernanceConsoleReport(
     transportCounts[transport] = (transportCounts[transport] ?? 0) + 1;
     admissionCounts[admission] = (admissionCounts[admission] ?? 0) + 1;
     recommendedActionCounts[recommendedAction] = (recommendedActionCounts[recommendedAction] ?? 0) + 1;
-    if (recommendedAction !== "proceed" && recommendedAction !== "unknown") {
-      attentionCount += 1;
-    }
     if (trust) {
       trustCounts[trust] = (trustCounts[trust] ?? 0) + 1;
     }
   }
+  const attentionCount = listLatestGovernanceAuditEvents(auditEvents).filter(isGovernanceAttentionAudit).length;
 
   return {
     totalPermissionRecords: permissionRecords.length,
@@ -185,6 +182,72 @@ export function buildGovernanceConsoleReport(
   };
 }
 
+function listLatestGovernanceAuditEvents(auditEvents: TeamEvent[]): TeamEvent[] {
+  const latestByCaseKey = new Map<string, TeamEvent>();
+  for (const event of auditEvents) {
+    const caseKey = resolveGovernanceAuditCaseKey(event);
+    const existing = latestByCaseKey.get(caseKey);
+    if (!existing || compareGovernanceAuditRecency(event, existing) > 0) {
+      latestByCaseKey.set(caseKey, event);
+    }
+  }
+  return [...latestByCaseKey.values()].sort((left, right) => compareGovernanceAuditRecency(right, left));
+}
+
+function resolveGovernanceAuditCaseKey(event: TeamEvent): string {
+  const payload = event.payload ?? {};
+  const permission = isUnknownRecord(payload.permission) ? payload.permission : null;
+  const requirement = permission && isUnknownRecord(permission.requirement) ? permission.requirement : null;
+  const explicitCaseKey = firstNonEmptyString(
+    payload.governanceCaseKey,
+    payload.governanceCaseId,
+    payload.caseKey,
+    payload.caseId,
+    payload.auditCaseKey,
+    payload.cacheKey,
+    permission?.cacheKey,
+    requirement?.cacheKey
+  );
+  if (explicitCaseKey) {
+    return `${event.threadId}:${explicitCaseKey}`;
+  }
+  return `${event.threadId}:event:${event.eventId}`;
+}
+
+function isGovernanceAttentionAudit(event: TeamEvent): boolean {
+  const action = readGovernanceRecommendedAction(event);
+  return action !== null && action !== "proceed";
+}
+
+function readGovernanceRecommendedAction(event: TeamEvent): string | null {
+  const permission = isUnknownRecord(event.payload.permission) ? event.payload.permission : null;
+  return typeof permission?.recommendedAction === "string" ? permission.recommendedAction : null;
+}
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+function compareGovernanceAuditRecency(left: TeamEvent, right: TeamEvent): number {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt - right.createdAt;
+  }
+  return left.eventId.localeCompare(right.eventId);
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): RecoveryConsoleReport {
   const statusCounts: RecoveryConsoleReport["statusCounts"] = {};
   const phaseCounts: RecoveryConsoleReport["phaseCounts"] = {};
@@ -192,6 +255,7 @@ export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): Rec
   const nextActionCounts: RecoveryConsoleReport["nextActionCounts"] = {};
   const browserResumeCounts: RecoveryConsoleReport["browserResumeCounts"] = {};
   const browserOutcomeCounts: RecoveryConsoleReport["browserOutcomeCounts"] = {};
+  const attentionRuns: RecoveryConsoleReport["attentionRuns"] = [];
   let attentionCount = 0;
 
   for (const run of runs) {
@@ -213,14 +277,36 @@ export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): Rec
       browserOutcomeCounts[latestBrowserOutcome] = (browserOutcomeCounts[latestBrowserOutcome] ?? 0) + 1;
     }
 
-    if (
-      run.requiresManualIntervention ||
-      run.status === "waiting_approval" ||
-      run.status === "waiting_external" ||
-      run.status === "failed" ||
-      run.status === "aborted"
-    ) {
+    if (isRecoveryRunAttention(run)) {
       attentionCount += 1;
+      const orderedAttempts = [...run.attempts].sort((left, right) => right.updatedAt - left.updatedAt);
+      const currentAttempt = run.currentAttemptId
+        ? orderedAttempts.find((attempt) => attempt.attemptId === run.currentAttemptId)
+        : undefined;
+      const latestBrowserAttempt =
+        currentAttempt && (currentAttempt.browserOutcome || currentAttempt.browserOutcomeSummary)
+          ? currentAttempt
+          : orderedAttempts.find((attempt) => attempt.browserOutcome || attempt.browserOutcomeSummary) ?? null;
+      attentionRuns.push({
+        recoveryRunId: run.recoveryRunId,
+        sourceGroupId: run.sourceGroupId,
+        status: run.status,
+        phase: progress.phase,
+        gate,
+        nextAction: run.nextAction,
+        allowedActions: listAllowedRecoveryRunActions(run.status).filter((candidate) => candidate !== "dispatch"),
+        summary: run.latestSummary,
+        updatedAt: run.updatedAt,
+        ...(run.waitingReason ? { waitingReason: run.waitingReason } : {}),
+        ...(run.currentAttemptId ? { currentAttemptId: run.currentAttemptId } : {}),
+        ...(run.browserSession?.resumeMode ? { browserResumeMode: run.browserSession.resumeMode } : {}),
+        ...(latestBrowserAttempt?.browserOutcome ? { browserOutcome: latestBrowserAttempt.browserOutcome } : {}),
+        ...(latestBrowserAttempt?.browserOutcomeSummary
+          ? { browserOutcomeSummary: latestBrowserAttempt.browserOutcomeSummary }
+          : {}),
+        ...(run.targetLayer ? { targetLayer: run.targetLayer } : {}),
+        ...(run.targetWorker ? { targetWorker: run.targetWorker } : {}),
+      });
     }
   }
 
@@ -233,6 +319,7 @@ export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): Rec
     nextActionCounts,
     browserResumeCounts,
     browserOutcomeCounts,
+    attentionRuns: attentionRuns.sort((left, right) => right.updatedAt - left.updatedAt).slice(0, limit),
     latestRuns: [...runs].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, limit),
   };
 }
@@ -357,20 +444,8 @@ export function buildOperatorAttentionReport(input: {
   );
 
   const flowUpdatedAtById = new Map(input.flows.map((flow) => [flow.flowId, flow.updatedAt]));
-  const governanceAttentionEvents = governance.latestAudits.filter((event) => {
-    const payload = event.payload ?? {};
-    const permission = typeof payload.permission === "object" && payload.permission
-      ? (payload.permission as { recommendedAction?: unknown })
-      : null;
-    return typeof permission?.recommendedAction === "string" && permission.recommendedAction !== "proceed";
-  });
-  const recoveryAttentionRuns = recovery.latestRuns.filter((run) =>
-    run.requiresManualIntervention ||
-    run.status === "waiting_approval" ||
-    run.status === "waiting_external" ||
-    run.status === "failed" ||
-    run.status === "aborted"
-  );
+  const governanceAttentionEvents = listLatestGovernanceAuditEvents(governance.latestAudits).filter(isGovernanceAttentionAudit);
+  const recoveryAttentionRuns = recovery.latestRuns.filter(isRecoveryRunAttention);
 
   const allItems: OperatorAttentionItem[] = [
     ...flow.attentionGroups.map((group) => ({
@@ -878,6 +953,16 @@ function deriveRecoveryAttentionLifecycle(run: RecoveryRun): OperatorAttentionIt
     default:
       return "open";
   }
+}
+
+function isRecoveryRunAttention(run: RecoveryRun): boolean {
+  return (
+    run.requiresManualIntervention ||
+    run.status === "waiting_approval" ||
+    run.status === "waiting_external" ||
+    run.status === "failed" ||
+    run.status === "aborted"
+  );
 }
 
 function deriveRecoveryAttentionSeverity(run: RecoveryRun): OperatorAttentionItem["severity"] {

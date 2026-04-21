@@ -76,6 +76,7 @@ const SCENARIOS: FailureInjectionScenarioDescriptor[] = [
       "governance-summary-highlights-browser-fallback",
       "governance-browser-evidence-stays-summary-only",
       "governance-approval-required-side-effect-blocks",
+      "parallel-governed-merge-waits-for-approval",
     ],
   },
   {
@@ -99,6 +100,7 @@ const SCENARIOS: FailureInjectionScenarioDescriptor[] = [
       "context-reentry-preserves-active-tasks-and-open-questions",
       "context-continuity-keeps-decisions-and-constraints-under-budget",
       "context-continuity-keeps-journal-notes-under-budget",
+      "context-high-pressure-real-task-keeps-operator-runbook",
     ],
   },
   {

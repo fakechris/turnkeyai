@@ -253,6 +253,9 @@ async function main(): Promise<void> {
       console.log(`browser-target-continuity: ${browserSmoke.targetContinuity}`);
       console.log(`browser-screenshots: ${browserSmoke.screenshotCount}`);
       console.log(`browser-artifacts: ${browserSmoke.artifactCount}`);
+      if (browserSmoke.networkControlsPassed) {
+        console.log("browser-network-controls: passed");
+      }
       if (browserSmoke.resumeFinalUrl) {
         console.log(`browser-resume-final-url: ${browserSmoke.resumeFinalUrl}`);
       }
@@ -462,6 +465,7 @@ async function runBrowserSessionSmoke(input: {
   targetContinuity: string;
   screenshotCount: number;
   artifactCount: number;
+  networkControlsPassed: boolean;
 }> {
   const thread = (await postJson(`${input.daemonUrl}/threads/bootstrap-demo`, {
     variant: "default",
@@ -513,6 +517,7 @@ async function runBrowserSessionSmoke(input: {
       targetContinuity: "not-verified",
       screenshotCount: 0,
       artifactCount: 0,
+      networkControlsPassed: false,
     };
   }
 
@@ -622,6 +627,7 @@ async function runBrowserSessionSmoke(input: {
     targetContinuity: "chrome-tab",
     screenshotCount,
     artifactCount,
+    networkControlsPassed: true,
   };
 }
 

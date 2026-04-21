@@ -173,6 +173,13 @@ for (const aggregate of result.targetAggregates) {
   for (const bucket of aggregate.failureBuckets) {
     console.log(`  bucket=${bucket.bucket} count=${bucket.count}`);
   }
+  if (aggregate.acceptanceChecks.length > 0) {
+    console.log(
+      `  acceptance=${aggregate.acceptanceChecks
+        .map((check) => `${check.checkId}:passed=${check.passed},failed=${check.failed},skipped=${check.skipped}`)
+        .join(" | ")}`
+    );
+  }
 }
 
 if (jsonPath) {

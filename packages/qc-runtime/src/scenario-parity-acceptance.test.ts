@@ -32,6 +32,11 @@ test("scenario parity acceptance suite lists scenario families", () => {
   );
   assert.ok(
     scenarios
+      .find((scenario) => scenario.scenarioId === "context-evidence-heavy-and-reentry")
+      ?.caseIds.includes("context-high-pressure-real-task-keeps-operator-runbook")
+  );
+  assert.ok(
+    scenarios
       .find((scenario) => scenario.scenarioId === "browser-spawn-send-resume")
       ?.caseIds.includes("browser-recovery-multi-attempt-chain-stays-aligned")
   );
@@ -39,6 +44,16 @@ test("scenario parity acceptance suite lists scenario families", () => {
     scenarios
       .find((scenario) => scenario.scenarioId === "browser-ownership-reclaim-isolation")
       ?.caseIds.includes("browser-ownership-reclaim-keeps-single-recovered-case")
+  );
+  assert.ok(
+    scenarios
+      .find((scenario) => scenario.scenarioId === "governance-success-fallback-approval")
+      ?.caseIds.includes("parallel-governed-merge-waits-for-approval")
+  );
+  assert.ok(
+    scenarios
+      .find((scenario) => scenario.scenarioId === "governance-success-fallback-approval")
+      ?.caseIds.includes("parallel-governed-merge-closes-after-readback")
   );
 });
 

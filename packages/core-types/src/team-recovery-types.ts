@@ -175,6 +175,24 @@ export interface RecoveryConsoleReport {
   nextActionCounts: Partial<Record<RecoveryRun["nextAction"], number>>;
   browserResumeCounts: Partial<Record<BrowserResumeMode, number>>;
   browserOutcomeCounts: Partial<Record<RecoveryBrowserOutcome, number>>;
+  attentionRuns: Array<{
+    recoveryRunId: string;
+    sourceGroupId: string;
+    status: RecoveryRunStatus;
+    phase: RecoveryRunProgress["phase"];
+    gate: string;
+    nextAction: RecoveryRun["nextAction"];
+    allowedActions: RecoveryRunAction[];
+    summary: string;
+    updatedAt: number;
+    waitingReason?: string;
+    currentAttemptId?: string;
+    browserResumeMode?: BrowserResumeMode;
+    browserOutcome?: RecoveryBrowserOutcome;
+    browserOutcomeSummary?: string;
+    targetLayer?: ReplayLayer;
+    targetWorker?: WorkerKind;
+  }>;
   latestRuns: RecoveryRun[];
 }
 
