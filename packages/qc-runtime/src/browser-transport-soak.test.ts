@@ -26,6 +26,25 @@ test("browser transport soak classifies relay peer timeout and direct-cdp reconn
   );
 });
 
+test("browser transport soak classifies download and upload failures as artifact failures", () => {
+  assert.equal(
+    classifyBrowserTransportFailure({
+      target: "relay",
+      exitCode: 1,
+      output: "relay download action timed out after 5000ms",
+    }),
+    "artifact-failure"
+  );
+  assert.equal(
+    classifyBrowserTransportFailure({
+      target: "direct-cdp",
+      exitCode: 1,
+      output: "direct-cdp upload smoke did not record completed upload trace metadata",
+    }),
+    "artifact-failure"
+  );
+});
+
 test("browser transport soak aggregates multi-cycle target results and failure buckets", async () => {
   const result = await runBrowserTransportSoak(
     {
@@ -66,6 +85,10 @@ test("browser transport soak aggregates multi-cycle target results and failure b
                   "browser-target-continuity: chrome-tab",
                   "browser-screenshots: 0",
                   "browser-artifacts: 1",
+                  "browser-targets: 2",
+                  "browser-multi-target: passed",
+                  "browser-download-artifacts: 1",
+                  "browser-upload-actions: 1",
                   "browser-network-controls: passed",
                   "browser-resume-final-url: http://127.0.0.1:4010/#submitted",
                   "reconnect-history: 4",
@@ -80,6 +103,10 @@ test("browser transport soak aggregates multi-cycle target results and failure b
                   "browser-target-continuity: direct-cdp",
                   "browser-screenshots: 1",
                   "browser-artifacts: 1",
+                  "browser-targets: 2",
+                  "browser-multi-target: passed",
+                  "browser-download-artifacts: 1",
+                  "browser-upload-actions: 1",
                   "browser-network-controls: passed",
                   "browser-resume-final-url: http://127.0.0.1:4010/#submitted",
                   "reconnect-history: 4",
@@ -102,7 +129,7 @@ test("browser transport soak aggregates multi-cycle target results and failure b
   assert.ok(relayAggregate?.failureBuckets.some((bucket) => bucket.bucket === "peer-timeout" && bucket.count === 1));
   const relayPassedRun = result.cycleResults[0]?.targets.find((run) => run.target === "relay");
   assert.equal(relayPassedRun?.failedAcceptanceChecks, 0);
-  assert.equal(relayPassedRun?.passedAcceptanceChecks, 10);
+  assert.equal(relayPassedRun?.passedAcceptanceChecks, 13);
   assert.ok(
     relayAggregate?.acceptanceChecks.some((check) =>
       check.checkId === "network-controls" && check.passed === 1 && check.failed === 1
@@ -114,7 +141,7 @@ test("browser transport soak aggregates multi-cycle target results and failure b
   assert.ok(cdpAggregate?.failureBuckets.some((bucket) => bucket.bucket === "workflow-log-failure" && bucket.count === 1));
   const cdpPassedRun = result.cycleResults[1]?.targets.find((run) => run.target === "direct-cdp");
   assert.equal(cdpPassedRun?.failedAcceptanceChecks, 0);
-  assert.equal(cdpPassedRun?.passedAcceptanceChecks, 8);
+  assert.equal(cdpPassedRun?.passedAcceptanceChecks, 11);
   assert.ok(
     cdpAggregate?.acceptanceChecks.some((check) =>
       check.checkId === "relay-target-discovery" && check.passed === 0 && check.failed === 0 && check.skipped === 2
@@ -138,6 +165,10 @@ test("browser transport acceptance requires long-chain relay markers", () => {
       "browser-target-continuity: chrome-tab",
       "browser-screenshots: 0",
       "browser-artifacts: 1",
+      "browser-targets: 2",
+      "browser-multi-target: passed",
+      "browser-download-artifacts: 1",
+      "browser-upload-actions: 1",
       "browser-network-controls: passed",
       "browser-resume-final-url: http://127.0.0.1:4010/#submitted",
       "reconnect-history: 4",
@@ -155,6 +186,9 @@ test("browser transport acceptance requires long-chain relay markers", () => {
       ["target-continuity", "passed"],
       ["artifact-continuity", "passed"],
       ["network-controls", "passed"],
+      ["multi-target-continuity", "passed"],
+      ["download-artifact", "passed"],
+      ["upload-artifact", "passed"],
       ["reconnect", "passed"],
       ["workflow-log", "passed"],
       ["relay-target-discovery", "passed"],
@@ -177,6 +211,10 @@ test("browser transport acceptance skips optional checks when not requested", ()
       "browser-target-continuity: direct-cdp",
       "browser-screenshots: 1",
       "browser-artifacts: 1",
+      "browser-targets: 2",
+      "browser-multi-target: passed",
+      "browser-download-artifacts: 1",
+      "browser-upload-actions: 1",
       "browser-network-controls: passed",
       "browser-resume-final-url: http://127.0.0.1:4010/#submitted",
     ].join("\n"),
@@ -218,6 +256,12 @@ test("browser transport soak treats missing acceptance markers as local regressi
   assert.equal(result.failedTargetRuns, 1);
   const failedRun = result.cycleResults[0]?.targets[0];
   assert.equal(failedRun?.failureBucket, "local-regression");
-  assert.equal(failedRun?.failedAcceptanceChecks, 1);
+  assert.equal(failedRun?.failedAcceptanceChecks, 4);
   assert.equal(failedRun?.acceptanceChecks?.find((check) => check.checkId === "network-controls")?.status, "failed");
+  assert.equal(
+    failedRun?.acceptanceChecks?.find((check) => check.checkId === "multi-target-continuity")?.status,
+    "failed"
+  );
+  assert.equal(failedRun?.acceptanceChecks?.find((check) => check.checkId === "download-artifact")?.status, "failed");
+  assert.equal(failedRun?.acceptanceChecks?.find((check) => check.checkId === "upload-artifact")?.status, "failed");
 });

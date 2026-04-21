@@ -9,6 +9,7 @@ export type BrowserTransportFailureBucket =
   | "content-script-unavailable"
   | "action-timeout"
   | "cdp-unreachable"
+  | "artifact-failure"
   | "reconnect-failure"
   | "workflow-log-failure"
   | "local-regression"
@@ -21,6 +22,9 @@ export type BrowserTransportAcceptanceCheckId =
   | "target-continuity"
   | "artifact-continuity"
   | "network-controls"
+  | "multi-target-continuity"
+  | "download-artifact"
+  | "upload-artifact"
   | "reconnect"
   | "workflow-log"
   | "relay-target-discovery"
@@ -123,6 +127,9 @@ const ACCEPTANCE_CHECK_IDS: BrowserTransportAcceptanceCheckId[] = [
   "target-continuity",
   "artifact-continuity",
   "network-controls",
+  "multi-target-continuity",
+  "download-artifact",
+  "upload-artifact",
   "reconnect",
   "workflow-log",
   "relay-target-discovery",
@@ -264,76 +271,90 @@ export function classifyBrowserTransportFailure(input: {
 
   const normalized = input.output.toLowerCase();
 
-  if (
-    normalized.includes("no supported chromium executable found")
-    || normalized.includes("enoent")
-    || normalized.includes("cannot find chrome")
-  ) {
+  if (includesAny(normalized, [
+    "no supported chromium executable found",
+    "enoent",
+    "cannot find chrome",
+  ])) {
     return "browser-launch-failure";
   }
-  if (
-    normalized.includes("timed out waiting for health")
-    || normalized.includes("econnrefused")
-    || normalized.includes("fetch failed")
-    || normalized.includes("failed to fetch")
-  ) {
+  if (includesAny(normalized, [
+    "timed out waiting for health",
+    "econnrefused",
+    "fetch failed",
+    "failed to fetch",
+  ])) {
     return "daemon-unreachable";
   }
-  if (
-    normalized.includes("content_script_unavailable")
-    || normalized.includes("content script unavailable")
-    || normalized.includes("no tab responded")
-  ) {
+  if (includesAny(normalized, [
+    "content_script_unavailable",
+    "content script unavailable",
+    "no tab responded",
+  ])) {
     return "content-script-unavailable";
   }
-  if (normalized.includes("action_timeout") || normalized.includes("action timeout")) {
+  if (includesAny(normalized, ["action_timeout", "action timeout"])) {
     return "action-timeout";
   }
-  if (
-    normalized.includes("timed out waiting for cdp endpoint")
-    || normalized.includes("no inspectable pages")
-    || normalized.includes("browser endpoint unavailable")
-    || normalized.includes("websocket endpoint")
-  ) {
+  if (includesAny(normalized, [
+    "timed out waiting for cdp endpoint",
+    "no inspectable pages",
+    "browser endpoint unavailable",
+    "websocket endpoint",
+  ])) {
     return "cdp-unreachable";
   }
-  if (
-    normalized.includes("workflow-log")
-    || normalized.includes("workflow log")
-  ) {
+  if (includesAny(normalized, [
+    "download smoke",
+    "browser download",
+    "relay download",
+    "downloaded-file browser artifact",
+    "download action",
+    "upload smoke",
+    "browser upload",
+    "content script upload",
+    "upload action",
+  ])) {
+    return "artifact-failure";
+  }
+  if (includesAny(normalized, ["workflow-log", "workflow log"])) {
     return "workflow-log-failure";
   }
-  if (
-    normalized.includes("to become stale")
-    || normalized.includes("to become online")
-    || normalized.includes("reconnect")
-    || normalized.includes("resume-final-url")
-    || normalized.includes("resume")
-  ) {
+  if (includesAny(normalized, [
+    "to become stale",
+    "to become online",
+    "reconnect",
+    "resume-final-url",
+    "resume",
+  ])) {
     return "reconnect-failure";
   }
-  if (
-    normalized.includes("timed out waiting for relay peer")
-    || normalized.includes("timed out waiting for any online relay peer")
-  ) {
+  if (includesAny(normalized, [
+    "timed out waiting for relay peer",
+    "timed out waiting for any online relay peer",
+  ])) {
     return "peer-timeout";
   }
-  if (
-    normalized.includes("target_missing")
-    || normalized.includes("missing target")
-    || normalized.includes("no relay target")
-    || normalized.includes("require-target")
-  ) {
+  if (includesAny(normalized, [
+    "target_missing",
+    "missing target",
+    "no relay target",
+    "require-target",
+  ])) {
     return "target-missing";
   }
-  if (
-    normalized.includes("assertionerror")
-    || normalized.includes("expected ")
-    || normalized.includes("local regression")
-  ) {
+  if (includesAny(normalized, [
+    "assertionerror",
+    "expected ",
+    "local regression",
+  ])) {
     return "local-regression";
   }
   return "unknown";
+}
+
+function includesAny(value: string, needles: readonly string[]): boolean {
+  return needles.some((needle) => value.includes(needle));
 }
 
 function summarizeBrowserTransportRun(input: {
@@ -349,6 +370,9 @@ function summarizeBrowserTransportRun(input: {
       ?? lines.find((line) => line.startsWith("browser-resume-final-url:"))
       ?? lines.find((line) => line.startsWith("browser-final-url:"));
     const peerCount = lines.find((line) => line.startsWith("peer-count:"));
+    const browserTargets = lines.find((line) => line.startsWith("browser-targets:"));
+    const downloadArtifacts = lines.find((line) => line.startsWith("browser-download-artifacts:"));
+    const uploadActions = lines.find((line) => line.startsWith("browser-upload-actions:"));
     const failedChecks = input.acceptanceChecks?.filter((check) => check.status === "failed") ?? [];
     const acceptanceSummary = failedChecks.length > 0
       ? `failed=${failedChecks.map((check) => check.checkId).join(",")}`
@@ -357,7 +381,9 @@ function summarizeBrowserTransportRun(input: {
             input.acceptanceChecks.filter((check) => check.status !== "skipped").length
           }`
         : null;
-    return [input.target, finalUrl, peerCount, acceptanceSummary].filter(Boolean).join(" | ");
+    return [input.target, finalUrl, peerCount, browserTargets, downloadArtifacts, uploadActions, acceptanceSummary]
+      .filter(Boolean)
+      .join(" | ");
   }
   return `${input.target} failed (${input.failureBucket})`;
 }
@@ -376,11 +402,15 @@ export function evaluateBrowserTransportAcceptance(input: {
   const reconnectHistory = parsePositiveLineValue(input.output, "reconnect-history");
   const screenshotCount = parsePositiveLineValue(input.output, "browser-screenshots");
   const artifactCount = parsePositiveLineValue(input.output, "browser-artifacts");
+  const browserTargetCount = parsePositiveLineValue(input.output, "browser-targets");
+  const downloadArtifactCount = parsePositiveLineValue(input.output, "browser-download-artifacts");
+  const uploadActionCount = parsePositiveLineValue(input.output, "browser-upload-actions");
   const browserFinalUrl = findLineValue(input.output, "browser-final-url");
   const browserResumeFinalUrl = findLineValue(input.output, "browser-resume-final-url");
   const transportLabel = findLineValue(input.output, "browser-transport");
   const targetContinuity = findLineValue(input.output, "browser-target-continuity");
   const networkControls = findLineValue(input.output, "browser-network-controls");
+  const multiTarget = findLineValue(input.output, "browser-multi-target");
   const reconnectFinalUrl = findLineValue(input.output, "reconnect-final-url");
   const workflowStatus = findLineValue(input.output, "workflow-log-status");
   const targetCount = parsePositiveLineValue(input.output, "targets");
@@ -418,6 +448,21 @@ export function evaluateBrowserTransportAcceptance(input: {
       "network-controls",
       networkControls === "passed",
       `network-controls=${networkControls ?? "missing"}`
+    ),
+    requiredCheck(
+      "multi-target-continuity",
+      multiTarget === "passed" && browserTargetCount !== null && browserTargetCount >= 2,
+      `multi-target=${multiTarget ?? "missing"} browser-targets=${browserTargetCount ?? "missing"} expected>=2`
+    ),
+    requiredCheck(
+      "download-artifact",
+      downloadArtifactCount !== null && downloadArtifactCount >= 1,
+      `download-artifacts=${downloadArtifactCount ?? "missing"} expected>=1`
+    ),
+    requiredCheck(
+      "upload-artifact",
+      uploadActionCount !== null && uploadActionCount >= 1,
+      `upload-actions=${uploadActionCount ?? "missing"} expected>=1`
     ),
     optionalCheck(
       "reconnect",

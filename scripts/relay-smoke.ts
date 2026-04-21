@@ -5,6 +5,16 @@ import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import { createServer, type Server } from "node:http";
 
+import {
+  buildDownloadUploadFixtureMarkup,
+  buildDownloadUploadFixtureScript,
+  countUploadTraceEntries,
+  isUploadedExportTitle,
+  resolveDownloadSmokeArtifact,
+  verifyBrowserSmokeMultiTarget,
+  writeExportCsvResponse,
+  type BrowserSmokeResponse,
+} from "./lib/browser-smoke-shared";
 import { prepareRelayExtensionRuntimeDir } from "./relay-extension-runtime";
 
 const args = process.argv.slice(2);
@@ -253,6 +263,12 @@ async function main(): Promise<void> {
       console.log(`browser-target-continuity: ${browserSmoke.targetContinuity}`);
       console.log(`browser-screenshots: ${browserSmoke.screenshotCount}`);
       console.log(`browser-artifacts: ${browserSmoke.artifactCount}`);
+      console.log(`browser-targets: ${browserSmoke.targetCount}`);
+      console.log(`browser-download-artifacts: ${browserSmoke.downloadArtifactCount}`);
+      console.log(`browser-upload-actions: ${browserSmoke.uploadTraceCount}`);
+      if (browserSmoke.multiTargetContinuityPassed) {
+        console.log("browser-multi-target: passed");
+      }
       if (browserSmoke.networkControlsPassed) {
         console.log("browser-network-controls: passed");
       }
@@ -465,7 +481,11 @@ async function runBrowserSessionSmoke(input: {
   targetContinuity: string;
   screenshotCount: number;
   artifactCount: number;
+  targetCount: number;
+  downloadArtifactCount: number;
+  uploadTraceCount: number;
   networkControlsPassed: boolean;
+  multiTargetContinuityPassed: boolean;
 }> {
   const thread = (await postJson(`${input.daemonUrl}/threads/bootstrap-demo`, {
     variant: "default",
@@ -483,6 +503,7 @@ async function runBrowserSessionSmoke(input: {
     instructions: `Open ${input.startUrl} and capture a relay smoke snapshot`,
   })) as {
     sessionId?: unknown;
+    targetId?: unknown;
     page?: {
       finalUrl?: unknown;
     };
@@ -517,7 +538,11 @@ async function runBrowserSessionSmoke(input: {
       targetContinuity: "not-verified",
       screenshotCount: 0,
       artifactCount: 0,
+      targetCount: 0,
+      downloadArtifactCount: 0,
+      uploadTraceCount: 0,
       networkControlsPassed: false,
+      multiTargetContinuityPassed: false,
     };
   }
 
@@ -526,6 +551,8 @@ async function runBrowserSessionSmoke(input: {
     instructions: "Exercise relay network controls, type into the relay form, submit it, and inspect page metadata.",
     actions: [
       ...buildNetworkSmokeActions("chrome-relay"),
+      { kind: "download", urlPattern: "/export.csv", timeoutMs: 5_000 },
+      { kind: "click", selectors: ["#download-link"] },
       { kind: "type", selectors: ["#relay-input"], text: "turnkey relay" },
       { kind: "click", selectors: ["#relay-submit"] },
       { kind: "wait", timeoutMs: 50 },
@@ -563,6 +590,41 @@ async function runBrowserSessionSmoke(input: {
   if (typeof metadataResult.href !== "string" || !metadataResult.href.includes("#submitted")) {
     throw new Error("relay send smoke console probe did not observe the submitted hash URL");
   }
+  const downloadSmoke = resolveDownloadSmokeArtifact(sendResponse, "relay");
+
+  const uploadResponse = (await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/send`, {
+    threadId,
+    instructions: "Upload the downloaded CSV artifact back into the relay fixture and verify file chooser continuity.",
+    actions: [
+      { kind: "upload", selectors: ["#upload-input"], artifactId: downloadSmoke.artifactId },
+      { kind: "console", probe: "page-metadata" },
+      { kind: "snapshot", note: "after-upload" },
+    ],
+  })) as BrowserSmokeResponse;
+  const uploadFinalUrl = requireString(uploadResponse.page?.finalUrl, "relay upload final page URL");
+  const uploadTitle = requireString(uploadResponse.page?.title, "relay upload page title");
+  if (!uploadFinalUrl.includes("#submitted")) {
+    throw new Error(`relay upload smoke lost the submitted page state: ${uploadFinalUrl}`);
+  }
+  if (!isUploadedExportTitle(uploadTitle)) {
+    throw new Error(`relay upload smoke returned unexpected title: ${uploadTitle}`);
+  }
+  if (requireString(uploadResponse.transportLabel, "relay upload transport label") !== "chrome-relay") {
+    throw new Error("relay upload smoke lost transport labeling");
+  }
+  const uploadTraceCount = countUploadTraceEntries(uploadResponse, "relay");
+
+  const multiTarget = await verifyBrowserSmokeMultiTarget({
+    daemonUrl: input.daemonUrl,
+    threadId,
+    sessionId,
+    startUrl: input.startUrl,
+    originalTargetId: uploadResponse.targetId
+      ?? sendResponse.targetId
+      ?? (typeof response.targetId === "string" ? response.targetId : undefined),
+    label: "relay",
+    client: { getJson, postJson },
+  });
 
   const resumeResponse = (await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/resume`, {
     threadId,
@@ -598,7 +660,11 @@ async function runBrowserSessionSmoke(input: {
     throw new Error("relay resume smoke returned non-array artifactIds");
   }
   const screenshotPaths = Array.isArray(resumeResponse.screenshotPaths) ? resumeResponse.screenshotPaths : [];
-  const artifactIds = Array.isArray(resumeResponse.artifactIds) ? resumeResponse.artifactIds : [];
+  const artifactIds = [
+    ...(Array.isArray(sendResponse.artifactIds) ? sendResponse.artifactIds : []),
+    ...(Array.isArray(uploadResponse.artifactIds) ? uploadResponse.artifactIds : []),
+    ...(Array.isArray(resumeResponse.artifactIds) ? resumeResponse.artifactIds : []),
+  ];
   const screenshotCount = screenshotPaths.length;
   const artifactCount = artifactIds.length;
   if (artifactCount < 1) {
@@ -607,7 +673,7 @@ async function runBrowserSessionSmoke(input: {
 
   const history = await getSessionHistory(input.daemonUrl, threadId, sessionId);
   const dispatchSequence = history.map((entry) => entry.dispatchMode).join(",");
-  if (dispatchSequence !== "spawn,send,resume") {
+  if (dispatchSequence !== "spawn,send,send,send,resume") {
     throw new Error(`relay smoke history recorded unexpected dispatch sequence: ${dispatchSequence}`);
   }
   if (!history.every((entry) => entry.transportLabel === "chrome-relay")) {
@@ -627,7 +693,11 @@ async function runBrowserSessionSmoke(input: {
     targetContinuity: "chrome-tab",
     screenshotCount,
     artifactCount,
+    targetCount: multiTarget.targetCount,
+    downloadArtifactCount: downloadSmoke.downloadArtifactCount,
+    uploadTraceCount,
     networkControlsPassed: true,
+    multiTargetContinuityPassed: true,
   };
 }
 
@@ -881,6 +951,10 @@ async function startRelaySmokeFixture(): Promise<{ url: string; close(): Promise
       res.end(JSON.stringify({ header: Array.isArray(header) ? header.join(",") : header ?? null }));
       return;
     }
+    if (url.pathname === "/export.csv") {
+      writeExportCsvResponse(res);
+      return;
+    }
     if (url.pathname !== "/") {
       res.statusCode = 404;
       res.setHeader("content-type", "text/plain; charset=utf-8");
@@ -935,6 +1009,7 @@ function buildRelaySmokeFixtureHtml(): string {
     <label for="relay-input">Relay Input</label>
     <input id="relay-input" aria-label="Relay Input" />
     <button id="relay-submit" type="button">Submit Relay Form</button>
+    ${buildDownloadUploadFixtureMarkup()}
     <div class="spacer"></div>
     <script>
       const input = document.getElementById("relay-input");
@@ -946,6 +1021,7 @@ function buildRelaySmokeFixtureHtml(): string {
         status.textContent = "submitted:" + value;
         location.hash = "submitted";
       });
+      ${buildDownloadUploadFixtureScript()}
     </script>
   </body>
 </html>`;
@@ -1111,26 +1187,6 @@ function assertNetworkSmokeTrace(response: BrowserSmokeResponse, label: string):
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-interface BrowserSmokeResponse {
-  sessionId?: string;
-  dispatchMode?: string;
-  resumeMode?: string;
-  transportMode?: string;
-  transportLabel?: string;
-  transportTargetId?: string;
-  page?: {
-    finalUrl?: string;
-    title?: string;
-  };
-  screenshotPaths?: string[];
-  artifactIds?: string[];
-  trace?: Array<{
-    kind?: string;
-    input?: Record<string, unknown>;
-    output?: Record<string, unknown>;
-  }>;
 }
 
 async function getJson(url: string): Promise<unknown> {

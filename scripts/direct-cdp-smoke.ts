@@ -5,6 +5,17 @@ import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import { createServer } from "node:http";
 
+import {
+  buildDownloadUploadFixtureMarkup,
+  buildDownloadUploadFixtureScript,
+  countUploadTraceEntries,
+  isUploadedExportTitle,
+  resolveDownloadSmokeArtifact,
+  verifyBrowserSmokeMultiTarget,
+  writeExportCsvResponse,
+  type BrowserSmokeResponse,
+} from "./lib/browser-smoke-shared";
+
 const args = process.argv.slice(2);
 let daemonUrl = process.env.TURNKEYAI_DAEMON_URL ?? "";
 let cdpEndpoint = process.env.TURNKEYAI_BROWSER_CDP_ENDPOINT ?? "";
@@ -212,6 +223,12 @@ async function main(): Promise<void> {
     console.log(`browser-target-continuity: ${smoke.targetContinuity}`);
     console.log(`browser-screenshots: ${smoke.screenshotCount}`);
     console.log(`browser-artifacts: ${smoke.artifactCount}`);
+    console.log(`browser-targets: ${smoke.targetCount}`);
+    console.log(`browser-download-artifacts: ${smoke.downloadArtifactCount}`);
+    console.log(`browser-upload-actions: ${smoke.uploadTraceCount}`);
+    if (smoke.multiTargetContinuityPassed) {
+      console.log("browser-multi-target: passed");
+    }
     if (smoke.networkControlsPassed) {
       console.log("browser-network-controls: passed");
     }
@@ -278,7 +295,11 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   targetContinuity: string;
   screenshotCount: number;
   artifactCount: number;
+  targetCount: number;
+  downloadArtifactCount: number;
+  uploadTraceCount: number;
   networkControlsPassed: boolean;
+  multiTargetContinuityPassed: boolean;
 }> {
   const thread = (await postJson(`${input.daemonUrl}/threads/bootstrap-demo`, {
     variant: "default",
@@ -305,6 +326,8 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     instructions: "Exercise direct-cdp network controls, type into the form, submit it, and inspect page metadata.",
     actions: [
       ...buildNetworkSmokeActions("direct-cdp"),
+      { kind: "download", urlPattern: "/export.csv", timeoutMs: 5_000 },
+      { kind: "click", selectors: ["#download-link"] },
       { kind: "type", selectors: ["#relay-input"], text: "turnkey cdp" },
       { kind: "click", selectors: ["#relay-submit"] },
       { kind: "console", probe: "page-metadata" },
@@ -334,6 +357,39 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   if (typeof metadataResult.href !== "string" || !metadataResult.href.includes("#submitted")) {
     throw new Error("direct-cdp send smoke console probe did not observe the submitted hash URL");
   }
+  const downloadSmoke = resolveDownloadSmokeArtifact(sendResponse, "direct-cdp");
+
+  const uploadResponse = (await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/send`, {
+    threadId,
+    instructions: "Upload the downloaded CSV artifact back into the fixture and verify file chooser continuity.",
+    actions: [
+      { kind: "upload", selectors: ["#upload-input"], artifactId: downloadSmoke.artifactId },
+      { kind: "console", probe: "page-metadata" },
+      { kind: "snapshot", note: "after-upload" },
+    ],
+  })) as BrowserSmokeResponse;
+  const uploadFinalUrl = requireString(uploadResponse.page?.finalUrl, "upload final page URL");
+  const uploadTitle = requireString(uploadResponse.page?.title, "upload page title");
+  if (!uploadFinalUrl.includes("#submitted")) {
+    throw new Error(`direct-cdp upload smoke lost the submitted page state: ${uploadFinalUrl}`);
+  }
+  if (!isUploadedExportTitle(uploadTitle)) {
+    throw new Error(`direct-cdp upload smoke returned unexpected title: ${uploadTitle}`);
+  }
+  if (requireString(uploadResponse.transportLabel, "upload transport label") !== "direct-cdp") {
+    throw new Error("direct-cdp upload smoke lost transport labeling");
+  }
+  const uploadTraceCount = countUploadTraceEntries(uploadResponse, "direct-cdp");
+
+  const multiTarget = await verifyBrowserSmokeMultiTarget({
+    daemonUrl: input.daemonUrl,
+    threadId,
+    sessionId,
+    startUrl: input.startUrl,
+    originalTargetId: uploadResponse.targetId ?? sendResponse.targetId ?? spawnResponse.targetId,
+    label: "direct-cdp",
+    client: { getJson, postJson },
+  });
 
   const resumeResponse = (await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/resume`, {
     threadId,
@@ -370,7 +426,11 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     throw new Error("direct-cdp resume smoke returned non-array artifactIds");
   }
   const screenshotPaths = Array.isArray(resumeResponse.screenshotPaths) ? resumeResponse.screenshotPaths : [];
-  const artifactIds = Array.isArray(resumeResponse.artifactIds) ? resumeResponse.artifactIds : [];
+  const artifactIds = [
+    ...(Array.isArray(sendResponse.artifactIds) ? sendResponse.artifactIds : []),
+    ...(Array.isArray(uploadResponse.artifactIds) ? uploadResponse.artifactIds : []),
+    ...(Array.isArray(resumeResponse.artifactIds) ? resumeResponse.artifactIds : []),
+  ];
   const screenshotCount = screenshotPaths.length;
   const artifactCount = artifactIds.length;
   if (screenshotCount < 1) {
@@ -382,7 +442,7 @@ async function runDirectCdpBrowserSessionSmoke(input: {
 
   const history = await getSessionHistory(input.daemonUrl, threadId, sessionId);
   const dispatchSequence = history.map((entry) => entry.dispatchMode).join(",");
-  if (dispatchSequence !== "spawn,send,resume") {
+  if (dispatchSequence !== "spawn,send,send,resume") {
     throw new Error(`direct-cdp smoke history recorded unexpected dispatch sequence: ${dispatchSequence}`);
   }
   if (!history.every((entry) => entry.transportLabel === "direct-cdp")) {
@@ -399,7 +459,11 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     targetContinuity: "direct-cdp",
     screenshotCount,
     artifactCount,
+    targetCount: multiTarget.targetCount,
+    downloadArtifactCount: downloadSmoke.downloadArtifactCount,
+    uploadTraceCount,
     networkControlsPassed: true,
+    multiTargetContinuityPassed: true,
   };
 }
 
@@ -519,7 +583,7 @@ async function runDirectCdpReconnectSmoke(input: {
     input.browserSmoke.sessionId
   );
   const dispatchSequence = history.map((entry) => entry.dispatchMode).join(",");
-  if (dispatchSequence !== "spawn,send,resume,resume") {
+  if (dispatchSequence !== "spawn,send,send,resume,resume") {
     throw new Error(`direct-cdp reconnect smoke recorded unexpected dispatch sequence: ${dispatchSequence}`);
   }
   if (!history.every((entry) => entry.transportLabel === "direct-cdp")) {
@@ -615,6 +679,10 @@ async function startDirectCdpSmokeFixture(): Promise<{ url: string; close(): Pro
       res.end(JSON.stringify({ header: Array.isArray(header) ? header.join(",") : header ?? null }));
       return;
     }
+    if (url.pathname === "/export.csv") {
+      writeExportCsvResponse(res);
+      return;
+    }
     if (url.pathname !== "/") {
       res.statusCode = 404;
       res.setHeader("content-type", "text/plain; charset=utf-8");
@@ -669,6 +737,7 @@ function buildDirectCdpSmokeFixtureHtml(): string {
     <label for="relay-input">Direct CDP Input</label>
     <input id="relay-input" aria-label="Direct CDP Input" />
     <button id="relay-submit" type="button">Submit Direct CDP Form</button>
+    ${buildDownloadUploadFixtureMarkup()}
     <div class="spacer"></div>
     <script>
       const input = document.getElementById("relay-input");
@@ -680,6 +749,7 @@ function buildDirectCdpSmokeFixtureHtml(): string {
         status.textContent = "submitted:" + value;
         location.hash = "submitted";
       });
+      ${buildDownloadUploadFixtureScript()}
     </script>
   </body>
 </html>`;
@@ -845,23 +915,6 @@ function assertNetworkSmokeTrace(response: BrowserSmokeResponse, label: string):
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-interface BrowserSmokeResponse {
-  sessionId?: string;
-  dispatchMode?: string;
-  transportLabel?: string;
-  page?: {
-    finalUrl?: string;
-    title?: string;
-  };
-  screenshotPaths?: string[];
-  artifactIds?: string[];
-  trace?: Array<{
-    kind?: string;
-    input?: Record<string, unknown>;
-    output?: Record<string, unknown>;
-  }>;
 }
 
 async function getJson(url: string): Promise<unknown> {
