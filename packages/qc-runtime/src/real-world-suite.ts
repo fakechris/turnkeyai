@@ -236,6 +236,19 @@ const SCENARIOS: RealWorldScenarioDescriptor[] = [
       "context-high-pressure-real-task-keeps-operator-runbook",
     ],
   },
+  {
+    scenarioId: "phase1-production-closure-runbook",
+    area: "operator",
+    title: "Phase 1 production closure runbook",
+    summary:
+      "验证 browser transport E2E、operator case 语义、context 高压附件任务与 parallel/governance contract 在同一收尾 runbook 下稳定收敛。",
+    caseIds: [
+      "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "operator-case-semantics-separate-active-manual-from-resolved-recent",
+      "context-real-task-attachment-pressure-keeps-critical-carry-forward",
+      "parallel-governance-contract-dedupes-retried-audits-by-case",
+    ],
+  },
 ];
 
 export function listRealWorldScenarios(): RealWorldScenarioDescriptor[] {

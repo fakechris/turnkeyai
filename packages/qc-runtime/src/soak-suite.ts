@@ -160,6 +160,19 @@ const SCENARIOS: SoakScenarioDescriptor[] = [
       "replay-console-browser-continuity-counts",
     ],
   },
+  {
+    scenarioId: "phase1-production-closure-long-chain",
+    area: "operator",
+    title: "Phase 1 production closure long chain",
+    summary:
+      "验证 Phase 1 收尾场景在 browser transport、operator active/resolved、context 压力和治理闭环下保持稳定。",
+    caseIds: [
+      "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "operator-case-semantics-separate-active-manual-from-resolved-recent",
+      "context-real-task-attachment-pressure-keeps-critical-carry-forward",
+      "parallel-governance-contract-dedupes-retried-audits-by-case",
+    ],
+  },
 ];
 
 export function listSoakScenarios(): SoakScenarioDescriptor[] {

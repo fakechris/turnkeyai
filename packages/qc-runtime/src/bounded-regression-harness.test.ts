@@ -55,6 +55,10 @@ test("bounded regression harness lists built-in cases", () => {
   assert.ok(cases.some((item) => item.caseId === "context-continuity-keeps-decisions-and-constraints-under-budget"));
   assert.ok(cases.some((item) => item.caseId === "context-continuity-keeps-journal-notes-under-budget"));
   assert.ok(cases.some((item) => item.caseId === "context-high-pressure-real-task-keeps-operator-runbook"));
+  assert.ok(cases.some((item) => item.caseId === "browser-transport-real-world-e2e-keeps-replay-operator-aligned"));
+  assert.ok(cases.some((item) => item.caseId === "operator-case-semantics-separate-active-manual-from-resolved-recent"));
+  assert.ok(cases.some((item) => item.caseId === "context-real-task-attachment-pressure-keeps-critical-carry-forward"));
+  assert.ok(cases.some((item) => item.caseId === "parallel-governance-contract-dedupes-retried-audits-by-case"));
 });
 
 test("bounded regression harness runs all built-in cases", () => {
@@ -175,5 +179,16 @@ test("bounded regression harness can run scenario-parity governance and parallel
     "browser-ownership-reclaim-keeps-single-recovered-case",
   ]);
   assert.equal(result.totalCases, 11);
+  assert.equal(result.failedCases, 0);
+});
+
+test("bounded regression harness can run phase1 closure cases", () => {
+  const result = runBoundedRegressionSuite([
+    "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+    "operator-case-semantics-separate-active-manual-from-resolved-recent",
+    "context-real-task-attachment-pressure-keeps-critical-carry-forward",
+    "parallel-governance-contract-dedupes-retried-audits-by-case",
+  ]);
+  assert.equal(result.totalCases, 4);
   assert.equal(result.failedCases, 0);
 });

@@ -17,6 +17,7 @@ test("soak suite lists built-in long-chain stability scenarios", () => {
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "governance-approval-fallback-closure"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "parallel-retry-and-merge-closure"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "browser-transport-reconnect-diagnostics"));
+  assert.ok(scenarios.some((scenario) => scenario.scenarioId === "phase1-production-closure-long-chain"));
 });
 
 test("soak suite passes all built-in long-chain stability scenarios", () => {
@@ -24,7 +25,7 @@ test("soak suite passes all built-in long-chain stability scenarios", () => {
 
   assert.equal(result.failedScenarios, 0);
   assert.equal(result.passedScenarios, result.totalScenarios);
-  assert.equal(result.totalScenarios, 8);
+  assert.equal(result.totalScenarios, 9);
 });
 
 test("soak suite can run one selected long-chain scenario", () => {
