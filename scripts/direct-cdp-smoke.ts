@@ -212,6 +212,12 @@ async function main(): Promise<void> {
     console.log(`browser-target-continuity: ${smoke.targetContinuity}`);
     console.log(`browser-screenshots: ${smoke.screenshotCount}`);
     console.log(`browser-artifacts: ${smoke.artifactCount}`);
+    console.log(`browser-targets: ${smoke.targetCount}`);
+    console.log(`browser-download-artifacts: ${smoke.downloadArtifactCount}`);
+    console.log(`browser-upload-actions: ${smoke.uploadTraceCount}`);
+    if (smoke.multiTargetContinuityPassed) {
+      console.log("browser-multi-target: passed");
+    }
     if (smoke.networkControlsPassed) {
       console.log("browser-network-controls: passed");
     }
@@ -278,7 +284,11 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   targetContinuity: string;
   screenshotCount: number;
   artifactCount: number;
+  targetCount: number;
+  downloadArtifactCount: number;
+  uploadTraceCount: number;
   networkControlsPassed: boolean;
+  multiTargetContinuityPassed: boolean;
 }> {
   const thread = (await postJson(`${input.daemonUrl}/threads/bootstrap-demo`, {
     variant: "default",
@@ -305,6 +315,8 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     instructions: "Exercise direct-cdp network controls, type into the form, submit it, and inspect page metadata.",
     actions: [
       ...buildNetworkSmokeActions("direct-cdp"),
+      { kind: "download", urlPattern: "/export.csv", timeoutMs: 5_000 },
+      { kind: "click", selectors: ["#download-link"] },
       { kind: "type", selectors: ["#relay-input"], text: "turnkey cdp" },
       { kind: "click", selectors: ["#relay-submit"] },
       { kind: "console", probe: "page-metadata" },
@@ -334,6 +346,38 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   if (typeof metadataResult.href !== "string" || !metadataResult.href.includes("#submitted")) {
     throw new Error("direct-cdp send smoke console probe did not observe the submitted hash URL");
   }
+  const downloadArtifactId = requireDownloadArtifactId(sendResponse, "direct-cdp");
+
+  const uploadResponse = (await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/send`, {
+    threadId,
+    instructions: "Upload the downloaded CSV artifact back into the fixture and verify file chooser continuity.",
+    actions: [
+      { kind: "upload", selectors: ["#upload-input"], artifactId: downloadArtifactId },
+      { kind: "console", probe: "page-metadata" },
+      { kind: "snapshot", note: "after-upload" },
+    ],
+  })) as BrowserSmokeResponse;
+  const uploadFinalUrl = requireString(uploadResponse.page?.finalUrl, "upload final page URL");
+  const uploadTitle = requireString(uploadResponse.page?.title, "upload page title");
+  if (!uploadFinalUrl.includes("#submitted")) {
+    throw new Error(`direct-cdp upload smoke lost the submitted page state: ${uploadFinalUrl}`);
+  }
+  if (!isUploadedExportTitle(uploadTitle)) {
+    throw new Error(`direct-cdp upload smoke returned unexpected title: ${uploadTitle}`);
+  }
+  if (requireString(uploadResponse.transportLabel, "upload transport label") !== "direct-cdp") {
+    throw new Error("direct-cdp upload smoke lost transport labeling");
+  }
+  const uploadTraceCount = countUploadTraceEntries(uploadResponse, "direct-cdp");
+
+  const multiTarget = await verifyBrowserSmokeMultiTarget({
+    daemonUrl: input.daemonUrl,
+    threadId,
+    sessionId,
+    startUrl: input.startUrl,
+    originalTargetId: uploadResponse.targetId ?? sendResponse.targetId ?? spawnResponse.targetId,
+    label: "direct-cdp",
+  });
 
   const resumeResponse = (await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/resume`, {
     threadId,
@@ -370,7 +414,11 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     throw new Error("direct-cdp resume smoke returned non-array artifactIds");
   }
   const screenshotPaths = Array.isArray(resumeResponse.screenshotPaths) ? resumeResponse.screenshotPaths : [];
-  const artifactIds = Array.isArray(resumeResponse.artifactIds) ? resumeResponse.artifactIds : [];
+  const artifactIds = [
+    ...(Array.isArray(sendResponse.artifactIds) ? sendResponse.artifactIds : []),
+    ...(Array.isArray(uploadResponse.artifactIds) ? uploadResponse.artifactIds : []),
+    ...(Array.isArray(resumeResponse.artifactIds) ? resumeResponse.artifactIds : []),
+  ];
   const screenshotCount = screenshotPaths.length;
   const artifactCount = artifactIds.length;
   if (screenshotCount < 1) {
@@ -382,7 +430,7 @@ async function runDirectCdpBrowserSessionSmoke(input: {
 
   const history = await getSessionHistory(input.daemonUrl, threadId, sessionId);
   const dispatchSequence = history.map((entry) => entry.dispatchMode).join(",");
-  if (dispatchSequence !== "spawn,send,resume") {
+  if (dispatchSequence !== "spawn,send,send,resume") {
     throw new Error(`direct-cdp smoke history recorded unexpected dispatch sequence: ${dispatchSequence}`);
   }
   if (!history.every((entry) => entry.transportLabel === "direct-cdp")) {
@@ -399,7 +447,11 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     targetContinuity: "direct-cdp",
     screenshotCount,
     artifactCount,
+    targetCount: multiTarget.targetCount,
+    downloadArtifactCount: 1,
+    uploadTraceCount,
     networkControlsPassed: true,
+    multiTargetContinuityPassed: true,
   };
 }
 
@@ -461,6 +513,111 @@ async function getSessionHistory(
   )) as Array<{ dispatchMode?: unknown; transportLabel?: unknown }>;
 }
 
+async function getSessionTargets(
+  daemonUrl: string,
+  threadId: string,
+  sessionId: string
+): Promise<BrowserSmokeTarget[]> {
+  return (await getJson(
+    `${daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/targets?threadId=${encodeURIComponent(threadId)}`
+  )) as BrowserSmokeTarget[];
+}
+
+async function verifyBrowserSmokeMultiTarget(input: {
+  daemonUrl: string;
+  threadId: string;
+  sessionId: string;
+  startUrl: string;
+  originalTargetId?: string;
+  label: string;
+}): Promise<{ targetCount: number }> {
+  const initialTargets = await getSessionTargets(input.daemonUrl, input.threadId, input.sessionId);
+  const originalTargetId = input.originalTargetId
+    ?? initialTargets.find((target) => target.active === true)?.targetId
+    ?? initialTargets[0]?.targetId;
+  if (!originalTargetId) {
+    throw new Error(`${input.label} multi-target smoke could not resolve the original target`);
+  }
+
+  const opened = (await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(input.sessionId)}/targets`, {
+    threadId: input.threadId,
+    url: buildSecondaryTargetUrl(input.startUrl),
+  })) as BrowserSmokeTarget;
+  const openedTargetId = requireString(opened.targetId, `${input.label} secondary targetId`);
+  if (openedTargetId === originalTargetId) {
+    throw new Error(`${input.label} multi-target smoke reused the original target id`);
+  }
+
+  const targetsAfterOpen = await getSessionTargets(input.daemonUrl, input.threadId, input.sessionId);
+  if (!targetsAfterOpen.some((target) => target.targetId === originalTargetId)) {
+    throw new Error(`${input.label} multi-target smoke lost the original target`);
+  }
+  if (!targetsAfterOpen.some((target) => target.targetId === openedTargetId)) {
+    throw new Error(`${input.label} multi-target smoke did not list the secondary target`);
+  }
+
+  const activated = (await postJson(
+    `${input.daemonUrl}/browser-sessions/${encodeURIComponent(input.sessionId)}/activate-target`,
+    {
+      threadId: input.threadId,
+      targetId: originalTargetId,
+    }
+  )) as BrowserSmokeTarget;
+  if (requireString(activated.targetId, `${input.label} activated targetId`) !== originalTargetId) {
+    throw new Error(`${input.label} multi-target smoke activated the wrong target`);
+  }
+
+  const finalTargets = await getSessionTargets(input.daemonUrl, input.threadId, input.sessionId);
+  if (finalTargets.length < 2) {
+    throw new Error(`${input.label} multi-target smoke expected at least two targets, saw ${finalTargets.length}`);
+  }
+  return {
+    targetCount: finalTargets.length,
+  };
+}
+
+function buildSecondaryTargetUrl(startUrl: string): string {
+  const url = new URL(startUrl);
+  url.searchParams.set("target", "secondary");
+  return url.toString();
+}
+
+function requireDownloadArtifactId(response: BrowserSmokeResponse, label: string): string {
+  const artifactIds = Array.isArray(response.artifactIds) ? response.artifactIds : [];
+  const artifactId = artifactIds.find((candidate) => candidate.includes("download"));
+  if (!artifactId) {
+    throw new Error(`${label} download smoke did not persist a downloaded-file browser artifact`);
+  }
+  const downloadTrace = response.trace?.find((entry) =>
+    entry.kind === "download" &&
+    entry.output?.matched === true &&
+    entry.output?.fileName === "export.csv" &&
+    typeof entry.output?.sizeBytes === "number" &&
+    entry.output.sizeBytes > 0
+  );
+  if (!downloadTrace) {
+    throw new Error(`${label} download smoke did not record completed download trace metadata`);
+  }
+  return artifactId;
+}
+
+function countUploadTraceEntries(response: BrowserSmokeResponse, label: string): number {
+  const uploadTraceEntries = response.trace?.filter((entry) =>
+    entry.kind === "upload" &&
+    entry.output?.fileName === "export.csv" &&
+    typeof entry.output?.sizeBytes === "number" &&
+    entry.output.sizeBytes > 0
+  ) ?? [];
+  if (uploadTraceEntries.length < 1) {
+    throw new Error(`${label} upload smoke did not record completed upload trace metadata`);
+  }
+  return uploadTraceEntries.length;
+}
+
+function isUploadedExportTitle(value: string): boolean {
+  return value.startsWith("uploaded:") && value.endsWith("export.csv");
+}
+
 async function runDirectCdpReconnectSmoke(input: {
   daemonUrl: string;
   timeoutMs: number;
@@ -519,7 +676,7 @@ async function runDirectCdpReconnectSmoke(input: {
     input.browserSmoke.sessionId
   );
   const dispatchSequence = history.map((entry) => entry.dispatchMode).join(",");
-  if (dispatchSequence !== "spawn,send,resume,resume") {
+  if (dispatchSequence !== "spawn,send,send,resume,resume") {
     throw new Error(`direct-cdp reconnect smoke recorded unexpected dispatch sequence: ${dispatchSequence}`);
   }
   if (!history.every((entry) => entry.transportLabel === "direct-cdp")) {
@@ -615,6 +772,13 @@ async function startDirectCdpSmokeFixture(): Promise<{ url: string; close(): Pro
       res.end(JSON.stringify({ header: Array.isArray(header) ? header.join(",") : header ?? null }));
       return;
     }
+    if (url.pathname === "/export.csv") {
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/csv; charset=utf-8");
+      res.setHeader("content-disposition", "attachment; filename=\"export.csv\"");
+      res.end("id,name\n1,Ada\n");
+      return;
+    }
     if (url.pathname !== "/") {
       res.statusCode = 404;
       res.setHeader("content-type", "text/plain; charset=utf-8");
@@ -669,16 +833,26 @@ function buildDirectCdpSmokeFixtureHtml(): string {
     <label for="relay-input">Direct CDP Input</label>
     <input id="relay-input" aria-label="Direct CDP Input" />
     <button id="relay-submit" type="button">Submit Direct CDP Form</button>
+    <a id="download-link" href="/export.csv" download="export.csv">Download CSV</a>
+    <label for="upload-input">Upload CSV</label>
+    <input id="upload-input" type="file" aria-label="Upload CSV" />
     <div class="spacer"></div>
     <script>
       const input = document.getElementById("relay-input");
       const status = document.getElementById("status");
       const button = document.getElementById("relay-submit");
+      const upload = document.getElementById("upload-input");
       button.addEventListener("click", () => {
         const value = input.value || "empty";
         document.title = "submitted:" + value;
         status.textContent = "submitted:" + value;
         location.hash = "submitted";
+      });
+      upload.addEventListener("change", () => {
+        const file = upload.files && upload.files[0];
+        const name = file ? file.name : "missing";
+        document.title = "uploaded:" + name;
+        status.textContent = "uploaded:" + name;
       });
     </script>
   </body>
@@ -849,6 +1023,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 interface BrowserSmokeResponse {
   sessionId?: string;
+  targetId?: string;
   dispatchMode?: string;
   transportLabel?: string;
   page?: {
@@ -862,6 +1037,14 @@ interface BrowserSmokeResponse {
     input?: Record<string, unknown>;
     output?: Record<string, unknown>;
   }>;
+}
+
+interface BrowserSmokeTarget {
+  targetId?: string;
+  url?: string;
+  title?: string;
+  status?: string;
+  active?: boolean;
 }
 
 async function getJson(url: string): Promise<unknown> {

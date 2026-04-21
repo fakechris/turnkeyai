@@ -9,6 +9,7 @@ export type BrowserTransportFailureBucket =
   | "content-script-unavailable"
   | "action-timeout"
   | "cdp-unreachable"
+  | "artifact-failure"
   | "reconnect-failure"
   | "workflow-log-failure"
   | "local-regression"
@@ -21,6 +22,9 @@ export type BrowserTransportAcceptanceCheckId =
   | "target-continuity"
   | "artifact-continuity"
   | "network-controls"
+  | "multi-target-continuity"
+  | "download-artifact"
+  | "upload-artifact"
   | "reconnect"
   | "workflow-log"
   | "relay-target-discovery"
@@ -123,6 +127,9 @@ const ACCEPTANCE_CHECK_IDS: BrowserTransportAcceptanceCheckId[] = [
   "target-continuity",
   "artifact-continuity",
   "network-controls",
+  "multi-target-continuity",
+  "download-artifact",
+  "upload-artifact",
   "reconnect",
   "workflow-log",
   "relay-target-discovery",
@@ -298,6 +305,19 @@ export function classifyBrowserTransportFailure(input: {
     return "cdp-unreachable";
   }
   if (
+    normalized.includes("download smoke")
+    || normalized.includes("browser download")
+    || normalized.includes("relay download")
+    || normalized.includes("downloaded-file browser artifact")
+    || normalized.includes("download action")
+    || normalized.includes("upload smoke")
+    || normalized.includes("browser upload")
+    || normalized.includes("content script upload")
+    || normalized.includes("upload action")
+  ) {
+    return "artifact-failure";
+  }
+  if (
     normalized.includes("workflow-log")
     || normalized.includes("workflow log")
   ) {
@@ -349,6 +369,9 @@ function summarizeBrowserTransportRun(input: {
       ?? lines.find((line) => line.startsWith("browser-resume-final-url:"))
       ?? lines.find((line) => line.startsWith("browser-final-url:"));
     const peerCount = lines.find((line) => line.startsWith("peer-count:"));
+    const browserTargets = lines.find((line) => line.startsWith("browser-targets:"));
+    const downloadArtifacts = lines.find((line) => line.startsWith("browser-download-artifacts:"));
+    const uploadActions = lines.find((line) => line.startsWith("browser-upload-actions:"));
     const failedChecks = input.acceptanceChecks?.filter((check) => check.status === "failed") ?? [];
     const acceptanceSummary = failedChecks.length > 0
       ? `failed=${failedChecks.map((check) => check.checkId).join(",")}`
@@ -357,7 +380,9 @@ function summarizeBrowserTransportRun(input: {
             input.acceptanceChecks.filter((check) => check.status !== "skipped").length
           }`
         : null;
-    return [input.target, finalUrl, peerCount, acceptanceSummary].filter(Boolean).join(" | ");
+    return [input.target, finalUrl, peerCount, browserTargets, downloadArtifacts, uploadActions, acceptanceSummary]
+      .filter(Boolean)
+      .join(" | ");
   }
   return `${input.target} failed (${input.failureBucket})`;
 }
@@ -376,11 +401,15 @@ export function evaluateBrowserTransportAcceptance(input: {
   const reconnectHistory = parsePositiveLineValue(input.output, "reconnect-history");
   const screenshotCount = parsePositiveLineValue(input.output, "browser-screenshots");
   const artifactCount = parsePositiveLineValue(input.output, "browser-artifacts");
+  const browserTargetCount = parsePositiveLineValue(input.output, "browser-targets");
+  const downloadArtifactCount = parsePositiveLineValue(input.output, "browser-download-artifacts");
+  const uploadActionCount = parsePositiveLineValue(input.output, "browser-upload-actions");
   const browserFinalUrl = findLineValue(input.output, "browser-final-url");
   const browserResumeFinalUrl = findLineValue(input.output, "browser-resume-final-url");
   const transportLabel = findLineValue(input.output, "browser-transport");
   const targetContinuity = findLineValue(input.output, "browser-target-continuity");
   const networkControls = findLineValue(input.output, "browser-network-controls");
+  const multiTarget = findLineValue(input.output, "browser-multi-target");
   const reconnectFinalUrl = findLineValue(input.output, "reconnect-final-url");
   const workflowStatus = findLineValue(input.output, "workflow-log-status");
   const targetCount = parsePositiveLineValue(input.output, "targets");
@@ -418,6 +447,21 @@ export function evaluateBrowserTransportAcceptance(input: {
       "network-controls",
       networkControls === "passed",
       `network-controls=${networkControls ?? "missing"}`
+    ),
+    requiredCheck(
+      "multi-target-continuity",
+      multiTarget === "passed" && browserTargetCount !== null && browserTargetCount >= 2,
+      `multi-target=${multiTarget ?? "missing"} browser-targets=${browserTargetCount ?? "missing"} expected>=2`
+    ),
+    requiredCheck(
+      "download-artifact",
+      downloadArtifactCount !== null && downloadArtifactCount >= 1,
+      `download-artifacts=${downloadArtifactCount ?? "missing"} expected>=1`
+    ),
+    requiredCheck(
+      "upload-artifact",
+      uploadActionCount !== null && uploadActionCount >= 1,
+      `upload-actions=${uploadActionCount ?? "missing"} expected>=1`
     ),
     optionalCheck(
       "reconnect",
