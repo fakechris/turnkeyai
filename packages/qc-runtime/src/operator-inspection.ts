@@ -195,10 +195,22 @@ function listLatestGovernanceAuditEvents(auditEvents: TeamEvent[]): TeamEvent[] 
 }
 
 function resolveGovernanceAuditCaseKey(event: TeamEvent): string {
+  const explicitCaseKey = readExplicitGovernanceAuditCaseKey(event);
+  if (explicitCaseKey) {
+    return `${event.threadId}:${explicitCaseKey}`;
+  }
+  return `${event.threadId}:event:${event.eventId}`;
+}
+
+function buildGovernanceAttentionCaseKey(event: TeamEvent): string {
+  return `governance:${resolveGovernanceAuditCaseKey(event)}`;
+}
+
+function readExplicitGovernanceAuditCaseKey(event: TeamEvent): string | null {
   const payload = event.payload ?? {};
   const permission = isUnknownRecord(payload.permission) ? payload.permission : null;
   const requirement = permission && isUnknownRecord(permission.requirement) ? permission.requirement : null;
-  const explicitCaseKey = firstNonEmptyString(
+  return firstNonEmptyString(
     payload.governanceCaseKey,
     payload.governanceCaseId,
     payload.caseKey,
@@ -208,10 +220,6 @@ function resolveGovernanceAuditCaseKey(event: TeamEvent): string {
     permission?.cacheKey,
     requirement?.cacheKey
   );
-  if (explicitCaseKey) {
-    return `${event.threadId}:${explicitCaseKey}`;
-  }
-  return `${event.threadId}:event:${event.eventId}`;
 }
 
 function isGovernanceAttentionAudit(event: TeamEvent): boolean {
@@ -516,7 +524,7 @@ export function buildOperatorAttentionReport(input: {
       return {
         source: "governance" as const,
         key: event.eventId,
-        caseKey: `governance:${event.eventId}`,
+        caseKey: buildGovernanceAttentionCaseKey(event),
         headline: "",
         recordedAt: event.createdAt,
         severity:

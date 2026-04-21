@@ -37,6 +37,7 @@ import {
   decorateRuntimeChainStatus,
 } from "./runtime-chain-inspection";
 import { buildPromptConsoleReport } from "./prompt-inspection";
+import { evaluateBrowserTransportAcceptance } from "./browser-transport-soak";
 
 export interface BoundedRegressionCaseDescriptor {
   caseId: string;
@@ -2162,7 +2163,7 @@ const BUILT_IN_CASES: RegressionCase[] = [
         summary.governance.attentionCount === 1 &&
         summary.governance.recommendedActionCounts.request_approval === 1 &&
         summary.totalAttentionCount === 1 &&
-        attention.cases[0]?.caseKey === "governance:evt-parallel-publish-approval" &&
+        attention.cases[0]?.caseKey === "governance:thread-1:parallel-publish" &&
         attention.cases[0]?.nextStep === "request_approval" &&
         triage.recommendedEntryPoint === "governance workers 20";
       return buildResult(this, passed, details);
@@ -2755,7 +2756,7 @@ const BUILT_IN_CASES: RegressionCase[] = [
         attention.sourceCounts.replay === 1 &&
         attention.sourceCounts.governance === 1 &&
         attention.sourceCounts.recovery === 1 &&
-        casesByKey["governance:evt-op"]?.caseState === "blocked" &&
+        casesByKey["governance:thread-1:event:evt-op"]?.caseState === "blocked" &&
         casesByKey["flow:flow-op:group-op"]?.caseState === "recovering" &&
         casesByKey["incident:task-op"]?.caseState === "waiting_manual" &&
         casesByKey["incident:task-op"]?.itemCount === 2 &&
@@ -2933,7 +2934,7 @@ const BUILT_IN_CASES: RegressionCase[] = [
         `browser=${summary.attentionOverview?.resolvedRecentCases?.[0]?.browserContinuityState ?? "none"}`,
       ];
       const passed =
-        summary.attentionOverview?.activeCases?.[0]?.caseKey === "governance:evt-card" &&
+        summary.attentionOverview?.activeCases?.[0]?.caseKey === "governance:thread-1:event:evt-card" &&
         summary.attentionOverview?.activeCases?.[0]?.gate === "fallback_browser" &&
         summary.attentionOverview?.activeCases?.[0]?.action === "fallback_browser" &&
         summary.attentionOverview?.activeCases?.[0]?.reasonPreview === "browser" &&
@@ -5543,7 +5544,781 @@ const BUILT_IN_CASES: RegressionCase[] = [
       return buildResult(this, Boolean(passed), details);
     },
   },
+  {
+    caseId: "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+    title: "Browser transport real-world E2E keeps replay and operator aligned",
+    area: "browser",
+    summary:
+      "Relay and direct-CDP long-chain markers, recovered replay continuity, and operator resolved case cards should agree for a real browser task path.",
+    run() {
+      const relayChecks = evaluateBrowserTransportAcceptance({
+        target: "relay",
+        exitCode: 0,
+        relayPeerCount: 2,
+        verifyReconnect: true,
+        verifyWorkflowLog: true,
+        output: buildBrowserTransportAcceptanceOutput("relay"),
+      });
+      const directChecks = evaluateBrowserTransportAcceptance({
+        target: "direct-cdp",
+        exitCode: 0,
+        relayPeerCount: 2,
+        verifyReconnect: true,
+        verifyWorkflowLog: true,
+        output: buildBrowserTransportAcceptanceOutput("direct-cdp"),
+      });
+      const records = [
+        {
+          replayId: "task-transport-relay:worker:worker:browser:task:task-transport-relay",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 10,
+          threadId: "thread-1",
+          taskId: "task-transport-relay",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "relay target detached during multi-step research flow",
+          failure: {
+            category: "stale_session",
+            layer: "worker",
+            retryable: true,
+            message: "relay target detached during multi-step research flow",
+            recommendedAction: "resume",
+          },
+          metadata: {
+            payload: {
+              sessionId: "browser-session-transport",
+              targetId: "target-transport-relay",
+              transportMode: "relay",
+              transportLabel: "chrome-relay",
+              transportPeerId: "peer-transport-1",
+              transportTargetId: "chrome-tab:transport-main",
+              resumeMode: "warm",
+              targetResolution: "reconnect",
+            },
+          },
+        },
+        {
+          replayId: "task-transport-relay-follow:scheduled",
+          layer: "scheduled",
+          status: "completed",
+          recordedAt: 20,
+          threadId: "thread-1",
+          taskId: "task-transport-relay-follow",
+          roleId: "role-operator",
+          summary: "relay reconnect recovery dispatched",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-transport-relay",
+              attemptId: "recovery:task-transport-relay:attempt:1",
+              dispatchReplayId: "task-transport-relay-follow:scheduled",
+            },
+          },
+        },
+        {
+          replayId: "task-transport-relay-follow:worker:worker:browser:task:task-transport-relay-follow",
+          layer: "worker",
+          status: "completed",
+          recordedAt: 30,
+          threadId: "thread-1",
+          taskId: "task-transport-relay-follow",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "relay reconnected the original target after upload/download and network controls completed",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-transport-relay",
+              attemptId: "recovery:task-transport-relay:attempt:1",
+              dispatchReplayId: "task-transport-relay-follow:scheduled",
+            },
+            payload: {
+              sessionId: "browser-session-transport",
+              targetId: "target-transport-relay",
+              transportMode: "relay",
+              transportLabel: "chrome-relay",
+              transportPeerId: "peer-transport-1",
+              transportTargetId: "chrome-tab:transport-main",
+              resumeMode: "warm",
+              targetResolution: "reconnect",
+            },
+          },
+        },
+        {
+          replayId: "task-transport-cdp:worker:worker:browser:task:task-transport-cdp",
+          layer: "worker",
+          status: "completed",
+          recordedAt: 40,
+          threadId: "thread-1",
+          taskId: "task-transport-cdp",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "direct-cdp completed the same workflow through a stable page target",
+          metadata: {
+            payload: {
+              sessionId: "browser-session-cdp-transport",
+              targetId: "target-transport-cdp",
+              transportMode: "direct-cdp",
+              transportLabel: "direct-cdp",
+              transportTargetId: "page:manager-transport:1",
+              resumeMode: "hot",
+              targetResolution: "attach",
+            },
+          },
+        },
+      ] satisfies ReplayRecord[];
+      const relayDiagnostics = {
+        peers: [
+          {
+            peerId: "peer-transport-1",
+            transportLabel: "chrome-relay",
+            lastSeenAt: 42,
+            status: "online" as const,
+          },
+        ],
+        targets: [
+          {
+            relayTargetId: "chrome-tab:transport-main",
+            peerId: "peer-transport-1",
+            url: "http://127.0.0.1:4010/#submitted",
+            title: "Transport acceptance",
+            status: "attached" as const,
+            lastSeenAt: 42,
+          },
+        ],
+        actions: [],
+      };
+      const replayConsole = buildReplayConsoleReport(records, 10, [], relayDiagnostics);
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: records,
+        recoveryRuns: [],
+        relayDiagnostics,
+        limit: 10,
+      });
+      const relayBundle = buildReplayIncidentBundle(records, "task-transport-relay", relayDiagnostics);
+      const resolvedByKey = Object.fromEntries(
+        (operatorSummary.attentionOverview?.resolvedRecentCases ?? []).map((entry) => [entry.caseKey, entry])
+      );
+      const relayPassed = relayChecks.filter((check) => check.status === "passed").length;
+      const directPassed = directChecks.filter((check) => check.status === "passed").length;
+      const directSkipped = directChecks.filter((check) => check.status === "skipped").length;
+      const details = [
+        `relayChecks=${relayPassed}/${relayChecks.length}`,
+        `directChecks=${directPassed}/${directChecks.length}`,
+        `directSkipped=${directSkipped}`,
+        `open=${replayConsole.openIncidents}`,
+        `resolved=${replayConsole.recoveredGroups}`,
+        `relayWorkflow=${relayBundle?.recoveryWorkflow?.status ?? "-"}`,
+        `relayTransport=${resolvedByKey["incident:task-transport-relay"]?.browserTransportLabel ?? "-"}`,
+        `cdpTransport=${resolvedByKey["incident:task-transport-cdp"]?.browserTransportLabel ?? "-"}`,
+      ];
+      const passed =
+        relayPassed === relayChecks.length &&
+        directSkipped === 2 &&
+        directPassed === directChecks.length - directSkipped &&
+        replayConsole.openIncidents === 0 &&
+        replayConsole.recoveredGroups === 2 &&
+        relayBundle?.recoveryWorkflow?.status === "recovered" &&
+        relayBundle.browserContinuity?.transportLabel === "chrome-relay" &&
+        relayBundle.browserContinuity?.relayPeerStatus === "online" &&
+        relayBundle.browserContinuity?.relayTargetStatus === "attached" &&
+        (operatorSummary.attentionOverview?.activeCases?.length ?? 0) === 0 &&
+        resolvedByKey["incident:task-transport-relay"]?.browserContinuityState === "recovered" &&
+        resolvedByKey["incident:task-transport-relay"]?.browserTransportLabel === "chrome-relay" &&
+        resolvedByKey["incident:task-transport-cdp"]?.browserContinuityState === "stable" &&
+        resolvedByKey["incident:task-transport-cdp"]?.browserTransportLabel === "direct-cdp";
+      return buildResult(this, Boolean(passed), details);
+    },
+  },
+  {
+    caseId: "operator-case-semantics-separate-active-manual-from-resolved-recent",
+    title: "Operator case semantics separate active manual work from resolved recent cases",
+    area: "recovery",
+    summary:
+      "A recovered browser continuity path that still has an active manual recovery run should remain active only, not duplicate into resolved recent cards.",
+    run() {
+      const records = [
+        {
+          replayId: "task-semantics:worker:worker:browser:task:task-semantics",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 10,
+          threadId: "thread-1",
+          taskId: "task-semantics",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "browser detached before operator verification",
+          failure: {
+            category: "stale_session",
+            layer: "worker",
+            retryable: true,
+            message: "browser detached before operator verification",
+            recommendedAction: "resume",
+          },
+        },
+        {
+          replayId: "task-semantics-follow:scheduled",
+          layer: "scheduled",
+          status: "completed",
+          recordedAt: 20,
+          threadId: "thread-1",
+          taskId: "task-semantics-follow",
+          roleId: "role-operator",
+          summary: "manual recovery follow-up dispatched",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-semantics",
+              attemptId: "recovery:task-semantics:attempt:1",
+              dispatchReplayId: "task-semantics-follow:scheduled",
+            },
+          },
+        },
+        {
+          replayId: "task-semantics-follow:worker:worker:browser:task:task-semantics-follow",
+          layer: "worker",
+          status: "completed",
+          recordedAt: 30,
+          threadId: "thread-1",
+          taskId: "task-semantics-follow",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "browser continuity recovered but operator confirmation remains pending",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-semantics",
+              attemptId: "recovery:task-semantics:attempt:1",
+              dispatchReplayId: "task-semantics-follow:scheduled",
+            },
+            payload: {
+              sessionId: "browser-session-semantics",
+              targetId: "target-semantics",
+              resumeMode: "warm",
+              targetResolution: "reconnect",
+            },
+          },
+        },
+      ] satisfies ReplayRecord[];
+      const recoveryRun: RecoveryRun = {
+        recoveryRunId: buildRecoveryRunId("task-semantics"),
+        threadId: "thread-1",
+        sourceGroupId: "task-semantics",
+        latestStatus: "partial",
+        status: "waiting_external",
+        nextAction: "inspect_then_resume",
+        autoDispatchReady: false,
+        requiresManualIntervention: true,
+        latestSummary: "Browser continuity recovered; waiting on operator confirmation.",
+        waitingReason: "operator confirmation pending",
+        browserSession: {
+          sessionId: "browser-session-semantics",
+          targetId: "target-semantics",
+          resumeMode: "warm",
+        },
+        currentAttemptId: "recovery:task-semantics:attempt:1",
+        attempts: [
+          {
+            attemptId: "recovery:task-semantics:attempt:1",
+            action: "resume",
+            requestedAt: 20,
+            updatedAt: 30,
+            status: "waiting_external",
+            nextAction: "inspect_then_resume",
+            summary: "Browser continuity recovered; waiting on operator confirmation.",
+            dispatchedTaskId: "task-semantics-follow",
+            browserOutcome: "detached_target_recovered",
+          },
+        ],
+        createdAt: 20,
+        updatedAt: 30,
+      };
+      const replayConsole = buildReplayConsoleReport(records, 10, [recoveryRun]);
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: records,
+        recoveryRuns: [recoveryRun],
+        limit: 10,
+      });
+      const attention = buildOperatorAttentionReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: records,
+        recoveryRuns: [recoveryRun],
+        limit: 10,
+      });
+      const activeCase = operatorSummary.attentionOverview?.activeCases?.find((entry) => entry.caseKey === "incident:task-semantics");
+      const details = [
+        `consoleResolved=${replayConsole.caseStateCounts.resolved ?? 0}`,
+        `consoleOperator=${replayConsole.operatorCaseStateCounts.waiting_manual ?? 0}`,
+        `active=${activeCase?.caseState ?? "-"}`,
+        `resolvedRecent=${operatorSummary.attentionOverview?.resolvedRecentCases?.length ?? 0}`,
+        `items=${attention.totalItems}`,
+        `cases=${attention.uniqueCaseCount}`,
+      ];
+      const passed =
+        replayConsole.caseStateCounts.resolved === 1 &&
+        replayConsole.operatorCaseStateCounts.waiting_manual === 1 &&
+        operatorSummary.totalAttentionCount === 1 &&
+        activeCase?.caseState === "waiting_manual" &&
+        activeCase.gate === "waiting for external/manual follow-up" &&
+        activeCase.browserContinuityState === "recovered" &&
+        (operatorSummary.attentionOverview?.resolvedRecentCases?.length ?? 0) === 0 &&
+        attention.totalItems === 1 &&
+        attention.uniqueCaseCount === 1 &&
+        attention.cases[0]?.caseKey === "incident:task-semantics";
+      return buildResult(this, Boolean(passed), details);
+    },
+  },
+  {
+    caseId: "context-real-task-attachment-pressure-keeps-critical-carry-forward",
+    title: "Context real-task attachment pressure keeps critical carry-forward",
+    area: "context",
+    summary:
+      "A real task with large attachments and tool output should retain pending work, waiting point, decisions, artifacts, and runtime/operator entry points.",
+    run() {
+      const progressEvents: RuntimeProgressEvent[] = [
+        {
+          progressId: "progress:context-attachment:compaction",
+          threadId: "thread-1",
+          chainId: "flow:context-attachment",
+          spanId: "role:lead",
+          subjectKind: "role_run",
+          subjectId: "role:lead",
+          phase: "degraded",
+          progressKind: "boundary",
+          summary: "Attachment-heavy research task compacted raw evidence but retained critical carry-forward.",
+          recordedAt: 60,
+          flowId: "context-attachment",
+          taskId: "task-context-attachment",
+          roleId: "lead",
+          metadata: {
+            boundaryKind: "prompt_compaction",
+            modelId: "gpt-5",
+            modelChainId: "real_task_pressure",
+            assemblyFingerprint: "fp-context-attachment",
+            compactedSegments: ["recent-turns", "retrieved-memory", "worker-evidence"],
+            omittedSections: ["raw-worker-evidence", "inline-attachments"],
+            usedArtifacts: ["artifact:pricing-pdf", "artifact:browser-snapshot", "artifact:downloaded-csv"],
+            tokenEstimate: {
+              inputTokens: 98_000,
+              outputTokensReserved: 8_000,
+              totalProjectedTokens: 106_000,
+              overBudget: true,
+            },
+            envelopeHint: {
+              toolResultCount: 31,
+              toolResultBytes: 1_400_000,
+              inlineAttachmentBytes: 760_000,
+              inlineImageCount: 4,
+              inlineImageBytes: 260_000,
+              inlinePdfCount: 2,
+              inlinePdfBytes: 500_000,
+              multimodalPartCount: 6,
+            },
+            contextDiagnostics: {
+              continuity: {
+                hasThreadSummary: true,
+                hasSessionMemory: true,
+                hasRoleScratchpad: true,
+                hasContinuationContext: true,
+                carriesPendingWork: true,
+                carriesWaitingOn: true,
+                carriesOpenQuestions: true,
+                carriesDecisionOrConstraint: true,
+              },
+              recentTurns: {
+                availableCount: 88,
+                selectedCount: 24,
+                packedCount: 6,
+                salientEarlierCount: 12,
+                compacted: true,
+              },
+              retrievedMemory: {
+                availableCount: 36,
+                selectedCount: 16,
+                packedCount: 4,
+                compacted: true,
+                userPreferenceCount: 2,
+                threadMemoryCount: 6,
+                sessionMemoryCount: 5,
+                knowledgeNoteCount: 2,
+                journalNoteCount: 1,
+              },
+              workerEvidence: {
+                totalCount: 64,
+                admittedCount: 44,
+                selectedCount: 20,
+                packedCount: 5,
+                compacted: true,
+                promotableCount: 8,
+                observationalCount: 36,
+                fullCount: 7,
+                summaryOnlyCount: 37,
+                continuationRelevantCount: 13,
+              },
+            },
+          },
+        },
+        {
+          progressId: "progress:context-attachment:reduction",
+          threadId: "thread-1",
+          chainId: "flow:context-attachment",
+          spanId: "browser:session-context-attachment",
+          subjectKind: "browser_session",
+          subjectId: "session-context-attachment",
+          phase: "waiting",
+          progressKind: "boundary",
+          summary: "Request reduction retained browser verification, downloaded CSV, and unresolved approval question.",
+          recordedAt: 70,
+          flowId: "context-attachment",
+          taskId: "task-context-attachment",
+          roleId: "lead",
+          metadata: {
+            boundaryKind: "request_envelope_reduction",
+            modelId: "gpt-5",
+            modelChainId: "real_task_pressure",
+            assemblyFingerprint: "fp-context-attachment",
+            reductionLevel: "reference-only",
+            compactedSegments: ["recent-turns", "retrieved-memory", "worker-evidence"],
+            omittedSections: ["raw-worker-evidence", "inline-attachments", "raw-download"],
+            usedArtifacts: ["artifact:browser-snapshot", "artifact:downloaded-csv"],
+            tokenEstimate: {
+              inputTokens: 132_000,
+              outputTokensReserved: 6_000,
+              totalProjectedTokens: 138_000,
+              overBudget: true,
+            },
+            envelopeHint: {
+              toolResultCount: 31,
+              toolResultBytes: 1_400_000,
+              inlineAttachmentBytes: 760_000,
+              inlineImageCount: 4,
+              inlineImageBytes: 260_000,
+              inlinePdfCount: 2,
+              inlinePdfBytes: 500_000,
+              multimodalPartCount: 6,
+            },
+            contextDiagnostics: {
+              continuity: {
+                hasThreadSummary: true,
+                hasSessionMemory: true,
+                hasRoleScratchpad: true,
+                hasContinuationContext: true,
+                carriesPendingWork: true,
+                carriesWaitingOn: true,
+                carriesOpenQuestions: true,
+                carriesDecisionOrConstraint: true,
+              },
+              recentTurns: {
+                availableCount: 88,
+                selectedCount: 24,
+                packedCount: 4,
+                salientEarlierCount: 12,
+                compacted: true,
+              },
+              retrievedMemory: {
+                availableCount: 36,
+                selectedCount: 16,
+                packedCount: 3,
+                compacted: true,
+                userPreferenceCount: 2,
+                threadMemoryCount: 6,
+                sessionMemoryCount: 5,
+                knowledgeNoteCount: 2,
+                journalNoteCount: 1,
+              },
+              workerEvidence: {
+                totalCount: 64,
+                admittedCount: 44,
+                selectedCount: 14,
+                packedCount: 3,
+                compacted: true,
+                promotableCount: 8,
+                observationalCount: 36,
+                fullCount: 7,
+                summaryOnlyCount: 37,
+                continuationRelevantCount: 13,
+              },
+            },
+          },
+        },
+      ];
+      const promptReport = buildPromptConsoleReport(progressEvents);
+      const chain: RuntimeChain = {
+        chainId: "flow:context-attachment",
+        threadId: "thread-1",
+        rootKind: "flow",
+        rootId: "context-attachment",
+        flowId: "context-attachment",
+        createdAt: 50,
+        updatedAt: 70,
+      };
+      const runtimeSummary = buildRuntimeSummaryReport({
+        entries: [
+          {
+            chain,
+            status: {
+              chainId: chain.chainId,
+              threadId: chain.threadId,
+              activeSpanId: "browser:session-context-attachment",
+              activeSubjectKind: "browser_session",
+              activeSubjectId: "session-context-attachment",
+              phase: "waiting",
+              continuityState: "waiting",
+              waitingReason: "waiting on browser snapshot and downloaded CSV verification",
+              currentWaitingPoint: "Verify downloaded CSV totals against the browser pricing snapshot before approving final synthesis.",
+              latestSummary: "Attachment pressure reduced raw evidence while preserving the active verification blocker.",
+              attention: true,
+              updatedAt: 70,
+            },
+          },
+        ],
+        limit: 5,
+        now: 70,
+      });
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: [],
+        recoveryRuns: [],
+        progressEvents,
+        runtimeSummary,
+        limit: 5,
+      });
+      const attention = buildOperatorAttentionReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: [],
+        recoveryRuns: [],
+        progressEvents,
+        limit: 5,
+      });
+      const triage = buildOperatorTriageReport({
+        summary: operatorSummary,
+        attention,
+        runtime: runtimeSummary,
+        limit: 5,
+      });
+      const latestBoundary = promptReport.latestBoundaries[0];
+      const promptCase = attention.cases.find((entry) => entry.caseKey === "prompt:task-context-attachment");
+      const details = [
+        `boundaries=${promptReport.totalBoundaries}`,
+        `reduction=${promptReport.reductionLevelCounts["reference-only"] ?? 0}`,
+        `pending=${promptReport.continuityCarryForwardCounts.pendingWork}`,
+        `artifacts=${latestBoundary?.usedArtifacts?.join(",") ?? "-"}`,
+        `runtime=${runtimeSummary.waitingCount}`,
+        `promptCase=${promptCase?.caseState ?? "-"}`,
+        `entry=${triage.recommendedEntryPoint ?? "-"}`,
+      ];
+      const passed =
+        promptReport.totalBoundaries === 2 &&
+        promptReport.compactionCount === 1 &&
+        promptReport.reductionCount === 1 &&
+        promptReport.reductionLevelCounts["reference-only"] === 1 &&
+        promptReport.continuityCarryForwardCounts.pendingWork === 2 &&
+        promptReport.continuityCarryForwardCounts.waitingOn === 2 &&
+        promptReport.continuityCarryForwardCounts.openQuestions === 2 &&
+        promptReport.continuityCarryForwardCounts.decisionsOrConstraints === 2 &&
+        promptReport.totalRecentTurnsPacked === 10 &&
+        promptReport.totalRetrievedMemoryPacked === 7 &&
+        promptReport.totalWorkerEvidencePacked === 8 &&
+        latestBoundary?.tokenEstimate?.overBudget === true &&
+        latestBoundary?.usedArtifacts?.includes("artifact:downloaded-csv") === true &&
+        runtimeSummary.waitingCount === 1 &&
+        runtimeSummary.activeChains[0]?.currentWaitingPoint ===
+          "Verify downloaded CSV totals against the browser pricing snapshot before approving final synthesis." &&
+        operatorSummary.promptAttentionCount === 2 &&
+        promptCase?.caseState === "blocked" &&
+        promptCase.itemCount === 2 &&
+        triage.focusAreas.some((area) => area.commandHint === "prompt-console 10") &&
+        triage.focusAreas.some((area) => area.commandHint === "runtime-waiting 10");
+      return buildResult(this, Boolean(passed), details);
+    },
+  },
+  {
+    caseId: "parallel-governance-contract-dedupes-retried-audits-by-case",
+    title: "Parallel governance contract dedupes retried audits by case",
+    area: "governance",
+    summary:
+      "Repeated approval audits for one governed parallel merge should stay one active operator case and close only after official read-back proceeds.",
+    run() {
+      const flows = [buildReadyParallelPublishFlow()];
+      const permissionRecords: PermissionCacheRecord[] = [
+        {
+          cacheKey: "perm-parallel-contract",
+          threadId: "thread-1",
+          workerType: "explore",
+          requirement: {
+            level: "approval",
+            scope: "publish",
+            rationale: "publishing merged synthesis requires approval",
+            cacheKey: "perm-parallel-contract",
+          },
+          decision: "prompt_required",
+          createdAt: 10,
+          updatedAt: 11,
+        },
+      ];
+      const blockedEvents: TeamEvent[] = [
+        {
+          eventId: "evt-parallel-contract-blocked-1",
+          threadId: "thread-1",
+          kind: "audit.logged",
+          createdAt: 20,
+          payload: {
+            governanceCaseKey: "parallel-contract",
+            workerType: "explore",
+            status: "blocked",
+            transport: "browser",
+            trustLevel: "observational",
+            admissionMode: "summary_only",
+            permission: {
+              recommendedAction: "request_approval",
+            },
+          },
+        },
+        {
+          eventId: "evt-parallel-contract-blocked-2",
+          threadId: "thread-1",
+          kind: "audit.logged",
+          createdAt: 30,
+          payload: {
+            workerType: "explore",
+            status: "blocked",
+            transport: "browser",
+            trustLevel: "observational",
+            admissionMode: "summary_only",
+            permission: {
+              cacheKey: "parallel-contract",
+              recommendedAction: "request_approval",
+            },
+          },
+        },
+      ];
+      const closedEvents: TeamEvent[] = [
+        ...blockedEvents,
+        {
+          eventId: "evt-parallel-contract-readback",
+          threadId: "thread-1",
+          kind: "audit.logged",
+          createdAt: 40,
+          payload: {
+            governanceCaseKey: "parallel-contract",
+            workerType: "explore",
+            status: "completed",
+            transport: "official_api",
+            trustLevel: "promotable",
+            admissionMode: "full",
+            permission: {
+              recommendedAction: "proceed",
+            },
+          },
+        },
+      ];
+      const activeSummary = buildOperatorSummaryReport({
+        flows,
+        permissionRecords,
+        events: blockedEvents,
+        replays: [],
+        recoveryRuns: [],
+        runtimeSummary: buildRuntimeSummaryReport({ entries: [], limit: 5, now: 30 }),
+        limit: 5,
+      });
+      const activeAttention = buildOperatorAttentionReport({
+        flows,
+        permissionRecords,
+        events: blockedEvents,
+        replays: [],
+        recoveryRuns: [],
+        limit: 5,
+      });
+      const closedSummary = buildOperatorSummaryReport({
+        flows,
+        permissionRecords,
+        events: closedEvents,
+        replays: [],
+        recoveryRuns: [],
+        runtimeSummary: buildRuntimeSummaryReport({ entries: [], limit: 5, now: 40 }),
+        limit: 5,
+      });
+      const closedAttention = buildOperatorAttentionReport({
+        flows,
+        permissionRecords,
+        events: closedEvents,
+        replays: [],
+        recoveryRuns: [],
+        limit: 5,
+      });
+      const details = [
+        `activeGovernance=${activeSummary.governance.attentionCount}`,
+        `activeCases=${activeAttention.uniqueCaseCount}`,
+        `case=${activeAttention.cases[0]?.caseKey ?? "-"}`,
+        `approvalAudits=${activeSummary.governance.recommendedActionCounts.request_approval ?? 0}`,
+        `closedGovernance=${closedSummary.governance.attentionCount}`,
+        `closedCases=${closedAttention.uniqueCaseCount}`,
+      ];
+      const passed =
+        activeSummary.flow.attentionCount === 0 &&
+        activeSummary.flow.shardStatusCounts.ready_to_merge === 1 &&
+        activeSummary.governance.attentionCount === 1 &&
+        activeSummary.governance.recommendedActionCounts.request_approval === 2 &&
+        activeSummary.totalAttentionCount === 1 &&
+        activeAttention.totalItems === 1 &&
+        activeAttention.uniqueCaseCount === 1 &&
+        activeAttention.cases[0]?.caseKey === "governance:thread-1:parallel-contract" &&
+        activeAttention.cases[0]?.itemCount === 1 &&
+        activeAttention.cases[0]?.nextStep === "request_approval" &&
+        closedSummary.governance.attentionCount === 0 &&
+        closedSummary.governance.recommendedActionCounts.request_approval === 2 &&
+        closedSummary.governance.recommendedActionCounts.proceed === 1 &&
+        closedSummary.totalAttentionCount === 0 &&
+        closedAttention.totalItems === 0 &&
+        closedAttention.uniqueCaseCount === 0;
+      return buildResult(this, Boolean(passed), details);
+    },
+  },
 ];
+
+function buildBrowserTransportAcceptanceOutput(target: "relay" | "direct-cdp"): string {
+  if (target === "relay") {
+    return [
+      "relay smoke passed",
+      "targets: 2",
+      "peer-count: 2",
+      "browser-final-url: http://127.0.0.1:4010/#submitted",
+      "browser-history: 5",
+      "browser-transport: chrome-relay",
+      "browser-target-continuity: chrome-tab",
+      "browser-screenshots: 1",
+      "browser-artifacts: 3",
+      "browser-network-controls: passed",
+      "browser-resume-final-url: http://127.0.0.1:4010/#submitted",
+      "reconnect-history: 5",
+      "reconnect-final-url: http://127.0.0.1:4010/#submitted",
+      "workflow-log-status: passed",
+    ].join("\n");
+  }
+  return [
+    "direct-cdp smoke passed",
+    "browser-final-url: http://127.0.0.1:4010/#submitted",
+    "browser-history: 5",
+    "browser-transport: direct-cdp",
+    "browser-target-continuity: direct-cdp",
+    "browser-screenshots: 1",
+    "browser-artifacts: 3",
+    "browser-network-controls: passed",
+    "browser-resume-final-url: http://127.0.0.1:4010/#submitted",
+    "reconnect-history: 5",
+    "reconnect-final-url: http://127.0.0.1:4010/#submitted",
+    "workflow-log-status: passed",
+  ].join("\n");
+}
 
 function buildReadyParallelPublishFlow(): FlowLedger {
   return {

@@ -24,6 +24,7 @@ test("scenario parity acceptance suite lists scenario families", () => {
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "real-world-governed-publish-approval-reject-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "real-world-parallel-follow-up-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "browser-transport-reconnect-workflow"));
+  assert.ok(scenarios.some((scenario) => scenario.scenarioId === "phase1-production-closure"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "observability-live-chain-visibility"));
   assert.ok(
     scenarios
@@ -54,6 +55,11 @@ test("scenario parity acceptance suite lists scenario families", () => {
     scenarios
       .find((scenario) => scenario.scenarioId === "governance-success-fallback-approval")
       ?.caseIds.includes("parallel-governed-merge-closes-after-readback")
+  );
+  assert.ok(
+    scenarios
+      .find((scenario) => scenario.scenarioId === "phase1-production-closure")
+      ?.caseIds.includes("parallel-governance-contract-dedupes-retried-audits-by-case")
   );
 });
 

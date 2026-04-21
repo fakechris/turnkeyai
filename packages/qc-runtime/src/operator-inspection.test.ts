@@ -505,7 +505,7 @@ test("operator inspection builds one operator summary from flow, replay, and gov
   assert.equal(summary.attentionOverview?.activeCases?.length, 4);
   assert.deepEqual(
     (summary.attentionOverview?.activeCases ?? []).map((entry) => entry.caseKey),
-    ["prompt:task-op", "governance:evt-op", "flow:flow-op:group-op", "incident:task-op"]
+    ["prompt:task-op", "governance:thread-1:event:evt-op", "flow:flow-op:group-op", "incident:task-op"]
   );
   const activeCasesByKey = Object.fromEntries((summary.attentionOverview?.activeCases ?? []).map((entry) => [entry.caseKey, entry]));
   assert.match(activeCasesByKey["prompt:task-op"]?.headline ?? "", /prompt:task-op blocked via prompt/);
@@ -514,13 +514,13 @@ test("operator inspection builds one operator summary from flow, replay, and gov
   assert.equal(activeCasesByKey["prompt:task-op"]?.reasonPreview, "reference-only");
   assert.equal(activeCasesByKey["prompt:task-op"]?.nextStep, "inspect_prompt_boundary");
   assert.match(activeCasesByKey["prompt:task-op"]?.latestUpdate ?? "", /reference-only/);
-  assert.match(activeCasesByKey["governance:evt-op"]?.headline ?? "", /governance:evt-op blocked via governance/);
+  assert.match(activeCasesByKey["governance:thread-1:event:evt-op"]?.headline ?? "", /governance:thread-1:event:evt-op blocked via governance/);
   assert.match(activeCasesByKey["flow:flow-op:group-op"]?.headline ?? "", /flow:flow-op:group-op recovering via flow/);
-  assert.equal(activeCasesByKey["governance:evt-op"]?.gate, "fallback_browser");
-  assert.equal(activeCasesByKey["governance:evt-op"]?.action, "fallback_browser");
-  assert.equal(activeCasesByKey["governance:evt-op"]?.reasonPreview, "browser");
-  assert.equal(activeCasesByKey["governance:evt-op"]?.nextStep, "fallback_browser");
-  assert.match(activeCasesByKey["governance:evt-op"]?.latestUpdate ?? "", /requires attention/);
+  assert.equal(activeCasesByKey["governance:thread-1:event:evt-op"]?.gate, "fallback_browser");
+  assert.equal(activeCasesByKey["governance:thread-1:event:evt-op"]?.action, "fallback_browser");
+  assert.equal(activeCasesByKey["governance:thread-1:event:evt-op"]?.reasonPreview, "browser");
+  assert.equal(activeCasesByKey["governance:thread-1:event:evt-op"]?.nextStep, "fallback_browser");
+  assert.match(activeCasesByKey["governance:thread-1:event:evt-op"]?.latestUpdate ?? "", /requires attention/);
   assert.equal(activeCasesByKey["incident:task-op"]?.gate, "waiting for approval");
   assert.equal(activeCasesByKey["incident:task-op"]?.action, "request_approval");
   assert.deepEqual(activeCasesByKey["incident:task-op"]?.allowedActions, ["approve", "reject"]);
@@ -1223,7 +1223,7 @@ test("operator inspection keeps attention overview stable when item list is limi
   assert.equal(report.caseStateCounts.recovering, 1);
   assert.equal(report.severityCounts.critical, 2);
   assert.equal(report.cases.length, 1);
-  assert.equal(report.cases[0]?.caseKey, "governance:evt-limit");
+  assert.equal(report.cases[0]?.caseKey, "governance:thread-1:event:evt-limit");
 });
 
 test("operator inspection surfaces direct-cdp reconnect diagnostics in replay attention", () => {

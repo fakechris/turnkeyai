@@ -230,6 +230,19 @@ const SCENARIOS: ScenarioParityAcceptanceScenarioDescriptor[] = [
     ],
   },
   {
+    scenarioId: "phase1-production-closure",
+    area: "operator",
+    title: "Phase 1 production closure",
+    summary:
+      "验证 Phase 1 收尾面覆盖 browser transport、operator case 语义、context 高压附件任务与 parallel/governance contract。",
+    caseIds: [
+      "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "operator-case-semantics-separate-active-manual-from-resolved-recent",
+      "context-real-task-attachment-pressure-keeps-critical-carry-forward",
+      "parallel-governance-contract-dedupes-retried-audits-by-case",
+    ],
+  },
+  {
     scenarioId: "observability-live-chain-visibility",
     area: "observability",
     title: "整链活态可见与单查定位",

@@ -17,13 +17,16 @@ test("validation suite lists regression, soak, failure, acceptance, and real-wor
   assert.ok(suites.find((suite) => suite.suiteId === "soak")?.items.some((item) => item.itemId === "browser-recovery-long-chain"));
   assert.ok(suites.find((suite) => suite.suiteId === "soak")?.items.some((item) => item.itemId === "governance-approval-fallback-closure"));
   assert.ok(suites.find((suite) => suite.suiteId === "soak")?.items.some((item) => item.itemId === "parallel-retry-and-merge-closure"));
+  assert.ok(suites.find((suite) => suite.suiteId === "soak")?.items.some((item) => item.itemId === "phase1-production-closure-long-chain"));
   assert.ok(suites.find((suite) => suite.suiteId === "failure")?.items.some((item) => item.itemId === "browser-detach-reopen-recovery"));
   assert.ok(suites.find((suite) => suite.suiteId === "acceptance")?.items.some((item) => item.itemId === "browser-spawn-send-resume"));
   assert.ok(suites.find((suite) => suite.suiteId === "acceptance")?.items.some((item) => item.itemId === "browser-ownership-reclaim-isolation"));
   assert.ok(suites.find((suite) => suite.suiteId === "acceptance")?.items.some((item) => item.itemId === "real-world-governed-publish-runbook"));
+  assert.ok(suites.find((suite) => suite.suiteId === "acceptance")?.items.some((item) => item.itemId === "phase1-production-closure"));
   assert.ok(suites.find((suite) => suite.suiteId === "realworld")?.items.some((item) => item.itemId === "browser-research-recovery-runbook"));
   assert.ok(suites.find((suite) => suite.suiteId === "realworld")?.items.some((item) => item.itemId === "governed-publish-approval-runbook"));
   assert.ok(suites.find((suite) => suite.suiteId === "realworld")?.items.some((item) => item.itemId === "governed-publish-readback-verification"));
+  assert.ok(suites.find((suite) => suite.suiteId === "realworld")?.items.some((item) => item.itemId === "phase1-production-closure-runbook"));
 });
 
 test("validation suite runs all validation catalogs", () => {
