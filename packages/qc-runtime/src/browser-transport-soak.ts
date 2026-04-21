@@ -271,89 +271,90 @@ export function classifyBrowserTransportFailure(input: {
 
   const normalized = input.output.toLowerCase();
 
-  if (
-    normalized.includes("no supported chromium executable found")
-    || normalized.includes("enoent")
-    || normalized.includes("cannot find chrome")
-  ) {
+  if (includesAny(normalized, [
+    "no supported chromium executable found",
+    "enoent",
+    "cannot find chrome",
+  ])) {
     return "browser-launch-failure";
   }
-  if (
-    normalized.includes("timed out waiting for health")
-    || normalized.includes("econnrefused")
-    || normalized.includes("fetch failed")
-    || normalized.includes("failed to fetch")
-  ) {
+  if (includesAny(normalized, [
+    "timed out waiting for health",
+    "econnrefused",
+    "fetch failed",
+    "failed to fetch",
+  ])) {
     return "daemon-unreachable";
   }
-  if (
-    normalized.includes("content_script_unavailable")
-    || normalized.includes("content script unavailable")
-    || normalized.includes("no tab responded")
-  ) {
+  if (includesAny(normalized, [
+    "content_script_unavailable",
+    "content script unavailable",
+    "no tab responded",
+  ])) {
     return "content-script-unavailable";
   }
-  if (normalized.includes("action_timeout") || normalized.includes("action timeout")) {
+  if (includesAny(normalized, ["action_timeout", "action timeout"])) {
     return "action-timeout";
   }
-  if (
-    normalized.includes("timed out waiting for cdp endpoint")
-    || normalized.includes("no inspectable pages")
-    || normalized.includes("browser endpoint unavailable")
-    || normalized.includes("websocket endpoint")
-  ) {
+  if (includesAny(normalized, [
+    "timed out waiting for cdp endpoint",
+    "no inspectable pages",
+    "browser endpoint unavailable",
+    "websocket endpoint",
+  ])) {
     return "cdp-unreachable";
   }
-  if (
-    normalized.includes("download smoke")
-    || normalized.includes("browser download")
-    || normalized.includes("relay download")
-    || normalized.includes("downloaded-file browser artifact")
-    || normalized.includes("download action")
-    || normalized.includes("upload smoke")
-    || normalized.includes("browser upload")
-    || normalized.includes("content script upload")
-    || normalized.includes("upload action")
-  ) {
+  if (includesAny(normalized, [
+    "download smoke",
+    "browser download",
+    "relay download",
+    "downloaded-file browser artifact",
+    "download action",
+    "upload smoke",
+    "browser upload",
+    "content script upload",
+    "upload action",
+  ])) {
     return "artifact-failure";
   }
-  if (
-    normalized.includes("workflow-log")
-    || normalized.includes("workflow log")
-  ) {
+  if (includesAny(normalized, ["workflow-log", "workflow log"])) {
     return "workflow-log-failure";
   }
-  if (
-    normalized.includes("to become stale")
-    || normalized.includes("to become online")
-    || normalized.includes("reconnect")
-    || normalized.includes("resume-final-url")
-    || normalized.includes("resume")
-  ) {
+  if (includesAny(normalized, [
+    "to become stale",
+    "to become online",
+    "reconnect",
+    "resume-final-url",
+    "resume",
+  ])) {
     return "reconnect-failure";
   }
-  if (
-    normalized.includes("timed out waiting for relay peer")
-    || normalized.includes("timed out waiting for any online relay peer")
-  ) {
+  if (includesAny(normalized, [
+    "timed out waiting for relay peer",
+    "timed out waiting for any online relay peer",
+  ])) {
     return "peer-timeout";
   }
-  if (
-    normalized.includes("target_missing")
-    || normalized.includes("missing target")
-    || normalized.includes("no relay target")
-    || normalized.includes("require-target")
-  ) {
+  if (includesAny(normalized, [
+    "target_missing",
+    "missing target",
+    "no relay target",
+    "require-target",
+  ])) {
     return "target-missing";
   }
-  if (
-    normalized.includes("assertionerror")
-    || normalized.includes("expected ")
-    || normalized.includes("local regression")
-  ) {
+  if (includesAny(normalized, [
+    "assertionerror",
+    "expected ",
+    "local regression",
+  ])) {
     return "local-regression";
   }
   return "unknown";
+}
+
+function includesAny(value: string, needles: readonly string[]): boolean {
+  return needles.some((needle) => value.includes(needle));
 }
 
 function summarizeBrowserTransportRun(input: {

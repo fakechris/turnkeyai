@@ -6311,7 +6311,7 @@ function buildBrowserTransportAcceptanceOutput(target: "relay" | "direct-cdp"): 
   return [
     "direct-cdp smoke passed",
     "browser-final-url: http://127.0.0.1:4010/#submitted",
-    "browser-history: 5",
+    "browser-history: 4",
     "browser-transport: direct-cdp",
     "browser-target-continuity: direct-cdp",
     "browser-screenshots: 1",
