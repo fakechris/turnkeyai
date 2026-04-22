@@ -6142,6 +6142,230 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
   {
+    caseId: "context-weak-observational-evidence-does-not-outrank-continuation",
+    title: "Context weak observational evidence does not outrank continuation",
+    area: "context",
+    summary:
+      "Evidence-heavy browser excerpts should be visible as pressure while pending work, waiting point, and continuation-critical evidence remain carried forward.",
+    run() {
+      const progressEvents: RuntimeProgressEvent[] = [
+        {
+          progressId: "progress:context-observational-pressure",
+          threadId: "thread-1",
+          chainId: "flow:context-observational-pressure",
+          spanId: "role:lead",
+          subjectKind: "role_run",
+          subjectId: "role:lead",
+          phase: "degraded",
+          progressKind: "boundary",
+          summary:
+            "Weak observational browser excerpts were compacted behind continuation-critical evidence and unresolved approval context.",
+          recordedAt: 80,
+          flowId: "context-observational-pressure",
+          taskId: "task-context-observational-pressure",
+          roleId: "lead",
+          metadata: {
+            boundaryKind: "prompt_compaction",
+            modelId: "gpt-5",
+            modelChainId: "real_task_pressure",
+            assemblyFingerprint: "fp-context-observational-pressure",
+            compactedSegments: ["worker-evidence", "retrieved-memory"],
+            omittedSections: ["low-trust-browser-excerpts"],
+            usedArtifacts: ["artifact:verified-browser-snapshot", "artifact:approval-thread"],
+            tokenEstimate: {
+              inputTokens: 86_000,
+              outputTokensReserved: 8_000,
+              totalProjectedTokens: 94_000,
+              overBudget: true,
+            },
+            contextDiagnostics: {
+              continuity: {
+                hasThreadSummary: true,
+                hasSessionMemory: true,
+                hasRoleScratchpad: true,
+                hasContinuationContext: true,
+                carriesPendingWork: true,
+                carriesWaitingOn: true,
+                carriesOpenQuestions: true,
+                carriesDecisionOrConstraint: true,
+              },
+              recentTurns: {
+                availableCount: 64,
+                selectedCount: 18,
+                packedCount: 9,
+                salientEarlierCount: 8,
+                compacted: true,
+              },
+              retrievedMemory: {
+                availableCount: 30,
+                selectedCount: 12,
+                packedCount: 5,
+                compacted: true,
+                userPreferenceCount: 2,
+                threadMemoryCount: 5,
+                sessionMemoryCount: 3,
+                knowledgeNoteCount: 1,
+                journalNoteCount: 1,
+              },
+              workerEvidence: {
+                totalCount: 92,
+                admittedCount: 58,
+                selectedCount: 24,
+                packedCount: 4,
+                compacted: true,
+                promotableCount: 4,
+                observationalCount: 54,
+                fullCount: 4,
+                summaryOnlyCount: 54,
+                continuationRelevantCount: 10,
+              },
+            },
+          },
+        },
+      ];
+      const promptReport = buildPromptConsoleReport(progressEvents);
+      const attention = buildOperatorAttentionReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: [],
+        recoveryRuns: [],
+        progressEvents,
+        limit: 5,
+      });
+      const boundary = promptReport.latestBoundaries[0];
+      const promptCase = attention.cases.find((entry) => entry.caseKey === "prompt:task-context-observational-pressure");
+      const details = [
+        `risks=${Object.keys(promptReport.contextRiskCounts).join(",")}`,
+        `observational=${promptReport.contextRiskCounts.observational_evidence_pressure ?? 0}`,
+        `continuationEvidence=${promptReport.contextRiskCounts.continuation_relevant_evidence_pressure ?? 0}`,
+        `pending=${promptReport.continuityCarryForwardCounts.pendingWork}`,
+        `case=${promptCase?.caseState ?? "-"}`,
+        `next=${promptCase?.nextStep ?? "-"}`,
+      ];
+      const passed =
+        promptReport.totalBoundaries === 1 &&
+        promptReport.contextRiskCounts.observational_evidence_pressure === 1 &&
+        promptReport.contextRiskCounts.continuation_relevant_evidence_pressure === 1 &&
+        promptReport.contextRiskCounts.missing_pending_work === undefined &&
+        promptReport.contextRiskCounts.missing_waiting_on === undefined &&
+        promptReport.continuityCarryForwardCounts.pendingWork === 1 &&
+        promptReport.continuityCarryForwardCounts.waitingOn === 1 &&
+        promptReport.continuityCarryForwardCounts.openQuestions === 1 &&
+        boundary?.contextRiskSignals?.includes("observational_evidence_pressure") === true &&
+        boundary?.contextRiskSignals?.includes("continuation_relevant_evidence_pressure") === true &&
+        attention.sourceCounts.prompt === 1 &&
+        promptCase?.caseState === "open" &&
+        promptCase.reasons?.includes("observational_evidence_pressure") === true &&
+        promptCase.reasons?.includes("continuation_relevant_evidence_pressure") === true &&
+        promptCase.nextStep === "inspect_prompt_boundary";
+      return buildResult(this, Boolean(passed), details);
+    },
+  },
+  {
+    caseId: "parallel-governance-downgrade-fallback-explains-operator-contract",
+    title: "Parallel governance downgrade fallback explains operator contract",
+    area: "governance",
+    summary:
+      "A merge-ready parallel publish blocked by official API scope should surface fallback transport, permission scope, admission, and trust in one operator case.",
+    run() {
+      const flows = [buildReadyParallelPublishFlow()];
+      const permissionRecords: PermissionCacheRecord[] = [
+        {
+          cacheKey: "perm-parallel-downgrade",
+          threadId: "thread-1",
+          workerType: "explore",
+          requirement: {
+            level: "approval",
+            scope: "publish",
+            rationale: "publishing merged synthesis requires an approved promotable read-back",
+            cacheKey: "perm-parallel-downgrade",
+          },
+          decision: "denied",
+          denialReason: "official api missing publish scope",
+          createdAt: 50,
+          updatedAt: 55,
+        },
+      ];
+      const events: TeamEvent[] = [
+        {
+          eventId: "evt-parallel-downgrade-fallback",
+          threadId: "thread-1",
+          kind: "audit.logged",
+          createdAt: 60,
+          payload: {
+            governanceCaseKey: "parallel-downgrade",
+            workerType: "explore",
+            status: "partial",
+            transport: "official_api",
+            trustLevel: "observational",
+            admissionMode: "summary_only",
+            fallbackReason: "official_api_scope_missing",
+            permission: {
+              requirement: {
+                level: "approval",
+                scope: "publish",
+                rationale: "publishing merged synthesis requires an approved promotable read-back",
+                cacheKey: "perm-parallel-downgrade",
+              },
+              decision: "denied",
+              recommendedAction: "fallback_browser",
+              fallbackTransport: "browser",
+              denialReason: "official api missing publish scope",
+            },
+          },
+        },
+      ];
+      const summary = buildOperatorSummaryReport({
+        flows,
+        permissionRecords,
+        events,
+        replays: [],
+        recoveryRuns: [],
+        runtimeSummary: buildRuntimeSummaryReport({ entries: [], limit: 5, now: 60 }),
+        limit: 5,
+      });
+      const attention = buildOperatorAttentionReport({
+        flows,
+        permissionRecords,
+        events,
+        replays: [],
+        recoveryRuns: [],
+        limit: 5,
+      });
+      const governanceItem = attention.items.find((item) => item.source === "governance");
+      const governanceCase = attention.cases.find((entry) => entry.caseKey === "governance:thread-1:parallel-downgrade");
+      const governanceReasons = governanceItem?.reasons ?? [];
+      const details = [
+        `ready=${summary.flow.shardStatusCounts.ready_to_merge ?? 0}`,
+        `governance=${summary.governance.attentionCount}`,
+        `next=${governanceCase?.nextStep ?? "-"}`,
+        `reasons=${governanceReasons.join("|") || "-"}`,
+        `summary=${governanceItem?.summary ?? "-"}`,
+      ];
+      const passed =
+        summary.flow.attentionCount === 0 &&
+        summary.flow.shardStatusCounts.ready_to_merge === 1 &&
+        summary.governance.attentionCount === 1 &&
+        summary.governance.recommendedActionCounts.fallback_browser === 1 &&
+        summary.governance.permissionDecisionCounts.denied === 1 &&
+        summary.totalAttentionCount === 1 &&
+        attention.totalItems === 1 &&
+        attention.uniqueCaseCount === 1 &&
+        governanceCase?.nextStep === "fallback_browser" &&
+        governanceCase.caseState === "blocked" &&
+        governanceReasons.includes("scope=publish") &&
+        governanceReasons.includes("level=approval") &&
+        governanceReasons.includes("decision=denied") &&
+        governanceReasons.includes("fallback=browser") &&
+        governanceReasons.includes("fallback_reason=official_api_scope_missing") &&
+        /action=fallback_browser/.test(governanceItem?.summary ?? "") &&
+        /admission=summary_only/.test(governanceItem?.summary ?? "") &&
+        /trust=observational/.test(governanceItem?.summary ?? "");
+      return buildResult(this, Boolean(passed), details);
+    },
+  },
+  {
     caseId: "parallel-governance-contract-dedupes-retried-audits-by-case",
     title: "Parallel governance contract dedupes retried audits by case",
     area: "governance",

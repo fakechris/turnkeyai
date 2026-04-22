@@ -246,6 +246,8 @@ const SCENARIOS: RealWorldScenarioDescriptor[] = [
       "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
       "operator-case-semantics-separate-active-manual-from-resolved-recent",
       "context-real-task-attachment-pressure-keeps-critical-carry-forward",
+      "context-weak-observational-evidence-does-not-outrank-continuation",
+      "parallel-governance-downgrade-fallback-explains-operator-contract",
       "parallel-governance-contract-dedupes-retried-audits-by-case",
     ],
   },

@@ -3,6 +3,7 @@ import type {
   PromptBoundaryKind,
   PromptBoundaryReductionLevel,
   PromptConsoleReport,
+  PromptContextRiskSignal,
   RuntimeProgressEvent,
 } from "@turnkeyai/core-types/team";
 
@@ -16,6 +17,7 @@ export function buildPromptConsoleReport(events: RuntimeProgressEvent[], limit =
   const modelChainCounts: PromptConsoleReport["modelChainCounts"] = {};
   const roleCounts: PromptConsoleReport["roleCounts"] = {};
   const compactedSegmentCounts: PromptConsoleReport["compactedSegmentCounts"] = {};
+  const contextRiskCounts: PromptConsoleReport["contextRiskCounts"] = {};
   const continuityCarryForwardCounts: PromptConsoleReport["continuityCarryForwardCounts"] = {
     continuationContext: 0,
     pendingWork: 0,
@@ -64,6 +66,9 @@ export function buildPromptConsoleReport(events: RuntimeProgressEvent[], limit =
     for (const segment of boundary.compactedSegments ?? []) {
       compactedSegmentCounts[segment] = (compactedSegmentCounts[segment] ?? 0) + 1;
     }
+    for (const signal of boundary.contextRiskSignals ?? []) {
+      contextRiskCounts[signal] = (contextRiskCounts[signal] ?? 0) + 1;
+    }
     if (boundary.contextDiagnostics) {
       totalRecentTurnsSelected += boundary.contextDiagnostics.recentTurns.selectedCount;
       totalRecentTurnsPacked += boundary.contextDiagnostics.recentTurns.packedCount;
@@ -107,6 +112,7 @@ export function buildPromptConsoleReport(events: RuntimeProgressEvent[], limit =
     totalWorkerEvidenceCandidates,
     totalWorkerEvidencePacked,
     continuityCarryForwardCounts,
+    contextRiskCounts,
     latestBoundaries: promptBoundaries.slice(0, normalizedLimit),
   };
 }
@@ -122,6 +128,8 @@ function isPromptBoundaryEvent(event: RuntimeProgressEvent): boolean {
 
 function mapPromptBoundaryEntry(event: RuntimeProgressEvent): PromptBoundaryEntry {
   const metadata = event.metadata ?? {};
+  const contextDiagnostics = isContextDiagnostics(metadata.contextDiagnostics) ? metadata.contextDiagnostics : undefined;
+  const contextRiskSignals = contextDiagnostics ? derivePromptContextRiskSignals(contextDiagnostics) : [];
   return {
     progressId: event.progressId,
     recordedAt: event.recordedAt,
@@ -144,9 +152,53 @@ function mapPromptBoundaryEntry(event: RuntimeProgressEvent): PromptBoundaryEntr
     ...(Array.isArray(metadata.omittedSections) ? { omittedSections: metadata.omittedSections.filter(isString) } : {}),
     ...(Array.isArray(metadata.usedArtifacts) ? { usedArtifacts: metadata.usedArtifacts.filter(isString) } : {}),
     ...(isTokenEstimate(metadata.tokenEstimate) ? { tokenEstimate: metadata.tokenEstimate } : {}),
-    ...(isContextDiagnostics(metadata.contextDiagnostics) ? { contextDiagnostics: metadata.contextDiagnostics } : {}),
+    ...(contextDiagnostics ? { contextDiagnostics } : {}),
+    ...(contextRiskSignals.length > 0 ? { contextRiskSignals } : {}),
     ...(isEnvelopeHint(metadata.envelopeHint) ? { envelopeHint: metadata.envelopeHint } : {}),
   };
+}
+
+function derivePromptContextRiskSignals(
+  diagnostics: NonNullable<PromptBoundaryEntry["contextDiagnostics"]>
+): PromptContextRiskSignal[] {
+  const signals: PromptContextRiskSignal[] = [];
+  const { continuity, recentTurns, retrievedMemory, workerEvidence } = diagnostics;
+
+  if (!continuity.hasContinuationContext) {
+    signals.push("missing_continuation_context");
+  }
+  if (!continuity.carriesPendingWork) {
+    signals.push("missing_pending_work");
+  }
+  if (!continuity.carriesWaitingOn) {
+    signals.push("missing_waiting_on");
+  }
+  if (!continuity.carriesOpenQuestions) {
+    signals.push("missing_open_questions");
+  }
+  if (!continuity.carriesDecisionOrConstraint) {
+    signals.push("missing_decision_or_constraint");
+  }
+  if (recentTurns.packedCount < recentTurns.selectedCount) {
+    signals.push("recent_turn_pressure");
+  }
+  if (retrievedMemory.packedCount < retrievedMemory.selectedCount) {
+    signals.push("retrieved_memory_pressure");
+  }
+  if (workerEvidence.packedCount < workerEvidence.selectedCount) {
+    signals.push("worker_evidence_pressure");
+  }
+  if (workerEvidence.packedCount < workerEvidence.continuationRelevantCount) {
+    signals.push("continuation_relevant_evidence_pressure");
+  }
+  if (
+    workerEvidence.observationalCount > workerEvidence.promotableCount &&
+    workerEvidence.packedCount < workerEvidence.selectedCount
+  ) {
+    signals.push("observational_evidence_pressure");
+  }
+
+  return signals;
 }
 
 function isString(value: unknown): value is string {

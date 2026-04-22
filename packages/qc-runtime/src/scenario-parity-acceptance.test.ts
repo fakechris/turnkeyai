@@ -61,6 +61,16 @@ test("scenario parity acceptance suite lists scenario families", () => {
       .find((scenario) => scenario.scenarioId === "phase1-production-closure")
       ?.caseIds.includes("parallel-governance-contract-dedupes-retried-audits-by-case")
   );
+  assert.ok(
+    scenarios
+      .find((scenario) => scenario.scenarioId === "phase1-production-closure")
+      ?.caseIds.includes("context-weak-observational-evidence-does-not-outrank-continuation")
+  );
+  assert.ok(
+    scenarios
+      .find((scenario) => scenario.scenarioId === "phase1-production-closure")
+      ?.caseIds.includes("parallel-governance-downgrade-fallback-explains-operator-contract")
+  );
 });
 
 test("scenario parity acceptance suite passes all scenario families", () => {

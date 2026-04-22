@@ -1306,6 +1306,9 @@ function printPromptConsole(report: PromptConsoleReport): void {
       `  carry-forward: continuation=${report.continuityCarryForwardCounts.continuationContext}, pending=${report.continuityCarryForwardCounts.pendingWork}, waiting=${report.continuityCarryForwardCounts.waitingOn}, open-questions=${report.continuityCarryForwardCounts.openQuestions}, decisions-or-constraints=${report.continuityCarryForwardCounts.decisionsOrConstraints}`
     );
   }
+  if (Object.keys(report.contextRiskCounts).length > 0) {
+    console.log(`  context risks: ${formatCountMap(report.contextRiskCounts)}`);
+  }
   console.log(`  unique fingerprints: ${report.uniqueAssemblyFingerprintCount}`);
   if (report.latestBoundaries.length > 0) {
     console.log("  latest boundaries:");
@@ -1349,6 +1352,9 @@ function printPromptConsole(report: PromptConsoleReport): void {
         console.log(
           `      packed: turns=${entry.contextDiagnostics.recentTurns.packedCount}/${entry.contextDiagnostics.recentTurns.selectedCount}, memory=${entry.contextDiagnostics.retrievedMemory.packedCount}/${entry.contextDiagnostics.retrievedMemory.selectedCount}, evidence=${entry.contextDiagnostics.workerEvidence.packedCount}/${entry.contextDiagnostics.workerEvidence.selectedCount}`
         );
+        if (entry.contextRiskSignals?.length) {
+          console.log(`      risks: ${entry.contextRiskSignals.join(", ")}`);
+        }
         const carryForward: string[] = [];
         if (entry.contextDiagnostics.continuity.hasContinuationContext) {
           carryForward.push("continuation");
@@ -1556,7 +1562,7 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
   );
   if (report.prompt.totalBoundaries > 0) {
     console.log(
-      `  prompt pressure: boundaries=${report.prompt.totalBoundaries}  compactions=${report.prompt.compactionCount}  reductions=${report.prompt.reductionCount}  memory=${report.prompt.totalRetrievedMemoryPacked}/${report.prompt.totalRetrievedMemoryCandidates}  evidence=${report.prompt.totalWorkerEvidencePacked}/${report.prompt.totalWorkerEvidenceCandidates}`
+      `  prompt pressure: boundaries=${report.prompt.totalBoundaries}  compactions=${report.prompt.compactionCount}  reductions=${report.prompt.reductionCount}  memory=${report.prompt.totalRetrievedMemoryPacked}/${report.prompt.totalRetrievedMemoryCandidates}  evidence=${report.prompt.totalWorkerEvidencePacked}/${report.prompt.totalWorkerEvidenceCandidates}  risks=${formatCountMap(report.prompt.contextRiskCounts)}`
     );
   }
   if (report.attentionOverview) {

@@ -151,6 +151,8 @@ const PROFILE_DESCRIPTORS: Record<ValidationProfileId, ValidationProfileDescript
       "regression:browser-transport-real-world-e2e-keeps-replay-operator-aligned",
       "regression:operator-case-semantics-separate-active-manual-from-resolved-recent",
       "regression:context-real-task-attachment-pressure-keeps-critical-carry-forward",
+      "regression:context-weak-observational-evidence-does-not-outrank-continuation",
+      "regression:parallel-governance-downgrade-fallback-explains-operator-contract",
       "regression:parallel-governance-contract-dedupes-retried-audits-by-case",
       "acceptance:phase1-production-closure",
       "acceptance:browser-transport-reconnect-workflow",
