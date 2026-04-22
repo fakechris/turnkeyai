@@ -1,5 +1,7 @@
 import type { ServerResponse } from "node:http";
 
+import { BROWSER_LONG_CHAIN_ACTION_KINDS } from "@turnkeyai/core-types/team";
+
 export interface BrowserSmokeResponse {
   sessionId?: string;
   targetId?: string;
@@ -33,28 +35,6 @@ export interface BrowserSmokeHttpClient {
   getJson(url: string): Promise<unknown>;
   postJson(url: string, body: unknown): Promise<unknown>;
 }
-
-export const BROWSER_LONG_CHAIN_ACTION_KINDS = [
-  "click",
-  "type",
-  "hover",
-  "key",
-  "select",
-  "drag",
-  "waitFor",
-  "dialog",
-  "probe",
-  "storage",
-  "cookie",
-  "eval",
-  "network",
-  "download",
-  "upload",
-  "scroll",
-  "console",
-  "snapshot",
-  "cdp",
-] as const;
 
 export function writeExportCsvResponse(res: ServerResponse): void {
   res.statusCode = 200;

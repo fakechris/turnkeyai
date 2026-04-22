@@ -1,3 +1,5 @@
+import { BROWSER_LONG_CHAIN_ACTION_KINDS } from "@turnkeyai/core-types/team";
+
 export type BrowserTransportSoakTarget = "relay" | "direct-cdp";
 
 export type BrowserTransportFailureBucket =
@@ -579,27 +581,7 @@ function parseLineList(output: string, key: string): string[] {
 
 function hasAllActionKinds(actionKinds: string[]): boolean {
   const observed = new Set(actionKinds);
-  return [
-    "click",
-    "type",
-    "hover",
-    "key",
-    "select",
-    "drag",
-    "waitFor",
-    "dialog",
-    "probe",
-    "storage",
-    "cookie",
-    "eval",
-    "network",
-    "download",
-    "upload",
-    "scroll",
-    "console",
-    "snapshot",
-    "cdp",
-  ].every((kind) => observed.has(kind));
+  return BROWSER_LONG_CHAIN_ACTION_KINDS.every((kind) => observed.has(kind));
 }
 
 function normalizeTargets(value?: BrowserTransportSoakTarget[]): BrowserTransportSoakTarget[] {

@@ -312,9 +312,16 @@ function findLatestRecord(
   records: ValidationOpsRunRecord[],
   predicate: (record: ValidationOpsRunRecord) => boolean
 ): ValidationOpsRunRecord | undefined {
-  return records
-    .filter(predicate)
-    .sort((left, right) => right.completedAt - left.completedAt)[0];
+  let latest: ValidationOpsRunRecord | undefined;
+  for (const record of records) {
+    if (!predicate(record)) {
+      continue;
+    }
+    if (!latest || record.completedAt > latest.completedAt) {
+      latest = record;
+    }
+  }
+  return latest;
 }
 
 function buildValidationOpsIssue(input: {
