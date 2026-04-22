@@ -36,6 +36,10 @@ async function waitForCondition(predicate: () => boolean, timeoutMs = 2_000): Pr
   throw new Error(`waitForCondition timed out after ${timeoutMs}ms`);
 }
 
+async function removeTempDir(tempDir: string): Promise<void> {
+  await rm(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 });
+}
+
 test("runtime progress recorder emits an audit event when progress persistence fails permanently", async () => {
   const events: TeamEvent[] = [];
   const eventBus: TeamEventBus = {
@@ -188,6 +192,7 @@ test("runtime progress recorder retries remote delivery through the durable outb
   const stored: string[] = [];
   let attempts = 0;
   const delivered: string[][] = [];
+  let recorder: DefaultRuntimeProgressRecorder | undefined;
   const eventBus: TeamEventBus = {
     async publish(event) {
       events.push(event);
@@ -201,7 +206,7 @@ test("runtime progress recorder retries remote delivery through the durable outb
   };
 
   try {
-    const recorder = new DefaultRuntimeProgressRecorder({
+    recorder = new DefaultRuntimeProgressRecorder({
       progressStore: {
         async append(event) {
           stored.push(event.progressId);
@@ -253,13 +258,15 @@ test("runtime progress recorder retries remote delivery through the durable outb
       )
     );
   } finally {
-    await rm(tempDir, { recursive: true, force: true });
+    await recorder?.flush().catch(() => {});
+    await removeTempDir(tempDir);
   }
 });
 
 test("runtime progress recorder persists failed remote deliveries in the durable outbox", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-progress-outbox-drop-"));
   const events: TeamEvent[] = [];
+  let recorder: DefaultRuntimeProgressRecorder | undefined;
   const eventBus: TeamEventBus = {
     async publish(event) {
       events.push(event);
@@ -273,7 +280,7 @@ test("runtime progress recorder persists failed remote deliveries in the durable
   };
 
   try {
-    const recorder = new DefaultRuntimeProgressRecorder({
+    recorder = new DefaultRuntimeProgressRecorder({
       progressStore: {
         async append() {},
         async listByThread() {
@@ -315,6 +322,7 @@ test("runtime progress recorder persists failed remote deliveries in the durable
     assert.match(String((remaining[0] as { lastError?: string }).lastError ?? ""), /remote sink unavailable/);
     assert.ok(events.some((event) => event.kind === "runtime.progress"));
   } finally {
-    await rm(tempDir, { recursive: true, force: true });
+    await recorder?.flush().catch(() => {});
+    await removeTempDir(tempDir);
   }
 });

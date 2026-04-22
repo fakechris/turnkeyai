@@ -26,6 +26,10 @@ async function waitForOutboxItems<T>(
   return outbox.listDue(32, Date.now() + 1_000);
 }
 
+async function removeTempDir(tempDir: string): Promise<void> {
+  await rm(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 });
+}
+
 test("runtime state recorder coalesces repeated chain status updates", async () => {
   const eventBus = new InMemoryTeamEventBus();
   let releaseFirstPublish: (() => void) | undefined;
@@ -219,9 +223,10 @@ test("runtime state recorder retries remote delivery through the durable outbox"
   const eventBus = new InMemoryTeamEventBus();
   let attempts = 0;
   const delivered: string[][] = [];
+  let recorder: DefaultRuntimeStateRecorder | undefined;
 
   try {
-    const recorder = new DefaultRuntimeStateRecorder({
+    recorder = new DefaultRuntimeStateRecorder({
       teamEventBus: eventBus,
       remoteOutboxRootDir: tempDir,
       remoteSink: async (items) => {
@@ -275,16 +280,18 @@ test("runtime state recorder retries remote delivery through the durable outbox"
       )
     );
   } finally {
-    await rm(tempDir, { recursive: true, force: true });
+    await recorder?.flush().catch(() => {});
+    await removeTempDir(tempDir);
   }
 });
 
 test("runtime state recorder persists failed remote deliveries in the durable outbox", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-state-outbox-drop-"));
   const eventBus = new InMemoryTeamEventBus();
+  let recorder: DefaultRuntimeStateRecorder | undefined;
 
   try {
-    const recorder = new DefaultRuntimeStateRecorder({
+    recorder = new DefaultRuntimeStateRecorder({
       teamEventBus: eventBus,
       remoteOutboxRootDir: tempDir,
       remoteSink: async () => {
@@ -329,6 +336,7 @@ test("runtime state recorder persists failed remote deliveries in the durable ou
     const events = await eventBus.listRecent("thread-outbox-drop", 10);
     assert.ok(events.some((event) => event.kind === "runtime.state"));
   } finally {
-    await rm(tempDir, { recursive: true, force: true });
+    await recorder?.flush().catch(() => {});
+    await removeTempDir(tempDir);
   }
 });

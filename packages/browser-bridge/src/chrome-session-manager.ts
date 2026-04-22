@@ -2232,10 +2232,26 @@ async function executeStorageAction(
   page: Page,
   action: Extract<BrowserTaskAction, { kind: "storage" }>
 ): Promise<Record<string, unknown>> {
+  const input = JSON.stringify({
+    area: action.area,
+    action: action.action,
+    key: "key" in action ? action.key : undefined,
+    value: "value" in action ? action.value : undefined,
+    maxEntries: MAX_BROWSER_STORAGE_READ_ENTRIES,
+    maxValueBytes: MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+  });
+
   return await page.evaluate(
-    ({ area, action: storageAction, key, value, maxEntries, maxValueBytes }) => {
+    `(() => {
+      const { area, action: storageAction, key, value, maxEntries, maxValueBytes } = ${input};
       const storage = area === "localStorage" ? window.localStorage : window.sessionStorage;
-      const summarizeValue = (rawValue: string | null) => {
+      const requireStorageKey = () => {
+        if (typeof key !== "string" || key.length === 0) {
+          throw new Error("browser storage action requires a non-empty key");
+        }
+        return key;
+      };
+      const summarizeValue = (rawValue) => {
         if (rawValue === null) {
           return {
             found: false,
@@ -2254,22 +2270,24 @@ async function executeStorageAction(
       };
 
       if (storageAction === "set") {
-        storage.setItem(key!, value ?? "");
+        const storageKey = requireStorageKey();
+        storage.setItem(storageKey, value ?? "");
         return {
           area,
           action: storageAction,
-          key,
+          key: storageKey,
           valueBytes: new TextEncoder().encode(value ?? "").length,
           entryCount: storage.length,
         };
       }
       if (storageAction === "remove") {
-        const existed = storage.getItem(key!) !== null;
-        storage.removeItem(key!);
+        const storageKey = requireStorageKey();
+        const existed = storage.getItem(storageKey) !== null;
+        storage.removeItem(storageKey);
         return {
           area,
           action: storageAction,
-          key,
+          key: storageKey,
           removed: existed,
           entryCount: storage.length,
         };
@@ -2309,15 +2327,7 @@ async function executeStorageAction(
         entryCount: storage.length,
         entriesTruncated: storage.length > maxEntries,
       };
-    },
-    {
-      area: action.area,
-      action: action.action,
-      key: "key" in action ? action.key : undefined,
-      value: "value" in action ? action.value : undefined,
-      maxEntries: MAX_BROWSER_STORAGE_READ_ENTRIES,
-      maxValueBytes: MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
-    }
+    })()`
   );
 }
 

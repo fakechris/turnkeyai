@@ -181,6 +181,7 @@ function isValidationRoute(pathname: string): boolean {
     "/soak-series/run",
     "/transport-soak/run",
     "/release-readiness/run",
+    "/phase1-readiness/run",
   ].includes(pathname);
 }
 

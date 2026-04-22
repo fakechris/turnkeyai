@@ -1826,10 +1826,10 @@ test("chrome session manager persists downloaded files as bounded artifacts", as
 });
 
 test("chrome session manager executes bounded storage actions", async () => {
-  const evaluateInputs: unknown[] = [];
+  const evaluateInputs: string[] = [];
   const fakePage = {
-    async evaluate(_fn: unknown, input: unknown) {
-      evaluateInputs.push(input);
+    async evaluate(script: string) {
+      evaluateInputs.push(script);
       return {
         area: "localStorage",
         action: "get",
@@ -1869,17 +1869,79 @@ test("chrome session manager executes bounded storage actions", async () => {
     browserSessionId: "browser-session-storage",
   });
 
-  assert.deepEqual(evaluateInputs, [
-    {
-      area: "localStorage",
-      action: "get",
-      key: "token",
-      value: undefined,
-      maxEntries: 100,
-      maxValueBytes: 8192,
-    },
-  ]);
+  assert.equal(evaluateInputs.length, 1);
+  assert.match(evaluateInputs[0]!, /const \{ area, action: storageAction, key, value, maxEntries, maxValueBytes \}/);
+  assert.doesNotMatch(evaluateInputs[0]!, /__name/);
+  assert.match(evaluateInputs[0]!, /"area":"localStorage"/);
+  assert.match(evaluateInputs[0]!, /"action":"get"/);
+  assert.match(evaluateInputs[0]!, /"key":"token"/);
+  assert.match(evaluateInputs[0]!, /"maxEntries":100/);
+  assert.match(evaluateInputs[0]!, /"maxValueBytes":8192/);
   assert.equal(output.traceOutput?.value, "abc");
+});
+
+test("chrome session manager rejects storage mutations without a browser storage key", async () => {
+  const values = new Map<string, string>();
+  const browserStorage = {
+    get length() {
+      return values.size;
+    },
+    setItem(key: string, value: string) {
+      values.set(String(key), String(value));
+    },
+    getItem(key: string) {
+      return values.get(String(key)) ?? null;
+    },
+    removeItem(key: string) {
+      values.delete(String(key));
+    },
+    clear() {
+      values.clear();
+    },
+    key(index: number) {
+      return Array.from(values.keys())[index] ?? null;
+    },
+  };
+  const fakePage = {
+    async evaluate(script: string) {
+      const windowLike = {
+        localStorage: browserStorage,
+        sessionStorage: browserStorage,
+      };
+      return new Function("window", "TextEncoder", `return ${script};`)(windowLike, TextEncoder);
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action: { kind: "storage"; area: "localStorage"; action: "set"; value: string };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  await assert.rejects(
+    () =>
+      internal.executeAction({
+        page: fakePage,
+        action: { kind: "storage", area: "localStorage", action: "set", value: "abc" },
+        stepIndex: 1,
+        sessionDir: ".daemon-data/test-browser-artifacts",
+        requestedUrl: "https://example.com",
+        lastStatusCode: 200,
+        knownRefs: new Map(),
+        browserSessionId: "browser-session-storage",
+      }),
+    /browser storage action requires a non-empty key/
+  );
+  assert.equal(browserStorage.length, 0);
 });
 
 test("chrome session manager uploads files only from matching browser artifacts", async () => {
