@@ -23,6 +23,11 @@ export interface PromptAssemblyContinuityDiagnostics {
   carriesWaitingOn: boolean;
   carriesOpenQuestions: boolean;
   carriesDecisionOrConstraint: boolean;
+  sourceHasContinuationContext?: boolean;
+  sourceHasPendingWork?: boolean;
+  sourceHasWaitingOn?: boolean;
+  sourceHasOpenQuestions?: boolean;
+  sourceHasDecisionOrConstraint?: boolean;
 }
 
 export interface PromptAssemblyRecentTurnsDiagnostics {

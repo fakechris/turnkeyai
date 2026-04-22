@@ -233,6 +233,7 @@ test("operator inspection summarizes governance transport and admission state", 
   ]);
   assert.match(attention.items[0]?.summary ?? "", /action=fallback_browser/);
   assert.match(attention.items[0]?.summary ?? "", /fallback=browser/);
+  assert.match(attention.items[0]?.summary ?? "", /fallback_reason=official_api_scope_missing/);
   assert.match(attention.items[0]?.summary ?? "", /scope=publish/);
 });
 
@@ -956,6 +957,84 @@ test("operator inspection prefers the current recovery attempt browser summary o
   assert.equal(report.attentionRuns[0]?.currentAttemptId, "attempt-current");
   assert.equal(report.attentionRuns[0]?.browserOutcome, undefined);
   assert.equal(report.attentionRuns[0]?.browserOutcomeSummary, "Current browser resume is waiting for manual inspection.");
+});
+
+test("operator inspection surfaces prompt compaction with context risks and no packing deficit", () => {
+  const progressEvent: RuntimeProgressEvent = {
+    progressId: "progress:prompt-risk-only",
+    threadId: "thread-1",
+    subjectKind: "role_run",
+    subjectId: "role:lead",
+    phase: "degraded",
+    progressKind: "boundary",
+    summary: "Prompt compaction dropped open questions from the source context.",
+    recordedAt: 50,
+    taskId: "task-risk-only",
+    roleId: "lead",
+    metadata: {
+      boundaryKind: "prompt_compaction",
+      compactedSegments: ["recent-turns"],
+      contextDiagnostics: {
+        continuity: {
+          hasThreadSummary: true,
+          hasSessionMemory: true,
+          hasRoleScratchpad: true,
+          hasContinuationContext: true,
+          carriesPendingWork: true,
+          carriesWaitingOn: true,
+          carriesOpenQuestions: false,
+          carriesDecisionOrConstraint: true,
+          sourceHasOpenQuestions: true,
+        },
+        recentTurns: {
+          availableCount: 4,
+          selectedCount: 2,
+          packedCount: 2,
+          salientEarlierCount: 0,
+          compacted: true,
+        },
+        retrievedMemory: {
+          availableCount: 1,
+          selectedCount: 1,
+          packedCount: 1,
+          compacted: false,
+          userPreferenceCount: 0,
+          threadMemoryCount: 1,
+          sessionMemoryCount: 0,
+          knowledgeNoteCount: 0,
+          journalNoteCount: 0,
+        },
+        workerEvidence: {
+          totalCount: 1,
+          admittedCount: 1,
+          selectedCount: 1,
+          packedCount: 1,
+          compacted: false,
+          promotableCount: 1,
+          observationalCount: 0,
+          fullCount: 1,
+          summaryOnlyCount: 0,
+          continuationRelevantCount: 1,
+        },
+      },
+    },
+  };
+
+  const report = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [],
+    progressEvents: [progressEvent],
+    limit: 5,
+  });
+
+  assert.equal(report.totalItems, 1);
+  assert.equal(report.items[0]?.source, "prompt");
+  assert.equal(report.items[0]?.gate, "prompt_compaction");
+  assert.equal(report.items[0]?.reasons?.includes("missing_open_questions"), true);
+  assert.equal(report.items[0]?.reasons?.includes("recent_turn_pressure"), false);
 });
 
 test("operator inspection flattens cross-surface attention items", () => {
@@ -1867,6 +1946,7 @@ function buildPromptBoundary(input: {
           carriesWaitingOn: true,
           carriesOpenQuestions: false,
           carriesDecisionOrConstraint: true,
+          sourceHasOpenQuestions: true,
         },
         recentTurns: {
           availableCount: 8,

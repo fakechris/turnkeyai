@@ -19,7 +19,7 @@ export function listAllowedRecoveryRunActions(status: RecoveryRunStatus): readon
   return ALLOWED_RECOVERY_ACTIONS[status];
 }
 
-export function listOperatorRecoveryRunActions(status: RecoveryRunStatus): RecoveryRunAction[] {
+export function listOperatorRecoveryRunActions(status: RecoveryRunStatus): readonly RecoveryRunAction[] {
   return listAllowedRecoveryRunActions(status).filter((action) => action !== "dispatch");
 }
 

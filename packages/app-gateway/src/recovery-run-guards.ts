@@ -12,7 +12,7 @@ export interface RecoveryRunActionConflict {
   caseState: ReturnType<typeof deriveRecoveryRunOperatorCaseState>;
   currentGate: string;
   nextAction: RecoveryRun["nextAction"];
-  allowedActions: RecoveryRunAction[];
+  allowedActions: readonly RecoveryRunAction[];
 }
 
 export function validateRecoveryRunAction(run: RecoveryRun, action: RecoveryRunAction): string | null {

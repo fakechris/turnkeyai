@@ -183,7 +183,7 @@ export interface RecoveryConsoleReport {
     phase: RecoveryRunProgress["phase"];
     gate: string;
     nextAction: RecoveryRun["nextAction"];
-    allowedActions: RecoveryRunAction[];
+    allowedActions: readonly RecoveryRunAction[];
     summary: string;
     updatedAt: number;
     waitingReason?: string;

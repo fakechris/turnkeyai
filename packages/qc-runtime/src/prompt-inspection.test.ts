@@ -135,6 +135,8 @@ test("prompt inspection summarizes prompt compaction and reduction boundaries", 
             carriesWaitingOn: true,
             carriesOpenQuestions: false,
             carriesDecisionOrConstraint: true,
+            sourceHasContinuationContext: true,
+            sourceHasOpenQuestions: true,
           },
           recentTurns: {
             availableCount: 7,
@@ -218,6 +220,17 @@ test("prompt inspection summarizes prompt compaction and reduction boundaries", 
     "worker_evidence_pressure",
   ]);
   assert.equal(report.latestBoundaries[1]?.contextDiagnostics?.retrievedMemory.packedCount, 2);
+});
+
+test("prompt inspection does not infer missing context without source presence metadata", () => {
+  const report = buildPromptConsoleReport([buildPromptBoundary("progress-no-source", 10, "prompt_compaction", "fp-no-source")]);
+
+  assert.equal(report.contextRiskCounts.missing_continuation_context, undefined);
+  assert.equal(report.contextRiskCounts.missing_pending_work, undefined);
+  assert.equal(report.contextRiskCounts.missing_waiting_on, undefined);
+  assert.equal(report.contextRiskCounts.missing_open_questions, undefined);
+  assert.equal(report.contextRiskCounts.missing_decision_or_constraint, undefined);
+  assert.equal(report.latestBoundaries[0]?.contextRiskSignals, undefined);
 });
 
 test("prompt inspection flags weak observational evidence pressure without losing carry-forward", () => {

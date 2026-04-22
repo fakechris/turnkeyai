@@ -64,7 +64,7 @@ export interface OperatorSummaryReport extends OperatorSummaryRuntimeHealth {
       lifecycle: OperatorAttentionItem["lifecycle"];
       gate?: string;
       action?: string;
-      allowedActions?: RecoveryRunAction[];
+      allowedActions?: readonly RecoveryRunAction[];
       browserContinuityState?: ReplayBrowserContinuitySummary["state"];
       browserTransportLabel?: string;
       browserDiagnosticBucket?: ReplayBrowserContinuitySummary["browserDiagnosticBucket"];
@@ -159,7 +159,7 @@ export interface OperatorAttentionItem {
   browserDiagnosticBucket?: ReplayBrowserContinuitySummary["browserDiagnosticBucket"];
   relayDiagnosticBucket?: ReplayBrowserContinuitySummary["relayDiagnosticBucket"];
   action?: string;
-  allowedActions?: RecoveryRunAction[];
+  allowedActions?: readonly RecoveryRunAction[];
   truthState?: TruthAlignment["truthState"];
   truthSource?: TruthSource;
   remediation?: TruthRemediation[];
@@ -178,7 +178,7 @@ export interface OperatorAttentionCaseSummary {
   sources: OperatorAttentionItem["source"][];
   gate?: string;
   action?: string;
-  allowedActions?: RecoveryRunAction[];
+  allowedActions?: readonly RecoveryRunAction[];
   browserContinuityState?: ReplayBrowserContinuitySummary["state"];
   browserTransportLabel?: string;
   browserDiagnosticBucket?: ReplayBrowserContinuitySummary["browserDiagnosticBucket"];

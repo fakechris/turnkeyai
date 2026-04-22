@@ -164,19 +164,19 @@ function derivePromptContextRiskSignals(
   const signals: PromptContextRiskSignal[] = [];
   const { continuity, recentTurns, retrievedMemory, workerEvidence } = diagnostics;
 
-  if (!continuity.hasContinuationContext) {
+  if (continuity.sourceHasContinuationContext === true && !continuity.hasContinuationContext) {
     signals.push("missing_continuation_context");
   }
-  if (!continuity.carriesPendingWork) {
+  if (continuity.sourceHasPendingWork === true && !continuity.carriesPendingWork) {
     signals.push("missing_pending_work");
   }
-  if (!continuity.carriesWaitingOn) {
+  if (continuity.sourceHasWaitingOn === true && !continuity.carriesWaitingOn) {
     signals.push("missing_waiting_on");
   }
-  if (!continuity.carriesOpenQuestions) {
+  if (continuity.sourceHasOpenQuestions === true && !continuity.carriesOpenQuestions) {
     signals.push("missing_open_questions");
   }
-  if (!continuity.carriesDecisionOrConstraint) {
+  if (continuity.sourceHasDecisionOrConstraint === true && !continuity.carriesDecisionOrConstraint) {
     signals.push("missing_decision_or_constraint");
   }
   if (recentTurns.packedCount < recentTurns.selectedCount) {
@@ -263,6 +263,13 @@ function isContextDiagnostics(
       "carriesOpenQuestions",
       "carriesDecisionOrConstraint",
     ]) &&
+    isOptionalBooleanRecord(continuity, [
+      "sourceHasContinuationContext",
+      "sourceHasPendingWork",
+      "sourceHasWaitingOn",
+      "sourceHasOpenQuestions",
+      "sourceHasDecisionOrConstraint",
+    ]) &&
     isNumberRecord(recentTurns, ["availableCount", "selectedCount", "packedCount", "salientEarlierCount"]) &&
     typeof (recentTurns as Record<string, unknown>).compacted === "boolean" &&
     isNumberRecord(retrievedMemory, [
@@ -305,4 +312,15 @@ function isBooleanRecord(value: unknown, keys: string[]): boolean {
   }
 
   return keys.every((key) => typeof (value as Record<string, unknown>)[key] === "boolean");
+}
+
+function isOptionalBooleanRecord(value: unknown, keys: string[]): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  return keys.every((key) => {
+    const candidate = (value as Record<string, unknown>)[key];
+    return candidate == null || typeof candidate === "boolean";
+  });
 }

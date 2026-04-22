@@ -5801,21 +5801,32 @@ const BUILT_IN_CASES: RegressionCase[] = [
         `relay=${issuesByScope.relay?.summary ?? "-"}`,
         `cdp=${issuesByScope["direct-cdp"]?.summary ?? "-"}`,
       ];
-      const passed =
-        record.issueCount === 2 &&
+      const recordCountsPassed = record.issueCount === 2;
+      const reportCountsPassed =
         report.failedRuns === 1 &&
         report.attentionCount === 2 &&
         report.bucketCounts.transport === 2 &&
         report.severityCounts.critical === 2 &&
-        report.recommendedActionCounts["rerun-transport-soak"] === 2 &&
+        report.recommendedActionCounts["rerun-transport-soak"] === 2;
+      const artifactPassed =
         report.latestRuns[0]?.artifactPath ===
-          ".daemon-data/validation-artifacts/transport-soak/transport-phase1-closure.json" &&
+        ".daemon-data/validation-artifacts/transport-soak/transport-phase1-closure.json";
+      const commandHintsPassed =
         issuesByScope.relay?.commandHint === "transport-soak 2 relay" &&
-        issuesByScope["direct-cdp"]?.commandHint === "transport-soak 2 direct-cdp" &&
+        issuesByScope["direct-cdp"]?.commandHint === "transport-soak 2 direct-cdp";
+      const relaySummaryPassed =
         issuesByScope.relay?.summary.includes("peer-timeout x1") === true &&
-        issuesByScope.relay.summary.includes("failed checks: relay-peer-multiplex x1") &&
+        issuesByScope.relay?.summary.includes("failed checks: relay-peer-multiplex x1") === true;
+      const cdpSummaryPassed =
         issuesByScope["direct-cdp"]?.summary.includes("workflow-log-failure x1") === true &&
-        issuesByScope["direct-cdp"].summary.includes("failed checks: workflow-log x1");
+        issuesByScope["direct-cdp"]?.summary.includes("failed checks: workflow-log x1") === true;
+      const passed =
+        recordCountsPassed &&
+        reportCountsPassed &&
+        artifactPassed &&
+        commandHintsPassed &&
+        relaySummaryPassed &&
+        cdpSummaryPassed;
       return buildResult(this, Boolean(passed), details);
     },
   },
@@ -6330,22 +6341,26 @@ const BUILT_IN_CASES: RegressionCase[] = [
         `case=${promptCase?.caseState ?? "-"}`,
         `next=${promptCase?.nextStep ?? "-"}`,
       ];
-      const passed =
+      const riskCountsPassed =
         promptReport.totalBoundaries === 1 &&
         promptReport.contextRiskCounts.observational_evidence_pressure === 1 &&
         promptReport.contextRiskCounts.continuation_relevant_evidence_pressure === 1 &&
         promptReport.contextRiskCounts.missing_pending_work === undefined &&
-        promptReport.contextRiskCounts.missing_waiting_on === undefined &&
+        promptReport.contextRiskCounts.missing_waiting_on === undefined;
+      const carryForwardPassed =
         promptReport.continuityCarryForwardCounts.pendingWork === 1 &&
         promptReport.continuityCarryForwardCounts.waitingOn === 1 &&
-        promptReport.continuityCarryForwardCounts.openQuestions === 1 &&
+        promptReport.continuityCarryForwardCounts.openQuestions === 1;
+      const boundarySignalsPassed =
         boundary?.contextRiskSignals?.includes("observational_evidence_pressure") === true &&
-        boundary?.contextRiskSignals?.includes("continuation_relevant_evidence_pressure") === true &&
+        boundary?.contextRiskSignals?.includes("continuation_relevant_evidence_pressure") === true;
+      const attentionPassed =
         attention.sourceCounts.prompt === 1 &&
         promptCase?.caseState === "open" &&
         promptCase.reasons?.includes("observational_evidence_pressure") === true &&
         promptCase.reasons?.includes("continuation_relevant_evidence_pressure") === true &&
         promptCase.nextStep === "inspect_prompt_boundary";
+      const passed = riskCountsPassed && carryForwardPassed && boundarySignalsPassed && attentionPassed;
       return buildResult(this, Boolean(passed), details);
     },
   },
@@ -6430,25 +6445,31 @@ const BUILT_IN_CASES: RegressionCase[] = [
         `reasons=${governanceReasons.join("|") || "-"}`,
         `summary=${governanceItem?.summary ?? "-"}`,
       ];
-      const passed =
-        summary.flow.attentionCount === 0 &&
-        summary.flow.shardStatusCounts.ready_to_merge === 1 &&
+      const flowReadyPassed = summary.flow.attentionCount === 0 && summary.flow.shardStatusCounts.ready_to_merge === 1;
+      const governanceCountsPassed =
         summary.governance.attentionCount === 1 &&
         summary.governance.recommendedActionCounts.fallback_browser === 1 &&
-        summary.governance.permissionDecisionCounts.denied === 1 &&
-        summary.totalAttentionCount === 1 &&
-        attention.totalItems === 1 &&
-        attention.uniqueCaseCount === 1 &&
-        governanceCase?.nextStep === "fallback_browser" &&
-        governanceCase.caseState === "blocked" &&
+        summary.governance.permissionDecisionCounts.denied === 1;
+      const attentionCountsPassed =
+        summary.totalAttentionCount === 1 && attention.totalItems === 1 && attention.uniqueCaseCount === 1;
+      const governanceCasePassed = governanceCase?.nextStep === "fallback_browser" && governanceCase.caseState === "blocked";
+      const governanceReasonsPassed =
         governanceReasons.includes("scope=publish") &&
         governanceReasons.includes("level=approval") &&
         governanceReasons.includes("decision=denied") &&
         governanceReasons.includes("fallback=browser") &&
-        governanceReasons.includes("fallback_reason=official_api_scope_missing") &&
+        governanceReasons.includes("fallback_reason=official_api_scope_missing");
+      const governanceSummaryPassed =
         /action=fallback_browser/.test(governanceItem?.summary ?? "") &&
         /admission=summary_only/.test(governanceItem?.summary ?? "") &&
         /trust=observational/.test(governanceItem?.summary ?? "");
+      const passed =
+        flowReadyPassed &&
+        governanceCountsPassed &&
+        attentionCountsPassed &&
+        governanceCasePassed &&
+        governanceReasonsPassed &&
+        governanceSummaryPassed;
       return buildResult(this, Boolean(passed), details);
     },
   },

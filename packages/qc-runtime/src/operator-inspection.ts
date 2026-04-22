@@ -337,7 +337,7 @@ function buildGovernanceAttentionSummary(audit: GovernanceAuditDetails): string 
     audit.permissionDecision ? `decision=${audit.permissionDecision}` : null,
     audit.fallbackTransport ? `fallback=${audit.fallbackTransport}` : null,
     audit.denialReason ? `denial=${audit.denialReason}` : null,
-    audit.fallbackReason ? `fallback-reason=${audit.fallbackReason}` : null,
+    audit.fallbackReason ? `fallback_reason=${audit.fallbackReason}` : null,
   ].filter((value): value is string => Boolean(value));
   return `Governance audit for ${audit.workerType} via ${audit.transport} requires attention: ${details.join(", ")}.`;
 }
@@ -927,6 +927,9 @@ function buildPromptCaseKey(boundary: PromptBoundaryEntry): string {
 function shouldEscalatePromptCompaction(boundary: PromptBoundaryEntry): boolean {
   if (boundary.boundaryKind !== "prompt_compaction") {
     return false;
+  }
+  if ((boundary.contextRiskSignals?.length ?? 0) > 0) {
+    return true;
   }
   const diagnostics = boundary.contextDiagnostics;
   if (!diagnostics) {
