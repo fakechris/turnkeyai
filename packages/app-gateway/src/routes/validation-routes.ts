@@ -321,7 +321,7 @@ export async function handleValidationRoutes(input: {
     const cycles = body.cycles !== undefined ? Number(body.cycles) : undefined;
     try {
       const startedAt = Date.now();
-      const result = runValidationSoakSeries({
+      const result = await runValidationSoakSeries({
         ...(cycles !== undefined ? { cycles } : {}),
         ...(selectors !== undefined ? { selectors } : {}),
       });
@@ -559,7 +559,7 @@ async function runPhase1Readiness(input: {
   });
 
   const soakStartedAt = Date.now();
-  const soakResult = runValidationSoakSeries({
+  const soakResult = await runValidationSoakSeries({
     cycles: input.soakCycles,
     selectors: [...PHASE1_READINESS_SOAK_SELECTORS],
   });

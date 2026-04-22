@@ -2245,6 +2245,12 @@ async function executeStorageAction(
     `(() => {
       const { area, action: storageAction, key, value, maxEntries, maxValueBytes } = ${input};
       const storage = area === "localStorage" ? window.localStorage : window.sessionStorage;
+      const requireStorageKey = () => {
+        if (typeof key !== "string" || key.length === 0) {
+          throw new Error("browser storage action requires a non-empty key");
+        }
+        return key;
+      };
       const summarizeValue = (rawValue) => {
         if (rawValue === null) {
           return {
@@ -2264,22 +2270,24 @@ async function executeStorageAction(
       };
 
       if (storageAction === "set") {
-        storage.setItem(key, value ?? "");
+        const storageKey = requireStorageKey();
+        storage.setItem(storageKey, value ?? "");
         return {
           area,
           action: storageAction,
-          key,
+          key: storageKey,
           valueBytes: new TextEncoder().encode(value ?? "").length,
           entryCount: storage.length,
         };
       }
       if (storageAction === "remove") {
-        const existed = storage.getItem(key) !== null;
-        storage.removeItem(key);
+        const storageKey = requireStorageKey();
+        const existed = storage.getItem(storageKey) !== null;
+        storage.removeItem(storageKey);
         return {
           area,
           action: storageAction,
-          key,
+          key: storageKey,
           removed: existed,
           entryCount: storage.length,
         };

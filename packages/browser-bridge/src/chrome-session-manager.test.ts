@@ -1880,6 +1880,70 @@ test("chrome session manager executes bounded storage actions", async () => {
   assert.equal(output.traceOutput?.value, "abc");
 });
 
+test("chrome session manager rejects storage mutations without a browser storage key", async () => {
+  const values = new Map<string, string>();
+  const browserStorage = {
+    get length() {
+      return values.size;
+    },
+    setItem(key: string, value: string) {
+      values.set(String(key), String(value));
+    },
+    getItem(key: string) {
+      return values.get(String(key)) ?? null;
+    },
+    removeItem(key: string) {
+      values.delete(String(key));
+    },
+    clear() {
+      values.clear();
+    },
+    key(index: number) {
+      return Array.from(values.keys())[index] ?? null;
+    },
+  };
+  const fakePage = {
+    async evaluate(script: string) {
+      const windowLike = {
+        localStorage: browserStorage,
+        sessionStorage: browserStorage,
+      };
+      return new Function("window", "TextEncoder", `return ${script};`)(windowLike, TextEncoder);
+    },
+  } as unknown as Page;
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+  });
+  const internal = manager as unknown as {
+    executeAction(input: {
+      page: Page;
+      action: { kind: "storage"; area: "localStorage"; action: "set"; value: string };
+      stepIndex: number;
+      sessionDir: string;
+      requestedUrl: string;
+      lastStatusCode: number;
+      knownRefs: Map<string, unknown>;
+      browserSessionId: string;
+    }): Promise<{ traceOutput?: Record<string, unknown> }>;
+  };
+
+  await assert.rejects(
+    () =>
+      internal.executeAction({
+        page: fakePage,
+        action: { kind: "storage", area: "localStorage", action: "set", value: "abc" },
+        stepIndex: 1,
+        sessionDir: ".daemon-data/test-browser-artifacts",
+        requestedUrl: "https://example.com",
+        lastStatusCode: 200,
+        knownRefs: new Map(),
+        browserSessionId: "browser-session-storage",
+      }),
+    /browser storage action requires a non-empty key/
+  );
+  assert.equal(browserStorage.length, 0);
+});
+
 test("chrome session manager uploads files only from matching browser artifacts", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "chrome-session-manager-upload-"));
 
