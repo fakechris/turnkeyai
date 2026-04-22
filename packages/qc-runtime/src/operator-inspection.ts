@@ -23,7 +23,11 @@ import type {
   TeamEvent,
   TruthRemediationAction,
 } from "@turnkeyai/core-types/team";
-import { describeRecoveryRunGate, listAllowedRecoveryRunActions } from "@turnkeyai/core-types/recovery-operator-semantics";
+import {
+  deriveRecoveryRunOperatorCaseState,
+  describeRecoveryRunGate,
+  listOperatorRecoveryRunActions,
+} from "@turnkeyai/core-types/recovery-operator-semantics";
 import { detectConflictRoleIds, detectDuplicateRoleIds } from "@turnkeyai/core-types/shard-result-analysis";
 import {
   attachRecoveryRunToReplayIncidentBundle,
@@ -287,6 +291,7 @@ export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): Rec
 
     if (isRecoveryRunAttention(run)) {
       attentionCount += 1;
+      const caseState = deriveRecoveryRunOperatorCaseState(run);
       const orderedAttempts = [...run.attempts].sort((left, right) => right.updatedAt - left.updatedAt);
       const currentAttempt = run.currentAttemptId
         ? orderedAttempts.find((attempt) => attempt.attemptId === run.currentAttemptId)
@@ -299,10 +304,11 @@ export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): Rec
         recoveryRunId: run.recoveryRunId,
         sourceGroupId: run.sourceGroupId,
         status: run.status,
+        caseState,
         phase: progress.phase,
         gate,
         nextAction: run.nextAction,
-        allowedActions: listAllowedRecoveryRunActions(run.status).filter((candidate) => candidate !== "dispatch"),
+        allowedActions: listOperatorRecoveryRunActions(run.status),
         summary: run.latestSummary,
         updatedAt: run.updatedAt,
         ...(run.waitingReason ? { waitingReason: run.waitingReason } : {}),
@@ -559,7 +565,7 @@ export function buildOperatorAttentionReport(input: {
         run.status,
         ...(run.waitingReason ? [run.waitingReason] : []),
       ],
-      allowedActions: listAllowedRecoveryRunActions(run.status).filter((candidate) => candidate !== "dispatch"),
+      allowedActions: listOperatorRecoveryRunActions(run.status),
       ...(run.browserSession?.resumeMode === "hot"
         ? { browserContinuityState: "stable" as const }
         : run.browserSession?.resumeMode
@@ -944,23 +950,7 @@ function deriveReplayAttentionSeverity(
 }
 
 function deriveRecoveryAttentionLifecycle(run: RecoveryRun): OperatorAttentionItem["lifecycle"] {
-  switch (run.status) {
-    case "waiting_approval":
-    case "waiting_external":
-      return "waiting_manual";
-    case "running":
-    case "retrying":
-    case "fallback_running":
-    case "resumed":
-    case "superseded":
-      return "recovering";
-    case "failed":
-    case "aborted":
-      return "blocked";
-    case "planned":
-    default:
-      return "open";
-  }
+  return mapCaseStateToLifecycle(deriveRecoveryRunOperatorCaseState(run));
 }
 
 function isRecoveryRunAttention(run: RecoveryRun): boolean {

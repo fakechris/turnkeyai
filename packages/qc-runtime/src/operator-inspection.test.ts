@@ -867,6 +867,7 @@ test("operator inspection summarizes recovery run phases and browser outcomes", 
   assert.equal(report.browserOutcomeCounts.hot_reuse, 1);
   assert.equal(report.attentionRuns.length, 1);
   assert.equal(report.attentionRuns[0]?.recoveryRunId, buildRecoveryRunId("group-1"));
+  assert.equal(report.attentionRuns[0]?.caseState, "waiting_manual");
   assert.equal(report.attentionRuns[0]?.phase, "awaiting_approval");
   assert.equal(report.attentionRuns[0]?.gate, "waiting for approval");
   assert.deepEqual(report.attentionRuns[0]?.allowedActions, ["approve", "reject"]);

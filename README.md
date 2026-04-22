@@ -313,6 +313,7 @@ npm run daemon
 - `validation-ops`
 - `validation-profiles`
 - `validation-profile-run smoke`
+- `validation-profile-run phase1-e2e`
 
 `replay-console` 会同时显示仍需处理的 `latest bundles`，以及最近已收敛的 `latest resolved bundles`，便于把当前告警和刚恢复的 case 分开看；同时也会把 recovery operator 的 `case state`、`gate` 和 `allowed actions` 一起带出来，避免 workflow 已 recovered 但 operator 仍在 `waiting_manual` 时被首页级视图误判为彻底收口。
 `replay-bundle` 现在会直接带出 recovery operator 语义，包括当前 `gate`、允许动作、phase summary 和最近一次 browser outcome，便于不翻源码直接判断这个 case 还卡在哪一步。
@@ -322,7 +323,7 @@ npm run daemon
 `release-verify` 会对将要公开发布的 CLI 走一遍 `npm pack`、解包、bin/dist help smoke 和 `npm publish --dry-run`，避免 package metadata 在真正发版时才暴露问题；`soak-series` 和单独的 `Long Soak` workflow 会把 `soak / realworld / acceptance` 做多轮聚合运行，用来承接高成本、非 PR required 的长周期稳态验证。
 `validation-ops` 会把最近的 `validation-profile-run`、`release-verify` 和 `soak-series` 结果收成 operator-facing 读数，统一展示失败 bucket、推荐动作和重跑命令，避免验证失败只留在一次性 stdout 里。
 `transport-soak` 现在也会进入同一套 `validation-ops` 记录，并带上 artifact 路径，方便值班时直接回看 relay/direct-cdp 的多 cycle 诊断结果。
-`validation-profiles` / `validation-profile-run` 会把现有 `validation-run`、`release-verify`、`soak-series` 和 `transport-soak` 收成固定 hardening 档位：`smoke` 适合本地快速回归，`nightly` / `prerelease` / `weekly` 会把 transport 连通性和多 cycle 稳定性也一起压过一遍，适合持续稳定性和值班/发版前信心检查。
+`validation-profiles` / `validation-profile-run` 会把现有 `validation-run`、`release-verify`、`soak-series` 和 `transport-soak` 收成固定 hardening 档位：`smoke` 适合本地快速回归，`phase1-e2e` 固定覆盖 Phase 1 收尾的 browser/recovery/context/governance/operator 同场景验收，`nightly` / `prerelease` / `weekly` 会把 transport 连通性和多 cycle 稳定性也一起压过一遍，适合持续稳定性和值班/发版前信心检查。
 `relay-peers` / `relay-targets [peerId]` 可以直接查看本地 daemon 当前看到的 relay 扩展连接和浏览器 tab 发现结果，便于做 extension smoke 和 transport 排障。
 `relay:install-smoke` 会走一遍“build relay extension -> 启动本地 Chromium + unpacked extension -> 等 daemon 看见 peer/target”的真机安装连通链，适合快速确认本地浏览器端 bridge 没坏。
 `transport:soak` 会重复跑 relay / direct-cdp 的真实 smoke，并把失败按 `peer-timeout / cdp-unreachable / reconnect-failure / workflow-log-failure / content-script-unavailable` 这类稳定 bucket 汇总，便于做 transport 值班读数和周级稳定性回归。

@@ -557,6 +557,113 @@ test("recovery action service treats duplicate in-flight dispatch as idempotent"
   assert.deepEqual(appendedEventKinds, []);
 });
 
+test("recovery action service returns operator-facing conflict contract for blocked actions", async () => {
+  const records: ReplayRecord[] = [
+    {
+      replayId: "task-1:worker:worker:browser:task:task-1",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-1",
+      roleId: "role-operator",
+      workerType: "browser",
+      summary: "approval required",
+      failure: {
+        category: "permission_denied",
+        layer: "worker",
+        retryable: false,
+        message: "Approval required before browser resume.",
+        recommendedAction: "request_approval",
+      },
+    },
+  ];
+  const recoveryRunId = buildRecoveryRunId("task-1");
+  let latestRun: RecoveryRun | null = {
+    ...buildBaseRecoveryRun(records),
+    recoveryRunId,
+    status: "waiting_approval",
+    nextAction: "request_approval",
+    autoDispatchReady: false,
+    requiresManualIntervention: true,
+    waitingReason: "Approval required before browser resume.",
+    latestSummary: "Approval required before browser resume.",
+    version: 2,
+  };
+  let scheduledTasks = 0;
+  const appendedEventKinds: string[] = [];
+
+  const service = createRecoveryActionService({
+    clock: { now: () => 100 },
+    idGenerator: {
+      messageId: () => "msg-1",
+      taskId: () => "task-1",
+    } as any,
+    recoveryRunActionMutex: {
+      async run(_key: string, work: () => Promise<unknown>) {
+        return work();
+      },
+    } as any,
+    recoveryRunStaleAfterMs: 60_000,
+    coordinationEngine: {
+      async handleScheduledTask() {
+        scheduledTasks += 1;
+      },
+    } as any,
+    runtimeStateRecorder: {
+      async record() {},
+    } as any,
+    runtimeProgressRecorder: {
+      async record() {},
+    } as any,
+    replayRecorder: {
+      async list() {
+        return records;
+      },
+      async record() {
+        return "replay-recorded";
+      },
+    } as any,
+    recoveryRunStore: {
+      async listByThread() {
+        return latestRun ? [latestRun] : [];
+      },
+      async get(recoveryRunIdInput: string) {
+        return latestRun?.recoveryRunId === recoveryRunIdInput ? latestRun : null;
+      },
+      async put(run: RecoveryRun) {
+        latestRun = run;
+      },
+    } as any,
+    recoveryRunEventStore: {
+      async append(event: { kind: string }) {
+        appendedEventKinds.push(event.kind);
+      },
+      async listByRecoveryRun() {
+        return [];
+      },
+    } as any,
+  });
+
+  const result = await service.executeRecoveryRunActionById({
+    threadId: "thread-1",
+    recoveryRunId,
+    action: "resume",
+  });
+
+  assert.equal(result.statusCode, 409);
+  assert.deepEqual(result.body, {
+    error: "recovery run requires approval before it can continue",
+    recoveryRun: latestRun,
+    caseState: "waiting_manual",
+    currentGate: "waiting for approval",
+    nextAction: "request_approval",
+    allowedActions: ["approve", "reject"],
+  });
+  assert.equal(scheduledTasks, 0);
+  assert.deepEqual(appendedEventKinds, []);
+});
+
 test("recovery action service truth-aligns replay recovery plans", async () => {
   const records = buildReplayRecords();
   const service = createRecoveryActionService({

@@ -121,6 +121,35 @@ test("validation routes reject unknown profile ids after trimming", async () => 
   assert.deepEqual(response.json, { error: "Unknown validation profile" });
 });
 
+test("validation routes run the phase1-e2e profile through validation, soak, and transport stages", async () => {
+  const response = createResponse();
+  const transportCalls: unknown[] = [];
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/validation-profiles/run",
+      body: { profileId: " phase1-e2e " },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/validation-profiles/run"),
+    deps: createDeps({
+      async runBrowserTransportSoakViaCli(options) {
+        transportCalls.push(options);
+        return createDeps().runBrowserTransportSoakViaCli(options);
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.equal(response.json.profileId, "phase1-e2e");
+  assert.equal(response.json.status, "passed");
+  assert.deepEqual(
+    response.json.stages.map((stage: { stageId: string }) => stage.stageId),
+    ["validation-run", "soak-series", "transport-soak"]
+  );
+  assert.deepEqual(transportCalls, [{ cycles: 1, targets: ["relay", "direct-cdp"] }]);
+});
+
 test("validation routes reject malformed transport-soak booleans and trim targets", async () => {
   const invalid = createResponse();
   await handleValidationRoutes({
