@@ -362,6 +362,28 @@ export type BrowserTaskAction =
       events?: BrowserCdpEventOptions;
     };
 
+export const BROWSER_LONG_CHAIN_ACTION_KINDS = [
+  "click",
+  "type",
+  "hover",
+  "key",
+  "select",
+  "drag",
+  "waitFor",
+  "dialog",
+  "probe",
+  "storage",
+  "cookie",
+  "eval",
+  "network",
+  "download",
+  "upload",
+  "scroll",
+  "console",
+  "snapshot",
+  "cdp",
+] as const satisfies readonly BrowserTaskAction["kind"][];
+
 export interface BrowserTaskRequest {
   taskId: string;
   threadId: string;

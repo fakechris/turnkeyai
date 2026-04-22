@@ -1,6 +1,6 @@
 # Browser Relay Bridge v1
 
-> 更新日期：2026-04-04  
+> 更新日期：2026-04-22
 > 目的：定义 `turnkeyai` 的浏览器端 relay bridge 目标形态、分层边界、协议范围和当前落地状态。
 
 ## 1. 结论先说
@@ -15,6 +15,7 @@
 - daemon 侧 relay control plane：peer register、heartbeat、target report、action pull/result submit
 - browser-side peer 第一版：service worker runtime、peer loop、tab observer、content-script executor
 - extension bundling 第一版：可生成 `dist/extension/manifest.json`、`service-worker.js`、`content-script.js`
+- relay / direct-cdp smoke、transport soak、reconnect/workflow-log verification 和 validation-ops 汇总
 
 因此，`Browser Relay Bridge v1` 的目标不是重做 browser runtime，而是：
 
@@ -210,24 +211,38 @@ interface RelayObservedTarget {
 
 ### 5.2 v1 动作面
 
-v1 只要求这 4 个动作先打通：
+v1 第一版动作面已经不再只停留在最小四个动作。当前主 contract 覆盖：
 
 1. `open`
 2. `snapshot`
 3. `click`
 4. `type`
-
-第二阶段补齐：
-
-1. `scroll`
-2. `console`
-3. `screenshot`
+5. `hover`
+6. `key`
+7. `select`
+8. `drag`
+9. `scroll`
+10. `console`
+11. `probe`
+12. `wait`
+13. `waitFor`
+14. `dialog`
+15. `popup`
+16. `storage`
+17. `cookie`
+18. `eval`
+19. `network`
+20. `download`
+21. `upload`
+22. `screenshot`
+23. `cdp`
 
 设计要求：
 
-1. 不在引入 relay transport 时同时扩动作面
-2. 所有动作都要回流统一 `trace / page / artifact`
-3. local 和 relay 都产出同形态 `BrowserTaskResult`
+1. 所有动作都要回流统一 `trace / page / artifact`
+2. local / relay / direct-cdp 都产出同形态 `BrowserTaskResult`
+3. 高风险动作必须由 route validation、relay protocol allow-list、smoke/soak marker 同时兜住
+4. download/upload 只通过 artifact store 交接，不把本地路径暴露给 relay peer
 
 ## 6. 当前代码落地状态
 
@@ -260,13 +275,12 @@ v1 只要求这 4 个动作先打通：
   - [tsup.config.ts](../../packages/browser-relay-peer/tsup.config.ts)
   - [write-extension-manifest.ts](../../packages/browser-relay-peer/scripts/write-extension-manifest.ts)
 
-### 6.2 还没完成
+### 6.2 剩余缺口
 
-1. Chrome 侧真实安装与本地连通说明、安装 smoke 和自检
-2. `scroll / console / screenshot` 动作补齐
-3. daemon <-> extension 的更完整端到端模拟
-4. `direct-cdp-adapter`
-5. relay-specific operator/replay surface 补齐
+1. relay / direct-cdp 的真实环境长链样本还要继续扩充
+2. scheduled/nightly transport soak 的稳定读数还要持续积累
+3. Phase 1 readiness gates 需要在真实 release 环境中跑到稳定 passed
+4. 多 frame / 跨浏览器 / provider-specific remote browser 仍不属于 v1 已完成范围
 
 ## 7. 路线图
 
@@ -310,18 +324,18 @@ v1 只要求这 4 个动作先打通：
 2. service worker / content script bundling
 3. 安装说明与本地连通性验证
 
-状态：未开始
-状态：第一版产物已落地，继续补安装与连通验证
+状态：已完成第一版
 
 ### Phase E: Action Parity And Diagnostics
 
 目标：
 
-1. 补 `scroll / console / screenshot`
+1. 补齐 high-risk action contract
 2. relay-specific failure taxonomy
 3. relay continuity 进入 replay / operator / recovery 主线
+4. rich action parity、CDP control plane、artifact safety 进入 transport soak
 
-状态：未开始
+状态：已完成第一版
 
 ### Phase F: Direct CDP
 
@@ -331,7 +345,7 @@ v1 只要求这 4 个动作先打通：
 2. 让 `direct-cdp` 复用既有 session/runtime 契约
 3. 与 `relay`、`local` 保持同形态结果
 
-状态：未开始
+状态：已完成第一版
 
 ## 8. 落地原则
 
@@ -345,10 +359,10 @@ v1 只要求这 4 个动作先打通：
 
 ## 9. 下一步执行
 
-最短路径：
+当前最短路径已经不是继续补 relay 第一版代码，而是把 Phase 1 exit 跑实：
 
-1. 给 `browser-relay-peer` 加 extension bundling，产出 `dist/extension`
-2. 补 `scroll / console / screenshot`
-3. 增加 daemon <-> extension 端到端模拟测试
-4. 把 relay-specific 失败与 continuity 接入 replay / operator / recovery
-5. 再开始 `direct-cdp-adapter`
+1. `validation-profile-run phase1-e2e`
+2. `transport-soak 3 relay direct-cdp`
+3. `release-verify`
+4. `soak-series 3 acceptance realworld soak`
+5. `validation-ops` 确认 Phase 1 readiness gates 的 passed/failed/missing 状态

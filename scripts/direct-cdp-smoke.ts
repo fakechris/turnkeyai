@@ -6,8 +6,11 @@ import net from "node:net";
 import { createServer } from "node:http";
 
 import {
+  assertBrowserSmokeActionParity,
   buildDownloadUploadFixtureMarkup,
   buildDownloadUploadFixtureScript,
+  buildRichInteractionFixtureMarkup,
+  buildRichInteractionFixtureScript,
   countUploadTraceEntries,
   isUploadedExportTitle,
   resolveDownloadSmokeArtifact,
@@ -226,6 +229,10 @@ async function main(): Promise<void> {
     console.log(`browser-targets: ${smoke.targetCount}`);
     console.log(`browser-download-artifacts: ${smoke.downloadArtifactCount}`);
     console.log(`browser-upload-actions: ${smoke.uploadTraceCount}`);
+    console.log(`browser-action-kinds: ${smoke.actionKinds.join(",")}`);
+    console.log("browser-action-parity: passed");
+    console.log("browser-cdp-controls: passed");
+    console.log("browser-artifact-safety: passed");
     if (smoke.multiTargetContinuityPassed) {
       console.log("browser-multi-target: passed");
     }
@@ -300,6 +307,7 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   uploadTraceCount: number;
   networkControlsPassed: boolean;
   multiTargetContinuityPassed: boolean;
+  actionKinds: string[];
 }> {
   const thread = (await postJson(`${input.daemonUrl}/threads/bootstrap-demo`, {
     variant: "default",
@@ -326,6 +334,17 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     instructions: "Exercise direct-cdp network controls, type into the form, submit it, and inspect page metadata.",
     actions: [
       ...buildNetworkSmokeActions("direct-cdp"),
+      { kind: "hover", selectors: ["#hover-target"] },
+      { kind: "key", key: "Tab" },
+      { kind: "select", selectors: ["#plan-select"], value: "team" },
+      { kind: "drag", source: { selectors: ["#drag-source"] }, target: { selectors: ["#drop-zone"] } },
+      { kind: "waitFor", selectors: ["#relay-submit"], state: "visible", timeoutMs: 5_000 },
+      { kind: "dialog", action: "accept", timeoutMs: 5_000 },
+      { kind: "eval", expression: "setTimeout(() => alert('direct-cdp-dialog'), 0); 'dialog-armed';", timeoutMs: 5_000 },
+      { kind: "probe", probe: "links", maxItems: 5 },
+      { kind: "storage", area: "localStorage", action: "set", key: "transport", value: "direct-cdp" },
+      { kind: "cookie", action: "set", name: "transport", value: "direct-cdp", path: "/" },
+      { kind: "cdp", method: "Runtime.evaluate", params: { expression: "document.readyState" }, timeoutMs: 5_000 },
       { kind: "download", urlPattern: "/export.csv", timeoutMs: 5_000 },
       { kind: "click", selectors: ["#download-link"] },
       { kind: "type", selectors: ["#relay-input"], text: "turnkey cdp" },
@@ -448,6 +467,7 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   if (!history.every((entry) => entry.transportLabel === "direct-cdp")) {
     throw new Error("direct-cdp smoke history is missing direct-cdp transport labels");
   }
+  const actionKinds = assertBrowserSmokeActionParity([sendResponse, uploadResponse, resumeResponse], "direct-cdp");
 
   return {
     threadId,
@@ -464,6 +484,7 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     uploadTraceCount,
     networkControlsPassed: true,
     multiTargetContinuityPassed: true,
+    actionKinds,
   };
 }
 
@@ -737,6 +758,7 @@ function buildDirectCdpSmokeFixtureHtml(): string {
     <label for="relay-input">Direct CDP Input</label>
     <input id="relay-input" aria-label="Direct CDP Input" />
     <button id="relay-submit" type="button">Submit Direct CDP Form</button>
+    ${buildRichInteractionFixtureMarkup()}
     ${buildDownloadUploadFixtureMarkup()}
     <div class="spacer"></div>
     <script>
@@ -749,6 +771,7 @@ function buildDirectCdpSmokeFixtureHtml(): string {
         status.textContent = "submitted:" + value;
         location.hash = "submitted";
       });
+      ${buildRichInteractionFixtureScript()}
       ${buildDownloadUploadFixtureScript()}
     </script>
   </body>

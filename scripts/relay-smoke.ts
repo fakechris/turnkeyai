@@ -6,8 +6,11 @@ import net from "node:net";
 import { createServer, type Server } from "node:http";
 
 import {
+  assertBrowserSmokeActionParity,
   buildDownloadUploadFixtureMarkup,
   buildDownloadUploadFixtureScript,
+  buildRichInteractionFixtureMarkup,
+  buildRichInteractionFixtureScript,
   countUploadTraceEntries,
   isUploadedExportTitle,
   resolveDownloadSmokeArtifact,
@@ -266,6 +269,12 @@ async function main(): Promise<void> {
       console.log(`browser-targets: ${browserSmoke.targetCount}`);
       console.log(`browser-download-artifacts: ${browserSmoke.downloadArtifactCount}`);
       console.log(`browser-upload-actions: ${browserSmoke.uploadTraceCount}`);
+      if (browserSmoke.actionKinds.length > 0) {
+        console.log(`browser-action-kinds: ${browserSmoke.actionKinds.join(",")}`);
+        console.log("browser-action-parity: passed");
+        console.log("browser-cdp-controls: passed");
+        console.log("browser-artifact-safety: passed");
+      }
       if (browserSmoke.multiTargetContinuityPassed) {
         console.log("browser-multi-target: passed");
       }
@@ -486,6 +495,7 @@ async function runBrowserSessionSmoke(input: {
   uploadTraceCount: number;
   networkControlsPassed: boolean;
   multiTargetContinuityPassed: boolean;
+  actionKinds: string[];
 }> {
   const thread = (await postJson(`${input.daemonUrl}/threads/bootstrap-demo`, {
     variant: "default",
@@ -543,6 +553,7 @@ async function runBrowserSessionSmoke(input: {
       uploadTraceCount: 0,
       networkControlsPassed: false,
       multiTargetContinuityPassed: false,
+      actionKinds: [],
     };
   }
 
@@ -551,6 +562,17 @@ async function runBrowserSessionSmoke(input: {
     instructions: "Exercise relay network controls, type into the relay form, submit it, and inspect page metadata.",
     actions: [
       ...buildNetworkSmokeActions("chrome-relay"),
+      { kind: "hover", selectors: ["#hover-target"] },
+      { kind: "key", key: "Tab" },
+      { kind: "select", selectors: ["#plan-select"], value: "team" },
+      { kind: "drag", source: { selectors: ["#drag-source"] }, target: { selectors: ["#drop-zone"] } },
+      { kind: "waitFor", selectors: ["#relay-submit"], state: "visible", timeoutMs: 5_000 },
+      { kind: "dialog", action: "accept", timeoutMs: 5_000 },
+      { kind: "eval", expression: "setTimeout(() => alert('relay-dialog'), 0); 'dialog-armed';", timeoutMs: 5_000 },
+      { kind: "probe", probe: "links", maxItems: 5 },
+      { kind: "storage", area: "localStorage", action: "set", key: "transport", value: "chrome-relay" },
+      { kind: "cookie", action: "set", name: "transport", value: "chrome-relay", path: "/" },
+      { kind: "cdp", method: "Runtime.evaluate", params: { expression: "document.readyState" }, timeoutMs: 5_000 },
       { kind: "download", urlPattern: "/export.csv", timeoutMs: 5_000 },
       { kind: "click", selectors: ["#download-link"] },
       { kind: "type", selectors: ["#relay-input"], text: "turnkey relay" },
@@ -682,6 +704,7 @@ async function runBrowserSessionSmoke(input: {
   if (!history.every((entry) => typeof entry.transportTargetId === "string" && entry.transportTargetId.startsWith("chrome-tab:"))) {
     throw new Error("relay smoke history is missing chrome-tab transport targets");
   }
+  const actionKinds = assertBrowserSmokeActionParity([sendResponse, uploadResponse, resumeResponse], "relay");
 
   return {
     threadId,
@@ -698,6 +721,7 @@ async function runBrowserSessionSmoke(input: {
     uploadTraceCount,
     networkControlsPassed: true,
     multiTargetContinuityPassed: true,
+    actionKinds,
   };
 }
 
@@ -1009,6 +1033,7 @@ function buildRelaySmokeFixtureHtml(): string {
     <label for="relay-input">Relay Input</label>
     <input id="relay-input" aria-label="Relay Input" />
     <button id="relay-submit" type="button">Submit Relay Form</button>
+    ${buildRichInteractionFixtureMarkup()}
     ${buildDownloadUploadFixtureMarkup()}
     <div class="spacer"></div>
     <script>
@@ -1021,6 +1046,7 @@ function buildRelaySmokeFixtureHtml(): string {
         status.textContent = "submitted:" + value;
         location.hash = "submitted";
       });
+      ${buildRichInteractionFixtureScript()}
       ${buildDownloadUploadFixtureScript()}
     </script>
   </body>

@@ -1,5 +1,7 @@
 import type { ServerResponse } from "node:http";
 
+import { BROWSER_LONG_CHAIN_ACTION_KINDS } from "@turnkeyai/core-types/team";
+
 export interface BrowserSmokeResponse {
   sessionId?: string;
   targetId?: string;
@@ -39,6 +41,43 @@ export function writeExportCsvResponse(res: ServerResponse): void {
   res.setHeader("content-type", "text/csv; charset=utf-8");
   res.setHeader("content-disposition", "attachment; filename=\"export.csv\"");
   res.end("id,name\n1,Ada\n");
+}
+
+export function buildRichInteractionFixtureMarkup(): string {
+  return [
+    '<button id="hover-target" type="button">Hover Target</button>',
+    '<select id="plan-select" aria-label="Plan Select">',
+    '  <option value="starter">Starter</option>',
+    '  <option value="team">Team</option>',
+    "</select>",
+    '<div id="drag-source" draggable="true" style="width: 80px; padding: 8px; border: 1px solid #888;">Drag Card</div>',
+    '<div id="drop-zone" style="width: 140px; min-height: 48px; margin: 8px 0; padding: 8px; border: 1px dashed #888;">Drop Zone</div>',
+    '<a id="secondary-link" href="#secondary">Secondary Link</a>',
+  ].join("\n    ");
+}
+
+export function buildRichInteractionFixtureScript(): string {
+  return [
+    'const hoverTarget = document.getElementById("hover-target");',
+    'hoverTarget.addEventListener("mouseenter", () => {',
+    '  document.body.dataset.hovered = "true";',
+    "});",
+    'const planSelect = document.getElementById("plan-select");',
+    'planSelect.addEventListener("change", () => {',
+    "  status.textContent = 'selected:' + planSelect.value;",
+    "});",
+    'const dragSource = document.getElementById("drag-source");',
+    'const dropZone = document.getElementById("drop-zone");',
+    'dragSource.addEventListener("dragstart", (event) => {',
+    '  event.dataTransfer.setData("text/plain", "drag-card");',
+    "});",
+    'dropZone.addEventListener("dragover", (event) => event.preventDefault());',
+    'dropZone.addEventListener("drop", (event) => {',
+    "  event.preventDefault();",
+    '  dropZone.textContent = event.dataTransfer.getData("text/plain") || "dropped";',
+    '  dropZone.dataset.dropped = "true";',
+    "});",
+  ].join("\n      ");
 }
 
 export function buildDownloadUploadFixtureMarkup(): string {
@@ -162,6 +201,31 @@ export function countUploadTraceEntries(response: BrowserSmokeResponse, label: s
 
 export function isUploadedExportTitle(value: string): boolean {
   return value.startsWith("uploaded:") && value.endsWith("export.csv");
+}
+
+export function collectBrowserSmokeTraceKinds(responses: BrowserSmokeResponse[]): string[] {
+  const kinds = new Set<string>();
+  for (const response of responses) {
+    for (const entry of response.trace ?? []) {
+      if (entry.kind) {
+        kinds.add(entry.kind);
+      }
+    }
+  }
+  return [...kinds].sort();
+}
+
+export function assertBrowserSmokeActionParity(
+  responses: BrowserSmokeResponse[],
+  label: string
+): string[] {
+  const observedKinds = collectBrowserSmokeTraceKinds(responses);
+  const observed = new Set(observedKinds);
+  const missing = BROWSER_LONG_CHAIN_ACTION_KINDS.filter((kind) => !observed.has(kind));
+  if (missing.length > 0) {
+    throw new Error(`${label} smoke missing long-chain action kinds: ${missing.join(",")}`);
+  }
+  return observedKinds;
 }
 
 async function getSessionTargets(input: {

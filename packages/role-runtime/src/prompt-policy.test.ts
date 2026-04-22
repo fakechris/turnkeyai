@@ -137,6 +137,8 @@ test("default role prompt policy assembles context from thread and worker stores
     assert.match(packet.taskPrompt, /Role scratchpad:/);
     assert.match(packet.taskPrompt, /Worker evidence:/);
     assert.match(packet.taskPrompt, /Retrieved memory:/);
+    assert.match(packet.taskPrompt, /Decisions: Need browser-backed facts before deciding/);
+    assert.match(packet.taskPrompt, /Open questions: Which vendor has the better entry price/);
     assert.match(packet.taskPrompt, /Visited a public pricing page/);
     assert.doesNotMatch(packet.taskPrompt, /Should not be injected/);
     assert.ok(packet.promptAssembly);
@@ -153,6 +155,14 @@ test("default role prompt policy assembles context from thread and worker stores
     ]);
     assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.hasThreadSummary, true);
     assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.hasRoleScratchpad, true);
+    assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.sourceHasOpenQuestions, true);
+    assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.sourceHasDecisionOrConstraint, true);
+    assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.sourceHasPendingWork, true);
+    assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.sourceHasWaitingOn, true);
+    assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.carriesOpenQuestions, true);
+    assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.carriesDecisionOrConstraint, true);
+    assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.carriesPendingWork, true);
+    assert.equal(packet.promptAssembly?.contextDiagnostics.continuity.carriesWaitingOn, true);
     assert.equal(packet.promptAssembly?.contextDiagnostics.retrievedMemory.selectedCount, 2);
     assert.equal(packet.promptAssembly?.contextDiagnostics.workerEvidence.selectedCount, 1);
     assert.equal(packet.promptAssembly?.contextDiagnostics.workerEvidence.packedCount, 1);

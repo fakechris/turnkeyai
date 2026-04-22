@@ -1,6 +1,6 @@
 # Milestones
 
-> 更新日期：2026-04-19
+> 更新日期：2026-04-22
 
 ## 总览
 
@@ -49,6 +49,7 @@
 - runtime hard-points parity 的五个 pack 已全部进主干
 - `Runtime Observability v1.x` 已覆盖 flow / replay / recovery / live role/worker/browser
 - bounded regression、browser soak、runtime/operator acceptance 已覆盖 browser / recovery / context / parallel / governance / runtime 主线
+- validation-ops 已能汇总 Phase 1 readiness gates：phase1-e2e profile、release-readiness、relay/direct-cdp transport soak、acceptance/realworld/soak series
 - 当前判断：进入同场景 end-to-end 验收、failure injection 和 real-world validation，不直接切入 `Phase 2`
 
 ### Phase 2: Runtime Kernel Lift

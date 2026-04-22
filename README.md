@@ -321,8 +321,8 @@ npm run daemon
 `operator-triage` 会把当前最该看的 incident、runtime waiting/stale 和 prompt pressure 聚到一页里，并给出对应的 console 命令入口。
 `prompt-console` 现在会额外汇总 recent-turn / retrieved-memory / worker-evidence 的实际打包数量，以及 pending / waiting / open-question / decision-or-constraint 的 carry-forward 情况；acceptance / soak 也已把这些计数和 runtime waiting-point 一起编进长链验证，方便直接看高压上下文下哪些信息被保住了。
 `release-verify` 会对将要公开发布的 CLI 走一遍 `npm pack`、解包、bin/dist help smoke 和 `npm publish --dry-run`，避免 package metadata 在真正发版时才暴露问题；`soak-series` 和单独的 `Long Soak` workflow 会把 `soak / realworld / acceptance` 做多轮聚合运行，用来承接高成本、非 PR required 的长周期稳态验证。
-`validation-ops` 会把最近的 `validation-profile-run`、`release-verify` 和 `soak-series` 结果收成 operator-facing 读数，统一展示失败 bucket、推荐动作和重跑命令，避免验证失败只留在一次性 stdout 里。
-`transport-soak` 现在也会进入同一套 `validation-ops` 记录，并带上 artifact 路径，方便值班时直接回看 relay/direct-cdp 的多 cycle 诊断结果。
+`validation-ops` 会把最近的 `validation-profile-run`、`release-verify`、`soak-series` 和 `transport-soak` 结果收成 operator-facing 读数，统一展示失败 bucket、推荐动作、重跑命令和 Phase 1 readiness gates，避免验证失败只留在一次性 stdout 里。
+`transport-soak` 现在也会进入同一套 `validation-ops` 记录，并带上 artifact 路径；它会强制检查 relay/direct-cdp 的 rich action parity、CDP control plane、download/upload artifact safety 和 reconnect/workflow-log marker，方便值班时直接回看多 cycle 诊断结果。
 `validation-profiles` / `validation-profile-run` 会把现有 `validation-run`、`release-verify`、`soak-series` 和 `transport-soak` 收成固定 hardening 档位：`smoke` 适合本地快速回归，`phase1-e2e` 固定覆盖 Phase 1 收尾的 browser/recovery/context/governance/operator 同场景验收，`nightly` / `prerelease` / `weekly` 会把 transport 连通性和多 cycle 稳定性也一起压过一遍，适合持续稳定性和值班/发版前信心检查。
 `relay-peers` / `relay-targets [peerId]` 可以直接查看本地 daemon 当前看到的 relay 扩展连接和浏览器 tab 发现结果，便于做 extension smoke 和 transport 排障。
 `relay:install-smoke` 会走一遍“build relay extension -> 启动本地 Chromium + unpacked extension -> 等 daemon 看见 peer/target”的真机安装连通链，适合快速确认本地浏览器端 bridge 没坏。

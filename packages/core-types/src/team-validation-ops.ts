@@ -48,6 +48,32 @@ export interface ValidationOpsRunRecord {
   issues: ValidationOpsIssueRecord[];
 }
 
+export type ValidationOpsReadinessGateId =
+  | "phase1-e2e-profile"
+  | "release-readiness"
+  | "transport-soak"
+  | "soak-series";
+
+export interface ValidationOpsReadinessGate {
+  gateId: ValidationOpsReadinessGateId;
+  title: string;
+  status: "passed" | "failed" | "missing";
+  summary: string;
+  commandHint: string;
+  latestRunId?: string;
+  recordedAt?: number;
+}
+
+export interface ValidationOpsReadinessReport {
+  status: "passed" | "failed" | "missing";
+  summary: string;
+  passedGates: number;
+  failedGates: number;
+  missingGates: number;
+  nextCommand: string;
+  gates: ValidationOpsReadinessGate[];
+}
+
 export interface ValidationOpsReport {
   totalRuns: number;
   failedRuns: number;
@@ -66,6 +92,7 @@ export interface ValidationOpsReport {
       recordedAt: number;
     }
   >;
+  readiness: ValidationOpsReadinessReport;
 }
 
 export interface ValidationOpsRunStore {

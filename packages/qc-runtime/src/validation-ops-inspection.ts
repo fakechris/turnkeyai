@@ -211,7 +211,117 @@ export function buildValidationOpsReport(records: ValidationOpsRunRecord[], limi
     recommendedActionCounts,
     latestRuns,
     activeIssues: activeIssues.slice(0, Math.max(1, limit)),
+    readiness: buildPhase1ReadinessReport(records),
   };
+}
+
+function buildPhase1ReadinessReport(records: ValidationOpsRunRecord[]): ValidationOpsReport["readiness"] {
+  const gates: ValidationOpsReport["readiness"]["gates"] = [
+    buildReadinessGate({
+      gateId: "phase1-e2e-profile",
+      title: "Phase 1 E2E validation profile",
+      commandHint: "validation-profile-run phase1-e2e",
+      record: findLatestRecord(records, (record) =>
+        record.runType === "validation-profile" && record.profileId === "phase1-e2e"
+      ),
+      missingSummary: "No phase1-e2e validation profile run has been recorded.",
+    }),
+    buildReadinessGate({
+      gateId: "release-readiness",
+      title: "Release readiness",
+      commandHint: "release-verify",
+      record: findLatestRecord(records, (record) => record.runType === "release-readiness"),
+      missingSummary: "No release-readiness run has been recorded.",
+    }),
+    buildReadinessGate({
+      gateId: "transport-soak",
+      title: "Browser transport soak",
+      commandHint: "transport-soak 3 relay direct-cdp",
+      record: findLatestRecord(records, (record) =>
+        record.runType === "transport-soak" &&
+        Boolean(record.targets?.includes("relay")) &&
+        Boolean(record.targets?.includes("direct-cdp"))
+      ),
+      missingSummary: "No relay + direct-cdp transport soak run has been recorded.",
+    }),
+    buildReadinessGate({
+      gateId: "soak-series",
+      title: "Acceptance/realworld/soak series",
+      commandHint:
+        "soak-series 3 acceptance:phase1-production-closure realworld:phase1-production-closure-runbook soak:phase1-production-closure-long-chain",
+      record: findLatestRecord(records, (record) =>
+        record.runType === "soak-series" &&
+        Boolean(record.selectors?.some((selector) => selector.startsWith("acceptance"))) &&
+        Boolean(record.selectors?.some((selector) => selector.startsWith("realworld"))) &&
+        Boolean(record.selectors?.some((selector) => selector.startsWith("soak")))
+      ),
+      missingSummary: "No acceptance + realworld + soak series run has been recorded.",
+    }),
+  ];
+
+  const failedGates = gates.filter((gate) => gate.status === "failed").length;
+  const missingGates = gates.filter((gate) => gate.status === "missing").length;
+  const passedGates = gates.filter((gate) => gate.status === "passed").length;
+  const status: ValidationOpsReport["readiness"]["status"] =
+    failedGates > 0 ? "failed" : missingGates > 0 ? "missing" : "passed";
+  const nextGate = gates.find((gate) => gate.status === "failed") ?? gates.find((gate) => gate.status === "missing");
+
+  return {
+    status,
+    passedGates,
+    failedGates,
+    missingGates,
+    nextCommand: nextGate?.commandHint ?? "validation-ops",
+    summary:
+      status === "passed"
+        ? "Phase 1 exit gates have passing recorded validation runs."
+        : `Phase 1 exit gates need attention: failed=${failedGates} missing=${missingGates}.`,
+    gates,
+  };
+}
+
+function buildReadinessGate(input: {
+  gateId: ValidationOpsReport["readiness"]["gates"][number]["gateId"];
+  title: string;
+  commandHint: string;
+  record: ValidationOpsRunRecord | undefined;
+  missingSummary: string;
+}): ValidationOpsReport["readiness"]["gates"][number] {
+  if (!input.record) {
+    return {
+      gateId: input.gateId,
+      title: input.title,
+      status: "missing",
+      summary: input.missingSummary,
+      commandHint: input.commandHint,
+    };
+  }
+
+  return {
+    gateId: input.gateId,
+    title: input.title,
+    status: input.record.status,
+    summary: `${input.record.title} ${input.record.status} with ${input.record.issueCount} issue(s).`,
+    commandHint: input.commandHint,
+    latestRunId: input.record.runId,
+    recordedAt: input.record.completedAt,
+  };
+}
+
+function findLatestRecord(
+  records: ValidationOpsRunRecord[],
+  predicate: (record: ValidationOpsRunRecord) => boolean
+): ValidationOpsRunRecord | undefined {
+  let latest: ValidationOpsRunRecord | undefined;
+  for (const record of records) {
+    if (!predicate(record)) {
+      continue;
+    }
+    if (!latest || record.completedAt > latest.completedAt) {
+      latest = record;
+    }
+  }
+  return latest;
 }
 
 function buildValidationOpsIssue(input: {

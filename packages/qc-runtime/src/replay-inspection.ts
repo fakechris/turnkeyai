@@ -1440,7 +1440,8 @@ function buildRecoveryWorkflow(input: {
   }
 
   const latestDispatch = input.recoveryDispatches.at(-1)!;
-  const latestFollowUp = input.followUpGroups.sort((left, right) => right.latestRecordedAt - left.latestRecordedAt)[0];
+  const linkedFollowUpGroups = input.followUpGroups.filter((group) => group.groupId === latestDispatch.taskId);
+  const latestFollowUp = [...linkedFollowUpGroups].sort((left, right) => right.latestRecordedAt - left.latestRecordedAt)[0];
 
   if (!latestFollowUp) {
     return {
