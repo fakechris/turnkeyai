@@ -1,6 +1,6 @@
 # Future Work Master Plan
 
-> 更新日期：2026-04-04  
+> 更新日期：2026-04-22
 > 目的：把当前项目从“Phase 1 核心机制已完成”推进到“发布闭环、长期验证、operator 值班、Phase 2 准备”四条主线上的统一执行计划。
 
 ## 1. 当前判断
@@ -24,8 +24,8 @@
 
 - Phase 1 的代码侧收口已经基本完成
 - 真正还没实跑完的是 public release 的外部闭环，需要 `NPM_TOKEN` 和一次真实 release
-- 在不打断当前主线的前提下，下一条新增 workstream 可以进入 `Phase 1.5 / Browser Transport v1`
-- `Browser Transport v1` 的目标不是重写 browser runtime，而是把 `relay / direct-cdp / local` 的 transport adapter 边界正式落代码
+- `Browser Transport v1` 的第一版代码侧已经落地到 `relay / direct-cdp / local` 的 transport adapter、smoke/soak 和 validation-ops
+- 下一步不是开新 browser 主线，而是把 Phase 1 readiness gates 在真实环境中跑到稳定 passed
 
 ## 2. 工作原则
 
@@ -133,7 +133,7 @@
 2. reconnect / eviction / reclaim / ref isolation 的长期稳定性继续验证
 3. context 在高压 budget 下的 carry-forward 继续压测
 4. retrieved memory / worker evidence / recent turns 的 packing 行为继续对齐 acceptance
-5. 对 prompt-console / runtime query 的解释性输出继续打磨
+5. validation-ops 的 Phase 1 readiness gates 继续沉淀为 release / soak / transport 的出口读数
 
 完成标准：
 

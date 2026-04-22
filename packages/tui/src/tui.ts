@@ -1827,6 +1827,18 @@ function printValidationOpsReport(report: ValidationOpsReport): void {
   if (Object.keys(report.recommendedActionCounts).length > 0) {
     console.log(`  actions: ${formatCountMap(report.recommendedActionCounts)}`);
   }
+  console.log(
+    `  phase1 readiness=${report.readiness.status}  passed=${report.readiness.passedGates}  failed=${report.readiness.failedGates}  missing=${report.readiness.missingGates}`
+  );
+  console.log(`  phase1 next=${report.readiness.nextCommand}`);
+  for (const gate of report.readiness.gates) {
+    const parts = [gate.gateId, `status=${gate.status}`];
+    if (gate.latestRunId) {
+      parts.push(`run=${gate.latestRunId}`);
+    }
+    console.log(`    - ${parts.join("  ")}`);
+    console.log(`      ${gate.summary}`);
+  }
   if (report.latestRuns.length > 0) {
     console.log("  latest runs:");
     for (const run of report.latestRuns) {

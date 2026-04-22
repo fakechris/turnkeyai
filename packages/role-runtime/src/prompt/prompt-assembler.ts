@@ -199,6 +199,12 @@ export class DefaultPromptAssembler implements PromptAssembler {
       if (input.threadSummary.stableFacts.length > 0) {
         lines.push(`Stable facts: ${input.threadSummary.stableFacts.join(" | ")}`);
       }
+      if (input.threadSummary.decisions.length > 0) {
+        lines.push(`Decisions: ${input.threadSummary.decisions.slice(0, 3).join(" | ")}`);
+      }
+      if (input.threadSummary.openQuestions.length > 0) {
+        lines.push(`Open questions: ${input.threadSummary.openQuestions.slice(0, 3).join(" | ")}`);
+      }
       optionalSections.push({
         segment: "thread-summary",
         priority: 5,
@@ -773,27 +779,50 @@ function buildContextDiagnostics(input: {
   const recentTurnsSection = keptBySegment.get("recent-turns");
   const retrievedMemorySection = keptBySegment.get("retrieved-memory");
   const workerEvidenceSection = keptBySegment.get("worker-evidence");
+  const hasKeptSection = (segment: Exclude<PromptSegmentName, "task-brief">): boolean => keptBySegment.has(segment);
+  const sourceHasContinuationContext = Boolean(getContinuationContext(input.handoff.payload));
+  const sourceHasRolePendingWork = (input.roleScratchpad?.pendingWork.length ?? 0) > 0;
+  const sourceHasSessionPendingWork = (input.threadSessionMemory?.activeTasks.length ?? 0) > 0;
+  const sourceHasRoleWaitingOn = Boolean(input.roleScratchpad?.waitingOn);
+  const sourceHasSessionWaitingOn = (input.threadSessionMemory?.continuityNotes.length ?? 0) > 0;
+  const sourceHasThreadOpenQuestions = (input.threadSummary?.openQuestions.length ?? 0) > 0;
+  const sourceHasSessionOpenQuestions = (input.threadSessionMemory?.openQuestions.length ?? 0) > 0;
+  const sourceHasThreadDecision = (input.threadSummary?.decisions.length ?? 0) > 0;
+  const sourceHasSessionDecisionOrConstraint =
+    (input.threadSessionMemory?.recentDecisions.length ?? 0) > 0 ||
+    (input.threadSessionMemory?.constraints.length ?? 0) > 0;
+  const sourceHasPendingWork = sourceHasRolePendingWork || sourceHasSessionPendingWork;
+  const sourceHasWaitingOn = sourceHasRoleWaitingOn || sourceHasSessionWaitingOn;
+  const sourceHasOpenQuestions = sourceHasThreadOpenQuestions || sourceHasSessionOpenQuestions;
+  const sourceHasDecisionOrConstraint = sourceHasThreadDecision || sourceHasSessionDecisionOrConstraint;
 
   return {
     continuity: {
       hasThreadSummary: Boolean(input.threadSummary),
       hasSessionMemory: Boolean(input.threadSessionMemory),
       hasRoleScratchpad: Boolean(input.roleScratchpad),
-      hasContinuationContext: Boolean(getContinuationContext(input.handoff.payload)),
+      hasContinuationContext: sourceHasContinuationContext,
       carriesPendingWork: Boolean(
-        (input.roleScratchpad?.pendingWork.length ?? 0) > 0 || (input.threadSessionMemory?.activeTasks.length ?? 0) > 0
+        (sourceHasRolePendingWork && hasKeptSection("role-scratchpad")) ||
+          (sourceHasSessionPendingWork && hasKeptSection("session-memory"))
       ),
       carriesWaitingOn: Boolean(
-        input.roleScratchpad?.waitingOn || (input.threadSessionMemory?.continuityNotes.length ?? 0) > 0
+        (sourceHasRoleWaitingOn && hasKeptSection("role-scratchpad")) ||
+          (sourceHasSessionWaitingOn && hasKeptSection("session-memory"))
       ),
       carriesOpenQuestions: Boolean(
-        (input.threadSummary?.openQuestions.length ?? 0) > 0 || (input.threadSessionMemory?.openQuestions.length ?? 0) > 0
+        (sourceHasThreadOpenQuestions && hasKeptSection("thread-summary")) ||
+          (sourceHasSessionOpenQuestions && hasKeptSection("session-memory"))
       ),
       carriesDecisionOrConstraint: Boolean(
-        (input.threadSummary?.decisions.length ?? 0) > 0 ||
-          (input.threadSessionMemory?.recentDecisions.length ?? 0) > 0 ||
-          (input.threadSessionMemory?.constraints.length ?? 0) > 0
+        (sourceHasThreadDecision && hasKeptSection("thread-summary")) ||
+          (sourceHasSessionDecisionOrConstraint && hasKeptSection("session-memory"))
       ),
+      sourceHasContinuationContext,
+      sourceHasPendingWork,
+      sourceHasWaitingOn,
+      sourceHasOpenQuestions,
+      sourceHasDecisionOrConstraint,
     },
     recentTurns: {
       availableCount: input.totalRecentTurnCount,

@@ -22,9 +22,12 @@ export type BrowserTransportAcceptanceCheckId =
   | "target-continuity"
   | "artifact-continuity"
   | "network-controls"
+  | "rich-action-parity"
+  | "cdp-control-plane"
   | "multi-target-continuity"
   | "download-artifact"
   | "upload-artifact"
+  | "artifact-safety"
   | "reconnect"
   | "workflow-log"
   | "relay-target-discovery"
@@ -127,9 +130,12 @@ const ACCEPTANCE_CHECK_IDS: BrowserTransportAcceptanceCheckId[] = [
   "target-continuity",
   "artifact-continuity",
   "network-controls",
+  "rich-action-parity",
+  "cdp-control-plane",
   "multi-target-continuity",
   "download-artifact",
   "upload-artifact",
+  "artifact-safety",
   "reconnect",
   "workflow-log",
   "relay-target-discovery",
@@ -373,6 +379,8 @@ function summarizeBrowserTransportRun(input: {
     const browserTargets = lines.find((line) => line.startsWith("browser-targets:"));
     const downloadArtifacts = lines.find((line) => line.startsWith("browser-download-artifacts:"));
     const uploadActions = lines.find((line) => line.startsWith("browser-upload-actions:"));
+    const actionParity = lines.find((line) => line.startsWith("browser-action-parity:"));
+    const artifactSafety = lines.find((line) => line.startsWith("browser-artifact-safety:"));
     const failedChecks = input.acceptanceChecks?.filter((check) => check.status === "failed") ?? [];
     const acceptanceSummary = failedChecks.length > 0
       ? `failed=${failedChecks.map((check) => check.checkId).join(",")}`
@@ -381,7 +389,7 @@ function summarizeBrowserTransportRun(input: {
             input.acceptanceChecks.filter((check) => check.status !== "skipped").length
           }`
         : null;
-    return [input.target, finalUrl, peerCount, browserTargets, downloadArtifacts, uploadActions, acceptanceSummary]
+    return [input.target, finalUrl, peerCount, browserTargets, downloadArtifacts, uploadActions, actionParity, artifactSafety, acceptanceSummary]
       .filter(Boolean)
       .join(" | ");
   }
@@ -410,6 +418,10 @@ export function evaluateBrowserTransportAcceptance(input: {
   const transportLabel = findLineValue(input.output, "browser-transport");
   const targetContinuity = findLineValue(input.output, "browser-target-continuity");
   const networkControls = findLineValue(input.output, "browser-network-controls");
+  const actionParity = findLineValue(input.output, "browser-action-parity");
+  const actionKinds = parseLineList(input.output, "browser-action-kinds");
+  const cdpControls = findLineValue(input.output, "browser-cdp-controls");
+  const artifactSafety = findLineValue(input.output, "browser-artifact-safety");
   const multiTarget = findLineValue(input.output, "browser-multi-target");
   const reconnectFinalUrl = findLineValue(input.output, "reconnect-final-url");
   const workflowStatus = findLineValue(input.output, "workflow-log-status");
@@ -450,6 +462,16 @@ export function evaluateBrowserTransportAcceptance(input: {
       `network-controls=${networkControls ?? "missing"}`
     ),
     requiredCheck(
+      "rich-action-parity",
+      actionParity === "passed" && hasAllActionKinds(actionKinds),
+      `action-parity=${actionParity ?? "missing"} action-kinds=${actionKinds.length ? actionKinds.join(",") : "missing"}`
+    ),
+    requiredCheck(
+      "cdp-control-plane",
+      cdpControls === "passed",
+      `cdp-controls=${cdpControls ?? "missing"}`
+    ),
+    requiredCheck(
       "multi-target-continuity",
       multiTarget === "passed" && browserTargetCount !== null && browserTargetCount >= 2,
       `multi-target=${multiTarget ?? "missing"} browser-targets=${browserTargetCount ?? "missing"} expected>=2`
@@ -463,6 +485,11 @@ export function evaluateBrowserTransportAcceptance(input: {
       "upload-artifact",
       uploadActionCount !== null && uploadActionCount >= 1,
       `upload-actions=${uploadActionCount ?? "missing"} expected>=1`
+    ),
+    requiredCheck(
+      "artifact-safety",
+      artifactSafety === "passed" && downloadArtifactCount !== null && uploadActionCount !== null,
+      `artifact-safety=${artifactSafety ?? "missing"} download-artifacts=${downloadArtifactCount ?? "missing"} upload-actions=${uploadActionCount ?? "missing"}`
     ),
     optionalCheck(
       "reconnect",
@@ -537,6 +564,42 @@ function parsePositiveLineValue(output: string, key: string): number | null {
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function parseLineList(output: string, key: string): string[] {
+  const value = findLineValue(output, key);
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function hasAllActionKinds(actionKinds: string[]): boolean {
+  const observed = new Set(actionKinds);
+  return [
+    "click",
+    "type",
+    "hover",
+    "key",
+    "select",
+    "drag",
+    "waitFor",
+    "dialog",
+    "probe",
+    "storage",
+    "cookie",
+    "eval",
+    "network",
+    "download",
+    "upload",
+    "scroll",
+    "console",
+    "snapshot",
+    "cdp",
+  ].every((kind) => observed.has(kind));
 }
 
 function normalizeTargets(value?: BrowserTransportSoakTarget[]): BrowserTransportSoakTarget[] {

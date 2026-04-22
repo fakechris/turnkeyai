@@ -1,6 +1,6 @@
 # Browser Transport v1 Execution Plan
 
-> 更新日期：2026-04-04  
+> 更新日期：2026-04-22
 > 目的：把 `Browser Relay Bridge v1` 从设计文档收成明确可执行的里程碑、交付物和验收标准。
 
 ## 1. 背景
@@ -8,10 +8,12 @@
 当前 `turnkeyai` 的 browser runtime 已经具备：
 
 - `local` transport 主链
-- relay control plane 第一版
-- browser-side peer 第一版
+- relay control plane、peer identity binding、target/action polling/result submit
+- browser-side peer、installable extension artifact 和 extension install smoke
+- relay / direct-cdp smoke、reconnect/workflow-log verification 和 transport soak
+- browser route / relay route 输入与身份边界 hardening
 
-真正还差的是把 relay 从“代码可跑”推进到“可安装、可验证、可诊断、可持续维护”。
+当前 browser transport 已经从“代码可跑”推进到“可安装、可验证、可诊断、可进入持续 soak”。剩余重点不再是补第一版能力面，而是把 Phase 1 exit validation 和长期稳态读数跑实。
 
 这份执行计划只覆盖 `Browser Transport v1`：
 
@@ -33,7 +35,7 @@
 1. `local` 路径继续稳定且不回归
 2. `relay` 可以通过浏览器扩展实际安装和连通
 3. `relay` 输出的 action/page/trace 可以进入现有 replay/recovery/operator 主线
-4. `direct-cdp` 有清晰实现入口，即便还未全量动作 parity
+4. `direct-cdp` 通过同一 browser runtime contract 进入 smoke / soak / validation-ops
 
 ## 3. 里程碑
 
@@ -92,7 +94,7 @@
 
 ### M4. Installable Extension Artifact
 
-状态：进行中
+状态：已完成第一版
 
 交付物：
 
@@ -107,12 +109,8 @@
 1. `tsup` bundling 配置
 2. manifest 生成脚本
 3. `packages/browser-relay-peer/dist/extension/*` 第一版产物
-
-当前未完成：
-
-1. 安装 smoke / 连通 smoke
-2. icons / static assets
-3. 面向开发者的安装说明
+4. `relay:install-smoke` 真机安装和 daemon peer/target 连通验证
+5. README 中的本地安装 / smoke 说明
 
 验收标准：
 
@@ -122,29 +120,32 @@
 
 ### M5. Action Parity
 
-状态：待开发
+状态：已完成第一版
 
 交付物：
 
-1. `scroll`
-2. `console`
-3. `screenshot`
-4. 更完整 content-script / service-worker 协作
+1. `open / snapshot / click / type / hover / key / select / drag / scroll`
+2. `console / probe / wait / waitFor / dialog / popup`
+3. `storage / cookie / eval / network / cdp`
+4. `download / upload / screenshot`
+5. relay adapter upload/download artifact safety
 
 验收标准：
 
 - relay 与 local 在关键动作上输出同形态结果
 - screenshot / console 不需要另起一套结果模型
+- transport soak 强制校验 rich action parity、CDP control plane 和 artifact safety marker
 
 ### M6. Relay Diagnostics
 
-状态：待开发
+状态：已完成第一版
 
 交付物：
 
 1. relay-specific failure bucket
 2. continuity / reconnect / stale peer 诊断
 3. replay / operator / recovery surface 接线
+4. validation-ops 中的 transport target bucket、artifact path 和 Phase 1 readiness gates
 
 验收标准：
 
@@ -153,13 +154,15 @@
 
 ### M7. Direct CDP
 
-状态：待开发
+状态：已完成第一版
 
 交付物：
 
 1. `direct-cdp-adapter`
 2. 连接配置模型
-3. 最小动作打通
+3. 本地 launch / wait / smoke 链路
+4. reconnect / workflow-log verification
+5. transport soak target
 
 验收标准：
 
@@ -168,18 +171,20 @@
 
 ## 4. 推荐开发顺序
 
-严格按下面顺序：
+原开发顺序已经完成第一版：
 
 1. M4 Installable Extension Artifact
 2. M5 Action Parity
 3. M6 Relay Diagnostics
 4. M7 Direct CDP
 
-原因：
+后续顺序改为 Phase 1 exit validation：
 
-- 当前最缺的是“可安装、可对跑”的浏览器侧产物
-- 在扩动作面之前，应先把 extension artifact 做出来
-- diagnostics 应在动作面基本稳定后再统一补
+1. `validation-profile-run phase1-e2e`
+2. `transport-soak 3 relay direct-cdp`
+3. `release-verify`
+4. `soak-series 3 acceptance realworld soak`
+5. `validation-ops` 查看 readiness gates
 
 ## 5. 文件级落点
 
@@ -236,19 +241,20 @@ M4 之后额外要求：
 npm run build:relay-extension
 ```
 
-M6 之后额外要求：
+M6/M7 之后额外要求：
 
 ```bash
-npm run validation-profile-run nightly
+npm run transport:soak -- --cycles 3
 ```
 
 ## 7. 退出条件
 
 `Browser Transport v1` 收住的最低标准：
 
-1. relay extension 可安装、可连 daemon、可执行最小动作
+1. relay extension 可安装、可连 daemon、可执行 rich action smoke
 2. local 不回归
-3. relay failure 可被 operator/replay 理解
-4. direct-cdp 有明确实现入口
+3. relay failure 可被 operator/replay/validation-ops 理解
+4. direct-cdp 可通过同一 smoke/soak 验证
+5. Phase 1 readiness gates 能看到 passed/failed/missing
 
-达到这些条件后，才适合继续做更重的桌面产品面或 transport 扩展。
+代码侧第一版已经达到这些条件；真正出 Phase 1 还需要把 readiness gates 在真实环境中持续跑到稳定 passed。

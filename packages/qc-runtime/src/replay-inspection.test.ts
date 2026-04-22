@@ -1281,6 +1281,74 @@ test("replay incident bundle includes recovery dispatches and follow-up groups",
   assert.match(bundle?.caseHeadline ?? "", /task-6 resolved/);
 });
 
+test("replay incident bundle does not close workflow from an unrelated follow-up group", () => {
+  const records = [
+    {
+      replayId: "task-6:worker:worker:browser:task:task-6",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-6",
+      flowId: "flow-1",
+      roleId: "role-explore",
+      workerType: "browser",
+      summary: "browser task failed",
+      failure: {
+        category: "stale_session",
+        layer: "worker",
+        retryable: true,
+        message: "browser session went stale",
+        recommendedAction: "resume",
+      },
+    },
+    {
+      replayId: "task-7:scheduled",
+      layer: "scheduled",
+      status: "completed",
+      recordedAt: 20,
+      threadId: "thread-1",
+      taskId: "task-7",
+      roleId: "role-explore",
+      summary: "latest recovery dispatch",
+      metadata: {
+        recoveryContext: {
+          parentGroupId: "task-6",
+          action: "auto_resume",
+          dispatchReplayId: "task-7:scheduled",
+        },
+      },
+    },
+    {
+      replayId: "task-99:role:role:role-explore:thread:thread-1",
+      layer: "role",
+      status: "completed",
+      recordedAt: 30,
+      threadId: "thread-1",
+      taskId: "task-99",
+      roleId: "role-explore",
+      summary: "older unrelated follow-up completed",
+      metadata: {
+        recoveryContext: {
+          parentGroupId: "task-6",
+          action: "inspect",
+          dispatchReplayId: "task-99:scheduled",
+        },
+      },
+    },
+  ];
+
+  const bundle = buildReplayIncidentBundle(records as Parameters<typeof buildReplayInspectionReport>[0], "task-6");
+
+  assert.ok(bundle);
+  assert.equal(bundle?.followUpGroups.length, 1);
+  assert.equal(bundle?.followUpGroups[0]?.groupId, "task-99");
+  assert.equal(bundle?.recoveryWorkflow?.status, "running");
+  assert.equal(bundle?.recoveryWorkflow?.latestDispatchReplayId, "task-7:scheduled");
+  assert.equal(bundle?.recoveryWorkflow?.latestFollowUpGroupId, undefined);
+  assert.match(bundle?.recoveryWorkflow?.summary ?? "", /follow-up execution has not been observed/);
+});
+
 test("replay incident bundle reports failed recovery workflow state", () => {
   const records = [
     {
