@@ -16,6 +16,7 @@ test("failure injection suite lists built-in scenarios", () => {
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "runtime-stale-waiting-and-manual-attention"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "context-budget-pressure-and-reentry"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "operator-triage-compound-incident"));
+  assert.ok(scenarios.some((scenario) => scenario.scenarioId === "transport-soak-diagnostics-and-validation-ops"));
 });
 
 test("failure injection suite passes all built-in scenarios", () => {
@@ -38,4 +39,19 @@ test("failure injection suite can run selected scenarios", () => {
     ["browser-detach-reopen-recovery", "runtime-stale-waiting-and-manual-attention"]
   );
   assert.ok(result.scenarios.every((scenario) => scenario.status === "passed"));
+});
+
+test("failure injection suite can run transport soak validation ops scenario", () => {
+  const result = runFailureInjectionSuite(["transport-soak-diagnostics-and-validation-ops"]);
+  assert.equal(result.totalScenarios, 1);
+  assert.equal(result.failedScenarios, 0);
+  assert.deepEqual(
+    new Set(result.scenarios[0]?.caseResults.map((item) => item.caseId)),
+    new Set([
+      "transport-soak-validation-ops-surfaces-target-buckets",
+      "relay-recovery-workflow-log-surfaces-peer-diagnostics",
+      "direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics",
+      "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+    ])
+  );
 });

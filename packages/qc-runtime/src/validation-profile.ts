@@ -16,7 +16,7 @@ import type {
   ValidationSoakSeriesResult,
 } from "./validation-soak-series";
 
-export type ValidationProfileId = "smoke" | "nightly" | "prerelease" | "weekly";
+export type ValidationProfileId = "smoke" | "phase1-e2e" | "nightly" | "prerelease" | "weekly";
 export type ValidationProfileStageId =
   | "validation-run"
   | "release-readiness"
@@ -141,6 +141,42 @@ const PROFILE_DESCRIPTORS: Record<ValidationProfileId, ValidationProfileDescript
     ],
     includeReleaseReadiness: false,
   },
+  "phase1-e2e": {
+    profileId: "phase1-e2e",
+    title: "Phase 1 E2E Acceptance",
+    summary:
+      "固定压 Phase 1 收尾主线：browser transport、recovery/operator 语义、context 压力、governance 与真实 runbook 对齐。",
+    focusAreas: ["browser", "recovery", "context", "governance", "operator", "transport"],
+    validationSelectors: [
+      "regression:browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "regression:transport-soak-validation-ops-surfaces-target-buckets",
+      "regression:operator-case-semantics-separate-active-manual-from-resolved-recent",
+      "regression:context-real-task-attachment-pressure-keeps-critical-carry-forward",
+      "regression:context-weak-observational-evidence-does-not-outrank-continuation",
+      "regression:parallel-governance-downgrade-fallback-explains-operator-contract",
+      "regression:parallel-governance-contract-dedupes-retried-audits-by-case",
+      "acceptance:phase1-production-closure",
+      "acceptance:browser-transport-reconnect-workflow",
+      "acceptance:operator-cross-surface-consistency",
+      "realworld:phase1-production-closure-runbook",
+      "realworld:transport-soak-validation-ops-runbook",
+      "realworld:browser-research-transport-reconnect-runbook",
+      "failure:operator-triage-compound-incident",
+      "failure:transport-soak-diagnostics-and-validation-ops",
+      "soak:phase1-production-closure-long-chain",
+      "soak:transport-soak-validation-ops-readiness",
+    ],
+    includeReleaseReadiness: false,
+    soakSeriesCycles: 1,
+    soakSeriesSelectors: [
+      "acceptance:phase1-production-closure",
+      "realworld:phase1-production-closure-runbook",
+      "soak:phase1-production-closure-long-chain",
+      "soak:transport-soak-validation-ops-readiness",
+    ],
+    transportSoakCycles: 1,
+    transportSoakTargets: [...DEFAULT_TRANSPORT_SOAK_TARGETS],
+  },
   nightly: {
     profileId: "nightly",
     title: "Nightly Hardening",
@@ -183,7 +219,7 @@ const PROFILE_DESCRIPTORS: Record<ValidationProfileId, ValidationProfileDescript
 };
 
 export function listValidationProfiles(): ValidationProfileDescriptor[] {
-  return (["smoke", "nightly", "prerelease", "weekly"] as ValidationProfileId[]).map((profileId) => ({
+  return (["smoke", "phase1-e2e", "nightly", "prerelease", "weekly"] as ValidationProfileId[]).map((profileId) => ({
     ...PROFILE_DESCRIPTORS[profileId],
     focusAreas: [...PROFILE_DESCRIPTORS[profileId].focusAreas],
     validationSelectors: [...PROFILE_DESCRIPTORS[profileId].validationSelectors],

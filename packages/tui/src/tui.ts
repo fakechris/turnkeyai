@@ -30,7 +30,7 @@ import type {
 } from "@turnkeyai/core-types/team";
 import {
   describeRecoveryRunGate,
-  listAllowedRecoveryRunActions,
+  listOperatorRecoveryRunActions,
 } from "@turnkeyai/core-types/recovery-operator-semantics";
 import {
   buildFlowConsoleReport,
@@ -755,7 +755,7 @@ function printHelp(): void {
   console.log("  validation-cases                      list unified validation suites and items");
   console.log("  validation-profiles                   list fixed validation hardening profiles");
   console.log("  validation-run [suite[:item] ...]     run unified validation suites or individual items");
-  console.log("  validation-profile-run <profileId>    run a fixed hardening profile (smoke/nightly/prerelease/weekly)");
+  console.log("  validation-profile-run <profileId>    run a fixed hardening profile (smoke/phase1-e2e/nightly/prerelease/weekly)");
   console.log("  replay-incidents [limit] [action]     show replay incidents for current thread");
   console.log("  replay-group <groupId>                show one grouped replay task with its related replays");
   console.log("  replay-bundle <groupId>               show one incident bundle with timeline");
@@ -1306,6 +1306,9 @@ function printPromptConsole(report: PromptConsoleReport): void {
       `  carry-forward: continuation=${report.continuityCarryForwardCounts.continuationContext}, pending=${report.continuityCarryForwardCounts.pendingWork}, waiting=${report.continuityCarryForwardCounts.waitingOn}, open-questions=${report.continuityCarryForwardCounts.openQuestions}, decisions-or-constraints=${report.continuityCarryForwardCounts.decisionsOrConstraints}`
     );
   }
+  if (Object.keys(report.contextRiskCounts).length > 0) {
+    console.log(`  context risks: ${formatCountMap(report.contextRiskCounts)}`);
+  }
   console.log(`  unique fingerprints: ${report.uniqueAssemblyFingerprintCount}`);
   if (report.latestBoundaries.length > 0) {
     console.log("  latest boundaries:");
@@ -1349,6 +1352,9 @@ function printPromptConsole(report: PromptConsoleReport): void {
         console.log(
           `      packed: turns=${entry.contextDiagnostics.recentTurns.packedCount}/${entry.contextDiagnostics.recentTurns.selectedCount}, memory=${entry.contextDiagnostics.retrievedMemory.packedCount}/${entry.contextDiagnostics.retrievedMemory.selectedCount}, evidence=${entry.contextDiagnostics.workerEvidence.packedCount}/${entry.contextDiagnostics.workerEvidence.selectedCount}`
         );
+        if (entry.contextRiskSignals?.length) {
+          console.log(`      risks: ${entry.contextRiskSignals.join(", ")}`);
+        }
         const carryForward: string[] = [];
         if (entry.contextDiagnostics.continuity.hasContinuationContext) {
           carryForward.push("continuation");
@@ -1556,7 +1562,7 @@ function printOperatorSummary(report: OperatorSummaryReport): void {
   );
   if (report.prompt.totalBoundaries > 0) {
     console.log(
-      `  prompt pressure: boundaries=${report.prompt.totalBoundaries}  compactions=${report.prompt.compactionCount}  reductions=${report.prompt.reductionCount}  memory=${report.prompt.totalRetrievedMemoryPacked}/${report.prompt.totalRetrievedMemoryCandidates}  evidence=${report.prompt.totalWorkerEvidencePacked}/${report.prompt.totalWorkerEvidenceCandidates}`
+      `  prompt pressure: boundaries=${report.prompt.totalBoundaries}  compactions=${report.prompt.compactionCount}  reductions=${report.prompt.reductionCount}  memory=${report.prompt.totalRetrievedMemoryPacked}/${report.prompt.totalRetrievedMemoryCandidates}  evidence=${report.prompt.totalWorkerEvidencePacked}/${report.prompt.totalWorkerEvidenceCandidates}  risks=${formatCountMap(report.prompt.contextRiskCounts)}`
     );
   }
   if (report.attentionOverview) {
@@ -2609,7 +2615,7 @@ async function handleValidationProfilesCommand(): Promise<void> {
     (await getJson("/validation-profiles")) as {
       totalProfiles: number;
       profiles: Array<{
-        profileId: "smoke" | "nightly" | "prerelease" | "weekly";
+        profileId: "smoke" | "phase1-e2e" | "nightly" | "prerelease" | "weekly";
         title: string;
         summary: string;
         focusAreas: string[];
@@ -3024,7 +3030,7 @@ function printRecoveryRunList(payload: { totalRuns: number; runs: Array<Recovery
     console.log(`  ${run.latestSummary}`);
     printTruthFields(run);
     printTruthRemediation(run);
-    const allowedActions = listAllowedRecoveryRunActions(run.status).filter((action) => action !== "dispatch");
+    const allowedActions = listOperatorRecoveryRunActions(run.status);
     if (allowedActions.length > 0) {
       console.log(`  allowed: ${allowedActions.map(describeAttemptAction).join(", ")}`);
     }
@@ -3083,6 +3089,7 @@ function printRecoveryConsole(report: RecoveryConsoleReport): void {
       const parts = [
         run.recoveryRunId,
         `status=${run.status}`,
+        `case=${run.caseState}`,
         `phase=${run.phase}`,
         `gate=${run.gate}`,
         `next=${describeRecoveryAction(run.nextAction)}`,
@@ -3152,7 +3159,7 @@ function printRecoveryRun(run: RecoveryRun & TruthPrintable): void {
   console.log(`  latest status: ${run.latestStatus}`);
   console.log(`  current gate: ${describeRecoveryGate(run)}`);
   console.log(`  summary: ${run.latestSummary}`);
-  const allowedActions = listAllowedRecoveryRunActions(run.status).filter((action) => action !== "dispatch");
+  const allowedActions = listOperatorRecoveryRunActions(run.status);
   console.log(`  allowed actions: ${allowedActions.length > 0 ? allowedActions.map(describeAttemptAction).join(", ") : "none"}`);
   if (run.waitingReason) {
     console.log(`  waiting reason: ${run.waitingReason}`);
@@ -4013,7 +4020,7 @@ function printRealWorldRunResult(payload: {
 async function handleValidationProfileRunCommand(raw: string): Promise<void> {
   const profileId = raw.trim();
   if (!profileId) {
-    console.log("usage: validation-profile-run <smoke|nightly|prerelease|weekly>");
+    console.log("usage: validation-profile-run <smoke|phase1-e2e|nightly|prerelease|weekly>");
     return;
   }
 
@@ -4021,7 +4028,7 @@ async function handleValidationProfileRunCommand(raw: string): Promise<void> {
     const payload = await postJson("/validation-profiles/run", { profileId });
     printValidationProfileRunResult(
       payload as {
-        profileId: "smoke" | "nightly" | "prerelease" | "weekly";
+        profileId: "smoke" | "phase1-e2e" | "nightly" | "prerelease" | "weekly";
         title: string;
         summary: string;
         focusAreas: string[];
@@ -4147,7 +4154,7 @@ function printValidationSuiteList(payload: {
 function printValidationProfileList(payload: {
   totalProfiles: number;
   profiles: Array<{
-    profileId: "smoke" | "nightly" | "prerelease" | "weekly";
+    profileId: "smoke" | "phase1-e2e" | "nightly" | "prerelease" | "weekly";
     title: string;
     summary: string;
     focusAreas: string[];
@@ -4244,7 +4251,7 @@ function printValidationRunResult(payload: {
 }
 
 function printValidationProfileRunResult(payload: {
-  profileId: "smoke" | "nightly" | "prerelease" | "weekly";
+  profileId: "smoke" | "phase1-e2e" | "nightly" | "prerelease" | "weekly";
   title: string;
   summary: string;
   focusAreas: string[];

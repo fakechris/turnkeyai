@@ -22,7 +22,11 @@ import type {
   TruthRemediation,
 } from "@turnkeyai/core-types/team";
 import { WORKER_CONTINUATION_REASONS, WORKER_KINDS } from "@turnkeyai/core-types/team";
-import { describeRecoveryRunGate, listAllowedRecoveryRunActions } from "@turnkeyai/core-types/recovery-operator-semantics";
+import {
+  deriveRecoveryRunOperatorCaseState,
+  describeRecoveryRunGate,
+  listOperatorRecoveryRunActions,
+} from "@turnkeyai/core-types/recovery-operator-semantics";
 import { buildTruthAlignment, dedupeTruthRemediation, truthRemediation } from "./truth-alignment";
 
 const REPLAY_LAYER_ORDER: ReplayLayer[] = ["scheduled", "role", "worker", "browser"];
@@ -772,7 +776,7 @@ export function attachRecoveryRunToReplayIncidentBundle(input: {
   input.bundle.recoveryOperator = {
     caseState: deriveRecoveryRunOperatorCaseState(input.run),
     currentGate: describeRecoveryRunGate(input.run.status),
-    allowedActions: listAllowedRecoveryRunActions(input.run.status).filter((action) => action !== "dispatch"),
+    allowedActions: listOperatorRecoveryRunActions(input.run.status),
     nextAction: input.run.nextAction,
     phase: progress.phase,
     phaseSummary: progress.phaseSummary,
@@ -827,28 +831,6 @@ function buildReplayRecoveryRunRemediation(run: RecoveryRun): TruthRemediation[]
     );
   }
   return dedupeTruthRemediation(remediation);
-}
-
-function deriveRecoveryRunOperatorCaseState(run: RecoveryRun): NonNullable<ReplayIncidentBundle["caseState"]> {
-  switch (run.status) {
-    case "waiting_approval":
-    case "waiting_external":
-      return "waiting_manual";
-    case "running":
-    case "retrying":
-    case "fallback_running":
-    case "resumed":
-    case "superseded":
-      return "recovering";
-    case "recovered":
-      return "resolved";
-    case "failed":
-    case "aborted":
-      return "blocked";
-    case "planned":
-    default:
-      return "open";
-  }
 }
 
 function buildBundleCaseHeadline(

@@ -1,14 +1,17 @@
 import {
+  deriveRecoveryRunOperatorCaseState,
   describeRecoveryRunGate,
   isAllowedRecoveryRunAction,
-  listAllowedRecoveryRunActions,
+  listOperatorRecoveryRunActions,
 } from "@turnkeyai/core-types/recovery-operator-semantics";
 import type { RecoveryRun, RecoveryRunAction } from "@turnkeyai/core-types/team";
 
 export interface RecoveryRunActionConflict {
   error: string;
   recoveryRun: RecoveryRun;
+  caseState: ReturnType<typeof deriveRecoveryRunOperatorCaseState>;
   currentGate: string;
+  nextAction: RecoveryRun["nextAction"];
   allowedActions: readonly RecoveryRunAction[];
 }
 
@@ -51,7 +54,9 @@ export function buildRecoveryRunActionConflict(
   return {
     error,
     recoveryRun: run,
+    caseState: deriveRecoveryRunOperatorCaseState(run),
     currentGate: describeRecoveryRunGate(run.status),
-    allowedActions: listAllowedRecoveryRunActions(run.status).filter((candidate) => candidate !== "dispatch"),
+    nextAction: run.nextAction,
+    allowedActions: listOperatorRecoveryRunActions(run.status),
   };
 }

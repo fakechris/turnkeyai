@@ -135,6 +135,8 @@ test("prompt inspection summarizes prompt compaction and reduction boundaries", 
             carriesWaitingOn: true,
             carriesOpenQuestions: false,
             carriesDecisionOrConstraint: true,
+            sourceHasContinuationContext: true,
+            sourceHasOpenQuestions: true,
           },
           recentTurns: {
             availableCount: 7,
@@ -194,11 +196,130 @@ test("prompt inspection summarizes prompt compaction and reduction boundaries", 
   assert.equal(report.continuityCarryForwardCounts.waitingOn, 2);
   assert.equal(report.continuityCarryForwardCounts.openQuestions, 1);
   assert.equal(report.continuityCarryForwardCounts.decisionsOrConstraints, 2);
+  assert.equal(report.contextRiskCounts.recent_turn_pressure, 2);
+  assert.equal(report.contextRiskCounts.retrieved_memory_pressure, 2);
+  assert.equal(report.contextRiskCounts.worker_evidence_pressure, 2);
+  assert.equal(report.contextRiskCounts.missing_continuation_context, 1);
+  assert.equal(report.contextRiskCounts.missing_open_questions, 1);
+  assert.equal(report.contextRiskCounts.continuation_relevant_evidence_pressure, 1);
   assert.equal(report.latestBoundaries[0]?.boundaryKind, "request_envelope_reduction");
   assert.deepEqual(report.latestBoundaries[0]?.omittedSections, ["recent-turns", "worker-evidence"]);
+  assert.deepEqual(report.latestBoundaries[0]?.contextRiskSignals, [
+    "missing_continuation_context",
+    "missing_open_questions",
+    "recent_turn_pressure",
+    "retrieved_memory_pressure",
+    "worker_evidence_pressure",
+    "continuation_relevant_evidence_pressure",
+  ]);
   assert.equal(report.latestBoundaries[1]?.boundaryKind, "prompt_compaction");
   assert.deepEqual(report.latestBoundaries[1]?.usedArtifacts, ["artifact-1", "artifact-2"]);
+  assert.deepEqual(report.latestBoundaries[1]?.contextRiskSignals, [
+    "recent_turn_pressure",
+    "retrieved_memory_pressure",
+    "worker_evidence_pressure",
+  ]);
   assert.equal(report.latestBoundaries[1]?.contextDiagnostics?.retrievedMemory.packedCount, 2);
+});
+
+test("prompt inspection does not infer missing context without source presence metadata", () => {
+  const report = buildPromptConsoleReport([buildPromptBoundary("progress-no-source", 10, "prompt_compaction", "fp-no-source")]);
+
+  assert.equal(report.contextRiskCounts.missing_continuation_context, undefined);
+  assert.equal(report.contextRiskCounts.missing_pending_work, undefined);
+  assert.equal(report.contextRiskCounts.missing_waiting_on, undefined);
+  assert.equal(report.contextRiskCounts.missing_open_questions, undefined);
+  assert.equal(report.contextRiskCounts.missing_decision_or_constraint, undefined);
+  assert.equal(report.latestBoundaries[0]?.contextRiskSignals, undefined);
+});
+
+test("prompt inspection flags weak observational evidence pressure without losing carry-forward", () => {
+  const report = buildPromptConsoleReport([
+    {
+      progressId: "progress:prompt-observational-pressure",
+      threadId: "thread-1",
+      chainId: "flow:flow-weak-observation",
+      spanId: "role:role-lead",
+      subjectKind: "role_run",
+      subjectId: "role:role-lead",
+      phase: "degraded",
+      progressKind: "boundary",
+      summary: "Weak observational browser excerpts were compacted behind continuation-critical evidence.",
+      recordedAt: 40,
+      flowId: "flow-weak-observation",
+      taskId: "task-weak-observation",
+      roleId: "role-lead",
+      metadata: {
+        boundaryKind: "prompt_compaction",
+        modelId: "gpt-5",
+        modelChainId: "real_task_pressure",
+        assemblyFingerprint: "fp-weak-observation",
+        compactedSegments: ["worker-evidence"],
+        tokenEstimate: {
+          inputTokens: 82_000,
+          outputTokensReserved: 8_000,
+          totalProjectedTokens: 90_000,
+          overBudget: true,
+        },
+        contextDiagnostics: {
+          continuity: {
+            hasThreadSummary: true,
+            hasSessionMemory: true,
+            hasRoleScratchpad: true,
+            hasContinuationContext: true,
+            carriesPendingWork: true,
+            carriesWaitingOn: true,
+            carriesOpenQuestions: true,
+            carriesDecisionOrConstraint: true,
+          },
+          recentTurns: {
+            availableCount: 40,
+            selectedCount: 12,
+            packedCount: 8,
+            salientEarlierCount: 5,
+            compacted: true,
+          },
+          retrievedMemory: {
+            availableCount: 18,
+            selectedCount: 9,
+            packedCount: 6,
+            compacted: true,
+            userPreferenceCount: 2,
+            threadMemoryCount: 3,
+            sessionMemoryCount: 2,
+            knowledgeNoteCount: 1,
+            journalNoteCount: 1,
+          },
+          workerEvidence: {
+            totalCount: 80,
+            admittedCount: 52,
+            selectedCount: 18,
+            packedCount: 4,
+            compacted: true,
+            promotableCount: 3,
+            observationalCount: 49,
+            fullCount: 3,
+            summaryOnlyCount: 49,
+            continuationRelevantCount: 9,
+          },
+        },
+      },
+    },
+  ]);
+
+  assert.equal(report.totalBoundaries, 1);
+  assert.equal(report.continuityCarryForwardCounts.pendingWork, 1);
+  assert.equal(report.continuityCarryForwardCounts.waitingOn, 1);
+  assert.equal(report.continuityCarryForwardCounts.openQuestions, 1);
+  assert.equal(report.contextRiskCounts.observational_evidence_pressure, 1);
+  assert.equal(report.contextRiskCounts.continuation_relevant_evidence_pressure, 1);
+  assert.deepEqual(report.latestBoundaries[0]?.contextRiskSignals, [
+    "recent_turn_pressure",
+    "retrieved_memory_pressure",
+    "worker_evidence_pressure",
+    "continuation_relevant_evidence_pressure",
+    "observational_evidence_pressure",
+  ]);
 });
 
 test("prompt inspection limits latest prompt boundaries after sorting by recency", () => {

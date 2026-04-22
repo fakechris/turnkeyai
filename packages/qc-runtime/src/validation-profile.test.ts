@@ -17,8 +17,15 @@ test("validation profiles list built-in hardening profiles", () => {
 
   assert.deepEqual(
     profiles.map((profile) => profile.profileId),
-    ["smoke", "nightly", "prerelease", "weekly"]
+    ["smoke", "phase1-e2e", "nightly", "prerelease", "weekly"]
   );
+  const phase1E2e = profiles.find((profile) => profile.profileId === "phase1-e2e");
+  assert.ok(phase1E2e);
+  assert.equal(phase1E2e.includeReleaseReadiness, false);
+  assert.equal(phase1E2e.soakSeriesCycles, 1);
+  assert.equal(phase1E2e.transportSoakCycles, 1);
+  assert.deepEqual(phase1E2e.transportSoakTargets, ["relay", "direct-cdp"]);
+  assert.ok(phase1E2e.validationSelectors.includes("acceptance:phase1-production-closure"));
   assert.ok(profiles.find((profile) => profile.profileId === "nightly")?.includeReleaseReadiness);
   assert.deepEqual(
     profiles.find((profile) => profile.profileId === "weekly")?.soakSeriesSelectors,
@@ -33,10 +40,72 @@ test("validation profiles list built-in hardening profiles", () => {
 
 test("validation profile id guard accepts known profiles", () => {
   assert.equal(isValidationProfileId("smoke"), true);
+  assert.equal(isValidationProfileId("phase1-e2e"), true);
   assert.equal(isValidationProfileId("weekly"), true);
   assert.equal(isValidationProfileId("unknown"), false);
   assert.equal(isValidationProfileId("constructor"), false);
   assert.equal(isValidationProfileId("__proto__"), false);
+});
+
+test("phase1-e2e validation profile runs e2e validation, soak, and transport stages", async () => {
+  let releaseCalls = 0;
+  const validationCalls: string[][] = [];
+  const transportSoakCalls: Array<{ cycles?: number; targets?: string[] }> = [];
+
+  const result = await runValidationProfile(
+    "phase1-e2e",
+    {},
+    {
+      releaseReadinessRunner: async () => {
+        releaseCalls += 1;
+        return makeReleaseReadinessResult();
+      },
+      validationRunner: (selectors) => {
+        validationCalls.push([...(selectors ?? [])]);
+        return makeSuiteScopedValidationRunResult(selectors);
+      },
+      transportSoakRunner: async (options) => {
+        transportSoakCalls.push({
+          ...(options.cycles !== undefined ? { cycles: options.cycles } : {}),
+          ...(options.targets ? { targets: options.targets } : {}),
+        });
+        return makeTransportSoakResult();
+      },
+    }
+  );
+
+  assert.equal(result.status, "passed");
+  assert.equal(result.totalStages, 3);
+  assert.deepEqual(
+    result.stages.map((stage) => stage.stageId),
+    ["validation-run", "soak-series", "transport-soak"]
+  );
+  assert.equal(releaseCalls, 0);
+  assert.deepEqual(validationCalls.slice(0, 5), [
+    [
+      "regression:browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "regression:transport-soak-validation-ops-surfaces-target-buckets",
+      "regression:operator-case-semantics-separate-active-manual-from-resolved-recent",
+      "regression:context-real-task-attachment-pressure-keeps-critical-carry-forward",
+      "regression:context-weak-observational-evidence-does-not-outrank-continuation",
+      "regression:parallel-governance-downgrade-fallback-explains-operator-contract",
+      "regression:parallel-governance-contract-dedupes-retried-audits-by-case",
+    ],
+    ["acceptance:phase1-production-closure", "acceptance:browser-transport-reconnect-workflow", "acceptance:operator-cross-surface-consistency"],
+    [
+      "realworld:phase1-production-closure-runbook",
+      "realworld:transport-soak-validation-ops-runbook",
+      "realworld:browser-research-transport-reconnect-runbook",
+    ],
+    ["failure:operator-triage-compound-incident", "failure:transport-soak-diagnostics-and-validation-ops"],
+    ["soak:phase1-production-closure-long-chain", "soak:transport-soak-validation-ops-readiness"],
+  ]);
+  assert.deepEqual(validationCalls.slice(5), [
+    ["acceptance:phase1-production-closure"],
+    ["realworld:phase1-production-closure-runbook"],
+    ["soak:phase1-production-closure-long-chain", "soak:transport-soak-validation-ops-readiness"],
+  ]);
+  assert.deepEqual(transportSoakCalls, [{ cycles: 1, targets: ["relay", "direct-cdp"] }]);
 });
 
 test("smoke validation profile only runs validation catalog stage", async () => {

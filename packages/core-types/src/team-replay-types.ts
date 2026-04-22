@@ -261,7 +261,7 @@ export interface ReplayConsoleReport {
     targetWorker?: ReplayRecoveryPlan["targetWorker"];
     operatorCaseState?: OperatorCaseState;
     operatorGate?: string;
-    operatorAllowedActions?: RecoveryRunAction[];
+    operatorAllowedActions?: readonly RecoveryRunAction[];
   }>;
   latestResolvedBundles: Array<{
     groupId: string;
@@ -286,7 +286,7 @@ export interface ReplayConsoleReport {
     targetWorker?: ReplayRecoveryPlan["targetWorker"];
     operatorCaseState?: OperatorCaseState;
     operatorGate?: string;
-    operatorAllowedActions?: RecoveryRunAction[];
+    operatorAllowedActions?: readonly RecoveryRunAction[];
   }>;
   latestGroups: ReplayTaskSummary[];
 }
@@ -330,7 +330,7 @@ export interface ReplayIncidentBundle extends ReplayTruthSummary {
   recoveryOperator?: {
     caseState: OperatorCaseState;
     currentGate: string;
-    allowedActions: RecoveryRunAction[];
+    allowedActions: readonly RecoveryRunAction[];
     nextAction: RecoveryRun["nextAction"];
     phase: RecoveryRunProgress["phase"];
     phaseSummary: string;

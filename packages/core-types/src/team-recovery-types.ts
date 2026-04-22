@@ -179,10 +179,11 @@ export interface RecoveryConsoleReport {
     recoveryRunId: string;
     sourceGroupId: string;
     status: RecoveryRunStatus;
+    caseState: OperatorCaseState;
     phase: RecoveryRunProgress["phase"];
     gate: string;
     nextAction: RecoveryRun["nextAction"];
-    allowedActions: RecoveryRunAction[];
+    allowedActions: readonly RecoveryRunAction[];
     summary: string;
     updatedAt: number;
     waitingReason?: string;

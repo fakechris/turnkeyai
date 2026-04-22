@@ -23,7 +23,11 @@ import type {
   TeamEvent,
   TruthRemediationAction,
 } from "@turnkeyai/core-types/team";
-import { describeRecoveryRunGate, listAllowedRecoveryRunActions } from "@turnkeyai/core-types/recovery-operator-semantics";
+import {
+  deriveRecoveryRunOperatorCaseState,
+  describeRecoveryRunGate,
+  listOperatorRecoveryRunActions,
+} from "@turnkeyai/core-types/recovery-operator-semantics";
 import { detectConflictRoleIds, detectDuplicateRoleIds } from "@turnkeyai/core-types/shard-result-analysis";
 import {
   attachRecoveryRunToReplayIncidentBundle,
@@ -139,24 +143,11 @@ export function buildGovernanceConsoleReport(
     .sort((left, right) => right.createdAt - left.createdAt);
 
   for (const event of auditEvents) {
-    const payload = event.payload ?? {};
-    const transport =
-      typeof payload.transport === "string" ? (payload.transport as keyof GovernanceConsoleReport["transportCounts"]) : "none";
-    const trust =
-      typeof payload.trustLevel === "string" ? (payload.trustLevel as keyof GovernanceConsoleReport["trustCounts"]) : null;
-    const admission =
-      typeof payload.admission === "object" && payload.admission && typeof (payload.admission as { mode?: unknown }).mode === "string"
-        ? (((payload.admission as { mode: string }).mode) as keyof GovernanceConsoleReport["admissionCounts"])
-        : typeof payload.admissionMode === "string"
-          ? (payload.admissionMode as keyof GovernanceConsoleReport["admissionCounts"])
-          : "unknown";
-    const permission = typeof payload.permission === "object" && payload.permission
-      ? (payload.permission as { recommendedAction?: unknown })
-      : null;
-    const recommendedAction =
-      typeof permission?.recommendedAction === "string"
-        ? (permission.recommendedAction as keyof GovernanceConsoleReport["recommendedActionCounts"])
-        : "unknown";
+    const audit = readGovernanceAuditDetails(event);
+    const transport = audit.transport as keyof GovernanceConsoleReport["transportCounts"];
+    const trust = audit.trustLevel as keyof GovernanceConsoleReport["trustCounts"] | null;
+    const admission = audit.admissionMode as keyof GovernanceConsoleReport["admissionCounts"];
+    const recommendedAction = (audit.recommendedAction ?? "unknown") as keyof GovernanceConsoleReport["recommendedActionCounts"];
 
     transportCounts[transport] = (transportCounts[transport] ?? 0) + 1;
     admissionCounts[admission] = (admissionCounts[admission] ?? 0) + 1;
@@ -228,8 +219,7 @@ function isGovernanceAttentionAudit(event: TeamEvent): boolean {
 }
 
 function readGovernanceRecommendedAction(event: TeamEvent): string | null {
-  const permission = isUnknownRecord(event.payload.permission) ? event.payload.permission : null;
-  return typeof permission?.recommendedAction === "string" ? permission.recommendedAction : null;
+  return readGovernanceAuditDetails(event).recommendedAction;
 }
 
 function firstNonEmptyString(...values: unknown[]): string | null {
@@ -254,6 +244,102 @@ function compareGovernanceAuditRecency(left: TeamEvent, right: TeamEvent): numbe
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+type GovernanceAuditDetails = {
+  workerType: string;
+  status: string;
+  transport: string;
+  trustLevel: string | null;
+  admissionMode: string;
+  recommendedAction: string | null;
+  permissionDecision: string | null;
+  requirementLevel: string | null;
+  requirementScope: string | null;
+  fallbackTransport: string | null;
+  fallbackReason: string | null;
+  denialReason: string | null;
+};
+
+function readGovernanceAuditDetails(event: TeamEvent): GovernanceAuditDetails {
+  const payload = isUnknownRecord(event.payload) ? event.payload : {};
+  const permission = isUnknownRecord(payload.permission) ? payload.permission : null;
+  const requirement = permission && isUnknownRecord(permission.requirement)
+    ? permission.requirement
+    : isUnknownRecord(payload.requirement)
+      ? payload.requirement
+      : null;
+  const admission = isUnknownRecord(payload.admission) ? payload.admission : null;
+  const transportAudit = isUnknownRecord(payload.transportAudit) ? payload.transportAudit : null;
+
+  return {
+    workerType: firstNonEmptyString(payload.workerType) ?? "unknown worker",
+    status: firstNonEmptyString(payload.status) ?? "unknown",
+    transport: firstNonEmptyString(payload.transport, payload.finalTransport) ?? "none",
+    trustLevel: firstNonEmptyString(payload.trustLevel, permission?.trustLevel),
+    admissionMode: firstNonEmptyString(admission?.mode, payload.admissionMode) ?? "unknown",
+    recommendedAction: firstNonEmptyString(permission?.recommendedAction, payload.recommendedAction),
+    permissionDecision: firstNonEmptyString(permission?.decision, payload.permissionDecision),
+    requirementLevel: firstNonEmptyString(requirement?.level, payload.requirementLevel),
+    requirementScope: firstNonEmptyString(requirement?.scope, payload.permissionScope),
+    fallbackTransport: firstNonEmptyString(permission?.fallbackTransport, payload.fallbackTransport),
+    fallbackReason: firstNonEmptyString(transportAudit?.fallbackReason, payload.fallbackReason),
+    denialReason: firstNonEmptyString(permission?.denialReason, payload.denialReason),
+  };
+}
+
+function deriveGovernanceAttentionSeverity(action: string | null): OperatorAttentionItem["severity"] {
+  switch (action) {
+    case "request_approval":
+    case "retry_same_transport":
+      return "warning";
+    case "fallback_browser":
+    case "abort":
+    default:
+      return "critical";
+  }
+}
+
+function deriveGovernanceAttentionLifecycle(action: string | null): OperatorAttentionItem["lifecycle"] {
+  switch (action) {
+    case "request_approval":
+      return "waiting_manual";
+    case "retry_same_transport":
+      return "recovering";
+    case "fallback_browser":
+    case "abort":
+    default:
+      return "blocked";
+  }
+}
+
+function compactGovernanceAttentionReasons(audit: GovernanceAuditDetails): string[] {
+  return [
+    audit.transport,
+    `admission=${audit.admissionMode}`,
+    audit.trustLevel ? `trust=${audit.trustLevel}` : null,
+    audit.requirementScope ? `scope=${audit.requirementScope}` : null,
+    audit.requirementLevel ? `level=${audit.requirementLevel}` : null,
+    audit.permissionDecision ? `decision=${audit.permissionDecision}` : null,
+    audit.fallbackTransport ? `fallback=${audit.fallbackTransport}` : null,
+    audit.denialReason ? `denial=${audit.denialReason}` : null,
+    audit.fallbackReason ? `fallback_reason=${audit.fallbackReason}` : null,
+  ].filter((value): value is string => Boolean(value));
+}
+
+function buildGovernanceAttentionSummary(audit: GovernanceAuditDetails): string {
+  const details = [
+    `action=${audit.recommendedAction ?? "inspect_governance"}`,
+    `admission=${audit.admissionMode}`,
+    audit.trustLevel ? `trust=${audit.trustLevel}` : null,
+    audit.requirementScope ? `scope=${audit.requirementScope}` : null,
+    audit.requirementLevel ? `level=${audit.requirementLevel}` : null,
+    audit.permissionDecision ? `decision=${audit.permissionDecision}` : null,
+    audit.fallbackTransport ? `fallback=${audit.fallbackTransport}` : null,
+    audit.denialReason ? `denial=${audit.denialReason}` : null,
+    audit.fallbackReason ? `fallback_reason=${audit.fallbackReason}` : null,
+  ].filter((value): value is string => Boolean(value));
+  return `Governance audit for ${audit.workerType} via ${audit.transport} requires attention: ${details.join(", ")}.`;
 }
 
 export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): RecoveryConsoleReport {
@@ -287,6 +373,7 @@ export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): Rec
 
     if (isRecoveryRunAttention(run)) {
       attentionCount += 1;
+      const caseState = deriveRecoveryRunOperatorCaseState(run);
       const orderedAttempts = [...run.attempts].sort((left, right) => right.updatedAt - left.updatedAt);
       const currentAttempt = run.currentAttemptId
         ? orderedAttempts.find((attempt) => attempt.attemptId === run.currentAttemptId)
@@ -299,10 +386,11 @@ export function buildRecoveryConsoleReport(runs: RecoveryRun[], limit = 10): Rec
         recoveryRunId: run.recoveryRunId,
         sourceGroupId: run.sourceGroupId,
         status: run.status,
+        caseState,
         phase: progress.phase,
         gate,
         nextAction: run.nextAction,
-        allowedActions: listAllowedRecoveryRunActions(run.status).filter((candidate) => candidate !== "dispatch"),
+        allowedActions: listOperatorRecoveryRunActions(run.status),
         summary: run.latestSummary,
         updatedAt: run.updatedAt,
         ...(run.waitingReason ? { waitingReason: run.waitingReason } : {}),
@@ -511,38 +599,20 @@ export function buildOperatorAttentionReport(input: {
       };
     }),
     ...governanceAttentionEvents.map((event) => {
-      const payload = event.payload ?? {};
-      const permission = typeof payload.permission === "object" && payload.permission
-        ? (payload.permission as { recommendedAction?: unknown })
-        : null;
-      const admission =
-        typeof payload.admission === "object" && payload.admission && typeof (payload.admission as { mode?: unknown }).mode === "string"
-          ? (payload.admission as { mode: string }).mode
-          : typeof payload.admissionMode === "string"
-            ? payload.admissionMode
-            : "unknown";
+      const audit = readGovernanceAuditDetails(event);
       return {
         source: "governance" as const,
         key: event.eventId,
         caseKey: buildGovernanceAttentionCaseKey(event),
         headline: "",
         recordedAt: event.createdAt,
-        severity:
-          typeof permission?.recommendedAction === "string" && permission.recommendedAction === "request_approval"
-            ? ("warning" as const)
-            : ("critical" as const),
-        lifecycle:
-          typeof permission?.recommendedAction === "string" && permission.recommendedAction === "request_approval"
-            ? ("waiting_manual" as const)
-            : ("blocked" as const),
-        status: String(payload.status ?? "unknown"),
-        gate: typeof permission?.recommendedAction === "string" ? permission.recommendedAction : "inspect_governance",
-        reasons: [
-          String(payload.transport ?? "none"),
-          admission,
-        ],
-        summary: `Governance audit for ${String(payload.workerType ?? "unknown worker")} via ${String(payload.transport ?? "none")} requires attention.`,
-        ...(typeof permission?.recommendedAction === "string" ? { action: permission.recommendedAction } : {}),
+        severity: deriveGovernanceAttentionSeverity(audit.recommendedAction),
+        lifecycle: deriveGovernanceAttentionLifecycle(audit.recommendedAction),
+        status: audit.status,
+        gate: audit.recommendedAction ?? "inspect_governance",
+        reasons: compactGovernanceAttentionReasons(audit),
+        summary: buildGovernanceAttentionSummary(audit),
+        ...(audit.recommendedAction ? { action: audit.recommendedAction } : {}),
       };
     }),
     ...recoveryAttentionRuns.map((run) => ({
@@ -559,7 +629,7 @@ export function buildOperatorAttentionReport(input: {
         run.status,
         ...(run.waitingReason ? [run.waitingReason] : []),
       ],
-      allowedActions: listAllowedRecoveryRunActions(run.status).filter((candidate) => candidate !== "dispatch"),
+      allowedActions: listOperatorRecoveryRunActions(run.status),
       ...(run.browserSession?.resumeMode === "hot"
         ? { browserContinuityState: "stable" as const }
         : run.browserSession?.resumeMode
@@ -858,6 +928,9 @@ function shouldEscalatePromptCompaction(boundary: PromptBoundaryEntry): boolean 
   if (boundary.boundaryKind !== "prompt_compaction") {
     return false;
   }
+  if ((boundary.contextRiskSignals?.length ?? 0) > 0) {
+    return true;
+  }
   const diagnostics = boundary.contextDiagnostics;
   if (!diagnostics) {
     return (boundary.compactedSegments?.length ?? 0) >= 2;
@@ -887,6 +960,9 @@ function compactPromptReasons(boundary: PromptBoundaryEntry): string[] {
     if (boundary.contextDiagnostics.continuity.carriesOpenQuestions) {
       reasons.push("open_questions");
     }
+  }
+  if (boundary.contextRiskSignals) {
+    reasons.push(...boundary.contextRiskSignals);
   }
   return [...new Set(reasons)];
 }
@@ -944,23 +1020,7 @@ function deriveReplayAttentionSeverity(
 }
 
 function deriveRecoveryAttentionLifecycle(run: RecoveryRun): OperatorAttentionItem["lifecycle"] {
-  switch (run.status) {
-    case "waiting_approval":
-    case "waiting_external":
-      return "waiting_manual";
-    case "running":
-    case "retrying":
-    case "fallback_running":
-    case "resumed":
-    case "superseded":
-      return "recovering";
-    case "failed":
-    case "aborted":
-      return "blocked";
-    case "planned":
-    default:
-      return "open";
-  }
+  return mapCaseStateToLifecycle(deriveRecoveryRunOperatorCaseState(run));
 }
 
 function isRecoveryRunAttention(run: RecoveryRun): boolean {

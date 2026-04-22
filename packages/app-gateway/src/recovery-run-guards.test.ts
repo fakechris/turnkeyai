@@ -53,7 +53,9 @@ test("buildRecoveryRunActionConflict exposes gate and allowed actions for operat
   assert.deepEqual(conflict, {
     error: "recovery run requires approval before it can continue",
     recoveryRun: buildRun("waiting_approval"),
+    caseState: "waiting_manual",
     currentGate: "waiting for approval",
+    nextAction: "retry_same_layer",
     allowedActions: ["approve", "reject"],
   });
 });

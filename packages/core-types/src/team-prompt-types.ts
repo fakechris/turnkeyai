@@ -2,6 +2,17 @@ import type { FlowId, RoleId, TaskId, ThreadId } from "./team-core";
 
 export type PromptBoundaryKind = "prompt_compaction" | "request_envelope_reduction";
 export type PromptBoundaryReductionLevel = "compact" | "minimal" | "reference-only";
+export type PromptContextRiskSignal =
+  | "missing_continuation_context"
+  | "missing_pending_work"
+  | "missing_waiting_on"
+  | "missing_open_questions"
+  | "missing_decision_or_constraint"
+  | "recent_turn_pressure"
+  | "retrieved_memory_pressure"
+  | "worker_evidence_pressure"
+  | "continuation_relevant_evidence_pressure"
+  | "observational_evidence_pressure";
 
 export interface PromptAssemblyContinuityDiagnostics {
   hasThreadSummary: boolean;
@@ -12,6 +23,11 @@ export interface PromptAssemblyContinuityDiagnostics {
   carriesWaitingOn: boolean;
   carriesOpenQuestions: boolean;
   carriesDecisionOrConstraint: boolean;
+  sourceHasContinuationContext?: boolean;
+  sourceHasPendingWork?: boolean;
+  sourceHasWaitingOn?: boolean;
+  sourceHasOpenQuestions?: boolean;
+  sourceHasDecisionOrConstraint?: boolean;
 }
 
 export interface PromptAssemblyRecentTurnsDiagnostics {
@@ -80,6 +96,7 @@ export interface PromptBoundaryEntry {
     overBudget: boolean;
   };
   contextDiagnostics?: PromptAssemblyContextDiagnostics;
+  contextRiskSignals?: PromptContextRiskSignal[];
   envelopeHint?: {
     toolResultCount?: number;
     toolResultBytes?: number;
@@ -116,5 +133,6 @@ export interface PromptConsoleReport {
     openQuestions: number;
     decisionsOrConstraints: number;
   };
+  contextRiskCounts: Partial<Record<PromptContextRiskSignal, number>>;
   latestBoundaries: PromptBoundaryEntry[];
 }

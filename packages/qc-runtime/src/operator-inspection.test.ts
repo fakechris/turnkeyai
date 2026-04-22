@@ -170,8 +170,18 @@ test("operator inspection summarizes governance transport and admission state", 
         trustLevel: "observational",
         admissionMode: "summary_only",
         permission: {
+          requirement: {
+            level: "approval",
+            scope: "publish",
+            rationale: "publishing requires approval",
+            cacheKey: "perm-1",
+          },
+          decision: "denied",
           recommendedAction: "fallback_browser",
+          fallbackTransport: "browser",
+          denialReason: "official api missing publish scope",
         },
+        fallbackReason: "official_api_scope_missing",
       },
     },
     {
@@ -193,6 +203,13 @@ test("operator inspection summarizes governance transport and admission state", 
   ];
 
   const report = buildGovernanceConsoleReport(permissionRecords, events);
+  const attention = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords,
+    events,
+    replays: [],
+    recoveryRuns: [],
+  });
   assert.equal(report.totalPermissionRecords, 2);
   assert.equal(report.attentionCount, 1);
   assert.equal(report.permissionDecisionCounts.prompt_required, 1);
@@ -201,6 +218,23 @@ test("operator inspection summarizes governance transport and admission state", 
   assert.equal(report.admissionCounts.summary_only, 1);
   assert.equal(report.recommendedActionCounts.fallback_browser, 1);
   assert.equal(report.latestAudits[0]?.eventId, "evt-2");
+  assert.equal(attention.totalItems, 1);
+  assert.equal(attention.cases[0]?.nextStep, "fallback_browser");
+  assert.deepEqual(attention.items[0]?.reasons, [
+    "browser",
+    "admission=summary_only",
+    "trust=observational",
+    "scope=publish",
+    "level=approval",
+    "decision=denied",
+    "fallback=browser",
+    "denial=official api missing publish scope",
+    "fallback_reason=official_api_scope_missing",
+  ]);
+  assert.match(attention.items[0]?.summary ?? "", /action=fallback_browser/);
+  assert.match(attention.items[0]?.summary ?? "", /fallback=browser/);
+  assert.match(attention.items[0]?.summary ?? "", /fallback_reason=official_api_scope_missing/);
+  assert.match(attention.items[0]?.summary ?? "", /scope=publish/);
 });
 
 test("operator inspection clears governance attention when a newer audit proceeds for the same case", () => {
@@ -867,6 +901,7 @@ test("operator inspection summarizes recovery run phases and browser outcomes", 
   assert.equal(report.browserOutcomeCounts.hot_reuse, 1);
   assert.equal(report.attentionRuns.length, 1);
   assert.equal(report.attentionRuns[0]?.recoveryRunId, buildRecoveryRunId("group-1"));
+  assert.equal(report.attentionRuns[0]?.caseState, "waiting_manual");
   assert.equal(report.attentionRuns[0]?.phase, "awaiting_approval");
   assert.equal(report.attentionRuns[0]?.gate, "waiting for approval");
   assert.deepEqual(report.attentionRuns[0]?.allowedActions, ["approve", "reject"]);
@@ -922,6 +957,84 @@ test("operator inspection prefers the current recovery attempt browser summary o
   assert.equal(report.attentionRuns[0]?.currentAttemptId, "attempt-current");
   assert.equal(report.attentionRuns[0]?.browserOutcome, undefined);
   assert.equal(report.attentionRuns[0]?.browserOutcomeSummary, "Current browser resume is waiting for manual inspection.");
+});
+
+test("operator inspection surfaces prompt compaction with context risks and no packing deficit", () => {
+  const progressEvent: RuntimeProgressEvent = {
+    progressId: "progress:prompt-risk-only",
+    threadId: "thread-1",
+    subjectKind: "role_run",
+    subjectId: "role:lead",
+    phase: "degraded",
+    progressKind: "boundary",
+    summary: "Prompt compaction dropped open questions from the source context.",
+    recordedAt: 50,
+    taskId: "task-risk-only",
+    roleId: "lead",
+    metadata: {
+      boundaryKind: "prompt_compaction",
+      compactedSegments: ["recent-turns"],
+      contextDiagnostics: {
+        continuity: {
+          hasThreadSummary: true,
+          hasSessionMemory: true,
+          hasRoleScratchpad: true,
+          hasContinuationContext: true,
+          carriesPendingWork: true,
+          carriesWaitingOn: true,
+          carriesOpenQuestions: false,
+          carriesDecisionOrConstraint: true,
+          sourceHasOpenQuestions: true,
+        },
+        recentTurns: {
+          availableCount: 4,
+          selectedCount: 2,
+          packedCount: 2,
+          salientEarlierCount: 0,
+          compacted: true,
+        },
+        retrievedMemory: {
+          availableCount: 1,
+          selectedCount: 1,
+          packedCount: 1,
+          compacted: false,
+          userPreferenceCount: 0,
+          threadMemoryCount: 1,
+          sessionMemoryCount: 0,
+          knowledgeNoteCount: 0,
+          journalNoteCount: 0,
+        },
+        workerEvidence: {
+          totalCount: 1,
+          admittedCount: 1,
+          selectedCount: 1,
+          packedCount: 1,
+          compacted: false,
+          promotableCount: 1,
+          observationalCount: 0,
+          fullCount: 1,
+          summaryOnlyCount: 0,
+          continuationRelevantCount: 1,
+        },
+      },
+    },
+  };
+
+  const report = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [],
+    recoveryRuns: [],
+    progressEvents: [progressEvent],
+    limit: 5,
+  });
+
+  assert.equal(report.totalItems, 1);
+  assert.equal(report.items[0]?.source, "prompt");
+  assert.equal(report.items[0]?.gate, "prompt_compaction");
+  assert.equal(report.items[0]?.reasons?.includes("missing_open_questions"), true);
+  assert.equal(report.items[0]?.reasons?.includes("recent_turn_pressure"), false);
 });
 
 test("operator inspection flattens cross-surface attention items", () => {
@@ -1150,7 +1263,16 @@ test("operator inspection flattens cross-surface attention items", () => {
   assert.equal(bySource.prompt?.action, "inspect_prompt_boundary");
   assert.equal(bySource.prompt?.caseKey, "prompt:task-1");
   assert.match(bySource.prompt?.headline ?? "", /prompt:task-1 blocked via prompt/);
-  assert.deepEqual(bySource.prompt?.reasons, ["reference-only", "recent-turns", "pending", "waiting"]);
+  assert.deepEqual(bySource.prompt?.reasons, [
+    "reference-only",
+    "recent-turns",
+    "pending",
+    "waiting",
+    "missing_open_questions",
+    "recent_turn_pressure",
+    "retrieved_memory_pressure",
+    "worker_evidence_pressure",
+  ]);
 });
 
 test("operator inspection keeps attention overview stable when item list is limited", () => {
@@ -1824,6 +1946,7 @@ function buildPromptBoundary(input: {
           carriesWaitingOn: true,
           carriesOpenQuestions: false,
           carriesDecisionOrConstraint: true,
+          sourceHasOpenQuestions: true,
         },
         recentTurns: {
           availableCount: 8,

@@ -116,6 +116,19 @@ const SCENARIOS: FailureInjectionScenarioDescriptor[] = [
       "operator-triage-prioritizes-compound-incident",
     ],
   },
+  {
+    scenarioId: "transport-soak-diagnostics-and-validation-ops",
+    area: "browser",
+    title: "Transport soak diagnostics -> validation ops",
+    summary:
+      "验证 relay/direct-cdp transport soak 失败会带着 target bucket、acceptance check 和 rerun command 进入 validation ops。",
+    caseIds: [
+      "transport-soak-validation-ops-surfaces-target-buckets",
+      "relay-recovery-workflow-log-surfaces-peer-diagnostics",
+      "direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics",
+      "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+    ],
+  },
 ];
 
 export function listFailureInjectionScenarios(): FailureInjectionScenarioDescriptor[] {
