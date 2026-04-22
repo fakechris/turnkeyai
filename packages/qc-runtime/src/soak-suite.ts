@@ -161,6 +161,19 @@ const SCENARIOS: SoakScenarioDescriptor[] = [
     ],
   },
   {
+    scenarioId: "transport-soak-validation-ops-readiness",
+    area: "browser",
+    title: "Transport soak validation ops readiness",
+    summary:
+      "验证 transport soak 的 relay/direct-cdp target failure、acceptance failure 与 validation-ops 排障入口在长链里持续可读。",
+    caseIds: [
+      "transport-soak-validation-ops-surfaces-target-buckets",
+      "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "relay-recovery-workflow-log-surfaces-peer-diagnostics",
+      "direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics",
+    ],
+  },
+  {
     scenarioId: "phase1-production-closure-long-chain",
     area: "operator",
     title: "Phase 1 production closure long chain",
@@ -168,8 +181,11 @@ const SCENARIOS: SoakScenarioDescriptor[] = [
       "验证 Phase 1 收尾场景在 browser transport、operator active/resolved、context 压力和治理闭环下保持稳定。",
     caseIds: [
       "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "transport-soak-validation-ops-surfaces-target-buckets",
       "operator-case-semantics-separate-active-manual-from-resolved-recent",
       "context-real-task-attachment-pressure-keeps-critical-carry-forward",
+      "context-weak-observational-evidence-does-not-outrank-continuation",
+      "parallel-governance-downgrade-fallback-explains-operator-contract",
       "parallel-governance-contract-dedupes-retried-audits-by-case",
     ],
   },

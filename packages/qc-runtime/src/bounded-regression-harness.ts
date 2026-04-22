@@ -38,6 +38,10 @@ import {
 } from "./runtime-chain-inspection";
 import { buildPromptConsoleReport } from "./prompt-inspection";
 import { evaluateBrowserTransportAcceptance } from "./browser-transport-soak";
+import {
+  buildValidationOpsRecordFromTransportSoak,
+  buildValidationOpsReport,
+} from "./validation-ops-inspection";
 
 export interface BoundedRegressionCaseDescriptor {
   caseId: string;
@@ -5729,6 +5733,89 @@ const BUILT_IN_CASES: RegressionCase[] = [
         resolvedByKey["incident:task-transport-relay"]?.browserTransportLabel === "chrome-relay" &&
         resolvedByKey["incident:task-transport-cdp"]?.browserContinuityState === "stable" &&
         resolvedByKey["incident:task-transport-cdp"]?.browserTransportLabel === "direct-cdp";
+      return buildResult(this, Boolean(passed), details);
+    },
+  },
+  {
+    caseId: "transport-soak-validation-ops-surfaces-target-buckets",
+    title: "Transport soak validation ops surfaces target buckets",
+    area: "browser",
+    summary:
+      "Transport soak failures should carry relay/direct-cdp target buckets, failed acceptance checks, rerun commands, and artifact references into validation-ops.",
+    run() {
+      const record = buildValidationOpsRecordFromTransportSoak({
+        runId: "transport-phase1-closure",
+        startedAt: 100,
+        completedAt: 220,
+        artifactPath: ".daemon-data/validation-artifacts/transport-soak/transport-phase1-closure.json",
+        result: {
+          status: "failed",
+          totalCycles: 2,
+          passedCycles: 0,
+          failedCycles: 2,
+          totalTargetRuns: 4,
+          failedTargetRuns: 2,
+          durationMs: 120,
+          targets: ["relay", "direct-cdp"],
+          cycleResults: [],
+          targetAggregates: [
+            {
+              target: "relay",
+              cycles: 2,
+              passedCycles: 1,
+              failedCycles: 1,
+              failureBuckets: [
+                { bucket: "peer-timeout", count: 1 },
+                { bucket: "none", count: 1 },
+              ],
+              acceptanceChecks: [
+                { checkId: "relay-peer-multiplex", passed: 1, failed: 1, skipped: 0 },
+                { checkId: "workflow-log", passed: 1, failed: 0, skipped: 0 },
+                { checkId: "network-controls", passed: 1, failed: 0, skipped: 0 },
+              ],
+            },
+            {
+              target: "direct-cdp",
+              cycles: 2,
+              passedCycles: 1,
+              failedCycles: 1,
+              failureBuckets: [
+                { bucket: "workflow-log-failure", count: 1 },
+                { bucket: "none", count: 1 },
+              ],
+              acceptanceChecks: [
+                { checkId: "workflow-log", passed: 1, failed: 1, skipped: 0 },
+                { checkId: "reconnect", passed: 2, failed: 0, skipped: 0 },
+                { checkId: "relay-target-discovery", passed: 0, failed: 0, skipped: 2 },
+              ],
+            },
+          ],
+        },
+      });
+      const report = buildValidationOpsReport([record], 10);
+      const issuesByScope = Object.fromEntries(report.activeIssues.map((issue) => [issue.scope, issue]));
+      const details = [
+        `issues=${report.attentionCount}`,
+        `bucket=${report.bucketCounts.transport ?? 0}`,
+        `action=${report.recommendedActionCounts["rerun-transport-soak"] ?? 0}`,
+        `relay=${issuesByScope.relay?.summary ?? "-"}`,
+        `cdp=${issuesByScope["direct-cdp"]?.summary ?? "-"}`,
+      ];
+      const passed =
+        record.issueCount === 2 &&
+        report.failedRuns === 1 &&
+        report.attentionCount === 2 &&
+        report.bucketCounts.transport === 2 &&
+        report.severityCounts.critical === 2 &&
+        report.recommendedActionCounts["rerun-transport-soak"] === 2 &&
+        report.latestRuns[0]?.artifactPath ===
+          ".daemon-data/validation-artifacts/transport-soak/transport-phase1-closure.json" &&
+        issuesByScope.relay?.commandHint === "transport-soak 2 relay" &&
+        issuesByScope["direct-cdp"]?.commandHint === "transport-soak 2 direct-cdp" &&
+        issuesByScope.relay?.summary.includes("peer-timeout x1") === true &&
+        issuesByScope.relay.summary.includes("failed checks: relay-peer-multiplex x1") &&
+        issuesByScope["direct-cdp"]?.summary.includes("workflow-log-failure x1") === true &&
+        issuesByScope["direct-cdp"].summary.includes("failed checks: workflow-log x1");
       return buildResult(this, Boolean(passed), details);
     },
   },

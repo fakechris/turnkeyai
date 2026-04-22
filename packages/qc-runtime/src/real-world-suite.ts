@@ -67,6 +67,20 @@ const SCENARIOS: RealWorldScenarioDescriptor[] = [
     ],
   },
   {
+    scenarioId: "transport-soak-validation-ops-runbook",
+    area: "browser",
+    title: "Transport soak validation ops runbook",
+    summary:
+      "模拟真实 browser transport 值班场景：relay/direct-cdp soak 失败、workflow-log 诊断和 validation-ops 重跑入口保持一致。",
+    caseIds: [
+      "transport-soak-validation-ops-surfaces-target-buckets",
+      "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "relay-recovery-workflow-log-surfaces-peer-diagnostics",
+      "direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics",
+      "replay-console-browser-continuity-counts",
+    ],
+  },
+  {
     scenarioId: "parallel-governed-synthesis-runbook",
     area: "parallel",
     title: "Parallel governed synthesis runbook",
@@ -244,6 +258,7 @@ const SCENARIOS: RealWorldScenarioDescriptor[] = [
       "验证 browser transport E2E、operator case 语义、context 高压附件任务与 parallel/governance contract 在同一收尾 runbook 下稳定收敛。",
     caseIds: [
       "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "transport-soak-validation-ops-surfaces-target-buckets",
       "operator-case-semantics-separate-active-manual-from-resolved-recent",
       "context-real-task-attachment-pressure-keeps-critical-carry-forward",
       "context-weak-observational-evidence-does-not-outrank-continuation",

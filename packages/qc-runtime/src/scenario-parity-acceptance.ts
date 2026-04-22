@@ -237,6 +237,7 @@ const SCENARIOS: ScenarioParityAcceptanceScenarioDescriptor[] = [
       "验证 Phase 1 收尾面覆盖 browser transport、operator case 语义、context 高压附件任务与 parallel/governance contract。",
     caseIds: [
       "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "transport-soak-validation-ops-surfaces-target-buckets",
       "operator-case-semantics-separate-active-manual-from-resolved-recent",
       "context-real-task-attachment-pressure-keeps-critical-carry-forward",
       "context-weak-observational-evidence-does-not-outrank-continuation",

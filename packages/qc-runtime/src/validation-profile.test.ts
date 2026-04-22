@@ -84,6 +84,7 @@ test("phase1-e2e validation profile runs e2e validation, soak, and transport sta
   assert.deepEqual(validationCalls.slice(0, 5), [
     [
       "regression:browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "regression:transport-soak-validation-ops-surfaces-target-buckets",
       "regression:operator-case-semantics-separate-active-manual-from-resolved-recent",
       "regression:context-real-task-attachment-pressure-keeps-critical-carry-forward",
       "regression:context-weak-observational-evidence-does-not-outrank-continuation",
@@ -91,14 +92,18 @@ test("phase1-e2e validation profile runs e2e validation, soak, and transport sta
       "regression:parallel-governance-contract-dedupes-retried-audits-by-case",
     ],
     ["acceptance:phase1-production-closure", "acceptance:browser-transport-reconnect-workflow", "acceptance:operator-cross-surface-consistency"],
-    ["realworld:phase1-production-closure-runbook", "realworld:browser-research-transport-reconnect-runbook"],
-    ["failure:operator-triage-compound-incident"],
-    ["soak:phase1-production-closure-long-chain"],
+    [
+      "realworld:phase1-production-closure-runbook",
+      "realworld:transport-soak-validation-ops-runbook",
+      "realworld:browser-research-transport-reconnect-runbook",
+    ],
+    ["failure:operator-triage-compound-incident", "failure:transport-soak-diagnostics-and-validation-ops"],
+    ["soak:phase1-production-closure-long-chain", "soak:transport-soak-validation-ops-readiness"],
   ]);
   assert.deepEqual(validationCalls.slice(5), [
     ["acceptance:phase1-production-closure"],
     ["realworld:phase1-production-closure-runbook"],
-    ["soak:phase1-production-closure-long-chain"],
+    ["soak:phase1-production-closure-long-chain", "soak:transport-soak-validation-ops-readiness"],
   ]);
   assert.deepEqual(transportSoakCalls, [{ cycles: 1, targets: ["relay", "direct-cdp"] }]);
 });
