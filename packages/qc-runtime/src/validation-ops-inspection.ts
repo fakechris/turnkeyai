@@ -1,5 +1,6 @@
 import type {
   ValidationOpsFailureBucket,
+  ValidationOpsClosedLoopReport,
   ValidationOpsIssueRecord,
   ValidationOpsIssueSeverity,
   ValidationOpsRecommendedAction,
@@ -11,6 +12,7 @@ import type { ReleaseReadinessResult } from "./release-readiness";
 import type { BrowserTransportSoakResult } from "./browser-transport-soak";
 import type { ValidationProfileIssue, ValidationProfileRunResult } from "./validation-profile";
 import type { ValidationSoakSeriesResult } from "./validation-soak-series";
+import { buildClosedLoopMetric, mergeClosedLoopMetrics } from "./closed-loop-metrics";
 
 export function buildValidationOpsRecordFromReleaseReadiness(input: {
   runId: string;
@@ -56,6 +58,12 @@ export function buildValidationOpsRecordFromValidationProfile(input: {
       commandHint: buildValidationProfileIssueCommandHint(input.result, issue),
     })
   );
+  const closedLoop = mergeClosedLoopMetrics(
+    input.result.stages.map((stage) =>
+      stage.stageId === "validation-run" || stage.stageId === "soak-series" ? stage.result.closedLoop : undefined
+    ),
+    `validation-profile-run ${input.result.profileId}`
+  );
 
   return {
     runId: input.runId,
@@ -70,6 +78,7 @@ export function buildValidationOpsRecordFromValidationProfile(input: {
     selectors: [...input.result.validationSelectors],
     ...(input.result.soakSeriesCycles ? { cycles: input.result.soakSeriesCycles } : {}),
     ...(input.result.transportSoakTargets ? { targets: [...input.result.transportSoakTargets] } : {}),
+    ...(closedLoop ? { closedLoop } : {}),
     issues,
   };
 }
@@ -104,6 +113,7 @@ export function buildValidationOpsRecordFromSoakSeries(input: {
     issueCount: issues.length,
     selectors: [...input.selectors],
     cycles: input.result.totalCycles,
+    ...(input.result.closedLoop ? { closedLoop: input.result.closedLoop } : {}),
     issues,
   };
 }
@@ -212,6 +222,34 @@ export function buildValidationOpsReport(records: ValidationOpsRunRecord[], limi
     latestRuns,
     activeIssues: activeIssues.slice(0, Math.max(1, limit)),
     readiness: buildPhase1ReadinessReport(records),
+    closedLoop: buildValidationOpsClosedLoopReport(latestRuns),
+  };
+}
+
+function buildValidationOpsClosedLoopReport(records: ValidationOpsRunRecord[]): ValidationOpsClosedLoopReport {
+  const measuredRecords = records.filter((record) => record.closedLoop);
+  const latestMeasuredRecord = measuredRecords[0];
+  const aggregate = mergeClosedLoopMetrics(
+    measuredRecords.map((record) => record.closedLoop),
+    "phase1-readiness 3 3"
+  ) ?? buildClosedLoopMetric({ closedLoopStatus: "completed", rerunCommand: "phase1-readiness 3 3", totalCases: 0 });
+  const highestPriorityRecord = [...measuredRecords]
+    .sort((left, right) => compareClosedLoopStatus(left.closedLoop!.closedLoopStatus, right.closedLoop!.closedLoopStatus))
+    .at(-1);
+  const statusCounts: ValidationOpsClosedLoopReport["statusCounts"] = {};
+  for (const record of measuredRecords) {
+    const status = record.closedLoop!.closedLoopStatus;
+    statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+  }
+
+  return {
+    ...aggregate,
+    measuredRuns: measuredRecords.length,
+    statusCounts,
+    nextCommand: highestPriorityRecord?.closedLoop?.closedLoopStatus === "completed"
+      ? "validation-ops"
+      : highestPriorityRecord?.closedLoop?.rerunCommand ?? aggregate.rerunCommand,
+    ...(latestMeasuredRecord ? { latestRunId: latestMeasuredRecord.runId } : {}),
   };
 }
 
@@ -412,4 +450,17 @@ function compareValidationIssueSeverity(
 ): number {
   const rank = (value: ValidationOpsIssueSeverity) => (value === "critical" ? 0 : 1);
   return rank(left) - rank(right);
+}
+
+function compareClosedLoopStatus(
+  left: ValidationOpsClosedLoopReport["closedLoopStatus"],
+  right: ValidationOpsClosedLoopReport["closedLoopStatus"]
+): number {
+  const rank: Record<ValidationOpsClosedLoopReport["closedLoopStatus"], number> = {
+    completed: 0,
+    actionable: 1,
+    ambiguous_failure: 2,
+    silent_failure: 3,
+  };
+  return rank[left] - rank[right];
 }

@@ -1,4 +1,7 @@
 import type {
+  ValidationOpsClosedLoopMetric,
+} from "@turnkeyai/core-types/team";
+import type {
   ReleaseReadinessOptions,
   ReleaseReadinessResult,
 } from "./release-readiness";
@@ -15,6 +18,7 @@ import type {
   ValidationSoakSeriesOptions,
   ValidationSoakSeriesResult,
 } from "./validation-soak-series";
+import { mergeClosedLoopMetrics } from "./closed-loop-metrics";
 
 export type ValidationProfileId = "smoke" | "phase1-e2e" | "nightly" | "prerelease" | "weekly";
 export type ValidationProfileStageId =
@@ -416,6 +420,15 @@ async function runValidationSoakSeriesNonBlocking(
       validationRunner: options.validationRunner,
       selectors,
     });
+    const suiteResults = run.suites.map((suite) => ({
+      suiteId: suite.suiteId,
+      status: suite.failedItems === 0 ? "passed" as const : "failed" as const,
+      totalItems: suite.totalItems,
+      failedItems: suite.failedItems,
+      totalCases: suite.totalCases,
+      failedCases: suite.failedCases,
+      ...(suite.closedLoop ? { closedLoop: suite.closedLoop } : {}),
+    }));
     cycleResults.push({
       cycleNumber,
       status: run.failedSuites === 0 ? "passed" : "failed",
@@ -426,18 +439,13 @@ async function runValidationSoakSeriesNonBlocking(
       failedItems: run.failedItems,
       totalCases: run.totalCases,
       failedCases: run.failedCases,
-      suites: run.suites.map((suite) => ({
-        suiteId: suite.suiteId,
-        status: suite.failedItems === 0 ? "passed" : "failed",
-        totalItems: suite.totalItems,
-        failedItems: suite.failedItems,
-        totalCases: suite.totalCases,
-        failedCases: suite.failedCases,
-      })),
+      ...(run.closedLoop ? { closedLoop: run.closedLoop } : {}),
+      suites: suiteResults,
     });
   }
 
   const suiteAggregateMap = new Map<ValidationSuiteId, ValidationSoakSeriesResult["suiteAggregates"][number]>();
+  const suiteClosedLoopMetrics = new Map<ValidationSuiteId, ValidationOpsClosedLoopMetric[]>();
   for (const cycle of cycleResults) {
     for (const suite of cycle.suites) {
       const aggregate = suiteAggregateMap.get(suite.suiteId) ?? {
@@ -456,8 +464,25 @@ async function runValidationSoakSeriesNonBlocking(
       aggregate.totalCases += suite.totalCases;
       aggregate.failedCases += suite.failedCases;
       suiteAggregateMap.set(suite.suiteId, aggregate);
+      if (suite.closedLoop) {
+        const metrics = suiteClosedLoopMetrics.get(suite.suiteId) ?? [];
+        metrics.push(suite.closedLoop);
+        suiteClosedLoopMetrics.set(suite.suiteId, metrics);
+      }
     }
   }
+  const command = `soak-series ${cycleResults.length} ${selectors.join(" ")}`.trim();
+  const suiteAggregates = [...suiteAggregateMap.values()].map((aggregate) => {
+    const closedLoop = mergeClosedLoopMetrics(
+      suiteClosedLoopMetrics.get(aggregate.suiteId) ?? [],
+      command
+    );
+    return {
+      ...aggregate,
+      ...(closedLoop ? { closedLoop } : {}),
+    };
+  });
+  const closedLoop = mergeClosedLoopMetrics(cycleResults.map((cycle) => cycle.closedLoop), command);
 
   return {
     status: cycleResults.every((cycle) => cycle.status === "passed") ? "passed" : "failed",
@@ -472,8 +497,9 @@ async function runValidationSoakSeriesNonBlocking(
     totalCases: cycleResults.reduce((sum, cycle) => sum + cycle.totalCases, 0),
     failedCases: cycleResults.reduce((sum, cycle) => sum + cycle.failedCases, 0),
     durationMs: Date.now() - startedAt,
+    ...(closedLoop ? { closedLoop } : {}),
     cycles: cycleResults,
-    suiteAggregates: [...suiteAggregateMap.values()],
+    suiteAggregates,
   };
 }
 
@@ -493,6 +519,10 @@ async function runValidationSuitesNonBlocking(options: {
   }
 
   const suites = suiteRuns.flatMap((run) => run.suites);
+  const closedLoop = mergeClosedLoopMetrics(
+    suites.map((suite) => suite.closedLoop),
+    options.selectors?.length ? `validation-run ${options.selectors.join(" ")}` : "validation-run"
+  );
   return {
     totalSuites: suites.length,
     passedSuites: suites.filter((suite) => suite.failedItems === 0).length,
@@ -503,6 +533,7 @@ async function runValidationSuitesNonBlocking(options: {
     totalCases: suites.reduce((sum, suite) => sum + suite.totalCases, 0),
     passedCases: suites.reduce((sum, suite) => sum + (suite.totalCases - suite.failedCases), 0),
     failedCases: suites.reduce((sum, suite) => sum + suite.failedCases, 0),
+    ...(closedLoop ? { closedLoop } : {}),
     suites,
   };
 }

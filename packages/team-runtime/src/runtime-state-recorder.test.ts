@@ -30,6 +30,17 @@ async function removeTempDir(tempDir: string): Promise<void> {
   await rm(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 });
 }
 
+async function waitForCondition(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`waitForCondition timed out after ${timeoutMs}ms`);
+}
+
 test("runtime state recorder coalesces repeated chain status updates", async () => {
   const eventBus = new InMemoryTeamEventBus();
   let releaseFirstPublish: (() => void) | undefined;
@@ -257,7 +268,7 @@ test("runtime state recorder retries remote delivery through the durable outbox"
         updatedAt: 2,
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 140));
+    await waitForCondition(() => attempts >= 2 && delivered.length === 1);
     await recorder.flush();
 
     const events = await eventBus.listRecent("thread-outbox", 10);

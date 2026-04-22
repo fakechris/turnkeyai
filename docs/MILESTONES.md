@@ -50,6 +50,7 @@
 - `Runtime Observability v1.x` 已覆盖 flow / replay / recovery / live role/worker/browser
 - bounded regression、browser soak、runtime/operator acceptance 已覆盖 browser / recovery / context / parallel / governance / runtime 主线
 - validation-ops 已能汇总 Phase 1 readiness gates：phase1-e2e profile、release-readiness、relay/direct-cdp transport soak、acceptance/realworld/soak series
+- real-world runbook 已接入 north-star closed-loop 指标：completed / actionable 计入闭环，silent_failure / ambiguous_failure 作为 Phase 1 收尾阻断信号
 - 当前判断：进入同场景 end-to-end 验收、failure injection 和 real-world validation，不直接切入 `Phase 2`
 
 ### Phase 2: Runtime Kernel Lift
@@ -221,11 +222,12 @@
 
 当前不建议直接进入桌面壳，也不建议立刻切 Phase 2 kernel，而建议继续推进下面几条验证主轴：
 
-1. Browser bridge / relay / direct-cdp 长链真实任务验证
-2. Recovery / replay / operator case 语义收口
-3. Context Runtime 高压预算与真实任务验证
-4. Parallel orchestration / governance contract regression 扩充
-5. Failure injection / real-world acceptance / transport soak 扩样本
+1. North-star closed-loop rate 作为 Phase 1 入口指标
+2. Browser bridge / relay / direct-cdp 长链真实任务验证
+3. Recovery / replay / operator case 语义收口
+4. Context Runtime 高压预算与真实任务验证
+5. Parallel orchestration / governance contract regression 扩充
+6. Failure injection / real-world acceptance / transport soak 扩样本
 
 配套文档：
 

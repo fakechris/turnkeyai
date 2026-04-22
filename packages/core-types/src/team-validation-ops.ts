@@ -19,6 +19,11 @@ export type ValidationOpsRecommendedAction =
   | "rerun-profile"
   | "rerun-soak"
   | "rerun-transport-soak";
+export type ValidationOpsClosedLoopStatus =
+  | "completed"
+  | "actionable"
+  | "silent_failure"
+  | "ambiguous_failure";
 
 export interface ValidationOpsIssueRecord {
   issueId: string;
@@ -29,6 +34,28 @@ export interface ValidationOpsIssueRecord {
   severity: ValidationOpsIssueSeverity;
   recommendedAction: ValidationOpsRecommendedAction;
   commandHint: string;
+}
+
+export interface ValidationOpsClosedLoopMetric {
+  closedLoopStatus: ValidationOpsClosedLoopStatus;
+  totalCases: number;
+  completedCases: number;
+  actionableCases: number;
+  silentFailureCases: number;
+  ambiguousFailureCases: number;
+  closedLoopCases: number;
+  closedLoopRate: number;
+  rerunCommand: string;
+  timeToActionableMs?: number;
+  manualGateReason?: string;
+  failureBucket?: ValidationOpsFailureBucket;
+}
+
+export interface ValidationOpsClosedLoopReport extends ValidationOpsClosedLoopMetric {
+  measuredRuns: number;
+  statusCounts: Partial<Record<ValidationOpsClosedLoopStatus, number>>;
+  nextCommand: string;
+  latestRunId?: string;
 }
 
 export interface ValidationOpsRunRecord {
@@ -46,6 +73,7 @@ export interface ValidationOpsRunRecord {
   targets?: string[];
   artifactPath?: string;
   issues: ValidationOpsIssueRecord[];
+  closedLoop?: ValidationOpsClosedLoopMetric;
 }
 
 export type ValidationOpsReadinessGateId =
@@ -93,6 +121,7 @@ export interface ValidationOpsReport {
     }
   >;
   readiness: ValidationOpsReadinessReport;
+  closedLoop: ValidationOpsClosedLoopReport;
 }
 
 export type Phase1ReadinessRunStageId =
@@ -123,6 +152,7 @@ export interface Phase1ReadinessRunResult {
   nextCommand: string;
   stages: Phase1ReadinessRunStage[];
   validationOps: ValidationOpsReport;
+  northStar: ValidationOpsClosedLoopReport;
 }
 
 export interface ValidationOpsRunStore {

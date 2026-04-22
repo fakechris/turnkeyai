@@ -78,6 +78,20 @@ test("validation ops inspection derives operator-facing records and report count
       totalCases: 50,
       failedCases: 1,
       durationMs: 30,
+      closedLoop: {
+        closedLoopStatus: "actionable",
+        totalCases: 2,
+        completedCases: 1,
+        actionableCases: 1,
+        silentFailureCases: 0,
+        ambiguousFailureCases: 0,
+        closedLoopCases: 2,
+        closedLoopRate: 1,
+        rerunCommand: "realworld-run browser-research-recovery-runbook",
+        timeToActionableMs: 30,
+        manualGateReason: "inspect failed browser runbook case(s)",
+        failureBucket: "browser",
+      },
       cycles: [],
       suiteAggregates: [
         {
@@ -154,6 +168,10 @@ test("validation ops inspection derives operator-facing records and report count
   assert.equal(report.severityCounts.critical, 3);
   assert.equal(report.recommendedActionCounts["rerun-release"], 1);
   assert.equal(report.recommendedActionCounts["rerun-transport-soak"], 1);
+  assert.equal(report.closedLoop.measuredRuns, 1);
+  assert.equal(report.closedLoop.closedLoopStatus, "actionable");
+  assert.equal(report.closedLoop.closedLoopRate, 1);
+  assert.equal(report.closedLoop.nextCommand, "realworld-run browser-research-recovery-runbook");
   assert.ok(report.activeIssues.some((issue) => issue.kind === "validation-item" && issue.commandHint === "validation-profile-run nightly"));
   assert.ok(report.activeIssues.some((issue) => issue.kind === "transport-target" && issue.commandHint === "transport-soak 3 relay"));
   assert.ok(report.activeIssues.some((issue) => issue.kind === "transport-target" && issue.summary.includes("failed checks: reconnect x1")));

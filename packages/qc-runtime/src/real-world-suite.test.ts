@@ -9,7 +9,7 @@ import {
 test("real-world suite lists built-in runbook scenarios", () => {
   const scenarios = listRealWorldScenarios();
 
-  assert.equal(scenarios.length, 15);
+  assert.equal(scenarios.length, 17);
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "browser-research-recovery-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "browser-research-transport-reconnect-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "transport-soak-validation-ops-runbook"));
@@ -24,6 +24,8 @@ test("real-world suite lists built-in runbook scenarios", () => {
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "parallel-follow-up-merge-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "runtime-observability-reentry-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "long-continuation-under-pressure-runbook"));
+  assert.ok(scenarios.some((scenario) => scenario.scenarioId === "browser-recovery-closed-loop-runbook"));
+  assert.ok(scenarios.some((scenario) => scenario.scenarioId === "browser-recovery-operator-handoff-runbook"));
   assert.ok(scenarios.some((scenario) => scenario.scenarioId === "phase1-production-closure-runbook"));
 });
 
@@ -32,7 +34,11 @@ test("real-world suite passes all built-in runbook scenarios", () => {
 
   assert.equal(result.failedScenarios, 0);
   assert.equal(result.passedScenarios, result.totalScenarios);
-  assert.equal(result.totalScenarios, 15);
+  assert.equal(result.totalScenarios, 17);
+  assert.equal(result.closedLoopStatus, "completed");
+  assert.equal(result.closedLoopScenarios, result.totalScenarios);
+  assert.equal(result.closedLoopRate, 1);
+  assert.equal(result.closedLoop.totalCases, result.totalScenarios);
 });
 
 test("real-world suite can run one selected runbook scenario", () => {
@@ -41,6 +47,8 @@ test("real-world suite can run one selected runbook scenario", () => {
   assert.equal(result.totalScenarios, 1);
   assert.equal(result.scenarios[0]?.scenarioId, "browser-research-recovery-runbook");
   assert.equal(result.scenarios[0]?.status, "passed");
+  assert.equal(result.scenarios[0]?.closedLoopStatus, "completed");
+  assert.equal(result.scenarios[0]?.rerunCommand, "realworld-run browser-research-recovery-runbook");
 });
 
 test("real-world suite rejects unknown scenario ids", () => {

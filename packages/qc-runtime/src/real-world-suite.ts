@@ -1,8 +1,15 @@
 import type {
+  ValidationOpsClosedLoopMetric,
+  ValidationOpsClosedLoopStatus,
+  ValidationOpsFailureBucket,
+} from "@turnkeyai/core-types/team";
+
+import type {
   BoundedRegressionCaseResult,
 } from "./bounded-regression-harness";
 
 import { runBoundedRegressionSuite } from "./bounded-regression-harness";
+import { buildClosedLoopMetric, mergeClosedLoopMetrics } from "./closed-loop-metrics";
 
 export interface RealWorldScenarioDescriptor {
   scenarioId: string;
@@ -24,6 +31,13 @@ export interface RealWorldScenarioResult extends RealWorldScenarioDescriptor {
   totalCases: number;
   passedCases: number;
   failedCases: number;
+  durationMs: number;
+  closedLoopStatus: ValidationOpsClosedLoopStatus;
+  rerunCommand: string;
+  timeToActionableMs?: number;
+  manualGateReason?: string;
+  failureBucket?: ValidationOpsFailureBucket;
+  closedLoop: ValidationOpsClosedLoopMetric;
   caseResults: BoundedRegressionCaseResult[];
 }
 
@@ -34,6 +48,14 @@ export interface RealWorldSuiteResult {
   totalCases: number;
   passedCases: number;
   failedCases: number;
+  completedScenarios: number;
+  actionableScenarios: number;
+  silentFailureScenarios: number;
+  ambiguousFailureScenarios: number;
+  closedLoopScenarios: number;
+  closedLoopRate: number;
+  closedLoopStatus: ValidationOpsClosedLoopStatus;
+  closedLoop: ValidationOpsClosedLoopMetric;
   scenarios: RealWorldScenarioResult[];
 }
 
@@ -251,6 +273,36 @@ const SCENARIOS: RealWorldScenarioDescriptor[] = [
     ],
   },
   {
+    scenarioId: "browser-recovery-closed-loop-runbook",
+    area: "recovery",
+    title: "Browser recovery closed-loop runbook",
+    summary:
+      "模拟 browser target 断连、transport 诊断、recovery gate 与 operator lifecycle 的同场景闭环，确认失败能落到明确下一步。",
+    caseIds: [
+      "browser-recovery-multi-attempt-chain-stays-aligned",
+      "browser-recovery-recovered-but-waiting-manual-stays-visible",
+      "relay-recovery-workflow-log-surfaces-peer-diagnostics",
+      "direct-cdp-recovery-workflow-log-surfaces-reconnect-diagnostics",
+      "replay-bundle-exposes-recovery-operator-gate",
+      "operator-surfaces-track-recovery-lifecycle",
+    ],
+  },
+  {
+    scenarioId: "browser-recovery-operator-handoff-runbook",
+    area: "operator",
+    title: "Browser recovery operator handoff runbook",
+    summary:
+      "模拟 browser 恢复链路需要人工 approval/fallback 时，replay bundle、recovery run 和 operator summary 是否保持同一个 case。",
+    caseIds: [
+      "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
+      "browser-recovery-recovered-but-waiting-manual-stays-visible",
+      "operator-case-semantics-separate-active-manual-from-resolved-recent",
+      "replay-bundle-exposes-recovery-operator-gate",
+      "recovery-approval-fallback-chain",
+      "operator-surfaces-track-recovery-lifecycle",
+    ],
+  },
+  {
     scenarioId: "phase1-production-closure-runbook",
     area: "operator",
     title: "Phase 1 production closure runbook",
@@ -285,6 +337,10 @@ export function runRealWorldSuite(scenarioIds?: string[]): RealWorldSuiteResult 
     ? scenarioIds.map((scenarioId) => scenarioById.get(scenarioId)).filter((scenario): scenario is RealWorldScenarioDescriptor => scenario != null)
     : SCENARIOS;
   const scenarios = selected.map(runScenario);
+  const closedLoop = mergeClosedLoopMetrics(
+    scenarios.map((scenario) => scenario.closedLoop),
+    "realworld-run"
+  ) ?? buildClosedLoopMetric({ closedLoopStatus: "completed", rerunCommand: "realworld-run", totalCases: 1 });
   return {
     totalScenarios: scenarios.length,
     passedScenarios: scenarios.filter((scenario) => scenario.status === "passed").length,
@@ -292,6 +348,14 @@ export function runRealWorldSuite(scenarioIds?: string[]): RealWorldSuiteResult 
     totalCases: scenarios.reduce((sum, scenario) => sum + scenario.totalCases, 0),
     passedCases: scenarios.reduce((sum, scenario) => sum + scenario.passedCases, 0),
     failedCases: scenarios.reduce((sum, scenario) => sum + scenario.failedCases, 0),
+    completedScenarios: closedLoop.completedCases,
+    actionableScenarios: closedLoop.actionableCases,
+    silentFailureScenarios: closedLoop.silentFailureCases,
+    ambiguousFailureScenarios: closedLoop.ambiguousFailureCases,
+    closedLoopScenarios: closedLoop.closedLoopCases,
+    closedLoopRate: closedLoop.closedLoopRate,
+    closedLoopStatus: closedLoop.closedLoopStatus,
+    closedLoop,
     scenarios,
   };
 }
@@ -299,13 +363,89 @@ export function runRealWorldSuite(scenarioIds?: string[]): RealWorldSuiteResult 
 function runScenario(
   scenario: RealWorldScenarioDescriptor
 ): RealWorldScenarioResult {
+  const startedAt = Date.now();
   const suite = runBoundedRegressionSuite(scenario.caseIds);
+  const durationMs = Date.now() - startedAt;
+  const closedLoop = buildScenarioClosedLoopMetric({
+    scenario,
+    suite,
+    durationMs,
+  });
   return {
     ...scenario,
     status: suite.failedCases === 0 ? "passed" : "failed",
     totalCases: suite.totalCases,
     passedCases: suite.passedCases,
     failedCases: suite.failedCases,
+    durationMs,
+    closedLoopStatus: closedLoop.closedLoopStatus,
+    rerunCommand: closedLoop.rerunCommand,
+    ...(closedLoop.timeToActionableMs !== undefined ? { timeToActionableMs: closedLoop.timeToActionableMs } : {}),
+    ...(closedLoop.manualGateReason ? { manualGateReason: closedLoop.manualGateReason } : {}),
+    ...(closedLoop.failureBucket ? { failureBucket: closedLoop.failureBucket } : {}),
+    closedLoop,
     caseResults: suite.results,
   };
+}
+
+function buildScenarioClosedLoopMetric(input: {
+  scenario: RealWorldScenarioDescriptor;
+  suite: ReturnType<typeof runBoundedRegressionSuite>;
+  durationMs: number;
+}): ValidationOpsClosedLoopMetric {
+  const rerunCommand = `realworld-run ${input.scenario.scenarioId}`;
+  if (input.suite.failedCases === 0) {
+    return buildClosedLoopMetric({
+      closedLoopStatus: "completed",
+      rerunCommand,
+      totalCases: 1,
+      timeToActionableMs: input.durationMs,
+    });
+  }
+
+  const failedResults = input.suite.results.filter((result) => result.status === "failed");
+  const hasFailureDetails = failedResults.some((result) => result.details.length > 0);
+  if (!hasFailureDetails) {
+    return buildClosedLoopMetric({
+      closedLoopStatus: "silent_failure",
+      rerunCommand,
+      totalCases: 1,
+      timeToActionableMs: input.durationMs,
+      failureBucket: deriveFailureBucket(input.scenario.area),
+      manualGateReason: "failed real-world runbook produced no failed-case details",
+    });
+  }
+
+  if (failedResults.length === 0) {
+    return buildClosedLoopMetric({
+      closedLoopStatus: "ambiguous_failure",
+      rerunCommand,
+      totalCases: 1,
+      timeToActionableMs: input.durationMs,
+      failureBucket: deriveFailureBucket(input.scenario.area),
+      manualGateReason: "real-world runbook status and case results disagree",
+    });
+  }
+
+  return buildClosedLoopMetric({
+    closedLoopStatus: "actionable",
+    rerunCommand,
+    totalCases: 1,
+    timeToActionableMs: input.durationMs,
+    failureBucket: deriveFailureBucket(input.scenario.area),
+    manualGateReason: `inspect failed ${input.scenario.area} runbook case(s) and rerun ${input.scenario.scenarioId}`,
+  });
+}
+
+function deriveFailureBucket(area: RealWorldScenarioDescriptor["area"]): ValidationOpsFailureBucket {
+  switch (area) {
+    case "browser":
+    case "recovery":
+    case "context":
+    case "parallel":
+    case "governance":
+    case "runtime":
+    case "operator":
+      return area;
+  }
 }

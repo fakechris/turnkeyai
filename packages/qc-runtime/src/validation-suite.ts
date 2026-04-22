@@ -1,4 +1,7 @@
 import type {
+  ValidationOpsClosedLoopMetric,
+} from "@turnkeyai/core-types/team";
+import type {
   BoundedRegressionCaseDescriptor,
   BoundedRegressionCaseResult,
 } from "./bounded-regression-harness";
@@ -38,6 +41,7 @@ import {
   listRealWorldScenarios,
   runRealWorldSuite,
 } from "./real-world-suite";
+import { mergeClosedLoopMetrics } from "./closed-loop-metrics";
 
 export type ValidationSuiteId = "regression" | "soak" | "failure" | "acceptance" | "realworld";
 
@@ -68,6 +72,7 @@ export interface ValidationRunItemResult {
   totalCases: number;
   passedCases: number;
   failedCases: number;
+  closedLoop?: ValidationOpsClosedLoopMetric;
   caseResults: BoundedRegressionCaseResult[];
 }
 
@@ -81,6 +86,7 @@ export interface ValidationRunSuiteResult {
   totalCases: number;
   passedCases: number;
   failedCases: number;
+  closedLoop?: ValidationOpsClosedLoopMetric;
   items: ValidationRunItemResult[];
 }
 
@@ -94,6 +100,7 @@ export interface ValidationRunResult {
   totalCases: number;
   passedCases: number;
   failedCases: number;
+  closedLoop?: ValidationOpsClosedLoopMetric;
   suites: ValidationRunSuiteResult[];
 }
 
@@ -151,6 +158,10 @@ export function listValidationSuites(): ValidationSuiteDescriptor[] {
 export function runValidationSuites(selectors?: string[]): ValidationRunResult {
   const parsedSelectors = parseValidationSelectors(selectors);
   const suites = buildValidationSuiteRunResults(parsedSelectors);
+  const closedLoop = mergeClosedLoopMetrics(
+    suites.map((suite) => suite.closedLoop),
+    buildValidationRunCommand(selectors)
+  );
   return {
     totalSuites: suites.length,
     passedSuites: suites.filter((suite) => suite.failedItems === 0).length,
@@ -161,6 +172,7 @@ export function runValidationSuites(selectors?: string[]): ValidationRunResult {
     totalCases: suites.reduce((sum, suite) => sum + suite.totalCases, 0),
     passedCases: suites.reduce((sum, suite) => sum + suite.passedCases, 0),
     failedCases: suites.reduce((sum, suite) => sum + suite.failedCases, 0),
+    ...(closedLoop ? { closedLoop } : {}),
     suites,
   };
 }
@@ -255,6 +267,10 @@ function finalizeRunSuite(
   items: ValidationRunItemResult[]
 ): ValidationRunSuiteResult {
   const metadata = SUITE_METADATA[suiteId];
+  const closedLoop = mergeClosedLoopMetrics(
+    items.map((item) => item.closedLoop),
+    `validation-run ${suiteId}`
+  );
   return {
     suiteId,
     title: metadata.title,
@@ -265,6 +281,7 @@ function finalizeRunSuite(
     totalCases: items.reduce((sum, item) => sum + item.totalCases, 0),
     passedCases: items.reduce((sum, item) => sum + item.passedCases, 0),
     failedCases: items.reduce((sum, item) => sum + item.failedCases, 0),
+    ...(closedLoop ? { closedLoop } : {}),
     items,
   };
 }
@@ -474,6 +491,12 @@ function mapRealWorldRunItem(result: RealWorldScenarioResult): ValidationRunItem
     totalCases: result.totalCases,
     passedCases: result.passedCases,
     failedCases: result.failedCases,
+    closedLoop: result.closedLoop,
     caseResults: result.caseResults,
   };
+}
+
+function buildValidationRunCommand(selectors?: string[]): string {
+  const normalizedSelectors = selectors?.map((selector) => selector.trim()).filter((selector) => selector.length > 0) ?? [];
+  return normalizedSelectors.length > 0 ? `validation-run ${normalizedSelectors.join(" ")}` : "validation-run";
 }
