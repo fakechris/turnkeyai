@@ -2232,10 +2232,20 @@ async function executeStorageAction(
   page: Page,
   action: Extract<BrowserTaskAction, { kind: "storage" }>
 ): Promise<Record<string, unknown>> {
+  const input = JSON.stringify({
+    area: action.area,
+    action: action.action,
+    key: "key" in action ? action.key : undefined,
+    value: "value" in action ? action.value : undefined,
+    maxEntries: MAX_BROWSER_STORAGE_READ_ENTRIES,
+    maxValueBytes: MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
+  });
+
   return await page.evaluate(
-    ({ area, action: storageAction, key, value, maxEntries, maxValueBytes }) => {
+    `(() => {
+      const { area, action: storageAction, key, value, maxEntries, maxValueBytes } = ${input};
       const storage = area === "localStorage" ? window.localStorage : window.sessionStorage;
-      const summarizeValue = (rawValue: string | null) => {
+      const summarizeValue = (rawValue) => {
         if (rawValue === null) {
           return {
             found: false,
@@ -2254,7 +2264,7 @@ async function executeStorageAction(
       };
 
       if (storageAction === "set") {
-        storage.setItem(key!, value ?? "");
+        storage.setItem(key, value ?? "");
         return {
           area,
           action: storageAction,
@@ -2264,8 +2274,8 @@ async function executeStorageAction(
         };
       }
       if (storageAction === "remove") {
-        const existed = storage.getItem(key!) !== null;
-        storage.removeItem(key!);
+        const existed = storage.getItem(key) !== null;
+        storage.removeItem(key);
         return {
           area,
           action: storageAction,
@@ -2309,15 +2319,7 @@ async function executeStorageAction(
         entryCount: storage.length,
         entriesTruncated: storage.length > maxEntries,
       };
-    },
-    {
-      area: action.area,
-      action: action.action,
-      key: "key" in action ? action.key : undefined,
-      value: "value" in action ? action.value : undefined,
-      maxEntries: MAX_BROWSER_STORAGE_READ_ENTRIES,
-      maxValueBytes: MAX_BROWSER_STORAGE_READ_VALUE_BYTES,
-    }
+    })()`
   );
 }
 

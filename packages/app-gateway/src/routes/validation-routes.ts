@@ -1,6 +1,11 @@
 import type http from "node:http";
 
-import type { ValidationOpsRunStore } from "@turnkeyai/core-types/team";
+import type {
+  Phase1ReadinessRunResult,
+  Phase1ReadinessRunStage,
+  ValidationOpsRunRecord,
+  ValidationOpsRunStore,
+} from "@turnkeyai/core-types/team";
 import type {
   BrowserTransportSoakOptions,
   BrowserTransportSoakResult,
@@ -18,6 +23,10 @@ import {
   runRealWorldSuite,
 } from "@turnkeyai/qc-runtime/real-world-suite";
 import { runReleaseReadiness } from "@turnkeyai/qc-runtime/release-readiness";
+import type {
+  ReleaseReadinessOptions,
+  ReleaseReadinessResult,
+} from "@turnkeyai/qc-runtime/release-readiness";
 import {
   listScenarioParityAcceptanceScenarios,
   runScenarioParityAcceptanceSuite,
@@ -30,6 +39,7 @@ import {
   isValidationProfileId,
   listValidationProfiles,
   runValidationProfile,
+  summarizeValidationProfileResult,
 } from "@turnkeyai/qc-runtime/validation-profile";
 import {
   buildValidationOpsRecordFromReleaseReadiness,
@@ -54,7 +64,17 @@ export interface ValidationRouteDeps {
   ) => string;
   writeValidationArtifact: (kind: string, runId: string, payload: unknown) => Promise<string>;
   runBrowserTransportSoakViaCli: (options?: BrowserTransportSoakOptions) => Promise<BrowserTransportSoakResult>;
+  runReleaseReadiness?: (options?: ReleaseReadinessOptions) => Promise<ReleaseReadinessResult>;
 }
+
+const PHASE1_READINESS_SOAK_SELECTORS = [
+  "acceptance:phase1-production-closure",
+  "realworld:phase1-production-closure-runbook",
+  "soak:phase1-production-closure-long-chain",
+  "soak:transport-soak-validation-ops-readiness",
+] as const;
+
+const PHASE1_READINESS_TRANSPORT_TARGETS = ["relay", "direct-cdp"] as const;
 
 export async function handleValidationRoutes(input: {
   req: http.IncomingMessage;
@@ -269,7 +289,7 @@ export async function handleValidationRoutes(input: {
     }
     const startedAt = Date.now();
     const result = await runValidationProfile(profileId, {}, {
-      releaseReadinessRunner: runReleaseReadiness,
+      releaseReadinessRunner: deps.runReleaseReadiness ?? runReleaseReadiness,
       validationRunner: runValidationSuites,
       transportSoakRunner: (options) => deps.runBrowserTransportSoakViaCli(options),
     });
@@ -396,7 +416,7 @@ export async function handleValidationRoutes(input: {
 
   if (req.method === "POST" && url.pathname === "/release-readiness/run") {
     const startedAt = Date.now();
-    const result = await runReleaseReadiness();
+    const result = await (deps.runReleaseReadiness ?? runReleaseReadiness)();
     const completedAt = Date.now();
     await deps.validationOpsRunStore.put(
       buildValidationOpsRecordFromReleaseReadiness({
@@ -410,7 +430,178 @@ export async function handleValidationRoutes(input: {
     return true;
   }
 
+  if (req.method === "POST" && url.pathname === "/phase1-readiness/run") {
+    const bodyResult = await readJsonBodySafe<{
+      transportCycles?: number;
+      soakCycles?: number;
+      releaseSkipBuild?: boolean;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
+    if (body.transportCycles !== undefined && (!Number.isInteger(body.transportCycles) || body.transportCycles <= 0)) {
+      sendJson(res, 400, { error: "Invalid transportCycles: must be a positive integer" });
+      return true;
+    }
+    if (body.soakCycles !== undefined && (!Number.isInteger(body.soakCycles) || body.soakCycles <= 0)) {
+      sendJson(res, 400, { error: "Invalid soakCycles: must be a positive integer" });
+      return true;
+    }
+    if (body.releaseSkipBuild !== undefined && typeof body.releaseSkipBuild !== "boolean") {
+      sendJson(res, 400, { error: "Invalid releaseSkipBuild: must be a boolean" });
+      return true;
+    }
+
+    const result = await runPhase1Readiness({
+      deps,
+      transportCycles: body.transportCycles ?? 3,
+      soakCycles: body.soakCycles ?? 3,
+      releaseSkipBuild: body.releaseSkipBuild ?? false,
+    });
+    sendJson(res, 200, result);
+    return true;
+  }
+
   return false;
+}
+
+async function runPhase1Readiness(input: {
+  deps: ValidationRouteDeps;
+  transportCycles: number;
+  soakCycles: number;
+  releaseSkipBuild: boolean;
+}): Promise<Phase1ReadinessRunResult> {
+  const { deps } = input;
+  const startedAt = Date.now();
+  const stages: Phase1ReadinessRunStage[] = [];
+  const records: ValidationOpsRunRecord[] = [];
+  const releaseReadinessRunner = deps.runReleaseReadiness ?? runReleaseReadiness;
+
+  const profileStartedAt = Date.now();
+  const profileResult = await runValidationProfile("phase1-e2e", {}, {
+    releaseReadinessRunner,
+    validationRunner: runValidationSuites,
+    transportSoakRunner: (options) => deps.runBrowserTransportSoakViaCli(options),
+  });
+  const profileRunId = deps.createValidationOpsRunId("validation-profile");
+  const profileRecord = buildValidationOpsRecordFromValidationProfile({
+    runId: profileRunId,
+    startedAt: profileStartedAt,
+    completedAt: Date.now(),
+    result: profileResult,
+  });
+  await deps.validationOpsRunStore.put(profileRecord);
+  records.push(profileRecord);
+  stages.push({
+    stageId: "validation-profile",
+    title: "Phase 1 E2E validation profile",
+    status: profileResult.status,
+    runId: profileRunId,
+    durationMs: Date.now() - profileStartedAt,
+    summary: summarizeValidationProfileResult(profileResult),
+    commandHint: "validation-profile-run phase1-e2e",
+  });
+
+  const transportStartedAt = Date.now();
+  const transportResult = await deps.runBrowserTransportSoakViaCli({
+    cycles: input.transportCycles,
+    targets: [...PHASE1_READINESS_TRANSPORT_TARGETS],
+    verifyReconnect: true,
+    verifyWorkflowLog: true,
+  });
+  const transportRunId = deps.createValidationOpsRunId("transport-soak");
+  const transportArtifactPath = await deps.writeValidationArtifact("transport-soak", transportRunId, transportResult);
+  const transportRecord = buildValidationOpsRecordFromTransportSoak({
+    runId: transportRunId,
+    startedAt: transportStartedAt,
+    completedAt: Date.now(),
+    artifactPath: transportArtifactPath,
+    result: transportResult,
+  });
+  await deps.validationOpsRunStore.put(transportRecord);
+  records.push(transportRecord);
+  stages.push({
+    stageId: "transport-soak",
+    title: "Relay/direct-cdp transport soak",
+    status: transportResult.status,
+    runId: transportRunId,
+    durationMs: Date.now() - transportStartedAt,
+    summary: `cycles=${transportResult.passedCycles}/${transportResult.totalCycles} targetRuns=${
+      transportResult.totalTargetRuns - transportResult.failedTargetRuns
+    }/${transportResult.totalTargetRuns}`,
+    commandHint: `transport-soak ${input.transportCycles} relay direct-cdp`,
+    artifactPath: transportArtifactPath,
+  });
+
+  const releaseStartedAt = Date.now();
+  const releaseResult = await releaseReadinessRunner({
+    skipBuild: input.releaseSkipBuild,
+  });
+  const releaseRunId = deps.createValidationOpsRunId("release-readiness");
+  const releaseRecord = buildValidationOpsRecordFromReleaseReadiness({
+    runId: releaseRunId,
+    startedAt: releaseStartedAt,
+    completedAt: Date.now(),
+    result: releaseResult,
+  });
+  await deps.validationOpsRunStore.put(releaseRecord);
+  records.push(releaseRecord);
+  stages.push({
+    stageId: "release-readiness",
+    title: "Release readiness verification",
+    status: releaseResult.status,
+    runId: releaseRunId,
+    durationMs: Date.now() - releaseStartedAt,
+    summary: `checks=${releaseResult.passedChecks}/${releaseResult.totalChecks}`,
+    commandHint: "release-verify",
+  });
+
+  const soakStartedAt = Date.now();
+  const soakResult = runValidationSoakSeries({
+    cycles: input.soakCycles,
+    selectors: [...PHASE1_READINESS_SOAK_SELECTORS],
+  });
+  const soakRunId = deps.createValidationOpsRunId("soak-series");
+  const soakRecord = buildValidationOpsRecordFromSoakSeries({
+    runId: soakRunId,
+    startedAt: soakStartedAt,
+    completedAt: Date.now(),
+    selectors: soakResult.selectors,
+    result: soakResult,
+  });
+  await deps.validationOpsRunStore.put(soakRecord);
+  records.push(soakRecord);
+  stages.push({
+    stageId: "soak-series",
+    title: "Acceptance/realworld/soak series",
+    status: soakResult.status,
+    runId: soakRunId,
+    durationMs: Date.now() - soakStartedAt,
+    summary: `cycles=${soakResult.passedCycles}/${soakResult.totalCycles} cases=${
+      soakResult.totalCases - soakResult.failedCases
+    }/${soakResult.totalCases}`,
+    commandHint: `soak-series ${input.soakCycles} ${PHASE1_READINESS_SOAK_SELECTORS.join(" ")}`,
+  });
+
+  const storedRecords = await deps.validationOpsRunStore.list(50);
+  const validationOps = buildValidationOpsReport(storedRecords.length > 0 ? storedRecords : records, 50);
+  const completedAt = Date.now();
+  const failedStages = stages.filter((stage) => stage.status === "failed").length;
+
+  return {
+    status: failedStages === 0 && validationOps.readiness.status === "passed" ? "passed" : "failed",
+    startedAt,
+    completedAt,
+    durationMs: completedAt - startedAt,
+    totalStages: stages.length,
+    passedStages: stages.length - failedStages,
+    failedStages,
+    nextCommand: validationOps.readiness.nextCommand,
+    stages,
+    validationOps,
+  };
 }
 
 function filterNonEmptyStrings(values: string[] | undefined): string[] | undefined {

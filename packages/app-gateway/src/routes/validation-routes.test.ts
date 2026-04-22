@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
 
+import type { ValidationOpsRunRecord } from "@turnkeyai/core-types/team";
+
 import { handleValidationRoutes, type ValidationRouteDeps } from "./validation-routes";
 
 function createRequest(input: { method: string; url: string; body?: unknown }) {
@@ -32,14 +34,18 @@ function createResponse() {
 }
 
 function createDeps(overrides: Partial<ValidationRouteDeps> = {}): ValidationRouteDeps {
+  const records: ValidationOpsRunRecord[] = [];
   return {
     validationOpsRunStore: {
       async get() {
         return null;
       },
-      async put() {},
+      async put(record: ValidationOpsRunRecord) {
+        records.push(record);
+      },
       async list(limit?: number) {
-        return limit ? [] : [];
+        const sorted = [...records].sort((left, right) => right.completedAt - left.completedAt);
+        return limit ? sorted.slice(0, limit) : sorted;
       },
     } as any,
     createValidationOpsRunId: (kind) => `${kind}-run-1`,
@@ -67,6 +73,21 @@ function createDeps(overrides: Partial<ValidationRouteDeps> = {}): ValidationRou
           acceptanceChecks: [{ checkId: "network-controls", passed: options?.cycles ?? 1, failed: 0, skipped: 0 }],
         })),
       } as any;
+    },
+    async runReleaseReadiness() {
+      return {
+        status: "passed",
+        totalChecks: 2,
+        passedChecks: 2,
+        failedChecks: 0,
+        artifact: {
+          filename: "turnkeyai-cli-0.1.1.tgz",
+        },
+        checks: [
+          { checkId: "pack-cli", title: "Pack CLI", status: "passed", details: [] },
+          { checkId: "publish-dry-run", title: "Publish dry-run", status: "passed", details: [] },
+        ],
+      };
     },
     ...overrides,
   };
@@ -181,6 +202,63 @@ test("validation routes reject malformed transport-soak booleans and trim target
   });
   assert.equal(valid.res.statusCode, 200);
   assert.deepEqual(valid.json.targets, ["relay", "direct-cdp"]);
+});
+
+test("validation routes run phase1 readiness through all exit gates and records readiness", async () => {
+  const response = createResponse();
+  const transportCalls: unknown[] = [];
+
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/phase1-readiness/run",
+      body: {
+        transportCycles: 2,
+        soakCycles: 2,
+        releaseSkipBuild: true,
+      },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/phase1-readiness/run"),
+    deps: createDeps({
+      async runBrowserTransportSoakViaCli(options) {
+        transportCalls.push(options);
+        return createDeps().runBrowserTransportSoakViaCli(options);
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.equal(response.json.status, "passed");
+  assert.deepEqual(
+    response.json.stages.map((stage: { stageId: string }) => stage.stageId),
+    ["validation-profile", "transport-soak", "release-readiness", "soak-series"]
+  );
+  assert.equal(response.json.validationOps.readiness.status, "passed");
+  assert.equal(response.json.validationOps.readiness.passedGates, 4);
+  assert.equal(response.json.nextCommand, "validation-ops");
+  assert.deepEqual(transportCalls, [
+    { cycles: 1, targets: ["relay", "direct-cdp"] },
+    { cycles: 2, targets: ["relay", "direct-cdp"], verifyReconnect: true, verifyWorkflowLog: true },
+  ]);
+});
+
+test("validation routes reject malformed phase1 readiness options", async () => {
+  const response = createResponse();
+
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/phase1-readiness/run",
+      body: { transportCycles: 0 },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/phase1-readiness/run"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "Invalid transportCycles: must be a positive integer" });
 });
 
 test("validation routes return 400 for malformed JSON bodies", async () => {

@@ -103,17 +103,10 @@ import {
   listRealWorldScenarios,
   runRealWorldSuite,
 } from "@turnkeyai/qc-runtime/real-world-suite";
-import { runReleaseReadiness } from "@turnkeyai/qc-runtime/release-readiness";
 import {
   listScenarioParityAcceptanceScenarios,
   runScenarioParityAcceptanceSuite,
 } from "@turnkeyai/qc-runtime/scenario-parity-acceptance";
-import { runValidationSuites } from "@turnkeyai/qc-runtime/validation-suite";
-import { runValidationSoakSeries } from "@turnkeyai/qc-runtime/validation-soak-series";
-import {
-  isValidationProfileId,
-  runValidationProfile,
-} from "@turnkeyai/qc-runtime/validation-profile";
 import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 import { CoordinationEngine } from "@turnkeyai/team-runtime/coordination-engine";
 import { DefaultContextStateMaintainer } from "@turnkeyai/team-runtime/context-state-maintainer";

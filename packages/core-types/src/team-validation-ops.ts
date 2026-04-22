@@ -95,6 +95,36 @@ export interface ValidationOpsReport {
   readiness: ValidationOpsReadinessReport;
 }
 
+export type Phase1ReadinessRunStageId =
+  | "validation-profile"
+  | "transport-soak"
+  | "release-readiness"
+  | "soak-series";
+
+export interface Phase1ReadinessRunStage {
+  stageId: Phase1ReadinessRunStageId;
+  title: string;
+  status: "passed" | "failed";
+  runId: string;
+  durationMs: number;
+  summary: string;
+  commandHint: string;
+  artifactPath?: string;
+}
+
+export interface Phase1ReadinessRunResult {
+  status: "passed" | "failed";
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  totalStages: number;
+  passedStages: number;
+  failedStages: number;
+  nextCommand: string;
+  stages: Phase1ReadinessRunStage[];
+  validationOps: ValidationOpsReport;
+}
+
 export interface ValidationOpsRunStore {
   put(record: ValidationOpsRunRecord): Promise<void>;
   list(limit?: number): Promise<ValidationOpsRunRecord[]>;

@@ -8,6 +8,7 @@ import type {
   OperatorAttentionReport,
   OperatorSummaryReport,
   OperatorTriageReport,
+  Phase1ReadinessRunResult,
   PermissionCacheRecord,
   PromptConsoleReport,
   RuntimeChain,
@@ -527,6 +528,11 @@ while (true) {
       continue;
     }
 
+    if (command === "phase1-readiness") {
+      await handlePhase1ReadinessCommand(args);
+      continue;
+    }
+
     if (command === "validation-ops") {
       await handleValidationOpsCommand(args);
       continue;
@@ -751,6 +757,7 @@ function printHelp(): void {
   console.log("  soak-series [cycles] [suite[:item] ...]  run multi-cycle validation soak across selected suites");
   console.log("  transport-soak [cycles] [transport ...] run multi-cycle relay/direct-cdp transport soak");
   console.log("  release-verify                        verify packaged CLI and npm publish dry-run readiness");
+  console.log("  phase1-readiness [transportCycles] [soakCycles] [--release-skip-build] run all Phase 1 exit gates");
   console.log("  validation-ops [limit]               show operator-facing validation/release/soak run summary");
   console.log("  validation-cases                      list unified validation suites and items");
   console.log("  validation-profiles                   list fixed validation hardening profiles");
@@ -2837,11 +2844,52 @@ async function handleReleaseVerifyCommand(): Promise<void> {
   );
 }
 
+async function handlePhase1ReadinessCommand(raw: string): Promise<void> {
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  const releaseSkipBuild = tokens.includes("--release-skip-build");
+  const numericTokens = tokens.filter((token) => token !== "--release-skip-build");
+  const transportCycles = numericTokens[0] && /^\d+$/.test(numericTokens[0]) ? Number(numericTokens[0]) : 3;
+  const soakCycles = numericTokens[1] && /^\d+$/.test(numericTokens[1]) ? Number(numericTokens[1]) : 3;
+
+  try {
+    const payload = await postJson("/phase1-readiness/run", {
+      transportCycles,
+      soakCycles,
+      releaseSkipBuild,
+    }) as Phase1ReadinessRunResult;
+    printPhase1ReadinessRunResult(payload);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function handleValidationOpsCommand(raw: string): Promise<void> {
   const requestedLimit = Number(raw.trim() || "10");
   const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.floor(requestedLimit) : 10;
   const params = new URLSearchParams({ limit: String(limit) });
   printValidationOpsReport((await getJson(`/validation-ops?${params.toString()}`)) as ValidationOpsReport);
+}
+
+function printPhase1ReadinessRunResult(result: Phase1ReadinessRunResult): void {
+  console.log(
+    `Phase 1 readiness: status=${result.status}  stages=${result.passedStages}/${result.totalStages}  durationMs=${result.durationMs}`
+  );
+  console.log(`  next=${result.nextCommand}`);
+  for (const stage of result.stages) {
+    const parts = [
+      stage.stageId,
+      `status=${stage.status}`,
+      `run=${stage.runId}`,
+      `durationMs=${stage.durationMs}`,
+    ];
+    console.log(`  - ${parts.join("  ")}`);
+    console.log(`    ${stage.summary}`);
+    console.log(`    cmd=${stage.commandHint}`);
+    if (stage.artifactPath) {
+      console.log(`    artifact=${stage.artifactPath}`);
+    }
+  }
+  printValidationOpsReport(result.validationOps);
 }
 
 async function handleReplayIncidentsCommand(raw: string): Promise<void> {

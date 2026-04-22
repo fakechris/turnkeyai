@@ -57,6 +57,7 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "GET", pathname: "/validation-ops", expected: "admin" },
     { method: "POST", pathname: "/validation-profiles/run", expected: "admin" },
     { method: "POST", pathname: "/transport-soak/run", expected: "admin" },
+    { method: "POST", pathname: "/phase1-readiness/run", expected: "admin" },
     { method: "POST", pathname: "/relay/peers/register", expected: "relay-peer" },
     { method: "POST", pathname: "/relay/peers/peer-1/heartbeat", expected: "relay-peer" },
     { method: "GET", pathname: "/relay/targets", expected: "admin" },
@@ -133,6 +134,15 @@ test("authorizeDaemonRequest enforces layered access while keeping health public
   assert.equal(adminResult.authorized, true);
   assert.equal(adminResult.grantedAccess, "admin");
   assert.equal(adminResult.requiredAccess, "admin");
+
+  assert.equal(
+    authorizeDaemonRequest(
+      { method: "POST", headers: { authorization: "Bearer operator-token" } } as never,
+      new URL("http://127.0.0.1/phase1-readiness/run"),
+      config
+    ).authorized,
+    false
+  );
 
   const relayPeerResult = authorizeDaemonRequest(
     { method: "POST", headers: { authorization: "Bearer relay-token" } } as never,

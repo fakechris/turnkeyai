@@ -1826,10 +1826,10 @@ test("chrome session manager persists downloaded files as bounded artifacts", as
 });
 
 test("chrome session manager executes bounded storage actions", async () => {
-  const evaluateInputs: unknown[] = [];
+  const evaluateInputs: string[] = [];
   const fakePage = {
-    async evaluate(_fn: unknown, input: unknown) {
-      evaluateInputs.push(input);
+    async evaluate(script: string) {
+      evaluateInputs.push(script);
       return {
         area: "localStorage",
         action: "get",
@@ -1869,16 +1869,14 @@ test("chrome session manager executes bounded storage actions", async () => {
     browserSessionId: "browser-session-storage",
   });
 
-  assert.deepEqual(evaluateInputs, [
-    {
-      area: "localStorage",
-      action: "get",
-      key: "token",
-      value: undefined,
-      maxEntries: 100,
-      maxValueBytes: 8192,
-    },
-  ]);
+  assert.equal(evaluateInputs.length, 1);
+  assert.match(evaluateInputs[0]!, /const \{ area, action: storageAction, key, value, maxEntries, maxValueBytes \}/);
+  assert.doesNotMatch(evaluateInputs[0]!, /__name/);
+  assert.match(evaluateInputs[0]!, /"area":"localStorage"/);
+  assert.match(evaluateInputs[0]!, /"action":"get"/);
+  assert.match(evaluateInputs[0]!, /"key":"token"/);
+  assert.match(evaluateInputs[0]!, /"maxEntries":100/);
+  assert.match(evaluateInputs[0]!, /"maxValueBytes":8192/);
   assert.equal(output.traceOutput?.value, "abc");
 });
 
