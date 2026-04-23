@@ -1182,7 +1182,9 @@ function createIdGenerator(): IdGenerator {
   };
 }
 
-function createValidationOpsRunId(kind: "release-readiness" | "validation-profile" | "soak-series" | "transport-soak"): string {
+function createValidationOpsRunId(
+  kind: "release-readiness" | "validation-profile" | "soak-series" | "transport-soak" | "phase1-baseline"
+): string {
   return `validation-ops:${kind}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 }
 

@@ -182,6 +182,7 @@ function isValidationRoute(pathname: string): boolean {
     "/transport-soak/run",
     "/release-readiness/run",
     "/phase1-readiness/run",
+    "/phase1-baseline/run",
   ].includes(pathname);
 }
 

@@ -1,6 +1,8 @@
 import type http from "node:http";
 
 import type {
+  Phase1BaselineRunResult,
+  Phase1BaselineRunSummary,
   Phase1ReadinessRunResult,
   Phase1ReadinessRunStage,
   ValidationOpsRunRecord,
@@ -42,6 +44,7 @@ import {
   summarizeValidationProfileResult,
 } from "@turnkeyai/qc-runtime/validation-profile";
 import {
+  buildValidationOpsRecordFromPhase1Baseline,
   buildValidationOpsRecordFromReleaseReadiness,
   buildValidationOpsRecordFromSoakSeries,
   buildValidationOpsRecordFromTransportSoak,
@@ -60,7 +63,7 @@ import { readJsonBodySafe, sendJson } from "../http-helpers";
 export interface ValidationRouteDeps {
   validationOpsRunStore: ValidationOpsRunStore;
   createValidationOpsRunId: (
-    kind: "release-readiness" | "validation-profile" | "soak-series" | "transport-soak"
+    kind: "release-readiness" | "validation-profile" | "soak-series" | "transport-soak" | "phase1-baseline"
   ) => string;
   writeValidationArtifact: (kind: string, runId: string, payload: unknown) => Promise<string>;
   runBrowserTransportSoakViaCli: (options?: BrowserTransportSoakOptions) => Promise<BrowserTransportSoakResult>;
@@ -270,7 +273,7 @@ export async function handleValidationRoutes(input: {
   if (req.method === "GET" && url.pathname === "/validation-ops") {
     const requestedLimit = Number(url.searchParams.get("limit") ?? "10");
     const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.floor(requestedLimit) : 10;
-    const records = await deps.validationOpsRunStore.list(limit);
+    const records = await deps.validationOpsRunStore.list(Math.max(limit, 50));
     sendJson(res, 200, buildValidationOpsReport(records, limit));
     return true;
   }
@@ -464,6 +467,46 @@ export async function handleValidationRoutes(input: {
     return true;
   }
 
+  if (req.method === "POST" && url.pathname === "/phase1-baseline/run") {
+    const bodyResult = await readJsonBodySafe<{
+      runs?: number;
+      transportCycles?: number;
+      soakCycles?: number;
+      releaseSkipBuild?: boolean;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
+    if (body.runs !== undefined && (!Number.isInteger(body.runs) || body.runs <= 0)) {
+      sendJson(res, 400, { error: "Invalid runs: must be a positive integer" });
+      return true;
+    }
+    if (body.transportCycles !== undefined && (!Number.isInteger(body.transportCycles) || body.transportCycles <= 0)) {
+      sendJson(res, 400, { error: "Invalid transportCycles: must be a positive integer" });
+      return true;
+    }
+    if (body.soakCycles !== undefined && (!Number.isInteger(body.soakCycles) || body.soakCycles <= 0)) {
+      sendJson(res, 400, { error: "Invalid soakCycles: must be a positive integer" });
+      return true;
+    }
+    if (body.releaseSkipBuild !== undefined && typeof body.releaseSkipBuild !== "boolean") {
+      sendJson(res, 400, { error: "Invalid releaseSkipBuild: must be a boolean" });
+      return true;
+    }
+
+    const result = await runPhase1Baseline({
+      deps,
+      runs: body.runs ?? 3,
+      transportCycles: body.transportCycles ?? 3,
+      soakCycles: body.soakCycles ?? 3,
+      releaseSkipBuild: body.releaseSkipBuild ?? false,
+    });
+    sendJson(res, 200, result);
+    return true;
+  }
+
   return false;
 }
 
@@ -609,6 +652,76 @@ async function runPhase1Readiness(input: {
   };
 }
 
+async function runPhase1Baseline(input: {
+  deps: ValidationRouteDeps;
+  runs: number;
+  transportCycles: number;
+  soakCycles: number;
+  releaseSkipBuild: boolean;
+}): Promise<Phase1BaselineRunResult> {
+  const startedAt = Date.now();
+  const runs: Phase1BaselineRunSummary[] = [];
+  const failureReasons: string[] = [];
+
+  for (let index = 0; index < input.runs; index += 1) {
+    const result = await runPhase1Readiness({
+      deps: input.deps,
+      transportCycles: input.transportCycles,
+      soakCycles: input.soakCycles,
+      releaseSkipBuild: input.releaseSkipBuild,
+    });
+    const summary = summarizePhase1BaselineRun(index + 1, result);
+    runs.push(summary);
+    failureReasons.push(...validatePhase1BaselineRun(summary).map((reason) => `run ${summary.runNumber}: ${reason}`));
+  }
+
+  let records = await input.deps.validationOpsRunStore.list(50);
+  let validationOps = buildValidationOpsReport(records, 50);
+  failureReasons.push(
+    ...validatePhase1BaselineValidationOps(validationOps).map((reason) => `final validation-ops: ${reason}`)
+  );
+  const completedAt = Date.now();
+  const provisionalResult: Phase1BaselineRunResult = {
+    status: failureReasons.length === 0 ? "passed" : "failed",
+    startedAt,
+    completedAt,
+    durationMs: completedAt - startedAt,
+    requiredRuns: input.runs,
+    consecutivePassedRuns: countTrailingPhase1BaselineCleanRuns(runs),
+    transportCycles: input.transportCycles,
+    soakCycles: input.soakCycles,
+    releaseSkipBuild: input.releaseSkipBuild,
+    nextCommand:
+      validationOps.closedLoop.closedLoopStatus !== "completed"
+        ? validationOps.closedLoop.nextCommand
+        : validationOps.readiness.nextCommand,
+    runs,
+    failureReasons,
+    validationOps,
+    northStar: validationOps.closedLoop,
+    baseline: validationOps.baseline,
+  };
+
+  await input.deps.validationOpsRunStore.put(
+    buildValidationOpsRecordFromPhase1Baseline({
+      runId: input.deps.createValidationOpsRunId("phase1-baseline"),
+      startedAt,
+      completedAt,
+      result: provisionalResult,
+    })
+  );
+  records = await input.deps.validationOpsRunStore.list(50);
+  validationOps = buildValidationOpsReport(records, 50);
+
+  return {
+    ...provisionalResult,
+    nextCommand: validationOps.baseline.status === "fresh-passing" ? "validation-ops" : validationOps.baseline.nextCommand,
+    validationOps,
+    northStar: validationOps.closedLoop,
+    baseline: validationOps.baseline,
+  };
+}
+
 function filterNonEmptyStrings(values: string[] | undefined): string[] | undefined {
   return Array.isArray(values)
     ? values
@@ -630,4 +743,95 @@ function filterTrimmedStrings(values: string[] | undefined): string[] | undefine
 function findUnknownScenarioIds(inputIds: string[], validIds: string[]): string[] {
   const validScenarioIds = new Set(validIds);
   return inputIds.filter((scenarioId) => !validScenarioIds.has(scenarioId));
+}
+
+function summarizePhase1BaselineRun(runNumber: number, result: Phase1ReadinessRunResult): Phase1BaselineRunSummary {
+  return {
+    runNumber,
+    status: result.status,
+    durationMs: result.durationMs,
+    failedStages: result.failedStages,
+    nextCommand: result.nextCommand,
+    readinessStatus: result.validationOps.readiness.status,
+    northStarStatus: result.northStar.closedLoopStatus,
+    closedLoopCases: result.northStar.closedLoopCases,
+    totalCases: result.northStar.totalCases,
+    closedLoopRate: result.northStar.closedLoopRate,
+    silentFailureCases: result.northStar.silentFailureCases,
+    ambiguousFailureCases: result.northStar.ambiguousFailureCases,
+    stages: result.stages.map((stage) => ({
+      stageId: stage.stageId,
+      status: stage.status,
+      summary: stage.summary,
+      commandHint: stage.commandHint,
+      ...(stage.artifactPath ? { artifactPath: stage.artifactPath } : {}),
+    })),
+  };
+}
+
+function validatePhase1BaselineRun(summary: Phase1BaselineRunSummary): string[] {
+  const failures: string[] = [];
+  if (summary.status !== "passed") {
+    failures.push(`readiness status is ${summary.status}`);
+  }
+  if (summary.failedStages !== 0) {
+    failures.push(`failed stages=${summary.failedStages}`);
+  }
+  if (summary.readinessStatus !== "passed") {
+    failures.push(`readiness gate status is ${summary.readinessStatus}`);
+  }
+  if (summary.northStarStatus !== "completed") {
+    failures.push(`north-star status is ${summary.northStarStatus}`);
+  }
+  if (summary.closedLoopRate !== 1) {
+    failures.push(`closed-loop rate is ${summary.closedLoopRate.toFixed(3)}`);
+  }
+  if (summary.closedLoopCases !== summary.totalCases) {
+    failures.push(`closed-loop cases=${summary.closedLoopCases}/${summary.totalCases}`);
+  }
+  if (summary.silentFailureCases !== 0) {
+    failures.push(`silent failures=${summary.silentFailureCases}`);
+  }
+  if (summary.ambiguousFailureCases !== 0) {
+    failures.push(`ambiguous failures=${summary.ambiguousFailureCases}`);
+  }
+  return failures;
+}
+
+function validatePhase1BaselineValidationOps(report: Phase1ReadinessRunResult["validationOps"]): string[] {
+  const failures: string[] = [];
+  if (report.readiness.status !== "passed") {
+    failures.push(`readiness status is ${report.readiness.status}`);
+  }
+  if (report.closedLoop.closedLoopStatus !== "completed") {
+    failures.push(`north-star status is ${report.closedLoop.closedLoopStatus}`);
+  }
+  if (report.closedLoop.closedLoopRate !== 1) {
+    failures.push(`closed-loop rate is ${report.closedLoop.closedLoopRate.toFixed(3)}`);
+  }
+  if (report.closedLoop.closedLoopCases !== report.closedLoop.totalCases) {
+    failures.push(`closed-loop cases=${report.closedLoop.closedLoopCases}/${report.closedLoop.totalCases}`);
+  }
+  if (report.closedLoop.silentFailureCases !== 0) {
+    failures.push(`silent failures=${report.closedLoop.silentFailureCases}`);
+  }
+  if (report.closedLoop.ambiguousFailureCases !== 0) {
+    failures.push(`ambiguous failures=${report.closedLoop.ambiguousFailureCases}`);
+  }
+  return failures;
+}
+
+function countTrailingPhase1BaselineCleanRuns(runs: Phase1BaselineRunSummary[]): number {
+  let count = 0;
+  for (let index = runs.length - 1; index >= 0; index -= 1) {
+    const run = runs[index];
+    if (!run) {
+      continue;
+    }
+    if (validatePhase1BaselineRun(run).length > 0) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
 }

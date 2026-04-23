@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type { Phase1ReadinessRunResult, ValidationOpsReport } from "@turnkeyai/core-types";
+import type { Phase1BaselineRunResult } from "@turnkeyai/core-types";
 
 interface BaselineOptions {
   runs: number;
@@ -15,50 +15,7 @@ interface BaselineOptions {
   releaseSkipBuild: boolean;
 }
 
-interface BaselineRunSummary {
-  runNumber: number;
-  status: Phase1ReadinessRunResult["status"];
-  durationMs: number;
-  failedStages: number;
-  nextCommand: string;
-  readinessStatus: ValidationOpsReport["readiness"]["status"];
-  northStarStatus: ValidationOpsReport["closedLoop"]["closedLoopStatus"];
-  closedLoopCases: number;
-  totalCases: number;
-  closedLoopRate: number;
-  silentFailureCases: number;
-  ambiguousFailureCases: number;
-  stageSummaries: Array<{
-    stageId: string;
-    status: "passed" | "failed";
-    summary: string;
-    commandHint: string;
-    artifactPath?: string;
-  }>;
-}
-
-interface BaselineReport {
-  status: "passed" | "failed";
-  startedAt: string;
-  completedAt: string;
-  durationMs: number;
-  runs: BaselineRunSummary[];
-  consecutivePassedRuns: number;
-  requiredRuns: number;
-  transportCycles: number;
-  soakCycles: number;
-  releaseSkipBuild: boolean;
-  daemon: {
-    port: number;
-    dataDir: string;
-  };
-  finalValidationOps?: ValidationOpsReport;
-  failureReasons: string[];
-}
-
 const options = parseArgs(process.argv.slice(2));
-const startedAt = Date.now();
-await mkdir(options.dataDir, { recursive: true });
 if (options.jsonPath) {
   await mkdir(path.dirname(path.resolve(process.cwd(), options.jsonPath)), { recursive: true });
 }
@@ -77,60 +34,31 @@ try {
   daemon = await startDaemon(options);
   await waitForDaemon(options.port, 30_000);
 
-  const runs: BaselineRunSummary[] = [];
-  const failureReasons: string[] = [];
-
-  for (let index = 0; index < options.runs; index += 1) {
-    const runNumber = index + 1;
-    console.log(
-      `Phase 1 baseline run ${runNumber}/${options.runs}: phase1-readiness ${options.transportCycles} ${options.soakCycles}`
-    );
-    const result = await postPhase1Readiness(options);
-    const summary = summarizeRun(runNumber, result);
-    runs.push(summary);
-    const runFailures = validateRun(summary);
-    failureReasons.push(...runFailures.map((reason) => `run ${runNumber}: ${reason}`));
-    console.log(
-      `- status=${summary.status} readiness=${summary.readinessStatus} northStar=${summary.northStarStatus} closedLoop=${summary.closedLoopCases}/${summary.totalCases} rate=${formatRate(summary.closedLoopRate)} silent=${summary.silentFailureCases} ambiguous=${summary.ambiguousFailureCases}`
-    );
+  const result = await postPhase1Baseline(options);
+  console.log(
+    `Phase 1 baseline: status=${result.status} cleanRuns=${result.consecutivePassedRuns}/${result.requiredRuns} durationMs=${result.durationMs}`
+  );
+  console.log(
+    `north-star=${result.northStar.closedLoopStatus} closedLoop=${result.northStar.closedLoopCases}/${result.northStar.totalCases} rate=${formatRate(result.northStar.closedLoopRate)}`
+  );
+  console.log(`baseline=${result.baseline.status} next=${result.nextCommand}`);
+  if (result.failureReasons.length > 0) {
+    for (const reason of result.failureReasons) {
+      console.log(`- ${reason}`);
+    }
   }
-
-  const finalValidationOps = await getValidationOps(options.port);
-  failureReasons.push(...validateFinalValidationOps(finalValidationOps).map((reason) => `final validation-ops: ${reason}`));
-  const completedAt = Date.now();
-  const report: BaselineReport = {
-    status: failureReasons.length === 0 ? "passed" : "failed",
-    startedAt: new Date(startedAt).toISOString(),
-    completedAt: new Date(completedAt).toISOString(),
-    durationMs: completedAt - startedAt,
-    runs,
-    consecutivePassedRuns: countLeadingCleanRuns(runs),
-    requiredRuns: options.runs,
-    transportCycles: options.transportCycles,
-    soakCycles: options.soakCycles,
-    releaseSkipBuild: options.releaseSkipBuild,
-    daemon: {
-      port: options.port,
-      dataDir: options.dataDir,
-    },
-    finalValidationOps,
-    failureReasons,
-  };
-
-  console.log(
-    `Phase 1 baseline: ${report.status} (${report.consecutivePassedRuns}/${report.requiredRuns} clean runs, durationMs=${report.durationMs})`
-  );
-  console.log(
-    `final north-star=${finalValidationOps.closedLoop.closedLoopStatus} closedLoop=${finalValidationOps.closedLoop.closedLoopCases}/${finalValidationOps.closedLoop.totalCases} rate=${formatRate(finalValidationOps.closedLoop.closedLoopRate)}`
-  );
 
   if (options.jsonPath) {
     const resolvedPath = path.resolve(process.cwd(), options.jsonPath);
-    await writeFile(resolvedPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    await writeFile(
+      resolvedPath,
+      `${JSON.stringify({ ...result, daemon: { port: options.port, dataDir: options.dataDir } }, null, 2)}\n`,
+      "utf8"
+    );
     console.log(`wrote ${resolvedPath}`);
   }
 
-  process.exitCode = report.status === "passed" ? 0 : 1;
+  process.exitCode = result.status === "passed" ? 0 : 1;
 } finally {
   stopping = true;
   if (daemon && !daemon.killed) {
@@ -255,11 +183,12 @@ async function waitForDaemon(port: number, timeoutMs: number): Promise<void> {
   throw new Error(`daemon did not become healthy within ${timeoutMs}ms: ${String(lastError)}`);
 }
 
-async function postPhase1Readiness(input: BaselineOptions): Promise<Phase1ReadinessRunResult> {
-  const response = await fetch(`http://127.0.0.1:${input.port}/phase1-readiness/run`, {
+async function postPhase1Baseline(input: BaselineOptions): Promise<Phase1BaselineRunResult> {
+  const response = await fetch(`http://127.0.0.1:${input.port}/phase1-baseline/run`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      runs: input.runs,
       transportCycles: input.transportCycles,
       soakCycles: input.soakCycles,
       releaseSkipBuild: input.releaseSkipBuild,
@@ -267,105 +196,9 @@ async function postPhase1Readiness(input: BaselineOptions): Promise<Phase1Readin
   });
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`phase1 readiness failed with HTTP ${response.status}: ${text}`);
+    throw new Error(`phase1 baseline failed with HTTP ${response.status}: ${text}`);
   }
-  return JSON.parse(text) as Phase1ReadinessRunResult;
-}
-
-async function getValidationOps(port: number): Promise<ValidationOpsReport> {
-  const response = await fetch(`http://127.0.0.1:${port}/validation-ops?limit=50`);
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`validation-ops failed with HTTP ${response.status}: ${text}`);
-  }
-  return JSON.parse(text) as ValidationOpsReport;
-}
-
-function summarizeRun(runNumber: number, result: Phase1ReadinessRunResult): BaselineRunSummary {
-  return {
-    runNumber,
-    status: result.status,
-    durationMs: result.durationMs,
-    failedStages: result.failedStages,
-    nextCommand: result.nextCommand,
-    readinessStatus: result.validationOps.readiness.status,
-    northStarStatus: result.northStar.closedLoopStatus,
-    closedLoopCases: result.northStar.closedLoopCases,
-    totalCases: result.northStar.totalCases,
-    closedLoopRate: result.northStar.closedLoopRate,
-    silentFailureCases: result.northStar.silentFailureCases,
-    ambiguousFailureCases: result.northStar.ambiguousFailureCases,
-    stageSummaries: result.stages.map((stage) => ({
-      stageId: stage.stageId,
-      status: stage.status,
-      summary: stage.summary,
-      commandHint: stage.commandHint,
-      ...(stage.artifactPath ? { artifactPath: stage.artifactPath } : {}),
-    })),
-  };
-}
-
-function validateRun(summary: BaselineRunSummary): string[] {
-  const failures: string[] = [];
-  if (summary.status !== "passed") {
-    failures.push(`readiness status is ${summary.status}`);
-  }
-  if (summary.failedStages !== 0) {
-    failures.push(`failed stages=${summary.failedStages}`);
-  }
-  if (summary.readinessStatus !== "passed") {
-    failures.push(`readiness gate status is ${summary.readinessStatus}`);
-  }
-  if (summary.northStarStatus !== "completed") {
-    failures.push(`north-star status is ${summary.northStarStatus}`);
-  }
-  if (summary.closedLoopRate !== 1) {
-    failures.push(`closed-loop rate is ${formatRate(summary.closedLoopRate)}`);
-  }
-  if (summary.closedLoopCases !== summary.totalCases) {
-    failures.push(`closed-loop cases=${summary.closedLoopCases}/${summary.totalCases}`);
-  }
-  if (summary.silentFailureCases !== 0) {
-    failures.push(`silent failures=${summary.silentFailureCases}`);
-  }
-  if (summary.ambiguousFailureCases !== 0) {
-    failures.push(`ambiguous failures=${summary.ambiguousFailureCases}`);
-  }
-  return failures;
-}
-
-function validateFinalValidationOps(report: ValidationOpsReport): string[] {
-  const failures: string[] = [];
-  if (report.readiness.status !== "passed") {
-    failures.push(`readiness status is ${report.readiness.status}`);
-  }
-  if (report.closedLoop.closedLoopStatus !== "completed") {
-    failures.push(`north-star status is ${report.closedLoop.closedLoopStatus}`);
-  }
-  if (report.closedLoop.closedLoopRate !== 1) {
-    failures.push(`closed-loop rate is ${formatRate(report.closedLoop.closedLoopRate)}`);
-  }
-  if (report.closedLoop.closedLoopCases !== report.closedLoop.totalCases) {
-    failures.push(`closed-loop cases=${report.closedLoop.closedLoopCases}/${report.closedLoop.totalCases}`);
-  }
-  if (report.closedLoop.silentFailureCases !== 0) {
-    failures.push(`silent failures=${report.closedLoop.silentFailureCases}`);
-  }
-  if (report.closedLoop.ambiguousFailureCases !== 0) {
-    failures.push(`ambiguous failures=${report.closedLoop.ambiguousFailureCases}`);
-  }
-  return failures;
-}
-
-function countLeadingCleanRuns(runs: BaselineRunSummary[]): number {
-  let count = 0;
-  for (const run of runs) {
-    if (validateRun(run).length > 0) {
-      break;
-    }
-    count += 1;
-  }
-  return count;
+  return JSON.parse(text) as Phase1BaselineRunResult;
 }
 
 function prefixLines(prefix: string, value: string): string {

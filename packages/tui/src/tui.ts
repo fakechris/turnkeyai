@@ -8,6 +8,7 @@ import type {
   OperatorAttentionReport,
   OperatorSummaryReport,
   OperatorTriageReport,
+  Phase1BaselineRunResult,
   Phase1ReadinessRunResult,
   PermissionCacheRecord,
   PromptConsoleReport,
@@ -534,6 +535,11 @@ while (true) {
       continue;
     }
 
+    if (command === "phase1-baseline") {
+      await handlePhase1BaselineCommand(args);
+      continue;
+    }
+
     if (command === "validation-ops") {
       await handleValidationOpsCommand(args);
       continue;
@@ -759,6 +765,7 @@ function printHelp(): void {
   console.log("  transport-soak [cycles] [transport ...] run multi-cycle relay/direct-cdp transport soak");
   console.log("  release-verify                        verify packaged CLI and npm publish dry-run readiness");
   console.log("  phase1-readiness [transportCycles] [soakCycles] [--release-skip-build] run all Phase 1 exit gates");
+  console.log("  phase1-baseline [runs] [transportCycles] [soakCycles] [--release-skip-build] run repeated Phase 1 baseline");
   console.log("  validation-ops [limit]               show operator-facing validation/release/soak run summary");
   console.log("  validation-cases                      list unified validation suites and items");
   console.log("  validation-profiles                   list fixed validation hardening profiles");
@@ -1849,6 +1856,24 @@ function printValidationOpsReport(report: ValidationOpsReport): void {
   } else {
     console.log("  north-star closedLoop=not-measured  next=phase1-readiness 3 3");
   }
+  console.log(`  baseline status=${report.baseline.status}  next=${report.baseline.nextCommand}`);
+  if (report.baseline.latestRunId) {
+    const baselineParts = [`run=${report.baseline.latestRunId}`];
+    if (report.baseline.consecutivePassedRuns !== undefined && report.baseline.requiredRuns !== undefined) {
+      baselineParts.push(`cleanRuns=${report.baseline.consecutivePassedRuns}/${report.baseline.requiredRuns}`);
+    }
+    if (report.baseline.ageMs !== undefined) {
+      baselineParts.push(`ageMs=${report.baseline.ageMs}`);
+    }
+    if (report.baseline.finalClosedLoopStatus) {
+      baselineParts.push(`northStar=${report.baseline.finalClosedLoopStatus}`);
+    }
+    if (report.baseline.finalClosedLoopRate !== undefined) {
+      baselineParts.push(`rate=${formatClosedLoopRate(report.baseline.finalClosedLoopRate)}`);
+    }
+    console.log(`  baseline details: ${baselineParts.join("  ")}`);
+  }
+  console.log(`  baseline summary=${report.baseline.summary}`);
   console.log(
     `  phase1 readiness=${report.readiness.status}  passed=${report.readiness.passedGates}  failed=${report.readiness.failedGates}  missing=${report.readiness.missingGates}`
   );
@@ -1884,10 +1909,18 @@ function printValidationOpsReport(report: ValidationOpsReport): void {
         parts.push(`closedLoop=${run.closedLoop.closedLoopStatus}`);
         parts.push(`rate=${formatClosedLoopRate(run.closedLoop.closedLoopRate)}`);
       }
+      if (run.baseline) {
+        parts.push(`baselineClean=${run.baseline.consecutivePassedRuns}/${run.baseline.requiredRuns}`);
+        parts.push(`baselineNorthStar=${run.baseline.finalClosedLoopStatus}`);
+      }
       console.log(`    - ${parts.join("  ")}`);
       console.log(`      ${run.title}`);
       if (run.artifactPath) {
         console.log(`      artifact=${run.artifactPath}`);
+      }
+      if (run.baseline && run.baseline.failureReasons.length > 0) {
+        console.log(`      baselineNext=${report.baseline.nextCommand}`);
+        console.log(`      baselineReasons=${run.baseline.failureReasons.join(" | ")}`);
       }
       if (run.closedLoop && run.closedLoop.closedLoopStatus !== "completed") {
         console.log(`      closedLoopNext=${run.closedLoop.rerunCommand}`);
@@ -2906,6 +2939,27 @@ async function handlePhase1ReadinessCommand(raw: string): Promise<void> {
   }
 }
 
+async function handlePhase1BaselineCommand(raw: string): Promise<void> {
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  const releaseSkipBuild = tokens.includes("--release-skip-build");
+  const numericTokens = tokens.filter((token) => token !== "--release-skip-build");
+  const runs = numericTokens[0] && /^\d+$/.test(numericTokens[0]) ? Number(numericTokens[0]) : 3;
+  const transportCycles = numericTokens[1] && /^\d+$/.test(numericTokens[1]) ? Number(numericTokens[1]) : 3;
+  const soakCycles = numericTokens[2] && /^\d+$/.test(numericTokens[2]) ? Number(numericTokens[2]) : 3;
+
+  try {
+    const payload = await postJson("/phase1-baseline/run", {
+      runs,
+      transportCycles,
+      soakCycles,
+      releaseSkipBuild,
+    }) as Phase1BaselineRunResult;
+    printPhase1BaselineRunResult(payload);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function handleValidationOpsCommand(raw: string): Promise<void> {
   const requestedLimit = Number(raw.trim() || "10");
   const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.floor(requestedLimit) : 10;
@@ -2933,6 +2987,31 @@ function printPhase1ReadinessRunResult(result: Phase1ReadinessRunResult): void {
     console.log(`    cmd=${stage.commandHint}`);
     if (stage.artifactPath) {
       console.log(`    artifact=${stage.artifactPath}`);
+    }
+  }
+  printValidationOpsReport(result.validationOps);
+}
+
+function printPhase1BaselineRunResult(result: Phase1BaselineRunResult): void {
+  console.log(
+    `Phase 1 baseline: status=${result.status}  cleanRuns=${result.consecutivePassedRuns}/${result.requiredRuns}  durationMs=${result.durationMs}`
+  );
+  console.log(
+    `  north-star=${result.northStar.closedLoopStatus}  closedLoop=${result.northStar.closedLoopCases}/${result.northStar.totalCases}  rate=${formatClosedLoopRate(result.northStar.closedLoopRate)}`
+  );
+  console.log(`  baseline=${result.baseline.status}  next=${result.nextCommand}`);
+  for (const run of result.runs) {
+    console.log(
+      `  - run=${run.runNumber}  status=${run.status}  readiness=${run.readinessStatus}  northStar=${run.northStarStatus}  closedLoop=${run.closedLoopCases}/${run.totalCases}  rate=${formatClosedLoopRate(run.closedLoopRate)}  durationMs=${run.durationMs}`
+    );
+    if (run.failedStages > 0) {
+      console.log(`    failedStages=${run.failedStages}  next=${run.nextCommand}`);
+    }
+  }
+  if (result.failureReasons.length > 0) {
+    console.log("  failure reasons:");
+    for (const reason of result.failureReasons) {
+      console.log(`    - ${reason}`);
     }
   }
   printValidationOpsReport(result.validationOps);
