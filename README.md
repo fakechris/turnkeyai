@@ -165,6 +165,7 @@ http://127.0.0.1:4100
 常用环境变量：
 
 - `TURNKEYAI_DAEMON_PORT`: 覆盖本地 daemon 监听端口
+- `TURNKEYAI_DATA_DIR`: 覆盖 daemon 本地数据目录，适合隔离 validation / soak 基线
 - `TURNKEYAI_DAEMON_URL`: 让 TUI / CLI 连接指定 daemon
 - `TURNKEYAI_DAEMON_TOKEN`: 开启 daemon token auth 时使用的访问 token
 - `TURNKEYAI_BROWSER_TRANSPORT`: 选择 `relay` 或 `direct-cdp` browser transport
