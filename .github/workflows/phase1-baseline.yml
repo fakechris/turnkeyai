@@ -1,0 +1,75 @@
+name: Phase 1 Baseline
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "Consecutive Phase 1 readiness runs"
+        required: false
+        default: "3"
+      transport_cycles:
+        description: "Transport soak cycles per readiness run"
+        required: false
+        default: "3"
+      soak_cycles:
+        description: "Validation soak cycles per readiness run"
+        required: false
+        default: "3"
+      release_skip_build:
+        description: "Skip release-readiness build step"
+        required: false
+        default: "false"
+  schedule:
+    - cron: "0 20 * * *"
+
+jobs:
+  baseline:
+    name: phase1-baseline
+    if: github.event_name != 'schedule' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Phase 1 baseline
+        run: |
+          mkdir -p .artifacts
+          args=(
+            --runs "${PHASE1_BASELINE_RUNS}"
+            --transport-cycles "${PHASE1_TRANSPORT_CYCLES}"
+            --soak-cycles "${PHASE1_SOAK_CYCLES}"
+            --data-dir .artifacts/phase1-baseline-data
+            --json .artifacts/phase1-baseline.json
+          )
+          if [ "${PHASE1_RELEASE_SKIP_BUILD}" = "true" ]; then
+            args+=(--release-skip-build)
+          fi
+          npm run phase1:baseline -- "${args[@]}"
+        env:
+          PHASE1_BASELINE_RUNS: ${{ github.event.inputs.runs || '3' }}
+          PHASE1_TRANSPORT_CYCLES: ${{ github.event.inputs.transport_cycles || '3' }}
+          PHASE1_SOAK_CYCLES: ${{ github.event.inputs.soak_cycles || '3' }}
+          PHASE1_RELEASE_SKIP_BUILD: ${{ github.event.inputs.release_skip_build || 'false' }}
+
+      - name: Upload Phase 1 baseline artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1-baseline
+          if-no-files-found: warn
+          path: |
+            .artifacts/phase1-baseline.json
+            .artifacts/phase1-baseline-data/validation-artifacts/**

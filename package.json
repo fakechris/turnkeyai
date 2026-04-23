@@ -20,6 +20,7 @@
     "transport:soak": "tsx scripts/browser-transport-soak.ts",
     "pack:cli": "npm pack --workspace @turnkeyai/cli --dry-run",
     "release:verify": "tsx scripts/release-readiness.ts",
+    "phase1:baseline": "tsx scripts/phase1-readiness-baseline.ts",
     "soak:long": "tsx scripts/validation-soak-series.ts",
     "soak:ci": "tsx scripts/validation-soak-series.ts --cycles 10 --selectors soak,realworld,acceptance",
     "test": "tsx --test packages/**/*.test.ts",
