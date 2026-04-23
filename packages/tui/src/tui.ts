@@ -26,6 +26,7 @@ import type {
   RecoveryRunTimelineEntry,
   TeamEvent,
   ThreadSessionMemoryRecord,
+  ValidationOpsClosedLoopMetric,
   ValidationOpsReport,
   WorkerSessionRecord,
 } from "@turnkeyai/core-types/team";
@@ -1834,6 +1835,20 @@ function printValidationOpsReport(report: ValidationOpsReport): void {
   if (Object.keys(report.recommendedActionCounts).length > 0) {
     console.log(`  actions: ${formatCountMap(report.recommendedActionCounts)}`);
   }
+  if (report.closedLoop.measuredRuns > 0) {
+    console.log(
+      `  north-star closedLoop=${report.closedLoop.closedLoopStatus}  rate=${formatClosedLoopRate(report.closedLoop.closedLoopRate)}  cases=${report.closedLoop.closedLoopCases}/${report.closedLoop.totalCases}  measuredRuns=${report.closedLoop.measuredRuns}`
+    );
+    console.log(`  north-star next=${report.closedLoop.nextCommand}`);
+    if (Object.keys(report.closedLoop.statusCounts).length > 0) {
+      console.log(`  north-star statuses: ${formatCountMap(report.closedLoop.statusCounts)}`);
+    }
+    if (report.closedLoop.manualGateReason) {
+      console.log(`  north-star gate=${report.closedLoop.manualGateReason}`);
+    }
+  } else {
+    console.log("  north-star closedLoop=not-measured  next=phase1-readiness 3 3");
+  }
   console.log(
     `  phase1 readiness=${report.readiness.status}  passed=${report.readiness.passedGates}  failed=${report.readiness.failedGates}  missing=${report.readiness.missingGates}`
   );
@@ -1865,10 +1880,20 @@ function printValidationOpsReport(report: ValidationOpsReport): void {
       if (run.targets?.length) {
         parts.push(`targets=${run.targets.join(",")}`);
       }
+      if (run.closedLoop) {
+        parts.push(`closedLoop=${run.closedLoop.closedLoopStatus}`);
+        parts.push(`rate=${formatClosedLoopRate(run.closedLoop.closedLoopRate)}`);
+      }
       console.log(`    - ${parts.join("  ")}`);
       console.log(`      ${run.title}`);
       if (run.artifactPath) {
         console.log(`      artifact=${run.artifactPath}`);
+      }
+      if (run.closedLoop && run.closedLoop.closedLoopStatus !== "completed") {
+        console.log(`      closedLoopNext=${run.closedLoop.rerunCommand}`);
+        if (run.closedLoop.manualGateReason) {
+          console.log(`      gate=${run.closedLoop.manualGateReason}`);
+        }
       }
     }
   }
@@ -1882,6 +1907,10 @@ function printValidationOpsReport(report: ValidationOpsReport): void {
       console.log(`      cmd=${issue.commandHint}`);
     }
   }
+}
+
+function formatClosedLoopRate(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function printBrowserTransportSoakResult(result: {
@@ -2583,6 +2612,13 @@ async function handleRealWorldRunCommand(raw: string): Promise<void> {
       totalCases: number;
       passedCases: number;
       failedCases: number;
+      completedScenarios: number;
+      actionableScenarios: number;
+      silentFailureScenarios: number;
+      ambiguousFailureScenarios: number;
+      closedLoopScenarios: number;
+      closedLoopRate: number;
+      closedLoopStatus: "completed" | "actionable" | "silent_failure" | "ambiguous_failure";
       scenarios: Array<{
         scenarioId: string;
         area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
@@ -2593,6 +2629,13 @@ async function handleRealWorldRunCommand(raw: string): Promise<void> {
         totalCases: number;
         passedCases: number;
         failedCases: number;
+        durationMs: number;
+        closedLoopStatus: "completed" | "actionable" | "silent_failure" | "ambiguous_failure";
+        rerunCommand: string;
+        timeToActionableMs?: number;
+        manualGateReason?: string;
+        failureBucket?: string;
+        closedLoop: ValidationOpsClosedLoopMetric;
         caseResults: Array<{
           caseId: string;
           title: string;
@@ -2873,6 +2916,9 @@ async function handleValidationOpsCommand(raw: string): Promise<void> {
 function printPhase1ReadinessRunResult(result: Phase1ReadinessRunResult): void {
   console.log(
     `Phase 1 readiness: status=${result.status}  stages=${result.passedStages}/${result.totalStages}  durationMs=${result.durationMs}`
+  );
+  console.log(
+    `  north-star=${result.northStar.closedLoopStatus}  closedLoop=${result.northStar.closedLoopCases}/${result.northStar.totalCases}  rate=${formatClosedLoopRate(result.northStar.closedLoopRate)}`
   );
   console.log(`  next=${result.nextCommand}`);
   for (const stage of result.stages) {
@@ -4037,6 +4083,13 @@ function printRealWorldRunResult(payload: {
   totalCases: number;
   passedCases: number;
   failedCases: number;
+  completedScenarios: number;
+  actionableScenarios: number;
+  silentFailureScenarios: number;
+  ambiguousFailureScenarios: number;
+  closedLoopScenarios: number;
+  closedLoopRate: number;
+  closedLoopStatus: "completed" | "actionable" | "silent_failure" | "ambiguous_failure";
   scenarios: Array<{
     scenarioId: string;
     area: "browser" | "recovery" | "context" | "parallel" | "governance" | "runtime" | "operator";
@@ -4047,6 +4100,13 @@ function printRealWorldRunResult(payload: {
     totalCases: number;
     passedCases: number;
     failedCases: number;
+    durationMs: number;
+    closedLoopStatus: "completed" | "actionable" | "silent_failure" | "ambiguous_failure";
+    rerunCommand: string;
+    timeToActionableMs?: number;
+    manualGateReason?: string;
+    failureBucket?: string;
+    closedLoop: ValidationOpsClosedLoopMetric;
     caseResults: Array<{
       caseId: string;
       title: string;
@@ -4060,11 +4120,21 @@ function printRealWorldRunResult(payload: {
   console.log(
     `Real-World: ${payload.passedScenarios}/${payload.totalScenarios} scenarios passed, ${payload.passedCases}/${payload.totalCases} cases passed`
   );
+  console.log(
+    `Closed-loop: status=${payload.closedLoopStatus} rate=${formatClosedLoopRate(payload.closedLoopRate)} scenarios=${payload.closedLoopScenarios}/${payload.totalScenarios} completed=${payload.completedScenarios} actionable=${payload.actionableScenarios} silent=${payload.silentFailureScenarios} ambiguous=${payload.ambiguousFailureScenarios}`
+  );
   for (const scenario of payload.scenarios) {
     console.log(
-      `- ${scenario.scenarioId}  [${scenario.area}] ${scenario.title}  status=${scenario.status}  cases=${scenario.passedCases}/${scenario.totalCases}`
+      `- ${scenario.scenarioId}  [${scenario.area}] ${scenario.title}  status=${scenario.status}  closedLoop=${scenario.closedLoopStatus}  cases=${scenario.passedCases}/${scenario.totalCases}`
     );
     console.log(`  ${scenario.summary}`);
+    console.log(`  next=${scenario.rerunCommand}  durationMs=${scenario.durationMs}`);
+    if (scenario.failureBucket) {
+      console.log(`  bucket=${scenario.failureBucket}`);
+    }
+    if (scenario.manualGateReason) {
+      console.log(`  gate=${scenario.manualGateReason}`);
+    }
     if (scenario.failedCases > 0) {
       console.log(`  failed cases: ${scenario.failedCases}`);
     }
@@ -4127,6 +4197,7 @@ async function handleValidationProfileRunCommand(raw: string): Promise<void> {
                 totalCases: number;
                 passedCases: number;
                 failedCases: number;
+                closedLoop?: ValidationOpsClosedLoopMetric;
               };
             }
           | {
@@ -4153,6 +4224,7 @@ async function handleValidationProfileRunCommand(raw: string): Promise<void> {
                 failedCycles: number;
                 totalCases: number;
                 failedCases: number;
+                closedLoop?: ValidationOpsClosedLoopMetric;
               };
             }
           | {
@@ -4256,6 +4328,7 @@ function printValidationRunResult(payload: {
   totalCases: number;
   passedCases: number;
   failedCases: number;
+  closedLoop?: ValidationOpsClosedLoopMetric;
   suites: Array<{
     suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
     title: string;
@@ -4266,6 +4339,7 @@ function printValidationRunResult(payload: {
     totalCases: number;
     passedCases: number;
     failedCases: number;
+    closedLoop?: ValidationOpsClosedLoopMetric;
     items: Array<{
       suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
       itemId: string;
@@ -4276,6 +4350,7 @@ function printValidationRunResult(payload: {
       totalCases: number;
       passedCases: number;
       failedCases: number;
+      closedLoop?: ValidationOpsClosedLoopMetric;
       caseResults: Array<{
         caseId: string;
         title: string;
@@ -4290,14 +4365,19 @@ function printValidationRunResult(payload: {
   console.log(
     `Validation: suites=${payload.passedSuites}/${payload.totalSuites}  items=${payload.passedItems}/${payload.totalItems}  cases=${payload.passedCases}/${payload.totalCases}`
   );
+  if (payload.closedLoop) {
+    console.log(
+      `Closed-loop: status=${payload.closedLoop.closedLoopStatus} rate=${formatClosedLoopRate(payload.closedLoop.closedLoopRate)} cases=${payload.closedLoop.closedLoopCases}/${payload.closedLoop.totalCases} next=${payload.closedLoop.rerunCommand}`
+    );
+  }
   for (const suite of payload.suites) {
     console.log(
-      `- ${suite.suiteId}  ${suite.title}  status=${suite.failedItems === 0 ? "passed" : "failed"}  items=${suite.passedItems}/${suite.totalItems}  cases=${suite.passedCases}/${suite.totalCases}`
+      `- ${suite.suiteId}  ${suite.title}  status=${suite.failedItems === 0 ? "passed" : "failed"}  items=${suite.passedItems}/${suite.totalItems}  cases=${suite.passedCases}/${suite.totalCases}${suite.closedLoop ? ` closedLoop=${suite.closedLoop.closedLoopStatus}` : ""}`
     );
     console.log(`  ${suite.summary}`);
     for (const item of suite.items) {
       console.log(
-        `  - ${suite.suiteId}:${item.itemId}  [${item.area}] ${item.title}  status=${item.status}  cases=${item.passedCases}/${item.totalCases}`
+        `  - ${suite.suiteId}:${item.itemId}  [${item.area}] ${item.title}  status=${item.status}  cases=${item.passedCases}/${item.totalCases}${item.closedLoop ? ` closedLoop=${item.closedLoop.closedLoopStatus}` : ""}`
       );
       console.log(`    ${item.summary}`);
       for (const result of item.caseResults) {
@@ -4350,6 +4430,7 @@ function printValidationProfileRunResult(payload: {
           totalCases: number;
           passedCases: number;
           failedCases: number;
+          closedLoop?: ValidationOpsClosedLoopMetric;
         };
       }
     | {
@@ -4376,6 +4457,7 @@ function printValidationProfileRunResult(payload: {
           failedCycles: number;
           totalCases: number;
           failedCases: number;
+          closedLoop?: ValidationOpsClosedLoopMetric;
         };
       }
     | {
@@ -4406,6 +4488,11 @@ function printValidationProfileRunResult(payload: {
       console.log(
         `- validation-run  status=${stage.status}  suites=${stage.result.passedSuites}/${stage.result.totalSuites}  items=${stage.result.passedItems}/${stage.result.totalItems}  cases=${stage.result.passedCases}/${stage.result.totalCases}  durationMs=${stage.durationMs}`
       );
+      if (stage.result.closedLoop) {
+        console.log(
+          `  closedLoop=${stage.result.closedLoop.closedLoopStatus} rate=${formatClosedLoopRate(stage.result.closedLoop.closedLoopRate)} next=${stage.result.closedLoop.rerunCommand}`
+        );
+      }
       console.log(`  selectors: ${stage.selectors.join(", ")}`);
       continue;
     }
@@ -4419,6 +4506,11 @@ function printValidationProfileRunResult(payload: {
       console.log(
         `- soak-series  status=${stage.status}  cycles=${stage.result.passedCycles}/${stage.result.totalCycles}  cases=${stage.result.totalCases - stage.result.failedCases}/${stage.result.totalCases}  durationMs=${stage.durationMs}`
       );
+      if (stage.result.closedLoop) {
+        console.log(
+          `  closedLoop=${stage.result.closedLoop.closedLoopStatus} rate=${formatClosedLoopRate(stage.result.closedLoop.closedLoopRate)} next=${stage.result.closedLoop.rerunCommand}`
+        );
+      }
       console.log(`  selectors: ${stage.selectors.join(", ")}`);
       continue;
     }
@@ -4449,6 +4541,7 @@ function printValidationSoakSeriesResult(payload: {
   totalCases: number;
   failedCases: number;
   durationMs: number;
+  closedLoop?: ValidationOpsClosedLoopMetric;
   cycles: Array<{
     cycleNumber: number;
     status: "passed" | "failed";
@@ -4459,6 +4552,7 @@ function printValidationSoakSeriesResult(payload: {
     failedItems: number;
     totalCases: number;
     failedCases: number;
+    closedLoop?: ValidationOpsClosedLoopMetric;
     suites: Array<{
       suiteId: "regression" | "soak" | "failure" | "acceptance" | "realworld";
       status: "passed" | "failed";
@@ -4466,6 +4560,7 @@ function printValidationSoakSeriesResult(payload: {
       failedItems: number;
       totalCases: number;
       failedCases: number;
+      closedLoop?: ValidationOpsClosedLoopMetric;
     }>;
   }>;
   suiteAggregates: Array<{
@@ -4476,11 +4571,17 @@ function printValidationSoakSeriesResult(payload: {
     failedItems: number;
     totalCases: number;
     failedCases: number;
+    closedLoop?: ValidationOpsClosedLoopMetric;
   }>;
 }): void {
   console.log(
     `Validation soak series: status=${payload.status} cycles=${payload.passedCycles}/${payload.totalCycles} cases=${payload.totalCases - payload.failedCases}/${payload.totalCases} durationMs=${payload.durationMs}`
   );
+  if (payload.closedLoop) {
+    console.log(
+      `closedLoop=${payload.closedLoop.closedLoopStatus} rate=${formatClosedLoopRate(payload.closedLoop.closedLoopRate)} cases=${payload.closedLoop.closedLoopCases}/${payload.closedLoop.totalCases} next=${payload.closedLoop.rerunCommand}`
+    );
+  }
   console.log(`selectors: ${payload.selectors.join(", ")}`);
   for (const cycle of payload.cycles) {
     console.log(
@@ -4488,14 +4589,14 @@ function printValidationSoakSeriesResult(payload: {
     );
     for (const suite of cycle.suites) {
       console.log(
-        `  ${suite.suiteId}  status=${suite.status}  items=${suite.totalItems} failedItems=${suite.failedItems}  cases=${suite.totalCases} failedCases=${suite.failedCases}`
+        `  ${suite.suiteId}  status=${suite.status}  items=${suite.totalItems} failedItems=${suite.failedItems}  cases=${suite.totalCases} failedCases=${suite.failedCases}${suite.closedLoop ? ` closedLoop=${suite.closedLoop.closedLoopStatus}` : ""}`
       );
     }
   }
   console.log("Suite aggregates:");
   for (const suite of payload.suiteAggregates) {
     console.log(
-      `- ${suite.suiteId}  cycles=${suite.cycles} failedCycles=${suite.failedCycles} items=${suite.totalItems} failedItems=${suite.failedItems} cases=${suite.totalCases} failedCases=${suite.failedCases}`
+      `- ${suite.suiteId}  cycles=${suite.cycles} failedCycles=${suite.failedCycles} items=${suite.totalItems} failedItems=${suite.failedItems} cases=${suite.totalCases} failedCases=${suite.failedCases}${suite.closedLoop ? ` closedLoop=${suite.closedLoop.closedLoopStatus} rate=${formatClosedLoopRate(suite.closedLoop.closedLoopRate)}` : ""}`
     );
   }
 }

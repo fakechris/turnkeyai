@@ -587,8 +587,12 @@ async function runPhase1Readiness(input: {
 
   const storedRecords = await deps.validationOpsRunStore.list(50);
   const validationOps = buildValidationOpsReport(storedRecords.length > 0 ? storedRecords : records, 50);
+  const northStar = validationOps.closedLoop;
   const completedAt = Date.now();
   const failedStages = stages.filter((stage) => stage.status === "failed").length;
+  const nextCommand = northStar.closedLoopStatus !== "completed"
+    ? northStar.nextCommand
+    : validationOps.readiness.nextCommand;
 
   return {
     status: failedStages === 0 && validationOps.readiness.status === "passed" ? "passed" : "failed",
@@ -598,9 +602,10 @@ async function runPhase1Readiness(input: {
     totalStages: stages.length,
     passedStages: stages.length - failedStages,
     failedStages,
-    nextCommand: validationOps.readiness.nextCommand,
+    nextCommand,
     stages,
     validationOps,
+    northStar,
   };
 }
 

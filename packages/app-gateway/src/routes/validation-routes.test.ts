@@ -236,6 +236,8 @@ test("validation routes run phase1 readiness through all exit gates and records 
   );
   assert.equal(response.json.validationOps.readiness.status, "passed");
   assert.equal(response.json.validationOps.readiness.passedGates, 4);
+  assert.equal(response.json.northStar.closedLoopStatus, "completed");
+  assert.equal(response.json.northStar.closedLoopRate, 1);
   assert.equal(response.json.nextCommand, "validation-ops");
   assert.deepEqual(transportCalls, [
     { cycles: 1, targets: ["relay", "direct-cdp"] },

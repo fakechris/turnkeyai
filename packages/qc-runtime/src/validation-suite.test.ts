@@ -39,6 +39,8 @@ test("validation suite runs all validation catalogs", () => {
   assert.equal(result.totalSuites, 5);
   assert.equal(result.totalItems > 0, true);
   assert.equal(result.totalCases > 0, true);
+  assert.equal(result.closedLoop?.closedLoopStatus, "completed");
+  assert.equal(result.closedLoop?.closedLoopRate, 1);
   assert.deepEqual(
     result.suites.map((suite) => suite.suiteId),
     ["regression", "soak", "failure", "acceptance", "realworld"]
@@ -56,6 +58,8 @@ test("validation suite can run one selected item from multiple suites", () => {
 
   assert.equal(result.totalSuites, 5);
   assert.equal(result.totalItems, 5);
+  assert.equal(result.closedLoop?.closedLoopStatus, "completed");
+  assert.equal(result.suites.find((suite) => suite.suiteId === "realworld")?.closedLoop?.totalCases, 1);
   assert.deepEqual(
     result.suites.flatMap((suite) => suite.items.map((item) => `${suite.suiteId}:${item.itemId}`)),
     [

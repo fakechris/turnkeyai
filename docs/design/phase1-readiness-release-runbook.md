@@ -1,10 +1,10 @@
 # Phase 1 Readiness And Release Runbook
 
-> 更新日期：2026-04-22
+> 更新日期：2026-04-23
 
 ## 目标
 
-把 Phase 1 exit 从“机制已经完成”推进到“可重复验证、可发布、可回滚”的操作闭环。
+把 Phase 1 exit 从“机制已经完成”推进到“可重复验证、可发布、可回滚”的操作闭环。当前北极星指标是 real-world closed-loop rate：真实 runbook 要么 completed，要么失败后进入 actionable gate；`silent_failure` 和 `ambiguous_failure` 不能进入发版。
 
 本 runbook 只覆盖当前公开 CLI/npm 分发链路，不引入新的 runtime 主线。
 
@@ -43,8 +43,10 @@ validation-ops
 
 1. `validation-ops` 中 `phase1 readiness=passed`。
 2. 四个 gate 都有最新 passing run。
-3. transport soak artifact 路径可回看。
-4. 若任一 gate failed，先按 `validation-ops` 的 `next` 命令重跑最小失败面，不直接发版。
+3. `validation-ops` 中 `north-star closedLoop=completed`，或失败时至少是 `actionable` 且明确列出 gate、bucket 和 rerun command。
+4. `silent_failure=0` 且 `ambiguous_failure=0`。
+5. transport soak artifact 路径可回看。
+6. 若任一 gate failed，先按 `validation-ops` 的 `north-star next` 或 `phase1 next` 命令重跑最小失败面，不直接发版。
 
 ## Release Verification
 

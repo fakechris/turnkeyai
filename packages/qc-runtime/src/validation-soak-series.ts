@@ -1,6 +1,8 @@
 import type { ValidationSuiteId } from "./validation-suite";
+import type { ValidationOpsClosedLoopMetric } from "@turnkeyai/core-types/team";
 
 import { runValidationSuites } from "./validation-suite";
+import { mergeClosedLoopMetrics } from "./closed-loop-metrics";
 
 export const DEFAULT_VALIDATION_SOAK_SELECTORS = ["soak", "realworld", "acceptance"] as const;
 
@@ -11,6 +13,7 @@ export interface ValidationSoakSeriesCycleSuiteResult {
   failedItems: number;
   totalCases: number;
   failedCases: number;
+  closedLoop?: ValidationOpsClosedLoopMetric;
 }
 
 export interface ValidationSoakSeriesCycleResult {
@@ -23,6 +26,7 @@ export interface ValidationSoakSeriesCycleResult {
   failedItems: number;
   totalCases: number;
   failedCases: number;
+  closedLoop?: ValidationOpsClosedLoopMetric;
   suites: ValidationSoakSeriesCycleSuiteResult[];
 }
 
@@ -34,6 +38,7 @@ export interface ValidationSoakSeriesSuiteAggregate {
   failedItems: number;
   totalCases: number;
   failedCases: number;
+  closedLoop?: ValidationOpsClosedLoopMetric;
 }
 
 export interface ValidationSoakSeriesResult {
@@ -49,6 +54,7 @@ export interface ValidationSoakSeriesResult {
   totalCases: number;
   failedCases: number;
   durationMs: number;
+  closedLoop?: ValidationOpsClosedLoopMetric;
   cycles: ValidationSoakSeriesCycleResult[];
   suiteAggregates: ValidationSoakSeriesSuiteAggregate[];
 }
@@ -70,6 +76,15 @@ export function runValidationSoakSeries(
   for (let cycleNumber = 1; cycleNumber <= selectedCycles; cycleNumber += 1) {
     const cycleStartedAt = Date.now();
     const run = runValidationSuites(selectors);
+    const suiteResults = run.suites.map((suite) => ({
+      suiteId: suite.suiteId,
+      status: suite.failedItems === 0 ? "passed" as const : "failed" as const,
+      totalItems: suite.totalItems,
+      failedItems: suite.failedItems,
+      totalCases: suite.totalCases,
+      failedCases: suite.failedCases,
+      ...(suite.closedLoop ? { closedLoop: suite.closedLoop } : {}),
+    }));
     cycleResults.push({
       cycleNumber,
       status: run.failedSuites === 0 ? "passed" : "failed",
@@ -80,18 +95,13 @@ export function runValidationSoakSeries(
       failedItems: run.failedItems,
       totalCases: run.totalCases,
       failedCases: run.failedCases,
-      suites: run.suites.map((suite) => ({
-        suiteId: suite.suiteId,
-        status: suite.failedItems === 0 ? "passed" : "failed",
-        totalItems: suite.totalItems,
-        failedItems: suite.failedItems,
-        totalCases: suite.totalCases,
-        failedCases: suite.failedCases,
-      })),
+      ...(run.closedLoop ? { closedLoop: run.closedLoop } : {}),
+      suites: suiteResults,
     });
   }
 
   const suiteAggregateMap = new Map<ValidationSuiteId, ValidationSoakSeriesSuiteAggregate>();
+  const suiteClosedLoopMetrics = new Map<ValidationSuiteId, ValidationOpsClosedLoopMetric[]>();
   for (const cycle of cycleResults) {
     for (const suite of cycle.suites) {
       const aggregate = suiteAggregateMap.get(suite.suiteId) ?? {
@@ -110,8 +120,25 @@ export function runValidationSoakSeries(
       aggregate.totalCases += suite.totalCases;
       aggregate.failedCases += suite.failedCases;
       suiteAggregateMap.set(suite.suiteId, aggregate);
+      if (suite.closedLoop) {
+        const metrics = suiteClosedLoopMetrics.get(suite.suiteId) ?? [];
+        metrics.push(suite.closedLoop);
+        suiteClosedLoopMetrics.set(suite.suiteId, metrics);
+      }
     }
   }
+  const command = `soak-series ${cycleResults.length} ${selectors.join(" ")}`.trim();
+  const suiteAggregates = [...suiteAggregateMap.values()].map((aggregate) => {
+    const closedLoop = mergeClosedLoopMetrics(
+      suiteClosedLoopMetrics.get(aggregate.suiteId) ?? [],
+      command
+    );
+    return {
+      ...aggregate,
+      ...(closedLoop ? { closedLoop } : {}),
+    };
+  });
+  const closedLoop = mergeClosedLoopMetrics(cycleResults.map((cycle) => cycle.closedLoop), command);
 
   return {
     status: cycleResults.every((cycle) => cycle.status === "passed") ? "passed" : "failed",
@@ -126,8 +153,9 @@ export function runValidationSoakSeries(
     totalCases: cycleResults.reduce((sum, cycle) => sum + cycle.totalCases, 0),
     failedCases: cycleResults.reduce((sum, cycle) => sum + cycle.failedCases, 0),
     durationMs: Date.now() - startedAt,
+    ...(closedLoop ? { closedLoop } : {}),
     cycles: cycleResults,
-    suiteAggregates: [...suiteAggregateMap.values()],
+    suiteAggregates,
   };
 }
 
