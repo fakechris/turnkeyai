@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildScenarioClosedLoopMetric,
   listRealWorldScenarios,
   runRealWorldSuite,
 } from "./real-world-suite";
@@ -65,4 +66,47 @@ test("real-world suite preserves caller-provided scenario order", () => {
     result.scenarios.map((scenario) => scenario.scenarioId),
     ["runtime-observability-reentry-runbook", "browser-research-recovery-runbook"]
   );
+});
+
+test("real-world closed-loop metric distinguishes ambiguous and silent failures", () => {
+  const scenario = {
+    scenarioId: "synthetic-runbook",
+    area: "browser" as const,
+    title: "Synthetic runbook",
+    summary: "Synthetic closed-loop classification fixture.",
+    caseIds: ["case-1"],
+  };
+  const passingCase = {
+    caseId: "case-1",
+    area: "browser" as const,
+    title: "Case",
+    summary: "case",
+    status: "passed" as const,
+    details: ["case passed"],
+  };
+  const ambiguous = buildScenarioClosedLoopMetric({
+    scenario,
+    durationMs: 7,
+    suite: {
+      totalCases: 1,
+      passedCases: 0,
+      failedCases: 1,
+      results: [passingCase],
+    },
+  });
+  assert.equal(ambiguous.closedLoopStatus, "ambiguous_failure");
+  assert.match(ambiguous.manualGateReason ?? "", /status and case results disagree/);
+
+  const silent = buildScenarioClosedLoopMetric({
+    scenario,
+    durationMs: 7,
+    suite: {
+      totalCases: 1,
+      passedCases: 0,
+      failedCases: 1,
+      results: [{ ...passingCase, status: "failed", details: [] }],
+    },
+  });
+  assert.equal(silent.closedLoopStatus, "silent_failure");
+  assert.match(silent.manualGateReason ?? "", /produced no failed-case details/);
 });

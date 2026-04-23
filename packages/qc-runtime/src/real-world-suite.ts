@@ -6,6 +6,7 @@ import type {
 
 import type {
   BoundedRegressionCaseResult,
+  BoundedRegressionSuiteResult,
 } from "./bounded-regression-harness";
 
 import { runBoundedRegressionSuite } from "./bounded-regression-harness";
@@ -388,9 +389,9 @@ function runScenario(
   };
 }
 
-function buildScenarioClosedLoopMetric(input: {
+export function buildScenarioClosedLoopMetric(input: {
   scenario: RealWorldScenarioDescriptor;
-  suite: ReturnType<typeof runBoundedRegressionSuite>;
+  suite: BoundedRegressionSuiteResult;
   durationMs: number;
 }): ValidationOpsClosedLoopMetric {
   const rerunCommand = `realworld-run ${input.scenario.scenarioId}`;
@@ -404,6 +405,17 @@ function buildScenarioClosedLoopMetric(input: {
   }
 
   const failedResults = input.suite.results.filter((result) => result.status === "failed");
+  if (failedResults.length === 0) {
+    return buildClosedLoopMetric({
+      closedLoopStatus: "ambiguous_failure",
+      rerunCommand,
+      totalCases: 1,
+      timeToActionableMs: input.durationMs,
+      failureBucket: deriveFailureBucket(input.scenario.area),
+      manualGateReason: "real-world runbook status and case results disagree",
+    });
+  }
+
   const hasFailureDetails = failedResults.some((result) => result.details.length > 0);
   if (!hasFailureDetails) {
     return buildClosedLoopMetric({
@@ -413,17 +425,6 @@ function buildScenarioClosedLoopMetric(input: {
       timeToActionableMs: input.durationMs,
       failureBucket: deriveFailureBucket(input.scenario.area),
       manualGateReason: "failed real-world runbook produced no failed-case details",
-    });
-  }
-
-  if (failedResults.length === 0) {
-    return buildClosedLoopMetric({
-      closedLoopStatus: "ambiguous_failure",
-      rerunCommand,
-      totalCases: 1,
-      timeToActionableMs: input.durationMs,
-      failureBucket: deriveFailureBucket(input.scenario.area),
-      manualGateReason: "real-world runbook status and case results disagree",
     });
   }
 
