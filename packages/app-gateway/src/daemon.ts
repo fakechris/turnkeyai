@@ -194,7 +194,7 @@ if (wantsProcessHelp(process.argv.slice(2))) {
 }
 
 const PORT = Number(process.env.TURNKEYAI_DAEMON_PORT ?? 4100);
-const DATA_DIR = path.resolve(process.cwd(), ".daemon-data");
+const DATA_DIR = path.resolve(process.env.TURNKEYAI_DATA_DIR?.trim() || ".daemon-data");
 const VALIDATION_ARTIFACT_DIR = path.join(DATA_DIR, "validation-artifacts");
 const execFile = promisify(execFileCallback);
 const DAEMON_AUTH = resolveDaemonAuthConfig(process.env);
@@ -1549,6 +1549,7 @@ function printDaemonHelp(exitCode: number): never {
     "",
     "Environment:",
     "  TURNKEYAI_DAEMON_PORT       Override the daemon listen port",
+    "  TURNKEYAI_DATA_DIR          Override the daemon local data directory",
     "  TURNKEYAI_DAEMON_TOKEN      Require bearer auth for daemon requests",
     "  TURNKEYAI_DAEMON_READ_TOKEN Optional read-only daemon token",
     "  TURNKEYAI_DAEMON_OPERATOR_TOKEN Optional operator-scoped daemon token",
