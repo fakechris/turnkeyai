@@ -194,7 +194,7 @@ if (wantsProcessHelp(process.argv.slice(2))) {
 }
 
 const PORT = Number(process.env.TURNKEYAI_DAEMON_PORT ?? 4100);
-const DATA_DIR = path.resolve(process.env.TURNKEYAI_DATA_DIR ?? path.join(process.cwd(), ".daemon-data"));
+const DATA_DIR = path.resolve(process.env.TURNKEYAI_DATA_DIR?.trim() || ".daemon-data");
 const VALIDATION_ARTIFACT_DIR = path.join(DATA_DIR, "validation-artifacts");
 const execFile = promisify(execFileCallback);
 const DAEMON_AUTH = resolveDaemonAuthConfig(process.env);

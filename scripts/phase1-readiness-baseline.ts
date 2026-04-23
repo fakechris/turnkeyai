@@ -66,6 +66,13 @@ if (options.jsonPath) {
 let daemon: ChildProcessWithoutNullStreams | undefined;
 let stopping = false;
 
+process.on("SIGINT", () => {
+  if (!stopping && daemon && !daemon.killed) {
+    daemon.kill("SIGTERM");
+  }
+  process.exit(130);
+});
+
 try {
   daemon = await startDaemon(options);
   await waitForDaemon(options.port, 30_000);
@@ -130,13 +137,6 @@ try {
     daemon.kill("SIGTERM");
   }
 }
-
-process.on("SIGINT", () => {
-  if (!stopping && daemon && !daemon.killed) {
-    daemon.kill("SIGTERM");
-  }
-  process.exit(130);
-});
 
 function parseArgs(args: string[]): BaselineOptions {
   let runs = 3;
