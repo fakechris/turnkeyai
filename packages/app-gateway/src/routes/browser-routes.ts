@@ -1,6 +1,7 @@
 import type http from "node:http";
 
 import type {
+  BrowserRawCdpExpertLane,
   BrowserSessionOwnerType,
   BrowserTaskAction,
   BrowserTaskRequest,
@@ -95,8 +96,13 @@ interface BrowserBridgeDeps {
   evictIdleSessions(input: { idleBefore: number; reason?: string }): Promise<unknown>;
 }
 
+interface BrowserExpertRouteDeps {
+  expertLane?: BrowserRawCdpExpertLane | null;
+}
+
 export interface BrowserRouteDeps {
   browserBridge: BrowserBridgeDeps;
+  browserExpert?: BrowserExpertRouteDeps | undefined;
   idGenerator: IdGenerator;
   clock: Clock;
   resolveBrowserThreadOwner(input: {
@@ -233,6 +239,70 @@ export async function handleBrowserRoutes(input: {
     return true;
   }
 
+  const browserSessionExpertTargetsMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/expert\/targets$/);
+  if (req.method === "GET" && browserSessionExpertTargetsMatch) {
+    const expertLane = requireBrowserExpertLane(deps);
+    if ("error" in expertLane) {
+      sendJson(res, expertLane.statusCode, { error: expertLane.error });
+      return true;
+    }
+    const access = await deps.requireBrowserSessionAccess({
+      browserSessionId: decodeURIComponent(browserSessionExpertTargetsMatch[1]!),
+      threadId: url.searchParams.get("threadId"),
+    });
+    if ("error" in access) {
+      sendJson(res, access.statusCode, { error: access.error });
+      return true;
+    }
+    try {
+      sendJson(res, 200, await expertLane.lane.listExpertTargets(access.sessionId));
+    } catch (error) {
+      sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const browserSessionExpertEventsMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/expert\/events$/);
+  if (req.method === "GET" && browserSessionExpertEventsMatch) {
+    const expertLane = requireBrowserExpertLane(deps);
+    if ("error" in expertLane) {
+      sendJson(res, expertLane.statusCode, { error: expertLane.error });
+      return true;
+    }
+    const access = await deps.requireBrowserSessionAccess({
+      browserSessionId: decodeURIComponent(browserSessionExpertEventsMatch[1]!),
+      threadId: url.searchParams.get("threadId"),
+    });
+    if ("error" in access) {
+      sendJson(res, access.statusCode, { error: access.error });
+      return true;
+    }
+    const expertSessionId = parseOptionalRouteString(url.searchParams.get("expertSessionId"));
+    if (url.searchParams.get("expertSessionId") !== null && !expertSessionId) {
+      sendJson(res, 400, { error: "expertSessionId must be a non-empty string when provided" });
+      return true;
+    }
+    const limit = parsePositiveLimit(url.searchParams.get("limit"));
+    if (limit === null || limit > 200) {
+      sendJson(res, 400, { error: "limit must be a positive integer <= 200" });
+      return true;
+    }
+    try {
+      sendJson(
+        res,
+        200,
+        await expertLane.lane.drainExpertEvents({
+          browserSessionId: access.sessionId,
+          ...(expertSessionId ? { expertSessionId } : {}),
+          limit,
+        })
+      );
+    } catch (error) {
+      sendJson(res, 404, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
   if (req.method === "POST" && browserSessionTargetsMatch) {
     const bodyResult = await readJsonBodySafe<{
       url: string;
@@ -264,6 +334,144 @@ export async function handleBrowserRoutes(input: {
         ownerId: access.ownerId,
       })
     );
+    return true;
+  }
+
+  const browserSessionExpertAttachMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/expert\/attach$/);
+  if (req.method === "POST" && browserSessionExpertAttachMatch) {
+    const expertLane = requireBrowserExpertLane(deps);
+    if ("error" in expertLane) {
+      sendJson(res, expertLane.statusCode, { error: expertLane.error });
+      return true;
+    }
+    const bodyResult = await readJsonBodySafe<{
+      targetId?: string;
+      threadId?: string;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const targetId = parseOptionalRouteString(bodyResult.value.targetId);
+    if (!targetId) {
+      sendJson(res, 400, { error: "targetId is required" });
+      return true;
+    }
+    const access = await deps.requireBrowserSessionAccess({
+      browserSessionId: decodeURIComponent(browserSessionExpertAttachMatch[1]!),
+      threadId: bodyResult.value.threadId,
+    });
+    if ("error" in access) {
+      sendJson(res, access.statusCode, { error: access.error });
+      return true;
+    }
+    try {
+      sendJson(
+        res,
+        200,
+        await expertLane.lane.attachExpertTarget({
+          browserSessionId: access.sessionId,
+          targetId,
+        })
+      );
+    } catch (error) {
+      sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const browserSessionExpertDetachMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/expert\/detach$/);
+  if (req.method === "POST" && browserSessionExpertDetachMatch) {
+    const expertLane = requireBrowserExpertLane(deps);
+    if ("error" in expertLane) {
+      sendJson(res, expertLane.statusCode, { error: expertLane.error });
+      return true;
+    }
+    const bodyResult = await readJsonBodySafe<{
+      expertSessionId?: string;
+      threadId?: string;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const expertSessionId = parseOptionalRouteString(bodyResult.value.expertSessionId);
+    if (!expertSessionId) {
+      sendJson(res, 400, { error: "expertSessionId is required" });
+      return true;
+    }
+    const access = await deps.requireBrowserSessionAccess({
+      browserSessionId: decodeURIComponent(browserSessionExpertDetachMatch[1]!),
+      threadId: bodyResult.value.threadId,
+    });
+    if ("error" in access) {
+      sendJson(res, access.statusCode, { error: access.error });
+      return true;
+    }
+    try {
+      sendJson(
+        res,
+        200,
+        await expertLane.lane.detachExpertSession({
+          browserSessionId: access.sessionId,
+          expertSessionId,
+        })
+      );
+    } catch (error) {
+      sendJson(res, 404, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const browserSessionExpertSendMatch = url.pathname.match(/^\/browser-sessions\/([^/]+)\/expert\/send$/);
+  if (req.method === "POST" && browserSessionExpertSendMatch) {
+    const expertLane = requireBrowserExpertLane(deps);
+    if ("error" in expertLane) {
+      sendJson(res, expertLane.statusCode, { error: expertLane.error });
+      return true;
+    }
+    const bodyResult = await readJsonBodySafe<{
+      method?: string;
+      params?: unknown;
+      targetId?: string;
+      expertSessionId?: string;
+      threadId?: string;
+      timeoutMs?: number;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const expertValidationError = validateBrowserExpertSendBody(bodyResult.value);
+    if (expertValidationError) {
+      sendJson(res, 400, { error: expertValidationError });
+      return true;
+    }
+    const access = await deps.requireBrowserSessionAccess({
+      browserSessionId: decodeURIComponent(browserSessionExpertSendMatch[1]!),
+      threadId: bodyResult.value.threadId,
+    });
+    if ("error" in access) {
+      sendJson(res, access.statusCode, { error: access.error });
+      return true;
+    }
+    const params = isPlainRecord(bodyResult.value.params) ? bodyResult.value.params : undefined;
+    try {
+      sendJson(
+        res,
+        200,
+        await expertLane.lane.sendExpertCommand({
+          browserSessionId: access.sessionId,
+          method: normalizeBrowserCdpMethod(bodyResult.value.method)!,
+          ...(params ? { params } : {}),
+          ...(bodyResult.value.targetId ? { targetId: bodyResult.value.targetId.trim() } : {}),
+          ...(bodyResult.value.expertSessionId ? { expertSessionId: bodyResult.value.expertSessionId.trim() } : {}),
+          ...(bodyResult.value.timeoutMs ? { timeoutMs: bodyResult.value.timeoutMs } : {}),
+        })
+      );
+    } catch (error) {
+      sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
+    }
     return true;
   }
 
@@ -531,6 +739,20 @@ const BROWSER_NETWORK_ACTIONS = new Set([
 const BROWSER_NETWORK_METHOD_PATTERN = /^[A-Z]+$/;
 const BROWSER_NETWORK_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
+function requireBrowserExpertLane(
+  deps: BrowserRouteDeps
+): { lane: BrowserRawCdpExpertLane } | { statusCode: number; error: string } {
+  if (!deps.browserExpert?.expertLane) {
+    return {
+      statusCode: 409,
+      error: "browser raw CDP expert lane is only available for direct-cdp transport",
+    };
+  }
+  return {
+    lane: deps.browserExpert.expertLane,
+  };
+}
+
 function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: BrowserTaskMutationRoute): string | null {
   if ((route === "send" || route === "resume") && (body.ownerType !== undefined || body.ownerId !== undefined)) {
     return "ownerType and ownerId are not accepted for existing browser sessions";
@@ -600,6 +822,55 @@ function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: Browser
 
   if ((body.profileOwnerType === undefined) !== (body.profileOwnerId === undefined)) {
     return "profileOwnerType and profileOwnerId must be provided together";
+  }
+
+  return null;
+}
+
+function validateBrowserExpertSendBody(body: {
+  method?: string;
+  params?: unknown;
+  targetId?: string;
+  expertSessionId?: string;
+  timeoutMs?: number;
+}): string | null {
+  const method = normalizeBrowserCdpMethod(body.method);
+  if (!method) {
+    return "method must be a valid CDP method name";
+  }
+
+  if (body.targetId !== undefined && !parseOptionalRouteString(body.targetId)) {
+    return "targetId must be a non-empty string when provided";
+  }
+
+  if (body.expertSessionId !== undefined && !parseOptionalRouteString(body.expertSessionId)) {
+    return "expertSessionId must be a non-empty string when provided";
+  }
+
+  if (body.targetId !== undefined && body.expertSessionId !== undefined) {
+    return "targetId and expertSessionId are mutually exclusive";
+  }
+
+  if (body.params !== undefined && !isPlainRecord(body.params)) {
+    return "params must be an object when provided";
+  }
+
+  if (body.params !== undefined) {
+    try {
+      const bytes = Buffer.byteLength(JSON.stringify(body.params), "utf8");
+      if (bytes > MAX_BROWSER_CDP_ACTION_PARAMS_BYTES) {
+        return `params must serialize to <= ${MAX_BROWSER_CDP_ACTION_PARAMS_BYTES} bytes`;
+      }
+    } catch {
+      return "params must be JSON-serializable";
+    }
+  }
+
+  if (
+    body.timeoutMs !== undefined &&
+    (!Number.isInteger(body.timeoutMs) || body.timeoutMs <= 0 || body.timeoutMs > MAX_BROWSER_CDP_ACTION_TIMEOUT_MS)
+  ) {
+    return `timeoutMs must be a positive integer <= ${MAX_BROWSER_CDP_ACTION_TIMEOUT_MS}`;
   }
 
   return null;

@@ -35,7 +35,7 @@ import {
   createBrowserBridge,
   resolveBrowserTransportMode,
 } from "@turnkeyai/browser-bridge/browser-bridge-factory";
-import { maybeGetRelayControlPlane } from "@turnkeyai/browser-bridge/transport/transport-adapter";
+import { maybeGetRawCdpExpertLane, maybeGetRelayControlPlane } from "@turnkeyai/browser-bridge/transport/transport-adapter";
 import { AnthropicCompatibleClient } from "@turnkeyai/llm-adapter/anthropic-compatible-client";
 import { FileModelCatalogSource } from "@turnkeyai/llm-adapter/file-model-catalog";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
@@ -399,6 +399,7 @@ const browserBridge = createBrowserBridge({
   },
 });
 const relayGateway = maybeGetRelayControlPlane(browserBridge);
+const browserExpertLane = maybeGetRawCdpExpertLane(browserBridge);
 function getRelayDiagnosticsSnapshot() {
   return relayGateway
     ? {
@@ -1096,6 +1097,9 @@ const server = http.createServer(async (req, res) => {
         url,
         deps: {
           browserBridge,
+          browserExpert: {
+            expertLane: browserExpertLane,
+          },
           idGenerator,
           clock,
           resolveBrowserThreadOwner,

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
 
+import type { BrowserRawCdpExpertLane } from "@turnkeyai/core-types/team";
+
 import { handleBrowserRoutes, type BrowserRouteDeps } from "./browser-routes";
 
 function createRequest(input: { method: string; url: string; body?: unknown }) {
@@ -66,6 +68,7 @@ function createDeps(overrides: Partial<BrowserRouteDeps> = {}): BrowserRouteDeps
         return input;
       },
     },
+    browserExpert: undefined,
     idGenerator: {
       teamId: () => "team-1",
       threadId: () => "thread-1",
@@ -101,6 +104,64 @@ function createDeps(overrides: Partial<BrowserRouteDeps> = {}): BrowserRouteDeps
   };
 }
 
+function createExpertLane(): BrowserRawCdpExpertLane {
+  return {
+    async listExpertTargets(browserSessionId: string) {
+      return [{ browserSessionId, targetId: "raw-target-1", type: "page", attached: false }];
+    },
+    async attachExpertTarget(input: { browserSessionId: string; targetId: string }) {
+      return {
+        browserSessionId: input.browserSessionId,
+        targetId: input.targetId,
+        expertSessionId: "expert-session-1",
+        attachedAt: 1000,
+      };
+    },
+    async detachExpertSession(input: { browserSessionId: string; expertSessionId: string }) {
+      return {
+        browserSessionId: input.browserSessionId,
+        expertSessionId: input.expertSessionId,
+        targetId: "raw-target-1",
+        detached: true,
+      };
+    },
+    async sendExpertCommand(input: {
+      browserSessionId: string;
+      method: string;
+      params?: Record<string, unknown>;
+      expertSessionId?: string;
+      targetId?: string;
+      timeoutMs?: number;
+    }) {
+      const scope = input.expertSessionId || input.targetId ? "attached" : "root";
+      return {
+        method: input.method,
+        scope,
+        expertSessionId: input.expertSessionId ?? "expert-session-1",
+        targetId: input.targetId ?? "raw-target-1",
+        result: {
+          browserSessionId: input.browserSessionId,
+          params: input.params ?? {},
+          timeoutMs: input.timeoutMs ?? null,
+        },
+      };
+    },
+    async drainExpertEvents(input: { browserSessionId: string; expertSessionId?: string; limit?: number }) {
+      return [
+        {
+          ...(input.expertSessionId ? { expertSessionId: input.expertSessionId } : {}),
+          method: "Runtime.consoleAPICalled",
+          params: {
+            browserSessionId: input.browserSessionId,
+            limit: input.limit ?? 100,
+          },
+          receivedAt: 1000,
+        },
+      ];
+    },
+  };
+}
+
 test("browser routes reject blank open target urls", async () => {
   const response = createResponse();
   await handleBrowserRoutes({
@@ -116,6 +177,141 @@ test("browser routes reject blank open target urls", async () => {
 
   assert.equal(response.res.statusCode, 400);
   assert.deepEqual(response.json, { error: "url is required" });
+});
+
+test("browser expert routes return 409 when raw CDP lane is unavailable", async () => {
+  const response = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "GET",
+      url: "/browser-sessions/session-1/expert/targets?threadId=thread-1",
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/expert/targets?threadId=thread-1"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 409);
+  assert.deepEqual(response.json, {
+    error: "browser raw CDP expert lane is only available for direct-cdp transport",
+  });
+});
+
+test("browser expert routes attach and send through the raw CDP lane", async () => {
+  const expertLane = createExpertLane();
+
+  const attach = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/session-1/expert/attach",
+      body: { threadId: "thread-1", targetId: " raw-target-1 " },
+    }),
+    res: attach.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/expert/attach"),
+    deps: createDeps({
+      browserExpert: {
+        expertLane,
+      },
+    }),
+  });
+  assert.equal(attach.res.statusCode, 200);
+  assert.deepEqual(attach.json, {
+    browserSessionId: "session-1",
+    targetId: "raw-target-1",
+    expertSessionId: "expert-session-1",
+    attachedAt: 1000,
+  });
+
+  const send = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/session-1/expert/send",
+      body: {
+        threadId: "thread-1",
+        method: "Runtime.evaluate",
+        expertSessionId: "expert-session-1",
+        params: { expression: "document.title" },
+        timeoutMs: 5000,
+      },
+    }),
+    res: send.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/expert/send"),
+    deps: createDeps({
+      browserExpert: {
+        expertLane,
+      },
+    }),
+  });
+  assert.equal(send.res.statusCode, 200);
+  assert.deepEqual(send.json, {
+    method: "Runtime.evaluate",
+    scope: "attached",
+    expertSessionId: "expert-session-1",
+    targetId: "raw-target-1",
+    result: {
+      browserSessionId: "session-1",
+      params: { expression: "document.title" },
+      timeoutMs: 5000,
+    },
+  });
+});
+
+test("browser expert routes validate raw CDP send shape and can drain events", async () => {
+  const expertLane = createExpertLane();
+
+  const invalid = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/session-1/expert/send",
+      body: {
+        threadId: "thread-1",
+        method: "Runtime.evaluate",
+        targetId: "target-1",
+        expertSessionId: "expert-session-1",
+      },
+    }),
+    res: invalid.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/expert/send"),
+    deps: createDeps({
+      browserExpert: {
+        expertLane,
+      },
+    }),
+  });
+  assert.equal(invalid.res.statusCode, 400);
+  assert.deepEqual(invalid.json, {
+    error: "targetId and expertSessionId are mutually exclusive",
+  });
+
+  const events = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "GET",
+      url: "/browser-sessions/session-1/expert/events?threadId=thread-1&expertSessionId=expert-session-1&limit=5",
+    }),
+    res: events.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/expert/events?threadId=thread-1&expertSessionId=expert-session-1&limit=5"),
+    deps: createDeps({
+      browserExpert: {
+        expertLane,
+      },
+    }),
+  });
+  assert.equal(events.res.statusCode, 200);
+  assert.deepEqual(events.json, [
+    {
+      expertSessionId: "expert-session-1",
+      method: "Runtime.consoleAPICalled",
+      params: {
+        browserSessionId: "session-1",
+        limit: 5,
+      },
+      receivedAt: 1000,
+    },
+  ]);
 });
 
 test("browser routes trim target urls before opening", async () => {

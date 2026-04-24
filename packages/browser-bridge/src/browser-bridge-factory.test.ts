@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createBrowserBridge, resolveBrowserTransportMode } from "./browser-bridge-factory";
-import { maybeGetRelayControlPlane } from "./transport/transport-adapter";
+import { maybeGetRawCdpExpertLane, maybeGetRelayControlPlane } from "./transport/transport-adapter";
 
 test("browser bridge factory defaults to local automation transport", () => {
   const bridge = createBrowserBridge({
@@ -38,6 +38,7 @@ test("browser bridge factory can build direct-cdp transport", () => {
 
   assert.equal(bridge.transportMode, "direct-cdp");
   assert.equal(bridge.transportLabel, "direct-cdp");
+  assert.ok(maybeGetRawCdpExpertLane(bridge));
 });
 
 test("browser bridge factory rejects unknown transport mode", () => {
