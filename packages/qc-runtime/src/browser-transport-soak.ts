@@ -11,6 +11,12 @@ export type BrowserTransportFailureBucket =
   | "content-script-unavailable"
   | "action-timeout"
   | "cdp-unreachable"
+  | "raw-target-not-found"
+  | "raw-attach-failed"
+  | "expert-session-detached"
+  | "cdp-command-timeout"
+  | "browser-cdp-unavailable"
+  | "protocol-mode-mismatch"
   | "artifact-failure"
   | "reconnect-failure"
   | "workflow-log-failure"
@@ -26,6 +32,11 @@ export type BrowserTransportAcceptanceCheckId =
   | "network-controls"
   | "rich-action-parity"
   | "cdp-control-plane"
+  | "raw-cdp-target-attach"
+  | "raw-cdp-oopif-shadow"
+  | "raw-cdp-coordinate-input"
+  | "raw-cdp-popup-target"
+  | "raw-cdp-boundary"
   | "multi-target-continuity"
   | "download-artifact"
   | "upload-artifact"
@@ -134,6 +145,11 @@ const ACCEPTANCE_CHECK_IDS: BrowserTransportAcceptanceCheckId[] = [
   "network-controls",
   "rich-action-parity",
   "cdp-control-plane",
+  "raw-cdp-target-attach",
+  "raw-cdp-oopif-shadow",
+  "raw-cdp-coordinate-input",
+  "raw-cdp-popup-target",
+  "raw-cdp-boundary",
   "multi-target-continuity",
   "download-artifact",
   "upload-artifact",
@@ -305,6 +321,53 @@ export function classifyBrowserTransportFailure(input: {
     return "action-timeout";
   }
   if (includesAny(normalized, [
+    "protocol_mode_mismatch",
+    "protocol mode mismatch",
+    "when using flat protocol",
+    "target.sendmessagetotarget",
+  ])) {
+    return "protocol-mode-mismatch";
+  }
+  if (includesAny(normalized, [
+    "expert_session_detached",
+    "expert session detached",
+    "expert session not found",
+    "detached from target",
+  ])) {
+    return "expert-session-detached";
+  }
+  if (includesAny(normalized, [
+    "cdp_command_timeout",
+    "cdp command timeout",
+    "expert cdp command timed out",
+    "raw cdp command timed out",
+  ])) {
+    return "cdp-command-timeout";
+  }
+  if (includesAny(normalized, [
+    "attach_failed",
+    "attach failed",
+    "target.attachtotarget did not return",
+    "failed to attach",
+  ])) {
+    return "raw-attach-failed";
+  }
+  if (includesAny(normalized, [
+    "target_not_found",
+    "timed out waiting for raw cdp target",
+    "timed out waiting for live cdp target",
+  ])) {
+    return "raw-target-not-found";
+  }
+  if (includesAny(normalized, [
+    "browser_cdp_unavailable",
+    "browser cdp unavailable",
+    "direct-cdp browser transport requires",
+    "cdp endpoint is unavailable",
+  ])) {
+    return "browser-cdp-unavailable";
+  }
+  if (includesAny(normalized, [
     "timed out waiting for cdp endpoint",
     "no inspectable pages",
     "browser endpoint unavailable",
@@ -383,6 +446,8 @@ function summarizeBrowserTransportRun(input: {
     const uploadActions = lines.find((line) => line.startsWith("browser-upload-actions:"));
     const actionParity = lines.find((line) => line.startsWith("browser-action-parity:"));
     const artifactSafety = lines.find((line) => line.startsWith("browser-artifact-safety:"));
+    const rawCdpAttach = lines.find((line) => line.startsWith("browser-raw-cdp-target-attach:"));
+    const rawCdpBoundary = lines.find((line) => line.startsWith("browser-raw-cdp-boundary:"));
     const failedChecks = input.acceptanceChecks?.filter((check) => check.status === "failed") ?? [];
     const acceptanceSummary = failedChecks.length > 0
       ? `failed=${failedChecks.map((check) => check.checkId).join(",")}`
@@ -391,7 +456,19 @@ function summarizeBrowserTransportRun(input: {
             input.acceptanceChecks.filter((check) => check.status !== "skipped").length
           }`
         : null;
-    return [input.target, finalUrl, peerCount, browserTargets, downloadArtifacts, uploadActions, actionParity, artifactSafety, acceptanceSummary]
+    return [
+      input.target,
+      finalUrl,
+      peerCount,
+      browserTargets,
+      downloadArtifacts,
+      uploadActions,
+      actionParity,
+      artifactSafety,
+      rawCdpAttach,
+      rawCdpBoundary,
+      acceptanceSummary,
+    ]
       .filter(Boolean)
       .join(" | ");
   }
@@ -423,6 +500,11 @@ export function evaluateBrowserTransportAcceptance(input: {
   const actionParity = findLineValue(input.output, "browser-action-parity");
   const actionKinds = parseLineList(input.output, "browser-action-kinds");
   const cdpControls = findLineValue(input.output, "browser-cdp-controls");
+  const rawCdpTargetAttach = findLineValue(input.output, "browser-raw-cdp-target-attach");
+  const rawCdpOopifShadow = findLineValue(input.output, "browser-raw-cdp-oopif-shadow");
+  const rawCdpCoordinateInput = findLineValue(input.output, "browser-raw-cdp-coordinate-input");
+  const rawCdpPopupTarget = findLineValue(input.output, "browser-raw-cdp-popup-target");
+  const rawCdpBoundary = findLineValue(input.output, "browser-raw-cdp-boundary");
   const artifactSafety = findLineValue(input.output, "browser-artifact-safety");
   const multiTarget = findLineValue(input.output, "browser-multi-target");
   const reconnectFinalUrl = findLineValue(input.output, "reconnect-final-url");
@@ -472,6 +554,36 @@ export function evaluateBrowserTransportAcceptance(input: {
       "cdp-control-plane",
       cdpControls === "passed",
       `cdp-controls=${cdpControls ?? "missing"}`
+    ),
+    optionalCheck(
+      "raw-cdp-target-attach",
+      input.target === "direct-cdp",
+      rawCdpTargetAttach === "passed",
+      `raw-cdp-target-attach=${rawCdpTargetAttach ?? "missing"}`
+    ),
+    optionalCheck(
+      "raw-cdp-oopif-shadow",
+      input.target === "direct-cdp",
+      rawCdpOopifShadow === "passed",
+      `raw-cdp-oopif-shadow=${rawCdpOopifShadow ?? "missing"}`
+    ),
+    optionalCheck(
+      "raw-cdp-coordinate-input",
+      input.target === "direct-cdp",
+      rawCdpCoordinateInput === "passed",
+      `raw-cdp-coordinate-input=${rawCdpCoordinateInput ?? "missing"}`
+    ),
+    optionalCheck(
+      "raw-cdp-popup-target",
+      input.target === "direct-cdp",
+      rawCdpPopupTarget === "passed",
+      `raw-cdp-popup-target=${rawCdpPopupTarget ?? "missing"}`
+    ),
+    optionalCheck(
+      "raw-cdp-boundary",
+      input.target === "direct-cdp",
+      rawCdpBoundary === "direct-cdp-required",
+      `raw-cdp-boundary=${rawCdpBoundary ?? "missing"} expected direct-cdp-required`
     ),
     requiredCheck(
       "multi-target-continuity",

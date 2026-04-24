@@ -45,6 +45,49 @@ test("browser transport soak classifies download and upload failures as artifact
   );
 });
 
+test("browser transport soak classifies raw CDP expert-lane failures", () => {
+  assert.equal(
+    classifyBrowserTransportFailure({
+      target: "direct-cdp",
+      exitCode: 1,
+      output: "target_not_found: timed out waiting for raw CDP target",
+    }),
+    "raw-target-not-found"
+  );
+  assert.equal(
+    classifyBrowserTransportFailure({
+      target: "direct-cdp",
+      exitCode: 1,
+      output: "attach_failed: Target.attachToTarget did not return a sessionId",
+    }),
+    "raw-attach-failed"
+  );
+  assert.equal(
+    classifyBrowserTransportFailure({
+      target: "direct-cdp",
+      exitCode: 1,
+      output: "expert session not found",
+    }),
+    "expert-session-detached"
+  );
+  assert.equal(
+    classifyBrowserTransportFailure({
+      target: "direct-cdp",
+      exitCode: 1,
+      output: "Protocol error (Target.sendMessageToTarget): When using flat protocol",
+    }),
+    "protocol-mode-mismatch"
+  );
+});
+
+const rawCdpAcceptanceMarkers = [
+  "browser-raw-cdp-target-attach: passed",
+  "browser-raw-cdp-oopif-shadow: passed",
+  "browser-raw-cdp-coordinate-input: passed",
+  "browser-raw-cdp-popup-target: passed",
+  "browser-raw-cdp-boundary: direct-cdp-required",
+];
+
 test("browser transport soak aggregates multi-cycle target results and failure buckets", async () => {
   const result = await runBrowserTransportSoak(
     {
@@ -93,6 +136,7 @@ test("browser transport soak aggregates multi-cycle target results and failure b
                   "browser-action-kinds: cdp,click,console,cookie,dialog,download,drag,eval,hover,key,network,probe,scroll,select,snapshot,storage,type,upload,waitFor",
                   "browser-action-parity: passed",
                   "browser-cdp-controls: passed",
+                  ...rawCdpAcceptanceMarkers,
                   "browser-artifact-safety: passed",
                   "browser-resume-final-url: http://127.0.0.1:4010/#submitted",
                   "reconnect-history: 4",
@@ -115,6 +159,7 @@ test("browser transport soak aggregates multi-cycle target results and failure b
                   "browser-action-kinds: cdp,click,console,cookie,dialog,download,drag,eval,hover,key,network,probe,scroll,select,snapshot,storage,type,upload,waitFor",
                   "browser-action-parity: passed",
                   "browser-cdp-controls: passed",
+                  ...rawCdpAcceptanceMarkers,
                   "browser-artifact-safety: passed",
                   "browser-resume-final-url: http://127.0.0.1:4010/#submitted",
                   "reconnect-history: 4",
@@ -149,7 +194,7 @@ test("browser transport soak aggregates multi-cycle target results and failure b
   assert.ok(cdpAggregate?.failureBuckets.some((bucket) => bucket.bucket === "workflow-log-failure" && bucket.count === 1));
   const cdpPassedRun = result.cycleResults[1]?.targets.find((run) => run.target === "direct-cdp");
   assert.equal(cdpPassedRun?.failedAcceptanceChecks, 0);
-  assert.equal(cdpPassedRun?.passedAcceptanceChecks, 14);
+  assert.equal(cdpPassedRun?.passedAcceptanceChecks, 19);
   assert.ok(
     cdpAggregate?.acceptanceChecks.some((check) =>
       check.checkId === "relay-target-discovery" && check.passed === 0 && check.failed === 0 && check.skipped === 2
@@ -181,6 +226,7 @@ test("browser transport acceptance requires long-chain relay markers", () => {
       "browser-action-kinds: cdp,click,console,cookie,dialog,download,drag,eval,hover,key,network,probe,scroll,select,snapshot,storage,type,upload,waitFor",
       "browser-action-parity: passed",
       "browser-cdp-controls: passed",
+      ...rawCdpAcceptanceMarkers,
       "browser-artifact-safety: passed",
       "browser-resume-final-url: http://127.0.0.1:4010/#submitted",
       "reconnect-history: 4",
@@ -200,6 +246,11 @@ test("browser transport acceptance requires long-chain relay markers", () => {
       ["network-controls", "passed"],
       ["rich-action-parity", "passed"],
       ["cdp-control-plane", "passed"],
+      ["raw-cdp-target-attach", "skipped"],
+      ["raw-cdp-oopif-shadow", "skipped"],
+      ["raw-cdp-coordinate-input", "skipped"],
+      ["raw-cdp-popup-target", "skipped"],
+      ["raw-cdp-boundary", "skipped"],
       ["multi-target-continuity", "passed"],
       ["download-artifact", "passed"],
       ["upload-artifact", "passed"],
@@ -234,6 +285,7 @@ test("browser transport acceptance skips optional checks when not requested", ()
       "browser-action-kinds: cdp,click,console,cookie,dialog,download,drag,eval,hover,key,network,probe,scroll,select,snapshot,storage,type,upload,waitFor",
       "browser-action-parity: passed",
       "browser-cdp-controls: passed",
+      ...rawCdpAcceptanceMarkers,
       "browser-artifact-safety: passed",
       "browser-resume-final-url: http://127.0.0.1:4010/#submitted",
     ].join("\n"),
@@ -242,6 +294,7 @@ test("browser transport acceptance skips optional checks when not requested", ()
   assert.equal(checks.find((check) => check.checkId === "reconnect")?.status, "skipped");
   assert.equal(checks.find((check) => check.checkId === "workflow-log")?.status, "skipped");
   assert.equal(checks.find((check) => check.checkId === "relay-peer-multiplex")?.status, "skipped");
+  assert.equal(checks.find((check) => check.checkId === "raw-cdp-target-attach")?.status, "passed");
 });
 
 test("browser transport soak treats missing acceptance markers as local regression", async () => {

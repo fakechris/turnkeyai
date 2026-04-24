@@ -1428,6 +1428,58 @@ test("operator inspection surfaces direct-cdp reconnect diagnostics in replay at
   assert.ok(bySource.replay?.reasons?.includes("reconnect_required"));
 });
 
+test("operator inspection surfaces raw CDP expert-lane diagnostics in replay attention", () => {
+  const report = buildOperatorAttentionReport({
+    flows: [],
+    permissionRecords: [],
+    events: [],
+    replays: [
+      {
+        replayId: "task-raw-cdp:worker:worker:browser:task:task-raw-cdp",
+        layer: "worker",
+        status: "failed",
+        recordedAt: 30,
+        threadId: "thread-1",
+        taskId: "task-raw-cdp",
+        summary: "raw CDP command failed with a protocol mode mismatch",
+        failure: {
+          category: "transport_failed",
+          layer: "worker",
+          retryable: true,
+          message: "Protocol error (Target.sendMessageToTarget): When using flat protocol, messages are routed by sessionId",
+          recommendedAction: "inspect",
+        },
+        metadata: {
+          payload: {
+            sessionId: "browser-session-direct-cdp",
+            targetId: "target-direct-cdp",
+            transportMode: "direct-cdp",
+            transportLabel: "direct-cdp",
+            transportTargetId: "page:manager-1:1",
+            resumeMode: "hot",
+            targetResolution: "current",
+          },
+        },
+      },
+    ],
+    recoveryRuns: [],
+    progressEvents: [],
+    limit: 10,
+  });
+
+  const casesByKey = Object.fromEntries(report.cases.map((entry) => [entry.caseKey, entry]));
+  assert.equal(casesByKey["incident:task-raw-cdp"]?.browserTransportLabel, "direct-cdp");
+  assert.equal(casesByKey["incident:task-raw-cdp"]?.browserDiagnosticBucket, "protocol_mode_mismatch");
+  assert.match(
+    casesByKey["incident:task-raw-cdp"]?.headline ?? "",
+    /incident:task-raw-cdp .*transport=direct-cdp .*diag=protocol_mode_mismatch/
+  );
+
+  const bySource = Object.fromEntries(report.items.map((item) => [item.source, item]));
+  assert.equal(bySource.replay?.browserDiagnosticBucket, "protocol_mode_mismatch");
+  assert.ok(bySource.replay?.reasons?.includes("protocol_mode_mismatch"));
+});
+
 test("operator inspection counts cases from the full dataset before limiting returned items", () => {
   const report = buildOperatorAttentionReport({
     flows: [],

@@ -1756,6 +1756,42 @@ function deriveTransportDiagnostic(
         : "Direct CDP target needs confirmation before resume.",
     };
   }
+  if (/protocol_mode_mismatch|protocol mode mismatch|when using flat protocol|Target\.sendMessageToTarget/i.test(failureMessage)) {
+    return {
+      bucket: "protocol_mode_mismatch",
+      summary: "Raw CDP command used a protocol mode that does not match the attached target session.",
+    };
+  }
+  if (/expert_session_detached|expert session detached|expert session not found|detached from target/i.test(failureMessage)) {
+    return {
+      bucket: "expert_session_detached",
+      summary: "Raw CDP expert session detached before the command completed.",
+    };
+  }
+  if (/cdp_command_timeout|cdp command timeout|expert CDP command timed out|raw CDP command timed out/i.test(failureMessage)) {
+    return {
+      bucket: "cdp_command_timeout",
+      summary: "Raw CDP expert command timed out before Chrome returned a response.",
+    };
+  }
+  if (/attach_failed|attach failed|Target\.attachToTarget did not return|failed to attach/i.test(failureMessage)) {
+    return {
+      bucket: "attach_failed",
+      summary: "Raw CDP target attach failed before an expert session was established.",
+    };
+  }
+  if (/target_not_found|timed out waiting for raw CDP target|timed out waiting for live CDP target/i.test(failureMessage)) {
+    return {
+      bucket: "target_not_found",
+      summary: "Raw CDP target discovery did not find the expected Chrome target.",
+    };
+  }
+  if (/browser_cdp_unavailable|browser CDP unavailable|direct-cdp browser transport requires|CDP endpoint is unavailable/i.test(failureMessage)) {
+    return {
+      bucket: "browser_cdp_unavailable",
+      summary: "Direct CDP endpoint is unavailable before raw CDP commands can run.",
+    };
+  }
   if (/timed out|timeout/i.test(failureMessage)) {
     return {
       bucket: "action_timeout",

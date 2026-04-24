@@ -5706,10 +5706,12 @@ const BUILT_IN_CASES: RegressionCase[] = [
         (operatorSummary.attentionOverview?.resolvedRecentCases ?? []).map((entry) => [entry.caseKey, entry])
       );
       const relayPassed = relayChecks.filter((check) => check.status === "passed").length;
+      const relaySkipped = relayChecks.filter((check) => check.status === "skipped").length;
       const directPassed = directChecks.filter((check) => check.status === "passed").length;
       const directSkipped = directChecks.filter((check) => check.status === "skipped").length;
       const details = [
         `relayChecks=${relayPassed}/${relayChecks.length}`,
+        `relaySkipped=${relaySkipped}`,
         `directChecks=${directPassed}/${directChecks.length}`,
         `directSkipped=${directSkipped}`,
         `open=${replayConsole.openIncidents}`,
@@ -5719,7 +5721,8 @@ const BUILT_IN_CASES: RegressionCase[] = [
         `cdpTransport=${resolvedByKey["incident:task-transport-cdp"]?.browserTransportLabel ?? "-"}`,
       ];
       const passed =
-        relayPassed === relayChecks.length &&
+        relaySkipped === 5 &&
+        relayPassed === relayChecks.length - relaySkipped &&
         directSkipped === 2 &&
         directPassed === directChecks.length - directSkipped &&
         replayConsole.openIncidents === 0 &&
@@ -6660,6 +6663,11 @@ function buildBrowserTransportAcceptanceOutput(target: "relay" | "direct-cdp"): 
     "browser-action-kinds: cdp,click,console,cookie,dialog,download,drag,eval,hover,key,network,probe,scroll,select,snapshot,storage,type,upload,waitFor",
     "browser-action-parity: passed",
     "browser-cdp-controls: passed",
+    "browser-raw-cdp-target-attach: passed",
+    "browser-raw-cdp-oopif-shadow: passed",
+    "browser-raw-cdp-coordinate-input: passed",
+    "browser-raw-cdp-popup-target: passed",
+    "browser-raw-cdp-boundary: direct-cdp-required",
     "browser-artifact-safety: passed",
     "browser-resume-final-url: http://127.0.0.1:4010/#submitted",
     "reconnect-history: 5",
