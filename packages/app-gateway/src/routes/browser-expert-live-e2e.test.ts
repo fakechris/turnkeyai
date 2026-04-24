@@ -137,6 +137,7 @@ liveChromeTest(
       });
     } finally {
       chrome.kill("SIGTERM");
+      await waitForProcessExit(chrome, 5_000);
       await fixture.close();
       await rm(profileDir, { recursive: true, force: true });
     }
@@ -383,6 +384,36 @@ function requireServerPort(server: Server): number {
     throw new Error("fixture server did not expose a TCP port");
   }
   return address.port;
+}
+
+async function waitForProcessExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+  });
+  if (await waitUntil(exited, timeoutMs)) {
+    return;
+  }
+  child.kill("SIGKILL");
+  await waitUntil(exited, 2_000);
+}
+
+async function waitUntil(promise: Promise<void>, timeoutMs: number): Promise<boolean> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timeout = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 function assertRecord(value: unknown): asserts value is Record<string, unknown> {
