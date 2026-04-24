@@ -1919,7 +1919,7 @@ function printValidationOpsReport(report: ValidationOpsReport): void {
         console.log(`      artifact=${run.artifactPath}`);
       }
       if (run.baseline && run.baseline.failureReasons.length > 0) {
-        console.log(`      baselineNext=${report.baseline.nextCommand}`);
+        console.log(`      baselineNext=${run.baseline.nextCommand}`);
         console.log(`      baselineReasons=${run.baseline.failureReasons.join(" | ")}`);
       }
       if (run.closedLoop && run.closedLoop.closedLoopStatus !== "completed") {

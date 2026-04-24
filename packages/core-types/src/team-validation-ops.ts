@@ -77,6 +77,7 @@ export interface ValidationOpsBaselineRunDetails {
   transportCycles: number;
   soakCycles: number;
   releaseSkipBuild: boolean;
+  nextCommand: string;
   finalReadinessStatus: "passed" | "failed" | "missing";
   finalClosedLoopStatus: ValidationOpsClosedLoopStatus;
   finalClosedLoopRate: number;

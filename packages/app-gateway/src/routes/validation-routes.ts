@@ -78,6 +78,7 @@ const PHASE1_READINESS_SOAK_SELECTORS = [
 ] as const;
 
 const PHASE1_READINESS_TRANSPORT_TARGETS = ["relay", "direct-cdp"] as const;
+const MAX_PHASE1_BASELINE_REQUEST_CYCLES = 50;
 
 export async function handleValidationRoutes(input: {
   req: http.IncomingMessage;
@@ -479,16 +480,35 @@ export async function handleValidationRoutes(input: {
       return true;
     }
     const body = bodyResult.value;
-    if (body.runs !== undefined && (!Number.isInteger(body.runs) || body.runs <= 0)) {
-      sendJson(res, 400, { error: "Invalid runs: must be a positive integer" });
+    if (
+      body.runs !== undefined &&
+      (!Number.isInteger(body.runs) || body.runs <= 0 || body.runs > MAX_PHASE1_BASELINE_REQUEST_CYCLES)
+    ) {
+      sendJson(res, 400, {
+        error: `Invalid runs: must be an integer between 1 and ${MAX_PHASE1_BASELINE_REQUEST_CYCLES}`,
+      });
       return true;
     }
-    if (body.transportCycles !== undefined && (!Number.isInteger(body.transportCycles) || body.transportCycles <= 0)) {
-      sendJson(res, 400, { error: "Invalid transportCycles: must be a positive integer" });
+    if (
+      body.transportCycles !== undefined &&
+      (!Number.isInteger(body.transportCycles) ||
+        body.transportCycles <= 0 ||
+        body.transportCycles > MAX_PHASE1_BASELINE_REQUEST_CYCLES)
+    ) {
+      sendJson(res, 400, {
+        error: `Invalid transportCycles: must be an integer between 1 and ${MAX_PHASE1_BASELINE_REQUEST_CYCLES}`,
+      });
       return true;
     }
-    if (body.soakCycles !== undefined && (!Number.isInteger(body.soakCycles) || body.soakCycles <= 0)) {
-      sendJson(res, 400, { error: "Invalid soakCycles: must be a positive integer" });
+    if (
+      body.soakCycles !== undefined &&
+      (!Number.isInteger(body.soakCycles) ||
+        body.soakCycles <= 0 ||
+        body.soakCycles > MAX_PHASE1_BASELINE_REQUEST_CYCLES)
+    ) {
+      sendJson(res, 400, {
+        error: `Invalid soakCycles: must be an integer between 1 and ${MAX_PHASE1_BASELINE_REQUEST_CYCLES}`,
+      });
       return true;
     }
     if (body.releaseSkipBuild !== undefined && typeof body.releaseSkipBuild !== "boolean") {
@@ -629,7 +649,7 @@ async function runPhase1Readiness(input: {
   });
 
   const storedRecords = await deps.validationOpsRunStore.list(50);
-  const validationOps = buildValidationOpsReport(storedRecords.length > 0 ? storedRecords : records, 50);
+  const validationOps = buildValidationOpsReport(mergeValidationOpsRunRecords(storedRecords, records), 50);
   const northStar = validationOps.closedLoop;
   const completedAt = Date.now();
   const failedStages = stages.filter((stage) => stage.status === "failed").length;
@@ -661,6 +681,7 @@ async function runPhase1Baseline(input: {
 }): Promise<Phase1BaselineRunResult> {
   const startedAt = Date.now();
   const runs: Phase1BaselineRunSummary[] = [];
+  const observedRecords: ValidationOpsRunRecord[] = [];
   const failureReasons: string[] = [];
 
   for (let index = 0; index < input.runs; index += 1) {
@@ -672,10 +693,12 @@ async function runPhase1Baseline(input: {
     });
     const summary = summarizePhase1BaselineRun(index + 1, result);
     runs.push(summary);
+    const runRecordIds = new Set(result.stages.map((stage) => stage.runId));
+    observedRecords.push(...result.validationOps.latestRuns.filter((record) => runRecordIds.has(record.runId)));
     failureReasons.push(...validatePhase1BaselineRun(summary).map((reason) => `run ${summary.runNumber}: ${reason}`));
   }
 
-  let records = await input.deps.validationOpsRunStore.list(50);
+  let records = mergeValidationOpsRunRecords(await input.deps.validationOpsRunStore.list(50), observedRecords);
   let validationOps = buildValidationOpsReport(records, 50);
   failureReasons.push(
     ...validatePhase1BaselineValidationOps(validationOps).map((reason) => `final validation-ops: ${reason}`)
@@ -702,20 +725,19 @@ async function runPhase1Baseline(input: {
     baseline: validationOps.baseline,
   };
 
-  await input.deps.validationOpsRunStore.put(
-    buildValidationOpsRecordFromPhase1Baseline({
-      runId: input.deps.createValidationOpsRunId("phase1-baseline"),
-      startedAt,
-      completedAt,
-      result: provisionalResult,
-    })
-  );
-  records = await input.deps.validationOpsRunStore.list(50);
+  const baselineRecord = buildValidationOpsRecordFromPhase1Baseline({
+    runId: input.deps.createValidationOpsRunId("phase1-baseline"),
+    startedAt,
+    completedAt,
+    result: provisionalResult,
+  });
+  await input.deps.validationOpsRunStore.put(baselineRecord);
+  records = mergeValidationOpsRunRecords(await input.deps.validationOpsRunStore.list(50), observedRecords, [baselineRecord]);
   validationOps = buildValidationOpsReport(records, 50);
 
   return {
     ...provisionalResult,
-    nextCommand: validationOps.baseline.status === "fresh-passing" ? "validation-ops" : validationOps.baseline.nextCommand,
+    nextCommand: validationOps.baseline.nextCommand,
     validationOps,
     northStar: validationOps.closedLoop,
     baseline: validationOps.baseline,
@@ -834,4 +856,19 @@ function countTrailingPhase1BaselineCleanRuns(runs: Phase1BaselineRunSummary[]):
     count += 1;
   }
   return count;
+}
+
+function mergeValidationOpsRunRecords(...groups: ReadonlyArray<ValidationOpsRunRecord[]>): ValidationOpsRunRecord[] {
+  const recordsByRunId = new Map<string, ValidationOpsRunRecord>();
+  for (const group of groups) {
+    for (const record of group) {
+      const existing = recordsByRunId.get(record.runId);
+      if (!existing || record.completedAt >= existing.completedAt) {
+        recordsByRunId.set(record.runId, record);
+      }
+    }
+  }
+  return [...recordsByRunId.values()].sort(
+    (left, right) => right.completedAt - left.completedAt || right.startedAt - left.startedAt
+  );
 }

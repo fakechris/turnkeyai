@@ -23,12 +23,16 @@ if (options.jsonPath) {
 let daemon: ChildProcessWithoutNullStreams | undefined;
 let stopping = false;
 
-process.on("SIGINT", () => {
+const handleShutdown = (exitCode: number) => {
   if (!stopping && daemon && !daemon.killed) {
+    stopping = true;
     daemon.kill("SIGTERM");
   }
-  process.exit(130);
-});
+  process.exit(exitCode);
+};
+
+process.on("SIGINT", () => handleShutdown(130));
+process.on("SIGTERM", () => handleShutdown(143));
 
 try {
   daemon = await startDaemon(options);
@@ -198,7 +202,12 @@ async function postPhase1Baseline(input: BaselineOptions): Promise<Phase1Baselin
   if (!response.ok) {
     throw new Error(`phase1 baseline failed with HTTP ${response.status}: ${text}`);
   }
-  return JSON.parse(text) as Phase1BaselineRunResult;
+  try {
+    return JSON.parse(text) as Phase1BaselineRunResult;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`phase1 baseline returned non-JSON HTTP ${response.status}: ${text} (parse error: ${message})`);
+  }
 }
 
 function prefixLines(prefix: string, value: string): string {

@@ -379,7 +379,25 @@ test("validation routes reject malformed phase1 baseline options", async () => {
   });
 
   assert.equal(response.res.statusCode, 400);
-  assert.deepEqual(response.json, { error: "Invalid runs: must be a positive integer" });
+  assert.deepEqual(response.json, { error: "Invalid runs: must be an integer between 1 and 50" });
+});
+
+test("validation routes reject oversized phase1 baseline cycles", async () => {
+  const response = createResponse();
+
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/phase1-baseline/run",
+      body: { transportCycles: 51 },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/phase1-baseline/run"),
+    deps: createDeps(),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, { error: "Invalid transportCycles: must be an integer between 1 and 50" });
 });
 
 test("validation routes return 400 for malformed JSON bodies", async () => {

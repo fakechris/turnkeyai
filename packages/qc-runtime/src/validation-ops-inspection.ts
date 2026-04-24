@@ -206,6 +206,7 @@ export function buildValidationOpsRecordFromPhase1Baseline(input: {
       transportCycles: input.result.transportCycles,
       soakCycles: input.result.soakCycles,
       releaseSkipBuild: input.result.releaseSkipBuild,
+      nextCommand: input.result.nextCommand,
       finalReadinessStatus: input.result.validationOps.readiness.status,
       finalClosedLoopStatus: input.result.northStar.closedLoopStatus,
       finalClosedLoopRate: input.result.northStar.closedLoopRate,
@@ -417,9 +418,12 @@ function buildPhase1BaselineReport(records: ValidationOpsRunRecord[], now: numbe
   };
 
   if (ageMs > PHASE1_BASELINE_STALE_AFTER_MS) {
+    const underlyingStatusSummary = latestBaselineRecord.status === "failed"
+      ? `previous run failed ${baseline.consecutivePassedRuns}/${baseline.requiredRuns} clean runs`
+      : `previous run passed ${baseline.consecutivePassedRuns}/${baseline.requiredRuns} clean runs`;
     return {
       status: "stale",
-      summary: `Latest Phase 1 baseline is stale (ageMs=${ageMs}).`,
+      summary: `Latest Phase 1 baseline is stale (ageMs=${ageMs}; ${underlyingStatusSummary}).`,
       nextCommand: rerunCommand,
       ...baseReport,
     };
@@ -582,11 +586,8 @@ function buildPhase1BaselineCommand(
   soakCycles: number,
   releaseSkipBuild: boolean
 ): string {
-  const command = [`phase1-baseline ${runs} ${transportCycles} ${soakCycles}`];
-  if (releaseSkipBuild) {
-    command.push("--release-skip-build");
-  }
-  return command.join(" ");
+  const command = `phase1-baseline ${runs} ${transportCycles} ${soakCycles}`;
+  return releaseSkipBuild ? `${command} --release-skip-build` : command;
 }
 
 function compareValidationIssueSeverity(
