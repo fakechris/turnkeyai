@@ -470,7 +470,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
     const requestId = ++this.expertMessageCounter;
     const pendingKey = `${input.expertSessionId}:${requestId}`;
     const timeoutMs = input.timeoutMs ?? 30_000;
-    return await new Promise<unknown>(async (resolve, reject) => {
+    return await new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.expertPending.delete(pendingKey);
         reject(new Error(`expert CDP command timed out: ${input.method}`));
@@ -481,20 +481,20 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
         timeout,
         expertSessionId: input.expertSessionId,
       });
-      try {
-        await input.rootSession.send("Target.sendMessageToTarget", {
+      input.rootSession
+        .send("Target.sendMessageToTarget", {
           sessionId: input.expertSessionId,
           message: JSON.stringify({
             id: requestId,
             method: input.method,
             params: input.params ?? {},
           }),
+        })
+        .catch((error) => {
+          clearTimeout(timeout);
+          this.expertPending.delete(pendingKey);
+          reject(error instanceof Error ? error : new Error(String(error)));
         });
-      } catch (error) {
-        clearTimeout(timeout);
-        this.expertPending.delete(pendingKey);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      }
     });
   }
 
@@ -566,6 +566,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
       record.detached = true;
       this.expertAttachedSessions.delete(expertSessionId);
     }
+    this.expertEventQueues.delete(expertSessionId);
     for (const [pendingKey, pending] of this.expertPending.entries()) {
       if (pending.expertSessionId !== expertSessionId) {
         continue;
@@ -577,6 +578,9 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
   }
 
   private pushExpertEvent(queueId: string, event: Omit<BrowserExpertEvent, "receivedAt">): void {
+    if (queueId !== ROOT_EXPERT_SESSION_ID && !this.expertAttachedSessions.has(queueId)) {
+      return;
+    }
     const queue = this.expertEventQueues.get(queueId) ?? [];
     queue.push({
       ...event,

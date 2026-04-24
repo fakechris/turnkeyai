@@ -174,3 +174,70 @@ test("direct-cdp adapter raw expert lane can send root-scoped commands", async (
     product: "Chrome/123.0.0.0",
   });
 });
+
+test("direct-cdp adapter clears detached expert queues and ignores late events", async () => {
+  const rootSession = new FakeRootCdpSession();
+  const adapter = new DirectCdpBrowserAdapter(
+    {
+      artifactRootDir: "/tmp/turnkeyai-browser-direct-cdp-expert-detach-test",
+      transportMode: "direct-cdp",
+      directCdp: {
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/browser-id",
+      },
+    },
+    {
+      connectBrowser: async () => new FakeBrowser(rootSession) as any,
+    }
+  );
+
+  const expertLane = adapter.getRawCdpExpertLane();
+  const attached = await expertLane.attachExpertTarget({
+    browserSessionId: "browser-session-1",
+    targetId: "target-1",
+  });
+
+  rootSession.emit("Target.receivedMessageFromTarget", {
+    sessionId: attached.expertSessionId,
+    message: JSON.stringify({
+      method: "Runtime.executionContextCreated",
+      params: {
+        id: "ctx-1",
+      },
+    }),
+  });
+
+  const initialEvents = await expertLane.drainExpertEvents({
+    browserSessionId: "browser-session-1",
+    expertSessionId: attached.expertSessionId,
+  });
+  assert.equal(initialEvents.length, 1);
+  assert.equal(initialEvents[0]?.method, "Runtime.executionContextCreated");
+
+  rootSession.emit("Target.detachedFromTarget", {
+    sessionId: attached.expertSessionId,
+    targetId: attached.targetId,
+  });
+
+  rootSession.emit("Target.receivedMessageFromTarget", {
+    sessionId: attached.expertSessionId,
+    message: JSON.stringify({
+      method: "Runtime.consoleAPICalled",
+      params: {
+        type: "log",
+      },
+    }),
+  });
+
+  await assert.rejects(
+    expertLane.drainExpertEvents({
+      browserSessionId: "browser-session-1",
+      expertSessionId: attached.expertSessionId,
+    }),
+    /expert session not found/
+  );
+
+  assert.equal(
+    (adapter as unknown as { expertEventQueues: Map<string, unknown[]> }).expertEventQueues.has(attached.expertSessionId),
+    false
+  );
+});
