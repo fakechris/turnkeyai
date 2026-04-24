@@ -1,4 +1,5 @@
 import type {
+  Phase1BaselineRunResult,
   ValidationOpsFailureBucket,
   ValidationOpsClosedLoopReport,
   ValidationOpsIssueRecord,
@@ -13,6 +14,8 @@ import type { BrowserTransportSoakResult } from "./browser-transport-soak";
 import type { ValidationProfileIssue, ValidationProfileRunResult } from "./validation-profile";
 import type { ValidationSoakSeriesResult } from "./validation-soak-series";
 import { buildClosedLoopMetric, mergeClosedLoopMetrics } from "./closed-loop-metrics";
+
+const PHASE1_BASELINE_STALE_AFTER_MS = 36 * 60 * 60 * 1000;
 
 export function buildValidationOpsRecordFromReleaseReadiness(input: {
   runId: string;
@@ -163,6 +166,59 @@ export function buildValidationOpsRecordFromTransportSoak(input: {
   };
 }
 
+export function buildValidationOpsRecordFromPhase1Baseline(input: {
+  runId: string;
+  startedAt: number;
+  completedAt: number;
+  result: Phase1BaselineRunResult;
+}): ValidationOpsRunRecord {
+  const commandHint = buildPhase1BaselineCommand(
+    input.result.requiredRuns,
+    input.result.transportCycles,
+    input.result.soakCycles,
+    input.result.releaseSkipBuild
+  );
+  const issues = input.result.status === "failed"
+    ? [
+        buildValidationOpsIssue({
+          issueId: `${input.runId}:phase1-baseline`,
+          kind: "baseline-run",
+          scope: "phase1-baseline",
+          summary: `Phase 1 baseline failed ${input.result.consecutivePassedRuns}/${input.result.requiredRuns} clean runs`,
+          commandHint,
+        }),
+      ]
+    : [];
+
+  return {
+    runId: input.runId,
+    runType: "phase1-baseline",
+    title: "Phase 1 baseline",
+    status: input.result.status,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt,
+    durationMs: input.completedAt - input.startedAt,
+    issueCount: issues.length,
+    issues,
+    baseline: {
+      requiredRuns: input.result.requiredRuns,
+      consecutivePassedRuns: input.result.consecutivePassedRuns,
+      transportCycles: input.result.transportCycles,
+      soakCycles: input.result.soakCycles,
+      releaseSkipBuild: input.result.releaseSkipBuild,
+      nextCommand: input.result.nextCommand,
+      finalReadinessStatus: input.result.validationOps.readiness.status,
+      finalClosedLoopStatus: input.result.northStar.closedLoopStatus,
+      finalClosedLoopRate: input.result.northStar.closedLoopRate,
+      finalClosedLoopCases: input.result.northStar.closedLoopCases,
+      finalTotalCases: input.result.northStar.totalCases,
+      silentFailureCases: input.result.northStar.silentFailureCases,
+      ambiguousFailureCases: input.result.northStar.ambiguousFailureCases,
+      failureReasons: [...input.result.failureReasons],
+    },
+  };
+}
+
 function buildValidationProfileIssueCommandHint(
   result: ValidationProfileRunResult,
   issue: ValidationProfileIssue
@@ -180,7 +236,7 @@ function buildValidationProfileIssueCommandHint(
   return `validation-profile-run ${result.profileId}`;
 }
 
-export function buildValidationOpsReport(records: ValidationOpsRunRecord[], limit = 10): ValidationOpsReport {
+export function buildValidationOpsReport(records: ValidationOpsRunRecord[], limit = 10, now = Date.now()): ValidationOpsReport {
   const latestRuns = [...records]
     .sort((left, right) => right.completedAt - left.completedAt)
     .slice(0, Math.max(1, limit));
@@ -223,6 +279,7 @@ export function buildValidationOpsReport(records: ValidationOpsRunRecord[], limi
     activeIssues: activeIssues.slice(0, Math.max(1, limit)),
     readiness: buildPhase1ReadinessReport(records),
     closedLoop: buildValidationOpsClosedLoopReport(latestRuns),
+    baseline: buildPhase1BaselineReport(records, now),
   };
 }
 
@@ -318,6 +375,77 @@ function buildPhase1ReadinessReport(records: ValidationOpsRunRecord[]): Validati
   };
 }
 
+function buildPhase1BaselineReport(records: ValidationOpsRunRecord[], now: number): ValidationOpsReport["baseline"] {
+  const latestBaselineRecord = findLatestRecord(
+    records,
+    (record) => record.runType === "phase1-baseline" && record.baseline !== undefined
+  );
+  if (!latestBaselineRecord?.baseline) {
+    return {
+      status: "missing",
+      summary: "No Phase 1 baseline has been recorded.",
+      nextCommand: buildPhase1BaselineCommand(3, 3, 3, false),
+      staleAfterMs: PHASE1_BASELINE_STALE_AFTER_MS,
+    };
+  }
+
+  const baseline = latestBaselineRecord.baseline;
+  const ageMs = Math.max(0, now - latestBaselineRecord.completedAt);
+  const rerunCommand = buildPhase1BaselineCommand(
+    baseline.requiredRuns,
+    baseline.transportCycles,
+    baseline.soakCycles,
+    baseline.releaseSkipBuild
+  );
+  const baseReport = {
+    staleAfterMs: PHASE1_BASELINE_STALE_AFTER_MS,
+    latestRunId: latestBaselineRecord.runId,
+    recordedAt: latestBaselineRecord.completedAt,
+    ageMs,
+    requiredRuns: baseline.requiredRuns,
+    consecutivePassedRuns: baseline.consecutivePassedRuns,
+    transportCycles: baseline.transportCycles,
+    soakCycles: baseline.soakCycles,
+    releaseSkipBuild: baseline.releaseSkipBuild,
+    finalReadinessStatus: baseline.finalReadinessStatus,
+    finalClosedLoopStatus: baseline.finalClosedLoopStatus,
+    finalClosedLoopRate: baseline.finalClosedLoopRate,
+    finalClosedLoopCases: baseline.finalClosedLoopCases,
+    finalTotalCases: baseline.finalTotalCases,
+    silentFailureCases: baseline.silentFailureCases,
+    ambiguousFailureCases: baseline.ambiguousFailureCases,
+    failureReasons: [...baseline.failureReasons],
+  };
+
+  if (ageMs > PHASE1_BASELINE_STALE_AFTER_MS) {
+    const underlyingStatusSummary = latestBaselineRecord.status === "failed"
+      ? `previous run failed ${baseline.consecutivePassedRuns}/${baseline.requiredRuns} clean runs`
+      : `previous run passed ${baseline.consecutivePassedRuns}/${baseline.requiredRuns} clean runs`;
+    return {
+      status: "stale",
+      summary: `Latest Phase 1 baseline is stale (ageMs=${ageMs}; ${underlyingStatusSummary}).`,
+      nextCommand: rerunCommand,
+      ...baseReport,
+    };
+  }
+
+  if (latestBaselineRecord.status === "failed") {
+    return {
+      status: "fresh-failing",
+      summary: `Latest Phase 1 baseline failed ${baseline.consecutivePassedRuns}/${baseline.requiredRuns} clean runs.`,
+      nextCommand: rerunCommand,
+      ...baseReport,
+    };
+  }
+
+  return {
+    status: "fresh-passing",
+    summary: `Latest Phase 1 baseline passed ${baseline.consecutivePassedRuns}/${baseline.requiredRuns} clean runs.`,
+    nextCommand: "validation-ops",
+    ...baseReport,
+  };
+}
+
 function buildReadinessGate(input: {
   gateId: ValidationOpsReport["readiness"]["gates"][number]["gateId"];
   title: string;
@@ -364,7 +492,7 @@ function findLatestRecord(
 
 function buildValidationOpsIssue(input: {
   issueId: string;
-  kind: ValidationProfileIssue["kind"] | "release-check" | "soak-suite" | "transport-target";
+  kind: ValidationProfileIssue["kind"] | "release-check" | "soak-suite" | "transport-target" | "baseline-run";
   scope: string;
   summary: string;
   commandHint: string;
@@ -398,6 +526,9 @@ function deriveValidationOpsBucket(
   if (kind === "transport-target") {
     return "transport";
   }
+  if (kind === "baseline-run") {
+    return "baseline";
+  }
 
   const suiteId = scope.split(":")[0];
   switch (suiteId) {
@@ -427,6 +558,9 @@ function deriveValidationIssueSeverity(
   if (kind === "transport-target") {
     return "critical";
   }
+  if (kind === "baseline-run") {
+    return "critical";
+  }
   return bucket === "operator" || bucket === "browser" ? "critical" : "warning";
 }
 
@@ -438,10 +572,22 @@ function deriveValidationRecommendedAction(kind: ValidationOpsIssueRecord["kind"
       return "rerun-soak";
     case "transport-target":
       return "rerun-transport-soak";
+    case "baseline-run":
+      return "rerun-baseline";
     case "validation-item":
     default:
       return "rerun-profile";
   }
+}
+
+function buildPhase1BaselineCommand(
+  runs: number,
+  transportCycles: number,
+  soakCycles: number,
+  releaseSkipBuild: boolean
+): string {
+  const command = `phase1-baseline ${runs} ${transportCycles} ${soakCycles}`;
+  return releaseSkipBuild ? `${command} --release-skip-build` : command;
 }
 
 function compareValidationIssueSeverity(

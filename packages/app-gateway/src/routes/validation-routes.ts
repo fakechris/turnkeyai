@@ -1,6 +1,8 @@
 import type http from "node:http";
 
 import type {
+  Phase1BaselineRunResult,
+  Phase1BaselineRunSummary,
   Phase1ReadinessRunResult,
   Phase1ReadinessRunStage,
   ValidationOpsRunRecord,
@@ -42,6 +44,7 @@ import {
   summarizeValidationProfileResult,
 } from "@turnkeyai/qc-runtime/validation-profile";
 import {
+  buildValidationOpsRecordFromPhase1Baseline,
   buildValidationOpsRecordFromReleaseReadiness,
   buildValidationOpsRecordFromSoakSeries,
   buildValidationOpsRecordFromTransportSoak,
@@ -60,7 +63,7 @@ import { readJsonBodySafe, sendJson } from "../http-helpers";
 export interface ValidationRouteDeps {
   validationOpsRunStore: ValidationOpsRunStore;
   createValidationOpsRunId: (
-    kind: "release-readiness" | "validation-profile" | "soak-series" | "transport-soak"
+    kind: "release-readiness" | "validation-profile" | "soak-series" | "transport-soak" | "phase1-baseline"
   ) => string;
   writeValidationArtifact: (kind: string, runId: string, payload: unknown) => Promise<string>;
   runBrowserTransportSoakViaCli: (options?: BrowserTransportSoakOptions) => Promise<BrowserTransportSoakResult>;
@@ -75,6 +78,7 @@ const PHASE1_READINESS_SOAK_SELECTORS = [
 ] as const;
 
 const PHASE1_READINESS_TRANSPORT_TARGETS = ["relay", "direct-cdp"] as const;
+const MAX_PHASE1_BASELINE_REQUEST_CYCLES = 50;
 
 export async function handleValidationRoutes(input: {
   req: http.IncomingMessage;
@@ -270,7 +274,7 @@ export async function handleValidationRoutes(input: {
   if (req.method === "GET" && url.pathname === "/validation-ops") {
     const requestedLimit = Number(url.searchParams.get("limit") ?? "10");
     const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.floor(requestedLimit) : 10;
-    const records = await deps.validationOpsRunStore.list(limit);
+    const records = await deps.validationOpsRunStore.list(Math.max(limit, 50));
     sendJson(res, 200, buildValidationOpsReport(records, limit));
     return true;
   }
@@ -464,6 +468,65 @@ export async function handleValidationRoutes(input: {
     return true;
   }
 
+  if (req.method === "POST" && url.pathname === "/phase1-baseline/run") {
+    const bodyResult = await readJsonBodySafe<{
+      runs?: number;
+      transportCycles?: number;
+      soakCycles?: number;
+      releaseSkipBuild?: boolean;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
+    if (
+      body.runs !== undefined &&
+      (!Number.isInteger(body.runs) || body.runs <= 0 || body.runs > MAX_PHASE1_BASELINE_REQUEST_CYCLES)
+    ) {
+      sendJson(res, 400, {
+        error: `Invalid runs: must be an integer between 1 and ${MAX_PHASE1_BASELINE_REQUEST_CYCLES}`,
+      });
+      return true;
+    }
+    if (
+      body.transportCycles !== undefined &&
+      (!Number.isInteger(body.transportCycles) ||
+        body.transportCycles <= 0 ||
+        body.transportCycles > MAX_PHASE1_BASELINE_REQUEST_CYCLES)
+    ) {
+      sendJson(res, 400, {
+        error: `Invalid transportCycles: must be an integer between 1 and ${MAX_PHASE1_BASELINE_REQUEST_CYCLES}`,
+      });
+      return true;
+    }
+    if (
+      body.soakCycles !== undefined &&
+      (!Number.isInteger(body.soakCycles) ||
+        body.soakCycles <= 0 ||
+        body.soakCycles > MAX_PHASE1_BASELINE_REQUEST_CYCLES)
+    ) {
+      sendJson(res, 400, {
+        error: `Invalid soakCycles: must be an integer between 1 and ${MAX_PHASE1_BASELINE_REQUEST_CYCLES}`,
+      });
+      return true;
+    }
+    if (body.releaseSkipBuild !== undefined && typeof body.releaseSkipBuild !== "boolean") {
+      sendJson(res, 400, { error: "Invalid releaseSkipBuild: must be a boolean" });
+      return true;
+    }
+
+    const result = await runPhase1Baseline({
+      deps,
+      runs: body.runs ?? 3,
+      transportCycles: body.transportCycles ?? 3,
+      soakCycles: body.soakCycles ?? 3,
+      releaseSkipBuild: body.releaseSkipBuild ?? false,
+    });
+    sendJson(res, 200, result);
+    return true;
+  }
+
   return false;
 }
 
@@ -586,7 +649,7 @@ async function runPhase1Readiness(input: {
   });
 
   const storedRecords = await deps.validationOpsRunStore.list(50);
-  const validationOps = buildValidationOpsReport(storedRecords.length > 0 ? storedRecords : records, 50);
+  const validationOps = buildValidationOpsReport(mergeValidationOpsRunRecords(storedRecords, records), 50);
   const northStar = validationOps.closedLoop;
   const completedAt = Date.now();
   const failedStages = stages.filter((stage) => stage.status === "failed").length;
@@ -606,6 +669,78 @@ async function runPhase1Readiness(input: {
     stages,
     validationOps,
     northStar,
+  };
+}
+
+async function runPhase1Baseline(input: {
+  deps: ValidationRouteDeps;
+  runs: number;
+  transportCycles: number;
+  soakCycles: number;
+  releaseSkipBuild: boolean;
+}): Promise<Phase1BaselineRunResult> {
+  const startedAt = Date.now();
+  const runs: Phase1BaselineRunSummary[] = [];
+  const observedRecords: ValidationOpsRunRecord[] = [];
+  const failureReasons: string[] = [];
+
+  for (let index = 0; index < input.runs; index += 1) {
+    const result = await runPhase1Readiness({
+      deps: input.deps,
+      transportCycles: input.transportCycles,
+      soakCycles: input.soakCycles,
+      releaseSkipBuild: input.releaseSkipBuild,
+    });
+    const summary = summarizePhase1BaselineRun(index + 1, result);
+    runs.push(summary);
+    const runRecordIds = new Set(result.stages.map((stage) => stage.runId));
+    observedRecords.push(...result.validationOps.latestRuns.filter((record) => runRecordIds.has(record.runId)));
+    failureReasons.push(...validatePhase1BaselineRun(summary).map((reason) => `run ${summary.runNumber}: ${reason}`));
+  }
+
+  let records = mergeValidationOpsRunRecords(await input.deps.validationOpsRunStore.list(50), observedRecords);
+  let validationOps = buildValidationOpsReport(records, 50);
+  failureReasons.push(
+    ...validatePhase1BaselineValidationOps(validationOps).map((reason) => `final validation-ops: ${reason}`)
+  );
+  const completedAt = Date.now();
+  const provisionalResult: Phase1BaselineRunResult = {
+    status: failureReasons.length === 0 ? "passed" : "failed",
+    startedAt,
+    completedAt,
+    durationMs: completedAt - startedAt,
+    requiredRuns: input.runs,
+    consecutivePassedRuns: countTrailingPhase1BaselineCleanRuns(runs),
+    transportCycles: input.transportCycles,
+    soakCycles: input.soakCycles,
+    releaseSkipBuild: input.releaseSkipBuild,
+    nextCommand:
+      validationOps.closedLoop.closedLoopStatus !== "completed"
+        ? validationOps.closedLoop.nextCommand
+        : validationOps.readiness.nextCommand,
+    runs,
+    failureReasons,
+    validationOps,
+    northStar: validationOps.closedLoop,
+    baseline: validationOps.baseline,
+  };
+
+  const baselineRecord = buildValidationOpsRecordFromPhase1Baseline({
+    runId: input.deps.createValidationOpsRunId("phase1-baseline"),
+    startedAt,
+    completedAt,
+    result: provisionalResult,
+  });
+  await input.deps.validationOpsRunStore.put(baselineRecord);
+  records = mergeValidationOpsRunRecords(await input.deps.validationOpsRunStore.list(50), observedRecords, [baselineRecord]);
+  validationOps = buildValidationOpsReport(records, 50);
+
+  return {
+    ...provisionalResult,
+    nextCommand: validationOps.baseline.nextCommand,
+    validationOps,
+    northStar: validationOps.closedLoop,
+    baseline: validationOps.baseline,
   };
 }
 
@@ -630,4 +765,110 @@ function filterTrimmedStrings(values: string[] | undefined): string[] | undefine
 function findUnknownScenarioIds(inputIds: string[], validIds: string[]): string[] {
   const validScenarioIds = new Set(validIds);
   return inputIds.filter((scenarioId) => !validScenarioIds.has(scenarioId));
+}
+
+function summarizePhase1BaselineRun(runNumber: number, result: Phase1ReadinessRunResult): Phase1BaselineRunSummary {
+  return {
+    runNumber,
+    status: result.status,
+    durationMs: result.durationMs,
+    failedStages: result.failedStages,
+    nextCommand: result.nextCommand,
+    readinessStatus: result.validationOps.readiness.status,
+    northStarStatus: result.northStar.closedLoopStatus,
+    closedLoopCases: result.northStar.closedLoopCases,
+    totalCases: result.northStar.totalCases,
+    closedLoopRate: result.northStar.closedLoopRate,
+    silentFailureCases: result.northStar.silentFailureCases,
+    ambiguousFailureCases: result.northStar.ambiguousFailureCases,
+    stages: result.stages.map((stage) => ({
+      stageId: stage.stageId,
+      status: stage.status,
+      summary: stage.summary,
+      commandHint: stage.commandHint,
+      ...(stage.artifactPath ? { artifactPath: stage.artifactPath } : {}),
+    })),
+  };
+}
+
+function validatePhase1BaselineRun(summary: Phase1BaselineRunSummary): string[] {
+  const failures: string[] = [];
+  if (summary.status !== "passed") {
+    failures.push(`readiness status is ${summary.status}`);
+  }
+  if (summary.failedStages !== 0) {
+    failures.push(`failed stages=${summary.failedStages}`);
+  }
+  if (summary.readinessStatus !== "passed") {
+    failures.push(`readiness gate status is ${summary.readinessStatus}`);
+  }
+  if (summary.northStarStatus !== "completed") {
+    failures.push(`north-star status is ${summary.northStarStatus}`);
+  }
+  if (summary.closedLoopRate !== 1) {
+    failures.push(`closed-loop rate is ${summary.closedLoopRate.toFixed(3)}`);
+  }
+  if (summary.closedLoopCases !== summary.totalCases) {
+    failures.push(`closed-loop cases=${summary.closedLoopCases}/${summary.totalCases}`);
+  }
+  if (summary.silentFailureCases !== 0) {
+    failures.push(`silent failures=${summary.silentFailureCases}`);
+  }
+  if (summary.ambiguousFailureCases !== 0) {
+    failures.push(`ambiguous failures=${summary.ambiguousFailureCases}`);
+  }
+  return failures;
+}
+
+function validatePhase1BaselineValidationOps(report: Phase1ReadinessRunResult["validationOps"]): string[] {
+  const failures: string[] = [];
+  if (report.readiness.status !== "passed") {
+    failures.push(`readiness status is ${report.readiness.status}`);
+  }
+  if (report.closedLoop.closedLoopStatus !== "completed") {
+    failures.push(`north-star status is ${report.closedLoop.closedLoopStatus}`);
+  }
+  if (report.closedLoop.closedLoopRate !== 1) {
+    failures.push(`closed-loop rate is ${report.closedLoop.closedLoopRate.toFixed(3)}`);
+  }
+  if (report.closedLoop.closedLoopCases !== report.closedLoop.totalCases) {
+    failures.push(`closed-loop cases=${report.closedLoop.closedLoopCases}/${report.closedLoop.totalCases}`);
+  }
+  if (report.closedLoop.silentFailureCases !== 0) {
+    failures.push(`silent failures=${report.closedLoop.silentFailureCases}`);
+  }
+  if (report.closedLoop.ambiguousFailureCases !== 0) {
+    failures.push(`ambiguous failures=${report.closedLoop.ambiguousFailureCases}`);
+  }
+  return failures;
+}
+
+function countTrailingPhase1BaselineCleanRuns(runs: Phase1BaselineRunSummary[]): number {
+  let count = 0;
+  for (let index = runs.length - 1; index >= 0; index -= 1) {
+    const run = runs[index];
+    if (!run) {
+      continue;
+    }
+    if (validatePhase1BaselineRun(run).length > 0) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function mergeValidationOpsRunRecords(...groups: ReadonlyArray<ValidationOpsRunRecord[]>): ValidationOpsRunRecord[] {
+  const recordsByRunId = new Map<string, ValidationOpsRunRecord>();
+  for (const group of groups) {
+    for (const record of group) {
+      const existing = recordsByRunId.get(record.runId);
+      if (!existing || record.completedAt >= existing.completedAt) {
+        recordsByRunId.set(record.runId, record);
+      }
+    }
+  }
+  return [...recordsByRunId.values()].sort(
+    (left, right) => right.completedAt - left.completedAt || right.startedAt - left.startedAt
+  );
 }

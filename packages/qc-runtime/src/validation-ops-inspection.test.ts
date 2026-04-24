@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildValidationOpsRecordFromPhase1Baseline,
   buildValidationOpsRecordFromTransportSoak,
   buildValidationOpsRecordFromReleaseReadiness,
   buildValidationOpsRecordFromSoakSeries,
@@ -183,6 +184,7 @@ test("validation ops inspection derives operator-facing records and report count
   assert.equal(report.readiness.gates.find((gate) => gate.gateId === "phase1-e2e-profile")?.status, "missing");
   assert.equal(report.readiness.gates.find((gate) => gate.gateId === "transport-soak")?.latestRunId, "transport-1");
   assert.equal(report.readiness.nextCommand, "release-verify");
+  assert.equal(report.baseline.status, "missing");
 });
 
 test("validation ops inspection marks phase1 readiness passed when all exit gates pass", () => {
@@ -290,4 +292,191 @@ test("validation ops inspection marks phase1 readiness passed when all exit gate
   assert.equal(report.readiness.failedGates, 0);
   assert.equal(report.readiness.missingGates, 0);
   assert.equal(report.readiness.nextCommand, "validation-ops");
+});
+
+test("validation ops inspection surfaces fresh and stale baseline status", () => {
+  const baselineRecord = buildValidationOpsRecordFromPhase1Baseline({
+    runId: "baseline-1",
+    startedAt: 100,
+    completedAt: 200,
+    result: {
+      status: "passed",
+      startedAt: 100,
+      completedAt: 200,
+      durationMs: 100,
+      requiredRuns: 3,
+      consecutivePassedRuns: 3,
+      transportCycles: 3,
+      soakCycles: 3,
+      releaseSkipBuild: false,
+      nextCommand: "validation-ops",
+      runs: [],
+      failureReasons: [],
+      validationOps: {
+        totalRuns: 4,
+        failedRuns: 0,
+        passedRuns: 4,
+        attentionCount: 0,
+        runTypeCounts: {},
+        bucketCounts: {},
+        severityCounts: {},
+        recommendedActionCounts: {},
+        latestRuns: [],
+        activeIssues: [],
+        readiness: {
+          status: "passed",
+          summary: "ok",
+          passedGates: 4,
+          failedGates: 0,
+          missingGates: 0,
+          nextCommand: "validation-ops",
+          gates: [],
+        },
+        closedLoop: {
+          closedLoopStatus: "completed",
+          totalCases: 21,
+          completedCases: 21,
+          actionableCases: 0,
+          silentFailureCases: 0,
+          ambiguousFailureCases: 0,
+          closedLoopCases: 21,
+          closedLoopRate: 1,
+          rerunCommand: "phase1-readiness 3 3",
+          measuredRuns: 6,
+          statusCounts: { completed: 6 },
+          nextCommand: "validation-ops",
+        },
+        baseline: {
+          status: "missing",
+          summary: "missing",
+          nextCommand: "phase1-baseline 3 3 3",
+          staleAfterMs: 36 * 60 * 60 * 1000,
+        },
+      },
+      northStar: {
+        closedLoopStatus: "completed",
+        totalCases: 21,
+        completedCases: 21,
+        actionableCases: 0,
+        silentFailureCases: 0,
+        ambiguousFailureCases: 0,
+        closedLoopCases: 21,
+        closedLoopRate: 1,
+        rerunCommand: "phase1-readiness 3 3",
+        measuredRuns: 6,
+        statusCounts: { completed: 6 },
+        nextCommand: "validation-ops",
+      },
+      baseline: {
+        status: "missing",
+        summary: "missing",
+        nextCommand: "phase1-baseline 3 3 3",
+        staleAfterMs: 36 * 60 * 60 * 1000,
+      },
+    },
+  });
+
+  const freshReport = buildValidationOpsReport([baselineRecord], 10, 1_000);
+  assert.equal(freshReport.baseline.status, "fresh-passing");
+  assert.equal(freshReport.baseline.consecutivePassedRuns, 3);
+  assert.equal(freshReport.baseline.nextCommand, "validation-ops");
+  assert.equal(freshReport.runTypeCounts["phase1-baseline"], 1);
+
+  const staleReport = buildValidationOpsReport([baselineRecord], 10, 200 + 36 * 60 * 60 * 1000 + 1);
+  assert.equal(staleReport.baseline.status, "stale");
+  assert.equal(staleReport.baseline.nextCommand, "phase1-baseline 3 3 3");
+
+  const freshFailingRecord = buildValidationOpsRecordFromPhase1Baseline({
+    runId: "baseline-failed-1",
+    startedAt: 300,
+    completedAt: 400,
+    result: {
+      status: "failed",
+      startedAt: 300,
+      completedAt: 400,
+      durationMs: 100,
+      requiredRuns: 3,
+      consecutivePassedRuns: 2,
+      transportCycles: 3,
+      soakCycles: 3,
+      releaseSkipBuild: true,
+      nextCommand: "phase1-baseline 3 3 3 --release-skip-build",
+      runs: [],
+      failureReasons: ["run 1: readiness status is failed"],
+      validationOps: {
+        totalRuns: 5,
+        failedRuns: 1,
+        passedRuns: 4,
+        attentionCount: 1,
+        runTypeCounts: {},
+        bucketCounts: {},
+        severityCounts: {},
+        recommendedActionCounts: {},
+        latestRuns: [],
+        activeIssues: [],
+        readiness: {
+          status: "failed",
+          summary: "failed",
+          passedGates: 3,
+          failedGates: 1,
+          missingGates: 0,
+          nextCommand: "release-verify",
+          gates: [],
+        },
+        closedLoop: {
+          closedLoopStatus: "completed",
+          totalCases: 21,
+          completedCases: 21,
+          actionableCases: 0,
+          silentFailureCases: 0,
+          ambiguousFailureCases: 0,
+          closedLoopCases: 21,
+          closedLoopRate: 1,
+          rerunCommand: "phase1-readiness 3 3",
+          measuredRuns: 6,
+          statusCounts: { completed: 6 },
+          nextCommand: "validation-ops",
+        },
+        baseline: {
+          status: "missing",
+          summary: "missing",
+          nextCommand: "phase1-baseline 3 3 3 --release-skip-build",
+          staleAfterMs: 36 * 60 * 60 * 1000,
+        },
+      },
+      northStar: {
+        closedLoopStatus: "completed",
+        totalCases: 21,
+        completedCases: 21,
+        actionableCases: 0,
+        silentFailureCases: 0,
+        ambiguousFailureCases: 0,
+        closedLoopCases: 21,
+        closedLoopRate: 1,
+        rerunCommand: "phase1-readiness 3 3",
+        measuredRuns: 6,
+        statusCounts: { completed: 6 },
+        nextCommand: "validation-ops",
+      },
+      baseline: {
+        status: "missing",
+        summary: "missing",
+        nextCommand: "phase1-baseline 3 3 3 --release-skip-build",
+        staleAfterMs: 36 * 60 * 60 * 1000,
+      },
+    },
+  });
+
+  const freshFailingReport = buildValidationOpsReport([freshFailingRecord], 10, 1_000);
+  assert.equal(freshFailingReport.baseline.status, "fresh-failing");
+  assert.equal(freshFailingReport.baseline.nextCommand, "phase1-baseline 3 3 3 --release-skip-build");
+  assert.equal(freshFailingReport.baseline.failureReasons?.[0], "run 1: readiness status is failed");
+
+  const staleFailingReport = buildValidationOpsReport(
+    [freshFailingRecord],
+    10,
+    400 + 36 * 60 * 60 * 1000 + 1
+  );
+  assert.equal(staleFailingReport.baseline.status, "stale");
+  assert.match(staleFailingReport.baseline.summary, /previous run failed 2\/3 clean runs/);
 });

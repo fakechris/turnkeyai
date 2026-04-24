@@ -301,6 +301,7 @@ npm run daemon
 - real-world runbook harness: `realworld-cases` / `realworld-run [scenarioId ...]`
 - release readiness: `release-verify`
 - Phase 1 exit readiness: `phase1-readiness [transportCycles] [soakCycles] [--release-skip-build]`
+- Phase 1 baseline: `phase1-baseline [runs] [transportCycles] [soakCycles] [--release-skip-build]`
 - multi-cycle soak series: `soak-series [cycles] [suite[:item] ...]`
 - browser transport soak: `transport-soak [cycles] [relay|direct-cdp ...]`
 
@@ -327,8 +328,8 @@ npm run daemon
 `prompt-console` 现在会额外汇总 recent-turn / retrieved-memory / worker-evidence 的实际打包数量，以及 pending / waiting / open-question / decision-or-constraint 的 carry-forward 情况；acceptance / soak 也已把这些计数和 runtime waiting-point 一起编进长链验证，方便直接看高压上下文下哪些信息被保住了。
 `release-verify` 会对将要公开发布的 CLI 走一遍 `npm pack`、解包、bin/dist help smoke 和 `npm publish --dry-run`，避免 package metadata 在真正发版时才暴露问题；`soak-series` 和单独的 `Long Soak` workflow 会把 `soak / realworld / acceptance` 做多轮聚合运行，用来承接高成本、非 PR required 的长周期稳态验证。
 `phase1-readiness` 会按 Phase 1 exit 顺序依次跑 `phase1-e2e` profile、relay/direct-cdp transport soak、release readiness 和 acceptance/realworld/soak series，并把四类记录统一写入 `validation-ops` readiness gates，同时返回 north-star closed-loop 读数。
-`npm run phase1:baseline` 会用隔离的 daemon 数据目录连续运行 3 次 `phase1-readiness 3 3`，输出 baseline JSON；任一轮不是 readiness passed、north-star completed、closedLoop rate 1.0、silent/ambiguous failure 为 0，命令都会失败。`.github/workflows/phase1-baseline.yml` 提供同一逻辑的手动/定时入口，用来沉淀趋势证据。
-`validation-ops` 会把最近的 `validation-profile-run`、`release-verify`、`soak-series` 和 `transport-soak` 结果收成 operator-facing 读数，统一展示失败 bucket、推荐动作、重跑命令、Phase 1 readiness gates 和 real-world closed-loop rate，避免验证失败只留在一次性 stdout 里。
+`npm run phase1:baseline` 会用隔离的 daemon 数据目录连续运行多轮 `phase1-readiness`，输出 baseline JSON；任一轮不是 readiness passed、north-star completed、closedLoop rate 1.0、silent/ambiguous failure 为 0，命令都会失败。`.github/workflows/phase1-baseline.yml` 提供同一逻辑的手动/定时入口，`.github/workflows/publish-cli.yml` 也会把同一路径接成 publish gate。
+`validation-ops` 会把最近的 `validation-profile-run`、`release-verify`、`soak-series`、`transport-soak` 和 `phase1-baseline` 结果收成 operator-facing 读数，统一展示失败 bucket、推荐动作、重跑命令、Phase 1 readiness gates、baseline `fresh-passing / fresh-failing / stale / missing` 状态和 real-world closed-loop rate，避免验证失败只留在一次性 stdout 里。
 `transport-soak` 现在也会进入同一套 `validation-ops` 记录，并带上 artifact 路径；它会强制检查 relay/direct-cdp 的 rich action parity、CDP control plane、download/upload artifact safety 和 reconnect/workflow-log marker，方便值班时直接回看多 cycle 诊断结果。
 `validation-profiles` / `validation-profile-run` 会把现有 `validation-run`、`release-verify`、`soak-series` 和 `transport-soak` 收成固定 hardening 档位：`smoke` 适合本地快速回归，`phase1-e2e` 固定覆盖 Phase 1 收尾的 browser/recovery/context/governance/operator 同场景验收，`nightly` / `prerelease` / `weekly` 会把 transport 连通性和多 cycle 稳定性也一起压过一遍，适合持续稳定性和值班/发版前信心检查。
 `relay-peers` / `relay-targets [peerId]` 可以直接查看本地 daemon 当前看到的 relay 扩展连接和浏览器 tab 发现结果，便于做 extension smoke 和 transport 排障。

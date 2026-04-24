@@ -1,5 +1,15 @@
-export type ValidationOpsRunType = "release-readiness" | "validation-profile" | "soak-series" | "transport-soak";
-export type ValidationOpsIssueKind = "validation-item" | "release-check" | "soak-suite" | "transport-target";
+export type ValidationOpsRunType =
+  | "release-readiness"
+  | "validation-profile"
+  | "soak-series"
+  | "transport-soak"
+  | "phase1-baseline";
+export type ValidationOpsIssueKind =
+  | "validation-item"
+  | "release-check"
+  | "soak-suite"
+  | "transport-target"
+  | "baseline-run";
 export type ValidationOpsIssueSeverity = "warning" | "critical";
 export type ValidationOpsFailureBucket =
   | "browser"
@@ -12,18 +22,21 @@ export type ValidationOpsFailureBucket =
   | "release"
   | "soak"
   | "transport"
-  | "validation";
+  | "validation"
+  | "baseline";
 export type ValidationOpsRecommendedAction =
   | "inspect"
   | "rerun-release"
   | "rerun-profile"
   | "rerun-soak"
-  | "rerun-transport-soak";
+  | "rerun-transport-soak"
+  | "rerun-baseline";
 export type ValidationOpsClosedLoopStatus =
   | "completed"
   | "actionable"
   | "silent_failure"
   | "ambiguous_failure";
+export type ValidationOpsBaselineStatus = "fresh-passing" | "fresh-failing" | "stale" | "missing";
 
 export interface ValidationOpsIssueRecord {
   issueId: string;
@@ -58,6 +71,46 @@ export interface ValidationOpsClosedLoopReport extends ValidationOpsClosedLoopMe
   latestRunId?: string;
 }
 
+export interface ValidationOpsBaselineRunDetails {
+  requiredRuns: number;
+  consecutivePassedRuns: number;
+  transportCycles: number;
+  soakCycles: number;
+  releaseSkipBuild: boolean;
+  nextCommand: string;
+  finalReadinessStatus: "passed" | "failed" | "missing";
+  finalClosedLoopStatus: ValidationOpsClosedLoopStatus;
+  finalClosedLoopRate: number;
+  finalClosedLoopCases: number;
+  finalTotalCases: number;
+  silentFailureCases: number;
+  ambiguousFailureCases: number;
+  failureReasons: string[];
+}
+
+export interface ValidationOpsBaselineReport {
+  status: ValidationOpsBaselineStatus;
+  summary: string;
+  nextCommand: string;
+  staleAfterMs: number;
+  latestRunId?: string;
+  recordedAt?: number;
+  ageMs?: number;
+  requiredRuns?: number;
+  consecutivePassedRuns?: number;
+  transportCycles?: number;
+  soakCycles?: number;
+  releaseSkipBuild?: boolean;
+  finalReadinessStatus?: "passed" | "failed" | "missing";
+  finalClosedLoopStatus?: ValidationOpsClosedLoopStatus;
+  finalClosedLoopRate?: number;
+  finalClosedLoopCases?: number;
+  finalTotalCases?: number;
+  silentFailureCases?: number;
+  ambiguousFailureCases?: number;
+  failureReasons?: string[];
+}
+
 export interface ValidationOpsRunRecord {
   runId: string;
   runType: ValidationOpsRunType;
@@ -74,6 +127,7 @@ export interface ValidationOpsRunRecord {
   artifactPath?: string;
   issues: ValidationOpsIssueRecord[];
   closedLoop?: ValidationOpsClosedLoopMetric;
+  baseline?: ValidationOpsBaselineRunDetails;
 }
 
 export type ValidationOpsReadinessGateId =
@@ -122,6 +176,7 @@ export interface ValidationOpsReport {
   >;
   readiness: ValidationOpsReadinessReport;
   closedLoop: ValidationOpsClosedLoopReport;
+  baseline: ValidationOpsBaselineReport;
 }
 
 export type Phase1ReadinessRunStageId =
@@ -153,6 +208,46 @@ export interface Phase1ReadinessRunResult {
   stages: Phase1ReadinessRunStage[];
   validationOps: ValidationOpsReport;
   northStar: ValidationOpsClosedLoopReport;
+}
+
+export interface Phase1BaselineRunSummary {
+  runNumber: number;
+  status: "passed" | "failed";
+  durationMs: number;
+  failedStages: number;
+  nextCommand: string;
+  readinessStatus: ValidationOpsReadinessReport["status"];
+  northStarStatus: ValidationOpsClosedLoopReport["closedLoopStatus"];
+  closedLoopCases: number;
+  totalCases: number;
+  closedLoopRate: number;
+  silentFailureCases: number;
+  ambiguousFailureCases: number;
+  stages: Array<{
+    stageId: Phase1ReadinessRunStageId;
+    status: "passed" | "failed";
+    summary: string;
+    commandHint: string;
+    artifactPath?: string;
+  }>;
+}
+
+export interface Phase1BaselineRunResult {
+  status: "passed" | "failed";
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  requiredRuns: number;
+  consecutivePassedRuns: number;
+  transportCycles: number;
+  soakCycles: number;
+  releaseSkipBuild: boolean;
+  nextCommand: string;
+  runs: Phase1BaselineRunSummary[];
+  failureReasons: string[];
+  validationOps: ValidationOpsReport;
+  northStar: ValidationOpsClosedLoopReport;
+  baseline: ValidationOpsBaselineReport;
 }
 
 export interface ValidationOpsRunStore {

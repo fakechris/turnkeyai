@@ -14,7 +14,7 @@ jobs:
     name: publish
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     permissions:
       contents: write
     steps:
@@ -38,6 +38,17 @@ jobs:
         if: ${{ always() }}
         run: npm run release:verify -- --skip-build --artifact-dir .artifacts --json .artifacts/release-readiness.json
 
+      - name: Run Phase 1 baseline gate
+        run: |
+          mkdir -p .artifacts
+          npm run phase1:baseline -- \
+            --runs 1 \
+            --transport-cycles 3 \
+            --soak-cycles 3 \
+            --release-skip-build \
+            --data-dir .artifacts/phase1-baseline-data \
+            --json .artifacts/phase1-baseline.json
+
       - name: Publish @turnkeyai/cli to npm
         run: npm publish --workspace @turnkeyai/cli --access public
         env:
@@ -52,6 +63,8 @@ jobs:
           path: |
             .artifacts/*.tgz
             .artifacts/release-readiness.json
+            .artifacts/phase1-baseline.json
+            .artifacts/phase1-baseline-data/validation-artifacts/**
 
       - name: Upload tarball to GitHub release
         if: ${{ always() && github.event_name == 'release' }}
@@ -60,6 +73,9 @@ jobs:
           files=(.artifacts/*.tgz)
           if [ -f .artifacts/release-readiness.json ]; then
             files+=(.artifacts/release-readiness.json)
+          fi
+          if [ -f .artifacts/phase1-baseline.json ]; then
+            files+=(.artifacts/phase1-baseline.json)
           fi
           if ((${#files[@]})); then
             gh release upload "${{ github.event.release.tag_name }}" "${files[@]}" --clobber
