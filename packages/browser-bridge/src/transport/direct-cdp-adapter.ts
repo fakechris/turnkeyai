@@ -265,7 +265,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
     const rootSession = await this.getOrCreateRootCdpSession();
     const attached = await rootSession.send("Target.attachToTarget", {
       targetId: input.targetId,
-      flatten: true,
+      flatten: false,
     });
     const expertSessionId =
       typeof attached?.sessionId === "string" && attached.sessionId.trim().length > 0 ? attached.sessionId.trim() : null;
