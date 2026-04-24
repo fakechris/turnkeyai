@@ -1,5 +1,6 @@
 import type {
   BrowserBridge,
+  BrowserRawCdpExpertLane,
   BrowserTransportMode,
 } from "@turnkeyai/core-types/team";
 import type {
@@ -41,6 +42,22 @@ export function maybeGetRelayControlPlane(adapter: BrowserTransportAdapter): Rel
     typeof (adapter as RelayControlPlaneCapable).getRelayControlPlane === "function"
   ) {
     return (adapter as RelayControlPlaneCapable).getRelayControlPlane();
+  }
+  return null;
+}
+
+export interface BrowserRawCdpExpertCapable {
+  getRawCdpExpertLane(): BrowserRawCdpExpertLane;
+}
+
+export function maybeGetRawCdpExpertLane(adapter: BrowserTransportAdapter): BrowserRawCdpExpertLane | null {
+  if (
+    typeof adapter === "object" &&
+    adapter !== null &&
+    "getRawCdpExpertLane" in adapter &&
+    typeof (adapter as BrowserRawCdpExpertCapable).getRawCdpExpertLane === "function"
+  ) {
+    return (adapter as BrowserRawCdpExpertCapable).getRawCdpExpertLane();
   }
   return null;
 }

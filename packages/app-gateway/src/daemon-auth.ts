@@ -125,6 +125,10 @@ export function resolveDaemonRequestAccess(
     return "admin";
   }
 
+  if (isBrowserExpertRoute(url.pathname)) {
+    return "admin";
+  }
+
   if (isBrowserRoute(url.pathname)) {
     return "operator";
   }
@@ -188,6 +192,10 @@ function isValidationRoute(pathname: string): boolean {
 
 function isBrowserRoute(pathname: string): boolean {
   return pathname === "/browser-sessions" || pathname.startsWith("/browser-sessions/");
+}
+
+function isBrowserExpertRoute(pathname: string): boolean {
+  return /^\/browser-sessions\/[^/]+\/expert(?:\/|$)/.test(pathname);
 }
 
 function isWorkflowMutationRoute(pathname: string): boolean {
