@@ -78,6 +78,14 @@ test("browser transport soak classifies raw CDP expert-lane failures", () => {
     }),
     "protocol-mode-mismatch"
   );
+  assert.equal(
+    classifyBrowserTransportFailure({
+      target: "relay",
+      exitCode: 1,
+      output: "Protocol error (Target.sendMessageToTarget): When using flat protocol",
+    }),
+    "unknown"
+  );
 });
 
 const rawCdpAcceptanceMarkers = [

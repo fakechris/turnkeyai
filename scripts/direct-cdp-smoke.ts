@@ -189,6 +189,7 @@ async function main(): Promise<void> {
     const smoke = await runDirectCdpBrowserSessionSmoke({
       daemonUrl: resolvedDaemonUrl,
       startUrl: effectiveStartUrl,
+      timeoutMs,
     });
     const reconnectSmoke =
       verifyReconnect
@@ -307,6 +308,7 @@ function launchChromeForDirectCdp(input: {
 async function runDirectCdpBrowserSessionSmoke(input: {
   daemonUrl: string;
   startUrl: string;
+  timeoutMs: number;
 }): Promise<{
   threadId: string;
   sessionId: string;
@@ -433,6 +435,7 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     threadId,
     sessionId,
     startUrl: input.startUrl,
+    timeoutMs: input.timeoutMs,
   });
 
   const resumeResponse = (await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/resume`, {
@@ -580,6 +583,7 @@ async function verifyRawCdpExpertLaneSmoke(input: {
   threadId: string;
   sessionId: string;
   startUrl: string;
+  timeoutMs: number;
 }): Promise<{
   targetAttachPassed: boolean;
   oopifShadowPassed: boolean;
@@ -588,9 +592,11 @@ async function verifyRawCdpExpertLaneSmoke(input: {
 }> {
   const pageUrl = new URL(input.startUrl);
   const popupUrl = `${pageUrl.origin}/raw-cdp-popup`;
+  const expertCommandTimeoutMs = Math.min(input.timeoutMs, 30_000);
   await sendRawCdpExpertCommand(input, {
     method: "Target.setDiscoverTargets",
     params: { discover: true },
+    timeoutMs: expertCommandTimeoutMs,
   });
 
   const pageTarget = await waitForRawCdpTarget(input, (target) =>
@@ -599,17 +605,20 @@ async function verifyRawCdpExpertLaneSmoke(input: {
   const iframeTarget = await waitForRawCdpTarget(input, (target) =>
     target.type === "iframe" && typeof target.url === "string" && target.url.includes("/iframe.html")
   );
-  const pageSession = await attachRawCdpTarget(input, pageTarget.targetId);
-  const iframeSession = await attachRawCdpTarget(input, iframeTarget.targetId);
+  let pageSession: RawCdpAttachedSession | null = null;
+  let iframeSession: RawCdpAttachedSession | null = null;
   let targetAttachPassed = false;
   let oopifShadowPassed = false;
   let coordinateInputPassed = false;
   let popupTargetPassed = false;
 
   try {
+    pageSession = await attachRawCdpTarget(input, pageTarget.targetId);
+    iframeSession = await attachRawCdpTarget(input, iframeTarget.targetId);
     targetAttachPassed = Boolean(pageSession.expertSessionId && iframeSession.expertSessionId);
     const shadowState = await rawRuntimeEvaluate(input, {
       expertSessionId: iframeSession.expertSessionId,
+      timeoutMs: expertCommandTimeoutMs,
       expression: `(() => {
         const button = document.querySelector("#shadow-host").shadowRoot.querySelector("#shadow-button");
         const rect = button.getBoundingClientRect();
@@ -627,9 +636,11 @@ async function verifyRawCdpExpertLaneSmoke(input: {
       expertSessionId: iframeSession.expertSessionId,
       x: Number(shadowRecord.x),
       y: Number(shadowRecord.y),
+      timeoutMs: expertCommandTimeoutMs,
     });
     const clickedState = await rawRuntimeEvaluate(input, {
       expertSessionId: iframeSession.expertSessionId,
+      timeoutMs: expertCommandTimeoutMs,
       expression: `(() => {
         const button = document.querySelector("#shadow-host").shadowRoot.querySelector("#shadow-button");
         return { text: button.textContent, clicks: window.__rawCdpClicks };
@@ -640,6 +651,7 @@ async function verifyRawCdpExpertLaneSmoke(input: {
 
     await rawRuntimeEvaluate(input, {
       expertSessionId: pageSession.expertSessionId,
+      timeoutMs: expertCommandTimeoutMs,
       expression: `window.open(${JSON.stringify(popupUrl)}, "turnkeyai-raw-cdp-popup", "width=420,height=320"); "opened";`,
     });
     const popupTarget = await waitForRawCdpTarget(input, (target) => target.url === popupUrl);
@@ -647,6 +659,7 @@ async function verifyRawCdpExpertLaneSmoke(input: {
     try {
       const popupState = await rawRuntimeEvaluate(input, {
         expertSessionId: popupSession.expertSessionId,
+        timeoutMs: expertCommandTimeoutMs,
         expression: `({ title: document.title, marker: document.querySelector("#popup-marker")?.textContent })`,
       });
       const popupRecord = assertRecord(popupState, "raw CDP popup state");
@@ -656,8 +669,8 @@ async function verifyRawCdpExpertLaneSmoke(input: {
     }
   } finally {
     await Promise.all([
-      detachRawCdpSession(input, iframeSession.expertSessionId).catch(() => undefined),
-      detachRawCdpSession(input, pageSession.expertSessionId).catch(() => undefined),
+      iframeSession ? detachRawCdpSession(input, iframeSession.expertSessionId).catch(() => undefined) : Promise.resolve(),
+      pageSession ? detachRawCdpSession(input, pageSession.expertSessionId).catch(() => undefined) : Promise.resolve(),
     ]);
   }
 
@@ -682,10 +695,10 @@ async function verifyRawCdpExpertLaneSmoke(input: {
 }
 
 async function waitForRawCdpTarget(
-  input: { daemonUrl: string; threadId: string; sessionId: string },
+  input: { daemonUrl: string; threadId: string; sessionId: string; timeoutMs: number },
   predicate: (target: RawCdpTargetInfo) => boolean
 ): Promise<RawCdpTargetInfo> {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + input.timeoutMs;
   let lastTargets: RawCdpTargetInfo[] = [];
   while (Date.now() < deadline) {
     const targets = (await getJson(
@@ -734,7 +747,7 @@ async function detachRawCdpSession(
 
 async function rawRuntimeEvaluate(
   input: { daemonUrl: string; threadId: string; sessionId: string },
-  command: { expertSessionId: string; expression: string }
+  command: { expertSessionId: string; expression: string; timeoutMs: number }
 ): Promise<unknown> {
   const response = await sendRawCdpExpertCommand(input, {
     expertSessionId: command.expertSessionId,
@@ -744,14 +757,14 @@ async function rawRuntimeEvaluate(
       awaitPromise: true,
       returnByValue: true,
     },
-    timeoutMs: 5_000,
+    timeoutMs: command.timeoutMs,
   });
   return ((response.result as { result?: { value?: unknown } }).result ?? {}).value;
 }
 
 async function dispatchRawMouse(
   input: { daemonUrl: string; threadId: string; sessionId: string },
-  command: { expertSessionId: string; x: number; y: number }
+  command: { expertSessionId: string; x: number; y: number; timeoutMs: number }
 ): Promise<void> {
   for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
     await sendRawCdpExpertCommand(input, {
@@ -764,7 +777,7 @@ async function dispatchRawMouse(
         button: type === "mouseMoved" ? "none" : "left",
         clickCount: type === "mouseMoved" ? 0 : 1,
       },
-      timeoutMs: 5_000,
+      timeoutMs: command.timeoutMs,
     });
   }
 }
@@ -1025,10 +1038,11 @@ async function startDirectCdpSmokeFixture(): Promise<{
     res.setHeader("content-type", "text/html; charset=utf-8");
     res.end(html());
   });
-  const port = await listenOnFreeLocalPort(server, "127.0.0.1");
-  popupUrl = `http://localhost:${port}/raw-cdp-popup`;
+  const mainHost = "localhost";
+  const port = await listenOnFreeLocalPort(server, mainHost);
+  popupUrl = `http://${mainHost}:${port}/raw-cdp-popup`;
   return {
-    url: `http://localhost:${port}/`,
+    url: `http://${mainHost}:${port}/`,
     iframeUrl,
     iframeOrigin,
     popupUrl,

@@ -5720,10 +5720,12 @@ const BUILT_IN_CASES: RegressionCase[] = [
         `relayTransport=${resolvedByKey["incident:task-transport-relay"]?.browserTransportLabel ?? "-"}`,
         `cdpTransport=${resolvedByKey["incident:task-transport-cdp"]?.browserTransportLabel ?? "-"}`,
       ];
+      const expectedRelaySkippedChecks = 5;
+      const expectedDirectCdpSkippedChecks = 2;
       const passed =
-        relaySkipped === 5 &&
+        relaySkipped === expectedRelaySkippedChecks &&
         relayPassed === relayChecks.length - relaySkipped &&
-        directSkipped === 2 &&
+        directSkipped === expectedDirectCdpSkippedChecks &&
         directPassed === directChecks.length - directSkipped &&
         replayConsole.openIncidents === 0 &&
         replayConsole.recoveredGroups === 2 &&

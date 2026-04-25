@@ -320,7 +320,8 @@ export function classifyBrowserTransportFailure(input: {
   if (includesAny(normalized, ["action_timeout", "action timeout"])) {
     return "action-timeout";
   }
-  if (includesAny(normalized, [
+  const isDirectCdpTarget = input.target === "direct-cdp";
+  if (isDirectCdpTarget && includesAny(normalized, [
     "protocol_mode_mismatch",
     "protocol mode mismatch",
     "when using flat protocol",
@@ -328,7 +329,7 @@ export function classifyBrowserTransportFailure(input: {
   ])) {
     return "protocol-mode-mismatch";
   }
-  if (includesAny(normalized, [
+  if (isDirectCdpTarget && includesAny(normalized, [
     "expert_session_detached",
     "expert session detached",
     "expert session not found",
@@ -336,7 +337,7 @@ export function classifyBrowserTransportFailure(input: {
   ])) {
     return "expert-session-detached";
   }
-  if (includesAny(normalized, [
+  if (isDirectCdpTarget && includesAny(normalized, [
     "cdp_command_timeout",
     "cdp command timeout",
     "expert cdp command timed out",
@@ -344,7 +345,7 @@ export function classifyBrowserTransportFailure(input: {
   ])) {
     return "cdp-command-timeout";
   }
-  if (includesAny(normalized, [
+  if (isDirectCdpTarget && includesAny(normalized, [
     "attach_failed",
     "attach failed",
     "target.attachtotarget did not return",
@@ -352,14 +353,14 @@ export function classifyBrowserTransportFailure(input: {
   ])) {
     return "raw-attach-failed";
   }
-  if (includesAny(normalized, [
+  if (isDirectCdpTarget && includesAny(normalized, [
     "target_not_found",
     "timed out waiting for raw cdp target",
     "timed out waiting for live cdp target",
   ])) {
     return "raw-target-not-found";
   }
-  if (includesAny(normalized, [
+  if (isDirectCdpTarget && includesAny(normalized, [
     "browser_cdp_unavailable",
     "browser cdp unavailable",
     "direct-cdp browser transport requires",
