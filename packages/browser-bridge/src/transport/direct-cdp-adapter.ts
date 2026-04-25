@@ -210,6 +210,10 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
       this.sessionManager.listTargets(browserSessionId),
     ]);
     const targetResponse = await rootSession.send("Target.getTargets");
+    return this.buildExpertTargets(targetResponse, sessionTargets);
+  }
+
+  private buildExpertTargets(targetResponse: unknown, sessionTargets: BrowserTarget[]): BrowserExpertTargetInfo[] {
     const matchingTargetIdsByUrl = new Map<string, string[]>();
     for (const target of sessionTargets) {
       const normalizedUrl = target.url.trim();
@@ -220,7 +224,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
       matches.push(target.targetId);
       matchingTargetIdsByUrl.set(normalizedUrl, matches);
     }
-    const targetInfos = Array.isArray(targetResponse?.targetInfos) ? targetResponse.targetInfos : [];
+    const targetInfos = isRecord(targetResponse) && Array.isArray(targetResponse.targetInfos) ? targetResponse.targetInfos : [];
     return targetInfos.map((targetInfo) => {
       const url = typeof targetInfo?.url === "string" ? targetInfo.url : undefined;
       const matches = url ? matchingTargetIdsByUrl.get(url) : undefined;
@@ -263,15 +267,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
     }
 
     const rootSession = await this.getOrCreateRootCdpSession();
-    const attached = await rootSession.send("Target.attachToTarget", {
-      targetId: input.targetId,
-      flatten: false,
-    });
-    const expertSessionId =
-      typeof attached?.sessionId === "string" && attached.sessionId.trim().length > 0 ? attached.sessionId.trim() : null;
-    if (!expertSessionId) {
-      throw new Error("Target.attachToTarget did not return a sessionId");
-    }
+    const expertSessionId = await this.attachTargetWithDiagnostics(rootSession, input);
     const record: ExpertAttachedSessionRecord = {
       expertSessionId,
       browserSessionId: input.browserSessionId,
@@ -326,18 +322,23 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
     const rootSession = await this.getOrCreateRootCdpSession();
     if (input.expertSessionId) {
       const record = this.requireExpertSession(input.browserSessionId, input.expertSessionId);
+      const commandResult = await this.sendAttachedCommandWithRecovery({
+        rootSession,
+        browserSessionId: input.browserSessionId,
+        expertSessionId: record.expertSessionId,
+        targetId: record.targetId,
+        method: input.method,
+        ...(input.params ? { params: input.params } : {}),
+        ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+        retryOnDetach: true,
+        detachReattachedOnFailure: true,
+      });
       return {
         method: input.method,
         scope: "attached",
-        expertSessionId: record.expertSessionId,
+        expertSessionId: commandResult.expertSessionId,
         targetId: record.targetId,
-        result: await this.sendAttachedCommand({
-          rootSession,
-          expertSessionId: record.expertSessionId,
-          method: input.method,
-          ...(input.params ? { params: input.params } : {}),
-          ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
-        }),
+        result: commandResult.result,
       };
     }
 
@@ -353,26 +354,33 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
         targetId: input.targetId,
       });
       const reused = Boolean(existing);
+      let latestExpertSessionId = attached.expertSessionId;
       try {
+        const commandResult = await this.sendAttachedCommandWithRecovery({
+          rootSession,
+          browserSessionId: input.browserSessionId,
+          expertSessionId: attached.expertSessionId,
+          targetId: attached.targetId,
+          method: input.method,
+          ...(input.params ? { params: input.params } : {}),
+          ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+          retryOnDetach: true,
+          detachReattachedOnFailure: true,
+        });
+        latestExpertSessionId = commandResult.expertSessionId;
         return {
           method: input.method,
           scope: "attached",
-          expertSessionId: attached.expertSessionId,
+          expertSessionId: commandResult.expertSessionId,
           targetId: attached.targetId,
-          result: await this.sendAttachedCommand({
-            rootSession,
-            expertSessionId: attached.expertSessionId,
-            method: input.method,
-            ...(input.params ? { params: input.params } : {}),
-            ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
-          }),
+          result: commandResult.result,
         };
       } finally {
         if (!reused) {
-          this.expertAttachedSessions.delete(attached.expertSessionId);
-          this.expertEventQueues.delete(attached.expertSessionId);
+          this.expertAttachedSessions.delete(latestExpertSessionId);
+          this.expertEventQueues.delete(latestExpertSessionId);
           await rootSession.send("Target.detachFromTarget", {
-            sessionId: attached.expertSessionId,
+            sessionId: latestExpertSessionId,
           }).catch(() => undefined);
         }
       }
@@ -412,13 +420,14 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
           browser.on("disconnected", () => {
             this.browserPromise = null;
             this.rootCdpSessionPromise = null;
-            this.clearExpertState(new Error("browser disconnected"));
+            this.clearExpertState(new Error("browser_cdp_unavailable: browser disconnected"));
           });
           return browser;
         })
         .catch((error) => {
           this.browserPromise = null;
-          throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`browser_cdp_unavailable: ${message}`);
         });
     }
 
@@ -454,10 +463,108 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
         })
         .catch((error) => {
           this.rootCdpSessionPromise = null;
-          throw error;
+          throw normalizeBrowserCdpUnavailable(error);
         });
     }
     return this.rootCdpSessionPromise;
+  }
+
+  private async attachTargetWithDiagnostics(
+    rootSession: CDPSession,
+    input: {
+      browserSessionId: string;
+      targetId: string;
+    }
+  ): Promise<string> {
+    try {
+      const attached = await rootSession.send("Target.attachToTarget", {
+        targetId: input.targetId,
+        flatten: false,
+      });
+      const expertSessionId =
+        typeof attached?.sessionId === "string" && attached.sessionId.trim().length > 0 ? attached.sessionId.trim() : null;
+      if (!expertSessionId) {
+        throw new Error("Target.attachToTarget did not return a sessionId");
+      }
+      return expertSessionId;
+    } catch (error) {
+      const targetStillExists = await this.hasExpertTarget(rootSession, input.browserSessionId, input.targetId);
+      if (!targetStillExists) {
+        throw new Error(`target_not_found: raw CDP target disappeared before attach: ${input.targetId}`);
+      }
+      throw new Error(`attach_failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async hasExpertTarget(rootSession: CDPSession, browserSessionId: string, targetId: string): Promise<boolean> {
+    try {
+      const [targetResponse, sessionTargets] = await Promise.all([
+        rootSession.send("Target.getTargets"),
+        this.sessionManager.listTargets(browserSessionId),
+      ]);
+      return this.buildExpertTargets(targetResponse, sessionTargets).some((target) => target.targetId === targetId);
+    } catch {
+      return true;
+    }
+  }
+
+  private async sendAttachedCommandWithRecovery(input: {
+    rootSession: CDPSession;
+    browserSessionId: string;
+    expertSessionId: string;
+    targetId: string;
+    method: string;
+    params?: Record<string, unknown>;
+    timeoutMs?: number;
+    retryOnDetach: boolean;
+    detachReattachedOnFailure?: boolean;
+  }): Promise<{ expertSessionId: string; result: unknown }> {
+    try {
+      return {
+        expertSessionId: input.expertSessionId,
+        result: await this.sendAttachedCommand(input),
+      };
+    } catch (error) {
+      if (!input.retryOnDetach || !isExpertSessionDetachedError(error)) {
+        throw normalizeRawCdpCommandError(error);
+      }
+      this.onExpertSessionDetached(input.expertSessionId);
+      const attached = await this.attachExpertTarget({
+        browserSessionId: input.browserSessionId,
+        targetId: input.targetId,
+      });
+      try {
+        const result = await this.sendAttachedCommand({
+          rootSession: input.rootSession,
+          expertSessionId: attached.expertSessionId,
+          method: input.method,
+          ...(input.params ? { params: input.params } : {}),
+          ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+        });
+        this.pushExpertEvent(ROOT_EXPERT_SESSION_ID, {
+          method: "Target.expertSessionReattached",
+          params: {
+            browserSessionId: input.browserSessionId,
+            targetId: input.targetId,
+            previousExpertSessionId: input.expertSessionId,
+            expertSessionId: attached.expertSessionId,
+          },
+        });
+        return {
+          expertSessionId: attached.expertSessionId,
+          result,
+        };
+      } catch (retryError) {
+        if (input.detachReattachedOnFailure) {
+          this.expertAttachedSessions.delete(attached.expertSessionId);
+          this.expertEventQueues.delete(attached.expertSessionId);
+          await input.rootSession.send("Target.detachFromTarget", {
+            sessionId: attached.expertSessionId,
+          }).catch(() => undefined);
+        }
+        throw normalizeRawCdpCommandError(retryError);
+      }
+    }
   }
 
   private async sendAttachedCommand(input: {
@@ -473,7 +580,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
     return await new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.expertPending.delete(pendingKey);
-        reject(new Error(`expert CDP command timed out: ${input.method}`));
+        reject(new Error(`cdp_command_timeout: expert CDP command timed out: ${input.method}`));
       }, timeoutMs);
       this.expertPending.set(pendingKey, {
         resolve,
@@ -573,7 +680,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
       }
       clearTimeout(pending.timeout);
       this.expertPending.delete(pendingKey);
-      pending.reject(new Error("expert session detached"));
+      pending.reject(new Error("expert_session_detached: expert session detached"));
     }
   }
 
@@ -616,6 +723,35 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isExpertSessionDetachedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /expert_session_detached|expert session detached|expert session not found|detached from target/i.test(
+    message
+  );
+}
+
+function normalizeRawCdpCommandError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/^cdp_command_timeout:/i.test(message) || /^expert_session_detached:/i.test(message)) {
+    return error instanceof Error ? error : new Error(message);
+  }
+  if (/expert CDP command timed out|raw CDP command timed out|cdp command timeout/i.test(message)) {
+    return new Error(`cdp_command_timeout: ${message}`);
+  }
+  if (isExpertSessionDetachedError(error)) {
+    return new Error(`expert_session_detached: ${message}`);
+  }
+  return error instanceof Error ? error : new Error(message);
+}
+
+function normalizeBrowserCdpUnavailable(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/^browser_cdp_unavailable:/i.test(message)) {
+    return error instanceof Error ? error : new Error(message);
+  }
+  return new Error(`browser_cdp_unavailable: ${message}`);
 }
 
 interface EventTargetLike {

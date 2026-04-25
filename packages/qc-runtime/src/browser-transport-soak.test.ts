@@ -66,9 +66,25 @@ test("browser transport soak classifies raw CDP expert-lane failures", () => {
     classifyBrowserTransportFailure({
       target: "direct-cdp",
       exitCode: 1,
-      output: "expert session not found",
+      output: "expert_session_detached: expert session not found",
     }),
     "expert-session-detached"
+  );
+  assert.equal(
+    classifyBrowserTransportFailure({
+      target: "direct-cdp",
+      exitCode: 1,
+      output: "cdp_command_timeout: expert CDP command timed out: Runtime.evaluate",
+    }),
+    "cdp-command-timeout"
+  );
+  assert.equal(
+    classifyBrowserTransportFailure({
+      target: "direct-cdp",
+      exitCode: 1,
+      output: "browser_cdp_unavailable: connection refused",
+    }),
+    "browser-cdp-unavailable"
   );
   assert.equal(
     classifyBrowserTransportFailure({
@@ -82,7 +98,14 @@ test("browser transport soak classifies raw CDP expert-lane failures", () => {
     classifyBrowserTransportFailure({
       target: "relay",
       exitCode: 1,
-      output: "Protocol error (Target.sendMessageToTarget): When using flat protocol",
+      output: [
+        "target_not_found: timed out waiting for raw CDP target",
+        "attach_failed: Target.attachToTarget did not return a sessionId",
+        "expert_session_detached: expert session not found",
+        "cdp_command_timeout: expert CDP command timed out: Runtime.evaluate",
+        "browser_cdp_unavailable: connection refused",
+        "Protocol error (Target.sendMessageToTarget): When using flat protocol",
+      ].join("\n"),
     }),
     "unknown"
   );

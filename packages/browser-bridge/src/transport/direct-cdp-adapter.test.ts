@@ -5,7 +5,10 @@ import test from "node:test";
 import { DirectCdpBrowserAdapter } from "./direct-cdp-adapter";
 
 class FakeRootCdpSession extends EventEmitter {
+  readonly sent: Array<{ method: string; params?: Record<string, unknown> }> = [];
+
   async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    this.sent.push(params ? { method, params } : { method });
     switch (method) {
       case "Target.getTargets":
         return {
@@ -71,6 +74,111 @@ class FakeRootCdpSession extends EventEmitter {
       default:
         throw new Error(`unexpected root method: ${method}`);
     }
+  }
+}
+
+class AttachFailureRootCdpSession extends FakeRootCdpSession {
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.attachToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      return {};
+    }
+    return super.send(method, params);
+  }
+}
+
+class MissingTargetRootCdpSession extends FakeRootCdpSession {
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.attachToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      throw new Error("No target with given id found");
+    }
+    return super.send(method, params);
+  }
+}
+
+class CommandTimeoutRootCdpSession extends FakeRootCdpSession {
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.sendMessageToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      return {};
+    }
+    return super.send(method, params);
+  }
+}
+
+class DetachThenRecoverRootCdpSession extends FakeRootCdpSession {
+  private attachCounter = 0;
+  private sendCounter = 0;
+
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.attachToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      this.attachCounter += 1;
+      return {
+        sessionId: `expert-target-1-${this.attachCounter}`,
+      };
+    }
+    if (method === "Target.sendMessageToTarget") {
+      const payload = JSON.parse(String(params?.message ?? "{}"));
+      const sessionId = String(params?.sessionId ?? "");
+      if (payload.method === "Runtime.enable" && this.sendCounter === 0) {
+        this.sent.push(params ? { method, params } : { method });
+        this.sendCounter += 1;
+        queueMicrotask(() => {
+          this.emit("Target.detachedFromTarget", {
+            sessionId,
+            targetId: "target-1",
+          });
+        });
+        return {};
+      }
+      this.sendCounter += 1;
+    }
+    return super.send(method, params);
+  }
+}
+
+class GenericSessionNotFoundRootCdpSession extends FakeRootCdpSession {
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.sendMessageToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      throw new Error("Protocol error: Session with given id not found");
+    }
+    return super.send(method, params);
+  }
+}
+
+class DetachThenRetryFailureRootCdpSession extends FakeRootCdpSession {
+  private attachCounter = 0;
+  private sendCounter = 0;
+
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.attachToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      this.attachCounter += 1;
+      return {
+        sessionId: `expert-target-1-${this.attachCounter}`,
+      };
+    }
+    if (method === "Target.sendMessageToTarget") {
+      const payload = JSON.parse(String(params?.message ?? "{}"));
+      const sessionId = String(params?.sessionId ?? "");
+      this.sent.push(params ? { method, params } : { method });
+      if (payload.method === "Runtime.enable" && this.sendCounter === 0) {
+        this.sendCounter += 1;
+        queueMicrotask(() => {
+          this.emit("Target.detachedFromTarget", {
+            sessionId,
+            targetId: "target-1",
+          });
+        });
+        return {};
+      }
+      this.sendCounter += 1;
+      throw new Error("retry transport failed");
+    }
+    return super.send(method, params);
   }
 }
 
@@ -240,4 +348,206 @@ test("direct-cdp adapter clears detached expert queues and ignores late events",
     (adapter as unknown as { expertEventQueues: Map<string, unknown[]> }).expertEventQueues.has(attached.expertSessionId),
     false
   );
+});
+
+test("direct-cdp adapter classifies attach failures after relisting targets", async () => {
+  const rootSession = new AttachFailureRootCdpSession();
+  const adapter = new DirectCdpBrowserAdapter(
+    {
+      artifactRootDir: "/tmp/turnkeyai-browser-direct-cdp-expert-attach-failure-test",
+      transportMode: "direct-cdp",
+      directCdp: {
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/browser-id",
+      },
+    },
+    {
+      connectBrowser: async () => new FakeBrowser(rootSession) as any,
+    }
+  );
+
+  await assert.rejects(
+    adapter.getRawCdpExpertLane().attachExpertTarget({
+      browserSessionId: "browser-session-1",
+      targetId: "target-1",
+    }),
+    /attach_failed: Target\.attachToTarget did not return a sessionId/
+  );
+  assert.equal(rootSession.sent.some((entry) => entry.method === "Target.detachFromTarget"), false);
+});
+
+test("direct-cdp adapter classifies missing targets after attach relist", async () => {
+  const rootSession = new MissingTargetRootCdpSession();
+  const adapter = new DirectCdpBrowserAdapter(
+    {
+      artifactRootDir: "/tmp/turnkeyai-browser-direct-cdp-expert-target-missing-test",
+      transportMode: "direct-cdp",
+      directCdp: {
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/browser-id",
+      },
+    },
+    {
+      connectBrowser: async () => new FakeBrowser(rootSession) as any,
+    }
+  );
+
+  await assert.rejects(
+    adapter.getRawCdpExpertLane().attachExpertTarget({
+      browserSessionId: "browser-session-1",
+      targetId: "target-gone",
+    }),
+    /target_not_found: raw CDP target disappeared before attach: target-gone/
+  );
+});
+
+test("direct-cdp adapter reattaches and retries once after expert session detach", async () => {
+  const rootSession = new DetachThenRecoverRootCdpSession();
+  const adapter = new DirectCdpBrowserAdapter(
+    {
+      artifactRootDir: "/tmp/turnkeyai-browser-direct-cdp-expert-reattach-test",
+      transportMode: "direct-cdp",
+      directCdp: {
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/browser-id",
+      },
+    },
+    {
+      connectBrowser: async () => new FakeBrowser(rootSession) as any,
+    }
+  );
+
+  const expertLane = adapter.getRawCdpExpertLane();
+  const attached = await expertLane.attachExpertTarget({
+    browserSessionId: "browser-session-1",
+    targetId: "target-1",
+  });
+  assert.equal(attached.expertSessionId, "expert-target-1-1");
+
+  const result = await expertLane.sendExpertCommand({
+    browserSessionId: "browser-session-1",
+    expertSessionId: attached.expertSessionId,
+    method: "Runtime.enable",
+  });
+  assert.equal(result.expertSessionId, "expert-target-1-2");
+  assert.deepEqual(result.result, {
+    ok: true,
+    echoedMethod: "Runtime.enable",
+  });
+  const rootEvents = await expertLane.drainExpertEvents({
+    browserSessionId: "browser-session-1",
+  });
+  const reattachedEvent = rootEvents.find((event) => event.method === "Target.expertSessionReattached");
+  assert.deepEqual(reattachedEvent?.params, {
+    browserSessionId: "browser-session-1",
+    targetId: "target-1",
+    previousExpertSessionId: "expert-target-1-1",
+    expertSessionId: "expert-target-1-2",
+  });
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.attachToTarget").length, 2);
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.sendMessageToTarget").length, 2);
+});
+
+test("direct-cdp adapter does not retry generic protocol session misses", async () => {
+  const rootSession = new GenericSessionNotFoundRootCdpSession();
+  const adapter = new DirectCdpBrowserAdapter(
+    {
+      artifactRootDir: "/tmp/turnkeyai-browser-direct-cdp-expert-generic-session-missing-test",
+      transportMode: "direct-cdp",
+      directCdp: {
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/browser-id",
+      },
+    },
+    {
+      connectBrowser: async () => new FakeBrowser(rootSession) as any,
+    }
+  );
+
+  const expertLane = adapter.getRawCdpExpertLane();
+  const attached = await expertLane.attachExpertTarget({
+    browserSessionId: "browser-session-1",
+    targetId: "target-1",
+  });
+  await assert.rejects(
+    expertLane.sendExpertCommand({
+      browserSessionId: "browser-session-1",
+      expertSessionId: attached.expertSessionId,
+      method: "Runtime.enable",
+    }),
+    /Protocol error: Session with given id not found/
+  );
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.attachToTarget").length, 1);
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.sendMessageToTarget").length, 1);
+});
+
+test("direct-cdp adapter detaches replacement sessions when retry fails", async () => {
+  const rootSession = new DetachThenRetryFailureRootCdpSession();
+  const adapter = new DirectCdpBrowserAdapter(
+    {
+      artifactRootDir: "/tmp/turnkeyai-browser-direct-cdp-expert-retry-failure-test",
+      transportMode: "direct-cdp",
+      directCdp: {
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/browser-id",
+      },
+    },
+    {
+      connectBrowser: async () => new FakeBrowser(rootSession) as any,
+    }
+  );
+
+  const expertLane = adapter.getRawCdpExpertLane();
+  const attached = await expertLane.attachExpertTarget({
+    browserSessionId: "browser-session-1",
+    targetId: "target-1",
+  });
+  await assert.rejects(
+    expertLane.sendExpertCommand({
+      browserSessionId: "browser-session-1",
+      expertSessionId: attached.expertSessionId,
+      method: "Runtime.enable",
+    }),
+    /retry transport failed/
+  );
+
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.attachToTarget").length, 2);
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.sendMessageToTarget").length, 2);
+  assert.equal(
+    rootSession.sent.some(
+      (entry) => entry.method === "Target.detachFromTarget" && entry.params?.sessionId === "expert-target-1-2"
+    ),
+    true
+  );
+  assert.equal(
+    (adapter as unknown as { expertAttachedSessions: Map<string, unknown> }).expertAttachedSessions.has("expert-target-1-2"),
+    false
+  );
+});
+
+test("direct-cdp adapter surfaces command timeouts without retrying", async () => {
+  const rootSession = new CommandTimeoutRootCdpSession();
+  const adapter = new DirectCdpBrowserAdapter(
+    {
+      artifactRootDir: "/tmp/turnkeyai-browser-direct-cdp-expert-timeout-test",
+      transportMode: "direct-cdp",
+      directCdp: {
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/browser-id",
+      },
+    },
+    {
+      connectBrowser: async () => new FakeBrowser(rootSession) as any,
+    }
+  );
+
+  const expertLane = adapter.getRawCdpExpertLane();
+  const attached = await expertLane.attachExpertTarget({
+    browserSessionId: "browser-session-1",
+    targetId: "target-1",
+  });
+  await assert.rejects(
+    expertLane.sendExpertCommand({
+      browserSessionId: "browser-session-1",
+      expertSessionId: attached.expertSessionId,
+      method: "Runtime.enable",
+      timeoutMs: 1,
+    }),
+    /cdp_command_timeout: expert CDP command timed out: Runtime\.enable/
+  );
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.sendMessageToTarget").length, 1);
 });

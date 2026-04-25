@@ -79,6 +79,15 @@ Replay/operator/validation surfaces should preserve these raw CDP buckets:
 
 These buckets are intentionally concrete. They should tell the next operator or agent whether to relist targets, reattach, reconnect the browser, retry with a different timeout, or fix the CDP session mode.
 
+## Recovery Policy
+
+The direct-CDP adapter applies conservative runtime recovery:
+
+- Attach failures relist Chrome targets once. If the target disappeared, the failure is reported as `target_not_found`; if the target is still present, it is reported as `attach_failed`.
+- In-flight attached commands that fail because the expert session detached are reattached to the same target and retried once. A successful retry returns the replacement `expertSessionId`; if the retry also fails, the replacement session is detached and the failure is surfaced as `expert_session_detached` or the underlying retry error.
+- Command timeouts are not automatically retried. The command may already have executed in Chrome, so `cdp_command_timeout` is surfaced to replay/operator for an explicit retry or alternate action.
+- Browser disconnects and connection failures clear root/expert session state and surface `browser_cdp_unavailable`.
+
 ## Relay Boundary
 
 `relay` remains the extension-backed high-level browser transport. It can run the normal browser action contract and long-chain relay smoke, but it does not currently expose same-level raw Chrome target attach/send/detach.

@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import { createServer, type Server } from "node:http";
+import { pathToFileURL } from "node:url";
 
 import {
   assertBrowserSmokeActionParity,
@@ -19,140 +20,162 @@ import {
   type BrowserSmokeResponse,
 } from "./lib/browser-smoke-shared";
 
-const args = process.argv.slice(2);
-let daemonUrl = process.env.TURNKEYAI_DAEMON_URL ?? "";
-let cdpEndpoint = process.env.TURNKEYAI_BROWSER_CDP_ENDPOINT ?? "";
-let startUrl = "";
-let chromePath: string | null = null;
-let profileDir: string | null = null;
-let timeoutMs = 20_000;
-let keepOpen = false;
-let skipLaunch = false;
-let daemonPort: number | null = null;
-let cdpPort: number | null = null;
-let verifyReconnect = false;
-let verifyWorkflowLog = false;
-
-for (let index = 0; index < args.length; index += 1) {
-  const arg = args[index];
-  if (arg === "--daemon-url") {
-    const value = args[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error("missing value for --daemon-url");
-    }
-    daemonUrl = value;
-    index += 1;
-    continue;
-  }
-  if (arg === "--cdp-endpoint") {
-    const value = args[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error("missing value for --cdp-endpoint");
-    }
-    cdpEndpoint = value;
-    index += 1;
-    continue;
-  }
-  if (arg === "--url") {
-    const value = args[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error("missing value for --url");
-    }
-    startUrl = value;
-    index += 1;
-    continue;
-  }
-  if (arg === "--daemon-port") {
-    const value = args[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error("missing value for --daemon-port");
-    }
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      throw new Error("--daemon-port must be a positive integer");
-    }
-    daemonPort = parsed;
-    index += 1;
-    continue;
-  }
-  if (arg === "--cdp-port") {
-    const value = args[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error("missing value for --cdp-port");
-    }
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      throw new Error("--cdp-port must be a positive integer");
-    }
-    cdpPort = parsed;
-    index += 1;
-    continue;
-  }
-  if (arg === "--chrome-path") {
-    const value = args[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error("missing value for --chrome-path");
-    }
-    chromePath = value;
-    index += 1;
-    continue;
-  }
-  if (arg === "--profile-dir") {
-    const value = args[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error("missing value for --profile-dir");
-    }
-    profileDir = path.resolve(process.cwd(), value);
-    index += 1;
-    continue;
-  }
-  if (arg === "--timeout-ms") {
-    const value = args[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error("missing value for --timeout-ms");
-    }
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      throw new Error("--timeout-ms must be a positive number");
-    }
-    timeoutMs = Math.trunc(parsed);
-    index += 1;
-    continue;
-  }
-  if (arg === "--keep-open") {
-    keepOpen = true;
-    continue;
-  }
-  if (arg === "--skip-launch") {
-    skipLaunch = true;
-    continue;
-  }
-  if (arg === "--verify-reconnect") {
-    verifyReconnect = true;
-    continue;
-  }
-  if (arg === "--verify-workflow-log") {
-    verifyWorkflowLog = true;
-    continue;
-  }
+interface DirectCdpSmokeCliOptions {
+  daemonUrl: string;
+  cdpEndpoint: string;
+  startUrl: string;
+  chromePath: string | null;
+  profileDir: string | null;
+  timeoutMs: number;
+  keepOpen: boolean;
+  skipLaunch: boolean;
+  daemonPort: number | null;
+  cdpPort: number | null;
+  verifyReconnect: boolean;
+  verifyWorkflowLog: boolean;
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main(parseDirectCdpSmokeCliOptions(process.argv.slice(2)));
+}
 
-async function main(): Promise<void> {
-  const resolvedProfileDir = profileDir ?? path.join(os.tmpdir(), `turnkeyai-direct-cdp-smoke-${Date.now()}`);
-  const resolvedDaemonUrl = daemonUrl.trim()
-    ? daemonUrl.trim().replace(/\/+$/, "")
-    : `http://127.0.0.1:${daemonPort ?? (await resolveFreePort())}`;
+function parseDirectCdpSmokeCliOptions(args: string[]): DirectCdpSmokeCliOptions {
+  const options: DirectCdpSmokeCliOptions = {
+    daemonUrl: process.env.TURNKEYAI_DAEMON_URL ?? "",
+    cdpEndpoint: process.env.TURNKEYAI_BROWSER_CDP_ENDPOINT ?? "",
+    startUrl: "",
+    chromePath: null,
+    profileDir: null,
+    timeoutMs: 20_000,
+    keepOpen: false,
+    skipLaunch: false,
+    daemonPort: null,
+    cdpPort: null,
+    verifyReconnect: false,
+    verifyWorkflowLog: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--daemon-url") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --daemon-url");
+      }
+      options.daemonUrl = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--cdp-endpoint") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --cdp-endpoint");
+      }
+      options.cdpEndpoint = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--url") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --url");
+      }
+      options.startUrl = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--daemon-port") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --daemon-port");
+      }
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error("--daemon-port must be a positive integer");
+      }
+      options.daemonPort = parsed;
+      index += 1;
+      continue;
+    }
+    if (arg === "--cdp-port") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --cdp-port");
+      }
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error("--cdp-port must be a positive integer");
+      }
+      options.cdpPort = parsed;
+      index += 1;
+      continue;
+    }
+    if (arg === "--chrome-path") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --chrome-path");
+      }
+      options.chromePath = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--profile-dir") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --profile-dir");
+      }
+      options.profileDir = path.resolve(process.cwd(), value);
+      index += 1;
+      continue;
+    }
+    if (arg === "--timeout-ms") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --timeout-ms");
+      }
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error("--timeout-ms must be a positive number");
+      }
+      options.timeoutMs = Math.trunc(parsed);
+      index += 1;
+      continue;
+    }
+    if (arg === "--keep-open") {
+      options.keepOpen = true;
+      continue;
+    }
+    if (arg === "--skip-launch") {
+      options.skipLaunch = true;
+      continue;
+    }
+    if (arg === "--verify-reconnect") {
+      options.verifyReconnect = true;
+      continue;
+    }
+    if (arg === "--verify-workflow-log") {
+      options.verifyWorkflowLog = true;
+      continue;
+    }
+  }
+
+  return options;
+}
+
+async function main(options: DirectCdpSmokeCliOptions): Promise<void> {
+  const resolvedProfileDir = options.profileDir ?? path.join(os.tmpdir(), `turnkeyai-direct-cdp-smoke-${Date.now()}`);
+  const resolvedDaemonUrl = options.daemonUrl.trim()
+    ? options.daemonUrl.trim().replace(/\/+$/, "")
+    : `http://127.0.0.1:${options.daemonPort ?? (await resolveFreePort())}`;
   const resolvedDaemonPort = Number(new URL(resolvedDaemonUrl).port || 80);
-  const resolvedCdpPort = cdpPort ?? (cdpEndpoint.trim() ? null : await resolveFreePort());
-  const resolvedCdpEndpoint = cdpEndpoint.trim()
-    ? cdpEndpoint.trim().replace(/\/+$/, "")
+  const resolvedCdpPort = options.cdpPort ?? (options.cdpEndpoint.trim() ? null : await resolveFreePort());
+  const resolvedCdpEndpoint = options.cdpEndpoint.trim()
+    ? options.cdpEndpoint.trim().replace(/\/+$/, "")
     : `http://127.0.0.1:${resolvedCdpPort}`;
-  const fixture = startUrl.trim() ? null : await startDirectCdpSmokeFixture();
-  const effectiveStartUrl = startUrl.trim() || fixture!.url;
+  const fixture = options.startUrl.trim() ? null : await startDirectCdpSmokeFixture();
+  const effectiveStartUrl = options.startUrl.trim() || fixture!.url;
   const resolvedChromePath =
-    skipLaunch ? null : await resolveChromePath(chromePath ?? process.env.TURNKEYAI_BROWSER_PATH);
+    options.skipLaunch ? null : await resolveChromePath(options.chromePath ?? process.env.TURNKEYAI_BROWSER_PATH);
 
   let daemonChild: ChildProcess | null = null;
   let chromeChild: ChildProcess | null = null;
@@ -160,7 +183,7 @@ async function main(): Promise<void> {
   try {
     await mkdir(resolvedProfileDir, { recursive: true });
 
-    if (!skipLaunch) {
+    if (!options.skipLaunch) {
       chromeChild = launchChromeForDirectCdp({
         chromePath: resolvedChromePath!,
         profileDir: resolvedProfileDir,
@@ -172,7 +195,7 @@ async function main(): Promise<void> {
       await access(resolvedProfileDir).catch(() => undefined);
     }
 
-    await waitForCdpEndpoint(resolvedCdpEndpoint, timeoutMs);
+    await waitForCdpEndpoint(resolvedCdpEndpoint, options.timeoutMs);
 
     daemonChild = spawn("npm", ["run", "daemon"], {
       cwd: process.cwd(),
@@ -185,17 +208,17 @@ async function main(): Promise<void> {
       stdio: "ignore",
     });
 
-    await waitForHealth(resolvedDaemonUrl, timeoutMs);
+    await waitForHealth(resolvedDaemonUrl, options.timeoutMs);
     const smoke = await runDirectCdpBrowserSessionSmoke({
       daemonUrl: resolvedDaemonUrl,
       startUrl: effectiveStartUrl,
-      timeoutMs,
+      timeoutMs: options.timeoutMs,
     });
     const reconnectSmoke =
-      verifyReconnect
+      options.verifyReconnect
         ? await runDirectCdpReconnectSmoke({
             daemonUrl: resolvedDaemonUrl,
-            timeoutMs,
+            timeoutMs: options.timeoutMs,
             cdpEndpoint: resolvedCdpEndpoint,
             browserChild: chromeChild,
             relaunch: () =>
@@ -213,7 +236,7 @@ async function main(): Promise<void> {
       chromeChild = reconnectSmoke.browserChild;
     }
     const workflowLogSmoke =
-      verifyWorkflowLog
+      options.verifyWorkflowLog
         ? await runDirectCdpWorkflowLogSmoke({
             daemonUrl: resolvedDaemonUrl,
           })
@@ -261,7 +284,7 @@ async function main(): Promise<void> {
     console.log(`profile: ${resolvedProfileDir}`);
     console.log(`url: ${effectiveStartUrl}`);
 
-    if (keepOpen) {
+    if (options.keepOpen) {
       console.log("processes left running due to --keep-open");
       daemonChild = null;
       chromeChild = null;
@@ -270,7 +293,7 @@ async function main(): Promise<void> {
     chromeChild?.kill("SIGTERM");
     daemonChild?.kill("SIGTERM");
     await fixture?.close();
-    if (!keepOpen) {
+    if (!options.keepOpen) {
       await rm(resolvedProfileDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
@@ -421,12 +444,13 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   }
   const uploadTraceCount = countUploadTraceEntries(uploadResponse, "direct-cdp");
 
+  const originalTargetId = uploadResponse.targetId ?? sendResponse.targetId ?? spawnResponse.targetId;
   const multiTarget = await verifyBrowserSmokeMultiTarget({
     daemonUrl: input.daemonUrl,
     threadId,
     sessionId,
     startUrl: input.startUrl,
-    originalTargetId: uploadResponse.targetId ?? sendResponse.targetId ?? spawnResponse.targetId,
+    ...(originalTargetId ? { originalTargetId } : {}),
     label: "direct-cdp",
     client: { getJson, postJson },
   });
@@ -694,8 +718,8 @@ async function verifyRawCdpExpertLaneSmoke(input: {
   };
 }
 
-async function waitForRawCdpTarget(
-  input: { daemonUrl: string; threadId: string; sessionId: string; timeoutMs: number },
+export async function waitForRawCdpTarget(
+  input: { daemonUrl: string; threadId: string; sessionId: string; timeoutMs: number; pollIntervalMs?: number },
   predicate: (target: RawCdpTargetInfo) => boolean
 ): Promise<RawCdpTargetInfo> {
   const deadline = Date.now() + input.timeoutMs;
@@ -709,7 +733,7 @@ async function waitForRawCdpTarget(
     if (target) {
       return target;
     }
-    await sleep(250);
+    await sleep(input.pollIntervalMs ?? 250);
   }
   throw new Error(`target_not_found: timed out waiting for raw CDP target; last targets: ${JSON.stringify(lastTargets)}`);
 }
@@ -807,7 +831,7 @@ function assertRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-interface RawCdpTargetInfo {
+export interface RawCdpTargetInfo {
   targetId: string;
   type: string;
   url?: string;
