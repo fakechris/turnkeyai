@@ -331,6 +331,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
         ...(input.params ? { params: input.params } : {}),
         ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
         retryOnDetach: true,
+        detachReattachedOnFailure: true,
       });
       return {
         method: input.method,
@@ -364,7 +365,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
           ...(input.params ? { params: input.params } : {}),
           ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
           retryOnDetach: true,
-          detachReattachedOnFailure: !reused,
+          detachReattachedOnFailure: true,
         });
         latestExpertSessionId = commandResult.expertSessionId;
         return {
@@ -533,15 +534,25 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
         targetId: input.targetId,
       });
       try {
+        const result = await this.sendAttachedCommand({
+          rootSession: input.rootSession,
+          expertSessionId: attached.expertSessionId,
+          method: input.method,
+          ...(input.params ? { params: input.params } : {}),
+          ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+        });
+        this.pushExpertEvent(ROOT_EXPERT_SESSION_ID, {
+          method: "Target.expertSessionReattached",
+          params: {
+            browserSessionId: input.browserSessionId,
+            targetId: input.targetId,
+            previousExpertSessionId: input.expertSessionId,
+            expertSessionId: attached.expertSessionId,
+          },
+        });
         return {
           expertSessionId: attached.expertSessionId,
-          result: await this.sendAttachedCommand({
-            rootSession: input.rootSession,
-            expertSessionId: attached.expertSessionId,
-            method: input.method,
-            ...(input.params ? { params: input.params } : {}),
-            ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
-          }),
+          result,
         };
       } catch (retryError) {
         if (input.detachReattachedOnFailure) {
@@ -716,7 +727,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isExpertSessionDetachedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /expert_session_detached|expert session detached|expert session not found|detached from target|session.*not.*found/i.test(
+  return /expert_session_detached|expert session detached|expert session not found|detached from target/i.test(
     message
   );
 }

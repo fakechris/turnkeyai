@@ -139,6 +139,49 @@ class DetachThenRecoverRootCdpSession extends FakeRootCdpSession {
   }
 }
 
+class GenericSessionNotFoundRootCdpSession extends FakeRootCdpSession {
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.sendMessageToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      throw new Error("Protocol error: Session with given id not found");
+    }
+    return super.send(method, params);
+  }
+}
+
+class DetachThenRetryFailureRootCdpSession extends FakeRootCdpSession {
+  private attachCounter = 0;
+  private sendCounter = 0;
+
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.attachToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      this.attachCounter += 1;
+      return {
+        sessionId: `expert-target-1-${this.attachCounter}`,
+      };
+    }
+    if (method === "Target.sendMessageToTarget") {
+      const payload = JSON.parse(String(params?.message ?? "{}"));
+      const sessionId = String(params?.sessionId ?? "");
+      this.sent.push(params ? { method, params } : { method });
+      if (payload.method === "Runtime.enable" && this.sendCounter === 0) {
+        this.sendCounter += 1;
+        queueMicrotask(() => {
+          this.emit("Target.detachedFromTarget", {
+            sessionId,
+            targetId: "target-1",
+          });
+        });
+        return {};
+      }
+      this.sendCounter += 1;
+      throw new Error("retry transport failed");
+    }
+    return super.send(method, params);
+  }
+}
+
 class FakeBrowser extends EventEmitter {
   constructor(private readonly rootSession: FakeRootCdpSession) {
     super();
@@ -388,8 +431,93 @@ test("direct-cdp adapter reattaches and retries once after expert session detach
     ok: true,
     echoedMethod: "Runtime.enable",
   });
+  const rootEvents = await expertLane.drainExpertEvents({
+    browserSessionId: "browser-session-1",
+  });
+  const reattachedEvent = rootEvents.find((event) => event.method === "Target.expertSessionReattached");
+  assert.deepEqual(reattachedEvent?.params, {
+    browserSessionId: "browser-session-1",
+    targetId: "target-1",
+    previousExpertSessionId: "expert-target-1-1",
+    expertSessionId: "expert-target-1-2",
+  });
   assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.attachToTarget").length, 2);
   assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.sendMessageToTarget").length, 2);
+});
+
+test("direct-cdp adapter does not retry generic protocol session misses", async () => {
+  const rootSession = new GenericSessionNotFoundRootCdpSession();
+  const adapter = new DirectCdpBrowserAdapter(
+    {
+      artifactRootDir: "/tmp/turnkeyai-browser-direct-cdp-expert-generic-session-missing-test",
+      transportMode: "direct-cdp",
+      directCdp: {
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/browser-id",
+      },
+    },
+    {
+      connectBrowser: async () => new FakeBrowser(rootSession) as any,
+    }
+  );
+
+  const expertLane = adapter.getRawCdpExpertLane();
+  const attached = await expertLane.attachExpertTarget({
+    browserSessionId: "browser-session-1",
+    targetId: "target-1",
+  });
+  await assert.rejects(
+    expertLane.sendExpertCommand({
+      browserSessionId: "browser-session-1",
+      expertSessionId: attached.expertSessionId,
+      method: "Runtime.enable",
+    }),
+    /Protocol error: Session with given id not found/
+  );
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.attachToTarget").length, 1);
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.sendMessageToTarget").length, 1);
+});
+
+test("direct-cdp adapter detaches replacement sessions when retry fails", async () => {
+  const rootSession = new DetachThenRetryFailureRootCdpSession();
+  const adapter = new DirectCdpBrowserAdapter(
+    {
+      artifactRootDir: "/tmp/turnkeyai-browser-direct-cdp-expert-retry-failure-test",
+      transportMode: "direct-cdp",
+      directCdp: {
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/browser-id",
+      },
+    },
+    {
+      connectBrowser: async () => new FakeBrowser(rootSession) as any,
+    }
+  );
+
+  const expertLane = adapter.getRawCdpExpertLane();
+  const attached = await expertLane.attachExpertTarget({
+    browserSessionId: "browser-session-1",
+    targetId: "target-1",
+  });
+  await assert.rejects(
+    expertLane.sendExpertCommand({
+      browserSessionId: "browser-session-1",
+      expertSessionId: attached.expertSessionId,
+      method: "Runtime.enable",
+    }),
+    /retry transport failed/
+  );
+
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.attachToTarget").length, 2);
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.sendMessageToTarget").length, 2);
+  assert.equal(
+    rootSession.sent.some(
+      (entry) => entry.method === "Target.detachFromTarget" && entry.params?.sessionId === "expert-target-1-2"
+    ),
+    true
+  );
+  assert.equal(
+    (adapter as unknown as { expertAttachedSessions: Map<string, unknown> }).expertAttachedSessions.has("expert-target-1-2"),
+    false
+  );
 });
 
 test("direct-cdp adapter surfaces command timeouts without retrying", async () => {
