@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import { createServer, type Server } from "node:http";
+import { pathToFileURL } from "node:url";
 
 import {
   assertBrowserSmokeActionParity,
@@ -137,7 +138,9 @@ for (let index = 0; index < args.length; index += 1) {
   }
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}
 
 async function main(): Promise<void> {
   const resolvedProfileDir = profileDir ?? path.join(os.tmpdir(), `turnkeyai-direct-cdp-smoke-${Date.now()}`);
@@ -421,12 +424,13 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   }
   const uploadTraceCount = countUploadTraceEntries(uploadResponse, "direct-cdp");
 
+  const originalTargetId = uploadResponse.targetId ?? sendResponse.targetId ?? spawnResponse.targetId;
   const multiTarget = await verifyBrowserSmokeMultiTarget({
     daemonUrl: input.daemonUrl,
     threadId,
     sessionId,
     startUrl: input.startUrl,
-    originalTargetId: uploadResponse.targetId ?? sendResponse.targetId ?? spawnResponse.targetId,
+    ...(originalTargetId ? { originalTargetId } : {}),
     label: "direct-cdp",
     client: { getJson, postJson },
   });
@@ -694,8 +698,8 @@ async function verifyRawCdpExpertLaneSmoke(input: {
   };
 }
 
-async function waitForRawCdpTarget(
-  input: { daemonUrl: string; threadId: string; sessionId: string; timeoutMs: number },
+export async function waitForRawCdpTarget(
+  input: { daemonUrl: string; threadId: string; sessionId: string; timeoutMs: number; pollIntervalMs?: number },
   predicate: (target: RawCdpTargetInfo) => boolean
 ): Promise<RawCdpTargetInfo> {
   const deadline = Date.now() + input.timeoutMs;
@@ -709,7 +713,7 @@ async function waitForRawCdpTarget(
     if (target) {
       return target;
     }
-    await sleep(250);
+    await sleep(input.pollIntervalMs ?? 250);
   }
   throw new Error(`target_not_found: timed out waiting for raw CDP target; last targets: ${JSON.stringify(lastTargets)}`);
 }
@@ -807,7 +811,7 @@ function assertRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-interface RawCdpTargetInfo {
+export interface RawCdpTargetInfo {
   targetId: string;
   type: string;
   url?: string;

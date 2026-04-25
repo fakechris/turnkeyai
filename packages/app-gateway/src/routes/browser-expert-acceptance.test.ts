@@ -371,6 +371,68 @@ class RawCdpScenarioBrowser extends EventEmitter {
   }
 }
 
+class RawCdpAttachFailureRootSession extends RawCdpScenarioRootSession {
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.attachToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      return {};
+    }
+    return super.send(method, params);
+  }
+}
+
+class RawCdpMissingTargetRootSession extends RawCdpScenarioRootSession {
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.attachToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      throw new Error("No target with given id found");
+    }
+    return super.send(method, params);
+  }
+}
+
+class RawCdpCommandTimeoutRootSession extends RawCdpScenarioRootSession {
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.sendMessageToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      return {};
+    }
+    return super.send(method, params);
+  }
+}
+
+class RawCdpDetachThenRecoverRootSession extends RawCdpScenarioRootSession {
+  private attachCounter = 0;
+  private sendCounter = 0;
+
+  override async send(method: string, params?: Record<string, unknown>): Promise<any> {
+    if (method === "Target.attachToTarget") {
+      this.sent.push(params ? { method, params } : { method });
+      this.attachCounter += 1;
+      return {
+        sessionId: `expert-iframe-cross-origin-${this.attachCounter}`,
+      };
+    }
+    if (method === "Target.sendMessageToTarget") {
+      const payload = JSON.parse(String(params?.message ?? "{}"));
+      const sessionId = String(params?.sessionId ?? "");
+      if (payload.method === "Runtime.evaluate" && this.sendCounter === 0) {
+        this.sent.push(params ? { method, params } : { method });
+        this.sendCounter += 1;
+        queueMicrotask(() => {
+          this.emit("Target.detachedFromTarget", {
+            sessionId,
+            targetId: "iframe-cross-origin",
+          });
+        });
+        return {};
+      }
+      this.sendCounter += 1;
+    }
+    return super.send(method, params);
+  }
+}
+
 function createRawCdpScenarioDeps(rootSession = new RawCdpScenarioRootSession()) {
   const adapter = new DirectCdpBrowserAdapter(
     {
@@ -669,7 +731,7 @@ test("browser expert scenarios fail an in-flight raw command when its target det
     },
   });
   assert.equal(sendResponse.res.statusCode, 502);
-  assert.equal(sendResponse.json.error, "expert session detached");
+  assert.equal(sendResponse.json.error, "expert_session_detached: expert session detached");
 
   const eventsResponse = await callBrowserRoute(deps, {
     method: "GET",
@@ -677,4 +739,137 @@ test("browser expert scenarios fail an in-flight raw command when its target det
   });
   assert.equal(eventsResponse.res.statusCode, 404);
   assert.equal(eventsResponse.json.error, "expert session not found");
+});
+
+test("browser expert scenarios classify attach failures without leaking expert sessions", async () => {
+  const { deps, rootSession } = createRawCdpScenarioDeps(new RawCdpAttachFailureRootSession());
+
+  const attachResponse = await callBrowserRoute(deps, {
+    method: "POST",
+    url: "/browser-sessions/session-attach-failure/expert/attach",
+    body: {
+      threadId: "thread-1",
+      targetId: "iframe-cross-origin",
+    },
+  });
+  assert.equal(attachResponse.res.statusCode, 502);
+  assert.equal(attachResponse.json.error, "attach_failed: Target.attachToTarget did not return a sessionId");
+
+  const detachResponse = await callBrowserRoute(deps, {
+    method: "POST",
+    url: "/browser-sessions/session-attach-failure/expert/detach",
+    body: {
+      threadId: "thread-1",
+      expertSessionId: "expert-iframe-cross-origin",
+    },
+  });
+  assert.equal(detachResponse.res.statusCode, 404);
+  assert.equal(detachResponse.json.error, "expert session not found");
+  assert.equal(
+    rootSession.sent.some((entry) => entry.method === "Target.detachFromTarget"),
+    false
+  );
+});
+
+test("browser expert scenarios classify missing targets after attach relist", async () => {
+  const { deps } = createRawCdpScenarioDeps(new RawCdpMissingTargetRootSession());
+
+  const attachResponse = await callBrowserRoute(deps, {
+    method: "POST",
+    url: "/browser-sessions/session-missing-target/expert/attach",
+    body: {
+      threadId: "thread-1",
+      targetId: "target-gone",
+    },
+  });
+  assert.equal(attachResponse.res.statusCode, 502);
+  assert.equal(attachResponse.json.error, "target_not_found: raw CDP target disappeared before attach: target-gone");
+});
+
+test("browser expert scenarios reattach and retry once after expert session detach", async () => {
+  const { deps, rootSession } = createRawCdpScenarioDeps(new RawCdpDetachThenRecoverRootSession());
+  const attachResponse = await callBrowserRoute(deps, {
+    method: "POST",
+    url: "/browser-sessions/session-reattach/expert/attach",
+    body: {
+      threadId: "thread-1",
+      targetId: "iframe-cross-origin",
+    },
+  });
+  assert.equal(attachResponse.res.statusCode, 200);
+  assert.equal(attachResponse.json.expertSessionId, "expert-iframe-cross-origin-1");
+
+  const sendResponse = await callBrowserRoute(deps, {
+    method: "POST",
+    url: "/browser-sessions/session-reattach/expert/send",
+    body: {
+      threadId: "thread-1",
+      expertSessionId: attachResponse.json.expertSessionId,
+      method: "Runtime.evaluate",
+      params: {
+        expression: "window.__recovers",
+      },
+      timeoutMs: 1000,
+    },
+  });
+  assert.equal(sendResponse.res.statusCode, 200);
+  assert.equal(sendResponse.json.expertSessionId, "expert-iframe-cross-origin-2");
+  assert.equal(sendResponse.json.result.result.value, "eval-ok");
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.attachToTarget").length, 2);
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.sendMessageToTarget").length, 2);
+});
+
+test("browser expert scenarios surface bounded raw command timeout", async () => {
+  const { deps, rootSession } = createRawCdpScenarioDeps(new RawCdpCommandTimeoutRootSession());
+  const attachResponse = await callBrowserRoute(deps, {
+    method: "POST",
+    url: "/browser-sessions/session-timeout/expert/attach",
+    body: {
+      threadId: "thread-1",
+      targetId: "iframe-cross-origin",
+    },
+  });
+  assert.equal(attachResponse.res.statusCode, 200);
+
+  const sendResponse = await callBrowserRoute(deps, {
+    method: "POST",
+    url: "/browser-sessions/session-timeout/expert/send",
+    body: {
+      threadId: "thread-1",
+      expertSessionId: attachResponse.json.expertSessionId,
+      method: "Runtime.evaluate",
+      params: {
+        expression: "window.__neverResolves",
+      },
+      timeoutMs: 1,
+    },
+  });
+  assert.equal(sendResponse.res.statusCode, 502);
+  assert.equal(sendResponse.json.error, "cdp_command_timeout: expert CDP command timed out: Runtime.evaluate");
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.sendMessageToTarget").length, 1);
+});
+
+test("browser expert scenarios surface unavailable direct CDP endpoint", async () => {
+  const adapter = new DirectCdpBrowserAdapter(
+    {
+      artifactRootDir: "/tmp/turnkeyai-browser-expert-unavailable",
+      transportMode: "direct-cdp",
+      directCdp: {
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/browser-id",
+      },
+    },
+    {
+      connectBrowser: async () => {
+        throw new Error("connection refused");
+      },
+    }
+  );
+  const deps = createDeps(adapter.getRawCdpExpertLane());
+
+  const targetsResponse = await callBrowserRoute(deps, {
+    method: "GET",
+    url: "/browser-sessions/session-unavailable/expert/targets?threadId=thread-1",
+  });
+  assert.equal(targetsResponse.res.statusCode, 502);
+  assert.equal(targetsResponse.json.error, "browser_cdp_unavailable: connection refused");
 });
