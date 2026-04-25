@@ -445,6 +445,12 @@ export type BrowserTransportDiagnosticBucket =
   | "action_timeout"
   | "action_failed"
   | "endpoint_unreachable"
+  | "target_not_found"
+  | "attach_failed"
+  | "expert_session_detached"
+  | "cdp_command_timeout"
+  | "browser_cdp_unavailable"
+  | "protocol_mode_mismatch"
   | "reconnect_required";
 export type BrowserSessionStatus = "starting" | "ready" | "busy" | "disconnected" | "closed";
 export type BrowserTargetStatus = "open" | "attached" | "detached" | "closed";

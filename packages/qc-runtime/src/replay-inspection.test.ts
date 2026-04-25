@@ -670,6 +670,47 @@ test("replay inspection enriches direct-cdp browser continuity with reconnect di
   assert.match(bundle?.caseHeadline ?? "", /diag=reconnect_required/);
 });
 
+test("replay inspection classifies raw CDP expert-lane diagnostics", () => {
+  const records = [
+    {
+      replayId: "task-raw-cdp:worker",
+      layer: "worker",
+      status: "failed",
+      recordedAt: 10,
+      threadId: "thread-1",
+      taskId: "task-raw-cdp",
+      workerType: "browser",
+      summary: "raw CDP expert command failed",
+      failure: {
+        category: "transport_failed",
+        layer: "worker",
+        retryable: true,
+        message: "Protocol error (Target.sendMessageToTarget): When using flat protocol, messages are routed by sessionId",
+        recommendedAction: "inspect",
+      },
+      metadata: {
+        payload: {
+          sessionId: "browser-session-direct-cdp",
+          targetId: "target-direct-cdp",
+          transportMode: "direct-cdp",
+          transportLabel: "direct-cdp",
+          transportTargetId: "page:manager-1:1",
+          resumeMode: "hot",
+          targetResolution: "current",
+        },
+      },
+    },
+  ] as Parameters<typeof buildReplayInspectionReport>[0];
+
+  const consoleReport = buildReplayConsoleReport(records, 5);
+  const bundle = buildReplayIncidentBundle(records, "task-raw-cdp");
+
+  assert.equal(consoleReport.latestBundles[0]?.browserDiagnosticBucket, "protocol_mode_mismatch");
+  assert.equal(bundle?.browserContinuity?.browserDiagnosticBucket, "protocol_mode_mismatch");
+  assert.match(bundle?.browserContinuity?.browserDiagnosticSummary ?? "", /protocol mode/i);
+  assert.match(bundle?.caseHeadline ?? "", /diag=protocol_mode_mismatch/);
+});
+
 test("replay console surfaces recovery workflow states from actionable bundles", () => {
   const records = [
     {

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 
 import {
   assertBrowserSmokeActionParity,
@@ -166,6 +166,7 @@ async function main(): Promise<void> {
         profileDir: resolvedProfileDir,
         cdpPort: resolvedCdpPort ?? Number(new URL(resolvedCdpEndpoint).port || 9222),
         startUrl: effectiveStartUrl,
+        isolateOrigins: fixture ? [fixture.iframeOrigin] : [],
       });
     } else {
       await access(resolvedProfileDir).catch(() => undefined);
@@ -188,6 +189,7 @@ async function main(): Promise<void> {
     const smoke = await runDirectCdpBrowserSessionSmoke({
       daemonUrl: resolvedDaemonUrl,
       startUrl: effectiveStartUrl,
+      timeoutMs,
     });
     const reconnectSmoke =
       verifyReconnect
@@ -202,6 +204,7 @@ async function main(): Promise<void> {
                 profileDir: resolvedProfileDir,
                 cdpPort: resolvedCdpPort ?? Number(new URL(resolvedCdpEndpoint).port || 9222),
                 startUrl: effectiveStartUrl,
+                isolateOrigins: fixture ? [fixture.iframeOrigin] : [],
               }),
             browserSmoke: smoke,
           })
@@ -233,6 +236,11 @@ async function main(): Promise<void> {
     console.log("browser-action-parity: passed");
     console.log("browser-cdp-controls: passed");
     console.log("browser-artifact-safety: passed");
+    console.log(`browser-raw-cdp-target-attach: ${smoke.rawCdpTargetAttachPassed ? "passed" : "failed"}`);
+    console.log(`browser-raw-cdp-oopif-shadow: ${smoke.rawCdpOopifShadowPassed ? "passed" : "failed"}`);
+    console.log(`browser-raw-cdp-coordinate-input: ${smoke.rawCdpCoordinateInputPassed ? "passed" : "failed"}`);
+    console.log(`browser-raw-cdp-popup-target: ${smoke.rawCdpPopupTargetPassed ? "passed" : "failed"}`);
+    console.log("browser-raw-cdp-boundary: direct-cdp-required");
     if (smoke.multiTargetContinuityPassed) {
       console.log("browser-multi-target: passed");
     }
@@ -273,14 +281,22 @@ function launchChromeForDirectCdp(input: {
   profileDir: string;
   cdpPort: number;
   startUrl: string;
+  isolateOrigins?: string[];
 }): ChildProcess {
   return spawn(
     input.chromePath,
     [
       `--user-data-dir=${input.profileDir}`,
       `--remote-debugging-port=${input.cdpPort}`,
+      "--headless=new",
+      "--disable-gpu",
+      "--no-sandbox",
+      "--disable-extensions",
+      "--disable-component-extensions-with-background-pages",
       "--no-first-run",
       "--no-default-browser-check",
+      "--site-per-process",
+      ...(input.isolateOrigins?.length ? [`--isolate-origins=${input.isolateOrigins.join(",")}`] : []),
       input.startUrl,
     ],
     {
@@ -292,6 +308,7 @@ function launchChromeForDirectCdp(input: {
 async function runDirectCdpBrowserSessionSmoke(input: {
   daemonUrl: string;
   startUrl: string;
+  timeoutMs: number;
 }): Promise<{
   threadId: string;
   sessionId: string;
@@ -307,6 +324,10 @@ async function runDirectCdpBrowserSessionSmoke(input: {
   uploadTraceCount: number;
   networkControlsPassed: boolean;
   multiTargetContinuityPassed: boolean;
+  rawCdpTargetAttachPassed: boolean;
+  rawCdpOopifShadowPassed: boolean;
+  rawCdpCoordinateInputPassed: boolean;
+  rawCdpPopupTargetPassed: boolean;
   actionKinds: string[];
 }> {
   const thread = (await postJson(`${input.daemonUrl}/threads/bootstrap-demo`, {
@@ -409,6 +430,13 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     label: "direct-cdp",
     client: { getJson, postJson },
   });
+  const rawExpertSmoke = await verifyRawCdpExpertLaneSmoke({
+    daemonUrl: input.daemonUrl,
+    threadId,
+    sessionId,
+    startUrl: input.startUrl,
+    timeoutMs: input.timeoutMs,
+  });
 
   const resumeResponse = (await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/resume`, {
     threadId,
@@ -484,6 +512,10 @@ async function runDirectCdpBrowserSessionSmoke(input: {
     uploadTraceCount,
     networkControlsPassed: true,
     multiTargetContinuityPassed: true,
+    rawCdpTargetAttachPassed: rawExpertSmoke.targetAttachPassed,
+    rawCdpOopifShadowPassed: rawExpertSmoke.oopifShadowPassed,
+    rawCdpCoordinateInputPassed: rawExpertSmoke.coordinateInputPassed,
+    rawCdpPopupTargetPassed: rawExpertSmoke.popupTargetPassed,
     actionKinds,
   };
 }
@@ -544,6 +576,251 @@ async function getSessionHistory(
   return (await getJson(
     `${daemonUrl}/browser-sessions/${encodeURIComponent(sessionId)}/history?threadId=${encodeURIComponent(threadId)}&limit=10`
   )) as Array<{ dispatchMode?: unknown; transportLabel?: unknown }>;
+}
+
+async function verifyRawCdpExpertLaneSmoke(input: {
+  daemonUrl: string;
+  threadId: string;
+  sessionId: string;
+  startUrl: string;
+  timeoutMs: number;
+}): Promise<{
+  targetAttachPassed: boolean;
+  oopifShadowPassed: boolean;
+  coordinateInputPassed: boolean;
+  popupTargetPassed: boolean;
+}> {
+  const pageUrl = new URL(input.startUrl);
+  const popupUrl = `${pageUrl.origin}/raw-cdp-popup`;
+  const expertCommandTimeoutMs = Math.min(input.timeoutMs, 30_000);
+  await sendRawCdpExpertCommand(input, {
+    method: "Target.setDiscoverTargets",
+    params: { discover: true },
+    timeoutMs: expertCommandTimeoutMs,
+  });
+
+  const pageTarget = await waitForRawCdpTarget(input, (target) =>
+    target.type === "page" && typeof target.url === "string" && target.url.startsWith(input.startUrl)
+  );
+  const iframeTarget = await waitForRawCdpTarget(input, (target) =>
+    target.type === "iframe" && typeof target.url === "string" && target.url.includes("/iframe.html")
+  );
+  let pageSession: RawCdpAttachedSession | null = null;
+  let iframeSession: RawCdpAttachedSession | null = null;
+  let targetAttachPassed = false;
+  let oopifShadowPassed = false;
+  let coordinateInputPassed = false;
+  let popupTargetPassed = false;
+
+  try {
+    pageSession = await attachRawCdpTarget(input, pageTarget.targetId);
+    iframeSession = await attachRawCdpTarget(input, iframeTarget.targetId);
+    targetAttachPassed = Boolean(pageSession.expertSessionId && iframeSession.expertSessionId);
+    const shadowState = await rawRuntimeEvaluate(input, {
+      expertSessionId: iframeSession.expertSessionId,
+      timeoutMs: expertCommandTimeoutMs,
+      expression: `(() => {
+        const button = document.querySelector("#shadow-host").shadowRoot.querySelector("#shadow-button");
+        const rect = button.getBoundingClientRect();
+        return {
+          text: button.textContent,
+          clicks: window.__rawCdpClicks,
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2
+        };
+      })()`,
+    });
+    const shadowRecord = assertRecord(shadowState, "raw CDP shadow state");
+    oopifShadowPassed = shadowRecord.text === "Submit from shadow" && shadowRecord.clicks === 0;
+    await dispatchRawMouse(input, {
+      expertSessionId: iframeSession.expertSessionId,
+      x: Number(shadowRecord.x),
+      y: Number(shadowRecord.y),
+      timeoutMs: expertCommandTimeoutMs,
+    });
+    const clickedState = await rawRuntimeEvaluate(input, {
+      expertSessionId: iframeSession.expertSessionId,
+      timeoutMs: expertCommandTimeoutMs,
+      expression: `(() => {
+        const button = document.querySelector("#shadow-host").shadowRoot.querySelector("#shadow-button");
+        return { text: button.textContent, clicks: window.__rawCdpClicks };
+      })()`,
+    });
+    const clickedRecord = assertRecord(clickedState, "raw CDP clicked state");
+    coordinateInputPassed = clickedRecord.text === "Clicked 1" && clickedRecord.clicks === 1;
+
+    await rawRuntimeEvaluate(input, {
+      expertSessionId: pageSession.expertSessionId,
+      timeoutMs: expertCommandTimeoutMs,
+      expression: `window.open(${JSON.stringify(popupUrl)}, "turnkeyai-raw-cdp-popup", "width=420,height=320"); "opened";`,
+    });
+    const popupTarget = await waitForRawCdpTarget(input, (target) => target.url === popupUrl);
+    const popupSession = await attachRawCdpTarget(input, popupTarget.targetId);
+    try {
+      const popupState = await rawRuntimeEvaluate(input, {
+        expertSessionId: popupSession.expertSessionId,
+        timeoutMs: expertCommandTimeoutMs,
+        expression: `({ title: document.title, marker: document.querySelector("#popup-marker")?.textContent })`,
+      });
+      const popupRecord = assertRecord(popupState, "raw CDP popup state");
+      popupTargetPassed = popupRecord.title === "Raw CDP Popup" && popupRecord.marker === "popup-ready";
+    } finally {
+      await detachRawCdpSession(input, popupSession.expertSessionId);
+    }
+  } finally {
+    await Promise.all([
+      iframeSession ? detachRawCdpSession(input, iframeSession.expertSessionId).catch(() => undefined) : Promise.resolve(),
+      pageSession ? detachRawCdpSession(input, pageSession.expertSessionId).catch(() => undefined) : Promise.resolve(),
+    ]);
+  }
+
+  if (!targetAttachPassed) {
+    throw new Error("raw CDP target attach did not return expert sessions");
+  }
+  if (!oopifShadowPassed) {
+    throw new Error("raw CDP OOPIF shadow DOM probe did not observe the expected state");
+  }
+  if (!coordinateInputPassed) {
+    throw new Error("raw CDP coordinate input did not click the OOPIF shadow DOM button");
+  }
+  if (!popupTargetPassed) {
+    throw new Error("raw CDP popup target attach did not observe the popup fixture");
+  }
+  return {
+    targetAttachPassed,
+    oopifShadowPassed,
+    coordinateInputPassed,
+    popupTargetPassed,
+  };
+}
+
+async function waitForRawCdpTarget(
+  input: { daemonUrl: string; threadId: string; sessionId: string; timeoutMs: number },
+  predicate: (target: RawCdpTargetInfo) => boolean
+): Promise<RawCdpTargetInfo> {
+  const deadline = Date.now() + input.timeoutMs;
+  let lastTargets: RawCdpTargetInfo[] = [];
+  while (Date.now() < deadline) {
+    const targets = (await getJson(
+      `${input.daemonUrl}/browser-sessions/${encodeURIComponent(input.sessionId)}/expert/targets?threadId=${encodeURIComponent(input.threadId)}`
+    )) as RawCdpTargetInfo[];
+    lastTargets = Array.isArray(targets) ? targets : [];
+    const target = lastTargets.find(predicate);
+    if (target) {
+      return target;
+    }
+    await sleep(250);
+  }
+  throw new Error(`target_not_found: timed out waiting for raw CDP target; last targets: ${JSON.stringify(lastTargets)}`);
+}
+
+async function attachRawCdpTarget(
+  input: { daemonUrl: string; threadId: string; sessionId: string },
+  targetId: string
+): Promise<RawCdpAttachedSession> {
+  try {
+    const result = (await postJson(
+      `${input.daemonUrl}/browser-sessions/${encodeURIComponent(input.sessionId)}/expert/attach`,
+      {
+        threadId: input.threadId,
+        targetId,
+      }
+    )) as RawCdpAttachedSession;
+    if (typeof result.expertSessionId !== "string" || !result.expertSessionId) {
+      throw new Error("Target.attachToTarget did not return a sessionId");
+    }
+    return result;
+  } catch (error) {
+    throw new Error(`attach_failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function detachRawCdpSession(
+  input: { daemonUrl: string; threadId: string; sessionId: string },
+  expertSessionId: string
+): Promise<void> {
+  await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(input.sessionId)}/expert/detach`, {
+    threadId: input.threadId,
+    expertSessionId,
+  });
+}
+
+async function rawRuntimeEvaluate(
+  input: { daemonUrl: string; threadId: string; sessionId: string },
+  command: { expertSessionId: string; expression: string; timeoutMs: number }
+): Promise<unknown> {
+  const response = await sendRawCdpExpertCommand(input, {
+    expertSessionId: command.expertSessionId,
+    method: "Runtime.evaluate",
+    params: {
+      expression: command.expression,
+      awaitPromise: true,
+      returnByValue: true,
+    },
+    timeoutMs: command.timeoutMs,
+  });
+  return ((response.result as { result?: { value?: unknown } }).result ?? {}).value;
+}
+
+async function dispatchRawMouse(
+  input: { daemonUrl: string; threadId: string; sessionId: string },
+  command: { expertSessionId: string; x: number; y: number; timeoutMs: number }
+): Promise<void> {
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+    await sendRawCdpExpertCommand(input, {
+      expertSessionId: command.expertSessionId,
+      method: "Input.dispatchMouseEvent",
+      params: {
+        type,
+        x: command.x,
+        y: command.y,
+        button: type === "mouseMoved" ? "none" : "left",
+        clickCount: type === "mouseMoved" ? 0 : 1,
+      },
+      timeoutMs: command.timeoutMs,
+    });
+  }
+}
+
+async function sendRawCdpExpertCommand(
+  input: { daemonUrl: string; threadId: string; sessionId: string },
+  command: {
+    method: string;
+    params?: Record<string, unknown>;
+    expertSessionId?: string;
+    timeoutMs?: number;
+  }
+): Promise<RawCdpCommandResult> {
+  return (await postJson(`${input.daemonUrl}/browser-sessions/${encodeURIComponent(input.sessionId)}/expert/send`, {
+    threadId: input.threadId,
+    method: command.method,
+    ...(command.params ? { params: command.params } : {}),
+    ...(command.expertSessionId ? { expertSessionId: command.expertSessionId } : {}),
+    ...(command.timeoutMs ? { timeoutMs: command.timeoutMs } : {}),
+  })) as RawCdpCommandResult;
+}
+
+function assertRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} was not an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+interface RawCdpTargetInfo {
+  targetId: string;
+  type: string;
+  url?: string;
+}
+
+interface RawCdpAttachedSession {
+  expertSessionId: string;
+  browserSessionId: string;
+  targetId: string;
+}
+
+interface RawCdpCommandResult {
+  result?: unknown;
 }
 
 async function runDirectCdpReconnectSmoke(input: {
@@ -689,8 +966,49 @@ async function resolveFreePort(): Promise<number> {
   });
 }
 
-async function startDirectCdpSmokeFixture(): Promise<{ url: string; close(): Promise<void> }> {
-  const html = buildDirectCdpSmokeFixtureHtml();
+async function listenOnFreeLocalPort(server: Server, host: string): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    server.listen(0, host, () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        reject(new Error("failed to bind direct-cdp smoke fixture server"));
+        return;
+      }
+      resolve(address.port);
+    });
+    server.on("error", reject);
+  });
+}
+
+async function closeHttpServer(server: Server): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function startDirectCdpSmokeFixture(): Promise<{
+  url: string;
+  iframeUrl: string;
+  iframeOrigin: string;
+  popupUrl: string;
+  close(): Promise<void>;
+}> {
+  const iframeServer = createServer((_req, res) => {
+    res.statusCode = 200;
+    res.setHeader("content-type", "text/html; charset=utf-8");
+    res.end(buildRawCdpIframeFixtureHtml());
+  });
+  const iframePort = await listenOnFreeLocalPort(iframeServer, "0.0.0.0");
+  const iframeUrl = `http://127.0.0.1:${iframePort}/iframe.html`;
+  const iframeOrigin = `http://127.0.0.1:${iframePort}`;
+  let popupUrl = "";
+  const html = () => buildDirectCdpSmokeFixtureHtml({ iframeUrl, popupUrl });
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     if (url.pathname === "/headers-smoke") {
@@ -704,6 +1022,12 @@ async function startDirectCdpSmokeFixture(): Promise<{ url: string; close(): Pro
       writeExportCsvResponse(res);
       return;
     }
+    if (url.pathname === "/raw-cdp-popup") {
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/html; charset=utf-8");
+      res.end(buildRawCdpPopupFixtureHtml());
+      return;
+    }
     if (url.pathname !== "/") {
       res.statusCode = 404;
       res.setHeader("content-type", "text/plain; charset=utf-8");
@@ -712,35 +1036,22 @@ async function startDirectCdpSmokeFixture(): Promise<{ url: string; close(): Pro
     }
     res.statusCode = 200;
     res.setHeader("content-type", "text/html; charset=utf-8");
-    res.end(html);
+    res.end(html());
   });
-  const port = await new Promise<number>((resolve, reject) => {
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        reject(new Error("failed to bind direct-cdp smoke fixture server"));
-        return;
-      }
-      resolve(address.port);
-    });
-    server.on("error", reject);
-  });
+  const mainHost = "localhost";
+  const port = await listenOnFreeLocalPort(server, mainHost);
+  popupUrl = `http://${mainHost}:${port}/raw-cdp-popup`;
   return {
-    url: `http://127.0.0.1:${port}/`,
+    url: `http://${mainHost}:${port}/`,
+    iframeUrl,
+    iframeOrigin,
+    popupUrl,
     close: async () =>
-      new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      }),
+      Promise.all([closeHttpServer(server), closeHttpServer(iframeServer)]).then(() => undefined),
   };
 }
 
-function buildDirectCdpSmokeFixtureHtml(): string {
+function buildDirectCdpSmokeFixtureHtml(input: { iframeUrl: string; popupUrl: string }): string {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -760,6 +1071,10 @@ function buildDirectCdpSmokeFixtureHtml(): string {
     <button id="relay-submit" type="button">Submit Direct CDP Form</button>
     ${buildRichInteractionFixtureMarkup()}
     ${buildDownloadUploadFixtureMarkup()}
+    <section aria-label="Raw CDP Expert Fixture">
+      <iframe id="raw-cdp-frame" src="${input.iframeUrl}" width="640" height="360"></iframe>
+      <button id="raw-cdp-open-popup" type="button">Open Raw CDP Popup</button>
+    </section>
     <div class="spacer"></div>
     <script>
       const input = document.getElementById("relay-input");
@@ -771,10 +1086,41 @@ function buildDirectCdpSmokeFixtureHtml(): string {
         status.textContent = "submitted:" + value;
         location.hash = "submitted";
       });
+      document.getElementById("raw-cdp-open-popup").addEventListener("click", () => {
+        window.open(${JSON.stringify(input.popupUrl)}, "turnkeyai-raw-cdp-popup", "width=420,height=320");
+      });
       ${buildRichInteractionFixtureScript()}
       ${buildDownloadUploadFixtureScript()}
     </script>
   </body>
+</html>`;
+}
+
+function buildRawCdpIframeFixtureHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Raw CDP Iframe</title></head>
+  <body>
+    <div id="shadow-host"></div>
+    <script>
+      window.__rawCdpClicks = 0;
+      const host = document.querySelector("#shadow-host");
+      const root = host.attachShadow({ mode: "open" });
+      root.innerHTML = '<button id="shadow-button" style="margin:80px;padding:24px 32px">Submit from shadow</button>';
+      root.querySelector("#shadow-button").addEventListener("click", () => {
+        window.__rawCdpClicks += 1;
+        root.querySelector("#shadow-button").textContent = "Clicked " + window.__rawCdpClicks;
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+function buildRawCdpPopupFixtureHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Raw CDP Popup</title></head>
+  <body><main id="popup-marker">popup-ready</main></body>
 </html>`;
 }
 
