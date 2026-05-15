@@ -524,8 +524,29 @@ export interface TeamThreadStore {
   delete(threadId: ThreadId): Promise<void>;
 }
 
+export interface TeamMessageAppendIfAbsentResult {
+  written: boolean;
+  existing?: TeamMessage;
+  /**
+   * Set when an existing message was found but its threadId differs from the
+   * caller's intended threadId. Callers MUST treat this as a hard error and
+   * must not proceed; the conflict is reported (rather than thrown) so the
+   * caller can attach its own diagnostic context.
+   */
+  threadIdConflict?: { existing: ThreadId; requested: ThreadId };
+}
+
 export interface TeamMessageStore {
   append(message: TeamMessage): Promise<void>;
+  /**
+   * Atomic idempotent append for at-least-once delivery paths (outbox replay,
+   * scheduled re-entry). Within a single store instance, concurrent calls with
+   * the same message id are serialized: exactly one returns `written: true`,
+   * the rest observe the existing record. Optional for backward compatibility
+   * with legacy stores; callers must fall back to `get`-then-`append` when
+   * the method is absent.
+   */
+  appendIfAbsent?(message: TeamMessage): Promise<TeamMessageAppendIfAbsentResult>;
   list(threadId: ThreadId, limit?: number): Promise<TeamMessage[]>;
   get(messageId: MessageId): Promise<TeamMessage | null>;
 }

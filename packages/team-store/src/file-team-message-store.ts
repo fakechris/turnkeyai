@@ -1,7 +1,13 @@
 import { mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 
-import type { MessageId, TeamMessage, TeamMessageStore, ThreadId } from "@turnkeyai/core-types/team";
+import type {
+  MessageId,
+  TeamMessage,
+  TeamMessageAppendIfAbsentResult,
+  TeamMessageStore,
+  ThreadId,
+} from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { listJsonFiles, readJsonFile, removeFileIfExists, writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
@@ -12,6 +18,7 @@ interface FileTeamMessageStoreOptions {
 export class FileTeamMessageStore implements TeamMessageStore {
   private readonly rootDir: string;
   private readonly threadMutex = new KeyedAsyncMutex<ThreadId>();
+  private readonly idMutex = new KeyedAsyncMutex<MessageId>();
   private legacyByIdBackfillPromise: Promise<void> | null = null;
 
   constructor(options: FileTeamMessageStoreOptions) {
@@ -20,25 +27,60 @@ export class FileTeamMessageStore implements TeamMessageStore {
 
   async append(message: TeamMessage): Promise<void> {
     await this.withThreadLock(message.threadId, async () => {
-      const entryPath = this.entryFilePath(message.threadId, message);
-      const byIdPath = this.byIdFilePath(message.id);
-      const existingProjection = await readJsonFile<TeamMessage>(byIdPath);
-      const shouldUpdateProjection = !existingProjection || message.updatedAt >= existingProjection.updatedAt;
-
-      let entryWritten = false;
-      try {
-        await writeJsonFileAtomic(entryPath, message);
-        entryWritten = true;
-        if (shouldUpdateProjection) {
-          await writeJsonFileAtomic(byIdPath, message);
-        }
-      } catch (error) {
-        if (entryWritten) {
-          await removeFileIfExists(entryPath);
-        }
-        throw error;
-      }
+      await this.appendUnlocked(message);
     });
+  }
+
+  async appendIfAbsent(message: TeamMessage): Promise<TeamMessageAppendIfAbsentResult> {
+    // The id-level lock serializes redundant outbox redeliveries of the same
+    // message within this process. The thread-level lock inside `appendUnlocked`
+    // serializes per-thread file IO. Together they make the get-then-write
+    // check-then-act safe for at-least-once delivery callers.
+    return this.idMutex.run(message.id, async () => {
+      // Route through `get()` rather than reading the by-id projection directly:
+      // legacy thread-files (pre-journal upgrade) only surface a message after
+      // backfillLegacyByIdProjectionsOnce has run, and a redelivered outbox
+      // intent for one of those messages must observe it as existing.
+      const existing = await this.get(message.id);
+      if (existing) {
+        if (existing.threadId !== message.threadId) {
+          return {
+            written: false,
+            existing,
+            threadIdConflict: { existing: existing.threadId, requested: message.threadId },
+          };
+        }
+        return { written: false, existing };
+      }
+      // We just observed no by-id projection; pass that knowledge into the
+      // unlocked write so it doesn't re-read the same file.
+      await this.withThreadLock(message.threadId, async () => {
+        await this.appendUnlocked(message, null);
+      });
+      return { written: true };
+    });
+  }
+
+  private async appendUnlocked(message: TeamMessage, existingProjection?: TeamMessage | null): Promise<void> {
+    const entryPath = this.entryFilePath(message.threadId, message);
+    const byIdPath = this.byIdFilePath(message.id);
+    const projection =
+      existingProjection !== undefined ? existingProjection : await readJsonFile<TeamMessage>(byIdPath);
+    const shouldUpdateProjection = !projection || message.updatedAt >= projection.updatedAt;
+
+    let entryWritten = false;
+    try {
+      await writeJsonFileAtomic(entryPath, message);
+      entryWritten = true;
+      if (shouldUpdateProjection) {
+        await writeJsonFileAtomic(byIdPath, message);
+      }
+    } catch (error) {
+      if (entryWritten) {
+        await removeFileIfExists(entryPath);
+      }
+      throw error;
+    }
   }
 
   async list(threadId: ThreadId, limit?: number): Promise<TeamMessage[]> {

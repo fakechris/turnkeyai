@@ -4,6 +4,8 @@ import type {
   BrowserProfileStore,
   BrowserResumeMode,
   BrowserSession,
+  BrowserSessionOwnershipRequest,
+  BrowserSessionOwnershipResult,
   BrowserSessionOwnerType,
   BrowserSessionStore,
   BrowserTarget,
@@ -528,6 +530,90 @@ export class BrowserSessionManager {
     if (input.ownerType !== session.ownerType || input.ownerId !== session.ownerId) {
       throw new Error(`browser session owner mismatch: ${session.browserSessionId}`);
     }
+  }
+
+  async inspectSessionOwnership(input: BrowserSessionOwnershipRequest): Promise<BrowserSessionOwnershipResult> {
+    const now = this.now();
+    const session = await this.browserSessionStore.get(input.browserSessionId);
+    if (!session) {
+      return {
+        browserSessionId: input.browserSessionId,
+        ok: false,
+        reason: "missing_session",
+        checkedAt: now,
+      };
+    }
+
+    const owner = { ownerType: session.ownerType, ownerId: session.ownerId };
+    const leaseActive = this.isLeaseActive(session, now);
+    const lease = {
+      leaseActive,
+      ...(session.leaseHolderRunKey ? { leaseHolderRunKey: session.leaseHolderRunKey } : {}),
+      ...(session.leaseExpiresAt !== undefined ? { leaseExpiresAt: session.leaseExpiresAt } : {}),
+    };
+
+    if (session.status === "closed") {
+      return {
+        browserSessionId: input.browserSessionId,
+        ok: false,
+        reason: "closed",
+        owner,
+        lease,
+        status: session.status,
+        checkedAt: now,
+      };
+    }
+
+    if (input.ownerType !== undefined && input.ownerType !== session.ownerType) {
+      return {
+        browserSessionId: input.browserSessionId,
+        ok: false,
+        reason: "wrong_owner",
+        owner,
+        lease,
+        status: session.status,
+        checkedAt: now,
+      };
+    }
+
+    if (input.ownerId !== undefined && input.ownerId !== session.ownerId) {
+      return {
+        browserSessionId: input.browserSessionId,
+        ok: false,
+        reason: "wrong_owner",
+        owner,
+        lease,
+        status: session.status,
+        checkedAt: now,
+      };
+    }
+
+    if (
+      leaseActive &&
+      input.leaseHolderRunKey !== undefined &&
+      session.leaseHolderRunKey !== input.leaseHolderRunKey
+    ) {
+      // `leaseActive` implies session.leaseHolderRunKey is truthy
+      // (see isLeaseActive); no need for an extra undefined check here.
+      return {
+        browserSessionId: input.browserSessionId,
+        ok: false,
+        reason: "wrong_lease_holder",
+        owner,
+        lease,
+        status: session.status,
+        checkedAt: now,
+      };
+    }
+
+    return {
+      browserSessionId: input.browserSessionId,
+      ok: true,
+      owner,
+      lease,
+      status: session.status,
+      checkedAt: now,
+    };
   }
 
   private isLeaseActive(session: Pick<BrowserSession, "leaseHolderRunKey" | "leaseExpiresAt">, now: number): boolean {

@@ -16,12 +16,17 @@ import type {
   BrowserRawCdpExpertLane,
   BrowserSession,
   BrowserSessionHistoryEntry,
+  BrowserSessionOwnershipRequest,
+  BrowserSessionOwnershipResult,
   BrowserSessionResumeInput,
   BrowserSessionSendInput,
   BrowserSessionSpawnInput,
   BrowserTarget,
   BrowserTaskRequest,
   BrowserTaskResult,
+  BrowserTransportHealth,
+  BrowserTransportReconnectRequest,
+  BrowserTransportReconnectResult,
 } from "@turnkeyai/core-types/team";
 
 import { FileBrowserArtifactStore } from "../artifacts/file-browser-artifact-store";
@@ -50,6 +55,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
 
   private readonly endpoint: string;
   private readonly sessionManager: ChromeSessionManager;
+  private readonly browserSessionManager: BrowserSessionManager;
   private readonly connectBrowser: (endpoint: string) => Promise<Browser>;
   private browserPromise: Promise<Browser> | null = null;
   private rootCdpSessionPromise: Promise<CDPSession> | null = null;
@@ -90,6 +96,8 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
       }),
       profileRootDir: path.join(stateRootDir, "profiles"),
     });
+
+    this.browserSessionManager = browserSessionManager;
 
     this.connectBrowser = deps.connectBrowser ?? ((endpoint: string) => chromium.connectOverCDP(endpoint));
 
@@ -202,6 +210,46 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
 
   async closeSession(browserSessionId: string, reason = "client requested"): Promise<void> {
     await this.sessionManager.closeSession(browserSessionId, reason);
+  }
+
+  async inspectSessionOwnership(input: BrowserSessionOwnershipRequest): Promise<BrowserSessionOwnershipResult> {
+    return this.browserSessionManager.inspectSessionOwnership(input);
+  }
+
+  async getTransportHealth(): Promise<BrowserTransportHealth> {
+    const connected = this.browserPromise !== null;
+    return {
+      transportMode: this.transportMode,
+      transportLabel: this.transportLabel,
+      healthy: true,
+      endpoint: this.endpoint,
+      connected,
+      checkedAt: Date.now(),
+    };
+  }
+
+  async reconnect(input?: BrowserTransportReconnectRequest): Promise<BrowserTransportReconnectResult> {
+    const reason = input?.reason ?? "transport_reconnect_requested";
+    const previousBrowserPromise = this.browserPromise;
+    const hadConnection = previousBrowserPromise !== null;
+    if (hadConnection) {
+      this.browserPromise = null;
+      this.rootCdpSessionPromise = null;
+      this.clearExpertState(new Error(`browser_cdp_unavailable: ${reason}`));
+      // Best-effort close so the underlying CDP websocket and Playwright
+      // listeners are released instead of being kept alive by GC roots.
+      // Errors are swallowed because the connection may already be in a
+      // half-broken state (which is often why reconnect was called).
+      void previousBrowserPromise!
+        .then((browser) => browser.close().catch(() => undefined))
+        .catch(() => undefined);
+    }
+    return {
+      transportMode: this.transportMode,
+      ok: true,
+      invalidatedConnection: hadConnection,
+      reconnectedAt: Date.now(),
+    };
   }
 
   async listExpertTargets(browserSessionId: string): Promise<BrowserExpertTargetInfo[]> {
@@ -415,20 +463,31 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
 
   private async getOrConnectBrowser(): Promise<Browser> {
     if (!this.browserPromise) {
-      this.browserPromise = this.connectBrowser(this.endpoint)
+      // Capture the in-flight promise into the listener/catch closures so that
+      // a `reconnect()` followed by a fresh connect cannot have its new
+      // browserPromise wiped by a late `disconnected` event from the previous
+      // browser. The race matters because reconnect() best-effort closes the
+      // old browser asynchronously — the close fires `disconnected` on the
+      // OLD browser, which would otherwise overwrite freshly-cached state.
+      const attempt: Promise<Browser> = this.connectBrowser(this.endpoint)
         .then((browser) => {
           browser.on("disconnected", () => {
-            this.browserPromise = null;
-            this.rootCdpSessionPromise = null;
-            this.clearExpertState(new Error("browser_cdp_unavailable: browser disconnected"));
+            if (this.browserPromise === attempt) {
+              this.browserPromise = null;
+              this.rootCdpSessionPromise = null;
+              this.clearExpertState(new Error("browser_cdp_unavailable: browser disconnected"));
+            }
           });
           return browser;
         })
         .catch((error) => {
-          this.browserPromise = null;
+          if (this.browserPromise === attempt) {
+            this.browserPromise = null;
+          }
           const message = error instanceof Error ? error.message : String(error);
           throw new Error(`browser_cdp_unavailable: ${message}`);
         });
+      this.browserPromise = attempt;
     }
 
     return this.browserPromise;
@@ -436,7 +495,10 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
 
   private async getOrCreateRootCdpSession(): Promise<CDPSession> {
     if (!this.rootCdpSessionPromise) {
-      this.rootCdpSessionPromise = this.getOrConnectBrowser()
+      // Identity-gate the catch the same way getOrConnectBrowser does: a late
+      // failure on a pre-reconnect attempt must not wipe a freshly-cached root
+      // session promise belonging to the post-reconnect browser.
+      const attempt: Promise<CDPSession> = this.getOrConnectBrowser()
         .then(async (browser) => {
           const rootSession = await browser.newBrowserCDPSession();
           rootSession.on("Target.receivedMessageFromTarget", (event) => {
@@ -462,9 +524,12 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
           return rootSession;
         })
         .catch((error) => {
-          this.rootCdpSessionPromise = null;
+          if (this.rootCdpSessionPromise === attempt) {
+            this.rootCdpSessionPromise = null;
+          }
           throw normalizeBrowserCdpUnavailable(error);
         });
+      this.rootCdpSessionPromise = attempt;
     }
     return this.rootCdpSessionPromise;
   }
