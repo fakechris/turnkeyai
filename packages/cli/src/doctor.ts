@@ -92,15 +92,24 @@ function checkConfig(paths: ReturnType<typeof getRuntimePaths>): CheckResult {
   };
 }
 
-async function checkPort(paths: ReturnType<typeof getRuntimePaths>): Promise<CheckResult> {
+async function checkPort(
+  paths: ReturnType<typeof getRuntimePaths>,
+  daemonHealthy: boolean
+): Promise<CheckResult> {
   const config = readConfig(paths.configFile);
   const envPort = process.env.TURNKEYAI_DAEMON_PORT?.trim();
   const port = envPort ? Number(envPort) : typeof config?.port === "number" ? (config.port as number) : 4100;
   const free = await isPortFree(port);
+  if (free) {
+    return { name: `port ${port}`, ok: true, detail: "available" };
+  }
+  if (daemonHealthy) {
+    return { name: `port ${port}`, ok: true, detail: "in use by healthy daemon" };
+  }
   return {
     name: `port ${port}`,
-    ok: free,
-    detail: free ? "available" : "in use (daemon may already be running)",
+    ok: false,
+    detail: "in use by another process (daemon /health is not responding)",
   };
 }
 
@@ -177,8 +186,9 @@ export async function runDoctor(_args: string[]): Promise<void> {
   checks.push(checkNodeVersion());
   checks.push(checkRuntimeDir(paths));
   checks.push(checkConfig(paths));
-  checks.push(await checkPort(paths));
-  checks.push(await checkDaemonHealth(paths));
+  const healthCheck = await checkDaemonHealth(paths);
+  checks.push(await checkPort(paths, healthCheck.ok));
+  checks.push(healthCheck);
   checks.push(await checkRelayExtension(paths));
   const transport = await checkTransportSpecific();
   if (transport) checks.push(transport);

@@ -181,38 +181,80 @@ async function runDaemonForeground(args: string[]): Promise<void> {
   });
 }
 
-export async function runDaemonStop(_args: string[]): Promise<void> {
+interface StopOutcome {
+  alreadyStopped: boolean;
+  stopped: boolean;
+  pid: number | null;
+  message: string;
+}
+
+async function stopDaemonInner(): Promise<StopOutcome> {
   const paths = getRuntimePaths();
   const pid = readPid(paths);
   if (!pid || !isAlive(pid)) {
-    console.log("daemon not running");
-    process.exit(0);
+    return {
+      alreadyStopped: true,
+      stopped: true,
+      pid: null,
+      message: "daemon not running",
+    };
   }
   try {
     process.kill(pid, "SIGTERM");
   } catch (error) {
-    console.error(`failed to signal pid ${pid}: ${(error as Error).message}`);
-    process.exit(1);
+    return {
+      alreadyStopped: false,
+      stopped: false,
+      pid,
+      message: `failed to signal pid ${pid}: ${(error as Error).message}`,
+    };
   }
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     if (!isAlive(pid)) {
-      console.log(`daemon stopped (pid ${pid})`);
-      process.exit(0);
+      return {
+        alreadyStopped: false,
+        stopped: true,
+        pid,
+        message: `daemon stopped (pid ${pid})`,
+      };
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   try {
     process.kill(pid, "SIGKILL");
-    console.log(`daemon force-killed (pid ${pid})`);
+    return {
+      alreadyStopped: false,
+      stopped: true,
+      pid,
+      message: `daemon force-killed (pid ${pid})`,
+    };
   } catch (error) {
-    console.error(`failed to force-kill pid ${pid}: ${(error as Error).message}`);
-    process.exit(1);
+    return {
+      alreadyStopped: false,
+      stopped: false,
+      pid,
+      message: `failed to force-kill pid ${pid}: ${(error as Error).message}`,
+    };
   }
 }
 
+export async function runDaemonStop(_args: string[]): Promise<void> {
+  const result = await stopDaemonInner();
+  if (result.stopped) {
+    console.log(result.message);
+    process.exit(0);
+  }
+  console.error(result.message);
+  process.exit(1);
+}
+
 export async function runDaemonRestart(args: string[]): Promise<void> {
-  await runDaemonStop([]);
+  const result = await stopDaemonInner();
+  console.log(result.message);
+  if (!result.stopped) {
+    process.exit(1);
+  }
   await new Promise((resolve) => setTimeout(resolve, 500));
   await runDaemonStart(args);
 }

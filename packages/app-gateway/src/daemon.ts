@@ -221,7 +221,7 @@ if (wantsProcessHelp(process.argv.slice(2))) {
 const RUNTIME_PATHS = getDaemonRuntimePaths();
 ensureDaemonRuntimeDirs(RUNTIME_PATHS);
 const TOKEN_BOOTSTRAP = ensureDaemonAuthToken(RUNTIME_PATHS);
-if (TOKEN_BOOTSTRAP.generated && !process.env.TURNKEYAI_DAEMON_TOKEN) {
+if (TOKEN_BOOTSTRAP.token && !process.env.TURNKEYAI_DAEMON_TOKEN) {
   process.env.TURNKEYAI_DAEMON_TOKEN = TOKEN_BOOTSTRAP.token;
 }
 const PORT = resolveDaemonPort(RUNTIME_PATHS);

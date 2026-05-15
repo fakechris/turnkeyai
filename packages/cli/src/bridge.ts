@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 function getRuntimePaths() {
   const rootDir = process.env.TURNKEYAI_HOME?.trim() || path.join(homedir(), ".turnkeyai");
@@ -57,6 +58,28 @@ function findRepoRoot(): string | null {
   return null;
 }
 
+function findPackagedExtensionDir(): string | null {
+  // For globally-installed @turnkeyai/cli, the extension dist is bundled at
+  // packages/cli/dist/extension (copied by scripts/copy-relay-extension.mjs
+  // during the CLI build). bridge.js itself lives in that dist dir.
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const sibling = path.join(here, "extension");
+    if (existsSync(path.join(sibling, "manifest.json"))) {
+      return sibling;
+    }
+  } catch {
+    // ignore — module URL may not be resolvable in unusual runners
+  }
+  return null;
+}
+
+function findRepoSourceExtensionDir(): string | null {
+  const repoRoot = findRepoRoot();
+  if (!repoRoot) return null;
+  return path.join(repoRoot, "packages", "browser-relay-peer", "dist", "extension");
+}
+
 async function runNpmBuild(repoRoot: string): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn("npm", ["run", "build:relay-extension"], {
@@ -71,26 +94,41 @@ async function runNpmBuild(repoRoot: string): Promise<number> {
 
 export async function runBridgeInstallExtension(_args: string[]): Promise<void> {
   const paths = getRuntimePaths();
-  const repoRoot = findRepoRoot();
-  if (!repoRoot) {
-    console.error("install-extension requires a turnkeyai checkout (run from inside the repo)");
-    process.exit(1);
-  }
-  const distDir = path.join(repoRoot, "packages", "browser-relay-peer", "dist", "extension");
-  if (!existsSync(distDir)) {
-    console.log("building relay extension...");
-    const code = await runNpmBuild(repoRoot);
-    if (code !== 0) {
-      console.error("relay extension build failed");
-      process.exit(code);
+
+  // Prefer the dist bundled with the published CLI (works for `npm i -g`).
+  let sourceDir = findPackagedExtensionDir();
+
+  // Fall back to in-repo dist (developer flow). If missing, attempt to build.
+  if (!sourceDir) {
+    const repoSourceDir = findRepoSourceExtensionDir();
+    const repoRoot = findRepoRoot();
+    if (repoSourceDir && existsSync(repoSourceDir)) {
+      sourceDir = repoSourceDir;
+    } else if (repoRoot) {
+      console.log("relay extension dist not found; building from source...");
+      const code = await runNpmBuild(repoRoot);
+      if (code !== 0) {
+        console.error("relay extension build failed");
+        process.exit(code);
+      }
+      if (repoSourceDir && existsSync(repoSourceDir)) {
+        sourceDir = repoSourceDir;
+      }
     }
   }
-  if (!existsSync(distDir)) {
-    console.error(`build did not produce ${distDir}`);
+
+  if (!sourceDir) {
+    console.error(
+      "could not locate the relay extension dist. Expected one of:\n" +
+        "  - <cli-install>/dist/extension (bundled with @turnkeyai/cli)\n" +
+        "  - <repo>/packages/browser-relay-peer/dist/extension (from npm run build)\n" +
+        "If you installed @turnkeyai/cli globally, reinstall — the extension should be bundled."
+    );
     process.exit(1);
   }
+
   mkdirSync(paths.extensionsDir, { recursive: true });
-  cpSync(distDir, paths.relayExtDir, { recursive: true });
+  cpSync(sourceDir, paths.relayExtDir, { recursive: true });
   console.log(`relay extension installed to ${paths.relayExtDir}`);
   console.log("");
   console.log("next steps:");

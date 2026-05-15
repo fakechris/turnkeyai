@@ -134,4 +134,24 @@ describe("daemon-runtime-paths", () => {
     assert.equal(isProcessAlive(process.pid), true);
     assert.equal(isProcessAlive(2_000_000_000), false);
   });
+
+  it("returns the persisted token on subsequent calls so auth stays enabled", () => {
+    const paths = getDaemonRuntimePaths();
+    // Seed a known token via the public writer (mirrors what first-start does).
+    const persistedToken = "persisted-token-with-sufficient-length-1234567890";
+    writeDaemonRuntimeConfig(paths, {
+      port: 4100,
+      token: persistedToken,
+      transportMode: null,
+      dataDir: null,
+      generatedAt: Date.now(),
+    });
+    // Simulate a fresh process by clearing only the env var (config.json
+    // still exists). This guards against the regression where a persisted
+    // token would not be returned, causing the daemon to start unauthenticated.
+    delete process.env.TURNKEYAI_DAEMON_TOKEN;
+    const result = ensureDaemonAuthToken(paths);
+    assert.equal(result.generated, false);
+    assert.equal(result.token, persistedToken);
+  });
 });
