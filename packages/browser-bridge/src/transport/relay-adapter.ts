@@ -8,6 +8,8 @@ import type {
   BrowserPageResult,
   BrowserSessionDispatchMode,
   BrowserSessionHistoryEntry,
+  BrowserSessionOwnershipRequest,
+  BrowserSessionOwnershipResult,
   BrowserSessionResumeInput,
   BrowserSession,
   BrowserSessionSendInput,
@@ -17,6 +19,9 @@ import type {
   BrowserTaskAction,
   BrowserTaskRequest,
   BrowserTaskResult,
+  BrowserTransportHealth,
+  BrowserTransportReconnectRequest,
+  BrowserTransportReconnectResult,
   BrowserUploadFilePayload,
   SnapshotRefEntry,
 } from "@turnkeyai/core-types/team";
@@ -244,6 +249,44 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
 
   async closeSession(browserSessionId: string, reason = "client requested"): Promise<void> {
     await this.sessionManager.closeSession(browserSessionId, reason);
+  }
+
+  async inspectSessionOwnership(input: BrowserSessionOwnershipRequest): Promise<BrowserSessionOwnershipResult> {
+    return this.sessionManager.inspectSessionOwnership(input);
+  }
+
+  async getTransportHealth(): Promise<BrowserTransportHealth> {
+    const peers = this.gateway.listPeers();
+    const activePeers = peers.filter((peer) => peer.status === "online");
+    const healthy = activePeers.length > 0;
+    return {
+      transportMode: this.transportMode,
+      transportLabel: this.transportLabel,
+      healthy,
+      ...(healthy ? {} : { reason: peers.length === 0 ? "no_relay_peers_registered" : "no_online_relay_peers" }),
+      peerCount: peers.length,
+      activePeerCount: activePeers.length,
+      connected: healthy,
+      checkedAt: Date.now(),
+    };
+  }
+
+  async reconnect(_input?: BrowserTransportReconnectRequest): Promise<BrowserTransportReconnectResult> {
+    // Relay transport's only durable connection is the registered peer set.
+    // A real reconnect must be initiated by the peer extension; what the daemon
+    // can do here is re-evaluate liveness and surface whether peers are present.
+    const peers = this.gateway.listPeers();
+    const activePeers = peers.filter((peer) => peer.status === "online");
+    return {
+      transportMode: this.transportMode,
+      ok: activePeers.length > 0,
+      ...(activePeers.length > 0
+        ? {}
+        : { reason: peers.length === 0 ? "no_relay_peers_registered" : "no_online_relay_peers" }),
+      invalidatedConnection: false,
+      peerCount: peers.length,
+      reconnectedAt: Date.now(),
+    };
   }
 
   private async executeTask(

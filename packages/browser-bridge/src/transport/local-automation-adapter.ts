@@ -3,6 +3,8 @@ import path from "node:path";
 import type {
   BrowserPageResult,
   BrowserSessionHistoryEntry,
+  BrowserSessionOwnershipRequest,
+  BrowserSessionOwnershipResult,
   BrowserSessionResumeInput,
   BrowserSession,
   BrowserSessionSendInput,
@@ -10,6 +12,9 @@ import type {
   BrowserTarget,
   BrowserTaskRequest,
   BrowserTaskResult,
+  BrowserTransportHealth,
+  BrowserTransportReconnectRequest,
+  BrowserTransportReconnectResult,
 } from "@turnkeyai/core-types/team";
 
 import { FileBrowserArtifactStore } from "../artifacts/file-browser-artifact-store";
@@ -30,6 +35,7 @@ export class LocalAutomationBrowserAdapter implements BrowserTransportAdapter {
   readonly transportLabel = "local-automation";
 
   private readonly sessionManager: ChromeSessionManager;
+  private readonly browserSessionManager: BrowserSessionManager;
 
   constructor(options: BrowserTransportFactoryOptions) {
     const stateRootDir = options.stateRootDir ?? path.join(options.artifactRootDir, "_state");
@@ -45,6 +51,8 @@ export class LocalAutomationBrowserAdapter implements BrowserTransportAdapter {
       }),
       profileRootDir: path.join(stateRootDir, "profiles"),
     });
+
+    this.browserSessionManager = browserSessionManager;
 
     this.sessionManager = new ChromeSessionManager({
       artifactRootDir: options.artifactRootDir,
@@ -137,5 +145,28 @@ export class LocalAutomationBrowserAdapter implements BrowserTransportAdapter {
 
   async closeSession(browserSessionId: string, reason = "client requested"): Promise<void> {
     await this.sessionManager.closeSession(browserSessionId, reason);
+  }
+
+  async inspectSessionOwnership(input: BrowserSessionOwnershipRequest): Promise<BrowserSessionOwnershipResult> {
+    return this.browserSessionManager.inspectSessionOwnership(input);
+  }
+
+  async getTransportHealth(): Promise<BrowserTransportHealth> {
+    return {
+      transportMode: this.transportMode,
+      transportLabel: this.transportLabel,
+      healthy: true,
+      connected: true,
+      checkedAt: Date.now(),
+    };
+  }
+
+  async reconnect(_input?: BrowserTransportReconnectRequest): Promise<BrowserTransportReconnectResult> {
+    return {
+      transportMode: this.transportMode,
+      ok: true,
+      invalidatedConnection: false,
+      reconnectedAt: Date.now(),
+    };
   }
 }

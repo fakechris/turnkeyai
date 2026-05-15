@@ -1,7 +1,12 @@
 import type {
   BrowserBridge,
   BrowserRawCdpExpertLane,
+  BrowserSessionOwnershipRequest,
+  BrowserSessionOwnershipResult,
+  BrowserTransportHealth,
   BrowserTransportMode,
+  BrowserTransportReconnectRequest,
+  BrowserTransportReconnectResult,
 } from "@turnkeyai/core-types/team";
 import type {
   RelayActionRequest,
@@ -16,6 +21,27 @@ import type {
 export interface BrowserTransportAdapter extends BrowserBridge {
   readonly transportMode: BrowserTransportMode;
   readonly transportLabel: string;
+
+  /**
+   * Store-backed ownership/lease check for a known session id.
+   * Adapters MUST consult their persistent session store (not in-memory handles)
+   * so that the answer survives daemon restart and is consistent across callers.
+   */
+  inspectSessionOwnership(input: BrowserSessionOwnershipRequest): Promise<BrowserSessionOwnershipResult>;
+
+  /**
+   * Transport-level liveness snapshot. For relay this includes peer counts; for
+   * direct-cdp it includes the connected/endpoint state. Pure observation — never
+   * throws and never mutates state.
+   */
+  getTransportHealth(): Promise<BrowserTransportHealth>;
+
+  /**
+   * Invalidate any cached transport handles so the next request re-establishes
+   * the connection. For local automation this is a no-op (no shared connection
+   * to re-establish). MUST be idempotent.
+   */
+  reconnect(input?: BrowserTransportReconnectRequest): Promise<BrowserTransportReconnectResult>;
 }
 
 export interface RelayControlPlane {

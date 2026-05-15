@@ -6,10 +6,13 @@ import type {
   BrowserSessionResumeInput,
   BrowserSessionSendInput,
   BrowserSessionSpawnInput,
+  BrowserSessionStatus,
   BrowserTarget,
   BrowserTaskRequest,
   BrowserTaskResult,
+  BrowserTransportMode,
 } from "./browser";
+import type { RunKey } from "./team-core";
 
 export interface BrowserSessionRuntime {
   spawnSession(input: BrowserSessionSpawnInput): Promise<BrowserTaskResult>;
@@ -75,6 +78,61 @@ export interface BrowserExpertCommandResult {
   expertSessionId?: string;
   targetId?: string;
   result: unknown;
+}
+
+export type BrowserSessionOwnershipFailureReason =
+  | "missing_session"
+  | "wrong_owner"
+  | "closed"
+  | "wrong_lease_holder";
+
+export interface BrowserSessionOwnershipRequest {
+  browserSessionId: string;
+  ownerType?: BrowserSessionOwnerType;
+  ownerId?: string;
+  leaseHolderRunKey?: RunKey;
+}
+
+export interface BrowserSessionOwnershipLeaseSnapshot {
+  leaseHolderRunKey?: RunKey;
+  leaseExpiresAt?: number;
+  leaseActive: boolean;
+}
+
+export interface BrowserSessionOwnershipResult {
+  browserSessionId: string;
+  ok: boolean;
+  reason?: BrowserSessionOwnershipFailureReason;
+  owner?: { ownerType: BrowserSessionOwnerType; ownerId: string };
+  lease?: BrowserSessionOwnershipLeaseSnapshot;
+  status?: BrowserSessionStatus;
+  checkedAt: number;
+}
+
+export interface BrowserTransportHealth {
+  transportMode: BrowserTransportMode;
+  transportLabel: string;
+  healthy: boolean;
+  reason?: string;
+  endpoint?: string;
+  peerCount?: number;
+  activePeerCount?: number;
+  connected?: boolean;
+  checkedAt: number;
+}
+
+export interface BrowserTransportReconnectRequest {
+  browserSessionId?: string;
+  reason?: string;
+}
+
+export interface BrowserTransportReconnectResult {
+  transportMode: BrowserTransportMode;
+  ok: boolean;
+  reason?: string;
+  invalidatedConnection?: boolean;
+  peerCount?: number;
+  reconnectedAt: number;
 }
 
 export interface BrowserRawCdpExpertLane {

@@ -16,12 +16,17 @@ import type {
   BrowserRawCdpExpertLane,
   BrowserSession,
   BrowserSessionHistoryEntry,
+  BrowserSessionOwnershipRequest,
+  BrowserSessionOwnershipResult,
   BrowserSessionResumeInput,
   BrowserSessionSendInput,
   BrowserSessionSpawnInput,
   BrowserTarget,
   BrowserTaskRequest,
   BrowserTaskResult,
+  BrowserTransportHealth,
+  BrowserTransportReconnectRequest,
+  BrowserTransportReconnectResult,
 } from "@turnkeyai/core-types/team";
 
 import { FileBrowserArtifactStore } from "../artifacts/file-browser-artifact-store";
@@ -50,6 +55,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
 
   private readonly endpoint: string;
   private readonly sessionManager: ChromeSessionManager;
+  private readonly browserSessionManager: BrowserSessionManager;
   private readonly connectBrowser: (endpoint: string) => Promise<Browser>;
   private browserPromise: Promise<Browser> | null = null;
   private rootCdpSessionPromise: Promise<CDPSession> | null = null;
@@ -90,6 +96,8 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
       }),
       profileRootDir: path.join(stateRootDir, "profiles"),
     });
+
+    this.browserSessionManager = browserSessionManager;
 
     this.connectBrowser = deps.connectBrowser ?? ((endpoint: string) => chromium.connectOverCDP(endpoint));
 
@@ -202,6 +210,38 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
 
   async closeSession(browserSessionId: string, reason = "client requested"): Promise<void> {
     await this.sessionManager.closeSession(browserSessionId, reason);
+  }
+
+  async inspectSessionOwnership(input: BrowserSessionOwnershipRequest): Promise<BrowserSessionOwnershipResult> {
+    return this.browserSessionManager.inspectSessionOwnership(input);
+  }
+
+  async getTransportHealth(): Promise<BrowserTransportHealth> {
+    const connected = this.browserPromise !== null;
+    return {
+      transportMode: this.transportMode,
+      transportLabel: this.transportLabel,
+      healthy: true,
+      endpoint: this.endpoint,
+      connected,
+      checkedAt: Date.now(),
+    };
+  }
+
+  async reconnect(input?: BrowserTransportReconnectRequest): Promise<BrowserTransportReconnectResult> {
+    const reason = input?.reason ?? "transport_reconnect_requested";
+    const hadConnection = this.browserPromise !== null;
+    if (hadConnection) {
+      this.browserPromise = null;
+      this.rootCdpSessionPromise = null;
+      this.clearExpertState(new Error(`browser_cdp_unavailable: ${reason}`));
+    }
+    return {
+      transportMode: this.transportMode,
+      ok: true,
+      invalidatedConnection: hadConnection,
+      reconnectedAt: Date.now(),
+    };
   }
 
   async listExpertTargets(browserSessionId: string): Promise<BrowserExpertTargetInfo[]> {
