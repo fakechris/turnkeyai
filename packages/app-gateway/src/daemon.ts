@@ -1,6 +1,5 @@
 import http from "node:http";
 import { execFile as execFileCallback } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -32,36 +31,25 @@ import type {
 } from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
-import {
-  createBrowserBridge,
-  resolveBrowserTransportMode,
-} from "@turnkeyai/browser-bridge/browser-bridge-factory";
-import { maybeGetRawCdpExpertLane, maybeGetRelayControlPlane } from "@turnkeyai/browser-bridge/transport/transport-adapter";
 import { AnthropicCompatibleClient } from "@turnkeyai/llm-adapter/anthropic-compatible-client";
 import { FileModelCatalogSource } from "@turnkeyai/llm-adapter/file-model-catalog";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import { OpenAICompatibleClient } from "@turnkeyai/llm-adapter/openai-compatible-client";
 import { ModelRegistry } from "@turnkeyai/llm-adapter/registry";
-import { DefaultApiExecutionVerifier } from "@turnkeyai/qc-runtime/api-execution-verifier";
-import { DefaultAuthAndScopeDiagnosisPolicy } from "@turnkeyai/qc-runtime/auth-and-scope-diagnosis-policy";
 import {
   listBoundedRegressionCases,
   runBoundedRegressionSuite,
 } from "@turnkeyai/qc-runtime/bounded-regression-harness";
-import { BrowserResultVerifier } from "@turnkeyai/qc-runtime/browser-result-verifier";
-import { BrowserStepVerifier } from "@turnkeyai/qc-runtime/browser-step-verifier";
 import type {
   BrowserTransportSoakOptions,
   BrowserTransportSoakResult,
 } from "@turnkeyai/qc-runtime/browser-transport-soak";
 import { runBrowserTransportSoak } from "@turnkeyai/qc-runtime/browser-transport-soak";
-import { DefaultEvidenceTrustPolicy } from "@turnkeyai/qc-runtime/evidence-trust-policy";
 import {
   listFailureInjectionScenarios,
   runFailureInjectionSuite,
 } from "@turnkeyai/qc-runtime/failure-injection-suite";
 import { classifyRuntimeError } from "@turnkeyai/qc-runtime/failure-taxonomy";
-import { FileReplayRecorder } from "@turnkeyai/qc-runtime/file-replay-recorder";
 import {
   buildOperatorAttentionReport,
   buildFlowConsoleReport,
@@ -94,8 +82,6 @@ import {
   decorateRuntimeChainStatus,
   isRecoveryRuntimeChainId,
 } from "@turnkeyai/qc-runtime/runtime-chain-inspection";
-import { DefaultPermissionGovernancePolicy } from "@turnkeyai/qc-runtime/permission-governance-policy";
-import { DefaultPromptAdmissionPolicy } from "@turnkeyai/qc-runtime/prompt-admission-policy";
 import {
   listSoakScenarios,
   runSoakSuite,
@@ -110,56 +96,21 @@ import {
 } from "@turnkeyai/qc-runtime/scenario-parity-acceptance";
 import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 import { CoordinationEngine } from "@turnkeyai/team-runtime/coordination-engine";
-import { DefaultContextStateMaintainer } from "@turnkeyai/team-runtime/context-state-maintainer";
-import { FileBackedTeamRouteMap } from "@turnkeyai/team-runtime/file-backed-team-route-map";
 import { DefaultHandoffPlanner } from "@turnkeyai/team-runtime/handoff-planner";
-import { InMemoryTeamEventBus } from "@turnkeyai/team-runtime/in-memory-team-event-bus";
 import { InlineRoleLoopRunner } from "@turnkeyai/team-runtime/inline-role-loop-runner";
-import { DefaultRecoveryDirector } from "@turnkeyai/team-runtime/recovery-director";
 import { DefaultRoleRunCoordinator } from "@turnkeyai/team-runtime/role-run-coordinator";
 import { DefaultRuntimeChainRecorder } from "@turnkeyai/team-runtime/runtime-chain-recorder";
-import { DefaultRuntimeProgressRecorder } from "@turnkeyai/team-runtime/runtime-progress-recorder";
 import { DefaultRuntimeStateRecorder } from "@turnkeyai/team-runtime/runtime-state-recorder";
 import { DefaultScheduledTaskRuntime } from "@turnkeyai/team-runtime/scheduled-task-runtime";
-import { DefaultContextCompressor } from "@turnkeyai/role-runtime/compression/context-compressor";
-import { DefaultContextBudgeter } from "@turnkeyai/role-runtime/context/context-budgeter";
-import { DefaultRoleMemoryResolver } from "@turnkeyai/role-runtime/context/role-memory-resolver";
 import { DeterministicRoleResponseGenerator } from "@turnkeyai/role-runtime/deterministic-response-generator";
 import { HeuristicModelAdapter } from "@turnkeyai/role-runtime/model-adapter";
 import { HybridRoleResponseGenerator } from "@turnkeyai/role-runtime/hybrid-response-generator";
 import { LLMRoleResponseGenerator } from "@turnkeyai/role-runtime/llm-response-generator";
 import { PolicyRoleRuntime } from "@turnkeyai/role-runtime/policy-role-runtime";
-import { DefaultPromptAssembler } from "@turnkeyai/role-runtime/prompt/prompt-assembler";
 import { DefaultRolePromptPolicy } from "@turnkeyai/role-runtime/prompt-policy";
-import { DefaultRoleProfileRegistry } from "@turnkeyai/role-runtime/role-profile";
-import { FileRoleScratchpadStore } from "@turnkeyai/team-store/context/file-role-scratchpad-store";
-import { FileThreadJournalStore } from "@turnkeyai/team-store/context/file-thread-journal-store";
-import { FileThreadMemoryStore } from "@turnkeyai/team-store/context/file-thread-memory-store";
-import { FileThreadSessionMemoryStore } from "@turnkeyai/team-store/context/file-thread-session-memory-store";
-import { FileThreadSummaryStore } from "@turnkeyai/team-store/context/file-thread-summary-store";
-import { FileWorkerEvidenceDigestStore } from "@turnkeyai/team-store/context/file-worker-evidence-digest-store";
-import { FileFlowLedgerStore } from "@turnkeyai/team-store/file-flow-ledger-store";
-import { FileRoleRunStore } from "@turnkeyai/team-store/file-role-run-store";
-import { FileRuntimeChainEventStore } from "@turnkeyai/team-store/file-runtime-chain-event-store";
-import { FileRuntimeChainSpanStore } from "@turnkeyai/team-store/file-runtime-chain-span-store";
-import { FileRuntimeChainStatusStore } from "@turnkeyai/team-store/file-runtime-chain-status-store";
-import { FileRuntimeChainStore } from "@turnkeyai/team-store/file-runtime-chain-store";
-import { FileRuntimeProgressStore } from "@turnkeyai/team-store/file-runtime-progress-store";
-import { FileSessionMemoryRefreshJobStore } from "@turnkeyai/team-store/context/file-session-memory-refresh-job-store";
-import { FileTeamMessageStore } from "@turnkeyai/team-store/file-team-message-store";
-import { FileTeamThreadStore } from "@turnkeyai/team-store/file-team-thread-store";
-import { FilePermissionCacheStore } from "@turnkeyai/team-store/governance/file-permission-cache-store";
-import { FileValidationOpsRunStore } from "@turnkeyai/team-store/ops/file-validation-ops-run-store";
-import { FileRecoveryRunStore } from "@turnkeyai/team-store/recovery/file-recovery-run-store";
-import { FileRecoveryRunEventStore } from "@turnkeyai/team-store/recovery/file-recovery-run-event-store";
-import { FileScheduledTaskStore } from "@turnkeyai/team-store/scheduled/file-scheduled-task-store";
-import { FileWorkerSessionStore } from "@turnkeyai/team-store/worker/file-worker-session-store";
-import { BrowserWorkerHandler } from "@turnkeyai/worker-runtime/browser-worker-handler";
-import { DefaultCapabilityDiscoveryService } from "@turnkeyai/worker-runtime/capability-discovery-service";
-import { ExploreWorkerHandler } from "@turnkeyai/worker-runtime/explore-worker-handler";
-import { FinanceWorkerHandler } from "@turnkeyai/worker-runtime/finance-worker-handler";
 import { LocalWorkerRuntime } from "@turnkeyai/worker-runtime/local-worker-runtime";
-import { DefaultWorkerRegistry } from "@turnkeyai/worker-runtime/worker-registry";
+
+import { composeDaemonFoundations } from "./composition/foundations";
 
 import {
   parsePositiveInteger,
@@ -182,16 +133,6 @@ import {
   resolveDaemonPort,
   writePidFile,
 } from "./daemon-runtime-paths";
-import {
-  TIER1_TOOLS,
-  TIER2_TOOLS,
-  buildTier1Action,
-  buildTier2Action,
-  createBridgeBatchDispatcher,
-  createBridgeCommandDispatcher,
-  createBridgeExpertDispatcher,
-  createInMemoryAmbientSessionStore,
-} from "./bridge-command-dispatcher";
 import { createFileRouteIdempotencyStore } from "./idempotency-store";
 import { createRecoveryActionService } from "./recovery-action-service";
 import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
@@ -254,263 +195,66 @@ const runtimeLimits = {
 };
 const modelCatalogPath = await resolveModelCatalogPath();
 
-const teamThreadStore = new FileTeamThreadStore({
-  rootDir: path.join(DATA_DIR, "threads"),
-  idGenerator,
+const foundations = composeDaemonFoundations({
+  dataDir: DATA_DIR,
   clock,
+  idGenerator,
 });
-const teamEventBus = new InMemoryTeamEventBus();
-const teamRouteMap = new FileBackedTeamRouteMap({
+const {
   teamThreadStore,
-});
-const teamMessageStore = new FileTeamMessageStore({
-  rootDir: path.join(DATA_DIR, "messages"),
-});
-const flowLedgerStore = new FileFlowLedgerStore({
-  rootDir: path.join(DATA_DIR, "flows"),
-});
-const roleRunStore = new FileRoleRunStore({
-  rootDir: path.join(DATA_DIR, "runs"),
-});
-const runtimeChainStore = new FileRuntimeChainStore({
-  rootDir: path.join(DATA_DIR, "runtime-chains"),
-});
-const runtimeChainSpanStore = new FileRuntimeChainSpanStore({
-  rootDir: path.join(DATA_DIR, "runtime-chain-spans"),
-});
-const runtimeChainEventStore = new FileRuntimeChainEventStore({
-  rootDir: path.join(DATA_DIR, "runtime-chain-events"),
-});
-const runtimeChainStatusStore = new FileRuntimeChainStatusStore({
-  rootDir: path.join(DATA_DIR, "runtime-chain-status"),
-});
-const runtimeProgressStore = new FileRuntimeProgressStore({
-  rootDir: path.join(DATA_DIR, "runtime-progress"),
-});
-const threadSummaryStore = new FileThreadSummaryStore({
-  rootDir: path.join(DATA_DIR, "context", "thread-summaries"),
-});
-const threadMemoryStore = new FileThreadMemoryStore({
-  rootDir: path.join(DATA_DIR, "context", "thread-memory"),
-});
-const threadSessionMemoryStore = new FileThreadSessionMemoryStore({
-  rootDir: path.join(DATA_DIR, "context", "thread-session-memory"),
-});
-const sessionMemoryRefreshJobStore = new FileSessionMemoryRefreshJobStore({
-  rootDir: path.join(DATA_DIR, "context", "session-memory-refresh-jobs"),
-});
-const threadJournalStore = new FileThreadJournalStore({
-  rootDir: path.join(DATA_DIR, "context", "thread-journal"),
-});
-const roleScratchpadStore = new FileRoleScratchpadStore({
-  rootDir: path.join(DATA_DIR, "context", "role-scratchpads"),
-});
-const workerEvidenceDigestStore = new FileWorkerEvidenceDigestStore({
-  rootDir: path.join(DATA_DIR, "context", "worker-evidence"),
-});
-const permissionCacheStore = new FilePermissionCacheStore({
-  rootDir: path.join(DATA_DIR, "governance", "permission-cache"),
-});
-const recoveryRunStore = new FileRecoveryRunStore({
-  rootDir: path.join(DATA_DIR, "recovery-runs"),
-});
-const recoveryRunEventStore = new FileRecoveryRunEventStore({
-  rootDir: path.join(DATA_DIR, "recovery-run-events"),
-});
-const scheduledTaskStore = new FileScheduledTaskStore({
-  rootDir: path.join(DATA_DIR, "scheduled-tasks"),
-});
-const validationOpsRunStore = new FileValidationOpsRunStore({
-  rootDir: path.join(DATA_DIR, "validation-ops-runs"),
-});
-const workerSessionStore = new FileWorkerSessionStore({
-  rootDir: path.join(DATA_DIR, "worker-sessions"),
-});
-
-const summaryBuilder: SummaryBuilder = {
-  async getRecentMessages(threadId, limit = 10) {
-    const messages = await teamMessageStore.list(threadId, limit);
-    return messages.map((message) => {
-      const summary = {
-        messageId: message.id,
-        role: message.role,
-        name: message.name,
-        content: message.content,
-        createdAt: message.createdAt,
-      };
-
-      return message.roleId ? { ...summary, roleId: message.roleId } : summary;
-    });
-  },
-};
-
-const relayBriefBuilder: RelayBriefBuilder = {
-  build(input) {
-    const closingTag = "</relay_brief>";
-    const header = [
-      "<relay_brief>",
-      `Flow: ${input.flow?.flowId ?? "unknown"}`,
-      `Thread: ${input.thread.threadId}`,
-      `Target Role: ${input.targetRoleId}`,
-    ];
-    const recent = (input.recentMessages ?? [])
-      .slice(-5)
-      .map((item) => `[${item.name}]: ${truncateRelayBriefLine(item.content, 220)}`);
-    const body = [...header, ...recent].join("\n");
-    return `${truncateRelayBrief(body, 2_400 - closingTag.length - 1)}\n${closingTag}`;
-  },
-};
-
-function truncateRelayBriefLine(content: string, maxChars: number): string {
-  return content.length > maxChars ? `${content.slice(0, Math.max(maxChars - 1, 1))}…` : content;
-}
-
-function truncateRelayBrief(content: string, maxChars: number): string {
-  return content.length > maxChars ? `${content.slice(0, Math.max(maxChars - 1, 1))}…` : content;
-}
-
-const recoveryDirector = new DefaultRecoveryDirector();
-const authAndScopeDiagnosisPolicy = new DefaultAuthAndScopeDiagnosisPolicy();
-const apiExecutionVerifier = new DefaultApiExecutionVerifier({
-  authPolicy: authAndScopeDiagnosisPolicy,
-});
-const permissionGovernancePolicy = new DefaultPermissionGovernancePolicy();
-const evidenceTrustPolicy = new DefaultEvidenceTrustPolicy();
-const promptAdmissionPolicy = new DefaultPromptAdmissionPolicy();
-
-const roleProfileRegistry = new DefaultRoleProfileRegistry();
-const contextBudgeter = new DefaultContextBudgeter();
-const runtimeProgressRecorder = new DefaultRuntimeProgressRecorder({
-  progressStore: runtimeProgressStore,
-  teamEventBus,
-});
-const roleMemoryResolver = new DefaultRoleMemoryResolver({
-  threadSummaryStore,
-  threadMemoryStore,
-  threadSessionMemoryStore,
-  threadJournalStore,
-  roleScratchpadStore,
-  workerEvidenceDigestStore,
-});
-const promptAssembler = new DefaultPromptAssembler({
-  estimateTokens: (input, reservedOutputTokens, maxInputTokens) =>
-    contextBudgeter.estimate(input, reservedOutputTokens, maxInputTokens),
-});
-const contextCompressor = new DefaultContextCompressor();
-const contextStateMaintainer = new DefaultContextStateMaintainer({
   teamMessageStore,
+  teamRouteMap,
+  teamEventBus,
+  flowLedgerStore,
+  roleRunStore,
+  runtimeChainStore,
+  runtimeChainSpanStore,
+  runtimeChainEventStore,
+  runtimeChainStatusStore,
+  runtimeProgressStore,
   threadSummaryStore,
   threadMemoryStore,
   threadSessionMemoryStore,
   sessionMemoryRefreshJobStore,
   threadJournalStore,
   roleScratchpadStore,
-  contextCompressor,
+  workerEvidenceDigestStore,
+  permissionCacheStore,
+  recoveryRunStore,
+  recoveryRunEventStore,
+  scheduledTaskStore,
+  validationOpsRunStore,
+  workerSessionStore,
+  summaryBuilder,
+  relayBriefBuilder,
+  recoveryDirector,
+  apiExecutionVerifier,
+  permissionGovernancePolicy,
+  evidenceTrustPolicy,
+  promptAdmissionPolicy,
+  roleProfileRegistry,
+  contextBudgeter,
   runtimeProgressRecorder,
-  sessionMemoryRefreshDelayMs: 10,
-});
-const browserBridge = createBrowserBridge({
-  artifactRootDir: path.join(DATA_DIR, "browser-artifacts"),
-  stateRootDir: path.join(DATA_DIR, "browser-state"),
-  ...(process.env.TURNKEYAI_BROWSER_TRANSPORT?.trim()
-    ? { transportMode: resolveBrowserTransportMode(process.env.TURNKEYAI_BROWSER_TRANSPORT.trim()) }
-    : {}),
-  relay: {
-    ...(process.env.TURNKEYAI_BROWSER_RELAY_ENDPOINT?.trim()
-      ? { endpoint: process.env.TURNKEYAI_BROWSER_RELAY_ENDPOINT.trim() }
-      : {}),
-    ...(process.env.TURNKEYAI_BROWSER_RELAY_PEER_ID?.trim()
-      ? { relayPeerId: process.env.TURNKEYAI_BROWSER_RELAY_PEER_ID.trim() }
-      : {}),
-  },
-  directCdp: {
-    ...(process.env.TURNKEYAI_BROWSER_CDP_ENDPOINT?.trim()
-      ? { endpoint: process.env.TURNKEYAI_BROWSER_CDP_ENDPOINT.trim() }
-      : {}),
-  },
-});
-const relayGateway = maybeGetRelayControlPlane(browserBridge);
-const browserExpertLane = maybeGetRawCdpExpertLane(browserBridge);
-const RELAY_ENDPOINT_CONFIGURED = Boolean(process.env.TURNKEYAI_BROWSER_RELAY_ENDPOINT?.trim());
-const DIRECT_CDP_ENDPOINT = process.env.TURNKEYAI_BROWSER_CDP_ENDPOINT?.trim() || null;
-const DAEMON_PACKAGE_VERSION = (() => {
-  // Look for the CLI package.json relative to this module so the lookup
-  // works in both the bundled dist (packages/cli/dist/daemon.js → ../package.json)
-  // and the source dev loop (packages/app-gateway/src/daemon.ts → ../../cli/package.json).
-  const candidates = [
-    path.join(import.meta.dirname, "..", "package.json"),
-    path.join(import.meta.dirname, "..", "..", "cli", "package.json"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      const raw = readFileSync(candidate, "utf8");
-      const parsed = JSON.parse(raw) as { name?: string; version?: string };
-      if (parsed.name === "@turnkeyai/cli" && typeof parsed.version === "string") {
-        return parsed.version;
-      }
-    } catch {
-      // try next candidate
-    }
-  }
-  return "0.0.0";
-})();
-
-const bridgeAmbientSessions = createInMemoryAmbientSessionStore();
-const bridgeAdapterDeps = {
-  spawnSession: (request: BrowserTaskRequest) => browserBridge.spawnSession(request),
-  sendSession: (request: BrowserTaskRequest & { browserSessionId: string }) =>
-    browserBridge.sendSession(request),
-  listTargets: (sessionId: string) => browserBridge.listTargets(sessionId),
-  activateTarget: (
-    sessionId: string,
-    targetId: string,
-    owner?: { ownerType?: BrowserSessionOwnerType; ownerId?: string }
-  ) => browserBridge.activateTarget(sessionId, targetId, owner),
-  closeTarget: (
-    sessionId: string,
-    targetId: string,
-    owner?: { ownerType?: BrowserSessionOwnerType; ownerId?: string }
-  ) => browserBridge.closeTarget(sessionId, targetId, owner),
-};
-const bridgeCommandDispatcher = createBridgeCommandDispatcher({
-  bridge: bridgeAdapterDeps,
-  ambient: bridgeAmbientSessions,
-  idGenerator,
-  clock,
-  allowedTools: TIER1_TOOLS,
-  buildAction: buildTier1Action,
-  expertLaneAvailable: () => browserExpertLane !== null,
-});
-const bridgeAdvancedDispatcher = createBridgeCommandDispatcher({
-  bridge: bridgeAdapterDeps,
-  ambient: bridgeAmbientSessions,
-  idGenerator,
-  clock,
-  allowedTools: new Set([...TIER1_TOOLS, ...TIER2_TOOLS]),
-  buildAction: (tool, args) => {
-    const tier1 = TIER1_TOOLS.has(tool) ? buildTier1Action(tool, args) : null;
-    if (tier1 && !("error" in tier1)) return tier1;
-    return buildTier2Action(tool, args);
-  },
-  expertLaneAvailable: () => browserExpertLane !== null,
-});
-const bridgeBatchDispatcher = createBridgeBatchDispatcher({
-  bridge: bridgeAdapterDeps,
-  ambient: bridgeAmbientSessions,
-  idGenerator,
-  clock,
-  buildAction: (tool, args) => {
-    if (TIER1_TOOLS.has(tool)) return buildTier1Action(tool, args);
-    if (TIER2_TOOLS.has(tool)) return buildTier2Action(tool, args);
-    return { error: `tool not allowed in batch: ${tool}` };
-  },
-});
-const bridgeExpertDispatcher = createBridgeExpertDispatcher({
-  expertLane: browserExpertLane,
-  ambient: bridgeAmbientSessions,
-  bridge: bridgeAdapterDeps,
-  idGenerator,
-});
+  roleMemoryResolver,
+  promptAssembler,
+  contextCompressor,
+  contextStateMaintainer,
+  browserBridge,
+  relayGateway,
+  browserExpertLane,
+  relayEndpointConfigured: RELAY_ENDPOINT_CONFIGURED,
+  directCdpEndpoint: DIRECT_CDP_ENDPOINT,
+  daemonPackageVersion: DAEMON_PACKAGE_VERSION,
+  bridgeAmbientSessions,
+  bridgeCommandDispatcher,
+  bridgeAdvancedDispatcher,
+  bridgeBatchDispatcher,
+  bridgeExpertDispatcher,
+  replayRecorder,
+  workerHandlers,
+  capabilityDiscoveryService,
+  workerRegistry,
+} = foundations;
 
 function extractBridgeRequestToken(req: http.IncomingMessage): string | null {
   const headerToken = req.headers["x-turnkeyai-token"];
@@ -585,31 +329,6 @@ function getRelayDiagnosticsSnapshot() {
       }
     : undefined;
 }
-const replayRecorder = new FileReplayRecorder({
-  rootDir: path.join(DATA_DIR, "replays"),
-});
-const workerHandlers = [
-  new BrowserWorkerHandler({
-    browserBridge,
-    stepVerifier: new BrowserStepVerifier(),
-    resultVerifier: new BrowserResultVerifier(),
-    replayRecorder,
-    runtimeProgressRecorder,
-  }),
-  new ExploreWorkerHandler({
-    browserBridge,
-  }),
-  new FinanceWorkerHandler(),
-];
-const capabilityDiscoveryService = new DefaultCapabilityDiscoveryService({
-  availableWorkers: () => workerHandlers.map((handler) => handler.kind),
-  skills: [
-    { skillId: "browser", installed: true, capability: "browser" },
-    { skillId: "explore", installed: true, capability: "explore" },
-    { skillId: "finance", installed: true, capability: "finance" },
-  ],
-});
-const workerRegistry = new DefaultWorkerRegistry(workerHandlers);
 const workerRuntime: WorkerRuntime = new LocalWorkerRuntime({
   workerRegistry,
   runtimeProgressRecorder,
