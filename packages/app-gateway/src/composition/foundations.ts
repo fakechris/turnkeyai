@@ -289,9 +289,9 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
       ];
       const recent = (input.recentMessages ?? [])
         .slice(-5)
-        .map((item) => `[${item.name}]: ${truncateRelayBriefLine(item.content, 220)}`);
+        .map((item) => `[${item.name}]: ${truncateBrief(item.content, RELAY_BRIEF_LINE_MAX_CHARS)}`);
       const body = [...header, ...recent].join("\n");
-      return `${truncateRelayBrief(body, 2_400 - closingTag.length - 1)}\n${closingTag}`;
+      return `${truncateBrief(body, RELAY_BRIEF_MAX_CHARS - closingTag.length - 1)}\n${closingTag}`;
     },
   };
 
@@ -508,11 +508,10 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
   };
 }
 
-function truncateRelayBriefLine(content: string, maxChars: number): string {
-  return content.length > maxChars ? `${content.slice(0, Math.max(maxChars - 1, 1))}…` : content;
-}
+const RELAY_BRIEF_LINE_MAX_CHARS = 220;
+const RELAY_BRIEF_MAX_CHARS = 2_400;
 
-function truncateRelayBrief(content: string, maxChars: number): string {
+function truncateBrief(content: string, maxChars: number): string {
   return content.length > maxChars ? `${content.slice(0, Math.max(maxChars - 1, 1))}…` : content;
 }
 
