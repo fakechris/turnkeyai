@@ -463,20 +463,31 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
 
   private async getOrConnectBrowser(): Promise<Browser> {
     if (!this.browserPromise) {
-      this.browserPromise = this.connectBrowser(this.endpoint)
+      // Capture the in-flight promise into the listener/catch closures so that
+      // a `reconnect()` followed by a fresh connect cannot have its new
+      // browserPromise wiped by a late `disconnected` event from the previous
+      // browser. The race matters because reconnect() best-effort closes the
+      // old browser asynchronously — the close fires `disconnected` on the
+      // OLD browser, which would otherwise overwrite freshly-cached state.
+      const attempt: Promise<Browser> = this.connectBrowser(this.endpoint)
         .then((browser) => {
           browser.on("disconnected", () => {
-            this.browserPromise = null;
-            this.rootCdpSessionPromise = null;
-            this.clearExpertState(new Error("browser_cdp_unavailable: browser disconnected"));
+            if (this.browserPromise === attempt) {
+              this.browserPromise = null;
+              this.rootCdpSessionPromise = null;
+              this.clearExpertState(new Error("browser_cdp_unavailable: browser disconnected"));
+            }
           });
           return browser;
         })
         .catch((error) => {
-          this.browserPromise = null;
+          if (this.browserPromise === attempt) {
+            this.browserPromise = null;
+          }
           const message = error instanceof Error ? error.message : String(error);
           throw new Error(`browser_cdp_unavailable: ${message}`);
         });
+      this.browserPromise = attempt;
     }
 
     return this.browserPromise;

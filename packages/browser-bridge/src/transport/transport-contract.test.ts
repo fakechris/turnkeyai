@@ -180,6 +180,86 @@ test("RelayBrowserAdapter reports peer-aware transport health and reconnect", as
   }
 });
 
+test("DirectCdpBrowserAdapter survives a delayed disconnected event after reconnect", async () => {
+  // Regression: when reconnect() closes the old browser asynchronously, the
+  // old browser's `disconnected` listener must NOT wipe a freshly-cached
+  // browserPromise / rootCdpSessionPromise. Identity-gated cleanup ensures
+  // only the original connection's listener fires.
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "transport-contract-cdp-race-"));
+  try {
+    let nextBrowserId = 0;
+    const disconnectHandlers: Array<{ id: number; fire: () => void }> = [];
+    const closeOrder: number[] = [];
+
+    const adapter = new DirectCdpBrowserAdapter(
+      {
+        artifactRootDir: path.join(tempDir, "artifacts"),
+        stateRootDir: path.join(tempDir, "state"),
+        directCdp: { endpoint: "http://127.0.0.1:0" },
+      },
+      {
+        connectBrowser: async () => {
+          const id = ++nextBrowserId;
+          let onDisconnected: (() => void) | null = null;
+          const browser = {
+            on: (event: string, handler: () => void) => {
+              if (event === "disconnected") {
+                onDisconnected = handler;
+                disconnectHandlers.push({ id, fire: () => onDisconnected?.() });
+              }
+            },
+            newBrowserCDPSession: async () => ({
+              on: () => undefined,
+              send: async () => ({}),
+            }),
+            close: async () => {
+              closeOrder.push(id);
+              // Simulate Playwright's behavior: closing the browser fires the
+              // disconnected event *after* close resolves, on the next tick.
+              await new Promise((resolve) => setImmediate(resolve));
+              onDisconnected?.();
+            },
+          };
+          return browser as never;
+        },
+      }
+    );
+
+    // Provision first connection.
+    await adapter.listExpertTargets("bs-cdp-race");
+    assert.equal(nextBrowserId, 1);
+
+    // reconnect() drops the promise and schedules close of browser #1.
+    const reconnectResult = await adapter.reconnect({ reason: "race-test" });
+    assert.equal(reconnectResult.invalidatedConnection, true);
+
+    // Immediately provision a new connection — should connect browser #2.
+    await adapter.listExpertTargets("bs-cdp-race");
+    assert.equal(nextBrowserId, 2);
+
+    // Now let browser #1's close + late disconnected event run.
+    // Two setImmediate ticks: one for the reconnect best-effort .then, one for
+    // the simulated close-then-disconnect inside the fake browser.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(closeOrder, [1], "only browser #1 should have been closed");
+
+    // The race we are guarding against: a late disconnected from browser #1
+    // wiping the state belonging to browser #2. Verify by issuing one more
+    // expert call — it must reuse the cached browser #2, not reconnect.
+    await adapter.listExpertTargets("bs-cdp-race");
+    assert.equal(
+      nextBrowserId,
+      2,
+      "late disconnected from old browser must not invalidate the cached new connection"
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("DirectCdpBrowserAdapter reconnect invalidates cached browser connection", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "transport-contract-cdp-"));
   try {
