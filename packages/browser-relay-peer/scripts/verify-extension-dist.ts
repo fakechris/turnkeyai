@@ -8,6 +8,9 @@ interface ChromeExtensionManifest {
   content_scripts?: Array<{
     js?: string[];
   }>;
+  action?: {
+    default_popup?: string;
+  };
 }
 
 const extensionDir = path.join(import.meta.dirname, "..", "dist", "extension");
@@ -22,6 +25,12 @@ async function main(): Promise<void> {
     manifestPath,
     path.join(extensionDir, manifest.background?.service_worker ?? "service-worker.js"),
     ...((manifest.content_scripts ?? []).flatMap((entry) => (entry.js ?? []).map((file) => path.join(extensionDir, file)))),
+    ...(manifest.action?.default_popup
+      ? [
+          path.join(extensionDir, manifest.action.default_popup),
+          path.join(extensionDir, "popup.js"),
+        ]
+      : []),
   ];
 
   for (const filePath of requiredFiles) {

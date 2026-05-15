@@ -152,9 +152,19 @@ npx @turnkeyai/cli tui
 
 ```bash
 npm install -g @turnkeyai/cli
-turnkeyai daemon
+turnkeyai daemon start      # detached; logs to ~/.turnkeyai/logs/daemon.log
+turnkeyai daemon status
+turnkeyai daemon logs -f
+turnkeyai daemon stop
+turnkeyai bridge install-extension
+turnkeyai bridge status
+turnkeyai bridge install-skill
+turnkeyai doctor
 turnkeyai tui
 ```
+
+`daemon start` 会在首次运行时自动生成访问 token 并写入 `~/.turnkeyai/config.json`（0600）。
+传统 `turnkeyai daemon`（无子命令）等价于 foreground 模式，仍可用于开发循环。
 
 默认 daemon 地址：
 
@@ -162,15 +172,37 @@ turnkeyai tui
 http://127.0.0.1:4100
 ```
 
+主要文件：
+
+| 路径 | 用途 |
+| --- | --- |
+| `~/.turnkeyai/config.json` | 自动生成的 token + port + transport（0600） |
+| `~/.turnkeyai/data/` | 默认数据目录（被 `TURNKEYAI_DATA_DIR` 覆盖） |
+| `~/.turnkeyai/logs/daemon.log` | 后台 daemon 日志 |
+| `~/.turnkeyai/daemon.pid` | 后台 daemon 的 PID 文件 |
+| `~/.turnkeyai/extensions/relay/` | 解压后的 relay 扩展（`bridge install-extension` 写入） |
+| `~/.turnkeyai/skills/` | 自动生成的 agent skill 文档 |
+
 常用环境变量：
 
+- `TURNKEYAI_HOME`: 覆盖 `~/.turnkeyai` 根目录
 - `TURNKEYAI_DAEMON_PORT`: 覆盖本地 daemon 监听端口
 - `TURNKEYAI_DATA_DIR`: 覆盖 daemon 本地数据目录，适合隔离 validation / soak 基线
 - `TURNKEYAI_DAEMON_URL`: 让 TUI / CLI 连接指定 daemon
-- `TURNKEYAI_DAEMON_TOKEN`: 开启 daemon token auth 时使用的访问 token
+- `TURNKEYAI_DAEMON_TOKEN`: 覆盖 daemon token（跳过自动生成）
 - `TURNKEYAI_BROWSER_TRANSPORT`: 选择 `relay` 或 `direct-cdp` browser transport
 - `TURNKEYAI_BROWSER_RELAY_TOKEN`: relay peer 使用的独立 token
 - `TURNKEYAI_BROWSER_CDP_ENDPOINT`: direct-cdp transport 使用的 CDP endpoint
+
+外部 agent 桥接 HTTP 端点（均位于 daemon 上）：
+
+| Endpoint | 用途 |
+| --- | --- |
+| `GET /bridge/status` | daemon + transport + relay + expert 汇总状态 |
+| `POST /bridge/command` | Tier 1 工具门面（ambient session） |
+| `POST /bridge/advanced` | Tier 2 工具（hover / pdf / find_tab / network.* 等） |
+| `POST /bridge/expert` | 原始 CDP 直通（仅 direct-cdp transport） |
+| `POST /bridge/batch` | 单次请求按顺序执行多个工具 |
 
 本地源码开发：
 

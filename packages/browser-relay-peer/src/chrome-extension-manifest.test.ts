@@ -15,6 +15,8 @@ test("chrome relay extension manifest uses explicit matches and loopback daemon 
   assert.ok(manifest.host_permissions.includes("http://127.0.0.1:4100/*"));
   assert.ok(manifest.permissions.includes("tabs"));
   assert.ok(manifest.permissions.includes("debugger"));
+  assert.equal(manifest.action.default_popup, "popup.html");
+  assert.ok(manifest.action.default_title.length > 0);
 });
 
 test("chrome relay extension manifest rejects empty match lists", () => {

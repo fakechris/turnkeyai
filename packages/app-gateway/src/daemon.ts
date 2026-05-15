@@ -1,5 +1,6 @@
 import http from "node:http";
 import { execFile as execFileCallback } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -172,6 +173,25 @@ import {
   createRelayPeerIdentityBindingStore,
   resolveDaemonAuthConfig,
 } from "./daemon-auth";
+import {
+  ensureDaemonAuthToken,
+  ensureDaemonRuntimeDirs,
+  getDaemonRuntimePaths,
+  removePidFile,
+  resolveDaemonDataDir,
+  resolveDaemonPort,
+  writePidFile,
+} from "./daemon-runtime-paths";
+import {
+  TIER1_TOOLS,
+  TIER2_TOOLS,
+  buildTier1Action,
+  buildTier2Action,
+  createBridgeBatchDispatcher,
+  createBridgeCommandDispatcher,
+  createBridgeExpertDispatcher,
+  createInMemoryAmbientSessionStore,
+} from "./bridge-command-dispatcher";
 import { createFileRouteIdempotencyStore } from "./idempotency-store";
 import { createRecoveryActionService } from "./recovery-action-service";
 import { buildRecoveryRunActionConflict } from "./recovery-run-guards";
@@ -183,6 +203,11 @@ import {
 } from "./runtime-reconciliation-pass";
 import { reconcileWorkerBindingsOnStartup } from "./worker-binding-startup-reconcile";
 import { handleBrowserRoutes, type BrowserTaskRouteBody } from "./routes/browser-routes";
+import {
+  buildBridgeStatus,
+  handleBridgeRoutes,
+  type BridgeStatusInfo,
+} from "./routes/bridge-routes";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
 import { handleRecoveryRoutes } from "./routes/recovery-routes";
 import { handleRelayRoutes } from "./routes/relay-routes";
@@ -193,8 +218,14 @@ if (wantsProcessHelp(process.argv.slice(2))) {
   printDaemonHelp(0);
 }
 
-const PORT = Number(process.env.TURNKEYAI_DAEMON_PORT ?? 4100);
-const DATA_DIR = path.resolve(process.env.TURNKEYAI_DATA_DIR?.trim() || ".daemon-data");
+const RUNTIME_PATHS = getDaemonRuntimePaths();
+ensureDaemonRuntimeDirs(RUNTIME_PATHS);
+const TOKEN_BOOTSTRAP = ensureDaemonAuthToken(RUNTIME_PATHS);
+if (TOKEN_BOOTSTRAP.generated && !process.env.TURNKEYAI_DAEMON_TOKEN) {
+  process.env.TURNKEYAI_DAEMON_TOKEN = TOKEN_BOOTSTRAP.token;
+}
+const PORT = resolveDaemonPort(RUNTIME_PATHS);
+const DATA_DIR = resolveDaemonDataDir(RUNTIME_PATHS);
 const VALIDATION_ARTIFACT_DIR = path.join(DATA_DIR, "validation-artifacts");
 const execFile = promisify(execFileCallback);
 const DAEMON_AUTH = resolveDaemonAuthConfig(process.env);
@@ -400,6 +431,123 @@ const browserBridge = createBrowserBridge({
 });
 const relayGateway = maybeGetRelayControlPlane(browserBridge);
 const browserExpertLane = maybeGetRawCdpExpertLane(browserBridge);
+const RELAY_ENDPOINT_CONFIGURED = Boolean(process.env.TURNKEYAI_BROWSER_RELAY_ENDPOINT?.trim());
+const DIRECT_CDP_ENDPOINT = process.env.TURNKEYAI_BROWSER_CDP_ENDPOINT?.trim() || null;
+const DAEMON_PACKAGE_VERSION = (() => {
+  try {
+    const cliPkgPath = path.join(process.cwd(), "packages", "cli", "package.json");
+    const raw = readFileSync(cliPkgPath, "utf8");
+    const parsed = JSON.parse(raw) as { version?: string };
+    return parsed.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
+
+const bridgeAmbientSessions = createInMemoryAmbientSessionStore();
+const bridgeAdapterDeps = {
+  spawnSession: (request: BrowserTaskRequest) => browserBridge.spawnSession(request),
+  sendSession: (request: BrowserTaskRequest & { browserSessionId: string }) =>
+    browserBridge.sendSession(request),
+  listTargets: (sessionId: string) => browserBridge.listTargets(sessionId),
+  activateTarget: (
+    sessionId: string,
+    targetId: string,
+    owner?: { ownerType?: BrowserSessionOwnerType; ownerId?: string }
+  ) => browserBridge.activateTarget(sessionId, targetId, owner),
+  closeTarget: (
+    sessionId: string,
+    targetId: string,
+    owner?: { ownerType?: BrowserSessionOwnerType; ownerId?: string }
+  ) => browserBridge.closeTarget(sessionId, targetId, owner),
+};
+const bridgeCommandDispatcher = createBridgeCommandDispatcher({
+  bridge: bridgeAdapterDeps,
+  ambient: bridgeAmbientSessions,
+  idGenerator,
+  clock,
+  allowedTools: TIER1_TOOLS,
+  buildAction: buildTier1Action,
+  expertLaneAvailable: () => browserExpertLane !== null,
+});
+const bridgeAdvancedDispatcher = createBridgeCommandDispatcher({
+  bridge: bridgeAdapterDeps,
+  ambient: bridgeAmbientSessions,
+  idGenerator,
+  clock,
+  allowedTools: new Set([...TIER1_TOOLS, ...TIER2_TOOLS]),
+  buildAction: (tool, args) => {
+    const tier1 = TIER1_TOOLS.has(tool) ? buildTier1Action(tool, args) : null;
+    if (tier1 && !("error" in tier1)) return tier1;
+    return buildTier2Action(tool, args);
+  },
+  expertLaneAvailable: () => browserExpertLane !== null,
+});
+const bridgeBatchDispatcher = createBridgeBatchDispatcher({
+  bridge: bridgeAdapterDeps,
+  ambient: bridgeAmbientSessions,
+  idGenerator,
+  clock,
+  buildAction: (tool, args) => {
+    if (TIER1_TOOLS.has(tool)) return buildTier1Action(tool, args);
+    if (TIER2_TOOLS.has(tool)) return buildTier2Action(tool, args);
+    return { error: `tool not allowed in batch: ${tool}` };
+  },
+});
+const bridgeExpertDispatcher = createBridgeExpertDispatcher({
+  expertLane: browserExpertLane,
+  ambient: bridgeAmbientSessions,
+  bridge: bridgeAdapterDeps,
+  idGenerator,
+});
+
+function extractBridgeRequestToken(req: http.IncomingMessage): string | null {
+  const headerToken = req.headers["x-turnkeyai-token"];
+  if (typeof headerToken === "string" && headerToken.trim().length > 0) {
+    return headerToken.trim();
+  }
+  const authorization = req.headers.authorization;
+  if (typeof authorization === "string" && authorization.toLowerCase().startsWith("bearer ")) {
+    const token = authorization.slice("bearer ".length).trim();
+    return token.length > 0 ? token : null;
+  }
+  return null;
+}
+
+async function buildBridgeStatusSnapshot(): Promise<BridgeStatusInfo> {
+  const sessions = await browserBridge.listSessions().catch(() => []);
+  const relaySnapshot = relayGateway
+    ? {
+        configured: true,
+        peers: relayGateway.listPeers(),
+        targets: relayGateway.listTargets(),
+        actions: relayGateway.listActionRequests(),
+      }
+    : {
+        configured: RELAY_ENDPOINT_CONFIGURED,
+        peers: [],
+        targets: [],
+        actions: [],
+      };
+  return buildBridgeStatus({
+    port: PORT,
+    version: DAEMON_PACKAGE_VERSION,
+    dataDir: DATA_DIR,
+    logsPath: RUNTIME_PATHS.logFile,
+    configFile: RUNTIME_PATHS.configFile,
+    transportMode: browserBridge.transportMode,
+    transportLabel: browserBridge.transportLabel,
+    relay: relaySnapshot,
+    directCdp: {
+      configured: Boolean(DIRECT_CDP_ENDPOINT) || browserBridge.transportMode === "direct-cdp",
+      endpoint: DIRECT_CDP_ENDPOINT,
+    },
+    expertLane: browserExpertLane,
+    sessionCount: sessions.length,
+    now: clock.now(),
+  });
+}
+
 function getRelayDiagnosticsSnapshot() {
   return relayGateway
     ? {
@@ -1112,6 +1260,24 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (
+      await handleBridgeRoutes({
+        req,
+        res,
+        url,
+        deps: {
+          getStatusInfo: buildBridgeStatusSnapshot,
+          commandDispatcher: bridgeCommandDispatcher,
+          advancedDispatcher: bridgeAdvancedDispatcher,
+          batchDispatcher: bridgeBatchDispatcher,
+          expertDispatcher: bridgeExpertDispatcher,
+          resolveToken: (request) => extractBridgeRequestToken(request),
+        },
+      })
+    ) {
+      return;
+    }
+
+    if (
       await handleRelayRoutes({
         req,
         res,
@@ -1151,11 +1317,20 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
+  try {
+    writePidFile(RUNTIME_PATHS, process.pid);
+  } catch {
+    // best-effort; foreground/dev runs may not have write access
+  }
   console.log(`daemon listening on http://127.0.0.1:${PORT}`);
   console.log(`data dir: ${DATA_DIR}`);
+  console.log(`runtime dir: ${RUNTIME_PATHS.rootDir}`);
   console.log(`model catalog: ${modelCatalogPath ?? "(none)"}`);
   if (DAEMON_AUTH.authMode !== "disabled") {
     console.log("auth: token required via x-turnkeyai-token or Authorization: Bearer <token>");
+    if (TOKEN_BOOTSTRAP.generated) {
+      console.log(`auth: generated token written to ${RUNTIME_PATHS.configFile}`);
+    }
     if (DAEMON_AUTH.authMode === "token-layered") {
       console.log("auth access levels: read / operator / admin");
       console.log("  TURNKEYAI_DAEMON_READ_TOKEN       Read-only inspection and replay routes");
@@ -1172,6 +1347,33 @@ server.listen(PORT, "127.0.0.1", () => {
     `  curl -X POST http://127.0.0.1:${PORT}/messages -H 'content-type: application/json' -d '{"threadId":"<THREAD_ID>","content":"Please start the demo flow"}'`
   );
 });
+
+let shuttingDown = false;
+function shutdownDaemon(signal: NodeJS.Signals | "exit"): void {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  console.log(`daemon shutting down (${signal})`);
+  const closeTimeout = setTimeout(() => {
+    console.error("daemon shutdown timed out, exiting");
+    removePidFile(RUNTIME_PATHS);
+    process.exit(1);
+  }, 10_000);
+  closeTimeout.unref();
+  server.close((closeError) => {
+    clearTimeout(closeTimeout);
+    if (closeError) {
+      console.error(`daemon shutdown error: ${closeError.message}`);
+    }
+    removePidFile(RUNTIME_PATHS);
+    process.exit(0);
+  });
+}
+
+process.on("SIGTERM", () => shutdownDaemon("SIGTERM"));
+process.on("SIGINT", () => shutdownDaemon("SIGINT"));
+process.on("SIGHUP", () => shutdownDaemon("SIGHUP"));
 
 function createIdGenerator(): IdGenerator {
   let seq = 0;
