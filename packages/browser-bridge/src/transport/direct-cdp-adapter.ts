@@ -495,7 +495,10 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
 
   private async getOrCreateRootCdpSession(): Promise<CDPSession> {
     if (!this.rootCdpSessionPromise) {
-      this.rootCdpSessionPromise = this.getOrConnectBrowser()
+      // Identity-gate the catch the same way getOrConnectBrowser does: a late
+      // failure on a pre-reconnect attempt must not wipe a freshly-cached root
+      // session promise belonging to the post-reconnect browser.
+      const attempt: Promise<CDPSession> = this.getOrConnectBrowser()
         .then(async (browser) => {
           const rootSession = await browser.newBrowserCDPSession();
           rootSession.on("Target.receivedMessageFromTarget", (event) => {
@@ -521,9 +524,12 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
           return rootSession;
         })
         .catch((error) => {
-          this.rootCdpSessionPromise = null;
+          if (this.rootCdpSessionPromise === attempt) {
+            this.rootCdpSessionPromise = null;
+          }
           throw normalizeBrowserCdpUnavailable(error);
         });
+      this.rootCdpSessionPromise = attempt;
     }
     return this.rootCdpSessionPromise;
   }
