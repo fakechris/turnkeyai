@@ -133,6 +133,18 @@ export function resolveDaemonRequestAccess(
     return "operator";
   }
 
+  if (isBridgeStatusRoute(req.method, url.pathname)) {
+    return "read";
+  }
+
+  if (isBridgeExpertRoute(url.pathname)) {
+    return "admin";
+  }
+
+  if (isBridgeRoute(url.pathname)) {
+    return "operator";
+  }
+
   if (req.method === "POST" && isWorkflowMutationRoute(url.pathname)) {
     return "operator";
   }
@@ -196,6 +208,18 @@ function isBrowserRoute(pathname: string): boolean {
 
 function isBrowserExpertRoute(pathname: string): boolean {
   return /^\/browser-sessions\/[^/]+\/expert(?:\/|$)/.test(pathname);
+}
+
+function isBridgeStatusRoute(method: string | undefined, pathname: string): boolean {
+  return method === "GET" && pathname === "/bridge/status";
+}
+
+function isBridgeExpertRoute(pathname: string): boolean {
+  return pathname === "/bridge/expert";
+}
+
+function isBridgeRoute(pathname: string): boolean {
+  return pathname === "/bridge/command" || pathname === "/bridge/advanced" || pathname === "/bridge/batch";
 }
 
 function isWorkflowMutationRoute(pathname: string): boolean {

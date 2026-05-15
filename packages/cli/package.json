@@ -14,7 +14,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup --config tsup.config.ts",
+    "build": "tsup --config tsup.config.ts && node scripts/copy-relay-extension.mjs",
     "prepack": "npm run build"
   },
   "dependencies": {

@@ -18,7 +18,16 @@ interface ChromeStorageLocalLike {
     keys: string | string[] | Record<string, unknown> | null | undefined,
     callback: (items: Record<string, unknown>) => void
   ): void;
+  set?(items: Record<string, unknown>, callback?: () => void): void;
+  remove?(keys: string | string[], callback?: () => void): void;
 }
+
+export type ChromeRelayExtensionRuntimeConfigPatch = Partial<
+  Pick<
+    ChromeRelayExtensionRuntimeConfig,
+    "daemonBaseUrl" | "daemonToken" | "peerId" | "peerLabel"
+  >
+>;
 
 const STORAGE_KEY = "turnkeyaiRelayConfig";
 const DEFAULT_DAEMON_BASE_URL = resolveDefaultDaemonBaseUrl();
@@ -98,6 +107,59 @@ async function readStoredRelayConfig(storageLocal?: ChromeStorageLocalLike): Pro
       resolve(value && typeof value === "object" ? (value as Record<string, unknown>) : {});
     });
   });
+}
+
+export async function saveChromeRelayExtensionRuntimeConfig(
+  patch: ChromeRelayExtensionRuntimeConfigPatch
+): Promise<ChromeRelayExtensionRuntimeConfig> {
+  const chromeLike = (globalThis as Record<string, unknown>).chrome as {
+    storage?: { local?: ChromeStorageLocalLike };
+  } | undefined;
+  const storageLocal = chromeLike?.storage?.local;
+  if (!storageLocal?.set) {
+    throw new Error("chrome.storage.local.set is unavailable");
+  }
+  const existing = await readStoredRelayConfig(storageLocal);
+  const next = pruneStoredRelayConfig({
+    ...existing,
+    ...filterDefinedKeys(patch),
+  });
+  await new Promise<void>((resolve) => {
+    storageLocal.set!({ [STORAGE_KEY]: next }, () => resolve());
+  });
+  return loadChromeRelayExtensionRuntimeConfig();
+}
+
+function filterDefinedKeys<T extends Record<string, unknown>>(input: T): Partial<T> {
+  const result: Partial<T> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value !== undefined) {
+      (result as Record<string, unknown>)[key] = value;
+    }
+  }
+  return result;
+}
+
+function pruneStoredRelayConfig(record: Record<string, unknown>): Record<string, unknown> {
+  const allowedKeys: Array<keyof ChromeRelayExtensionRuntimeConfig> = [
+    "daemonBaseUrl",
+    "daemonToken",
+    "peerId",
+    "peerLabel",
+    "capabilities",
+    "transportLabel",
+    "activeDelayMs",
+    "idleDelayMs",
+    "errorDelayMs",
+    "pullWaitMs",
+  ];
+  const out: Record<string, unknown> = {};
+  for (const key of allowedKeys) {
+    if (record[key] !== undefined) {
+      out[key] = record[key];
+    }
+  }
+  return out;
 }
 
 function asOptionalString(value: unknown): string | undefined {

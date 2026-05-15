@@ -2,7 +2,11 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-type CliCommand = "daemon" | "tui";
+import { runBridgeNamespace } from "./bridge";
+import { runDaemonNamespace } from "./daemon-commands";
+import { runDoctor } from "./doctor";
+
+type CliCommand = "daemon" | "tui" | "doctor" | "bridge";
 
 const [, , command, ...args] = process.argv;
 
@@ -21,19 +25,32 @@ void runCommand(command, args).catch((error) => {
 });
 
 function isCliCommand(value: string): value is CliCommand {
-  return value === "daemon" || value === "tui";
+  return value === "daemon" || value === "tui" || value === "doctor" || value === "bridge";
 }
 
-async function runCommand(command: CliCommand, args: string[]): Promise<void> {
+async function runCommand(command: CliCommand, commandArgs: string[]): Promise<void> {
+  switch (command) {
+    case "daemon":
+      return runDaemonNamespace(commandArgs);
+    case "bridge":
+      return runBridgeNamespace(commandArgs);
+    case "doctor":
+      return runDoctor(commandArgs);
+    case "tui":
+      return spawnLegacyEntry("tui", commandArgs);
+  }
+}
+
+async function spawnLegacyEntry(entryName: string, entryArgs: string[]): Promise<void> {
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
-  const entryPath = path.join(currentDir, `${command}.js`);
-  const child = spawn(process.execPath, [entryPath, ...args], {
+  const entryPath = path.join(currentDir, `${entryName}.js`);
+  const child = spawn(process.execPath, [entryPath, ...entryArgs], {
     stdio: "inherit",
     env: process.env,
   });
 
   child.on("error", (error) => {
-    console.error(`Failed to start ${command}:`, error);
+    console.error(`Failed to start ${entryName}:`, error);
     process.exit(1);
   });
 
@@ -51,13 +68,23 @@ function printHelp(exitCode: number): never {
     "TurnkeyAI CLI",
     "",
     "Usage:",
-    "  turnkeyai daemon",
+    "  turnkeyai daemon start [--foreground]",
+    "  turnkeyai daemon stop | restart | status | logs [--follow]",
+    "  turnkeyai daemon                  Run daemon in foreground (legacy)",
+    "  turnkeyai bridge install-extension | status | install-skill",
+    "  turnkeyai doctor",
     "  turnkeyai tui",
     "",
+    "Files:",
+    "  ~/.turnkeyai/config.json          Token + port + transport (0600)",
+    "  ~/.turnkeyai/data/                Default data dir (override: TURNKEYAI_DATA_DIR)",
+    "  ~/.turnkeyai/logs/daemon.log      Detached daemon log",
+    "",
     "Environment:",
-    "  TURNKEYAI_DAEMON_PORT   Override the daemon listen port",
-    "  TURNKEYAI_DAEMON_URL    Override the daemon base URL used by the TUI",
-    "  TURNKEYAI_DAEMON_TOKEN  Require bearer auth for daemon requests",
+    "  TURNKEYAI_HOME                    Override ~/.turnkeyai root",
+    "  TURNKEYAI_DAEMON_PORT             Override the daemon listen port",
+    "  TURNKEYAI_DAEMON_URL              Override the daemon base URL for CLI/TUI",
+    "  TURNKEYAI_DAEMON_TOKEN            Override the auth token",
   ];
 
   const output = exitCode === 0 ? console.log : console.error;

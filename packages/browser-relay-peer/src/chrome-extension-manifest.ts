@@ -24,6 +24,10 @@ export interface ChromeExtensionManifest {
     run_at: "document_idle";
     all_frames: boolean;
   }>;
+  action: {
+    default_popup: string;
+    default_title: string;
+  };
 }
 
 const DEFAULT_PERMISSIONS = ["storage", "tabs", "scripting", "activeTab", "alarms", "debugger"];
@@ -61,6 +65,10 @@ export function buildChromeRelayExtensionManifest(
         all_frames: true,
       },
     ],
+    action: {
+      default_popup: "popup.html",
+      default_title: options.name?.trim() || "TurnkeyAI Relay Bridge",
+    },
   };
 }
 

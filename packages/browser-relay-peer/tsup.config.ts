@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     "extension/service-worker": "src/extension-service-worker-entry.ts",
     "extension/content-script": "src/extension-content-script-entry.ts",
+    "extension/popup": "src/popup/popup-entry.ts",
   },
   format: ["esm"],
   platform: "browser",

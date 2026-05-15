@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>TurnkeyAI Relay</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1a1a1a;
+        --bg: #fafafa;
+        --muted: #6b6b6b;
+        --ok: #1f9d55;
+        --bad: #d33;
+        --pending: #c08600;
+        --accent: #3367d6;
+        --border: #e2e2e2;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #f5f5f5;
+          --bg: #1a1a1a;
+          --muted: #9a9a9a;
+          --border: #303030;
+        }
+      }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        margin: 0;
+        padding: 12px 14px;
+        width: 320px;
+        background: var(--bg);
+        color: var(--fg);
+        font-size: 12px;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .header h1 {
+        font-size: 14px;
+        margin: 0;
+        flex: 1;
+      }
+      .version {
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        display: inline-block;
+      }
+      .dot-ok {
+        background: var(--ok);
+      }
+      .dot-bad {
+        background: var(--bad);
+      }
+      .dot-pending {
+        background: var(--pending);
+      }
+      dl.status {
+        display: grid;
+        grid-template-columns: 110px 1fr;
+        gap: 4px 10px;
+        margin: 0 0 12px;
+      }
+      dl.status dt {
+        color: var(--muted);
+      }
+      dl.status dd {
+        margin: 0;
+        word-break: break-word;
+      }
+      dl.status .mono {
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        font-size: 11px;
+      }
+      dl.status .error {
+        color: var(--bad);
+      }
+      .actions {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 8px;
+      }
+      .actions button {
+        flex: 1;
+        padding: 6px 8px;
+        font-size: 12px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--fg);
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .actions button:hover {
+        background: var(--border);
+      }
+      details.settings summary {
+        cursor: pointer;
+        color: var(--muted);
+        padding: 4px 0;
+      }
+      details.settings form {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      details.settings label {
+        display: flex;
+        flex-direction: column;
+        font-size: 11px;
+        color: var(--muted);
+        gap: 2px;
+      }
+      details.settings input {
+        font-size: 12px;
+        padding: 4px 6px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--fg);
+        border-radius: 4px;
+      }
+      details.settings button {
+        align-self: flex-end;
+        padding: 4px 10px;
+        background: var(--accent);
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 12px;
+        transform: translateX(-50%);
+        background: var(--fg);
+        color: var(--bg);
+        padding: 4px 10px;
+        border-radius: 4px;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <p style="color: var(--muted)">Loading…</p>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
