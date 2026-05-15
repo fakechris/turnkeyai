@@ -148,7 +148,10 @@ export function createBridgeCommandDispatcher(
         const sessionId = await ensureSession({ input, owner, options });
         if (typeof sessionId !== "string") return sessionId;
         try {
-          const targets = (await options.bridge.listTargets(sessionId)) as Array<Record<string, unknown>>;
+          const rawTargets = await options.bridge.listTargets(sessionId);
+          const targets = Array.isArray(rawTargets)
+            ? (rawTargets as Array<Record<string, unknown>>)
+            : [];
           if (tool === "find_tab") {
             const filtered = filterTargets(targets, args);
             return successResponse({ sessionId, tool, result: filtered });
@@ -771,7 +774,10 @@ function filterTargets(
   });
 }
 
+const MAX_FIND_TAB_REGEX_LENGTH = 2048;
+
 function buildRegex(value: string): RegExp | null {
+  if (value.length > MAX_FIND_TAB_REGEX_LENGTH) return null;
   try {
     return new RegExp(value, "i");
   } catch {

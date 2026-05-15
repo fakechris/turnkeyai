@@ -434,14 +434,25 @@ const browserExpertLane = maybeGetRawCdpExpertLane(browserBridge);
 const RELAY_ENDPOINT_CONFIGURED = Boolean(process.env.TURNKEYAI_BROWSER_RELAY_ENDPOINT?.trim());
 const DIRECT_CDP_ENDPOINT = process.env.TURNKEYAI_BROWSER_CDP_ENDPOINT?.trim() || null;
 const DAEMON_PACKAGE_VERSION = (() => {
-  try {
-    const cliPkgPath = path.join(process.cwd(), "packages", "cli", "package.json");
-    const raw = readFileSync(cliPkgPath, "utf8");
-    const parsed = JSON.parse(raw) as { version?: string };
-    return parsed.version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
+  // Look for the CLI package.json relative to this module so the lookup
+  // works in both the bundled dist (packages/cli/dist/daemon.js → ../package.json)
+  // and the source dev loop (packages/app-gateway/src/daemon.ts → ../../cli/package.json).
+  const candidates = [
+    path.join(import.meta.dirname, "..", "package.json"),
+    path.join(import.meta.dirname, "..", "..", "cli", "package.json"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const raw = readFileSync(candidate, "utf8");
+      const parsed = JSON.parse(raw) as { name?: string; version?: string };
+      if (parsed.name === "@turnkeyai/cli" && typeof parsed.version === "string") {
+        return parsed.version;
+      }
+    } catch {
+      // try next candidate
+    }
   }
+  return "0.0.0";
 })();
 
 const bridgeAmbientSessions = createInMemoryAmbientSessionStore();

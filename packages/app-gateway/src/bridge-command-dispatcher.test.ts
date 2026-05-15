@@ -258,6 +258,51 @@ describe("bridge-command-dispatcher", () => {
     assert.equal((spawn.payload.actions[0] as { method: string }).method, "Page.printToPDF");
   });
 
+  it("find_tab rejects oversized regex patterns (ReDoS guard)", async () => {
+    const ambient = createInMemoryAmbientSessionStore();
+    const { bridge } = makeFakeBridge({
+      listTargets: async () => [
+        { targetId: "t1", url: "https://example.com", title: "Example" },
+      ],
+    });
+    const dispatcher = createBridgeCommandDispatcher({
+      bridge,
+      ambient,
+      idGenerator: makeIdGenerator(),
+      clock: { now: () => 0 },
+      allowedTools: new Set([...TIER1_TOOLS, ...TIER2_TOOLS]),
+      buildAction: buildTier2Action,
+    });
+    const oversized = "a".repeat(3000);
+    const response = await dispatcher.dispatch({
+      token: "tok",
+      tool: "find_tab",
+      args: { urlPattern: oversized },
+    });
+    // Oversized regex is treated as no filter (no match), so result is empty
+    // rather than crashing or hanging.
+    assert.equal(response.status, 200);
+    const result = response.body.result as Array<unknown>;
+    assert.equal(result.length, 1);
+  });
+
+  it("list_tabs tolerates a non-array bridge response", async () => {
+    const ambient = createInMemoryAmbientSessionStore();
+    const { bridge } = makeFakeBridge({
+      listTargets: async () => null as unknown as Array<Record<string, unknown>>,
+    });
+    const dispatcher = createBridgeCommandDispatcher({
+      bridge,
+      ambient,
+      idGenerator: makeIdGenerator(),
+      clock: { now: () => 0 },
+    });
+    const response = await dispatcher.dispatch({ token: "tok", tool: "list_tabs" });
+    assert.equal(response.status, 200);
+    assert.ok(Array.isArray(response.body.result));
+    assert.equal((response.body.result as Array<unknown>).length, 0);
+  });
+
   it("find_tab filters listTargets by url/title regex", async () => {
     const ambient = createInMemoryAmbientSessionStore();
     const { bridge } = makeFakeBridge({

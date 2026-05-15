@@ -131,7 +131,11 @@ function wireInteractions(config: ChromeRelayExtensionRuntimeConfig): void {
     sendServiceWorkerMessage({ type: "turnkeyai.relay.popup-action-reconnect" });
   });
   document.getElementById("btn-copy")?.addEventListener("click", async () => {
-    const payload = { config, takenAt: new Date().toISOString() };
+    const redactedConfig = {
+      ...config,
+      daemonToken: config.daemonToken ? "***redacted***" : null,
+    };
+    const payload = { config: redactedConfig, takenAt: new Date().toISOString() };
     try {
       await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
       flashMessage("copied diagnostics");
