@@ -230,11 +230,19 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
 
   async reconnect(input?: BrowserTransportReconnectRequest): Promise<BrowserTransportReconnectResult> {
     const reason = input?.reason ?? "transport_reconnect_requested";
-    const hadConnection = this.browserPromise !== null;
+    const previousBrowserPromise = this.browserPromise;
+    const hadConnection = previousBrowserPromise !== null;
     if (hadConnection) {
       this.browserPromise = null;
       this.rootCdpSessionPromise = null;
       this.clearExpertState(new Error(`browser_cdp_unavailable: ${reason}`));
+      // Best-effort close so the underlying CDP websocket and Playwright
+      // listeners are released instead of being kept alive by GC roots.
+      // Errors are swallowed because the connection may already be in a
+      // half-broken state (which is often why reconnect was called).
+      void previousBrowserPromise!
+        .then((browser) => browser.close().catch(() => undefined))
+        .catch(() => undefined);
     }
     return {
       transportMode: this.transportMode,

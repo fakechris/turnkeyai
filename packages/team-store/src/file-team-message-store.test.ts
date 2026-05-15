@@ -226,6 +226,57 @@ test("file team message store appendIfAbsent reports threadId conflicts without 
   }
 });
 
+test("file team message store appendIfAbsent observes legacy-only messages as existing", async () => {
+  // P0.1 + P0.2 regression — after upgrade from legacy thread-file format,
+  // a message that only lives in `thread-1.json` (no by-id projection yet)
+  // must still be observed as existing on appendIfAbsent so an outbox replay
+  // doesn't write a fresh entry and lose the original threadId guard.
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-message-store-legacy-idempotent-"));
+
+  try {
+    await writeJsonFileAtomic(path.join(rootDir, "thread-1.json"), [
+      {
+        id: "msg-legacy",
+        threadId: "thread-1",
+        role: "user",
+        name: "Chris",
+        content: "from legacy file",
+        createdAt: 5,
+        updatedAt: 5,
+      },
+    ]);
+
+    const store = new FileTeamMessageStore({ rootDir });
+
+    const replay = await store.appendIfAbsent({
+      id: "msg-legacy",
+      threadId: "thread-1",
+      role: "user",
+      name: "Chris",
+      content: "from replay",
+      createdAt: 5,
+      updatedAt: 5,
+    });
+    assert.equal(replay.written, false);
+    assert.equal(replay.existing?.content, "from legacy file");
+
+    // And the same id reused under a different thread must still be flagged.
+    const conflict = await store.appendIfAbsent({
+      id: "msg-legacy",
+      threadId: "thread-other",
+      role: "user",
+      name: "Chris",
+      content: "from wrong thread",
+      createdAt: 9,
+      updatedAt: 9,
+    });
+    assert.equal(conflict.written, false);
+    assert.deepEqual(conflict.threadIdConflict, { existing: "thread-1", requested: "thread-other" });
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("file team message store appendIfAbsent serializes concurrent calls with the same id", async () => {
   // P0.1 + P0.2 — within a single process, concurrent outbox redeliveries
   // (multiple ack-pending replays before the first finishes) must produce

@@ -37,7 +37,11 @@ export class FileTeamMessageStore implements TeamMessageStore {
     // serializes per-thread file IO. Together they make the get-then-write
     // check-then-act safe for at-least-once delivery callers.
     return this.idMutex.run(message.id, async () => {
-      const existing = await readJsonFile<TeamMessage>(this.byIdFilePath(message.id));
+      // Route through `get()` rather than reading the by-id projection directly:
+      // legacy thread-files (pre-journal upgrade) only surface a message after
+      // backfillLegacyByIdProjectionsOnce has run, and a redelivered outbox
+      // intent for one of those messages must observe it as existing.
+      const existing = await this.get(message.id);
       if (existing) {
         if (existing.threadId !== message.threadId) {
           return {
@@ -48,18 +52,21 @@ export class FileTeamMessageStore implements TeamMessageStore {
         }
         return { written: false, existing };
       }
+      // We just observed no by-id projection; pass that knowledge into the
+      // unlocked write so it doesn't re-read the same file.
       await this.withThreadLock(message.threadId, async () => {
-        await this.appendUnlocked(message);
+        await this.appendUnlocked(message, null);
       });
       return { written: true };
     });
   }
 
-  private async appendUnlocked(message: TeamMessage): Promise<void> {
+  private async appendUnlocked(message: TeamMessage, existingProjection?: TeamMessage | null): Promise<void> {
     const entryPath = this.entryFilePath(message.threadId, message);
     const byIdPath = this.byIdFilePath(message.id);
-    const existingProjection = await readJsonFile<TeamMessage>(byIdPath);
-    const shouldUpdateProjection = !existingProjection || message.updatedAt >= existingProjection.updatedAt;
+    const projection =
+      existingProjection !== undefined ? existingProjection : await readJsonFile<TeamMessage>(byIdPath);
+    const shouldUpdateProjection = !projection || message.updatedAt >= projection.updatedAt;
 
     let entryWritten = false;
     try {

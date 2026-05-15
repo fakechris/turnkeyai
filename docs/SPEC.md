@@ -178,7 +178,7 @@
 - 前置：网络抖动 / 浏览器重启 / extension 重启
 - 行为：当前 transport adapter 提供 `reconnect()` 或等价能力 → 验证 ownership → 重新挂回原 target / 给出降级
 - 验收：所有 adapter 在同一接口位置暴露 reconnect / ownership 验证；reconnect 决策可在 replay 里看见
-- 状态：⚠️ **当前没有一等契约**——逻辑分散在 `RelayBrowserAdapter` / `DirectCdpBrowserAdapter` 内部。**P0.3 要做的就是这件事**。
+- 状态：🟡 接口级契约已落地（`BrowserTransportAdapter.inspectSessionOwnership / getTransportHealth / reconnect` 已在三种 transport 实现）。仍未做的：reconnect 决策在 replay/operator bundle 里可见——这部分留到 W10 truth-alignment 后续推进。
 
 ### 3.5 Replay / recovery / operator
 
@@ -225,7 +225,7 @@
 
 | Invariant | 说明 | 当前守护机制 | 已知缺口 |
 |---|---|---|---|
-| **I1. 写入原子性** | message / flow / chain 三跳的状态在任何 crash 节点都不会让 operator 看到比真实世界更乐观的状态 | FileBatchOutbox + expectedVersion（部分 store） | message append 不在 outbox 里；message store 无 CAS — **P0.1 / P0.2 处理** |
+| **I1. 写入原子性** | message + flow 在同一 outbox claim 里推进；runtime-chain 是 best-effort 投影，crash 后由 reconcile 收敛——operator 视图不应该看到比真实世界更乐观的状态 | FileBatchOutbox（message + flow）+ TeamMessageStore.appendIfAbsent + expectedVersion（flow / role-run / runtime-chain / recovery / scheduled）+ runtime-chain startup reconcile | runtime-chain 仍是 best-effort（recordFlowCreated 等用 `recordRuntimeChainBestEffort` 包裹）；真正跨 store 的事务边界要等 Phase 2 |
 | **I2. Worker session 真相** | 重启后 worker 状态要么 hydrate 为 resumable，要么标 unrecoverable，不能"看起来在跑但实际丢了" | WorkerSessionStore + hydrateSessions + startup reconcile | 当前还不是 checkpoint-accurate execution，不能宣称"零丢失" |
 | **I3. Browser ownership** | 同一 browser session 同一时间只有一个 owner；非 owner 不能改 target 状态 | Lease + ownership-aware re-entry | 内部直调可绕过 daemon 层检查（review 已标记，待 transport contract 收紧后再补） |
 | **I4. Truth vs runtime 对齐** | 任何 replay / operator 视图都必须能在 stale 时被识别并提示 reconcile | truth-alignment + stale marker + remediation unification | "暴露 drift"已做，"自动修复闭环"还没 |
@@ -253,8 +253,8 @@
 
 且**同时**架构层面：
 
-7. message / flow / chain 三跳处于同一原子写入边界（**P0.1 完成**）
-8. message store 与其他 store 拥有同一档 CAS 保护（**P0.2 完成**）
-9. browser transport reconnect / ownership 是一等接口契约（**P0.3 完成**）
+7. message + flow 写入处于同一 outbox claim 信封内（**P0.1 完成**）；runtime-chain 写入仍是 best-effort 投影，crash 后由 replay/reconcile 路径推进收敛——非真正的 cross-store 事务边界。真正的 cross-store transaction 仍是 Phase 2 目标。
+8. message store 提供与"append-only create-if-not-exists"等价的幂等保护（`appendIfAbsent` 关闭了 outbox 重投递的 check-then-act 竞态以及静默 threadId 覆盖）（**P0.2 完成**）。其他 store 的 `expectedVersion`-style update CAS 在 message store 上目前没有对应位（因为消息天然 append-only，无 update 路径）。
+9. browser transport reconnect / ownership 是一等接口契约（**P0.3 完成**）；reconnect 决策在 replay bundle 中的可见性是 W10 后续工作。
 
 满足这 9 条后才允许进入 Phase 2 kernel lift。

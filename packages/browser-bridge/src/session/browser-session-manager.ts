@@ -591,9 +591,10 @@ export class BrowserSessionManager {
     if (
       leaseActive &&
       input.leaseHolderRunKey !== undefined &&
-      session.leaseHolderRunKey !== undefined &&
       session.leaseHolderRunKey !== input.leaseHolderRunKey
     ) {
+      // `leaseActive` implies session.leaseHolderRunKey is truthy
+      // (see isLeaseActive); no need for an extra undefined check here.
       return {
         browserSessionId: input.browserSessionId,
         ok: false,

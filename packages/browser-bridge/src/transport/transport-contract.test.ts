@@ -184,6 +184,7 @@ test("DirectCdpBrowserAdapter reconnect invalidates cached browser connection", 
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "transport-contract-cdp-"));
   try {
     let connectCalls = 0;
+    const closedBrowsers: number[] = [];
     const adapter = new DirectCdpBrowserAdapter(
       {
         artifactRootDir: path.join(tempDir, "artifacts"),
@@ -193,6 +194,7 @@ test("DirectCdpBrowserAdapter reconnect invalidates cached browser connection", 
       {
         connectBrowser: async () => {
           connectCalls += 1;
+          const browserId = connectCalls;
           // Return a minimal stub; real Browser type is enforced at boundary only.
           return {
             on: () => undefined,
@@ -200,7 +202,9 @@ test("DirectCdpBrowserAdapter reconnect invalidates cached browser connection", 
               on: () => undefined,
               send: async () => ({}),
             }),
-            close: async () => undefined,
+            close: async () => {
+              closedBrowsers.push(browserId);
+            },
           } as never;
         },
       }
@@ -232,9 +236,15 @@ test("DirectCdpBrowserAdapter reconnect invalidates cached browser connection", 
     assert.equal(flush1.ok, true);
     assert.equal(flush1.invalidatedConnection, true);
 
+    // Best-effort close fires asynchronously; give it a tick to settle.
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(closedBrowsers, [1], "reconnect must close the cached Browser to release the CDP websocket");
+
     const flush2 = await adapter.reconnect();
     assert.equal(flush2.ok, true);
     assert.equal(flush2.invalidatedConnection, false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(closedBrowsers, [1], "idempotent reconnect must not double-close");
 
     // ownership: store-backed
     await seedSession(path.join(tempDir, "state"), {
