@@ -1473,7 +1473,18 @@ export class CoordinationEngine {
   }
 
   private async ensureMessagePersisted(message: TeamMessage): Promise<void> {
-    const existing = await this.deps.teamMessageStore.get(message.id);
+    const store = this.deps.teamMessageStore;
+    if (typeof store.appendIfAbsent === "function") {
+      const result = await store.appendIfAbsent(message);
+      if (result.threadIdConflict) {
+        throw new Error(
+          `message thread mismatch for ${message.id}: existing=${result.threadIdConflict.existing} requested=${result.threadIdConflict.requested}`
+        );
+      }
+      return;
+    }
+
+    const existing = await store.get(message.id);
     if (existing) {
       if (existing.threadId !== message.threadId) {
         throw new Error(`message thread mismatch for ${message.id}`);
@@ -1481,7 +1492,7 @@ export class CoordinationEngine {
       return;
     }
 
-    await this.deps.teamMessageStore.append(message);
+    await store.append(message);
   }
 
   private async ensureFlowPersisted(flow: FlowLedger): Promise<FlowLedger> {
