@@ -517,12 +517,21 @@ function truncateRelayBrief(content: string, maxChars: number): string {
 }
 
 function resolveDaemonPackageVersion(): string {
-  // Look for the CLI package.json relative to this module so the lookup
-  // works in both the bundled dist (packages/cli/dist/daemon.js → ../package.json)
-  // and the source dev loop (packages/app-gateway/src/composition/foundations.ts
-  // → ../../../cli/package.json).
+  // Look for the @turnkeyai/cli package.json. Bundling collapses this whole
+  // module into packages/cli/dist/daemon.js, so the candidate set must cover
+  // BOTH layouts. Each candidate is checked against `name === "@turnkeyai/cli"`,
+  // so siblings that happen to resolve (e.g. app-gateway/package.json in the
+  // source loop) are safely skipped.
   const candidates = [
-    path.join(import.meta.dirname, "..", "..", "package.json"),
+    // Bundled dist: packages/cli/dist/daemon.js
+    //   ..               -> packages/cli
+    //   ../package.json  -> packages/cli/package.json
+    path.join(import.meta.dirname, "..", "package.json"),
+    // Source loop: packages/app-gateway/src/composition/foundations.ts
+    //   ..                            -> packages/app-gateway/src
+    //   ../..                         -> packages/app-gateway
+    //   ../../..                      -> packages
+    //   ../../../cli/package.json     -> packages/cli/package.json
     path.join(import.meta.dirname, "..", "..", "..", "cli", "package.json"),
   ];
   for (const candidate of candidates) {
