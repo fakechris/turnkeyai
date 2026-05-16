@@ -64,6 +64,7 @@ import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 import { composeDaemonFoundations } from "./composition/foundations";
 import { composeDaemonRuntimeServices } from "./composition/runtime-services";
 import { createBrowserRouteHelpers } from "./composition/browser-route-helpers";
+import { resolveControlCenterAssetDir } from "./composition/control-center-assets";
 import { buildDemoRoles } from "./composition/demo-roles";
 import { createInspectionRouteDeps } from "./composition/inspection-deps";
 import { createRecoveryRouteDeps } from "./composition/recovery-deps";
@@ -106,6 +107,7 @@ import {
   handleBridgeRoutes,
   type BridgeStatusInfo,
 } from "./routes/bridge-routes";
+import { handleControlCenterRoutes } from "./routes/control-center-routes";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
 import { handleRecoveryRoutes } from "./routes/recovery-routes";
 import { handleRelayRoutes } from "./routes/relay-routes";
@@ -125,6 +127,9 @@ if (TOKEN_BOOTSTRAP.token && !process.env.TURNKEYAI_DAEMON_TOKEN) {
 const PORT = resolveDaemonPort(RUNTIME_PATHS);
 const DATA_DIR = resolveDaemonDataDir(RUNTIME_PATHS);
 const VALIDATION_ARTIFACT_DIR = path.join(DATA_DIR, "validation-artifacts");
+const CONTROL_CENTER_ASSET_DIR = resolveControlCenterAssetDir({
+  override: process.env.TURNKEYAI_CONTROL_CENTER_DIR ?? null,
+});
 const DAEMON_AUTH = resolveDaemonAuthConfig(process.env);
 const RECOVERY_RUN_STALE_AFTER_MS = 5 * 60 * 1000;
 const RUNTIME_RECONCILIATION_INTERVAL_MS = 60_000;
@@ -318,6 +323,20 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // Control Center static bundle. Served before auth because the assets
+    // themselves do not leak any state — the dashboard's API calls still
+    // carry the daemon token and go through authorizeDaemonRequest below.
+    if (
+      await handleControlCenterRoutes({
+        req,
+        res,
+        url,
+        deps: { assetDir: CONTROL_CENTER_ASSET_DIR },
+      })
+    ) {
+      return;
+    }
+
     const authorization = authorizeDaemonRequest(req, url, DAEMON_AUTH);
     if (!authorization.authorized) {
       return sendJson(res, 401, {
@@ -484,6 +503,13 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`data dir: ${DATA_DIR}`);
   console.log(`runtime dir: ${RUNTIME_PATHS.rootDir}`);
   console.log(`model catalog: ${modelCatalogPath ?? "(none)"}`);
+  console.log(
+    `control center: ${
+      CONTROL_CENTER_ASSET_DIR
+        ? `http://127.0.0.1:${PORT}/app`
+        : "(bundle not found — rebuild @turnkeyai/cli)"
+    }`
+  );
   if (DAEMON_AUTH.authMode !== "disabled") {
     console.log("auth: token required via x-turnkeyai-token or Authorization: Bearer <token>");
     if (TOKEN_BOOTSTRAP.generated) {
