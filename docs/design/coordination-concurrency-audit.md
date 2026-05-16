@@ -27,7 +27,13 @@ _Reflects current `main` after this PR's R1 fix (see §5)._
 | `dispatchDeliveryMutex` | `edgeId` | 同一 handoff edge 不被重复 deliver；只覆盖 read-modify-write 的 edge state | `flowLedgerStore.get`, `roleRunCoordinator.{getOrCreate,enqueue}`, `markHandoffDelivered` | 否（`roleLoopRunner.ensureRunning` 现在在锁外 await，见 §5 R1） |
 | `roleOutcomeIntentMutex` | `intentId` | 同一 role reply/failure intent 不被重复 materialize | `teamThreadStore.get`, `requireFlow`, `materializeRoleReplyIntent` / `materializeRoleFailureIntent` | 否（reply/failure 内部进 flowMutex） |
 
-`withFlowLock` 调用站点（9 处）：`recordHandoff`, `markHandoffResponded`, `markHandoffDelivered`, `markHandoffClosed`, `markHandoffCancelled`, `markRoleCompleted`, `markRoleFailed`, `removeActiveRole`, `recordShardReply`. 全部是 read-flow → mutate → put 的 CAS，受 `expectedVersion` 保护（见 `putFlow` 在 `coordination-engine.ts:1714`）。
+`withFlowLock` 调用站点（9 处）：`recordHandoff`, `markHandoffResponded`, `markHandoffDelivered`, `markHandoffClosed`, `markHandoffCancelled`, `markRoleCompleted`, `markRoleFailed`, `removeActiveRole`, `recordShardReply`. 全部是 read-flow → mutate → put 的 CAS，受 `expectedVersion` 保护（见 `putFlow` 实现）。
+
+> **Note on file:line references in this doc:** Where this doc cites
+> `coordination-engine.ts` it tries to use symbol names (`recordHandoff`,
+> `dispatchToRole`, etc.) rather than line numbers. Where line numbers do
+> appear, treat them as a hint as of the audit date — symbol search is more
+> reliable.
 
 ## 3. Intent / Outbox 模型（当前已有，未正式命名）
 
@@ -53,7 +59,7 @@ _Reflects current `main` after this PR's R1 fix (see §5)._
 
 **仍可能在锁内**（部分场景）：
 
-- **`summaryBuilder.getRecentMessages`**：`dispatchToRole` 里同步调用（`coordination-engine.ts:314` 附近）。**不在 `flowMutex` 里**——`dispatchToRole` 只在 `recordHandoff` 那一段进 `flowMutex`。但是当 `dispatchToRole` 是从 `materializeFlowStartIntent` 调用过来时（ingress 路径：`flowStartIntentMutex` → `dispatchToLead` → `dispatchToRole` → `summaryBuilder.getRecentMessages`），summary 调用确实在 `flowStartIntentMutex(intentId)` 内。
+- **`summaryBuilder.getRecentMessages`**：`dispatchToRole` 里同步调用。**不在 `flowMutex` 里**——`dispatchToRole` 只在 `recordHandoff` 那一段进 `flowMutex`。但是当 `dispatchToRole` 是从 `materializeFlowStartIntent` 调用过来时（ingress 路径：`flowStartIntentMutex` → `dispatchToLead` → `dispatchToRole` → `summaryBuilder.getRecentMessages`），summary 调用确实在 `flowStartIntentMutex(intentId)` 内。
   - 影响范围：**同一个 intent** 的并发尝试会被排队（这本就是 flowStartIntentMutex 的目的）；不会跨 intent 影响其他 ingress。
   - 是否需要修：**不需要**。当前 summary 是纯 message store list 操作，毫秒级。如果未来 summary 接入 LLM 加工，这里要重新评估。
 
@@ -61,13 +67,13 @@ _Reflects current `main` after this PR's R1 fix (see §5)._
 
 ### R1 — `deliverDispatchIntent` 历史上在 `dispatchDeliveryMutex` 内调用 `ensureRunning`（**已修，本 PR 修**）
 
-**修复前**：`coordination-engine.ts:1441` 在锁内 `await this.deps.roleLoopRunner.ensureRunning(runState.runKey)`。
+**修复前**：`deliverDispatchIntent` 在 `dispatchDeliveryMutex.run(...)` 闭包末尾 `await this.deps.roleLoopRunner.ensureRunning(runState.runKey)`。
 
 `ensureRunning`：
 - 第一次调用某 runKey 时，进入 `while(true)` 循环驱动整个 role loop，每轮 `await roleRuntime.runActivation(...)`（含 LLM 调用）。直到循环 return（done / delegated / iteration 上限）才解锁。
 - 第二次（含）调用同 runKey 时，`activeRuns.has(runKey)` 命中，立即 return。
 
-修复前的后果：**该 edge 的 first-time 派发会把 `dispatchDeliveryMutex(edgeId)` 持有到 role loop 结束**。其他需要同 edgeId 的操作（最相关的是 `abandonDispatchIntent` 在 outbox dead-letter 路径上，`coordination-engine.ts:1446`）会被卡住。
+修复前的后果：**该 edge 的 first-time 派发会把 `dispatchDeliveryMutex(edgeId)` 持有到 role loop 结束**。其他需要同 edgeId 的操作（最相关的是 `abandonDispatchIntent`，由 outbox dead-letter 路径 onDroppedBatch 触发）会被卡住。
 
 **修法**：只在锁内做状态变更（lines 1426–1440 的 read-modify-write），出锁后再 await `ensureRunning`。本 PR 的 `deliverDispatchIntent` 现在是这个形状。
 
@@ -78,7 +84,7 @@ _Reflects current `main` after this PR's R1 fix (see §5)._
 
 ### R2 — `flowStartIntentMutex` 用 `intentId` 而不是 `threadId`（不修，**只记录**）
 
-`materializeFlowStartIntent` 锁 key 是 `intent.intentId`（`coordination-engine.ts:1375`）。这意味着：
+`materializeFlowStartIntent` 锁 key 是 `intent.intentId`。这意味着：
 - ✅ 同一 intent 不会被重复 materialize（outbox replay 安全）。
 - ❌ **同一 thread 多个 ingress intent 可以并发 materialize**——例如用户连续发两条消息，两个 `FlowStartIntent.intentId` 不同，就并行进 message append → flow create → dispatch。
 
@@ -94,7 +100,7 @@ _Reflects current `main` after this PR's R1 fix (see §5)._
 
 ### R4 — `putFlow` 的 `expectedVersion` CAS 必须被未来任何 queue 形态尊重（**约束**）
 
-`putFlow`（`coordination-engine.ts:1714`）已用 `expectedVersion: flow.version ?? 0`。如果未来真的把 `withFlowLock` 拆成事件队列，**绝不能丢掉这个 CAS**——它是当前并发安全的最后一道防线。
+`putFlow` 已用 `expectedVersion: flow.version ?? 0`。如果未来真的把 `withFlowLock` 拆成事件队列，**绝不能丢掉这个 CAS**——它是当前并发安全的最后一道防线。
 
 ## 6. 未来 queue model 的边界（不在本 PR）
 
