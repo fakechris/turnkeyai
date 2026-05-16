@@ -178,10 +178,13 @@
 - 前置：网络抖动 / 浏览器重启 / extension 重启
 - 行为：当前 transport adapter 提供 `reconnect()` 或等价能力 → 验证 ownership → 重新挂回原 target / 给出降级
 - 验收：所有 adapter 在同一接口位置暴露 reconnect / ownership 验证；reconnect 决策可在 replay 里看见
-- 状态：🟡 部分完成。需要分两层看：
-  - **接口级 transport 契约**：✅ `BrowserTransportAdapter.inspectSessionOwnership / getTransportHealth / reconnect` 已在三种 transport（local / relay / direct-cdp）实现。
-  - **Payload-derived reconnect visibility（replay/operator 已支持）**：✅ replay-inspection 已能从 browser continuity payload 识别 `reconnect_required` 桶并生成 `reconnect_session` remediation；当 `BrowserTaskResult.targetResolution === "reconnect"` 时也已能在 outcome 解析中标记 `detached_target_recovered`。换句话说，已有 browser-runtime 自己已经做过的 reconnect（无论是 attach、reopen 还是 detached-recovery），在 replay/operator bundle 里都是可见的。
-  - **Adapter-level reconnect event visibility（仍未做）**：⚠️ 当前 `adapter.reconnect()` 的调用结果（`BrowserTransportReconnectResult`）和 `adapter.getTransportHealth()` 的 health snapshot 没有作为一等事件进入 replay/operator bundle。也就是说：daemon 主动调用 reconnect 来强制刷新连接的那条路径，目前只在 daemon 日志里能看到，不在 operator/replay 工单里。要彻底闭环需要 transport 在 reconnect/health 状态变化时 emit 一个事件类型，并接入 replay recorder + operator bundle。归到 W10 truth-alignment 后续推进。
+- 状态：🟡 部分完成。需要分三层看：
+  - **(1) 接口级 transport 契约**：✅ `BrowserTransportAdapter.inspectSessionOwnership / getTransportHealth / reconnect` 已在三种 transport（local / relay / direct-cdp）实现。
+  - **(2) Payload-derived reconnect visibility（限定范围）**：✅ 但只覆盖了 browser-runtime *自己*识别为 reconnect 的那一条 outcome。具体：
+    - `BrowserTaskResult.targetResolution === "reconnect"` → outcome 解析为 `detached_target_recovered`（"通过 reconnect 把 detached 的 target 恢复回来"）。
+    - browser continuity payload 里的 `browserDiagnosticBucket === "reconnect_required"` → 在 replay incident 里出 `reconnect_session` remediation 建议。
+    - 注意 **不包括** `attach`（被解析为 `hot_reuse`）和 `reopen` / `new_target` / cold resume（被解析为 `cold_reopen`）。这些是合法的连接形态但不是 reconnect 语义；不要把它们也算进"reconnect 已经在 bundle 里"的范围。
+  - **(3) Adapter-level reconnect event visibility**：⚠️ 尚未有任何 daemon 生产路径调用 `adapter.reconnect()` —— P0.3 落下的 contract 目前只在 transport-contract 测试里被调用。即便未来加上调用者，`BrowserTransportReconnectResult` 和 `getTransportHealth()` snapshot 也没有接入 replay recorder / operator bundle。要让 daemon 主动 reconnect 能在 operator 工单里看见，需要先：(i) 在合理的恢复路径上调用 `adapter.reconnect()`；(ii) 让 transport 在 reconnect/health 状态变化时 emit replay 事件并接入 bundle。归到 W10 truth-alignment 后续推进。
 
 ### 3.5 Replay / recovery / operator
 
@@ -258,6 +261,6 @@
 
 7. message + flow 写入处于同一 outbox claim 信封内（**P0.1 完成**）；runtime-chain 写入仍是 best-effort 投影，crash 后由 replay/reconcile 路径推进收敛——非真正的 cross-store 事务边界。真正的 cross-store transaction 仍是 Phase 2 目标。
 8. message store 提供与"append-only create-if-not-exists"等价的幂等保护（`appendIfAbsent` 关闭了 outbox 重投递的 check-then-act 竞态以及静默 threadId 覆盖）（**P0.2 完成**）。其他 store 的 `expectedVersion`-style update CAS 在 message store 上目前没有对应位（因为消息天然 append-only，无 update 路径）。
-9. browser transport reconnect / ownership 是一等接口契约（**P0.3 完成**）。Replay/operator 中的 reconnect 可见性分两层：(a) payload-derived（browser runtime 自己做的 reconnect / detached recovery 通过 `targetResolution === "reconnect"` 和 `reconnect_required` 桶可见）✅ 已支持；(b) adapter-level（daemon 主动调用 `adapter.reconnect()` 的结果 + `getTransportHealth()` snapshot 进入 bundle）⚠️ 仍未做，归 W10 truth-alignment 后续。详见 §3.4 US-B3。
+9. browser transport reconnect / ownership 是一等接口契约（**P0.3 完成**）。Replay/operator 中的 reconnect 可见性需要分三层判断：(a) 接口契约 ✅；(b) 限定的 payload-derived 可见性（仅 `targetResolution === "reconnect"` 这条 detached-target-recovered 路径，以及 continuity 里的 `reconnect_required` 桶）✅；(c) adapter-level reconnect 事件可见性（含尚不存在的 daemon 主动调用路径）⚠️ 仍未做，归 W10 truth-alignment 后续。详见 §3.4 US-B3 的拆分说明，特别注意 attach / reopen / cold resume 不在 (b) 的覆盖范围内。
 
 满足这 9 条后才允许进入 Phase 2 kernel lift。
