@@ -1422,10 +1422,27 @@ export class CoordinationEngine {
   }
 
   private async deliverDispatchIntent(intent: DispatchDeliveryIntent): Promise<void> {
-    await this.dispatchDeliveryMutex.run(intent.edgeId, async () => {
+    // P1.4a — `ensureRunning` is moved OUT of dispatchDeliveryMutex.
+    //
+    // Background: the role loop runner's `ensureRunning` enters a `while(true)`
+    // loop on first call per runKey and awaits each LLM activation; it only
+    // returns once the loop drains (done / delegated / iteration limit).
+    // Holding `dispatchDeliveryMutex(edgeId)` across that entire loop blocks
+    // any other operation on the same edge — most importantly,
+    // `abandonDispatchIntent` (the outbox dead-letter path) cannot fire until
+    // the role loop returns.
+    //
+    // Safety: `ensureRunning` is idempotent via `activeRuns.has(runKey)`. Any
+    // concurrent caller (outbox replay of the same intent, abandon path,
+    // second deliver of a different edge targeting the same runKey) re-reads
+    // edge state inside its own lock acquire and either short-circuits or
+    // performs its own state transition. The lock here only protects the
+    // edge-state read-modify-write sequence; calling ensureRunning afterward
+    // is a pure handoff-to-the-role-loop signal that does not need the lock.
+    const runKey = await this.dispatchDeliveryMutex.run(intent.edgeId, async () => {
       const edge = await this.getEdge(intent.flowId, intent.edgeId);
       if (!edge || ["cancelled", "timeout", "responded", "closed"].includes(edge.state)) {
-        return;
+        return null;
       }
 
       const runState = await this.deps.roleRunCoordinator.getOrCreate(
@@ -1438,8 +1455,12 @@ export class CoordinationEngine {
       if (edge.state === "created") {
         await this.markHandoffDelivered(intent.flowId, intent.edgeId);
       }
-      await this.deps.roleLoopRunner.ensureRunning(runState.runKey);
+      return runState.runKey;
     });
+
+    if (runKey !== null) {
+      await this.deps.roleLoopRunner.ensureRunning(runKey);
+    }
   }
 
   private async abandonDispatchIntent(intent: DispatchDeliveryIntent): Promise<void> {

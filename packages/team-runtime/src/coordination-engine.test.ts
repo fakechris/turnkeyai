@@ -4176,6 +4176,340 @@ test("coordination engine treats runtime chain recorder failures as best effort"
   assert.equal((currentFlow as FlowLedger).status, "waiting_role");
 });
 
+// P1.4a — concurrency regression tests. See docs/design/coordination-concurrency-audit.md.
+//
+// These pin the engine's current concurrency contract after the
+// `ensureRunning out of dispatchDeliveryMutex` move. They are not exhaustive —
+// the audit doc lists the per-thread FIFO question (R2) as deliberately open;
+// these tests capture the CURRENT behavior so a future change to per-thread
+// FIFO can be deliberate (and visible in a diff).
+
+test("coordination engine: ensureRunning runs OUTSIDE dispatchDeliveryMutex (R1 fix)", async () => {
+  // Concrete property: when ensureRunning blocks indefinitely, the
+  // dispatchToRole call chain still completes its lock-protected work
+  // (enqueue + markHandoffDelivered) and then awaits ensureRunning. With the
+  // old code where ensureRunning ran INSIDE the lock, this test would still
+  // pass — the lock-protected work always completes before ensureRunning is
+  // awaited. The discriminating behavioral difference (lock release timing)
+  // is hard to observe via public API without exposing the mutex; the move
+  // itself is verifiable by reading deliverDispatchIntent in
+  // packages/team-runtime/src/coordination-engine.ts. This test instead pins
+  // the surrounding invariant: a hung ensureRunning does not prevent the
+  // edge state from advancing to "delivered" before its hang.
+  const thread: TeamThread = {
+    threadId: "thread-r1",
+    teamId: "team-r1",
+    teamName: "Demo",
+    leadRoleId: "lead",
+    roles: [
+      { roleId: "lead", name: "Lead", seat: "lead", runtime: "local" },
+      { roleId: "operator", name: "Operator", seat: "member", runtime: "local" },
+    ],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  let storedFlow: FlowLedger = {
+    flowId: "flow-r1",
+    threadId: thread.threadId,
+    rootMessageId: "msg-root",
+    mode: "serial",
+    status: "running",
+    currentStageIndex: 0,
+    activeRoleIds: [],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    nextExpectedRoleId: "lead",
+    hopCount: 0,
+    maxHops: 5,
+    edges: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const flowLedgerStore: FlowLedgerStore = {
+    async get() {
+      return storedFlow;
+    },
+    async put(flow) {
+      storedFlow = flow;
+    },
+    async listByThread() {
+      return [storedFlow];
+    },
+  };
+  const teamThreadStore: TeamThreadStore = {
+    async get() {
+      return thread;
+    },
+    async list() {
+      return [thread];
+    },
+    async create() {
+      throw new Error("not used");
+    },
+    async update() {
+      throw new Error("not used");
+    },
+    async delete() {},
+  };
+  const teamMessageStore: TeamMessageStore = {
+    async append() {},
+    async list() {
+      return [];
+    },
+    async get() {
+      return null;
+    },
+  };
+  const enqueued: HandoffEnvelope[] = [];
+  const roleRunCoordinator: RoleRunCoordinator = {
+    async getOrCreate(threadId, roleId): Promise<RoleRunState> {
+      return {
+        runKey: `${threadId}:${roleId}`,
+        threadId,
+        roleId,
+        mode: "group",
+        status: "idle",
+        iterationCount: 0,
+        maxIterations: 5,
+        inbox: [],
+        lastActiveAt: 0,
+      };
+    },
+    async enqueue(runKey, handoff): Promise<RoleRunState> {
+      enqueued.push(handoff);
+      return {
+        runKey,
+        threadId: handoff.threadId,
+        roleId: handoff.targetRoleId,
+        mode: "group",
+        status: "queued",
+        iterationCount: 0,
+        maxIterations: 5,
+        inbox: [handoff],
+        lastActiveAt: 0,
+      };
+    },
+    async dequeue() {
+      return null;
+    },
+    async ack() {},
+    async bindWorkerSession() {},
+    async clearWorkerSession() {},
+    async setStatus() {},
+    async incrementIteration() {
+      return 1;
+    },
+    async fail() {},
+    async finish() {},
+  };
+
+  let ensureRunningInvoked = false;
+  let releaseEnsureRunning!: () => void;
+  const ensureRunningHang = new Promise<void>((resolve) => {
+    releaseEnsureRunning = resolve;
+  });
+  const roleLoopRunner: RoleLoopRunner = {
+    async ensureRunning() {
+      ensureRunningInvoked = true;
+      await ensureRunningHang;
+    },
+  };
+
+  const sourceMessage: TeamMessage = {
+    id: "msg-r1-src",
+    threadId: thread.threadId,
+    role: "user",
+    name: "Chris",
+    content: "ping",
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const engine = buildEngine({
+    teamThreadStore,
+    teamMessageStore,
+    flowLedgerStore,
+    roleRunCoordinator,
+    roleLoopRunner,
+  });
+
+  // Fire-and-forget the dispatch so we can observe state while ensureRunning hangs.
+  const dispatchPromise = engine.dispatchToRole({
+    thread,
+    flow: storedFlow,
+    sourceMessage,
+    toRoleId: "operator",
+    activationType: "cascade",
+  });
+
+  // Give event loop a tick or two to let dispatch reach the lock-protected work
+  // and the eventual ensureRunning call.
+  await waitFor(async () => ensureRunningInvoked, 500, 5);
+
+  // Lock-protected work has happened by the time ensureRunning was called.
+  assert.equal(enqueued.length, 1, "handoff should have been enqueued before ensureRunning was awaited");
+  assert.equal(
+    storedFlow.edges.some((edge) => edge.state === "delivered"),
+    true,
+    "edge should be marked delivered (inside the lock) before ensureRunning was awaited"
+  );
+
+  // Release the hang and let dispatchPromise settle.
+  releaseEnsureRunning();
+  await dispatchPromise;
+});
+
+test("coordination engine: concurrent user posts on same thread persist both messages (R2 snapshot)", async () => {
+  // Snapshot of current behavior — flowStartIntentMutex is keyed by intentId,
+  // not threadId, so two concurrent user posts on the same thread can
+  // materialize in parallel. Both messages must persist; both flows must
+  // reach the dispatch path. If a future change introduces per-thread FIFO
+  // for ingress, this test should be updated to assert serial execution
+  // explicitly and the audit doc's R2 should be revised.
+  const thread: TeamThread = {
+    threadId: "thread-r2",
+    teamId: "team-r2",
+    teamName: "Demo",
+    leadRoleId: "lead",
+    roles: [{ roleId: "lead", name: "Lead", seat: "lead", runtime: "local" }],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const flows = new Map<string, FlowLedger>();
+  const flowLedgerStore: FlowLedgerStore = {
+    async get(flowId) {
+      return flows.get(flowId) ?? null;
+    },
+    async put(flow) {
+      flows.set(flow.flowId, flow);
+    },
+    async listByThread(threadId) {
+      return [...flows.values()].filter((flow) => flow.threadId === threadId);
+    },
+  };
+  const teamThreadStore: TeamThreadStore = {
+    async get() {
+      return thread;
+    },
+    async list() {
+      return [thread];
+    },
+    async create() {
+      throw new Error("not used");
+    },
+    async update() {
+      throw new Error("not used");
+    },
+    async delete() {},
+  };
+
+  // Use an in-memory message store that mimics FileTeamMessageStore's
+  // appendIfAbsent semantics. The R2 invariant requires both posts to
+  // persist as DISTINCT messages — message ids are minted by the engine's
+  // idGenerator (unique per call), so appendIfAbsent never collides on the
+  // happy path.
+  const messages = new Map<string, TeamMessage>();
+  const teamMessageStore: TeamMessageStore = {
+    async append(message) {
+      messages.set(message.id, message);
+    },
+    async list(threadId) {
+      return [...messages.values()].filter((m) => m.threadId === threadId);
+    },
+    async get(messageId) {
+      return messages.get(messageId) ?? null;
+    },
+    async appendIfAbsent(message) {
+      const existing = messages.get(message.id);
+      if (existing) {
+        return { written: false, existing };
+      }
+      messages.set(message.id, message);
+      return { written: true };
+    },
+  };
+
+  const enqueued: HandoffEnvelope[] = [];
+  const roleRunCoordinator: RoleRunCoordinator = {
+    async getOrCreate(threadId, roleId): Promise<RoleRunState> {
+      return {
+        runKey: `${threadId}:${roleId}`,
+        threadId,
+        roleId,
+        mode: "group",
+        status: "idle",
+        iterationCount: 0,
+        maxIterations: 5,
+        inbox: [],
+        lastActiveAt: 0,
+      };
+    },
+    async enqueue(runKey, handoff): Promise<RoleRunState> {
+      enqueued.push(handoff);
+      return {
+        runKey,
+        threadId: handoff.threadId,
+        roleId: handoff.targetRoleId,
+        mode: "group",
+        status: "queued",
+        iterationCount: 0,
+        maxIterations: 5,
+        inbox: [handoff],
+        lastActiveAt: 0,
+      };
+    },
+    async dequeue() {
+      return null;
+    },
+    async ack() {},
+    async bindWorkerSession() {},
+    async clearWorkerSession() {},
+    async setStatus() {},
+    async incrementIteration() {
+      return 1;
+    },
+    async fail() {},
+    async finish() {},
+  };
+  const roleLoopRunner: RoleLoopRunner = {
+    async ensureRunning() {},
+  };
+
+  const engine = buildEngine({
+    teamThreadStore,
+    teamMessageStore,
+    flowLedgerStore,
+    roleRunCoordinator,
+    roleLoopRunner,
+  });
+
+  await Promise.all([
+    engine.handleUserPost({ threadId: thread.threadId, content: "first post" }),
+    engine.handleUserPost({ threadId: thread.threadId, content: "second post" }),
+  ]);
+
+  const persistedMessages = await teamMessageStore.list(thread.threadId);
+  const userMessages = persistedMessages.filter((m) => m.role === "user");
+  assert.equal(userMessages.length, 2, "both user posts must be persisted");
+  const contents = userMessages.map((m) => m.content).sort();
+  assert.deepEqual(contents, ["first post", "second post"]);
+
+  // Two distinct flows must have been created — buildEngine's idGenerator
+  // mints a fresh flowId per call.
+  assert.equal(flows.size, 2, "each user post should create its own flow");
+
+  // Each flow should have dispatched to lead exactly once → 2 handoffs total,
+  // none duplicated.
+  assert.equal(enqueued.length, 2, "each flow should enqueue exactly one handoff to lead");
+});
+
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 500, intervalMs = 10): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
