@@ -145,6 +145,29 @@ describe("control-center-routes", () => {
       }
     });
 
+    it("rejects requests whose missing leaf would resolve via a symlinked parent outside the bundle (codex re-review #1)", () => {
+      // TOCTOU defense: even if the leaf file doesn't exist yet (so the full
+      // realpath throws), an ancestor on the path might be a symlink that
+      // points outside the bundle. If we just returned the lexically-joined
+      // path, an attacker who can race to create the leaf would have us
+      // serve outside-bundle content. resolveAssetPath must canonicalize
+      // the deepest existing ancestor and verify it stays inside root.
+      const bundle = makeBundle();
+      const outside = mkdtempSync(path.join(tmpdir(), "tk-cc-toctou-"));
+      try {
+        // Create a symlinked subdirectory "tunnel" inside the bundle that
+        // actually points outside.
+        const tunnel = path.join(bundle.dir, "tunnel");
+        symlinkSync(outside, tunnel);
+        // Request a not-yet-created file underneath "tunnel".
+        const resolved = resolveAssetPath(bundle.dir, "tunnel/future-file.js");
+        assert.equal(resolved, null, "symlinked parent escape must be refused even when leaf is missing");
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+        bundle.cleanup();
+      }
+    });
+
     it("allows symlinks that stay inside the bundle", () => {
       // Counter-test: a symlink pointing at another file IN the same bundle
       // (e.g. a "latest -> app.js" alias) should still resolve, so we know

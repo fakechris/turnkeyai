@@ -19,6 +19,12 @@ const state = {
   token: null,
   route: DEFAULT_ROUTE,
   pollTimer: null,
+  // Epoch counter for the polling loop. Each startPolling() bumps this;
+  // each in-flight tick captures its epoch and only reschedules if it still
+  // matches. Without this, an old tick's .finally() can see the NEW route's
+  // non-null pollTimer sentinel and resurrect itself, leaving two parallel
+  // poll loops running (codex re-review #2).
+  pollEpoch: 0,
   lastStatus: null,
 };
 
@@ -159,24 +165,29 @@ function startPolling(renderer) {
   // Recursive setTimeout instead of setInterval — guarantees the next poll
   // is only scheduled after the previous one finishes, so a slow daemon
   // can't stack up overlapping in-flight requests against itself.
+  //
+  // Use an epoch to bind each tick to THIS startPolling call. If the user
+  // navigates to a new route while a tick is in-flight, stopPolling bumps
+  // the epoch and the resolving tick will see the mismatch and skip its
+  // reschedule. Without this, the old tick's `.finally()` could resurrect
+  // itself against the NEW route's pollTimer sentinel.
+  const myEpoch = ++state.pollEpoch;
   const tick = () => {
     void renderer()
-      .catch(() => {
-        // Renderer owns its own error display; swallow here so the loop
-        // keeps trying.
-      })
+      .catch(() => {})
       .finally(() => {
-        if (state.pollTimer !== null) {
+        if (state.pollEpoch === myEpoch) {
           state.pollTimer = window.setTimeout(tick, POLL_INTERVAL_MS);
         }
       });
   };
-  // Non-null sentinel so stopPolling() correctly clears the first scheduled
-  // tick. The actual timer ID is replaced on the first .finally().
   state.pollTimer = window.setTimeout(tick, POLL_INTERVAL_MS);
 }
 
 function stopPolling() {
+  // Bump the epoch FIRST so any in-flight tick's .finally() sees the
+  // mismatch before we clear the timer handle.
+  state.pollEpoch += 1;
   if (state.pollTimer !== null) {
     window.clearTimeout(state.pollTimer);
     state.pollTimer = null;

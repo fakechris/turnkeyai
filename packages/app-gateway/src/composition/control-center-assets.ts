@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,7 +38,18 @@ export function resolveControlCenterAssetDir(
 }
 
 function isCompleteBundle(dir: string): boolean {
-  return REQUIRED_BUNDLE_FILES.every((name) => existsSync(path.join(dir, name)));
+  // existsSync alone accepts a directory named "index.html" or a zero-byte
+  // placeholder as "present" (codex re-review #3). Demand a regular file
+  // with non-zero size, so a half-copied or corrupt bundle falls through
+  // to the next candidate.
+  return REQUIRED_BUNDLE_FILES.every((name) => {
+    try {
+      const stats = statSync(path.join(dir, name));
+      return stats.isFile() && stats.size > 0;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function candidateDirs(): string[] {

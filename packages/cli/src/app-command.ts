@@ -46,15 +46,25 @@ function resolveDaemonBaseUrl(paths: AppRuntimePaths): string {
 
 function resolveDaemonToken(paths: AppRuntimePaths): string | null {
   // Layered token setups (see daemon-auth.ts) don't always set
-  // TURNKEYAI_DAEMON_TOKEN — only the level-specific tokens. The dashboard
-  // only needs an operator-or-above token to call /bridge/status and friends,
-  // but a read token is enough to make /bridge/status work, so prefer the
-  // broadest available. Order: legacy, then admin → operator → read.
+  // TURNKEYAI_DAEMON_TOKEN — only the level-specific tokens.
+  //
+  // Prefer LEAST privilege (codex re-review #4). The dashboard itself only
+  // calls /bridge/status which is a "read" route. The Agent Connect snippet
+  // displays whatever token we picked so the user can plug it into an agent
+  // (e.g. Claude Code), but tokens shown in a copy-pasteable snippet that
+  // gets stored in sessionStorage shouldn't be admin if a narrower token
+  // would do — admin tokens can hit validation/relay/expert routes the
+  // dashboard never needs. The user can copy a broader token in by hand
+  // via the no-token form if they need one for /bridge/command etc.
+  //
+  // Order: legacy single-token (most common, broad by definition) → READ
+  // (narrowest that satisfies the dashboard) → OPERATOR → ADMIN (last
+  // resort if no narrower token is configured).
   const envToken =
     process.env.TURNKEYAI_DAEMON_TOKEN?.trim() ||
-    process.env.TURNKEYAI_DAEMON_ADMIN_TOKEN?.trim() ||
+    process.env.TURNKEYAI_DAEMON_READ_TOKEN?.trim() ||
     process.env.TURNKEYAI_DAEMON_OPERATOR_TOKEN?.trim() ||
-    process.env.TURNKEYAI_DAEMON_READ_TOKEN?.trim();
+    process.env.TURNKEYAI_DAEMON_ADMIN_TOKEN?.trim();
   if (envToken) return envToken;
   return readConfig(paths)?.token ?? null;
 }

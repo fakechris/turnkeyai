@@ -168,22 +168,44 @@ export function resolveAssetPath(assetDir: string, relative: string): string | n
     return null;
   }
 
-  // Now resolve symlinks. If the target file doesn't exist (likely 404),
-  // realpathSync throws — fall back to the lexically-validated joined path
-  // so the route handler can produce a clean ENOENT 404 instead of leaking
-  // the realpath error.
-  let canonical: string;
+  // Now resolve symlinks. If the target file exists, realpathSync resolves
+  // the entire chain; we verify the result still lives under root.
   try {
-    canonical = realpathSync(joined);
+    const canonical = realpathSync(joined);
+    const canonicalRel = path.relative(root, canonical);
+    if (canonicalRel.startsWith("..") || path.isAbsolute(canonicalRel)) {
+      return null;
+    }
+    return canonical;
   } catch {
-    return joined;
+    // Target doesn't exist (the common 404 path). DO NOT just return `joined`:
+    // if a parent on the chain is a symlink that escapes the bundle, and the
+    // missing file gets created after this check but before readFile (TOCTOU,
+    // codex re-review #1), we'd serve outside-bundle content. Instead, walk
+    // up to the deepest EXISTING ancestor, canonicalize that, and verify the
+    // canonicalized ancestor is still inside root. Only then trust the
+    // joined leaf — if an attacker can race a file into the missing leaf,
+    // it'll appear under the canonicalized parent, which is still inside
+    // the bundle by construction.
+    let ancestor = path.dirname(joined);
+    let realAncestor: string | null = null;
+    while (ancestor.length > 0 && ancestor !== path.dirname(ancestor)) {
+      try {
+        realAncestor = realpathSync(ancestor);
+        break;
+      } catch {
+        ancestor = path.dirname(ancestor);
+      }
+    }
+    if (!realAncestor) return null;
+    const ancestorRel = path.relative(root, realAncestor);
+    if (ancestorRel !== "" && (ancestorRel.startsWith("..") || path.isAbsolute(ancestorRel))) {
+      return null;
+    }
+    // Rebuild the path with the canonical ancestor + the missing-leaf suffix.
+    const suffix = path.relative(ancestor, joined);
+    return path.join(realAncestor, suffix);
   }
-  const canonicalRel = path.relative(root, canonical);
-  if (canonicalRel.startsWith("..") || path.isAbsolute(canonicalRel)) {
-    // A symlink inside the bundle pointed outside of it. Refuse.
-    return null;
-  }
-  return canonical;
 }
 
 function sendPlainText(res: http.ServerResponse, statusCode: number, body: string): void {
