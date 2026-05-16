@@ -27,27 +27,34 @@ export const TIER1_TOOLS = new Set([
   "close_tab",
 ]);
 
+// TIER2_TOOLS is the catalog the /bridge/advanced facade promises. The
+// inclusion criterion is simple: a tool only belongs here if buildTier2Action
+// (or the dispatcher's special-case branch for tab routing / pdf / etc.)
+// actually produces a BrowserTaskAction the executor can run. Tools that
+// would just return "use /browser-sessions/:id/send" do NOT belong here —
+// listing them lied about what the facade supports and forced agents to
+// fall back to the lower-level route, defeating the purpose of having a
+// facade in the first place.
+//
+// Removed as of PR B (2026-05-16) for failing this criterion:
+//   storage, cookie, permission, download, drag,
+//   network_capture, network_mock, network_block, network_set_headers,
+//   network_emulate
+//
+// These will be re-added one at a time as their structured argument
+// validators land in buildTier2Action. Until then they remain accessible
+// via POST /browser-sessions/:id/send with the raw action shape.
 export const TIER2_TOOLS = new Set([
   "hover",
   "scroll",
-  "drag",
   "dialog",
   "popup",
-  "download",
-  "storage",
-  "cookie",
-  "permission",
   "probe",
   "console",
   "pdf",
   "click_coord",
   "screenshot_clip",
   "find_tab",
-  "network_capture",
-  "network_mock",
-  "network_block",
-  "network_set_headers",
-  "network_emulate",
 ]);
 
 export type BridgeCommandInput = {
@@ -738,6 +745,12 @@ export function buildTier2Action(
       };
     }
     case "pdf": {
+      // `pdf` invokes the CDP `Page.printToPDF` command. The response surfaces
+      // through the standard BrowserTaskResult `cdpResults` path; the PDF
+      // bytes are returned as base64 in `result.data` per the CDP contract.
+      // This tool does NOT persist an artifact — callers that want a saved
+      // file should fetch the base64 and write it themselves, or wait for a
+      // dedicated `save_pdf` tool that lands a BrowserArtifactStore record.
       const cdpAction: BrowserTaskAction = {
         kind: "cdp",
         method: "Page.printToPDF",
@@ -785,21 +798,13 @@ export function buildTier2Action(
       };
       return { action: cdpAction, instructions: "Screenshot with clip" };
     }
-    case "storage":
-    case "cookie":
-    case "permission":
-    case "download":
-    case "drag":
-    case "network_capture":
-    case "network_mock":
-    case "network_block":
-    case "network_set_headers":
-    case "network_emulate": {
-      return {
-        error: `${tool} requires structured args identical to the underlying browser action; pass them via /browser-sessions/:id/send for now`,
-      };
-    }
     default:
+      // The set of Tier-2 tools the dispatcher accepts is gated by
+      // TIER2_TOOLS. If a tool reaches this default branch it means the
+      // caller passed a name TIER2_TOOLS doesn't list — return a clean
+      // not-implemented error rather than the prior misleading "use
+      // /browser-sessions/:id/send" message (which was an honest answer
+      // for storage/cookie/permission/... but applied indiscriminately).
       return { error: `tool not implemented in Tier 2: ${tool}` };
   }
 }
