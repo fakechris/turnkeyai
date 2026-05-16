@@ -1,8 +1,6 @@
 import http from "node:http";
-import { execFile as execFileCallback } from "node:child_process";
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 
 import type {
   BrowserContinuationHint,
@@ -35,11 +33,6 @@ import {
   listBoundedRegressionCases,
   runBoundedRegressionSuite,
 } from "@turnkeyai/qc-runtime/bounded-regression-harness";
-import type {
-  BrowserTransportSoakOptions,
-  BrowserTransportSoakResult,
-} from "@turnkeyai/qc-runtime/browser-transport-soak";
-import { runBrowserTransportSoak } from "@turnkeyai/qc-runtime/browser-transport-soak";
 import {
   listFailureInjectionScenarios,
   runFailureInjectionSuite,
@@ -93,6 +86,9 @@ import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 import { composeDaemonFoundations } from "./composition/foundations";
 import { composeDaemonRuntimeServices } from "./composition/runtime-services";
+import { createBrowserRouteHelpers } from "./composition/browser-route-helpers";
+import { buildDemoRoles } from "./composition/demo-roles";
+import { runBrowserTransportSoakViaCli } from "./composition/transport-soak-cli";
 
 import {
   parsePositiveInteger,
@@ -150,7 +146,6 @@ if (TOKEN_BOOTSTRAP.token && !process.env.TURNKEYAI_DAEMON_TOKEN) {
 const PORT = resolveDaemonPort(RUNTIME_PATHS);
 const DATA_DIR = resolveDaemonDataDir(RUNTIME_PATHS);
 const VALIDATION_ARTIFACT_DIR = path.join(DATA_DIR, "validation-artifacts");
-const execFile = promisify(execFileCallback);
 const DAEMON_AUTH = resolveDaemonAuthConfig(process.env);
 const RECOVERY_RUN_STALE_AFTER_MS = 5 * 60 * 1000;
 const RUNTIME_RECONCILIATION_INTERVAL_MS = 60_000;
@@ -330,6 +325,18 @@ const {
   scheduledTaskRuntime,
   runtimeQueryService,
 } = runtimeServices;
+
+const browserRouteHelpers = createBrowserRouteHelpers({
+  teamThreadStore,
+  browserBridge,
+  clock,
+});
+const {
+  resolveBrowserThreadOwner,
+  requireBrowserSessionAccess,
+  buildBrowserTaskRequest,
+  buildBrowserTaskActions,
+} = browserRouteHelpers;
 
 await mkdir(DATA_DIR, { recursive: true });
 
@@ -894,186 +901,6 @@ async function writeValidationArtifact(kind: string, runId: string, payload: unk
   return path.relative(process.cwd(), artifactPath);
 }
 
-async function runBrowserTransportSoakViaCli(
-  options: BrowserTransportSoakOptions = {}
-): Promise<BrowserTransportSoakResult> {
-  return runBrowserTransportSoak(options, {
-    runner: runBrowserTransportSoakSmokeCommand,
-  });
-}
-
-async function runBrowserTransportSoakSmokeCommand(input: {
-  target: "relay" | "direct-cdp";
-  timeoutMs: number;
-  relayPeerCount: number;
-  verifyReconnect: boolean;
-  verifyWorkflowLog: boolean;
-}): Promise<{
-  exitCode: number;
-  stdout: string;
-  stderr?: string;
-  durationMs?: number;
-}> {
-  const commandArgs =
-    input.target === "relay"
-      ? buildRelayTransportSoakArgs(
-          input.timeoutMs,
-          input.relayPeerCount,
-          input.verifyReconnect,
-          input.verifyWorkflowLog
-        )
-      : buildDirectCdpTransportSoakArgs(input.timeoutMs, input.verifyReconnect, input.verifyWorkflowLog);
-  const runStartedAt = Date.now();
-  try {
-    const { stdout, stderr } = await execFile("npm", commandArgs, {
-      cwd: process.cwd(),
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    return {
-      exitCode: 0,
-      stdout,
-      stderr,
-      durationMs: Date.now() - runStartedAt,
-    };
-  } catch (error) {
-    const failure = error as {
-      code?: string | number;
-      stdout?: string;
-      stderr?: string;
-      message?: string;
-    };
-    return {
-      exitCode: typeof failure.code === "number" ? failure.code : 1,
-      stdout: failure.stdout ?? "",
-      stderr: failure.stderr ?? failure.message ?? String(error),
-      durationMs: Date.now() - runStartedAt,
-    };
-  }
-}
-
-function buildRelayTransportSoakArgs(
-  timeoutMs: number,
-  relayPeerCount: number,
-  verifyReconnect: boolean,
-  verifyWorkflowLog: boolean
-): string[] {
-  const args = ["run", "relay:smoke", "--", "--timeout-ms", String(timeoutMs), "--peer-count", String(relayPeerCount)];
-  if (verifyReconnect) {
-    args.push("--verify-reconnect");
-  }
-  if (verifyWorkflowLog) {
-    args.push("--verify-workflow-log");
-  }
-  return args;
-}
-
-function buildDirectCdpTransportSoakArgs(
-  timeoutMs: number,
-  verifyReconnect: boolean,
-  verifyWorkflowLog: boolean
-): string[] {
-  const args = ["run", "cdp:smoke", "--", "--timeout-ms", String(timeoutMs)];
-  if (verifyReconnect) {
-    args.push("--verify-reconnect");
-  }
-  if (verifyWorkflowLog) {
-    args.push("--verify-workflow-log");
-  }
-  return args;
-}
-
-function buildDemoRoles(variant: string) {
-  const lead = {
-    roleId: "role-lead",
-    name: "Lead",
-    seat: "lead" as const,
-    runtime: "local" as const,
-    modelRef: "claude-opus",
-    modelChain: "lead_reasoning",
-  };
-
-  if (variant === "coder") {
-    return [
-      lead,
-      {
-        roleId: "role-coder",
-        name: "Coder",
-        seat: "member" as const,
-        runtime: "local" as const,
-        modelRef: "gpt-5",
-        modelChain: "builder_primary",
-      },
-    ];
-  }
-
-  if (variant === "finance") {
-    return [
-      lead,
-      {
-        roleId: "role-finance",
-        name: "Finance",
-        seat: "member" as const,
-        runtime: "local" as const,
-        capabilities: ["finance"],
-        modelRef: "minimax",
-        modelChain: "finance_primary",
-      },
-    ];
-  }
-
-  if (variant === "operator") {
-    return [
-      lead,
-      {
-        roleId: "role-operator",
-        name: "Operator",
-        seat: "member" as const,
-        runtime: "local" as const,
-        capabilities: ["browser"],
-        modelRef: "gemini",
-        modelChain: "browser_primary",
-      },
-    ];
-  }
-
-  if (variant === "pricing") {
-    return [
-      lead,
-      {
-        roleId: "role-explore",
-        name: "Explore",
-        seat: "member" as const,
-        runtime: "local" as const,
-        capabilities: ["explore"],
-        modelRef: "gpt-5",
-        modelChain: "explore_primary",
-      },
-      {
-        roleId: "role-finance",
-        name: "Finance",
-        seat: "member" as const,
-        runtime: "local" as const,
-        capabilities: ["finance"],
-        modelRef: "minimax",
-        modelChain: "finance_primary",
-      },
-    ];
-  }
-
-  return [
-    lead,
-    {
-      roleId: "role-analyst",
-      name: "Analyst",
-      seat: "member" as const,
-      runtime: "local" as const,
-      capabilities: ["explore"],
-      modelRef: "kimi",
-      modelChain: "analyst_primary",
-    },
-  ];
-}
-
 async function resolveModelCatalogPath(): Promise<string | null> {
   const candidates = [
     path.resolve(process.cwd(), "models.local.json"),
@@ -1089,152 +916,6 @@ async function resolveModelCatalogPath(): Promise<string | null> {
   }
 
   return null;
-}
-
-async function resolveBrowserThreadOwner(input: {
-  threadId: string | null | undefined;
-  ownerType?: string | null;
-  ownerId?: string | null;
-}):
-  Promise<
-    | { ownerType: BrowserSessionOwnerType; ownerId: string; threadId: string }
-    | { statusCode: number; error: string }
-  > {
-  const threadId = input.threadId?.trim();
-  if (!threadId) {
-    return { statusCode: 400, error: "threadId is required" };
-  }
-
-  const thread = await teamThreadStore.get(threadId);
-  if (!thread) {
-    return { statusCode: 404, error: "thread not found" };
-  }
-
-  if (!input.ownerType && !input.ownerId) {
-    return {
-      threadId,
-      ownerType: "thread",
-      ownerId: threadId,
-    };
-  }
-
-  if (!input.ownerType || !input.ownerId) {
-    return { statusCode: 400, error: "ownerType and ownerId must be provided together" };
-  }
-
-  if (input.ownerType === "thread") {
-    if (input.ownerId !== threadId) {
-      return { statusCode: 403, error: "thread ownerId must match threadId" };
-    }
-    return {
-      threadId,
-      ownerType: "thread",
-      ownerId: threadId,
-    };
-  }
-
-  if (input.ownerType === "role") {
-    if (!thread.roles.some((role) => role.roleId === input.ownerId)) {
-      return { statusCode: 403, error: "role ownerId must belong to thread" };
-    }
-    return {
-      threadId,
-      ownerType: "role",
-      ownerId: input.ownerId,
-    };
-  }
-
-  return { statusCode: 403, error: `unsupported browser ownerType: ${input.ownerType}` };
-}
-
-async function requireBrowserSessionAccess(input: {
-  browserSessionId: string;
-  threadId: string | null | undefined;
-}):
-  Promise<
-    | {
-        sessionId: string;
-        threadId: string;
-        ownerType: BrowserSessionOwnerType;
-        ownerId: string;
-      }
-    | { statusCode: number; error: string }
-  > {
-  const owner = await resolveBrowserThreadOwner({
-    threadId: input.threadId,
-  });
-  if ("error" in owner) {
-    return owner;
-  }
-
-  const session = (await browserBridge.listSessions()).find((item) => item.browserSessionId === input.browserSessionId) ?? null;
-  if (!session) {
-    return { statusCode: 404, error: "browser session not found" };
-  }
-
-  if (session.ownerType === "thread") {
-    if (session.ownerId !== owner.threadId) {
-      return { statusCode: 403, error: "browser session does not belong to thread" };
-    }
-  } else if (session.ownerType === "role") {
-    if (!session.ownerId || !session.ownerId.length) {
-      return { statusCode: 403, error: "browser session role owner is invalid" };
-    }
-    const thread = await teamThreadStore.get(owner.threadId);
-    if (!thread?.roles.some((role) => role.roleId === session.ownerId)) {
-      return { statusCode: 403, error: "browser session role owner does not belong to thread" };
-    }
-  } else {
-    return { statusCode: 403, error: "browser session owner type is not externally addressable" };
-  }
-
-  return {
-    sessionId: session.browserSessionId,
-    threadId: owner.threadId,
-    ownerType: session.ownerType,
-    ownerId: session.ownerId,
-  };
-}
-
-function buildBrowserTaskRequest(input: {
-  body: BrowserTaskRouteBody;
-  idGenerator: IdGenerator;
-  owner: { ownerType?: BrowserSessionOwnerType; ownerId?: string };
-  browserSessionId?: string;
-}): BrowserTaskRequest {
-  const threadId = input.body.threadId ?? input.owner.ownerId ?? `browser-thread:${clock.now()}`;
-  const actions = buildBrowserTaskActions(input.body);
-  return {
-    taskId: input.body.taskId ?? input.idGenerator.taskId(),
-    threadId,
-    instructions:
-      input.body.instructions ??
-      (input.body.url ? `Open ${input.body.url}` : input.browserSessionId ? "Resume browser session" : "Open browser session"),
-    actions,
-    ...(input.browserSessionId ? { browserSessionId: input.browserSessionId } : {}),
-    ...(input.body.targetId ? { targetId: input.body.targetId } : {}),
-    ...(input.owner.ownerType ? { ownerType: input.owner.ownerType } : {}),
-    ...(input.owner.ownerId ? { ownerId: input.owner.ownerId } : {}),
-    ...(input.body.profileOwnerType ? { profileOwnerType: input.body.profileOwnerType } : {}),
-    ...(input.body.profileOwnerId ? { profileOwnerId: input.body.profileOwnerId } : {}),
-    ...(input.body.leaseHolderRunKey ? { leaseHolderRunKey: input.body.leaseHolderRunKey } : {}),
-    ...(input.body.leaseTtlMs !== undefined ? { leaseTtlMs: input.body.leaseTtlMs } : {}),
-  };
-}
-
-function buildBrowserTaskActions(body: BrowserTaskRouteBody): BrowserTaskAction[] {
-  if (Array.isArray(body.actions) && body.actions.length > 0) {
-    return body.actions;
-  }
-
-  if (body.url) {
-    return [
-      { kind: "open", url: body.url },
-      { kind: "snapshot", note: "browser-session-runtime" },
-    ];
-  }
-
-  return [{ kind: "snapshot", note: "resume-current-target" }];
 }
 
 function wantsProcessHelp(args: string[]): boolean {
