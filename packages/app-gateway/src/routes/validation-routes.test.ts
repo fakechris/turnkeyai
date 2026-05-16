@@ -535,52 +535,47 @@ test("validation routes return 409 on /transport-soak/run idempotency key reuse 
   assert.equal(conflict.json.error, "idempotency key reuse does not match the original request");
 });
 
-test("validation routes scope idempotency keys per route so /regression-cases and /soak-cases don't collide", async () => {
-  let regressionRuns = 0;
-  let soakRuns = 0;
-  // Patch the runners through a tiny indirection so we can count them.
+test("validation routes scope idempotency keys per route — same key + identical fingerprint shape on different routes do not collide", async () => {
+  // Codex review of P1.6b caught that the first version of this test used two
+  // routes (/regression-cases/run vs /soak-cases/run) whose fingerprints
+  // happened to differ by key name (`caseIds` vs `scenarioIds`), so it
+  // would pass even with a scope-collision bug. This version uses two routes
+  // with IDENTICAL fingerprint shape (both /soak-cases/run and
+  // /acceptance-cases/run fingerprint as `{scenarioIds}`), so only the
+  // per-route scope can prevent the 409.
   const baseDeps = createDeps({
     idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
   });
-  // The default fakes already provide harness runners; we count via the
-  // ops record list since each run pushes a record. Instead of patching
-  // private functions, verify by inspecting that both routes returned 200
-  // with their own independent key state — same key used on a different
-  // path/scope must not surface a 409.
 
-  // Run regression first.
-  const reg = createResponse();
-  await handleValidationRoutes({
-    req: createRequest({
-      method: "POST",
-      url: "/regression-cases/run",
-      headers: { "idempotency-key": "shared-key" },
-      body: {},
-    }),
-    res: reg.res,
-    url: new URL("http://127.0.0.1/regression-cases/run"),
-    deps: baseDeps,
-  });
-  assert.equal(reg.res.statusCode, 200);
-  regressionRuns += 1;
-
-  // Same key, different route — must NOT 409, because the scope differs.
   const soak = createResponse();
   await handleValidationRoutes({
     req: createRequest({
       method: "POST",
       url: "/soak-cases/run",
       headers: { "idempotency-key": "shared-key" },
-      body: {},
+      body: { scenarioIds: ["shared-scenario"] },
     }),
     res: soak.res,
     url: new URL("http://127.0.0.1/soak-cases/run"),
     deps: baseDeps,
   });
-  assert.equal(soak.res.statusCode, 200);
-  soakRuns += 1;
+  // Body shape is intentionally invalid for the suite (no such scenario id),
+  // but the route validation also runs against the actual harness; the test
+  // here cares only about NOT returning 409. Any 200 or 400 is acceptable —
+  // 409 would prove the scope isolation failed.
+  assert.notEqual(soak.res.statusCode, 409, "first call must not 409");
 
-  // Sanity: both ran successfully without inter-route collision.
-  assert.equal(regressionRuns, 1);
-  assert.equal(soakRuns, 1);
+  const acceptance = createResponse();
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/acceptance-cases/run",
+      headers: { "idempotency-key": "shared-key" },
+      body: { scenarioIds: ["shared-scenario"] },
+    }),
+    res: acceptance.res,
+    url: new URL("http://127.0.0.1/acceptance-cases/run"),
+    deps: baseDeps,
+  });
+  assert.notEqual(acceptance.res.statusCode, 409, "second call on a DIFFERENT route with IDENTICAL fingerprint must not 409 — scope isolation guards this");
 });
