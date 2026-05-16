@@ -1,0 +1,438 @@
+// P1.5b — Daemon composition root, runtime services layer.
+//
+// This module owns the wiring of the daemon's stateful/cyclic runtime layer:
+// the worker runtime + its startup reconcile, the LLM gateway, the role
+// runtime, the role-run coordinator, the runtime/state/chain recorders, the
+// cyclic CoordinationEngine ↔ InlineRoleLoopRunner pair, the recovery action
+// service, the runtime reconciliation timer with its mutable result state, the
+// scheduled task runtime, and the runtime query service.
+//
+// The mutable reconciliation state (runtimeReconciliationPassResult and the
+// startup-reconcile result fields it derives) is hidden inside the function's
+// closure scope. The setInterval timer is created here and given `.unref()`
+// so the process can exit naturally; daemon.ts never needs to clear it.
+
+import path from "node:path";
+
+import type {
+  Clock,
+  IdGenerator,
+  RuntimeSummaryReport,
+  WorkerRuntime,
+} from "@turnkeyai/core-types/team";
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
+import { AnthropicCompatibleClient } from "@turnkeyai/llm-adapter/anthropic-compatible-client";
+import { FileModelCatalogSource } from "@turnkeyai/llm-adapter/file-model-catalog";
+import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
+import { OpenAICompatibleClient } from "@turnkeyai/llm-adapter/openai-compatible-client";
+import { ModelRegistry } from "@turnkeyai/llm-adapter/registry";
+import { CoordinationEngine } from "@turnkeyai/team-runtime/coordination-engine";
+import { DefaultHandoffPlanner } from "@turnkeyai/team-runtime/handoff-planner";
+import { InlineRoleLoopRunner } from "@turnkeyai/team-runtime/inline-role-loop-runner";
+import { DefaultRoleRunCoordinator } from "@turnkeyai/team-runtime/role-run-coordinator";
+import { DefaultRuntimeChainRecorder } from "@turnkeyai/team-runtime/runtime-chain-recorder";
+import { DefaultRuntimeStateRecorder } from "@turnkeyai/team-runtime/runtime-state-recorder";
+import { DefaultScheduledTaskRuntime } from "@turnkeyai/team-runtime/scheduled-task-runtime";
+import { DeterministicRoleResponseGenerator } from "@turnkeyai/role-runtime/deterministic-response-generator";
+import { HeuristicModelAdapter } from "@turnkeyai/role-runtime/model-adapter";
+import { HybridRoleResponseGenerator } from "@turnkeyai/role-runtime/hybrid-response-generator";
+import { LLMRoleResponseGenerator } from "@turnkeyai/role-runtime/llm-response-generator";
+import { PolicyRoleRuntime } from "@turnkeyai/role-runtime/policy-role-runtime";
+import { DefaultRolePromptPolicy } from "@turnkeyai/role-runtime/prompt-policy";
+import { LocalWorkerRuntime } from "@turnkeyai/worker-runtime/local-worker-runtime";
+
+import { createRecoveryActionService } from "../recovery-action-service";
+import { createRuntimeQueryService } from "../runtime-query-service";
+import { recoverRoleRunsOnStartup } from "../role-run-startup-recovery";
+import {
+  runRuntimeReconciliationPass,
+  type RuntimeReconciliationPassResult,
+} from "../runtime-reconciliation-pass";
+import { reconcileWorkerBindingsOnStartup } from "../worker-binding-startup-reconcile";
+
+import type { DaemonFoundations } from "./foundations";
+
+export interface DaemonRuntimeLimits {
+  memberMaxIterations: number;
+  flowMaxHops: number;
+  maxQueuedHandoffsPerRole: number;
+  maxPerRoleHopCount: number;
+}
+
+export interface DaemonRuntimeServicesInputs {
+  foundations: DaemonFoundations;
+  dataDir: string;
+  clock: Clock;
+  idGenerator: IdGenerator;
+  modelCatalogPath: string | null;
+  runtimeLimits: DaemonRuntimeLimits;
+  recoveryRunActionMutex: KeyedAsyncMutex<string>;
+  recoveryRunStaleAfterMs: number;
+  runtimeReconciliationIntervalMs: number;
+}
+
+export interface DaemonRuntimeServices {
+  workerRuntime: WorkerRuntime;
+  modelRegistry: ModelRegistry | null;
+  llmGateway: LLMGateway | null;
+  roleRuntime: PolicyRoleRuntime;
+  roleRunCoordinator: DefaultRoleRunCoordinator;
+  runtimeStateRecorder: DefaultRuntimeStateRecorder;
+  runtimeChainRecorder: DefaultRuntimeChainRecorder;
+  coordinationEngine: CoordinationEngine;
+  roleLoopRunner: InlineRoleLoopRunner;
+  recoveryActionService: ReturnType<typeof createRecoveryActionService>;
+  scheduledTaskRuntime: DefaultScheduledTaskRuntime;
+  runtimeQueryService: ReturnType<typeof createRuntimeQueryService>;
+  /**
+   * Stop the background reconciliation timer. Idempotent — safe to call
+   * multiple times. The timer is `.unref()`ed so it does not keep the
+   * process alive on its own, but explicit cleanup is preferred during
+   * shutdown so any in-flight refresh promise is allowed to settle without
+   * a new pass being scheduled on top of it.
+   */
+  stop(): void;
+}
+
+export async function composeDaemonRuntimeServices(
+  inputs: DaemonRuntimeServicesInputs
+): Promise<DaemonRuntimeServices> {
+  const {
+    foundations,
+    dataDir,
+    clock,
+    idGenerator,
+    modelCatalogPath,
+    runtimeLimits,
+    recoveryRunActionMutex,
+    recoveryRunStaleAfterMs,
+    runtimeReconciliationIntervalMs,
+  } = inputs;
+
+  const {
+    teamThreadStore,
+    teamMessageStore,
+    flowLedgerStore,
+    roleRunStore,
+    runtimeChainStore,
+    runtimeChainSpanStore,
+    runtimeChainEventStore,
+    runtimeChainStatusStore,
+    runtimeProgressStore,
+    permissionCacheStore,
+    recoveryRunStore,
+    recoveryRunEventStore,
+    workerSessionStore,
+    teamEventBus,
+    workerEvidenceDigestStore,
+    summaryBuilder,
+    relayBriefBuilder,
+    recoveryDirector,
+    apiExecutionVerifier,
+    permissionGovernancePolicy,
+    evidenceTrustPolicy,
+    promptAdmissionPolicy,
+    roleProfileRegistry,
+    contextBudgeter,
+    runtimeProgressRecorder,
+    roleMemoryResolver,
+    promptAssembler,
+    contextCompressor,
+    contextStateMaintainer,
+    replayRecorder,
+    workerRegistry,
+    capabilityDiscoveryService,
+  } = foundations;
+
+  // --- Worker runtime + startup reconciles -------------------------------
+  const workerRuntime: WorkerRuntime = new LocalWorkerRuntime({
+    workerRegistry,
+    runtimeProgressRecorder,
+    sessionStore: workerSessionStore,
+  });
+  const workerStartupReconcileResult = await workerRuntime.reconcileStartup?.();
+  if (workerStartupReconcileResult && workerStartupReconcileResult.totalSessions > 0) {
+    console.info("worker runtime startup reconcile completed", workerStartupReconcileResult);
+  }
+  const workerBindingReconcileResult = await reconcileWorkerBindingsOnStartup({
+    teamThreadStore,
+    roleRunStore,
+    workerRuntime,
+  });
+  if (workerBindingReconcileResult && workerBindingReconcileResult.totalBindings > 0) {
+    console.info("worker binding startup reconcile completed", workerBindingReconcileResult);
+  }
+
+  // --- LLM gateway + role runtime ---------------------------------------
+  const heuristicResponseGenerator = new DeterministicRoleResponseGenerator({
+    modelAdapter: new HeuristicModelAdapter(),
+    roleProfileRegistry,
+  });
+  const modelRegistry = modelCatalogPath
+    ? new ModelRegistry(new FileModelCatalogSource(modelCatalogPath))
+    : null;
+  const llmGateway = modelRegistry
+    ? new LLMGateway({
+        registry: modelRegistry,
+        clients: [new OpenAICompatibleClient(), new AnthropicCompatibleClient()],
+      })
+    : null;
+
+  const roleRuntime = new PolicyRoleRuntime({
+    idGenerator,
+    clock,
+    promptPolicy: new DefaultRolePromptPolicy({
+      roleProfileRegistry,
+      contextBudgeter,
+      roleMemoryResolver,
+      promptAssembler,
+      capabilityDiscoveryService,
+      ...(modelRegistry ? { modelSelectionDescriber: modelRegistry } : {}),
+    }),
+    responseGenerator: llmGateway
+      ? new HybridRoleResponseGenerator({
+          primary: new LLMRoleResponseGenerator({
+            gateway: llmGateway,
+            runtimeProgressRecorder,
+          }),
+          fallback: heuristicResponseGenerator,
+        })
+      : heuristicResponseGenerator,
+    workerRuntime,
+    contextCompressor,
+    workerEvidenceDigestStore,
+    apiExecutionVerifier,
+    teamEventBus,
+    permissionGovernancePolicy,
+    evidenceTrustPolicy,
+    promptAdmissionPolicy,
+    permissionCacheStore,
+    replayRecorder,
+  });
+
+  // --- Coordination + cyclic role loop runner ----------------------------
+  const roleRunCoordinator = new DefaultRoleRunCoordinator({
+    roleRunStore,
+    runtimeLimits,
+    now: () => clock.now(),
+  });
+  const runtimeStateRecorder = new DefaultRuntimeStateRecorder({
+    teamEventBus,
+  });
+  const runtimeChainRecorder = new DefaultRuntimeChainRecorder({
+    chainStore: runtimeChainStore,
+    spanStore: runtimeChainSpanStore,
+    eventStore: runtimeChainEventStore,
+    statusStore: runtimeChainStatusStore,
+    clock,
+    runtimeStateRecorder,
+  });
+
+  // The CoordinationEngine ↔ InlineRoleLoopRunner pair is cyclic: the role
+  // loop needs to call back into coordination on ack/reply/failure, and
+  // coordination needs to drive the role loop. Both reference each other via
+  // closures bound at construction time, so coordinationEngine is declared
+  // with a deferred binding (the closures capture the variable, not its
+  // value at the moment of construction).
+  let coordinationEngine: CoordinationEngine;
+  const roleLoopRunner = new InlineRoleLoopRunner({
+    roleRunStore,
+    flowLedgerStore,
+    teamThreadStore,
+    teamMessageStore,
+    roleRunCoordinator,
+    roleRuntime,
+    onHandoffAck: async (input) => {
+      await coordinationEngine.onHandoffAck(input);
+    },
+    onRoleReply: async (input) => {
+      await coordinationEngine.handleRoleReply(input);
+    },
+    onRoleFailure: async (input) => {
+      await coordinationEngine.onRoleFailure(input);
+    },
+    runtimeProgressRecorder,
+  });
+  coordinationEngine = new CoordinationEngine({
+    teamThreadStore,
+    teamMessageStore,
+    flowLedgerStore,
+    roleRunCoordinator,
+    handoffPlanner: new DefaultHandoffPlanner({
+      maxPerRoleHopCount: runtimeLimits.maxPerRoleHopCount,
+    }),
+    recoveryDirector,
+    roleLoopRunner,
+    summaryBuilder,
+    relayBriefBuilder,
+    idGenerator,
+    runtimeLimits,
+    clock,
+    contextStateMaintainer,
+    workerRuntime,
+    replayRecorder,
+    runtimeChainRecorder,
+    ingressOutboxRootDir: path.join(dataDir, "flow-start-outbox"),
+    dispatchOutboxRootDir: path.join(dataDir, "dispatch-outbox"),
+    roleOutcomeOutboxRootDir: path.join(dataDir, "role-outcome-outbox"),
+  });
+
+  // --- Startup recovery + recovery action service -----------------------
+  const roleRunStartupRecoveryResult = await recoverRoleRunsOnStartup({
+    teamThreadStore,
+    flowLedgerStore,
+    roleRunStore,
+    roleLoopRunner,
+  });
+
+  // Mutable reconciliation state lives in this closure scope. The getters
+  // below are passed to recoveryActionService and runtimeQueryService and
+  // always observe the latest result without those services needing to know
+  // anything about the refresh cycle.
+  let runtimeReconciliationPassResult: RuntimeReconciliationPassResult | undefined;
+  let flowRecoveryStartupReconcileResult: RuntimeSummaryReport["flowRecoveryStartupReconcile"] | undefined;
+  let runtimeChainStartupReconcileResult: RuntimeSummaryReport["runtimeChainStartupReconcile"] | undefined;
+  let runtimeChainArtifactStartupReconcileResult: RuntimeSummaryReport["runtimeChainArtifactStartupReconcile"] | undefined;
+  let runtimeReconciliationPassInFlight = false;
+
+  const recoveryActionService = createRecoveryActionService({
+    clock,
+    idGenerator,
+    recoveryRunActionMutex,
+    recoveryRunStaleAfterMs,
+    coordinationEngine,
+    runtimeStateRecorder,
+    runtimeProgressRecorder,
+    replayRecorder,
+    recoveryRunStore,
+    recoveryRunEventStore,
+    getRuntimeReconciliationResult: () => runtimeReconciliationPassResult,
+  });
+
+  async function refreshRuntimeReconciliationPass(): Promise<void> {
+    if (runtimeReconciliationPassInFlight) {
+      return;
+    }
+    runtimeReconciliationPassInFlight = true;
+    try {
+      runtimeReconciliationPassResult = await runRuntimeReconciliationPass({
+        clock,
+        teamThreadStore,
+        flowLedgerStore,
+        recoveryRunStore,
+        runtimeChainStore,
+        runtimeChainStatusStore,
+        runtimeChainSpanStore,
+        runtimeChainEventStore,
+        syncRecoveryRuntime: (threadId) => recoveryActionService.syncRecoveryRuntime(threadId),
+        recoveryRunStaleAfterMs,
+        flowStartOutboxRootDir: path.join(dataDir, "flow-start-outbox"),
+        dispatchOutboxRootDir: path.join(dataDir, "dispatch-outbox"),
+        roleOutcomeOutboxRootDir: path.join(dataDir, "role-outcome-outbox"),
+      });
+      flowRecoveryStartupReconcileResult = runtimeReconciliationPassResult.flowRecovery;
+      runtimeChainStartupReconcileResult = runtimeReconciliationPassResult.runtimeChains;
+      runtimeChainArtifactStartupReconcileResult = runtimeReconciliationPassResult.runtimeChainArtifacts;
+    } finally {
+      runtimeReconciliationPassInFlight = false;
+    }
+  }
+
+  await refreshRuntimeReconciliationPass();
+  if (
+    roleRunStartupRecoveryResult.restartedQueuedRuns > 0 ||
+    roleRunStartupRecoveryResult.restartedRunningRuns > 0 ||
+    roleRunStartupRecoveryResult.restartedResumingRuns > 0
+  ) {
+    console.info("role run startup recovery completed", roleRunStartupRecoveryResult);
+  }
+  if (
+    flowRecoveryStartupReconcileResult &&
+    (flowRecoveryStartupReconcileResult.orphanedFlows > 0 ||
+      flowRecoveryStartupReconcileResult.orphanedRecoveryRuns > 0 ||
+      flowRecoveryStartupReconcileResult.failedRecoveryRuns > 0)
+  ) {
+    console.info("flow/recovery startup reconcile completed", flowRecoveryStartupReconcileResult);
+  }
+  if (runtimeChainStartupReconcileResult && runtimeChainStartupReconcileResult.affectedChainIds.length > 0) {
+    console.info("runtime chain startup reconcile completed", runtimeChainStartupReconcileResult);
+  }
+  if (
+    runtimeChainArtifactStartupReconcileResult &&
+    runtimeChainArtifactStartupReconcileResult.affectedChainIds.length > 0
+  ) {
+    console.info(
+      "runtime chain artifact startup reconcile completed",
+      runtimeChainArtifactStartupReconcileResult
+    );
+  }
+
+  // Background reconciliation. `.unref()` lets the process exit if this timer
+  // is the only thing keeping the event loop alive, so daemon.ts does not
+  // need to keep a reference for shutdown.
+  const runtimeReconciliationTimer = setInterval(() => {
+    void refreshRuntimeReconciliationPass().catch((error) => {
+      console.error(
+        "runtime reconciliation pass failed",
+        error instanceof Error ? error.message : error
+      );
+    });
+  }, runtimeReconciliationIntervalMs);
+  runtimeReconciliationTimer.unref?.();
+
+  // --- Scheduled task runtime + query service ---------------------------
+  const scheduledTaskRuntime = new DefaultScheduledTaskRuntime({
+    scheduledTaskStore: foundations.scheduledTaskStore,
+    coordinationEngine,
+    clock,
+    idGenerator,
+    replayRecorder,
+  });
+  const runtimeQueryService = createRuntimeQueryService({
+    clock,
+    workerRuntime,
+    getWorkerStartupReconcileResult: () => workerStartupReconcileResult,
+    getWorkerBindingReconcileResult: () => workerBindingReconcileResult,
+    getRoleRunStartupRecoveryResult: () => roleRunStartupRecoveryResult,
+    getFlowRecoveryStartupReconcileResult: () => flowRecoveryStartupReconcileResult,
+    getRuntimeChainStartupReconcileResult: () => runtimeChainStartupReconcileResult,
+    getRuntimeChainArtifactStartupReconcileResult: () => runtimeChainArtifactStartupReconcileResult,
+    getRuntimeReconciliationResult: () => runtimeReconciliationPassResult,
+    teamThreadStore,
+    flowLedgerStore,
+    roleRunStore,
+    runtimeChainStore,
+    runtimeChainStatusStore,
+    runtimeChainSpanStore,
+    runtimeChainEventStore,
+    runtimeProgressStore,
+    recoveryRunStore,
+    recoveryRunEventStore,
+    loadRecoveryRuntime: (threadId) => recoveryActionService.loadRecoveryRuntime(threadId),
+  });
+
+  let stopped = false;
+  function stop(): void {
+    if (stopped) {
+      return;
+    }
+    stopped = true;
+    clearInterval(runtimeReconciliationTimer);
+  }
+
+  return {
+    workerRuntime,
+    modelRegistry,
+    llmGateway,
+    roleRuntime,
+    roleRunCoordinator,
+    runtimeStateRecorder,
+    runtimeChainRecorder,
+    coordinationEngine,
+    roleLoopRunner,
+    recoveryActionService,
+    scheduledTaskRuntime,
+    runtimeQueryService,
+    stop,
+  };
+}

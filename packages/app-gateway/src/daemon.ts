@@ -31,11 +31,6 @@ import type {
 } from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
-import { AnthropicCompatibleClient } from "@turnkeyai/llm-adapter/anthropic-compatible-client";
-import { FileModelCatalogSource } from "@turnkeyai/llm-adapter/file-model-catalog";
-import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
-import { OpenAICompatibleClient } from "@turnkeyai/llm-adapter/openai-compatible-client";
-import { ModelRegistry } from "@turnkeyai/llm-adapter/registry";
 import {
   listBoundedRegressionCases,
   runBoundedRegressionSuite,
@@ -95,22 +90,9 @@ import {
   runScenarioParityAcceptanceSuite,
 } from "@turnkeyai/qc-runtime/scenario-parity-acceptance";
 import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
-import { CoordinationEngine } from "@turnkeyai/team-runtime/coordination-engine";
-import { DefaultHandoffPlanner } from "@turnkeyai/team-runtime/handoff-planner";
-import { InlineRoleLoopRunner } from "@turnkeyai/team-runtime/inline-role-loop-runner";
-import { DefaultRoleRunCoordinator } from "@turnkeyai/team-runtime/role-run-coordinator";
-import { DefaultRuntimeChainRecorder } from "@turnkeyai/team-runtime/runtime-chain-recorder";
-import { DefaultRuntimeStateRecorder } from "@turnkeyai/team-runtime/runtime-state-recorder";
-import { DefaultScheduledTaskRuntime } from "@turnkeyai/team-runtime/scheduled-task-runtime";
-import { DeterministicRoleResponseGenerator } from "@turnkeyai/role-runtime/deterministic-response-generator";
-import { HeuristicModelAdapter } from "@turnkeyai/role-runtime/model-adapter";
-import { HybridRoleResponseGenerator } from "@turnkeyai/role-runtime/hybrid-response-generator";
-import { LLMRoleResponseGenerator } from "@turnkeyai/role-runtime/llm-response-generator";
-import { PolicyRoleRuntime } from "@turnkeyai/role-runtime/policy-role-runtime";
-import { DefaultRolePromptPolicy } from "@turnkeyai/role-runtime/prompt-policy";
-import { LocalWorkerRuntime } from "@turnkeyai/worker-runtime/local-worker-runtime";
 
 import { composeDaemonFoundations } from "./composition/foundations";
+import { composeDaemonRuntimeServices } from "./composition/runtime-services";
 
 import {
   parsePositiveInteger,
@@ -329,246 +311,25 @@ function getRelayDiagnosticsSnapshot() {
       }
     : undefined;
 }
-const workerRuntime: WorkerRuntime = new LocalWorkerRuntime({
-  workerRegistry,
-  runtimeProgressRecorder,
-  sessionStore: workerSessionStore,
-});
-const workerStartupReconcileResult = await workerRuntime.reconcileStartup?.();
-if (workerStartupReconcileResult && workerStartupReconcileResult.totalSessions > 0) {
-  console.info("worker runtime startup reconcile completed", workerStartupReconcileResult);
-}
-const workerBindingReconcileResult = await reconcileWorkerBindingsOnStartup({
-  teamThreadStore,
-  roleRunStore,
-  workerRuntime,
-});
-if (workerBindingReconcileResult && workerBindingReconcileResult.totalBindings > 0) {
-  console.info("worker binding startup reconcile completed", workerBindingReconcileResult);
-}
-const heuristicResponseGenerator = new DeterministicRoleResponseGenerator({
-  modelAdapter: new HeuristicModelAdapter(),
-  roleProfileRegistry,
-});
-const modelRegistry = modelCatalogPath
-  ? new ModelRegistry(new FileModelCatalogSource(modelCatalogPath))
-  : null;
-const llmGateway = modelRegistry
-  ? new LLMGateway({
-      registry: modelRegistry,
-      clients: [new OpenAICompatibleClient(), new AnthropicCompatibleClient()],
-    })
-  : null;
-
-const roleRuntime = new PolicyRoleRuntime({
-  idGenerator,
+const runtimeServices = await composeDaemonRuntimeServices({
+  foundations,
+  dataDir: DATA_DIR,
   clock,
-  promptPolicy: new DefaultRolePromptPolicy({
-    roleProfileRegistry,
-    contextBudgeter,
-    roleMemoryResolver,
-    promptAssembler,
-    capabilityDiscoveryService,
-    ...(modelRegistry ? { modelSelectionDescriber: modelRegistry } : {}),
-  }),
-  responseGenerator: llmGateway
-    ? new HybridRoleResponseGenerator({
-        primary: new LLMRoleResponseGenerator({
-          gateway: llmGateway,
-          runtimeProgressRecorder,
-        }),
-        fallback: heuristicResponseGenerator,
-      })
-    : heuristicResponseGenerator,
-  workerRuntime,
-  contextCompressor,
-  workerEvidenceDigestStore,
-  apiExecutionVerifier,
-  teamEventBus,
-  permissionGovernancePolicy,
-  evidenceTrustPolicy,
-  promptAdmissionPolicy,
-  permissionCacheStore,
-  replayRecorder,
-});
-
-const roleRunCoordinator = new DefaultRoleRunCoordinator({
-  roleRunStore,
+  idGenerator,
+  modelCatalogPath,
   runtimeLimits,
-  now: () => clock.now(),
-});
-const runtimeStateRecorder = new DefaultRuntimeStateRecorder({
-  teamEventBus,
-});
-const runtimeChainRecorder = new DefaultRuntimeChainRecorder({
-  chainStore: runtimeChainStore,
-  spanStore: runtimeChainSpanStore,
-  eventStore: runtimeChainEventStore,
-  statusStore: runtimeChainStatusStore,
-  clock,
-  runtimeStateRecorder,
-});
-
-let coordinationEngine: CoordinationEngine;
-
-const roleLoopRunner = new InlineRoleLoopRunner({
-  roleRunStore,
-  flowLedgerStore,
-  teamThreadStore,
-  teamMessageStore,
-  roleRunCoordinator,
-  roleRuntime,
-  onHandoffAck: async (input) => {
-    await coordinationEngine.onHandoffAck(input);
-  },
-  onRoleReply: async (input) => {
-    await coordinationEngine.handleRoleReply(input);
-  },
-  onRoleFailure: async (input) => {
-    await coordinationEngine.onRoleFailure(input);
-  },
-  runtimeProgressRecorder,
-});
-
-coordinationEngine = new CoordinationEngine({
-  teamThreadStore,
-  teamMessageStore,
-  flowLedgerStore,
-  roleRunCoordinator,
-  handoffPlanner: new DefaultHandoffPlanner({
-    maxPerRoleHopCount: runtimeLimits.maxPerRoleHopCount,
-  }),
-  recoveryDirector,
-  roleLoopRunner,
-  summaryBuilder,
-  relayBriefBuilder,
-  idGenerator,
-  runtimeLimits,
-  clock,
-  contextStateMaintainer,
-  workerRuntime,
-  replayRecorder,
-  runtimeChainRecorder,
-  ingressOutboxRootDir: path.join(DATA_DIR, "flow-start-outbox"),
-  dispatchOutboxRootDir: path.join(DATA_DIR, "dispatch-outbox"),
-  roleOutcomeOutboxRootDir: path.join(DATA_DIR, "role-outcome-outbox"),
-});
-const roleRunStartupRecoveryResult = await recoverRoleRunsOnStartup({
-  teamThreadStore,
-  flowLedgerStore,
-  roleRunStore,
-  roleLoopRunner,
-});
-let runtimeReconciliationPassResult: RuntimeReconciliationPassResult | undefined;
-const recoveryActionService = createRecoveryActionService({
-  clock,
-  idGenerator,
   recoveryRunActionMutex,
   recoveryRunStaleAfterMs: RECOVERY_RUN_STALE_AFTER_MS,
-  coordinationEngine,
-  runtimeStateRecorder,
-  runtimeProgressRecorder,
-  replayRecorder,
-  recoveryRunStore,
-  recoveryRunEventStore,
-  getRuntimeReconciliationResult: () => runtimeReconciliationPassResult,
+  runtimeReconciliationIntervalMs: RUNTIME_RECONCILIATION_INTERVAL_MS,
 });
-let flowRecoveryStartupReconcileResult: RuntimeSummaryReport["flowRecoveryStartupReconcile"] | undefined;
-let runtimeChainStartupReconcileResult: RuntimeSummaryReport["runtimeChainStartupReconcile"] | undefined;
-let runtimeChainArtifactStartupReconcileResult: RuntimeSummaryReport["runtimeChainArtifactStartupReconcile"] | undefined;
-let runtimeReconciliationPassInFlight = false;
-
-async function refreshRuntimeReconciliationPass(): Promise<void> {
-  if (runtimeReconciliationPassInFlight) {
-    return;
-  }
-  runtimeReconciliationPassInFlight = true;
-  try {
-    runtimeReconciliationPassResult = await runRuntimeReconciliationPass({
-      clock,
-      teamThreadStore,
-      flowLedgerStore,
-      recoveryRunStore,
-      runtimeChainStore,
-      runtimeChainStatusStore,
-      runtimeChainSpanStore,
-      runtimeChainEventStore,
-      syncRecoveryRuntime: (threadId) => recoveryActionService.syncRecoveryRuntime(threadId),
-      recoveryRunStaleAfterMs: RECOVERY_RUN_STALE_AFTER_MS,
-      flowStartOutboxRootDir: path.join(DATA_DIR, "flow-start-outbox"),
-      dispatchOutboxRootDir: path.join(DATA_DIR, "dispatch-outbox"),
-      roleOutcomeOutboxRootDir: path.join(DATA_DIR, "role-outcome-outbox"),
-    });
-    flowRecoveryStartupReconcileResult = runtimeReconciliationPassResult.flowRecovery;
-    runtimeChainStartupReconcileResult = runtimeReconciliationPassResult.runtimeChains;
-    runtimeChainArtifactStartupReconcileResult = runtimeReconciliationPassResult.runtimeChainArtifacts;
-  } finally {
-    runtimeReconciliationPassInFlight = false;
-  }
-}
-
-await refreshRuntimeReconciliationPass();
-if (
-  roleRunStartupRecoveryResult.restartedQueuedRuns > 0 ||
-  roleRunStartupRecoveryResult.restartedRunningRuns > 0 ||
-  roleRunStartupRecoveryResult.restartedResumingRuns > 0
-) {
-  console.info("role run startup recovery completed", roleRunStartupRecoveryResult);
-}
-if (
-  flowRecoveryStartupReconcileResult &&
-  (
-    flowRecoveryStartupReconcileResult.orphanedFlows > 0 ||
-    flowRecoveryStartupReconcileResult.orphanedRecoveryRuns > 0 ||
-    flowRecoveryStartupReconcileResult.failedRecoveryRuns > 0
-  )
-) {
-  console.info("flow/recovery startup reconcile completed", flowRecoveryStartupReconcileResult);
-}
-if (runtimeChainStartupReconcileResult && runtimeChainStartupReconcileResult.affectedChainIds.length > 0) {
-  console.info("runtime chain startup reconcile completed", runtimeChainStartupReconcileResult);
-}
-if (runtimeChainArtifactStartupReconcileResult && runtimeChainArtifactStartupReconcileResult.affectedChainIds.length > 0) {
-  console.info("runtime chain artifact startup reconcile completed", runtimeChainArtifactStartupReconcileResult);
-}
-const runtimeReconciliationTimer = setInterval(() => {
-  void refreshRuntimeReconciliationPass().catch((error) => {
-    console.error(
-      "runtime reconciliation pass failed",
-      error instanceof Error ? error.message : error
-    );
-  });
-}, RUNTIME_RECONCILIATION_INTERVAL_MS);
-runtimeReconciliationTimer.unref?.();
-const scheduledTaskRuntime = new DefaultScheduledTaskRuntime({
-  scheduledTaskStore,
-  coordinationEngine,
-  clock,
-  idGenerator,
-  replayRecorder,
-});
-const runtimeQueryService = createRuntimeQueryService({
-  clock,
+const {
   workerRuntime,
-  getWorkerStartupReconcileResult: () => workerStartupReconcileResult,
-  getWorkerBindingReconcileResult: () => workerBindingReconcileResult,
-  getRoleRunStartupRecoveryResult: () => roleRunStartupRecoveryResult,
-  getFlowRecoveryStartupReconcileResult: () => flowRecoveryStartupReconcileResult,
-  getRuntimeChainStartupReconcileResult: () => runtimeChainStartupReconcileResult,
-  getRuntimeChainArtifactStartupReconcileResult: () => runtimeChainArtifactStartupReconcileResult,
-  getRuntimeReconciliationResult: () => runtimeReconciliationPassResult,
-  teamThreadStore,
-  flowLedgerStore,
-  roleRunStore,
-  runtimeChainStore,
-  runtimeChainStatusStore,
-  runtimeChainSpanStore,
-  runtimeChainEventStore,
-  runtimeProgressStore,
-  recoveryRunStore,
-  recoveryRunEventStore,
-  loadRecoveryRuntime: (threadId) => recoveryActionService.loadRecoveryRuntime(threadId),
-});
+  llmGateway,
+  coordinationEngine,
+  recoveryActionService,
+  scheduledTaskRuntime,
+  runtimeQueryService,
+} = runtimeServices;
 
 await mkdir(DATA_DIR, { recursive: true });
 
@@ -1085,6 +846,9 @@ function shutdownDaemon(signal: NodeJS.Signals | "exit"): void {
   }
   shuttingDown = true;
   console.log(`daemon shutting down (${signal})`);
+  // Stop the background reconciliation timer first so no new pass is
+  // scheduled while the HTTP server is draining.
+  runtimeServices.stop();
   const closeTimeout = setTimeout(() => {
     console.error("daemon shutdown timed out, exiting");
     removePidFile(RUNTIME_PATHS);
