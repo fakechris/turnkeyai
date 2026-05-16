@@ -184,7 +184,10 @@ export async function handleBrowserRoutes(input: {
       res,
       store: deps.idempotencyStore,
       scope: "browser:spawn",
-      fingerprint: { body, ownerType: owner.ownerType, ownerId: owner.ownerId },
+      fingerprint: fingerprintBrowserTaskBody(body, {
+        ownerType: owner.ownerType,
+        ownerId: owner.ownerId,
+      }),
       execute: async () => ({
         statusCode: 201,
         body: await deps.browserBridge.spawnSession(request),
@@ -536,7 +539,13 @@ export async function handleBrowserRoutes(input: {
       res,
       store: deps.idempotencyStore,
       scope: "browser:send",
-      fingerprint: { sessionId: access.sessionId, body },
+      fingerprint: {
+        sessionId: access.sessionId,
+        ...fingerprintBrowserTaskBody(body, {
+          ownerType: access.ownerType,
+          ownerId: access.ownerId,
+        }),
+      },
       execute: async () => ({
         statusCode: 200,
         body: await deps.browserBridge.sendSession({ ...request, browserSessionId: request.browserSessionId! }),
@@ -584,7 +593,13 @@ export async function handleBrowserRoutes(input: {
       res,
       store: deps.idempotencyStore,
       scope: "browser:resume",
-      fingerprint: { sessionId: access.sessionId, body },
+      fingerprint: {
+        sessionId: access.sessionId,
+        ...fingerprintBrowserTaskBody(body, {
+          ownerType: access.ownerType,
+          ownerId: access.ownerId,
+        }),
+      },
       execute: async () => ({
         statusCode: 200,
         body: await deps.browserBridge.resumeSession({ ...request, browserSessionId: request.browserSessionId! }),
@@ -732,12 +747,20 @@ export async function handleBrowserRoutes(input: {
       return true;
     }
     const idleBefore = body.idleBefore ?? deps.clock.now() - (body.idleMs ?? 30 * 60 * 1000);
+    // Fingerprint the caller-provided input rather than the time-derived
+    // idleBefore, so two identical retries don't 409 on each other just
+    // because the clock advanced between them. The idempotency window is
+    // bounded by the store's TTL anyway.
     return runIdempotently({
       req,
       res,
       store: deps.idempotencyStore,
       scope: "browser:evict-idle",
-      fingerprint: { idleBefore, reason: body.reason },
+      fingerprint: {
+        idleBefore: body.idleBefore ?? null,
+        idleMs: body.idleMs ?? null,
+        reason: body.reason ?? null,
+      },
       execute: async () => ({
         statusCode: 200,
         body: await deps.browserBridge.evictIdleSessions({
@@ -931,6 +954,33 @@ function validateBrowserExpertSendBody(body: {
   }
 
   return null;
+}
+
+/**
+ * Canonicalize a BrowserTaskRouteBody into a stable fingerprint for the
+ * idempotency store. Picks only the fields that affect what the browser
+ * bridge actually does — caller-added extras (telemetry, metadata, etc.) are
+ * intentionally ignored so two retries of "the same accepted request" with
+ * different junk fields still match.
+ */
+function fingerprintBrowserTaskBody(
+  body: BrowserTaskRouteBody,
+  owner: { ownerType?: BrowserSessionOwnerType; ownerId?: string }
+): Record<string, unknown> {
+  return {
+    threadId: body.threadId ?? null,
+    taskId: body.taskId ?? null,
+    instructions: body.instructions ?? null,
+    url: body.url ?? null,
+    targetId: body.targetId ?? null,
+    actions: body.actions ?? null,
+    ownerType: owner.ownerType ?? body.ownerType ?? null,
+    ownerId: owner.ownerId ?? body.ownerId ?? null,
+    profileOwnerType: body.profileOwnerType ?? null,
+    profileOwnerId: body.profileOwnerId ?? null,
+    leaseHolderRunKey: body.leaseHolderRunKey ?? null,
+    leaseTtlMs: body.leaseTtlMs ?? null,
+  };
 }
 
 function validateBrowserTaskRouteOwnership(

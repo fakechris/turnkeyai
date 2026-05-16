@@ -1715,6 +1715,95 @@ test("browser routes replay idempotent /browser-sessions/:id/send", async () => 
   assert.equal(sendCount, 1, "second send with same Idempotency-Key must NOT call sendSession again");
 });
 
+test("browser routes ignore non-fingerprinted body extras on idempotency match", async () => {
+  // P1.6a — fingerprintBrowserTaskBody only canonicalizes accepted fields.
+  // Two retries with the same accepted shape but different junk fields must
+  // still replay (not 409). Regression for codex's fingerprint review.
+  let spawnCount = 0;
+  const deps = createDeps({
+    browserBridge: {
+      async spawnSession(input) {
+        spawnCount += 1;
+        return {
+          status: "completed",
+          browserSessionId: "session-1",
+          taskId: input.taskId,
+          page: null,
+          trace: [],
+        } as any;
+      },
+      async listSessions() {
+        return [];
+      },
+      async getSessionHistory() {
+        return [];
+      },
+      async listTargets() {
+        return [];
+      },
+      async openTarget(browserSessionId: string, url: string) {
+        return { browserSessionId, url };
+      },
+      async sendSession(input) {
+        return { status: "completed", browserSessionId: input.browserSessionId } as any;
+      },
+      async resumeSession(input) {
+        return { status: "completed", browserSessionId: input.browserSessionId } as any;
+      },
+      async activateTarget(browserSessionId: string, targetId: string) {
+        return { browserSessionId, targetId };
+      },
+      async closeTarget(browserSessionId: string, targetId: string) {
+        return { browserSessionId, targetId };
+      },
+      async closeSession() {},
+      async evictIdleSessions(input) {
+        return input;
+      },
+    },
+    idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+  });
+
+  const first = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      headers: { "idempotency-key": "extras-key" },
+      body: {
+        threadId: "thread-1",
+        url: "https://example.com",
+        clientTrace: "first-attempt",
+      } as any,
+    }),
+    res: first.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps,
+  });
+  assert.equal(first.res.statusCode, 201);
+
+  const second = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      headers: { "idempotency-key": "extras-key" },
+      body: {
+        threadId: "thread-1",
+        url: "https://example.com",
+        clientTrace: "second-attempt",
+      } as any,
+    }),
+    res: second.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps,
+  });
+
+  assert.equal(second.res.statusCode, 201, "differing junk fields must not cause 409");
+  assert.equal(second.headers.get("x-turnkeyai-idempotency-status"), "replayed");
+  assert.equal(spawnCount, 1);
+});
+
 test("browser routes /browser-sessions/spawn without Idempotency-Key still works (header optional)", async () => {
   let spawnCount = 0;
   const deps = createDeps({
