@@ -59,6 +59,7 @@ import {
 } from "@turnkeyai/qc-runtime/validation-suite";
 
 import { readJsonBodySafe, sendJson } from "../http-helpers";
+import { runIdempotently, type RouteIdempotencyStore } from "../idempotency-store";
 
 export interface ValidationRouteDeps {
   validationOpsRunStore: ValidationOpsRunStore;
@@ -68,6 +69,14 @@ export interface ValidationRouteDeps {
   writeValidationArtifact: (kind: string, runId: string, payload: unknown) => Promise<string>;
   runBrowserTransportSoakViaCli: (options?: BrowserTransportSoakOptions) => Promise<BrowserTransportSoakResult>;
   runReleaseReadiness?: (options?: ReleaseReadinessOptions) => Promise<ReleaseReadinessResult>;
+  /**
+   * Optional. When supplied, validation `/run` routes honor the
+   * `Idempotency-Key` header to dedupe retries — important because these
+   * runs are minutes-long and double-triggering wastes compute. The key is
+   * scoped per-route so two different /run endpoints can reuse the same
+   * client-supplied key without colliding.
+   */
+  idempotencyStore?: RouteIdempotencyStore;
 }
 
 const PHASE1_READINESS_SOAK_SELECTORS = [
@@ -105,8 +114,14 @@ export async function handleValidationRoutes(input: {
     }
     const body = bodyResult.value;
     const caseIds = filterNonEmptyStrings(body.caseIds);
-    sendJson(res, 200, runBoundedRegressionSuite(caseIds));
-    return true;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:regression-cases-run",
+      fingerprint: { caseIds: caseIds ?? null },
+      execute: async () => ({ statusCode: 200, body: runBoundedRegressionSuite(caseIds) }),
+    });
   }
 
   if (req.method === "GET" && url.pathname === "/failure-cases") {
@@ -126,8 +141,14 @@ export async function handleValidationRoutes(input: {
     }
     const body = bodyResult.value;
     const scenarioIds = filterNonEmptyStrings(body.scenarioIds);
-    sendJson(res, 200, runFailureInjectionSuite(scenarioIds));
-    return true;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:failure-cases-run",
+      fingerprint: { scenarioIds: scenarioIds ?? null },
+      execute: async () => ({ statusCode: 200, body: runFailureInjectionSuite(scenarioIds) }),
+    });
   }
 
   if (req.method === "GET" && url.pathname === "/soak-cases") {
@@ -160,8 +181,14 @@ export async function handleValidationRoutes(input: {
         return true;
       }
     }
-    sendJson(res, 200, runSoakSuite(scenarioIds));
-    return true;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:soak-cases-run",
+      fingerprint: { scenarioIds: scenarioIds ?? null },
+      execute: async () => ({ statusCode: 200, body: runSoakSuite(scenarioIds) }),
+    });
   }
 
   if (req.method === "GET" && url.pathname === "/acceptance-cases") {
@@ -194,8 +221,14 @@ export async function handleValidationRoutes(input: {
         return true;
       }
     }
-    sendJson(res, 200, runScenarioParityAcceptanceSuite(scenarioIds));
-    return true;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:acceptance-cases-run",
+      fingerprint: { scenarioIds: scenarioIds ?? null },
+      execute: async () => ({ statusCode: 200, body: runScenarioParityAcceptanceSuite(scenarioIds) }),
+    });
   }
 
   if (req.method === "GET" && url.pathname === "/realworld-cases") {
@@ -228,8 +261,14 @@ export async function handleValidationRoutes(input: {
         return true;
       }
     }
-    sendJson(res, 200, runRealWorldSuite(scenarioIds));
-    return true;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:realworld-cases-run",
+      fingerprint: { scenarioIds: scenarioIds ?? null },
+      execute: async () => ({ statusCode: 200, body: runRealWorldSuite(scenarioIds) }),
+    });
   }
 
   if (req.method === "GET" && url.pathname === "/validation-cases") {
@@ -250,16 +289,23 @@ export async function handleValidationRoutes(input: {
     }
     const body = bodyResult.value;
     const selectors = filterNonEmptyStrings(body.selectors);
-    try {
-      sendJson(res, 200, runValidationSuites(selectors));
-    } catch (error) {
-      if (error instanceof ValidationSelectorError) {
-        sendJson(res, 400, { error: error.message });
-        return true;
-      }
-      throw error;
-    }
-    return true;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:validation-cases-run",
+      fingerprint: { selectors: selectors ?? null },
+      execute: async () => {
+        try {
+          return { statusCode: 200, body: runValidationSuites(selectors) };
+        } catch (error) {
+          if (error instanceof ValidationSelectorError) {
+            return { statusCode: 400, body: { error: error.message } };
+          }
+          throw error;
+        }
+      },
+    });
   }
 
   if (req.method === "GET" && url.pathname === "/validation-profiles") {
@@ -291,23 +337,31 @@ export async function handleValidationRoutes(input: {
       sendJson(res, 400, { error: "Unknown validation profile" });
       return true;
     }
-    const startedAt = Date.now();
-    const result = await runValidationProfile(profileId, {}, {
-      releaseReadinessRunner: deps.runReleaseReadiness ?? runReleaseReadiness,
-      validationRunner: runValidationSuites,
-      transportSoakRunner: (options) => deps.runBrowserTransportSoakViaCli(options),
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:validation-profiles-run",
+      fingerprint: { profileId },
+      execute: async () => {
+        const startedAt = Date.now();
+        const result = await runValidationProfile(profileId, {}, {
+          releaseReadinessRunner: deps.runReleaseReadiness ?? runReleaseReadiness,
+          validationRunner: runValidationSuites,
+          transportSoakRunner: (options) => deps.runBrowserTransportSoakViaCli(options),
+        });
+        const completedAt = Date.now();
+        await deps.validationOpsRunStore.put(
+          buildValidationOpsRecordFromValidationProfile({
+            runId: deps.createValidationOpsRunId("validation-profile"),
+            startedAt,
+            completedAt,
+            result,
+          })
+        );
+        return { statusCode: 200, body: result };
+      },
     });
-    const completedAt = Date.now();
-    await deps.validationOpsRunStore.put(
-      buildValidationOpsRecordFromValidationProfile({
-        runId: deps.createValidationOpsRunId("validation-profile"),
-        startedAt,
-        completedAt,
-        result,
-      })
-    );
-    sendJson(res, 200, result);
-    return true;
   }
 
   if (req.method === "POST" && url.pathname === "/soak-series/run") {
@@ -323,31 +377,38 @@ export async function handleValidationRoutes(input: {
       return true;
     }
     const cycles = body.cycles !== undefined ? Number(body.cycles) : undefined;
-    try {
-      const startedAt = Date.now();
-      const result = await runValidationSoakSeries({
-        ...(cycles !== undefined ? { cycles } : {}),
-        ...(selectors !== undefined ? { selectors } : {}),
-      });
-      const completedAt = Date.now();
-      await deps.validationOpsRunStore.put(
-        buildValidationOpsRecordFromSoakSeries({
-          runId: deps.createValidationOpsRunId("soak-series"),
-          startedAt,
-          completedAt,
-          selectors: result.selectors,
-          result,
-        })
-      );
-      sendJson(res, 200, result);
-    } catch (error) {
-      if (error instanceof ValidationSelectorError) {
-        sendJson(res, 400, { error: error.message });
-        return true;
-      }
-      throw error;
-    }
-    return true;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:soak-series-run",
+      fingerprint: { cycles: cycles ?? null, selectors: selectors ?? null },
+      execute: async () => {
+        try {
+          const startedAt = Date.now();
+          const result = await runValidationSoakSeries({
+            ...(cycles !== undefined ? { cycles } : {}),
+            ...(selectors !== undefined ? { selectors } : {}),
+          });
+          const completedAt = Date.now();
+          await deps.validationOpsRunStore.put(
+            buildValidationOpsRecordFromSoakSeries({
+              runId: deps.createValidationOpsRunId("soak-series"),
+              startedAt,
+              completedAt,
+              selectors: result.selectors,
+              result,
+            })
+          );
+          return { statusCode: 200, body: result };
+        } catch (error) {
+          if (error instanceof ValidationSelectorError) {
+            return { statusCode: 400, body: { error: error.message } };
+          }
+          throw error;
+        }
+      },
+    });
   }
 
   if (req.method === "POST" && url.pathname === "/transport-soak/run") {
@@ -390,48 +451,71 @@ export async function handleValidationRoutes(input: {
           .map((value) => value.trim())
           .filter((value): value is "relay" | "direct-cdp" => value === "relay" || value === "direct-cdp")
       : undefined;
-    const startedAt = Date.now();
-    const result = await deps.runBrowserTransportSoakViaCli({
-      ...(body.cycles !== undefined ? { cycles: Number(body.cycles) } : {}),
-      ...(body.timeoutMs !== undefined ? { timeoutMs: Math.trunc(body.timeoutMs) } : {}),
-      ...(body.relayPeerCount !== undefined ? { relayPeerCount: Number(body.relayPeerCount) } : {}),
-      ...(body.verifyReconnect !== undefined ? { verifyReconnect: body.verifyReconnect } : {}),
-      ...(body.verifyWorkflowLog !== undefined ? { verifyWorkflowLog: body.verifyWorkflowLog } : {}),
-      ...(targets && targets.length > 0 ? { targets } : {}),
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:transport-soak-run",
+      fingerprint: {
+        cycles: body.cycles ?? null,
+        timeoutMs: body.timeoutMs ?? null,
+        relayPeerCount: body.relayPeerCount ?? null,
+        verifyReconnect: body.verifyReconnect ?? null,
+        verifyWorkflowLog: body.verifyWorkflowLog ?? null,
+        targets: targets ?? null,
+      },
+      execute: async () => {
+        const startedAt = Date.now();
+        const result = await deps.runBrowserTransportSoakViaCli({
+          ...(body.cycles !== undefined ? { cycles: Number(body.cycles) } : {}),
+          ...(body.timeoutMs !== undefined ? { timeoutMs: Math.trunc(body.timeoutMs) } : {}),
+          ...(body.relayPeerCount !== undefined ? { relayPeerCount: Number(body.relayPeerCount) } : {}),
+          ...(body.verifyReconnect !== undefined ? { verifyReconnect: body.verifyReconnect } : {}),
+          ...(body.verifyWorkflowLog !== undefined ? { verifyWorkflowLog: body.verifyWorkflowLog } : {}),
+          ...(targets && targets.length > 0 ? { targets } : {}),
+        });
+        const completedAt = Date.now();
+        const runId = deps.createValidationOpsRunId("transport-soak");
+        const artifactPath = await deps.writeValidationArtifact("transport-soak", runId, result);
+        await deps.validationOpsRunStore.put(
+          buildValidationOpsRecordFromTransportSoak({
+            runId,
+            startedAt,
+            completedAt,
+            artifactPath,
+            result,
+          })
+        );
+        return {
+          statusCode: 200,
+          body: { ...result, artifactPath },
+        };
+      },
     });
-    const completedAt = Date.now();
-    const runId = deps.createValidationOpsRunId("transport-soak");
-    const artifactPath = await deps.writeValidationArtifact("transport-soak", runId, result);
-    await deps.validationOpsRunStore.put(
-      buildValidationOpsRecordFromTransportSoak({
-        runId,
-        startedAt,
-        completedAt,
-        artifactPath,
-        result,
-      })
-    );
-    sendJson(res, 200, {
-      ...result,
-      artifactPath,
-    });
-    return true;
   }
 
   if (req.method === "POST" && url.pathname === "/release-readiness/run") {
-    const startedAt = Date.now();
-    const result = await (deps.runReleaseReadiness ?? runReleaseReadiness)();
-    const completedAt = Date.now();
-    await deps.validationOpsRunStore.put(
-      buildValidationOpsRecordFromReleaseReadiness({
-        runId: deps.createValidationOpsRunId("release-readiness"),
-        startedAt,
-        completedAt,
-        result,
-      })
-    );
-    sendJson(res, 200, result);
-    return true;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:release-readiness-run",
+      fingerprint: {},
+      execute: async () => {
+        const startedAt = Date.now();
+        const result = await (deps.runReleaseReadiness ?? runReleaseReadiness)();
+        const completedAt = Date.now();
+        await deps.validationOpsRunStore.put(
+          buildValidationOpsRecordFromReleaseReadiness({
+            runId: deps.createValidationOpsRunId("release-readiness"),
+            startedAt,
+            completedAt,
+            result,
+          })
+        );
+        return { statusCode: 200, body: result };
+      },
+    });
   }
 
   if (req.method === "POST" && url.pathname === "/phase1-readiness/run") {
@@ -458,14 +542,26 @@ export async function handleValidationRoutes(input: {
       return true;
     }
 
-    const result = await runPhase1Readiness({
-      deps,
-      transportCycles: body.transportCycles ?? 3,
-      soakCycles: body.soakCycles ?? 3,
-      releaseSkipBuild: body.releaseSkipBuild ?? false,
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:phase1-readiness-run",
+      fingerprint: {
+        transportCycles: body.transportCycles ?? null,
+        soakCycles: body.soakCycles ?? null,
+        releaseSkipBuild: body.releaseSkipBuild ?? null,
+      },
+      execute: async () => ({
+        statusCode: 200,
+        body: await runPhase1Readiness({
+          deps,
+          transportCycles: body.transportCycles ?? 3,
+          soakCycles: body.soakCycles ?? 3,
+          releaseSkipBuild: body.releaseSkipBuild ?? false,
+        }),
+      }),
     });
-    sendJson(res, 200, result);
-    return true;
   }
 
   if (req.method === "POST" && url.pathname === "/phase1-baseline/run") {
@@ -516,15 +612,28 @@ export async function handleValidationRoutes(input: {
       return true;
     }
 
-    const result = await runPhase1Baseline({
-      deps,
-      runs: body.runs ?? 3,
-      transportCycles: body.transportCycles ?? 3,
-      soakCycles: body.soakCycles ?? 3,
-      releaseSkipBuild: body.releaseSkipBuild ?? false,
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "validation:phase1-baseline-run",
+      fingerprint: {
+        runs: body.runs ?? null,
+        transportCycles: body.transportCycles ?? null,
+        soakCycles: body.soakCycles ?? null,
+        releaseSkipBuild: body.releaseSkipBuild ?? null,
+      },
+      execute: async () => ({
+        statusCode: 200,
+        body: await runPhase1Baseline({
+          deps,
+          runs: body.runs ?? 3,
+          transportCycles: body.transportCycles ?? 3,
+          soakCycles: body.soakCycles ?? 3,
+          releaseSkipBuild: body.releaseSkipBuild ?? false,
+        }),
+      }),
     });
-    sendJson(res, 200, result);
-    return true;
   }
 
   return false;

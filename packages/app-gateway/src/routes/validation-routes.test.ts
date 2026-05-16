@@ -4,29 +4,34 @@ import test from "node:test";
 
 import type { ValidationOpsRunRecord } from "@turnkeyai/core-types/team";
 
+import { createRouteIdempotencyStore } from "../idempotency-store";
 import { handleValidationRoutes, type ValidationRouteDeps } from "./validation-routes";
 
-function createRequest(input: { method: string; url: string; body?: unknown }) {
+function createRequest(input: { method: string; url: string; body?: unknown; headers?: Record<string, string> }) {
   const body =
     input.body === undefined ? [] : [Buffer.from(typeof input.body === "string" ? input.body : JSON.stringify(input.body))];
   return Object.assign(Readable.from(body), {
     method: input.method,
     url: input.url,
-    headers: {},
+    headers: input.headers ?? {},
   }) as any;
 }
 
 function createResponse() {
   let payload = "";
+  const headers = new Map<string, string>();
   const res = {
     statusCode: 200,
-    setHeader() {},
+    setHeader(name: string, value: string) {
+      headers.set(name.toLowerCase(), value);
+    },
     end(chunk?: string) {
       payload = chunk ?? "";
     },
   } as any;
   return {
     res,
+    headers,
     get json() {
       return payload ? JSON.parse(payload) : undefined;
     },
@@ -415,4 +420,174 @@ test("validation routes return 400 for malformed JSON bodies", async () => {
 
   assert.equal(response.res.statusCode, 400);
   assert.deepEqual(response.json, { error: "Invalid JSON" });
+});
+
+// P1.6b — idempotency contract for validation /run endpoints. Two cases:
+// (1) retried POST with same Idempotency-Key replays without re-running the
+// underlying suite (these are minutes-long runs; double-trigger wastes
+// compute); (2) same key reused with a different request shape returns 409.
+
+test("validation routes replay idempotent /transport-soak/run without re-running the soak", async () => {
+  let soakRuns = 0;
+  const deps = createDeps({
+    idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+    async runBrowserTransportSoakViaCli(options) {
+      soakRuns += 1;
+      return {
+        status: "passed",
+        cycles: options?.cycles ?? 1,
+        targets: options?.targets ?? ["relay"],
+        totalCycles: options?.cycles ?? 1,
+        passedCycles: options?.cycles ?? 1,
+        failedCycles: 0,
+        totalTargetRuns: (options?.targets ?? ["relay"]).length,
+        failedTargetRuns: 0,
+        durationMs: 10,
+        cycleResults: [],
+        targetAggregates: [],
+        runIndex: soakRuns,
+      } as any;
+    },
+  });
+
+  const first = createResponse();
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/transport-soak/run",
+      headers: { "idempotency-key": "ts-key-1" },
+      body: { cycles: 2, targets: ["relay"] },
+    }),
+    res: first.res,
+    url: new URL("http://127.0.0.1/transport-soak/run"),
+    deps,
+  });
+  assert.equal(first.res.statusCode, 200);
+  assert.equal(soakRuns, 1);
+
+  const second = createResponse();
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/transport-soak/run",
+      headers: { "idempotency-key": "ts-key-1" },
+      body: { cycles: 2, targets: ["relay"] },
+    }),
+    res: second.res,
+    url: new URL("http://127.0.0.1/transport-soak/run"),
+    deps,
+  });
+
+  assert.equal(soakRuns, 1, "retried POST with same Idempotency-Key must NOT re-run the soak");
+  assert.equal(second.res.statusCode, 200);
+  assert.equal(second.headers.get("x-turnkeyai-idempotency-status"), "replayed");
+});
+
+test("validation routes return 409 on /transport-soak/run idempotency key reuse with different cycles", async () => {
+  let soakRuns = 0;
+  const deps = createDeps({
+    idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+    async runBrowserTransportSoakViaCli(options) {
+      soakRuns += 1;
+      return {
+        status: "passed",
+        cycles: options?.cycles ?? 1,
+        targets: options?.targets ?? ["relay"],
+        totalCycles: options?.cycles ?? 1,
+        passedCycles: options?.cycles ?? 1,
+        failedCycles: 0,
+        totalTargetRuns: 1,
+        failedTargetRuns: 0,
+        durationMs: 10,
+        cycleResults: [],
+        targetAggregates: [],
+      } as any;
+    },
+  });
+
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/transport-soak/run",
+      headers: { "idempotency-key": "collision" },
+      body: { cycles: 2 },
+    }),
+    res: createResponse().res,
+    url: new URL("http://127.0.0.1/transport-soak/run"),
+    deps,
+  });
+
+  const conflict = createResponse();
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/transport-soak/run",
+      headers: { "idempotency-key": "collision" },
+      body: { cycles: 5 },
+    }),
+    res: conflict.res,
+    url: new URL("http://127.0.0.1/transport-soak/run"),
+    deps,
+  });
+
+  assert.equal(soakRuns, 1, "conflicting second request must not re-run");
+  assert.equal(conflict.res.statusCode, 409);
+  assert.equal(conflict.json.error, "idempotency key reuse does not match the original request");
+});
+
+test("validation routes scope idempotency keys per route — same key + identical fingerprint shape on different routes do not collide", async () => {
+  // Codex review of P1.6b caught two earlier versions of this test that
+  // failed to actually exercise the scope-isolation guarantee:
+  //   v1 used /regression-cases/run vs /soak-cases/run, whose fingerprints
+  //       differ by key name (caseIds vs scenarioIds), so the test would
+  //       have passed even with a scope-collision bug.
+  //   v2 used /soak-cases/run + /acceptance-cases/run with an unknown
+  //       scenario id, but both routes 400-out BEFORE reaching
+  //       runIdempotently, so neither call populated the cache.
+  //
+  // This version uses an empty body (no scenarioIds), which means both
+  // routes fingerprint as { scenarioIds: null } and both routes do
+  // reach runIdempotently. The first call populates the cache; the
+  // second call would 409 if scopes were not per-route.
+  const baseDeps = createDeps({
+    idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+  });
+
+  const soak = createResponse();
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/soak-cases/run",
+      headers: { "idempotency-key": "shared-key" },
+      body: {},
+    }),
+    res: soak.res,
+    url: new URL("http://127.0.0.1/soak-cases/run"),
+    deps: baseDeps,
+  });
+  assert.equal(soak.res.statusCode, 200, "first call must populate the cache (status 200)");
+  assert.equal(soak.headers.get("x-turnkeyai-idempotency-status"), undefined, "first call is not a replay");
+
+  const acceptance = createResponse();
+  await handleValidationRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/acceptance-cases/run",
+      headers: { "idempotency-key": "shared-key" },
+      body: {},
+    }),
+    res: acceptance.res,
+    url: new URL("http://127.0.0.1/acceptance-cases/run"),
+    deps: baseDeps,
+  });
+  assert.equal(
+    acceptance.res.statusCode,
+    200,
+    "second call on a DIFFERENT route with IDENTICAL fingerprint must run (200, not 409) — per-route scope guards this",
+  );
+  assert.equal(
+    acceptance.headers.get("x-turnkeyai-idempotency-status"),
+    undefined,
+    "second call is NOT a replay of the first — different scope, fresh execution",
+  );
 });

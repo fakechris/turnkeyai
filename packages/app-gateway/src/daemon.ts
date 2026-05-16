@@ -643,6 +643,7 @@ const server = http.createServer(async (req, res) => {
           createValidationOpsRunId,
           writeValidationArtifact,
           runBrowserTransportSoakViaCli,
+          idempotencyStore: routeIdempotencyStore,
         },
       })
     ) {
