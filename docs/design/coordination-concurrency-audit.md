@@ -75,10 +75,10 @@ _Reflects current `main` after this PR's R1 fix (see §5)._
 
 修复前的后果：**该 edge 的 first-time 派发会把 `dispatchDeliveryMutex(edgeId)` 持有到 role loop 结束**。其他需要同 edgeId 的操作（最相关的是 `abandonDispatchIntent`，由 outbox dead-letter 路径 onDroppedBatch 触发）会被卡住。
 
-**修法**：只在锁内做状态变更（lines 1426–1440 的 read-modify-write），出锁后再 await `ensureRunning`。本 PR 的 `deliverDispatchIntent` 现在是这个形状。
+**修法**：只在锁内做 read-modify-write 的 edge state 状态变更（getEdge → terminal-state guard → roleRunCoordinator.getOrCreate → roleRunCoordinator.enqueue → markHandoffDelivered，并从闭包返回 runKey），出锁后再 await `ensureRunning(runKey)`。本 PR 的 `deliverDispatchIntent` 现在是这个形状。
 
 安全性论证：
-- `ensureRunning` 自身幂等（`InlineRoleLoopRunner.ensureRunning` 在 `inline-role-loop-runner.ts:72-77` 通过 `activeRuns.has(runKey)` 短路）。
+- `ensureRunning` 自身幂等：`InlineRoleLoopRunner.ensureRunning` 通过 `activeRuns.has(runKey)` 在方法入口短路。
 - 锁释放后任何争抢 `dispatchDeliveryMutex(edgeId)` 的 caller（abandon、replay）都会重新读 edge state，按 edge 当前状态走自己的分支；不依赖 first 的 `ensureRunning` 完成。
 - 关键不变量：**至多一个 caller 真正进入 role loop body**——不论是 first 的 ensureRunning 先到，还是 replay 的 ensureRunning 先到。`activeRuns.has` 决定谁是 "first"，剩下的都立即 return。
 
@@ -122,7 +122,7 @@ _Reflects current `main` after this PR's R1 fix (see §5)._
 
 **没做的测试 + 原因：**
 
-- **同 flow 并发 shard reply → merge 只触发一次**：需要构造 fan-out + shard group 状态机 fixture，单 PR 范围太大。已有的 fan-out 测试在 `coordination-engine.test.ts:3490` 起覆盖了相关路径，单线程 happy path。
+- **同 flow 并发 shard reply → merge 只触发一次**：需要构造 fan-out + shard group 状态机 fixture，单 PR 范围太大。已有的 fan-out 测试（`coordination engine fan-out waits for all shards before dispatching merge back to lead` 起的若干 case）覆盖了相关路径，单线程 happy path。
 - **dispatch intent / role outcome replay 不重复 enqueue/close edge**：这是现有 `dispatchDeliveryMutex` / `roleOutcomeIntentMutex` 的语义。outbox 自身的 claim/lease 也已守住——本 PR 不引入新的 replay 风险，单写专用测试边际收益不大；如果未来真要补，正确位置在 outbox shipper 层级，不在 coordination engine。
 - **role loop 长跑时 abandon path 不被阻塞**：这是 R1 修法的本质收益，但触发 abandon 路径需要让 outbox shipper dead-letter，这要么 mock 整套 shipper 行为（脆弱），要么需要 expose mutex（污染 API）。当前以 R1 的源码 diff + 安全性论证（§5）作为变更证明；未来如果做 outbox shipper 单测，可以在那里直接验证。
 
