@@ -39,27 +39,6 @@ import {
 } from "@turnkeyai/qc-runtime/failure-injection-suite";
 import { classifyRuntimeError } from "@turnkeyai/qc-runtime/failure-taxonomy";
 import {
-  buildOperatorAttentionReport,
-  buildFlowConsoleReport,
-  buildGovernanceConsoleReport,
-  buildOperatorSummaryReport,
-  buildOperatorTriageReport,
-  buildRecoveryConsoleReport,
-} from "@turnkeyai/qc-runtime/operator-inspection";
-import { buildPromptConsoleReport } from "@turnkeyai/qc-runtime/prompt-inspection";
-import {
-  attachRecoveryRunToReplayIncidentBundle,
-  buildReplayConsoleReport,
-  buildReplayIncidentBundle,
-  buildReplayInspectionReport,
-  buildReplayRecoveryPlans,
-  buildRecoveryRunProgress,
-  buildRecoveryRuns,
-  buildRecoveryRunId,
-  buildRecoveryRunTimeline,
-  findReplayRecoveryPlan,
-  findRecoveryRun,
-  findReplayTaskSummary,
 } from "@turnkeyai/qc-runtime/replay-inspection";
 import {
   buildAugmentedFlowRuntimeChainDetail,
@@ -88,6 +67,8 @@ import { composeDaemonFoundations } from "./composition/foundations";
 import { composeDaemonRuntimeServices } from "./composition/runtime-services";
 import { createBrowserRouteHelpers } from "./composition/browser-route-helpers";
 import { buildDemoRoles } from "./composition/demo-roles";
+import { createInspectionRouteDeps } from "./composition/inspection-deps";
+import { createRecoveryRouteDeps } from "./composition/recovery-deps";
 import { runBrowserTransportSoakViaCli } from "./composition/transport-soak-cli";
 
 import {
@@ -280,32 +261,6 @@ async function buildBridgeStatusSnapshot(): Promise<BridgeStatusInfo> {
   });
 }
 
-function getRelayDiagnosticsSnapshot() {
-  return relayGateway
-    ? {
-        peers: relayGateway.listPeers(),
-        targets: relayGateway.listTargets(),
-        actions: relayGateway.listActionRequests().map((action) => ({
-          actionRequestId: action.actionRequestId,
-          browserSessionId: action.browserSessionId,
-          taskId: action.taskId,
-          ...(action.relayTargetId ? { relayTargetId: action.relayTargetId } : {}),
-          ...(action.targetId ? { targetId: action.targetId } : {}),
-          actionKinds: [...action.actionKinds],
-          createdAt: action.createdAt,
-          expiresAt: action.expiresAt,
-          state: action.state,
-          ...(action.preferredPeerId ? { preferredPeerId: action.preferredPeerId } : {}),
-          ...(action.lockedPeerId ? { lockedPeerId: action.lockedPeerId } : {}),
-          ...(action.assignedPeerId ? { assignedPeerId: action.assignedPeerId } : {}),
-          ...(action.claimExpiresAt !== undefined ? { claimExpiresAt: action.claimExpiresAt } : {}),
-          attemptCount: action.attemptCount,
-          reclaimCount: action.reclaimCount,
-          ...(action.lastClaimExpiredAt !== undefined ? { lastClaimExpiredAt: action.lastClaimExpiredAt } : {}),
-        })),
-      }
-    : undefined;
-}
 const runtimeServices = await composeDaemonRuntimeServices({
   foundations,
   dataDir: DATA_DIR,
@@ -337,6 +292,18 @@ const {
   buildBrowserTaskRequest,
   buildBrowserTaskActions,
 } = browserRouteHelpers;
+
+const inspectionDeps = createInspectionRouteDeps({
+  foundations,
+  runtimeServices,
+  modelCatalogPath,
+});
+
+const recoveryDeps = createRecoveryRouteDeps({
+  foundations,
+  runtimeServices,
+  idempotencyStore: routeIdempotencyStore,
+});
 
 await mkdir(DATA_DIR, { recursive: true });
 
@@ -395,245 +362,7 @@ const server = http.createServer(async (req, res) => {
         req,
         res,
         url,
-        deps: {
-          listThreads: () => teamThreadStore.list(),
-          listRecentEvents: (threadId, limit) => teamEventBus.listRecent(threadId, limit),
-          resolveExternalRoute: (channelId, userId) => teamRouteMap.findByExternalActor(channelId, userId),
-          listMessages: (threadId) => teamMessageStore.list(threadId),
-          listFlows: async (threadId, limit) => (await flowLedgerStore.listByThread(threadId)).slice(0, limit),
-          buildFlowSummary: async (threadId) => buildFlowConsoleReport(await flowLedgerStore.listByThread(threadId)),
-          listRuntimeChainsByThread: (threadId, limit) => runtimeQueryService.listRuntimeChainEntriesByThread(threadId, limit),
-          listActiveRuntimeChains: (limit, threadId) => runtimeQueryService.listActiveRuntimeChainEntries(limit, threadId),
-          loadRuntimeSummary: (threadId, limit) => runtimeQueryService.loadRuntimeSummary(threadId, limit),
-          listWorkerSessions: (limit, threadId) => runtimeQueryService.listWorkerSessions(limit, threadId),
-          listRuntimeChainsByCanonicalState: (state, limit, threadId) =>
-            runtimeQueryService.listRuntimeChainsByCanonicalState(state, limit, threadId),
-          listStaleRuntimeChains: (limit, threadId) => runtimeQueryService.listStaleRuntimeChainEntries(limit, threadId),
-          listRuntimeProgressByThread: (threadId, limit) => runtimeProgressStore.listByThread(threadId, limit),
-          loadRuntimeChainDetail: (chainId, limit) => runtimeQueryService.loadRuntimeChainDetail(chainId, limit),
-          listRuntimeProgressByChain: (chainId, limit) => runtimeProgressStore.listByChain(chainId, limit),
-          listRoleRuns: (threadId) => roleRunStore.listByThread(threadId),
-          getSessionMemory: (threadId) => threadSessionMemoryStore.get(threadId),
-          listModels: async () => {
-            if (!llmGateway) {
-              return {
-                modelCatalogPath: null,
-                models: [],
-                adapterMode: "heuristic-only",
-              };
-            }
-            const models = await llmGateway.listModels();
-            return {
-              modelCatalogPath,
-              adapterMode: "llm+heuristic-fallback",
-              models: models.map((model) => ({
-                ...model,
-                configured: Boolean(process.env[model.apiKeyEnv]),
-              })),
-            };
-          },
-          inspectCapabilities: (threadId, roleId, requestedCapabilities) =>
-            capabilityDiscoveryService.inspect({
-              threadId,
-              roleId,
-              requestedCapabilities,
-            }),
-          listGovernancePermissions: (threadId) => permissionCacheStore.listByThread(threadId),
-          buildGovernanceSummary: async (threadId, limit) => {
-            const [permissionRecords, events] = await Promise.all([
-              permissionCacheStore.listByThread(threadId),
-              teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-            ]);
-            return buildGovernanceConsoleReport(permissionRecords, events, limit);
-          },
-          buildRecoverySummary: async (threadId, limit) => {
-            const synced = await recoveryActionService.loadRecoveryRuntime(threadId);
-            return buildRecoveryConsoleReport(synced.runs, limit);
-          },
-          buildPromptConsole: async (threadId, limit) => {
-            const progressEvents = await runtimeProgressStore.listByThread(threadId);
-            return buildPromptConsoleReport(progressEvents, limit);
-          },
-          buildOperatorSummary: async (threadId, limit) => {
-            const [flows, permissionRecords, events, synced, progressEvents, runtimeSummary] = await Promise.all([
-              flowLedgerStore.listByThread(threadId),
-              permissionCacheStore.listByThread(threadId),
-              teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-              recoveryActionService.loadRecoveryRuntime(threadId),
-              runtimeProgressStore.listByThread(threadId),
-              runtimeQueryService.loadRuntimeSummary(threadId, Math.max(limit, 10)),
-            ]);
-            const relayDiagnostics = getRelayDiagnosticsSnapshot();
-            return relayDiagnostics
-              ? buildOperatorSummaryReport({
-                  flows,
-                  permissionRecords,
-                  events,
-                  replays: synced.records,
-                  recoveryRuns: synced.runs,
-                  progressEvents,
-                  runtimeSummary,
-                  relayDiagnostics,
-                  limit,
-                })
-              : buildOperatorSummaryReport({
-                  flows,
-                  permissionRecords,
-                  events,
-                  replays: synced.records,
-                  recoveryRuns: synced.runs,
-                  progressEvents,
-                  runtimeSummary,
-                  limit,
-                });
-          },
-          buildOperatorAttention: async (threadId, limit) => {
-            const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
-              flowLedgerStore.listByThread(threadId),
-              permissionCacheStore.listByThread(threadId),
-              teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-              recoveryActionService.loadRecoveryRuntime(threadId),
-              runtimeProgressStore.listByThread(threadId),
-            ]);
-            const relayDiagnostics = getRelayDiagnosticsSnapshot();
-            return relayDiagnostics
-              ? buildOperatorAttentionReport({
-                  flows,
-                  permissionRecords,
-                  events,
-                  replays: synced.records,
-                  recoveryRuns: synced.runs,
-                  progressEvents,
-                  relayDiagnostics,
-                  limit,
-                })
-              : buildOperatorAttentionReport({
-                  flows,
-                  permissionRecords,
-                  events,
-                  replays: synced.records,
-                  recoveryRuns: synced.runs,
-                  progressEvents,
-                  limit,
-                });
-          },
-          buildOperatorTriage: async (threadId, limit) => {
-            const [summary, attention, runtime] = await Promise.all([
-              (async () => {
-                const [flows, permissionRecords, events, synced, progressEvents, runtimeSummary] = await Promise.all([
-                  flowLedgerStore.listByThread(threadId),
-                  permissionCacheStore.listByThread(threadId),
-                  teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-                  recoveryActionService.loadRecoveryRuntime(threadId),
-                  runtimeProgressStore.listByThread(threadId),
-                  runtimeQueryService.loadRuntimeSummary(threadId, Math.max(limit, 10)),
-                ]);
-                const relayDiagnostics = getRelayDiagnosticsSnapshot();
-                return relayDiagnostics
-                  ? buildOperatorSummaryReport({
-                      flows,
-                      permissionRecords,
-                      events,
-                      replays: synced.records,
-                      recoveryRuns: synced.runs,
-                      progressEvents,
-                      runtimeSummary,
-                      relayDiagnostics,
-                      limit,
-                    })
-                  : buildOperatorSummaryReport({
-                      flows,
-                      permissionRecords,
-                      events,
-                      replays: synced.records,
-                      recoveryRuns: synced.runs,
-                      progressEvents,
-                      runtimeSummary,
-                      limit,
-                    });
-              })(),
-              (async () => {
-                const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
-                  flowLedgerStore.listByThread(threadId),
-                  permissionCacheStore.listByThread(threadId),
-                  teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-                  recoveryActionService.loadRecoveryRuntime(threadId),
-                  runtimeProgressStore.listByThread(threadId),
-                ]);
-                const relayDiagnostics = getRelayDiagnosticsSnapshot();
-                return relayDiagnostics
-                  ? buildOperatorAttentionReport({
-                      flows,
-                      permissionRecords,
-                      events,
-                      replays: synced.records,
-                      recoveryRuns: synced.runs,
-                      progressEvents,
-                      relayDiagnostics,
-                      limit: Math.max(limit, 10),
-                    })
-                  : buildOperatorAttentionReport({
-                      flows,
-                      permissionRecords,
-                      events,
-                      replays: synced.records,
-                      recoveryRuns: synced.runs,
-                      progressEvents,
-                      limit: Math.max(limit, 10),
-                    });
-              })(),
-              runtimeQueryService.loadRuntimeSummary(threadId, Math.max(limit, 10)),
-            ]);
-            return buildOperatorTriageReport({
-              summary,
-              attention,
-              runtime,
-              limit,
-            });
-          },
-          listGovernanceAudits: async (threadId, limit) => {
-            const events = await teamEventBus.listRecent(threadId, limit);
-            return events.filter((event) => event.kind === "audit.logged");
-          },
-          listGovernanceWorkerAudits: async (threadId, limit) => {
-            const events = await teamEventBus.listRecent(threadId, limit);
-            return events.filter(
-              (event) =>
-                event.kind === "audit.logged" &&
-                typeof event.payload.scope === "string" &&
-                event.payload.scope === "worker_execution"
-            );
-          },
-          listReplays: ({ threadId, layer, limit }) =>
-            replayRecorder.list({
-              ...(threadId ? { threadId } : {}),
-              ...(layer && ["scheduled", "role", "worker", "browser"].includes(layer)
-                ? { layer: layer as "scheduled" | "role" | "worker" | "browser" }
-                : {}),
-              limit,
-            }),
-          buildReplaySummary: async (threadId, limit) =>
-            buildReplayInspectionReport(
-              await replayRecorder.list({
-                ...(threadId ? { threadId } : {}),
-                limit,
-              })
-            ),
-          buildReplayConsole: async (threadId, limit) => {
-            if (threadId) {
-              const synced = await recoveryActionService.loadRecoveryRuntime(threadId);
-              return buildReplayConsoleReport(synced.records, limit, synced.runs, getRelayDiagnosticsSnapshot());
-            }
-            return buildReplayConsoleReport(
-              await replayRecorder.list({
-                limit: Math.max(limit, 200),
-              }),
-              limit,
-              [],
-              getRelayDiagnosticsSnapshot()
-            );
-          },
-        },
+        deps: inspectionDeps,
       })
     ) {
       return;
@@ -661,83 +390,7 @@ const server = http.createServer(async (req, res) => {
         req,
         res,
         url,
-        deps: {
-          buildReplayIncidents: async ({ threadId, limit, action, category }) => {
-            const report = buildReplayInspectionReport(
-              await replayRecorder.list({
-                ...(threadId ? { threadId } : {}),
-                limit,
-              })
-            );
-            return {
-              totalReplays: report.totalReplays,
-              totalGroups: report.totalGroups,
-              incidents: report.incidents.filter(
-                (incident) =>
-                  (action ? incident.recoveryHint.action === action : true) &&
-                  (category ? incident.rootFailureCategory === category : true)
-              ),
-            };
-          },
-          buildReplayRecoveries: async ({ threadId, limit, action }) => {
-            const plans = buildReplayRecoveryPlans(
-              await replayRecorder.list({
-                ...(threadId ? { threadId } : {}),
-                limit,
-              })
-            );
-            return {
-              totalRecoveries: plans.length,
-              recoveries: plans.filter((plan) =>
-                action ? plan.recoveryHint.action === action || plan.nextAction === action : true
-              ),
-            };
-          },
-          getReplayGroup: async (threadId, groupId) => {
-            const records = await replayRecorder.list({ threadId });
-            const report = buildReplayInspectionReport(records);
-            const group = findReplayTaskSummary(records, groupId, report);
-            if (!group) {
-              return null;
-            }
-            const replays = records
-              .filter((record) => (record.taskId ?? record.replayId) === group.groupId)
-              .sort((left, right) => left.recordedAt - right.recordedAt);
-            return { group, replays };
-          },
-          getReplayBundle: async (threadId, groupId) => {
-            const synced = await recoveryActionService.loadRecoveryRuntime(threadId);
-            const bundle = buildReplayIncidentBundle(
-              synced.records,
-              groupId,
-              getRelayDiagnosticsSnapshot()
-            );
-            if (!bundle) {
-              return null;
-            }
-            const recoveryRun = synced.runs.find((run) => run.sourceGroupId === bundle.group.groupId);
-            if (recoveryRun) {
-              attachRecoveryRunToReplayIncidentBundle({
-                bundle,
-                run: recoveryRun,
-                records: synced.records,
-                events: await recoveryRunEventStore.listByRecoveryRun(recoveryRun.recoveryRunId),
-              });
-            }
-            return bundle;
-          },
-          getReplayRecovery: (threadId, groupId) => recoveryActionService.getReplayRecovery(threadId, groupId),
-          listRecoveryRuns: (threadId) => recoveryActionService.listRecoveryRuns(threadId),
-          getRecoveryRun: (threadId, recoveryRunId) => recoveryActionService.getRecoveryRun(threadId, recoveryRunId),
-          getRecoveryTimeline: (threadId, recoveryRunId) =>
-            recoveryActionService.getRecoveryTimeline(threadId, recoveryRunId),
-          executeRecoveryRunAction: ({ threadId, recoveryRunId, action }) =>
-            recoveryActionService.executeRecoveryRunActionById({ threadId, recoveryRunId, action }),
-          dispatchReplayRecovery: ({ threadId, groupId }) =>
-            recoveryActionService.dispatchReplayRecovery({ threadId, groupId }),
-          getReplay: (replayId) => replayRecorder.get(replayId),
-          idempotencyStore: routeIdempotencyStore,
-        },
+        deps: recoveryDeps,
       })
     ) {
       return;
