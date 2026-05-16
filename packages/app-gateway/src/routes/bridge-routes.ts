@@ -10,10 +10,11 @@ import type {
   RelayActionRequestRecord,
 } from "@turnkeyai/browser-bridge/transport/relay-protocol";
 
-import type {
-  BridgeBatchInput,
-  BridgeCommandDispatcher,
-  BridgeCommandResponse,
+import {
+  deriveBridgePrincipal,
+  type BridgeBatchInput,
+  type BridgeCommandDispatcher,
+  type BridgeCommandResponse,
 } from "../bridge-command-dispatcher";
 import { readJsonBodySafe, sendJson } from "../http-helpers";
 import { runIdempotently, type RouteIdempotencyStore } from "../idempotency-store";
@@ -115,7 +116,7 @@ export async function handleBridgeRoutes(input: {
       dispatcher: deps.commandDispatcher,
       ...(deps.resolveToken ? { resolveToken: deps.resolveToken } : {}),
       idempotencyStore: deps.idempotencyStore,
-      scope: "bridge:command",
+      scopePrefix: "bridge:command",
       label: "command",
     });
   }
@@ -127,7 +128,7 @@ export async function handleBridgeRoutes(input: {
       dispatcher: deps.advancedDispatcher,
       ...(deps.resolveToken ? { resolveToken: deps.resolveToken } : {}),
       idempotencyStore: deps.idempotencyStore,
-      scope: "bridge:advanced",
+      scopePrefix: "bridge:advanced",
       label: "advanced",
     });
   }
@@ -151,7 +152,10 @@ export async function handleBridgeRoutes(input: {
       req,
       res,
       store: deps.idempotencyStore,
-      scope: "bridge:expert",
+      // Scope namespaced by principal so two agents with different bridge
+      // tokens cannot share a cached response just because they happened
+      // to pick the same Idempotency-Key value. See deriveBridgePrincipal.
+      scope: `bridge:expert:${deriveBridgePrincipal(token)}`,
       // Token deliberately NOT in the fingerprint — two retries from the same
       // agent must dedupe. SessionId distinguishes work targeting different
       // browser sessions; tool + args distinguish what the agent asked for.
@@ -188,7 +192,7 @@ export async function handleBridgeRoutes(input: {
       req,
       res,
       store: deps.idempotencyStore,
-      scope: "bridge:batch",
+      scope: `bridge:batch:${deriveBridgePrincipal(token)}`,
       fingerprint: {
         actions,
         sessionId: sessionId ?? null,
@@ -217,7 +221,12 @@ async function dispatchSingleTool(input: {
   dispatcher: BridgeCommandDispatcher | undefined;
   resolveToken?: (req: http.IncomingMessage) => string | null;
   idempotencyStore: RouteIdempotencyStore | undefined;
-  scope: string;
+  /**
+   * Route-level scope prefix (e.g. `bridge:command`). The actual idempotency
+   * cache scope is built as `${scopePrefix}:${principal}` so different bridge
+   * tokens have separate cache namespaces — see deriveBridgePrincipal.
+   */
+  scopePrefix: string;
   label: string;
 }): Promise<boolean> {
   if (!input.dispatcher) {
@@ -240,10 +249,11 @@ async function dispatchSingleTool(input: {
     req: input.req,
     res: input.res,
     store: input.idempotencyStore,
-    scope: input.scope,
+    scope: `${input.scopePrefix}:${deriveBridgePrincipal(token)}`,
     // Token deliberately NOT fingerprinted — agent retries share the same token
     // and must replay. SessionId, threadId, tool, args, instructions all
     // describe what the agent asked the bridge to do; identical asks dedupe.
+    // Cross-principal isolation is handled by the scope, not the fingerprint.
     fingerprint: {
       tool,
       args: args ?? null,

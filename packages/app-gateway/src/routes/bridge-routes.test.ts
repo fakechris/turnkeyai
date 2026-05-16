@@ -354,6 +354,88 @@ describe("bridge-routes", () => {
     assert.equal(batchCalls, 1, "retried /bridge/batch must NOT re-dispatch the action sequence");
   });
 
+  it("/bridge/command isolates cached responses by principal (different bridge tokens do not share cache)", async () => {
+    // Codex review of PR A flagged that the original idempotency wiring used
+    // a route-only scope ("bridge:command"), so two different agents
+    // sending the same Idempotency-Key on the same route + body would share
+    // a single cache slot — a cross-principal leak. The fix namespaces the
+    // scope by deriveBridgePrincipal(token), giving each bridge token its
+    // own cache namespace. This test exercises that property.
+    let dispatchCalls = 0;
+    const seenTokens: Array<string | null> = [];
+    const deps: BridgeRouteDeps = {
+      getStatusInfo: async () => {
+        throw new Error("not used");
+      },
+      commandDispatcher: {
+        async dispatch(input): Promise<BridgeCommandResponse> {
+          dispatchCalls += 1;
+          seenTokens.push(input.token);
+          return { status: 200, body: { ok: true, byCall: dispatchCalls } };
+        },
+      },
+      resolveToken: (req) => {
+        const value = req.headers["x-bridge-token"];
+        return typeof value === "string" ? value : null;
+      },
+      idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+    };
+
+    // Agent A calls with their token + a key they happen to pick.
+    const agentA = createResponse();
+    await handleBridgeRoutes({
+      req: createRequest({
+        method: "POST",
+        url: "/bridge/command",
+        headers: { "idempotency-key": "shared-key", "x-bridge-token": "token-A" },
+        body: { tool: "click", args: { selectors: ["#a"] }, sessionId: "s-1" },
+      }),
+      res: agentA.res,
+      url: new URL("http://127.0.0.1/bridge/command"),
+      deps,
+    });
+    assert.equal(agentA.getStatus(), 200);
+
+    // Agent B uses the SAME key string but with a DIFFERENT bridge token.
+    // The cache must NOT replay agent A's response; B's call must execute.
+    const agentB = createResponse();
+    await handleBridgeRoutes({
+      req: createRequest({
+        method: "POST",
+        url: "/bridge/command",
+        headers: { "idempotency-key": "shared-key", "x-bridge-token": "token-B" },
+        body: { tool: "click", args: { selectors: ["#a"] }, sessionId: "s-1" },
+      }),
+      res: agentB.res,
+      url: new URL("http://127.0.0.1/bridge/command"),
+      deps,
+    });
+    assert.equal(agentB.getStatus(), 200);
+    assert.equal(
+      agentB.headers.get("x-turnkeyai-idempotency-status"),
+      undefined,
+      "agent B with a different bridge token must NOT replay agent A's cached response",
+    );
+    assert.equal(dispatchCalls, 2, "each principal must execute their own request");
+    assert.deepEqual(seenTokens, ["token-A", "token-B"]);
+
+    // Agent A retrying with their own token still replays.
+    const agentARetry = createResponse();
+    await handleBridgeRoutes({
+      req: createRequest({
+        method: "POST",
+        url: "/bridge/command",
+        headers: { "idempotency-key": "shared-key", "x-bridge-token": "token-A" },
+        body: { tool: "click", args: { selectors: ["#a"] }, sessionId: "s-1" },
+      }),
+      res: agentARetry.res,
+      url: new URL("http://127.0.0.1/bridge/command"),
+      deps,
+    });
+    assert.equal(agentARetry.headers.get("x-turnkeyai-idempotency-status"), "replayed");
+    assert.equal(dispatchCalls, 2, "agent A retry must replay, not dispatch a third time");
+  });
+
   it("/bridge/command without Idempotency-Key still works (header is optional)", async () => {
     let dispatchCalls = 0;
     const deps: BridgeRouteDeps = {

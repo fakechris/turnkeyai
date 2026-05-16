@@ -465,6 +465,18 @@ async function ensureSession(args: {
 }
 
 function deriveAmbientOwnerId(token: string | null): string {
+  return deriveBridgePrincipal(token);
+}
+
+/**
+ * Stable per-principal identifier derived from the bridge auth token. Returns
+ * `"anonymous"` when no token is present, or a short sha256 hex prefix
+ * otherwise. Used both for ambient-session ownership AND for namespacing the
+ * /bridge/* idempotency cache so two different agents cannot share each
+ * other's cached responses just because they happened to pick the same
+ * Idempotency-Key value.
+ */
+export function deriveBridgePrincipal(token: string | null): string {
   if (!token) return "anonymous";
   return createHash("sha256").update(token).digest("hex").slice(0, 24);
 }
