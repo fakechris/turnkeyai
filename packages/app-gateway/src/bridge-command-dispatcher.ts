@@ -756,7 +756,7 @@ export function buildTier2Action(
         method: "Page.printToPDF",
         params: isRecord(args.params) ? args.params : {},
       };
-      return { action: cdpAction, instructions: "Print page to PDF (returns base64 PDF bytes via CDP result)" };
+      return { action: cdpAction, instructions: "Print page to PDF" };
     }
     case "click_coord": {
       // A real click is `mousePressed` followed by `mouseReleased`. Many
