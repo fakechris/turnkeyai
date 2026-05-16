@@ -158,139 +158,70 @@ export function createInspectionRouteDeps(
       return buildPromptConsoleReport(progressEvents, limit);
     },
     buildOperatorSummary: async (threadId, limit) => {
-      const [flows, permissionRecords, events, synced, progressEvents, runtimeSummary] = await Promise.all([
-        flowLedgerStore.listByThread(threadId),
-        permissionCacheStore.listByThread(threadId),
-        teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-        recoveryActionService.loadRecoveryRuntime(threadId),
-        runtimeProgressStore.listByThread(threadId),
-        runtimeQueryService.loadRuntimeSummary(threadId, Math.max(limit, 10)),
-      ]);
-      const relayDiagnostics = getRelayDiagnosticsSnapshot(relayGateway);
-      return relayDiagnostics
-        ? buildOperatorSummaryReport({
-            flows,
-            permissionRecords,
-            events,
-            replays: synced.records,
-            recoveryRuns: synced.runs,
-            progressEvents,
-            runtimeSummary,
-            relayDiagnostics,
-            limit,
-          })
-        : buildOperatorSummaryReport({
-            flows,
-            permissionRecords,
-            events,
-            replays: synced.records,
-            recoveryRuns: synced.runs,
-            progressEvents,
-            runtimeSummary,
-            limit,
-          });
+      const snapshot = await loadOperatorInspectionSnapshot(
+        {
+          flowLedgerStore,
+          permissionCacheStore,
+          teamEventBus,
+          recoveryActionService,
+          runtimeProgressStore,
+          runtimeQueryService,
+          relayGateway,
+        },
+        threadId,
+        limit,
+      );
+      return summaryReportFromSnapshot(snapshot, limit);
     },
     buildOperatorAttention: async (threadId, limit) => {
-      const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
-        flowLedgerStore.listByThread(threadId),
-        permissionCacheStore.listByThread(threadId),
-        teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-        recoveryActionService.loadRecoveryRuntime(threadId),
-        runtimeProgressStore.listByThread(threadId),
-      ]);
-      const relayDiagnostics = getRelayDiagnosticsSnapshot(relayGateway);
-      return relayDiagnostics
-        ? buildOperatorAttentionReport({
-            flows,
-            permissionRecords,
-            events,
-            replays: synced.records,
-            recoveryRuns: synced.runs,
-            progressEvents,
-            relayDiagnostics,
-            limit,
-          })
-        : buildOperatorAttentionReport({
-            flows,
-            permissionRecords,
-            events,
-            replays: synced.records,
-            recoveryRuns: synced.runs,
-            progressEvents,
-            limit,
-          });
+      const snapshot = await loadOperatorInspectionSnapshot(
+        {
+          flowLedgerStore,
+          permissionCacheStore,
+          teamEventBus,
+          recoveryActionService,
+          runtimeProgressStore,
+          runtimeQueryService,
+          relayGateway,
+        },
+        threadId,
+        limit,
+      );
+      return attentionReportFromSnapshot(snapshot, limit);
     },
     buildOperatorTriage: async (threadId, limit) => {
-      const [summary, attention, runtime] = await Promise.all([
-        (async () => {
-          const [flows, permissionRecords, events, synced, progressEvents, runtimeSummary] = await Promise.all([
-            flowLedgerStore.listByThread(threadId),
-            permissionCacheStore.listByThread(threadId),
-            teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-            recoveryActionService.loadRecoveryRuntime(threadId),
-            runtimeProgressStore.listByThread(threadId),
-            runtimeQueryService.loadRuntimeSummary(threadId, Math.max(limit, 10)),
-          ]);
-          const relayDiagnostics = getRelayDiagnosticsSnapshot(relayGateway);
-          return relayDiagnostics
-            ? buildOperatorSummaryReport({
-                flows,
-                permissionRecords,
-                events,
-                replays: synced.records,
-                recoveryRuns: synced.runs,
-                progressEvents,
-                runtimeSummary,
-                relayDiagnostics,
-                limit,
-              })
-            : buildOperatorSummaryReport({
-                flows,
-                permissionRecords,
-                events,
-                replays: synced.records,
-                recoveryRuns: synced.runs,
-                progressEvents,
-                runtimeSummary,
-                limit,
-              });
-        })(),
-        (async () => {
-          const [flows, permissionRecords, events, synced, progressEvents] = await Promise.all([
-            flowLedgerStore.listByThread(threadId),
-            permissionCacheStore.listByThread(threadId),
-            teamEventBus.listRecent(threadId, Math.max(limit, 200)),
-            recoveryActionService.loadRecoveryRuntime(threadId),
-            runtimeProgressStore.listByThread(threadId),
-          ]);
-          const relayDiagnostics = getRelayDiagnosticsSnapshot(relayGateway);
-          return relayDiagnostics
-            ? buildOperatorAttentionReport({
-                flows,
-                permissionRecords,
-                events,
-                replays: synced.records,
-                recoveryRuns: synced.runs,
-                progressEvents,
-                relayDiagnostics,
-                limit: Math.max(limit, 10),
-              })
-            : buildOperatorAttentionReport({
-                flows,
-                permissionRecords,
-                events,
-                replays: synced.records,
-                recoveryRuns: synced.runs,
-                progressEvents,
-                limit: Math.max(limit, 10),
-              });
-        })(),
-        runtimeQueryService.loadRuntimeSummary(threadId, Math.max(limit, 10)),
-      ]);
+      // Load every store/runtime read ONCE per triage request. The previous
+      // implementation fanned out two IIFEs (for summary + attention) each
+      // doing its own Promise.all of 5–6 reads, plus a third runtimeSummary
+      // call in the outer Promise.all — totaling 12 store/runtime hits per
+      // triage. With the shared snapshot we do 6, and summary + attention
+      // both derive from the same in-memory data so they're inherently
+      // consistent with each other (no more "what if a flow appeared between
+      // the two reads" interleaving).
+      //
+      // limit semantics preserved: summary uses `limit`; attention's
+      // sub-call (inside triage) widens to `Math.max(limit, 10)` because
+      // operators want a slightly broader attention list when on the triage
+      // overview page even when the caller asked for a tight summary.
+      const snapshot = await loadOperatorInspectionSnapshot(
+        {
+          flowLedgerStore,
+          permissionCacheStore,
+          teamEventBus,
+          recoveryActionService,
+          runtimeProgressStore,
+          runtimeQueryService,
+          relayGateway,
+        },
+        threadId,
+        limit,
+      );
+      const summary = summaryReportFromSnapshot(snapshot, limit);
+      const attention = attentionReportFromSnapshot(snapshot, Math.max(limit, 10));
       return buildOperatorTriageReport({
         summary,
         attention,
-        runtime,
+        runtime: snapshot.runtimeSummary,
         limit,
       });
     },
@@ -337,6 +268,110 @@ export function createInspectionRouteDeps(
       );
     },
   };
+}
+
+/**
+ * One-shot read of every store + service the operator inspection surface
+ * needs (summary, attention, triage). Exported only for the type — the
+ * function is private to this module.
+ *
+ * Why a single helper instead of per-method reads: `buildOperatorTriage`
+ * previously did 12 store/runtime reads per request (6 inside the summary
+ * IIFE, 5 inside the attention IIFE, 1 extra outer loadRuntimeSummary). The
+ * snapshot collapses that to 6 (one Promise.all batch) and as a bonus makes
+ * summary + attention internally consistent — both observe the same point-in-
+ * time data instead of potentially interleaving with concurrent writes.
+ *
+ * Standalone buildOperatorAttention now pays one extra read it didn't before
+ * (runtimeSummary, which the attention report doesn't actually consume). The
+ * cost is one parallel store call — irrelevant under Promise.all — and the
+ * code-clarity win from a single shared snapshot is worth it. If profiling
+ * ever shows runtimeSummary as a hot loader, this is the place to fork into
+ * a slim attention snapshot.
+ */
+type OperatorInspectionSnapshotDeps = {
+  flowLedgerStore: DaemonFoundations["flowLedgerStore"];
+  permissionCacheStore: DaemonFoundations["permissionCacheStore"];
+  teamEventBus: DaemonFoundations["teamEventBus"];
+  recoveryActionService: DaemonRuntimeServices["recoveryActionService"];
+  runtimeProgressStore: DaemonFoundations["runtimeProgressStore"];
+  runtimeQueryService: DaemonRuntimeServices["runtimeQueryService"];
+  relayGateway: DaemonFoundations["relayGateway"];
+};
+
+interface OperatorInspectionSnapshot {
+  flows: Awaited<ReturnType<OperatorInspectionSnapshotDeps["flowLedgerStore"]["listByThread"]>>;
+  permissionRecords: Awaited<
+    ReturnType<OperatorInspectionSnapshotDeps["permissionCacheStore"]["listByThread"]>
+  >;
+  events: Awaited<ReturnType<OperatorInspectionSnapshotDeps["teamEventBus"]["listRecent"]>>;
+  synced: Awaited<
+    ReturnType<OperatorInspectionSnapshotDeps["recoveryActionService"]["loadRecoveryRuntime"]>
+  >;
+  progressEvents: Awaited<
+    ReturnType<OperatorInspectionSnapshotDeps["runtimeProgressStore"]["listByThread"]>
+  >;
+  runtimeSummary: Awaited<
+    ReturnType<OperatorInspectionSnapshotDeps["runtimeQueryService"]["loadRuntimeSummary"]>
+  >;
+  relayDiagnostics: ReturnType<typeof getRelayDiagnosticsSnapshot>;
+}
+
+async function loadOperatorInspectionSnapshot(
+  deps: OperatorInspectionSnapshotDeps,
+  threadId: string,
+  limit: number,
+): Promise<OperatorInspectionSnapshot> {
+  const eventsLimit = Math.max(limit, 200);
+  const runtimeSummaryLimit = Math.max(limit, 10);
+  const [flows, permissionRecords, events, synced, progressEvents, runtimeSummary] = await Promise.all([
+    deps.flowLedgerStore.listByThread(threadId),
+    deps.permissionCacheStore.listByThread(threadId),
+    deps.teamEventBus.listRecent(threadId, eventsLimit),
+    deps.recoveryActionService.loadRecoveryRuntime(threadId),
+    deps.runtimeProgressStore.listByThread(threadId),
+    deps.runtimeQueryService.loadRuntimeSummary(threadId, runtimeSummaryLimit),
+  ]);
+  return {
+    flows,
+    permissionRecords,
+    events,
+    synced,
+    progressEvents,
+    runtimeSummary,
+    relayDiagnostics: getRelayDiagnosticsSnapshot(deps.relayGateway),
+  };
+}
+
+function summaryReportFromSnapshot(snapshot: OperatorInspectionSnapshot, limit: number) {
+  const baseInput = {
+    flows: snapshot.flows,
+    permissionRecords: snapshot.permissionRecords,
+    events: snapshot.events,
+    replays: snapshot.synced.records,
+    recoveryRuns: snapshot.synced.runs,
+    progressEvents: snapshot.progressEvents,
+    runtimeSummary: snapshot.runtimeSummary,
+    limit,
+  };
+  return snapshot.relayDiagnostics
+    ? buildOperatorSummaryReport({ ...baseInput, relayDiagnostics: snapshot.relayDiagnostics })
+    : buildOperatorSummaryReport(baseInput);
+}
+
+function attentionReportFromSnapshot(snapshot: OperatorInspectionSnapshot, limit: number) {
+  const baseInput = {
+    flows: snapshot.flows,
+    permissionRecords: snapshot.permissionRecords,
+    events: snapshot.events,
+    replays: snapshot.synced.records,
+    recoveryRuns: snapshot.synced.runs,
+    progressEvents: snapshot.progressEvents,
+    limit,
+  };
+  return snapshot.relayDiagnostics
+    ? buildOperatorAttentionReport({ ...baseInput, relayDiagnostics: snapshot.relayDiagnostics })
+    : buildOperatorAttentionReport(baseInput);
 }
 
 async function buildModelsReport(llmGateway: LLMGateway | null, modelCatalogPath: string | null) {
