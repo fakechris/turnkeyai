@@ -300,9 +300,7 @@ export function createBridgeBatchDispatcher(
         if ("error" in built) {
           return errorResponse(400, `actions[${index}]: ${built.error}`, "invalid_request");
         }
-        for (const action of builtActionsAsList(built)) {
-          taskActions.push(action);
-        }
+        taskActions.push(...builtActionsAsList(built));
         instructions.push(built.instructions);
       }
 
