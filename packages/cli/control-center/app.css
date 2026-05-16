@@ -110,6 +110,29 @@ body {
 .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
 code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); font-size: 12px; }
 
+.list-table { margin-bottom: 16px; }
+.list-table thead th {
+  background: var(--panel-2); color: var(--muted);
+  font-weight: 500; font-size: 12px;
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.list-table tbody td { vertical-align: middle; }
+.list-table td.tab-url, .list-table td.tab-title {
+  font-family: var(--mono); font-size: 12px;
+  max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.list-table td.tab-status {
+  font-size: 12px; padding: 6px 10px;
+}
+.list-table td.muted, .list-table td.tab-age { color: var(--muted); font-size: 12px; }
+
+.list-empty {
+  color: var(--muted); font-size: 13px;
+  padding: 16px; border: 1px dashed var(--border); border-radius: 8px;
+  margin-bottom: 16px;
+}
+.muted-count { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 6px; }
+
 /* Visually-hidden label for screen readers (accessibility for token input). */
 .sr-only {
   position: absolute;

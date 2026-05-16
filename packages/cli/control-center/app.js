@@ -8,7 +8,7 @@
 
 const TOKEN_STORAGE_KEY = "turnkeyai.controlCenter.token";
 const DEFAULT_ROUTE = "setup";
-const KNOWN_ROUTES = ["setup", "bridge", "agent"];
+const KNOWN_ROUTES = ["setup", "bridge", "tabs", "agent"];
 const POLL_INTERVAL_MS = 5_000;
 
 const pageRoot = document.getElementById("page");
@@ -101,6 +101,9 @@ function renderActiveRoute() {
       break;
     case "bridge":
       renderTemplate("page-bridge", renderBridgePage);
+      break;
+    case "tabs":
+      renderTemplate("page-tabs", renderTabsPage);
       break;
     case "agent":
       renderTemplate("page-agent", renderAgentPage);
@@ -430,6 +433,185 @@ function colorMetric(root, field, value, thresholds) {
   if (thresholds.okMin !== undefined && value >= thresholds.okMin) {
     cell.classList.add("ok");
   }
+}
+
+// ---------- Tabs page ----------
+
+function renderTabsPage(root) {
+  const refresh = async () => {
+    // Fetch /bridge/status first so we know the transport mode. /relay/*
+    // returns 503 on local/direct-cdp transport ("relay browser transport
+    // is not active") — calling it unconditionally would surface that as
+    // a scary error. Branch on transport.mode instead.
+    let status;
+    try {
+      status = await apiFetch("/bridge/status");
+      state.lastStatus = status;
+      updateConnectionPillFromStatus(status);
+    } catch (error) {
+      // On unauthorized, apiFetch has already swapped in the no-token page
+      // and stopped polling — nothing more to do here. Doing another fetch
+      // would just re-trigger the same 401 path.
+      if (error.message === "unauthorized") return;
+
+      setConnectionPill("bad", "Unreachable");
+      // Try /threads anyway; it might still work if /bridge/status hit a
+      // transient hiccup. Pass null to renderTabsSection so it shows the
+      // transport-unknown empty state rather than the misleading "relay
+      // is active but no tabs" message that an empty fulfilled array
+      // would produce (caught by CodeRabbit + gemini).
+      const threadsResult = await reflect(apiFetch("/threads"));
+      renderTabsSection(root, null, null);
+      renderThreadsSection(root, threadsResult);
+      return;
+    }
+
+    const transportMode = status?.transport?.mode ?? null;
+    const targetsPromise =
+      transportMode === "relay" ? reflect(apiFetch("/relay/targets")) : Promise.resolve(null);
+    const [targetsResult, threadsResult] = await Promise.all([
+      targetsPromise,
+      reflect(apiFetch("/threads")),
+    ]);
+
+    renderTabsSection(root, targetsResult, transportMode);
+    renderThreadsSection(root, threadsResult);
+  };
+  void refresh();
+  startPolling(refresh);
+}
+
+// Promise.allSettled equivalent that returns the same {status,value/reason}
+// shape but works on a single promise — keeps the call sites uniform with
+// the renderXSection consumers.
+function reflect(promise) {
+  return promise.then(
+    (value) => ({ status: "fulfilled", value }),
+    (reason) => ({ status: "rejected", reason })
+  );
+}
+
+function renderTabsSection(root, result, transportMode) {
+  const table = root.querySelector('[data-field="tabs-table"]');
+  const rows = root.querySelector('[data-field="tabs-rows"]');
+  const empty = root.querySelector('[data-field="tabs-empty"]');
+  const count = root.querySelector('[data-field="tab-count"]');
+
+  const showEmpty = (text) => {
+    if (table) table.hidden = true;
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = text;
+    }
+    if (count) count.textContent = "";
+    if (rows) rows.replaceChildren();
+  };
+
+  // result === null means we deliberately skipped the fetch (non-relay
+  // transport). Show a transport-specific hint instead of an error.
+  if (result === null) {
+    if (transportMode === "local") {
+      showEmpty(
+        "Tabs are only discovered on the relay transport. Local Chromium sessions are listed under Bridge."
+      );
+    } else if (transportMode === "direct-cdp") {
+      showEmpty("Tabs come from the relay extension. Direct-CDP transport bypasses it.");
+    } else {
+      // Reached when /bridge/status failed (transport mode couldn't be
+      // determined). The Unreachable pill at the top already tells the
+      // user the daemon is down; keep this in sync.
+      showEmpty("Tabs unavailable — daemon status could not be read.");
+    }
+    return;
+  }
+
+  if (result.status !== "fulfilled" || !Array.isArray(result.value)) {
+    if (result.status === "rejected" && result.reason?.message === "unauthorized") {
+      // apiFetch already handled the redirect; just hide our content.
+      showEmpty("");
+      return;
+    }
+    showEmpty(`Could not load tabs: ${result.reason?.message ?? "unknown error"}`);
+    return;
+  }
+
+  const targets = result.value;
+  if (targets.length === 0) {
+    showEmpty(
+      "Relay transport is active but no tabs discovered yet. Open a tab in the connected browser, or check the relay extension."
+    );
+    return;
+  }
+
+  if (table) table.hidden = false;
+  if (empty) empty.hidden = true;
+  if (count) count.textContent = `(${targets.length})`;
+  if (rows) {
+    rows.replaceChildren(...targets.map(renderTabRow));
+  }
+}
+
+function renderTabRow(target) {
+  const tr = document.createElement("tr");
+  tr.appendChild(cell(target.title || target.relayTargetId || "—", "tab-title"));
+  tr.appendChild(cell(target.url || "—", "tab-url"));
+  tr.appendChild(cell(target.status || "—", "tab-status"));
+  tr.appendChild(cell(formatRelativeTimestamp(target.lastSeenAt), "tab-age"));
+  return tr;
+}
+
+function renderThreadsSection(root, result) {
+  const table = root.querySelector('[data-field="threads-table"]');
+  const rows = root.querySelector('[data-field="threads-rows"]');
+  const empty = root.querySelector('[data-field="threads-empty"]');
+  const count = root.querySelector('[data-field="thread-count"]');
+
+  if (result.status !== "fulfilled" || !Array.isArray(result.value) || result.value.length === 0) {
+    if (table) table.hidden = true;
+    if (empty) empty.hidden = false;
+    if (count) count.textContent = "";
+    if (rows) rows.replaceChildren();
+    if (empty && result.status === "rejected" && result.reason?.message !== "unauthorized") {
+      empty.textContent = `Could not load threads: ${result.reason?.message ?? "unknown error"}`;
+    }
+    return;
+  }
+
+  const threads = result.value;
+  if (table) table.hidden = false;
+  if (empty) empty.hidden = true;
+  if (count) count.textContent = `(${threads.length})`;
+  if (rows) {
+    rows.replaceChildren(...threads.map(renderThreadRow));
+  }
+}
+
+function renderThreadRow(thread) {
+  const tr = document.createElement("tr");
+  tr.appendChild(cell(thread.teamName || thread.teamId || "—", "tab-title"));
+  const roleCount = Array.isArray(thread.roles) ? thread.roles.length : 0;
+  tr.appendChild(cell(String(roleCount), "muted"));
+  tr.appendChild(cell(thread.leadRoleId || "—", "tab-url"));
+  tr.appendChild(cell(formatRelativeTimestamp(thread.createdAt), "tab-age"));
+  return tr;
+}
+
+function cell(text, className) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (className) td.classList.add(className);
+  return td;
+}
+
+function formatRelativeTimestamp(ts) {
+  if (typeof ts !== "number" || !isFinite(ts)) return "—";
+  const ageMs = Date.now() - ts;
+  if (ageMs < 0) return "just now";
+  if (ageMs < 1_000) return "just now";
+  if (ageMs < 60_000) return `${Math.round(ageMs / 1_000)}s ago`;
+  if (ageMs < 3_600_000) return `${Math.round(ageMs / 60_000)}m ago`;
+  if (ageMs < 86_400_000) return `${Math.round(ageMs / 3_600_000)}h ago`;
+  return `${Math.round(ageMs / 86_400_000)}d ago`;
 }
 
 // ---------- Agent connect page ----------

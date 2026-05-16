@@ -126,7 +126,13 @@ export function resolveDaemonRequestAccess(
   }
 
   if (isRelayReadRoute(req.method, url.pathname)) {
-    return "admin";
+    // Demoted from "admin" to "read" so the Control Center dashboard's
+    // least-privilege read token can enumerate browser instances and
+    // discovered tabs. The data exposed (peerId/lastSeenAt/url/title) is
+    // inspection-only — no tokens or PII beyond what /bridge/status's
+    // aggregate counters already report. Mutations (/relay/peers/.../*)
+    // remain on "relay-peer" via the next branch.
+    return "read";
   }
 
   if (isRelayPeerMutationRoute(req.method, url.pathname)) {

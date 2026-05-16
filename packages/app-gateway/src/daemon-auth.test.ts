@@ -71,8 +71,12 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "POST", pathname: "/phase1-baseline/run", expected: "admin" },
     { method: "POST", pathname: "/relay/peers/register", expected: "relay-peer" },
     { method: "POST", pathname: "/relay/peers/peer-1/heartbeat", expected: "relay-peer" },
-    { method: "GET", pathname: "/relay/targets", expected: "admin" },
-    { method: "GET", pathname: "/relay/actions", expected: "admin" },
+    // Relay read routes (peers/targets/actions) are now "read" so the
+    // Control Center dashboard can enumerate browser instances and tabs
+    // with the least-privilege read token. Mutations are still relay-peer.
+    { method: "GET", pathname: "/relay/peers", expected: "read" },
+    { method: "GET", pathname: "/relay/targets", expected: "read" },
+    { method: "GET", pathname: "/relay/actions", expected: "read" },
   ] as const;
 
   for (const entry of cases) {
@@ -181,7 +185,10 @@ test("authorizeDaemonRequest enforces layered access while keeping health public
   );
   assert.equal(relayPeerReadFailure.authorized, false);
   assert.equal(relayPeerReadFailure.grantedAccess, "relay-peer");
-  assert.equal(relayPeerReadFailure.requiredAccess, "admin");
+  // After PR G demoted /relay/peers from admin to read, a relay-peer-only
+  // token still can't read it — relay-peer scope is for relay mutations,
+  // not inspection. The required access just reflects the new "read" gate.
+  assert.equal(relayPeerReadFailure.requiredAccess, "read");
 });
 
 test("authorizeDaemonRequest returns required access for layered failures", () => {

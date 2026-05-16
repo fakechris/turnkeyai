@@ -15,6 +15,7 @@
   <nav class="nav">
     <a href="#/setup" data-route="setup">Setup</a>
     <a href="#/bridge" data-route="bridge">Bridge</a>
+    <a href="#/tabs" data-route="tabs">Tabs</a>
     <a href="#/agent" data-route="agent">Agent Connect</a>
   </nav>
   <div class="status-pill" id="connection-pill" data-state="unknown">
@@ -64,6 +65,33 @@
         <tr><th>Configured</th><td data-field="cdp-configured">—</td></tr>
         <tr><th>Endpoint</th><td data-field="cdp-endpoint">—</td></tr>
       </tbody>
+    </table>
+  </section>
+</template>
+
+<template id="page-tabs">
+  <section class="page-section">
+    <h1>Tabs &amp; Threads</h1>
+    <p class="page-lede">
+      Live view of browser tabs discovered via the relay transport, plus the threads the daemon is
+      tracking. Polls every 5 seconds. Read-only for now — spawn / revoke / navigate land in a
+      follow-up.
+    </p>
+
+    <h2>Discovered tabs <span class="muted-count" data-field="tab-count"></span></h2>
+    <div class="list-empty" data-field="tabs-empty">No tabs discovered. If you're on the relay transport,
+      ensure the extension is installed and connected.</div>
+    <table class="kv list-table" data-field="tabs-table" hidden>
+      <thead><tr><th>Tab</th><th>URL</th><th>Status</th><th>Last seen</th></tr></thead>
+      <tbody data-field="tabs-rows"></tbody>
+    </table>
+
+    <h2>Threads <span class="muted-count" data-field="thread-count"></span></h2>
+    <div class="list-empty" data-field="threads-empty">No threads yet. Bootstrap a demo with
+      <code>curl -X POST /threads/bootstrap-demo</code>.</div>
+    <table class="kv list-table" data-field="threads-table" hidden>
+      <thead><tr><th>Team</th><th>Roles</th><th>Lead</th><th>Created</th></tr></thead>
+      <tbody data-field="threads-rows"></tbody>
     </table>
   </section>
 </template>
