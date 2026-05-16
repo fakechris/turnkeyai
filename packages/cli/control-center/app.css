@@ -133,6 +133,17 @@ code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; font-fa
 }
 .muted-count { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 6px; }
 
+.log-tail {
+  background: #0a0d11; border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 14px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  color: var(--text);
+  max-height: 360px; overflow: auto;
+  white-space: pre; word-break: normal;
+  margin: 8px 0 12px;
+}
+.log-tail.log-empty { color: var(--muted); white-space: pre-wrap; }
+
 /* Visually-hidden label for screen readers (accessibility for token input). */
 .sr-only {
   position: absolute;

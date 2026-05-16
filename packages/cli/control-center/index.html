@@ -17,6 +17,7 @@
     <a href="#/bridge" data-route="bridge">Bridge</a>
     <a href="#/tabs" data-route="tabs">Tabs</a>
     <a href="#/agent" data-route="agent">Agent Connect</a>
+    <a href="#/diagnostics" data-route="diagnostics">Diagnostics</a>
   </nav>
   <div class="status-pill" id="connection-pill" data-state="unknown">
     <span class="dot"></span>
@@ -127,6 +128,61 @@
     <button class="copy" data-copy="skill">Copy skill snippet</button>
 
     <p class="note">For a full skill bundle, run <code>turnkeyai bridge install-skill</code> from your terminal. That writes a generated skill doc into <code>~/.turnkeyai/skills/</code>.</p>
+  </section>
+</template>
+
+<template id="page-diagnostics">
+  <section class="page-section">
+    <h1>Diagnostics</h1>
+    <p class="page-lede">
+      Runtime environment + recent log lines. Useful when filing a bug report — copy the bundle
+      below and attach it.
+    </p>
+
+    <h2>Daemon</h2>
+    <table class="kv">
+      <tbody>
+        <tr><th>Version</th><td data-field="daemon-version">—</td></tr>
+        <tr><th>Port</th><td data-field="daemon-port">—</td></tr>
+        <tr><th>Uptime</th><td data-field="daemon-uptime">—</td></tr>
+        <tr><th>Started at</th><td data-field="daemon-started-at">—</td></tr>
+        <tr><th>Auth mode</th><td data-field="daemon-auth-mode">—</td></tr>
+        <tr><th>Transport</th><td data-field="daemon-transport">—</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Paths</h2>
+    <table class="kv">
+      <tbody>
+        <tr><th>Runtime root</th><td><code data-field="path-runtime">—</code></td></tr>
+        <tr><th>Data dir</th><td><code data-field="path-data">—</code></td></tr>
+        <tr><th>Config file</th><td><code data-field="path-config">—</code></td></tr>
+        <tr><th>Log file</th><td><code data-field="path-log">—</code></td></tr>
+        <tr><th>Model catalog</th><td><code data-field="path-catalog">—</code></td></tr>
+        <tr><th>Log size</th><td data-field="path-log-size">—</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Counters</h2>
+    <div class="metric-grid">
+      <div class="metric"><div class="metric-label">Sessions</div><div class="metric-value" data-field="count-sessions">—</div></div>
+      <div class="metric"><div class="metric-label">Relay peers</div><div class="metric-value" data-field="count-peers">—</div></div>
+      <div class="metric"><div class="metric-label">Discovered tabs</div><div class="metric-value" data-field="count-targets">—</div></div>
+    </div>
+
+    <h2>Node runtime</h2>
+    <table class="kv">
+      <tbody>
+        <tr><th>Node version</th><td data-field="node-version">—</td></tr>
+        <tr><th>Platform</th><td data-field="node-platform">—</td></tr>
+        <tr><th>Architecture</th><td data-field="node-arch">—</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Recent log <span class="muted-count" data-field="log-meta"></span></h2>
+    <pre class="log-tail" data-field="log-pane">Loading…</pre>
+    <button class="copy" data-copy-target="diagnostics-bundle">Copy diagnostics bundle</button>
+    <pre class="snippet" data-field="diagnostics-bundle" hidden></pre>
   </section>
 </template>
 

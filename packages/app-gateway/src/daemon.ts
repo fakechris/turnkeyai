@@ -108,6 +108,7 @@ import {
   type BridgeStatusInfo,
 } from "./routes/bridge-routes";
 import { handleControlCenterRoutes } from "./routes/control-center-routes";
+import { handleDiagnosticsRoutes } from "./routes/diagnostics-routes";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
 import { handleRecoveryRoutes } from "./routes/recovery-routes";
 import { handleRelayRoutes } from "./routes/relay-routes";
@@ -131,6 +132,10 @@ const CONTROL_CENTER_ASSET_DIR = resolveControlCenterAssetDir({
   override: process.env.TURNKEYAI_CONTROL_CENTER_DIR ?? null,
 });
 const DAEMON_AUTH = resolveDaemonAuthConfig(process.env);
+// Captured once at startup so /diagnostics can report "started at" without
+// relying on PID file timestamps. process.uptime() gives the relative delta;
+// this gives the wall-clock origin.
+const PROCESS_STARTED_AT_MS = Date.now();
 const RECOVERY_RUN_STALE_AFTER_MS = 5 * 60 * 1000;
 const RUNTIME_RECONCILIATION_INTERVAL_MS = 60_000;
 
@@ -372,6 +377,41 @@ const server = http.createServer(async (req, res) => {
         },
       });
       return sendJson(res, 201, thread);
+    }
+
+    if (
+      await handleDiagnosticsRoutes({
+        req,
+        res,
+        url,
+        deps: {
+          daemonVersion: DAEMON_PACKAGE_VERSION,
+          port: PORT,
+          dataDir: DATA_DIR,
+          runtimeRoot: RUNTIME_PATHS.rootDir,
+          logFile: RUNTIME_PATHS.logFile,
+          configFile: RUNTIME_PATHS.configFile,
+          modelCatalogPath,
+          processStartedAtMs: PROCESS_STARTED_AT_MS,
+          transport: {
+            mode: browserBridge.transportMode,
+            label: browserBridge.transportLabel,
+          },
+          authMode: DAEMON_AUTH.authMode,
+          snapshotCounters: async () => {
+            const [sessions] = await Promise.all([browserBridge.listSessions().catch(() => [])]);
+            const peerCount = relayGateway?.listPeers().length ?? 0;
+            const targetCount = relayGateway?.listTargets().length ?? 0;
+            return {
+              sessionCount: sessions.length,
+              relayPeerCount: peerCount,
+              relayTargetCount: targetCount,
+            };
+          },
+        },
+      })
+    ) {
+      return;
     }
 
     if (
