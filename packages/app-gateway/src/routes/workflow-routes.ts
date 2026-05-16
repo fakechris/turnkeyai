@@ -17,7 +17,7 @@ import {
   readOptionalJsonBodySafe,
   sendJson,
 } from "../http-helpers";
-import { readIdempotencyKey, type RouteIdempotencyStore } from "../idempotency-store";
+import { readIdempotencyKey, sendIdempotentResponse, type RouteIdempotencyStore } from "../idempotency-store";
 
 interface CoordinationEngineDeps {
   handleUserPost(body: { threadId: string; content: string }): Promise<void>;
@@ -352,18 +352,3 @@ function normalizeRefArray(
   return { ok: true, value: normalized };
 }
 
-function sendIdempotentResponse(
-  res: http.ServerResponse,
-  result:
-    | { kind: "response"; statusCode: number; body: unknown; replayed: boolean }
-    | { kind: "conflict"; statusCode: 409; body: { error: string } }
-): void {
-  if (result.kind === "conflict") {
-    sendJson(res, result.statusCode, result.body);
-    return;
-  }
-  if (result.replayed) {
-    res.setHeader("x-turnkeyai-idempotency-status", "replayed");
-  }
-  sendJson(res, result.statusCode, result.body);
-}

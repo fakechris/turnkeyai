@@ -10,6 +10,8 @@ import {
   writeJsonFileAtomic,
 } from "@turnkeyai/shared-utils/file-store-utils";
 
+import { sendJson } from "./http-helpers";
+
 type IdempotencyResponse = {
   statusCode: number;
   body: unknown;
@@ -168,6 +170,69 @@ export function createRouteIdempotencyStore(
       };
     },
   };
+}
+
+/**
+ * High-level helper that does the full read-key → dedupe → respond chain for a
+ * POST route handler. Returns `true` when a response was sent so the caller can
+ * `return runIdempotently(...)` directly from its route dispatcher.
+ *
+ * - If the Idempotency-Key header is malformed, sends a 400 and returns true.
+ * - If `store` is undefined, executes immediately without dedupe.
+ * - Otherwise executes through the store, sets the
+ *   `x-turnkeyai-idempotency-status: replayed` header on cache hits, and
+ *   surfaces a 409 conflict when the same key was reused with a different
+ *   request shape.
+ */
+export async function runIdempotently(input: {
+  req: Pick<http.IncomingMessage, "headers">;
+  res: http.ServerResponse;
+  store: RouteIdempotencyStore | undefined;
+  scope: string;
+  fingerprint: unknown;
+  execute: () => Promise<{ statusCode: number; body: unknown }>;
+}): Promise<true> {
+  const idempotencyKey = readIdempotencyKey(input.req);
+  if (!idempotencyKey.ok) {
+    sendJson(input.res, 400, { error: idempotencyKey.error });
+    return true;
+  }
+  const result = input.store
+    ? await input.store.execute({
+        scope: input.scope,
+        ...(idempotencyKey.key ? { key: idempotencyKey.key } : {}),
+        fingerprint: JSON.stringify(input.fingerprint),
+        execute: input.execute,
+      })
+    : ({
+        kind: "response" as const,
+        ...(await input.execute()),
+        replayed: false,
+      });
+  sendIdempotentResponse(input.res, result);
+  return true;
+}
+
+/**
+ * Shared response sender for idempotent POST routes. Replays a cached response
+ * (with an `x-turnkeyai-idempotency-status: replayed` header so callers can tell
+ * the response was deduped) or surfaces a 409 conflict when the same key was
+ * reused with a different request shape.
+ */
+export function sendIdempotentResponse(
+  res: http.ServerResponse,
+  result:
+    | { kind: "response"; statusCode: number; body: unknown; replayed: boolean }
+    | { kind: "conflict"; statusCode: 409; body: { error: string } }
+): void {
+  if (result.kind === "conflict") {
+    sendJson(res, result.statusCode, result.body);
+    return;
+  }
+  if (result.replayed) {
+    res.setHeader("x-turnkeyai-idempotency-status", "replayed");
+  }
+  sendJson(res, result.statusCode, result.body);
 }
 
 export function readIdempotencyKey(req: Pick<http.IncomingMessage, "headers">): { ok: true; key?: string } | { ok: false; error: string } {

@@ -4,29 +4,34 @@ import test from "node:test";
 
 import type { BrowserRawCdpExpertLane } from "@turnkeyai/core-types/team";
 
+import { createRouteIdempotencyStore } from "../idempotency-store";
 import { handleBrowserRoutes, type BrowserRouteDeps } from "./browser-routes";
 
-function createRequest(input: { method: string; url: string; body?: unknown }) {
+function createRequest(input: { method: string; url: string; body?: unknown; headers?: Record<string, string> }) {
   const body =
     input.body === undefined ? [] : [Buffer.from(typeof input.body === "string" ? input.body : JSON.stringify(input.body))];
   return Object.assign(Readable.from(body), {
     method: input.method,
     url: input.url,
-    headers: {},
+    headers: input.headers ?? {},
   }) as any;
 }
 
 function createResponse() {
   let payload = "";
+  const headers = new Map<string, string>();
   const res = {
     statusCode: 200,
-    setHeader() {},
+    setHeader(name: string, value: string) {
+      headers.set(name.toLowerCase(), value);
+    },
     end(chunk?: string) {
       payload = chunk ?? "";
     },
   } as any;
   return {
     res,
+    headers,
     get json() {
       return payload ? JSON.parse(payload) : undefined;
     },
@@ -1469,4 +1474,303 @@ test("browser session revoke route rejects blank reasons and trims explicit reas
     browserSessionId: "session-1",
     reason: "operator handoff",
   });
+});
+
+// P1.6a — idempotency contract for browser mutation routes. These tests
+// verify that an external agent retrying a POST (e.g. after a network blip)
+// gets the same response back and the underlying bridge action runs once.
+
+test("browser routes replay idempotent /browser-sessions/spawn without re-spawning", async () => {
+  let spawnCount = 0;
+  const deps = createDeps({
+    browserBridge: {
+      async spawnSession(input) {
+        spawnCount += 1;
+        return {
+          status: "completed",
+          browserSessionId: `session-${spawnCount}`,
+          taskId: input.taskId,
+          page: null,
+          trace: [],
+        } as any;
+      },
+      async listSessions() {
+        return [];
+      },
+      async getSessionHistory() {
+        return [];
+      },
+      async listTargets() {
+        return [];
+      },
+      async openTarget(browserSessionId: string, url: string) {
+        return { browserSessionId, url };
+      },
+      async sendSession(input) {
+        return { status: "completed", browserSessionId: input.browserSessionId } as any;
+      },
+      async resumeSession(input) {
+        return { status: "completed", browserSessionId: input.browserSessionId } as any;
+      },
+      async activateTarget(browserSessionId: string, targetId: string) {
+        return { browserSessionId, targetId };
+      },
+      async closeTarget(browserSessionId: string, targetId: string) {
+        return { browserSessionId, targetId };
+      },
+      async closeSession() {},
+      async evictIdleSessions(input) {
+        return input;
+      },
+    },
+    idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+  });
+
+  const first = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      headers: { "idempotency-key": "spawn-key-1" },
+      body: { threadId: "thread-1", url: "https://example.com" },
+    }),
+    res: first.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps,
+  });
+
+  const second = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      headers: { "idempotency-key": "spawn-key-1" },
+      body: { threadId: "thread-1", url: "https://example.com" },
+    }),
+    res: second.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps,
+  });
+
+  assert.equal(spawnCount, 1, "second POST with same Idempotency-Key must NOT call spawnSession again");
+  assert.equal(first.res.statusCode, 201);
+  assert.equal(second.res.statusCode, 201);
+  assert.equal(second.headers.get("x-turnkeyai-idempotency-status"), "replayed");
+  assert.equal(second.json.browserSessionId, first.json.browserSessionId);
+});
+
+test("browser routes return 409 on /browser-sessions/spawn idempotency key reuse with different body", async () => {
+  let spawnCount = 0;
+  const deps = createDeps({
+    browserBridge: {
+      async spawnSession(input) {
+        spawnCount += 1;
+        return {
+          status: "completed",
+          browserSessionId: "session-1",
+          taskId: input.taskId,
+          page: null,
+          trace: [],
+        } as any;
+      },
+      async listSessions() {
+        return [];
+      },
+      async getSessionHistory() {
+        return [];
+      },
+      async listTargets() {
+        return [];
+      },
+      async openTarget(browserSessionId: string, url: string) {
+        return { browserSessionId, url };
+      },
+      async sendSession(input) {
+        return { status: "completed", browserSessionId: input.browserSessionId } as any;
+      },
+      async resumeSession(input) {
+        return { status: "completed", browserSessionId: input.browserSessionId } as any;
+      },
+      async activateTarget(browserSessionId: string, targetId: string) {
+        return { browserSessionId, targetId };
+      },
+      async closeTarget(browserSessionId: string, targetId: string) {
+        return { browserSessionId, targetId };
+      },
+      async closeSession() {},
+      async evictIdleSessions(input) {
+        return input;
+      },
+    },
+    idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+  });
+
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      headers: { "idempotency-key": "key-collision" },
+      body: { threadId: "thread-1", url: "https://first.example" },
+    }),
+    res: createResponse().res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps,
+  });
+
+  const conflict = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      headers: { "idempotency-key": "key-collision" },
+      body: { threadId: "thread-1", url: "https://second.example" },
+    }),
+    res: conflict.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps,
+  });
+
+  assert.equal(spawnCount, 1, "conflicting second request must not spawn");
+  assert.equal(conflict.res.statusCode, 409);
+  assert.equal(conflict.json.error, "idempotency key reuse does not match the original request");
+});
+
+test("browser routes reject malformed Idempotency-Key headers (comma-joined)", async () => {
+  const deps = createDeps({
+    idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+  });
+  const response = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      headers: { "idempotency-key": "key-a,key-b" },
+      body: { threadId: "thread-1", url: "https://example.com" },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps,
+  });
+  assert.equal(response.res.statusCode, 400);
+  assert.equal(response.json.error, "Idempotency-Key must be a single non-empty string");
+});
+
+test("browser routes replay idempotent /browser-sessions/:id/send", async () => {
+  let sendCount = 0;
+  const deps = createDeps({
+    browserBridge: {
+      async spawnSession() {
+        throw new Error("not used");
+      },
+      async listSessions() {
+        return [];
+      },
+      async getSessionHistory() {
+        return [];
+      },
+      async listTargets() {
+        return [];
+      },
+      async openTarget(browserSessionId: string, url: string) {
+        return { browserSessionId, url };
+      },
+      async sendSession(input) {
+        sendCount += 1;
+        return { status: "completed", browserSessionId: input.browserSessionId, runIndex: sendCount } as any;
+      },
+      async resumeSession(input) {
+        return { status: "completed", browserSessionId: input.browserSessionId } as any;
+      },
+      async activateTarget(browserSessionId: string, targetId: string) {
+        return { browserSessionId, targetId };
+      },
+      async closeTarget(browserSessionId: string, targetId: string) {
+        return { browserSessionId, targetId };
+      },
+      async closeSession() {},
+      async evictIdleSessions(input) {
+        return input;
+      },
+    },
+    idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+  });
+
+  for (let i = 0; i < 2; i += 1) {
+    const response = createResponse();
+    await handleBrowserRoutes({
+      req: createRequest({
+        method: "POST",
+        url: "/browser-sessions/session-1/send",
+        headers: { "idempotency-key": "send-key-1" },
+        body: { threadId: "thread-1", instructions: "click button" },
+      }),
+      res: response.res,
+      url: new URL("http://127.0.0.1/browser-sessions/session-1/send"),
+      deps,
+    });
+    if (i === 1) {
+      assert.equal(response.headers.get("x-turnkeyai-idempotency-status"), "replayed");
+    }
+  }
+  assert.equal(sendCount, 1, "second send with same Idempotency-Key must NOT call sendSession again");
+});
+
+test("browser routes /browser-sessions/spawn without Idempotency-Key still works (header optional)", async () => {
+  let spawnCount = 0;
+  const deps = createDeps({
+    browserBridge: {
+      async spawnSession(input) {
+        spawnCount += 1;
+        return {
+          status: "completed",
+          browserSessionId: `session-${spawnCount}`,
+          taskId: input.taskId,
+          page: null,
+          trace: [],
+        } as any;
+      },
+      async listSessions() {
+        return [];
+      },
+      async getSessionHistory() {
+        return [];
+      },
+      async listTargets() {
+        return [];
+      },
+      async openTarget(browserSessionId: string, url: string) {
+        return { browserSessionId, url };
+      },
+      async sendSession(input) {
+        return { status: "completed", browserSessionId: input.browserSessionId } as any;
+      },
+      async resumeSession(input) {
+        return { status: "completed", browserSessionId: input.browserSessionId } as any;
+      },
+      async activateTarget(browserSessionId: string, targetId: string) {
+        return { browserSessionId, targetId };
+      },
+      async closeTarget(browserSessionId: string, targetId: string) {
+        return { browserSessionId, targetId };
+      },
+      async closeSession() {},
+      async evictIdleSessions(input) {
+        return input;
+      },
+    },
+    idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+  });
+  const response = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/spawn",
+      body: { threadId: "thread-1", url: "https://example.com" },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/browser-sessions/spawn"),
+    deps,
+  });
+  assert.equal(response.res.statusCode, 201);
+  assert.equal(spawnCount, 1);
 });

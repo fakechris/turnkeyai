@@ -748,6 +748,7 @@ const server = http.createServer(async (req, res) => {
           },
           idGenerator,
           clock,
+          idempotencyStore: routeIdempotencyStore,
           resolveBrowserThreadOwner,
           requireBrowserSessionAccess,
           buildBrowserTaskRequest,

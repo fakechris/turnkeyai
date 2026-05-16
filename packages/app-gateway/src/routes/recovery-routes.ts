@@ -7,7 +7,7 @@ import {
   parseRequiredNonEmptyString,
   sendJson,
 } from "../http-helpers";
-import { readIdempotencyKey, type RouteIdempotencyStore } from "../idempotency-store";
+import { readIdempotencyKey, sendIdempotentResponse, type RouteIdempotencyStore } from "../idempotency-store";
 
 export interface RecoveryRouteDeps {
   buildReplayIncidents(input: {
@@ -317,18 +317,3 @@ function parsePathParam(value: string): string | null {
   }
 }
 
-function sendIdempotentResponse(
-  res: http.ServerResponse,
-  result:
-    | { kind: "response"; statusCode: number; body: unknown; replayed: boolean }
-    | { kind: "conflict"; statusCode: 409; body: { error: string } }
-): void {
-  if (result.kind === "conflict") {
-    sendJson(res, result.statusCode, result.body);
-    return;
-  }
-  if (result.replayed) {
-    res.setHeader("x-turnkeyai-idempotency-status", "replayed");
-  }
-  sendJson(res, result.statusCode, result.body);
-}
