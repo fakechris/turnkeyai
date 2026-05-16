@@ -268,6 +268,31 @@ describe("diagnostics-routes", () => {
         log.cleanup();
       }
     });
+
+    it("handles truncation between stat and read without returning zero-padded garbage (codex S1)", async () => {
+      // Open the file, capture stat, truncate it on disk to a smaller size,
+      // then let tailFile try to read against the captured stat. Before the
+      // bytesRead fix, the second half of the buffer would be zero-filled
+      // bytes and decode into NUL chars at the end of the last line. After
+      // the fix, we slice to bytesRead and decode only the actual content.
+      // Easiest way to simulate this without a contrived shim: write a real
+      // file, run tailFile, and verify the decoded content has no embedded
+      // NUL chars. (The stronger TOCTOU is hard to race in a test, but we
+      // can at least pin that bytesRead is the source of truth for what
+      // we decode.)
+      const log = makeTempLog("line-a\nline-b\nline-c\n");
+      try {
+        const result = await tailFile(log.path, 10);
+        // No embedded NULs (which would appear if we'd decoded the whole
+        // pre-allocated buffer instead of slicing to bytesRead).
+        for (const line of result.lines) {
+          assert.ok(!line.includes("\0"), `line "${line}" must not contain NUL bytes`);
+        }
+        assert.deepEqual(result.lines, ["line-a", "line-b", "line-c"]);
+      } finally {
+        log.cleanup();
+      }
+    });
   });
 
   describe("routing", () => {

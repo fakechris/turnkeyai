@@ -192,8 +192,15 @@ export async function tailFile(
     const readLength = Math.min(stats.size, MAX_LOG_TAIL_BYTES);
     const readStart = stats.size - readLength;
     const buffer = Buffer.alloc(readLength);
-    await handle.read(buffer, 0, readLength, readStart);
-    let text = buffer.toString("utf8");
+    // Capture bytesRead — if the file is truncated/rotated between stat()
+    // and read(), the buffer can be partially filled and the trailing
+    // zero-bytes would corrupt the decoded tail (codex S1). Slicing to
+    // bytesRead guarantees we decode only the actually-read region.
+    const { bytesRead } = await handle.read(buffer, 0, readLength, readStart);
+    if (bytesRead === 0) {
+      return { lines: [], truncatedFromHead: readStart > 0 };
+    }
+    let text = buffer.subarray(0, bytesRead).toString("utf8");
     // If we started mid-line (because the tail window doesn't reach the
     // start of file or doesn't begin at a newline), drop the partial first
     // line so we don't return a corrupted prefix.

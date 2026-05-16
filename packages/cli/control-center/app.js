@@ -814,13 +814,15 @@ function renderLogPane(root, payload) {
     return;
   }
   pane.classList.remove("log-empty");
+  // Capture scroll state BEFORE mutating textContent. If we measured after
+  // the update, a poll that added enough new lines would inflate scrollHeight
+  // and make our "within 40px of bottom" check false even when the user was
+  // pinned to the bottom — so auto-scroll would stop working exactly when
+  // there's new content (codex S2).
+  const wasNearBottom =
+    pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
   pane.textContent = lines.join("\n");
-  // Auto-scroll to the bottom so the most recent line is visible without
-  // the user having to scroll on every refresh. Only do this if we're
-  // already at the bottom (within 40px) — otherwise the user is reading
-  // older lines and we shouldn't snap them away.
-  const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
-  if (nearBottom) {
+  if (wasNearBottom) {
     pane.scrollTop = pane.scrollHeight;
   }
 

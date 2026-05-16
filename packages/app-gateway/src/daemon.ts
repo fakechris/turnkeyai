@@ -399,13 +399,28 @@ const server = http.createServer(async (req, res) => {
           },
           authMode: DAEMON_AUTH.authMode,
           snapshotCounters: async () => {
-            const [sessions] = await Promise.all([browserBridge.listSessions().catch(() => [])]);
-            const peerCount = relayGateway?.listPeers().length ?? 0;
-            const targetCount = relayGateway?.listTargets().length ?? 0;
+            // Per-source fallback (codex nit). The outer route catches
+            // exceptions and zeros ALL counters; without per-source
+            // try/catch a single misbehaving source (e.g. relayGateway
+            // hitting an internal error) would zero the others too,
+            // losing real signal. Each source defaults to 0 on failure.
+            let sessionCount = 0;
+            try {
+              const sessions = await browserBridge.listSessions();
+              sessionCount = sessions.length;
+            } catch {}
+            let relayPeerCount = 0;
+            try {
+              relayPeerCount = relayGateway?.listPeers().length ?? 0;
+            } catch {}
+            let relayTargetCount = 0;
+            try {
+              relayTargetCount = relayGateway?.listTargets().length ?? 0;
+            } catch {}
             return {
-              sessionCount: sessions.length,
-              relayPeerCount: peerCount,
-              relayTargetCount: targetCount,
+              sessionCount,
+              relayPeerCount,
+              relayTargetCount,
             };
           },
         },
