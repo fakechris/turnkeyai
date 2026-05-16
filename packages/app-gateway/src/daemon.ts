@@ -846,6 +846,9 @@ function shutdownDaemon(signal: NodeJS.Signals | "exit"): void {
   }
   shuttingDown = true;
   console.log(`daemon shutting down (${signal})`);
+  // Stop the background reconciliation timer first so no new pass is
+  // scheduled while the HTTP server is draining.
+  runtimeServices.stop();
   const closeTimeout = setTimeout(() => {
     console.error("daemon shutdown timed out, exiting");
     removePidFile(RUNTIME_PATHS);

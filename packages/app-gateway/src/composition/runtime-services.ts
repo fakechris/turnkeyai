@@ -84,6 +84,14 @@ export interface DaemonRuntimeServices {
   recoveryActionService: ReturnType<typeof createRecoveryActionService>;
   scheduledTaskRuntime: DefaultScheduledTaskRuntime;
   runtimeQueryService: ReturnType<typeof createRuntimeQueryService>;
+  /**
+   * Stop the background reconciliation timer. Idempotent — safe to call
+   * multiple times. The timer is `.unref()`ed so it does not keep the
+   * process alive on its own, but explicit cleanup is preferred during
+   * shutdown so any in-flight refresh promise is allowed to settle without
+   * a new pass being scheduled on top of it.
+   */
+  stop(): void;
 }
 
 export async function composeDaemonRuntimeServices(
@@ -403,6 +411,15 @@ export async function composeDaemonRuntimeServices(
     loadRecoveryRuntime: (threadId) => recoveryActionService.loadRecoveryRuntime(threadId),
   });
 
+  let stopped = false;
+  function stop(): void {
+    if (stopped) {
+      return;
+    }
+    stopped = true;
+    clearInterval(runtimeReconciliationTimer);
+  }
+
   return {
     workerRuntime,
     modelRegistry,
@@ -416,5 +433,6 @@ export async function composeDaemonRuntimeServices(
     recoveryActionService,
     scheduledTaskRuntime,
     runtimeQueryService,
+    stop,
   };
 }
