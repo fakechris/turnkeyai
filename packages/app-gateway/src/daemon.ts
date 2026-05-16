@@ -771,6 +771,7 @@ const server = http.createServer(async (req, res) => {
           batchDispatcher: bridgeBatchDispatcher,
           expertDispatcher: bridgeExpertDispatcher,
           resolveToken: (request) => extractBridgeRequestToken(request),
+          idempotencyStore: routeIdempotencyStore,
         },
       })
     ) {
