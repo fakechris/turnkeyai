@@ -13,10 +13,14 @@ const sourceDir = path.join(repoCli, "control-center");
 const targetDir = path.join(repoCli, "dist", "control-center");
 
 if (!existsSync(path.join(sourceDir, "index.html"))) {
-  console.warn(
-    `[copy-control-center] skipping: ${sourceDir} is missing index.html`
+  // Hard fail. The CLI build implicitly promises the daemon will be able to
+  // serve /app — shipping a CLI bundle without the dashboard would mean the
+  // daemon logs "(bundle not found)" at startup and users get an empty 404
+  // when they run `turnkeyai app`. CI should refuse to publish that.
+  console.error(
+    `[copy-control-center] error: ${sourceDir} is missing index.html`
   );
-  process.exit(0);
+  process.exit(1);
 }
 
 mkdirSync(path.dirname(targetDir), { recursive: true });

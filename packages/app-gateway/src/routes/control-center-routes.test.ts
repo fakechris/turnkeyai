@@ -1,7 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  writeFileSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  chmodSync,
+  realpathSync,
+} from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
@@ -103,10 +111,51 @@ describe("control-center-routes", () => {
     it("resolves normal relative paths", () => {
       const bundle = makeBundle();
       try {
+        // Compare via realpath since macOS resolves /var/folders/... to
+        // /private/var/folders/... (and Linux /tmp could be a symlink too).
+        const expectedRoot = realpathSync(bundle.dir);
         const resolved = resolveAssetPath(bundle.dir, "app.js");
-        assert.equal(resolved, path.join(bundle.dir, "app.js"));
+        assert.equal(resolved, path.join(expectedRoot, "app.js"));
         const nested = resolveAssetPath(bundle.dir, "sub/nested.js");
-        assert.equal(nested, path.join(bundle.dir, "sub", "nested.js"));
+        assert.equal(nested, path.join(expectedRoot, "sub", "nested.js"));
+      } finally {
+        bundle.cleanup();
+      }
+    });
+
+    it("rejects symlinks that escape the bundle directory (codex S1)", () => {
+      // A lexical "../" check is not enough — if an attacker can write to the
+      // bundle dir (or a developer accidentally checks in a stray symlink),
+      // a symlink named e.g. "rogue.js" pointing at /etc/passwd would slip
+      // through the path.relative guard but readFile would happily follow it.
+      // Pin that resolveAssetPath canonicalizes via realpath and rejects.
+      const bundle = makeBundle();
+      const outside = mkdtempSync(path.join(tmpdir(), "tk-cc-outside-"));
+      try {
+        const secret = path.join(outside, "secret.txt");
+        writeFileSync(secret, "top secret");
+        const symlinkInBundle = path.join(bundle.dir, "rogue.js");
+        symlinkSync(secret, symlinkInBundle);
+
+        const resolved = resolveAssetPath(bundle.dir, "rogue.js");
+        assert.equal(resolved, null, "symlink escape must be refused");
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+        bundle.cleanup();
+      }
+    });
+
+    it("allows symlinks that stay inside the bundle", () => {
+      // Counter-test: a symlink pointing at another file IN the same bundle
+      // (e.g. a "latest -> app.js" alias) should still resolve, so we know
+      // we're not over-rejecting.
+      const bundle = makeBundle();
+      try {
+        const alias = path.join(bundle.dir, "alias.js");
+        symlinkSync(path.join(bundle.dir, "app.js"), alias);
+        const resolved = resolveAssetPath(bundle.dir, "alias.js");
+        assert.ok(resolved, "in-bundle symlink should resolve");
+        assert.equal(path.basename(resolved!), "app.js");
       } finally {
         bundle.cleanup();
       }
@@ -207,6 +256,50 @@ describe("control-center-routes", () => {
           deps: { assetDir: bundle.dir },
         });
         assert.equal(handled, false);
+      } finally {
+        bundle.cleanup();
+      }
+    });
+
+    it("returns 404 for assets with extensions outside the allowlist (CR-1)", async () => {
+      const bundle = makeBundle();
+      try {
+        // Drop a file with an unfamiliar extension into the bundle.
+        writeFileSync(path.join(bundle.dir, "evil.exe"), "MZ\x00\x00");
+        const { res, getStatus, getBody } = createResponse();
+        const handled = await handleControlCenterRoutes({
+          req: createRequest({ method: "GET", url: "/app/evil.exe" }),
+          res,
+          url: new URL("http://127.0.0.1/app/evil.exe"),
+          deps: { assetDir: bundle.dir },
+        });
+        assert.equal(handled, true);
+        assert.equal(getStatus(), 404);
+        // Body should NOT leak the actual file contents.
+        assert.equal(getBody().toString("utf8"), "not found");
+      } finally {
+        bundle.cleanup();
+      }
+    });
+
+    it("returns 500 instead of 404 on permission read errors", async () => {
+      // Skip on environments where chmod doesn't gate read (e.g. running as
+      // root in CI). The point is to assert non-ENOENT errors surface as 500.
+      if (process.getuid?.() === 0) return;
+      const bundle = makeBundle();
+      try {
+        const target = path.join(bundle.dir, "locked.js");
+        writeFileSync(target, "console.log('locked')");
+        chmodSync(target, 0o000);
+        const { res, getStatus } = createResponse();
+        await handleControlCenterRoutes({
+          req: createRequest({ method: "GET", url: "/app/locked.js" }),
+          res,
+          url: new URL("http://127.0.0.1/app/locked.js"),
+          deps: { assetDir: bundle.dir },
+        });
+        assert.equal(getStatus(), 500);
+        chmodSync(target, 0o600);
       } finally {
         bundle.cleanup();
       }

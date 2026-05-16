@@ -16,19 +16,29 @@ import { fileURLToPath } from "node:url";
 // index.html. Returning null is acceptable — the daemon still boots and the
 // /app routes simply respond 404 with a hint to rebuild the CLI bundle.
 
+// Files the dashboard cannot run without. If any are missing from a
+// candidate directory we skip it — better to fall through to a later
+// candidate (or a friendly 404) than to load index.html that immediately
+// fails to fetch app.js.
+const REQUIRED_BUNDLE_FILES = ["index.html", "app.css", "app.js"] as const;
+
 export function resolveControlCenterAssetDir(
   options: { override?: string | null } = {}
 ): string | null {
   const override = options.override?.trim();
   if (override) {
-    return existsSync(path.join(override, "index.html")) ? path.resolve(override) : null;
+    return isCompleteBundle(override) ? path.resolve(override) : null;
   }
   for (const candidate of candidateDirs()) {
-    if (existsSync(path.join(candidate, "index.html"))) {
+    if (isCompleteBundle(candidate)) {
       return path.resolve(candidate);
     }
   }
   return null;
+}
+
+function isCompleteBundle(dir: string): boolean {
+  return REQUIRED_BUNDLE_FILES.every((name) => existsSync(path.join(dir, name)));
 }
 
 function candidateDirs(): string[] {

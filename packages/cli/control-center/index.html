@@ -110,7 +110,8 @@
     <p>That command starts the daemon if needed and opens this page with the token already attached to the URL fragment.</p>
     <p>If you already have a token, paste it below — it's kept only in this browser tab.</p>
     <form id="token-form">
-      <input type="password" id="token-input" placeholder="Daemon token" autocomplete="off" />
+      <label class="sr-only" for="token-input">Daemon token</label>
+      <input type="password" id="token-input" placeholder="Daemon token" autocomplete="off" required />
       <button type="submit">Use token</button>
     </form>
     <p class="note">Token is read from <code>~/.turnkeyai/config.json</code> by the CLI. It is also visible in <code>turnkeyai daemon status</code> output.</p>

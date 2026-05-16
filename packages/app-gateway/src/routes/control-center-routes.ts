@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type http from "node:http";
@@ -61,11 +62,21 @@ export async function handleControlCenterRoutes(input: {
     return true;
   }
 
+  const ext = path.extname(resolved).toLowerCase();
+  const contentType = ASSET_EXTENSIONS[ext];
+  if (!contentType) {
+    // Enforce the allowlist. If a future asset extension lands without
+    // updating ASSET_EXTENSIONS, we'd rather refuse to serve it than fall
+    // back to application/octet-stream (which combined with nosniff is safe
+    // but uselessly hides the misconfiguration from the operator).
+    sendPlainText(res, 404, "not found");
+    return true;
+  }
+
   try {
     const body = await readFile(resolved);
-    const ext = path.extname(resolved).toLowerCase();
     res.statusCode = 200;
-    res.setHeader("content-type", ASSET_EXTENSIONS[ext] ?? "application/octet-stream");
+    res.setHeader("content-type", contentType);
     // Tight cache for the HTML shell so users always get the latest router;
     // the assets reference fingerprint-free paths so the same applies. Keep
     // it private — this is a localhost dashboard, not a CDN-fronted page.
@@ -77,8 +88,15 @@ export async function handleControlCenterRoutes(input: {
     } else {
       res.end(body);
     }
-  } catch {
-    sendPlainText(res, 404, "not found");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") {
+      sendPlainText(res, 404, "not found");
+    } else {
+      // Permission / IO failures shouldn't masquerade as 404 — surface them
+      // so the operator can fix the underlying problem.
+      sendPlainText(res, 500, "asset read failed");
+    }
   }
   return true;
 }
@@ -109,8 +127,16 @@ export function matchControlCenterPath(pathname: string): string | null {
 /**
  * Joins the requested relative path against the bundle root and verifies the
  * resolved file lives inside the bundle. Path-traversal attempts (e.g.
- * "../../etc/passwd") are rejected. Returns null on failure so the caller
- * can return a 404.
+ * "../../etc/passwd") are rejected, AND symlink escapes are rejected by
+ * canonicalizing both root and target via realpath before the containment
+ * check (a lexical ".." check alone would happily follow a symlink that
+ * points outside the bundle). Returns null on failure so the caller can
+ * return a 404.
+ *
+ * Note: relative comes from url.pathname after stripping "/app/". URL.pathname
+ * does NOT percent-decode (e.g. "/app/a%20b" → pathname "/app/a%20b"), so the
+ * decodeURIComponent call here is required, not redundant. Without it,
+ * filenames containing legitimately-encoded chars would never resolve.
  */
 export function resolveAssetPath(assetDir: string, relative: string): string | null {
   const decoded = (() => {
@@ -122,13 +148,42 @@ export function resolveAssetPath(assetDir: string, relative: string): string | n
   })();
   if (!decoded) return null;
   if (decoded.includes("\0")) return null;
-  const normalizedDir = path.resolve(assetDir);
-  const joined = path.resolve(normalizedDir, decoded);
-  const rel = path.relative(normalizedDir, joined);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+
+  // Canonicalize the bundle root first. realpathSync follows symlinks and
+  // returns the on-disk path; if the root itself is missing we bail out
+  // (better to 404 than to silently serve from an unexpected location).
+  const root = (() => {
+    try {
+      return realpathSync(path.resolve(assetDir));
+    } catch {
+      return null;
+    }
+  })();
+  if (!root) return null;
+
+  const joined = path.resolve(root, decoded);
+  // Cheap lexical check first — catches "../" before we hit the filesystem.
+  const lexicalRel = path.relative(root, joined);
+  if (lexicalRel.startsWith("..") || path.isAbsolute(lexicalRel)) {
     return null;
   }
-  return joined;
+
+  // Now resolve symlinks. If the target file doesn't exist (likely 404),
+  // realpathSync throws — fall back to the lexically-validated joined path
+  // so the route handler can produce a clean ENOENT 404 instead of leaking
+  // the realpath error.
+  let canonical: string;
+  try {
+    canonical = realpathSync(joined);
+  } catch {
+    return joined;
+  }
+  const canonicalRel = path.relative(root, canonical);
+  if (canonicalRel.startsWith("..") || path.isAbsolute(canonicalRel)) {
+    // A symlink inside the bundle pointed outside of it. Refuse.
+    return null;
+  }
+  return canonical;
 }
 
 function sendPlainText(res: http.ServerResponse, statusCode: number, body: string): void {

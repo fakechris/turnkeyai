@@ -124,21 +124,28 @@ function setConnectionPill(stateName, label) {
 }
 
 async function apiFetch(pathname) {
+  // Capture the token used for THIS request. If the token changes underneath
+  // us (user pasted a new one in the no-token form) and an older request
+  // happens to return 401, we must not wipe the fresh token.
+  const requestToken = state.token;
   const headers = {
     accept: "application/json",
   };
-  if (state.token) {
-    headers.authorization = `Bearer ${state.token}`;
-    headers["x-turnkeyai-token"] = state.token;
+  if (requestToken) {
+    headers.authorization = `Bearer ${requestToken}`;
+    headers["x-turnkeyai-token"] = requestToken;
   }
   const response = await fetch(pathname, { headers });
   if (response.status === 401) {
-    // Token went stale (e.g. daemon restarted with a new token). Drop ours
-    // and bounce to the no-token page so the user can paste a fresh one.
-    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-    state.token = null;
-    renderTemplate("page-no-token", wireTokenForm);
-    setConnectionPill("bad", "Unauthorized");
+    if (state.token === requestToken) {
+      // Only clear if the same token is still current — otherwise this is a
+      // stale 401 for a token the user has already replaced.
+      stopPolling();
+      sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+      state.token = null;
+      renderTemplate("page-no-token", wireTokenForm);
+      setConnectionPill("bad", "Unauthorized");
+    }
     throw new Error("unauthorized");
   }
   if (!response.ok) {
@@ -149,17 +156,29 @@ async function apiFetch(pathname) {
 
 function startPolling(renderer) {
   stopPolling();
-  state.pollTimer = window.setInterval(() => {
-    void renderer().catch(() => {
-      // Renderer is responsible for its own error display; swallow here so
-      // the interval keeps trying.
-    });
-  }, POLL_INTERVAL_MS);
+  // Recursive setTimeout instead of setInterval — guarantees the next poll
+  // is only scheduled after the previous one finishes, so a slow daemon
+  // can't stack up overlapping in-flight requests against itself.
+  const tick = () => {
+    void renderer()
+      .catch(() => {
+        // Renderer owns its own error display; swallow here so the loop
+        // keeps trying.
+      })
+      .finally(() => {
+        if (state.pollTimer !== null) {
+          state.pollTimer = window.setTimeout(tick, POLL_INTERVAL_MS);
+        }
+      });
+  };
+  // Non-null sentinel so stopPolling() correctly clears the first scheduled
+  // tick. The actual timer ID is replaced on the first .finally().
+  state.pollTimer = window.setTimeout(tick, POLL_INTERVAL_MS);
 }
 
 function stopPolling() {
   if (state.pollTimer !== null) {
-    window.clearInterval(state.pollTimer);
+    window.clearTimeout(state.pollTimer);
     state.pollTimer = null;
   }
 }
@@ -358,6 +377,9 @@ function updateBridgeFields(root, status) {
 }
 
 function markBridgeUnreachable(root) {
+  // Reset both the value AND the metric color classes — otherwise stale
+  // ok/warn/bad colors from the last good poll stick around and lie about
+  // the current state.
   for (const field of [
     "transport-label",
     "peer-count",
@@ -369,6 +391,8 @@ function markBridgeUnreachable(root) {
     "cdp-endpoint",
   ]) {
     setField(root, field, "—");
+    const cell = root.querySelector(`[data-field="${field}"]`);
+    if (cell) cell.classList.remove("ok", "warn", "bad");
   }
 }
 
@@ -433,10 +457,16 @@ function renderAgentPage(root) {
   }
 
   // Refresh the connection pill once on mount — agent page doesn't need to
-  // poll, but a quick liveness check on entry is useful.
+  // poll, but a quick liveness check on entry is useful. Skip the
+  // "Unreachable" overwrite on auth errors so we don't stomp the
+  // "Unauthorized" pill that apiFetch already set before throwing.
   void apiFetch("/bridge/status")
     .then((status) => updateConnectionPillFromStatus(status))
-    .catch(() => setConnectionPill("bad", "Unreachable"));
+    .catch((error) => {
+      if (error?.message !== "unauthorized") {
+        setConnectionPill("bad", "Unreachable");
+      }
+    });
 }
 
 function buildAgentSnippets(baseUrl, token) {

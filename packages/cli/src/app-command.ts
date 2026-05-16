@@ -45,9 +45,17 @@ function resolveDaemonBaseUrl(paths: AppRuntimePaths): string {
 }
 
 function resolveDaemonToken(paths: AppRuntimePaths): string | null {
-  if (process.env.TURNKEYAI_DAEMON_TOKEN?.trim()) {
-    return process.env.TURNKEYAI_DAEMON_TOKEN.trim();
-  }
+  // Layered token setups (see daemon-auth.ts) don't always set
+  // TURNKEYAI_DAEMON_TOKEN — only the level-specific tokens. The dashboard
+  // only needs an operator-or-above token to call /bridge/status and friends,
+  // but a read token is enough to make /bridge/status work, so prefer the
+  // broadest available. Order: legacy, then admin → operator → read.
+  const envToken =
+    process.env.TURNKEYAI_DAEMON_TOKEN?.trim() ||
+    process.env.TURNKEYAI_DAEMON_ADMIN_TOKEN?.trim() ||
+    process.env.TURNKEYAI_DAEMON_OPERATOR_TOKEN?.trim() ||
+    process.env.TURNKEYAI_DAEMON_READ_TOKEN?.trim();
+  if (envToken) return envToken;
   return readConfig(paths)?.token ?? null;
 }
 
@@ -65,11 +73,16 @@ async function pingHealth(baseUrl: string, timeoutMs = 1500): Promise<boolean> {
 }
 
 function openInBrowser(url: string): void {
+  // Windows: cmd.exe's `start` treats `&` as a command separator, so the
+  // fragment "#token=...&route=..." would be chopped in half and break. Wrap
+  // the URL in literal double quotes so `start` sees it as one argument. The
+  // `""` second arg is the window title (start requires it when the first
+  // quoted arg might be interpreted as the title).
   const opener =
     platform() === "darwin"
       ? { cmd: "open", args: [url] }
       : platform() === "win32"
-        ? { cmd: "cmd", args: ["/c", "start", "", url] }
+        ? { cmd: "cmd", args: ["/c", "start", "", `"${url}"`] }
         : { cmd: "xdg-open", args: [url] };
   const child = spawn(opener.cmd, opener.args, {
     detached: true,
@@ -149,8 +162,9 @@ export function runAppHelp(exitCode: number): never {
     "Usage:",
     "  turnkeyai app [--route <name>] [--no-open]",
     "",
-    "Starts the daemon if needed, then opens the local Control Center in your",
-    "default browser with the daemon token preloaded.",
+    "Checks daemon health, then opens the local Control Center in your default",
+    "browser with the daemon token preloaded. If the daemon is not running,",
+    "prints a hint to run `turnkeyai daemon start` and exits non-zero.",
     "",
     "Options:",
     "  --route <name>     Open a specific page (setup | bridge | agent). Default: setup",
