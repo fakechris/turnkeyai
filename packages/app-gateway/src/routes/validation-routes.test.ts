@@ -536,13 +536,19 @@ test("validation routes return 409 on /transport-soak/run idempotency key reuse 
 });
 
 test("validation routes scope idempotency keys per route — same key + identical fingerprint shape on different routes do not collide", async () => {
-  // Codex review of P1.6b caught that the first version of this test used two
-  // routes (/regression-cases/run vs /soak-cases/run) whose fingerprints
-  // happened to differ by key name (`caseIds` vs `scenarioIds`), so it
-  // would pass even with a scope-collision bug. This version uses two routes
-  // with IDENTICAL fingerprint shape (both /soak-cases/run and
-  // /acceptance-cases/run fingerprint as `{scenarioIds}`), so only the
-  // per-route scope can prevent the 409.
+  // Codex review of P1.6b caught two earlier versions of this test that
+  // failed to actually exercise the scope-isolation guarantee:
+  //   v1 used /regression-cases/run vs /soak-cases/run, whose fingerprints
+  //       differ by key name (caseIds vs scenarioIds), so the test would
+  //       have passed even with a scope-collision bug.
+  //   v2 used /soak-cases/run + /acceptance-cases/run with an unknown
+  //       scenario id, but both routes 400-out BEFORE reaching
+  //       runIdempotently, so neither call populated the cache.
+  //
+  // This version uses an empty body (no scenarioIds), which means both
+  // routes fingerprint as { scenarioIds: null } and both routes do
+  // reach runIdempotently. The first call populates the cache; the
+  // second call would 409 if scopes were not per-route.
   const baseDeps = createDeps({
     idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
   });
@@ -553,17 +559,14 @@ test("validation routes scope idempotency keys per route — same key + identica
       method: "POST",
       url: "/soak-cases/run",
       headers: { "idempotency-key": "shared-key" },
-      body: { scenarioIds: ["shared-scenario"] },
+      body: {},
     }),
     res: soak.res,
     url: new URL("http://127.0.0.1/soak-cases/run"),
     deps: baseDeps,
   });
-  // Body shape is intentionally invalid for the suite (no such scenario id),
-  // but the route validation also runs against the actual harness; the test
-  // here cares only about NOT returning 409. Any 200 or 400 is acceptable —
-  // 409 would prove the scope isolation failed.
-  assert.notEqual(soak.res.statusCode, 409, "first call must not 409");
+  assert.equal(soak.res.statusCode, 200, "first call must populate the cache (status 200)");
+  assert.equal(soak.headers.get("x-turnkeyai-idempotency-status"), undefined, "first call is not a replay");
 
   const acceptance = createResponse();
   await handleValidationRoutes({
@@ -571,11 +574,20 @@ test("validation routes scope idempotency keys per route — same key + identica
       method: "POST",
       url: "/acceptance-cases/run",
       headers: { "idempotency-key": "shared-key" },
-      body: { scenarioIds: ["shared-scenario"] },
+      body: {},
     }),
     res: acceptance.res,
     url: new URL("http://127.0.0.1/acceptance-cases/run"),
     deps: baseDeps,
   });
-  assert.notEqual(acceptance.res.statusCode, 409, "second call on a DIFFERENT route with IDENTICAL fingerprint must not 409 — scope isolation guards this");
+  assert.equal(
+    acceptance.res.statusCode,
+    200,
+    "second call on a DIFFERENT route with IDENTICAL fingerprint must run (200, not 409) — per-route scope guards this",
+  );
+  assert.equal(
+    acceptance.headers.get("x-turnkeyai-idempotency-status"),
+    undefined,
+    "second call is NOT a replay of the first — different scope, fresh execution",
+  );
 });
