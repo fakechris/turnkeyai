@@ -59,12 +59,20 @@ function createResponse(): {
 }
 
 function makeBundle(): { dir: string; cleanup: () => void } {
+  // Content sized > 32 bytes so the bundle-completeness check in
+  // control-center-assets.ts wouldn't reject these as truncated. (These
+  // tests target the route handler, not the bundle selector, but keeping
+  // them above the floor avoids cross-coupling test fixtures to
+  // implementation thresholds.)
   const dir = mkdtempSync(path.join(tmpdir(), "tk-cc-"));
-  writeFileSync(path.join(dir, "index.html"), "<!doctype html><title>CC</title>");
-  writeFileSync(path.join(dir, "app.css"), ":root{}");
-  writeFileSync(path.join(dir, "app.js"), "console.log('cc')");
+  writeFileSync(
+    path.join(dir, "index.html"),
+    "<!doctype html><html><head><title>CC test</title></head><body>x</body></html>"
+  );
+  writeFileSync(path.join(dir, "app.css"), ":root{ --bg: #000; --fg: #fff; } body { margin: 0 }");
+  writeFileSync(path.join(dir, "app.js"), "console.log('cc test bundle content padded for size');");
   mkdirSync(path.join(dir, "sub"));
-  writeFileSync(path.join(dir, "sub", "nested.js"), "/* nested */");
+  writeFileSync(path.join(dir, "sub", "nested.js"), "/* nested asset for path-resolve tests */");
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 

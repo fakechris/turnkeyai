@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,15 +37,27 @@ export function resolveControlCenterAssetDir(
   return null;
 }
 
+// Real asset sizes today are 4.3K (CSS), 5.4K (HTML), 14.6K (JS). A
+// generous floor of 32 bytes catches obvious truncation (cp died mid-copy,
+// disk full, etc.) without false-positive rejecting some future minified
+// build. The leaf-level read in control-center-routes.ts is what actually
+// serves bytes; this check just biases candidate selection toward a
+// bundle that's plausibly intact.
+const MIN_BUNDLE_FILE_BYTES = 32;
+
 function isCompleteBundle(dir: string): boolean {
-  // existsSync alone accepts a directory named "index.html" or a zero-byte
-  // placeholder as "present" (codex re-review #3). Demand a regular file
-  // with non-zero size, so a half-copied or corrupt bundle falls through
-  // to the next candidate.
+  // lstatSync (not statSync) — don't follow symlinks. A required bundle
+  // file should be a regular file shipped inside the bundle dir; a symlink
+  // pointing to e.g. /etc/hosts could otherwise satisfy isFile()+size>0
+  // and win candidate selection (codex 3rd-round #3). lstat().isFile()
+  // returns false for symlinks regardless of where they point, which is
+  // exactly what we want.
   return REQUIRED_BUNDLE_FILES.every((name) => {
     try {
-      const stats = statSync(path.join(dir, name));
-      return stats.isFile() && stats.size > 0;
+      const stats = lstatSync(path.join(dir, name));
+      if (!stats.isFile()) return false;
+      if (stats.size < MIN_BUNDLE_FILE_BYTES) return false;
+      return true;
     } catch {
       return false;
     }
