@@ -8,7 +8,7 @@
 
 const TOKEN_STORAGE_KEY = "turnkeyai.controlCenter.token";
 const DEFAULT_ROUTE = "setup";
-const KNOWN_ROUTES = ["setup", "bridge", "tabs", "agent"];
+const KNOWN_ROUTES = ["setup", "bridge", "tabs", "agent", "diagnostics"];
 const POLL_INTERVAL_MS = 5_000;
 
 const pageRoot = document.getElementById("page");
@@ -107,6 +107,9 @@ function renderActiveRoute() {
       break;
     case "agent":
       renderTemplate("page-agent", renderAgentPage);
+      break;
+    case "diagnostics":
+      renderTemplate("page-diagnostics", renderDiagnosticsPage);
       break;
     default:
       renderTemplate("page-setup", renderSetupPage);
@@ -687,6 +690,215 @@ function buildAgentSnippets(baseUrl, token) {
       "Run `turnkeyai bridge install-skill` for a full skill doc.",
     ].join("\n"),
   };
+}
+
+// ---------- Diagnostics page ----------
+
+function renderDiagnosticsPage(root) {
+  // Cache the latest snapshot + log payload here so the "Copy bundle" button
+  // can serialize them without re-fetching. The button is set up once on
+  // mount; polling just refreshes the visible fields and the cached
+  // payload.
+  const cache = { diagnostics: null, logs: null };
+  wireDiagnosticsCopy(root, cache);
+
+  const refresh = async () => {
+    const [diagResult, logsResult] = await Promise.all([
+      reflect(apiFetch("/diagnostics")),
+      reflect(apiFetch("/diagnostics/logs?limit=200")),
+    ]);
+
+    if (diagResult.status === "fulfilled") {
+      cache.diagnostics = diagResult.value;
+      renderDiagnosticsSnapshot(root, diagResult.value);
+    } else if (diagResult.reason?.message !== "unauthorized") {
+      markDiagnosticsUnreachable(root);
+      setConnectionPill("bad", "Unreachable");
+    }
+
+    if (logsResult.status === "fulfilled") {
+      cache.logs = logsResult.value;
+      renderLogPane(root, logsResult.value);
+    } else if (logsResult.reason?.message !== "unauthorized") {
+      renderLogPane(root, {
+        lines: [],
+        note: `Could not load log: ${logsResult.reason?.message ?? "unknown error"}`,
+      });
+    }
+  };
+  void refresh();
+  startPolling(refresh);
+}
+
+function renderDiagnosticsSnapshot(root, snapshot) {
+  const daemon = snapshot.daemon ?? {};
+  const paths = snapshot.paths ?? {};
+  const transport = snapshot.transport ?? {};
+  const counters = snapshot.counters ?? {};
+  const node = snapshot.node ?? {};
+
+  setField(root, "daemon-version", `v${daemon.version ?? "?"}`);
+  setField(root, "daemon-port", String(daemon.port ?? "?"));
+  setField(root, "daemon-uptime", formatUptime(daemon.uptimeMs));
+  setField(root, "daemon-started-at", formatAbsoluteTimestamp(daemon.startedAt));
+  setField(root, "daemon-auth-mode", daemon.authMode ?? "—");
+  setField(root, "daemon-transport", `${transport.mode ?? "?"} (${transport.label ?? "?"})`);
+
+  setField(root, "path-runtime", paths.runtimeRoot ?? "—");
+  setField(root, "path-data", paths.dataDir ?? "—");
+  setField(root, "path-config", paths.configFile ?? "—");
+  setField(root, "path-log", paths.logFile ?? "—");
+  setField(root, "path-catalog", paths.modelCatalogPath ?? "(none)");
+  setField(
+    root,
+    "path-log-size",
+    paths.logFileBytes == null
+      ? "(no log file)"
+      : `${formatBytes(paths.logFileBytes)} · modified ${formatRelativeTimestamp(paths.logFileModifiedAt)}`
+  );
+
+  setField(root, "count-sessions", String(counters.sessionCount ?? 0));
+  setField(root, "count-peers", String(counters.relayPeerCount ?? 0));
+  setField(root, "count-targets", String(counters.relayTargetCount ?? 0));
+
+  setField(root, "node-version", node.version ?? "—");
+  setField(root, "node-platform", node.platform ?? "—");
+  setField(root, "node-arch", node.arch ?? "—");
+
+  // If the diagnostics fetch succeeded, the pill should reflect transport
+  // health like the other pages do. updateConnectionPillFromStatus expects
+  // a bridge-status shape; use the cached one if we have it, otherwise
+  // derive a minimal status object.
+  if (state.lastStatus) {
+    updateConnectionPillFromStatus(state.lastStatus);
+  } else {
+    setConnectionPill("ok", labelForMode(transport.mode));
+  }
+}
+
+function markDiagnosticsUnreachable(root) {
+  for (const field of [
+    "daemon-version",
+    "daemon-port",
+    "daemon-uptime",
+    "daemon-started-at",
+    "daemon-auth-mode",
+    "daemon-transport",
+    "path-runtime",
+    "path-data",
+    "path-config",
+    "path-log",
+    "path-catalog",
+    "path-log-size",
+    "count-sessions",
+    "count-peers",
+    "count-targets",
+    "node-version",
+    "node-platform",
+    "node-arch",
+  ]) {
+    setField(root, field, "—");
+  }
+}
+
+function renderLogPane(root, payload) {
+  const pane = root.querySelector('[data-field="log-pane"]');
+  const meta = root.querySelector('[data-field="log-meta"]');
+  if (!pane) return;
+
+  const lines = Array.isArray(payload?.lines) ? payload.lines : [];
+  if (lines.length === 0) {
+    pane.classList.add("log-empty");
+    pane.textContent = payload?.note || "Log is empty.";
+    if (meta) meta.textContent = "";
+    return;
+  }
+  pane.classList.remove("log-empty");
+  // Capture scroll state BEFORE mutating textContent. If we measured after
+  // the update, a poll that added enough new lines would inflate scrollHeight
+  // and make our "within 40px of bottom" check false even when the user was
+  // pinned to the bottom — so auto-scroll would stop working exactly when
+  // there's new content (codex S2).
+  const wasNearBottom =
+    pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
+  pane.textContent = lines.join("\n");
+  if (wasNearBottom) {
+    pane.scrollTop = pane.scrollHeight;
+  }
+
+  if (meta) {
+    const head = payload.truncatedFromHead ? "older lines truncated · " : "";
+    meta.textContent = `(${head}${lines.length} line${lines.length === 1 ? "" : "s"})`;
+  }
+}
+
+function wireDiagnosticsCopy(root, cache) {
+  const button = root.querySelector('[data-copy-target="diagnostics-bundle"]');
+  const target = root.querySelector('[data-field="diagnostics-bundle"]');
+  if (!button || !target) return;
+  button.addEventListener("click", () => {
+    if (!cache.diagnostics) {
+      button.textContent = "No data yet — wait for first poll";
+      return;
+    }
+    const bundle = {
+      diagnostics: cache.diagnostics,
+      logTail: cache.logs ?? null,
+      capturedAt: new Date().toISOString(),
+    };
+    const text = JSON.stringify(bundle, null, 2);
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        button.classList.add("copied");
+        const original = button.textContent;
+        button.textContent = "Copied";
+        target.hidden = false;
+        target.textContent = text;
+        window.setTimeout(() => {
+          button.classList.remove("copied");
+          button.textContent = original;
+        }, 1_500);
+      })
+      .catch(() => {
+        // Fall back to revealing the bundle pre block for manual copy.
+        target.hidden = false;
+        target.textContent = text;
+        button.textContent = "Clipboard unavailable — select text above";
+      });
+  });
+}
+
+function formatUptime(ms) {
+  if (typeof ms !== "number" || !isFinite(ms) || ms < 0) return "—";
+  const totalSeconds = Math.floor(ms / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  parts.push(`${seconds}s`);
+  return parts.join(" ");
+}
+
+function formatAbsoluteTimestamp(ts) {
+  if (typeof ts !== "number" || !isFinite(ts)) return "—";
+  try {
+    return new Date(ts).toLocaleString();
+  } catch {
+    return String(ts);
+  }
+}
+
+function formatBytes(bytes) {
+  if (typeof bytes !== "number" || !isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
 }
 
 // ---------- Shared ----------

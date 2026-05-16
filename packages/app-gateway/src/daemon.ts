@@ -108,6 +108,7 @@ import {
   type BridgeStatusInfo,
 } from "./routes/bridge-routes";
 import { handleControlCenterRoutes } from "./routes/control-center-routes";
+import { handleDiagnosticsRoutes } from "./routes/diagnostics-routes";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
 import { handleRecoveryRoutes } from "./routes/recovery-routes";
 import { handleRelayRoutes } from "./routes/relay-routes";
@@ -131,6 +132,10 @@ const CONTROL_CENTER_ASSET_DIR = resolveControlCenterAssetDir({
   override: process.env.TURNKEYAI_CONTROL_CENTER_DIR ?? null,
 });
 const DAEMON_AUTH = resolveDaemonAuthConfig(process.env);
+// Captured once at startup so /diagnostics can report "started at" without
+// relying on PID file timestamps. process.uptime() gives the relative delta;
+// this gives the wall-clock origin.
+const PROCESS_STARTED_AT_MS = Date.now();
 const RECOVERY_RUN_STALE_AFTER_MS = 5 * 60 * 1000;
 const RUNTIME_RECONCILIATION_INTERVAL_MS = 60_000;
 
@@ -372,6 +377,56 @@ const server = http.createServer(async (req, res) => {
         },
       });
       return sendJson(res, 201, thread);
+    }
+
+    if (
+      await handleDiagnosticsRoutes({
+        req,
+        res,
+        url,
+        deps: {
+          daemonVersion: DAEMON_PACKAGE_VERSION,
+          port: PORT,
+          dataDir: DATA_DIR,
+          runtimeRoot: RUNTIME_PATHS.rootDir,
+          logFile: RUNTIME_PATHS.logFile,
+          configFile: RUNTIME_PATHS.configFile,
+          modelCatalogPath,
+          processStartedAtMs: PROCESS_STARTED_AT_MS,
+          transport: {
+            mode: browserBridge.transportMode,
+            label: browserBridge.transportLabel,
+          },
+          authMode: DAEMON_AUTH.authMode,
+          snapshotCounters: async () => {
+            // Per-source fallback (codex nit). The outer route catches
+            // exceptions and zeros ALL counters; without per-source
+            // try/catch a single misbehaving source (e.g. relayGateway
+            // hitting an internal error) would zero the others too,
+            // losing real signal. Each source defaults to 0 on failure.
+            let sessionCount = 0;
+            try {
+              const sessions = await browserBridge.listSessions();
+              sessionCount = sessions.length;
+            } catch {}
+            let relayPeerCount = 0;
+            try {
+              relayPeerCount = relayGateway?.listPeers().length ?? 0;
+            } catch {}
+            let relayTargetCount = 0;
+            try {
+              relayTargetCount = relayGateway?.listTargets().length ?? 0;
+            } catch {}
+            return {
+              sessionCount,
+              relayPeerCount,
+              relayTargetCount,
+            };
+          },
+        },
+      })
+    ) {
+      return;
     }
 
     if (
