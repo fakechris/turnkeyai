@@ -2,11 +2,12 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { runAppCommand } from "./app-command";
 import { runBridgeNamespace } from "./bridge";
 import { runDaemonNamespace } from "./daemon-commands";
 import { runDoctor } from "./doctor";
 
-type CliCommand = "daemon" | "tui" | "doctor" | "bridge";
+type CliCommand = "daemon" | "tui" | "doctor" | "bridge" | "app";
 
 const [, , command, ...args] = process.argv;
 
@@ -25,7 +26,13 @@ void runCommand(command, args).catch((error) => {
 });
 
 function isCliCommand(value: string): value is CliCommand {
-  return value === "daemon" || value === "tui" || value === "doctor" || value === "bridge";
+  return (
+    value === "daemon" ||
+    value === "tui" ||
+    value === "doctor" ||
+    value === "bridge" ||
+    value === "app"
+  );
 }
 
 async function runCommand(command: CliCommand, commandArgs: string[]): Promise<void> {
@@ -38,6 +45,8 @@ async function runCommand(command: CliCommand, commandArgs: string[]): Promise<v
       return runDoctor(commandArgs);
     case "tui":
       return spawnLegacyEntry("tui", commandArgs);
+    case "app":
+      return runAppCommand(commandArgs);
   }
 }
 
@@ -72,6 +81,7 @@ function printHelp(exitCode: number): never {
     "  turnkeyai daemon stop | restart | status | logs [--follow]",
     "  turnkeyai daemon                  Run daemon in foreground (legacy)",
     "  turnkeyai bridge install-extension | status | install-skill",
+    "  turnkeyai app [--route setup|bridge|agent] [--no-open]",
     "  turnkeyai doctor",
     "  turnkeyai tui",
     "",

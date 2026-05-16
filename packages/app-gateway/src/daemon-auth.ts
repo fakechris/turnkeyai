@@ -113,6 +113,18 @@ export function resolveDaemonRequestAccess(
     return "public";
   }
 
+  // The Control Center is a static HTML/CSS/JS bundle. The dashboard itself
+  // is unauthenticated; the API calls it issues (e.g. /bridge/status) still
+  // carry the daemon token and go through the normal auth checks. Treating
+  // the assets as public lets `turnkeyai app` open the page directly without
+  // injecting credentials into the asset URLs.
+  if (
+    (req.method === "GET" || req.method === "HEAD") &&
+    (url.pathname === "/app" || url.pathname.startsWith("/app/"))
+  ) {
+    return "public";
+  }
+
   if (isRelayReadRoute(req.method, url.pathname)) {
     return "admin";
   }

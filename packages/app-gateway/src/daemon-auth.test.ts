@@ -42,6 +42,14 @@ test("resolveDaemonAuthConfig supports layered tokens", () => {
 test("resolveDaemonRequestAccess classifies representative route matrix entries", () => {
   const cases = [
     { method: "GET", pathname: "/health", expected: "public" },
+    // Control Center static bundle: assets are public, downstream API calls
+    // still go through auth (see /bridge/status entries elsewhere in matrix).
+    { method: "GET", pathname: "/app", expected: "public" },
+    { method: "GET", pathname: "/app/app.js", expected: "public" },
+    { method: "HEAD", pathname: "/app/app.css", expected: "public" },
+    // Non-GET/HEAD on /app/* should not be treated as public — it falls
+    // through to the default "read" classification (no /app POST routes exist).
+    { method: "POST", pathname: "/app", expected: "read" },
     { method: "GET", pathname: "/runtime-summary", expected: "read" },
     { method: "GET", pathname: "/runtime-worker-sessions", expected: "read" },
     { method: "GET", pathname: "/scheduled-tasks", expected: "read" },

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TurnkeyAI Control Center</title>
+<link rel="stylesheet" href="/app/app.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">TurnkeyAI</span>
+    <span class="brand-tag">Control Center</span>
+  </div>
+  <nav class="nav">
+    <a href="#/setup" data-route="setup">Setup</a>
+    <a href="#/bridge" data-route="bridge">Bridge</a>
+    <a href="#/agent" data-route="agent">Agent Connect</a>
+  </nav>
+  <div class="status-pill" id="connection-pill" data-state="unknown">
+    <span class="dot"></span>
+    <span class="label">Checking…</span>
+  </div>
+</header>
+
+<main id="page" class="page" aria-live="polite">
+  <div class="loading">Loading…</div>
+</main>
+
+<template id="page-setup">
+  <section class="page-section">
+    <h1>Setup</h1>
+    <p class="page-lede">First-time checklist. Each row reflects the live state of the running daemon.</p>
+    <table class="kv">
+      <tbody>
+        <tr><th>Daemon</th><td data-field="daemon">—</td></tr>
+        <tr><th>Daemon URL</th><td data-field="daemon-url">—</td></tr>
+        <tr><th>Auth token</th><td data-field="token">—</td></tr>
+        <tr><th>Transport</th><td data-field="transport">—</td></tr>
+        <tr><th>Browser extension</th><td data-field="extension">—</td></tr>
+        <tr><th>Active sessions</th><td data-field="sessions">—</td></tr>
+      </tbody>
+    </table>
+    <h2>Next steps</h2>
+    <ul class="hints" data-field="hints"></ul>
+  </section>
+</template>
+
+<template id="page-bridge">
+  <section class="page-section">
+    <h1>Bridge Status</h1>
+    <p class="page-lede">Live state of the browser-bridge transport. Polls every 5 seconds.</p>
+    <div class="metric-grid">
+      <div class="metric"><div class="metric-label">Transport</div><div class="metric-value" data-field="transport-label">—</div></div>
+      <div class="metric"><div class="metric-label">Relay peers</div><div class="metric-value" data-field="peer-count">—</div></div>
+      <div class="metric"><div class="metric-label">Discovered tabs</div><div class="metric-value" data-field="target-count">—</div></div>
+      <div class="metric"><div class="metric-label">Last heartbeat</div><div class="metric-value" data-field="last-heartbeat">—</div></div>
+      <div class="metric"><div class="metric-label">Action queue depth</div><div class="metric-value" data-field="queue-depth">—</div></div>
+      <div class="metric"><div class="metric-label">Expert lane</div><div class="metric-value" data-field="expert-lane">—</div></div>
+    </div>
+    <h2>Direct CDP</h2>
+    <table class="kv">
+      <tbody>
+        <tr><th>Configured</th><td data-field="cdp-configured">—</td></tr>
+        <tr><th>Endpoint</th><td data-field="cdp-endpoint">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+</template>
+
+<template id="page-agent">
+  <section class="page-section">
+    <h1>Agent Connect</h1>
+    <p class="page-lede">Endpoints and snippets for plugging Claude / Codex / Comet / Kimi into this daemon.</p>
+
+    <h2>Endpoints</h2>
+    <table class="kv">
+      <tbody>
+        <tr><th>Base URL</th><td data-field="base-url">—</td></tr>
+        <tr><th>Status</th><td><code>GET&nbsp;/bridge/status</code></td></tr>
+        <tr><th>Tier 1 command</th><td><code>POST&nbsp;/bridge/command</code></td></tr>
+        <tr><th>Tier 2 advanced</th><td><code>POST&nbsp;/bridge/advanced</code></td></tr>
+        <tr><th>Batch</th><td><code>POST&nbsp;/bridge/batch</code></td></tr>
+        <tr><th>Raw CDP expert</th><td><code>POST&nbsp;/bridge/expert</code></td></tr>
+      </tbody>
+    </table>
+
+    <h2>Auth header</h2>
+    <p>Every call must carry the daemon token in either header:</p>
+    <pre class="snippet" data-snippet="auth"></pre>
+    <button class="copy" data-copy="auth">Copy auth header</button>
+
+    <h2>Curl example — Tier 1 click</h2>
+    <pre class="snippet" data-snippet="curl"></pre>
+    <button class="copy" data-copy="curl">Copy curl</button>
+
+    <h2>Claude Code skill (snippet)</h2>
+    <pre class="snippet" data-snippet="skill"></pre>
+    <button class="copy" data-copy="skill">Copy skill snippet</button>
+
+    <p class="note">For a full skill bundle, run <code>turnkeyai bridge install-skill</code> from your terminal. That writes a generated skill doc into <code>~/.turnkeyai/skills/</code>.</p>
+  </section>
+</template>
+
+<template id="page-no-token">
+  <section class="page-section">
+    <h1>Auth token required</h1>
+    <p>This Control Center talks to the daemon as a real client and needs the daemon's auth token. The recommended way to launch it is:</p>
+    <pre class="snippet">turnkeyai app</pre>
+    <p>That command starts the daemon if needed and opens this page with the token already attached to the URL fragment.</p>
+    <p>If you already have a token, paste it below — it's kept only in this browser tab.</p>
+    <form id="token-form">
+      <label class="sr-only" for="token-input">Daemon token</label>
+      <input type="password" id="token-input" placeholder="Daemon token" autocomplete="off" required />
+      <button type="submit">Use token</button>
+    </form>
+    <p class="note">Token is read from <code>~/.turnkeyai/config.json</code> by the CLI. It is also visible in <code>turnkeyai daemon status</code> output.</p>
+  </section>
+</template>
+
+<script src="/app/app.js"></script>
+</body>
+</html>
