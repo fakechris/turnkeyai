@@ -74,13 +74,30 @@ function buildFakes(counters: CallCounters) {
   const runtimeQueryService = {
     async loadRuntimeSummary() {
       counters.loadRuntimeSummary += 1;
+      // Mirror RuntimeSummaryReport shape (packages/core-types/src/team-core.ts:264).
+      // Codex review of PR E caught the prior fake omitted required counter
+      // fields that buildOperatorTriageReport actually reads (waitingCount,
+      // staleCount, failedCount); the cast to `never` hid the gap. The tests
+      // only assert call counts so they still passed, but a future test that
+      // looked at report content would have been surprised. Use the full
+      // empty shape so the fixture genuinely models an empty thread.
       return {
-        threadIds: [],
-        chains: [],
+        totalChains: 0,
+        activeCount: 0,
+        waitingCount: 0,
+        failedCount: 0,
+        resolvedCount: 0,
+        staleCount: 0,
+        attentionCount: 0,
+        stateCounts: {},
+        continuityCounts: {},
+        caseStateCounts: {},
         attentionChains: [],
+        activeChains: [],
+        waitingChains: [],
         staleChains: [],
-        workerSessions: [],
-        startupReconcile: undefined,
+        failedChains: [],
+        recentlyResolved: [],
       };
     },
   } as never;
