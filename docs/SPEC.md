@@ -184,7 +184,7 @@
     - `BrowserTaskResult.targetResolution === "reconnect"` → outcome 解析为 `detached_target_recovered`（"通过 reconnect 把 detached 的 target 恢复回来"）。
     - browser continuity payload 里的 `browserDiagnosticBucket === "reconnect_required"` → 在 replay incident 里出 `reconnect_session` remediation 建议。
     - 注意 **不包括** `attach`（被解析为 `hot_reuse`）和 `reopen` / `new_target` / cold resume（被解析为 `cold_reopen`）。这些是合法的连接形态但不是 reconnect 语义；不要把它们也算进"reconnect 已经在 bundle 里"的范围。
-  - **(3) Adapter-level reconnect event visibility**：⚠️ 尚未有任何 daemon 生产路径调用 `adapter.reconnect()` —— P0.3 落下的 contract 目前只在 transport-contract 测试里被调用。即便未来加上调用者，`BrowserTransportReconnectResult` 和 `getTransportHealth()` snapshot 也没有接入 replay recorder / operator bundle。要让 daemon 主动 reconnect 能在 operator 工单里看见，需要先：(i) 在合理的恢复路径上调用 `adapter.reconnect()`；(ii) 让 transport 在 reconnect/health 状态变化时 emit replay 事件并接入 bundle。归到 W10 truth-alignment 后续推进。
+  - **(3) Adapter-level reconnect event visibility**：⚠️ 尚未有任何 daemon 生产路径调用 `adapter.reconnect()` —— P0.3 落下的 contract 目前只在 transport-contract 测试里被调用。即便未来加上调用者，`BrowserTransportReconnectResult` 和 `getTransportHealth()` snapshot 也没有接入 replay recorder / operator bundle。要让 daemon 主动 reconnect 能在 operator case / replay bundle 里看见，需要先：(i) 在合理的恢复路径上调用 `adapter.reconnect()`；(ii) 让 transport 在 reconnect/health 状态变化时 emit replay 事件并接入 bundle。归到 W10 truth-alignment 后续推进。
 
 ### 3.5 Replay / recovery / operator
 
