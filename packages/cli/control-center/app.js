@@ -449,12 +449,19 @@ function renderTabsPage(root) {
       state.lastStatus = status;
       updateConnectionPillFromStatus(status);
     } catch (error) {
-      if (error.message !== "unauthorized") {
-        setConnectionPill("bad", "Unreachable");
-      }
-      // Still try /threads — it doesn't depend on transport.
+      // On unauthorized, apiFetch has already swapped in the no-token page
+      // and stopped polling — nothing more to do here. Doing another fetch
+      // would just re-trigger the same 401 path.
+      if (error.message === "unauthorized") return;
+
+      setConnectionPill("bad", "Unreachable");
+      // Try /threads anyway; it might still work if /bridge/status hit a
+      // transient hiccup. Pass null to renderTabsSection so it shows the
+      // transport-unknown empty state rather than the misleading "relay
+      // is active but no tabs" message that an empty fulfilled array
+      // would produce (caught by CodeRabbit + gemini).
       const threadsResult = await reflect(apiFetch("/threads"));
-      renderTabsSection(root, { status: "fulfilled", value: [] }, null);
+      renderTabsSection(root, null, null);
       renderThreadsSection(root, threadsResult);
       return;
     }
@@ -510,7 +517,10 @@ function renderTabsSection(root, result, transportMode) {
     } else if (transportMode === "direct-cdp") {
       showEmpty("Tabs come from the relay extension. Direct-CDP transport bypasses it.");
     } else {
-      showEmpty("Tabs not available — transport mode unknown.");
+      // Reached when /bridge/status failed (transport mode couldn't be
+      // determined). The Unreachable pill at the top already tells the
+      // user the daemon is down; keep this in sync.
+      showEmpty("Tabs unavailable — daemon status could not be read.");
     }
     return;
   }
