@@ -363,6 +363,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/threads/bootstrap-demo") {
+      // Intentionally NOT wrapped in runIdempotently. This is a developer-
+      // facing demo route — every POST is meant to create a fresh demo
+      // thread (you can call it repeatedly to spin up parallel demos).
+      // Adding idempotency would defeat that purpose. The route is not
+      // exposed to external agents; it is documented in the daemon's
+      // startup help banner as a curl-from-localhost smoke command.
       const body = await readJsonBody<{ variant?: string }>(req).catch(() => null);
       const variant = body?.variant ?? url.searchParams.get("variant") ?? "analyst";
       const roles = buildDemoRoles(variant);

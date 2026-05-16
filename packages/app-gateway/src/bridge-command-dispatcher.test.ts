@@ -20,6 +20,38 @@ import {
   type BridgeBrowserBridgeDeps,
 } from "./bridge-command-dispatcher";
 
+/**
+ * Minimum-viable args for each TIER2 tool so the contract test in PR B can
+ * call buildTier2Action without tripping required-arg validators. The intent
+ * is to assert "this tool is implemented at all" — not to exercise every
+ * branch of every tool. If a tool grows new required args, this map should
+ * grow with it.
+ */
+function defaultArgsFor(tool: string): Record<string, unknown> {
+  switch (tool) {
+    case "hover":
+      return { selectors: ["#x"] };
+    case "scroll":
+      return { direction: "down" };
+    case "dialog":
+      return { action: "accept" };
+    case "popup":
+      return {};
+    case "console":
+      return { probe: "page-metadata" };
+    case "probe":
+      return { kind: "page-state" };
+    case "pdf":
+      return {};
+    case "click_coord":
+      return { x: 10, y: 20 };
+    case "screenshot_clip":
+      return { x: 0, y: 0, width: 100, height: 100 };
+    default:
+      return {};
+  }
+}
+
 function makeIdGenerator(): IdGenerator {
   let seq = 0;
   return {
@@ -488,6 +520,56 @@ describe("bridge-command-dispatcher", () => {
     assert.equal(built.actions.length, 2);
     for (const action of built.actions as unknown as Array<{ params: Record<string, unknown> }>) {
       assert.equal(action.params.button, "left");
+    }
+  });
+
+  it("TIER2_TOOLS only lists tools that buildTier2Action (or dispatcher special cases) actually implement", () => {
+    // PR B — facade honesty. The earlier set listed 10 tools whose
+    // buildTier2Action branch just returned "use /browser-sessions/:id/send"
+    // — that is the OPPOSITE of a facade. This test pins the new contract:
+    // every TIER2_TOOLS entry must produce a valid action (or be one of the
+    // dispatcher's known special-case tools), not a tier-2-tool-not-
+    // implemented error.
+    const dispatcherSpecialCases = new Set(["find_tab"]); // routed in dispatcher, not via buildTier2Action
+    for (const tool of TIER2_TOOLS) {
+      if (dispatcherSpecialCases.has(tool)) continue;
+      const built = buildTier2Action(tool, defaultArgsFor(tool));
+      if ("error" in built) {
+        assert.ok(
+          !built.error.startsWith("tool not implemented in Tier 2"),
+          `TIER2_TOOLS entry '${tool}' must not return the not-implemented error: ${built.error}`,
+        );
+        // Some tools return a different error for missing required args
+        // (e.g. "click_coord requires args.x and args.y") — that's fine, as
+        // long as it isn't the catch-all rejection.
+      }
+    }
+  });
+
+  it("buildTier2Action rejects previously-listed-but-unimplemented tools with the not-implemented error", () => {
+    // The PR B removal list. Each of these used to be in TIER2_TOOLS but
+    // returned "use /browser-sessions/:id/send" — they are now properly
+    // surfaced as not-in-tier-2 errors so the agent gets a clean signal
+    // instead of being told the facade exists but to use a different route.
+    const removed = [
+      "storage",
+      "cookie",
+      "permission",
+      "download",
+      "drag",
+      "network_capture",
+      "network_mock",
+      "network_block",
+      "network_set_headers",
+      "network_emulate",
+    ];
+    for (const tool of removed) {
+      assert.equal(TIER2_TOOLS.has(tool), false, `${tool} should no longer be in TIER2_TOOLS`);
+      const built = buildTier2Action(tool, {});
+      if (!("error" in built)) {
+        assert.fail(`buildTier2Action('${tool}') unexpectedly built an action`);
+      }
+      assert.equal(built.error, `tool not implemented in Tier 2: ${tool}`);
     }
   });
 
