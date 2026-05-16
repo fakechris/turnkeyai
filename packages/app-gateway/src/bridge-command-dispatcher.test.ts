@@ -417,4 +417,110 @@ describe("bridge-command-dispatcher", () => {
     assert.equal(response.status, 200);
     assert.equal((captured as Record<string, unknown> | null)?.method, "Runtime.evaluate");
   });
+
+  // PR A — facade correctness fixes flagged by the Step-7 aftermath audit.
+
+  it("buildTier1Action('wait_for') normalizes selector to selectors: [selector]", () => {
+    // The browser executor's BrowserActionTarget expects `selectors: string[]`.
+    // Earlier dispatcher wrote singular `selector: string`, producing an
+    // action shape the executor could not resolve — wait_for was a silently
+    // broken facade tool.
+    const built = buildTier1Action("wait_for", { selector: "#submit-button" });
+    assert.equal("error" in built, false);
+    assert.equal("action" in built, true);
+    if (!("action" in built)) return;
+    const action = built.action as Record<string, unknown>;
+    assert.equal(action.kind, "waitFor");
+    assert.deepEqual(action.selectors, ["#submit-button"], "selectors must be an array");
+    assert.equal(action.selector, undefined, "singular selector must not be set");
+  });
+
+  it("buildTier1Action('wait_for') still accepts refId / text / urlPattern targets", () => {
+    const byRef = buildTier1Action("wait_for", { refId: "ref-1" });
+    if (!("action" in byRef)) {
+      assert.fail("wait_for refId must build");
+    }
+    assert.equal((byRef.action as Record<string, unknown>).refId, "ref-1");
+
+    const byText = buildTier1Action("wait_for", { text: "Continue" });
+    if (!("action" in byText)) {
+      assert.fail("wait_for text must build");
+    }
+    assert.equal((byText.action as Record<string, unknown>).text, "Continue");
+  });
+
+  it("buildTier2Action('click_coord') emits BOTH mousePressed AND mouseReleased", () => {
+    // Earlier dispatcher only emitted mousePressed. Many pages only fire JS
+    // click handlers when both events arrive, so half-click did nothing
+    // observable in the page despite looking like a click in CDP traces.
+    const built = buildTier2Action("click_coord", { x: 120, y: 200, button: "left" });
+    assert.equal("error" in built, false);
+    assert.equal("actions" in built, true);
+    if (!("actions" in built)) return;
+    assert.equal(built.actions.length, 2, "click_coord must emit press + release as a sequence");
+
+    const seq = built.actions as unknown as Array<{
+      kind: string;
+      method: string;
+      params: Record<string, unknown>;
+    }>;
+    const press = seq[0]!;
+    const release = seq[1]!;
+    assert.equal(press.kind, "cdp");
+    assert.equal(release.kind, "cdp");
+    assert.equal(press.method, "Input.dispatchMouseEvent");
+    assert.equal(release.method, "Input.dispatchMouseEvent");
+    assert.equal(press.params.type, "mousePressed");
+    assert.equal(release.params.type, "mouseReleased");
+    assert.equal(press.params.x, 120);
+    assert.equal(press.params.y, 200);
+    assert.equal(release.params.x, 120, "release must target the same coordinates");
+    assert.equal(release.params.y, 200);
+    assert.equal(press.params.button, "left");
+    assert.equal(release.params.button, "left");
+  });
+
+  it("buildTier2Action('click_coord') defaults button to 'left' on both events", () => {
+    const built = buildTier2Action("click_coord", { x: 10, y: 20 });
+    if (!("actions" in built)) {
+      assert.fail("click_coord must build");
+    }
+    assert.equal(built.actions.length, 2);
+    for (const action of built.actions as unknown as Array<{ params: Record<string, unknown> }>) {
+      assert.equal(action.params.button, "left");
+    }
+  });
+
+  it("click_coord sequence flows through single-tool dispatcher as a two-action BrowserTaskRequest", async () => {
+    // End-to-end: confirm the multi-action build result is wired through the
+    // single-tool dispatcher into a BrowserTaskRequest with both CDP actions
+    // in order. The previous return type was { action } (singular), so this
+    // path would have only sent the press event.
+    const { bridge, history } = makeFakeBridge();
+    const dispatcher = createBridgeCommandDispatcher({
+      bridge,
+      ambient: createInMemoryAmbientSessionStore(),
+      idGenerator: makeIdGenerator(),
+      clock: { now: () => 1 },
+      allowedTools: new Set([...TIER1_TOOLS, ...TIER2_TOOLS]),
+      buildAction: (tool, args) => {
+        if (TIER1_TOOLS.has(tool)) return buildTier1Action(tool, args);
+        return buildTier2Action(tool, args);
+      },
+      expertLaneAvailable: () => false,
+    });
+    await dispatcher.dispatch({
+      token: "tok",
+      tool: "click_coord",
+      args: { x: 50, y: 80 },
+      sessionId: "session-1",
+    });
+    const sent = history.find((entry) => entry.kind === "send");
+    assert.ok(sent, "dispatcher should send to existing session");
+    const task = sent!.payload as BrowserTaskRequest;
+    assert.equal(task.actions.length, 2, "BrowserTaskRequest must carry both press + release");
+    const seq = task.actions as unknown as Array<{ params: Record<string, unknown> }>;
+    assert.equal(seq[0]!.params.type, "mousePressed");
+    assert.equal(seq[1]!.params.type, "mouseReleased");
+  });
 });

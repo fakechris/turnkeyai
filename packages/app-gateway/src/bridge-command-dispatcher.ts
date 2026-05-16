@@ -117,7 +117,22 @@ export type BridgeActionBuilder = (
 
 export type BridgeActionBuildResult =
   | { action: BrowserTaskAction; instructions: string }
+  | { actions: BrowserTaskAction[]; instructions: string }
   | { error: string };
+
+/**
+ * Internal helper: a builder may return either a single action or a sequence
+ * (e.g. `click_coord` emits press + release). Callers should use this helper
+ * to normalize before pushing into a BrowserTaskRequest.actions array.
+ */
+function builtActionsAsList(
+  built: { action: BrowserTaskAction } | { actions: BrowserTaskAction[] }
+): BrowserTaskAction[] {
+  if ("actions" in built) {
+    return built.actions;
+  }
+  return [built.action];
+}
 
 export interface BridgeCommandDispatcher {
   dispatch(input: BridgeCommandInput): Promise<BridgeCommandResponse>;
@@ -200,7 +215,9 @@ export async function dispatchActionRequest(args: {
   input: BridgeCommandInput;
   owner: { ownerType: BrowserOwnerType; ownerId: string };
   tool: string;
-  built: { action: BrowserTaskAction; instructions: string };
+  built:
+    | { action: BrowserTaskAction; instructions: string }
+    | { actions: BrowserTaskAction[]; instructions: string };
   options: BridgeCommandDispatcherOptions;
 }): Promise<BridgeCommandResponse> {
   const sessionId =
@@ -210,7 +227,7 @@ export async function dispatchActionRequest(args: {
     taskId: args.options.idGenerator.taskId(),
     threadId: args.input.threadId?.trim() || `bridge-ambient:${args.owner.ownerId}`,
     instructions: args.input.instructions?.trim() || args.built.instructions,
-    actions: [args.built.action],
+    actions: builtActionsAsList(args.built),
     ownerType: args.owner.ownerType,
     ownerId: args.owner.ownerId,
     ...(sessionId ? { browserSessionId: sessionId } : {}),
@@ -283,7 +300,9 @@ export function createBridgeBatchDispatcher(
         if ("error" in built) {
           return errorResponse(400, `actions[${index}]: ${built.error}`, "invalid_request");
         }
-        taskActions.push(built.action);
+        for (const action of builtActionsAsList(built)) {
+          taskActions.push(action);
+        }
         instructions.push(built.instructions);
       }
 
@@ -570,13 +589,19 @@ export function buildTier1Action(
       };
     }
     case "wait_for": {
+      // BrowserWaitForAction uses BrowserActionTarget, which expects
+      // `selectors: string[]` — NOT `selector: string`. The earlier
+      // dispatcher wrote the singular form and produced an action shape
+      // the browser executor could not resolve, so wait_for was a
+      // silently-broken facade tool. Wrap the single selector into the
+      // array the schema actually accepts.
       const action: Record<string, unknown> = { kind: "waitFor" };
       const selector = toOptionalString(args.selector);
       const refId = toOptionalString(args.refId);
       const text = toOptionalString(args.text);
       const urlPattern = toOptionalString(args.urlPattern);
       const timeoutMs = toFiniteNumber(args.timeoutMs);
-      if (selector) action.selector = selector;
+      if (selector) action.selectors = [selector];
       if (refId) action.refId = refId;
       if (text) action.text = text;
       if (urlPattern) action.urlPattern = urlPattern;
@@ -711,16 +736,28 @@ export function buildTier2Action(
       return { action: cdpAction, instructions: "Print page to PDF" };
     }
     case "click_coord": {
+      // A real click is `mousePressed` followed by `mouseReleased`. Many
+      // pages only fire the JS `click`/onClick handlers when both events
+      // arrive (some only check the release; others require the pair).
+      // The earlier implementation only dispatched `mousePressed`, which
+      // looked like a click in CDP traces but did nothing observable in
+      // the page — silently broken. Emit both events as a sequence so the
+      // facade tool actually clicks.
       const x = toFiniteNumber(args.x);
       const y = toFiniteNumber(args.y);
       if (x === null || y === null) return { error: "click_coord requires args.x and args.y" };
       const button = typeof args.button === "string" ? args.button : "left";
-      const cdpAction: BrowserTaskAction = {
+      const press: BrowserTaskAction = {
         kind: "cdp",
         method: "Input.dispatchMouseEvent",
         params: { type: "mousePressed", x, y, button, clickCount: 1 },
       };
-      return { action: cdpAction, instructions: `Click coordinates (${x},${y})` };
+      const release: BrowserTaskAction = {
+        kind: "cdp",
+        method: "Input.dispatchMouseEvent",
+        params: { type: "mouseReleased", x, y, button, clickCount: 1 },
+      };
+      return { actions: [press, release], instructions: `Click coordinates (${x},${y})` };
     }
     case "screenshot_clip": {
       const x = toFiniteNumber(args.x);
