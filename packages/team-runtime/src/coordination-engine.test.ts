@@ -4184,183 +4184,220 @@ test("coordination engine treats runtime chain recorder failures as best effort"
 // these tests capture the CURRENT behavior so a future change to per-thread
 // FIFO can be deliberate (and visible in a diff).
 
-test("coordination engine: ensureRunning runs OUTSIDE dispatchDeliveryMutex (R1 fix)", async () => {
-  // Concrete property: when ensureRunning blocks indefinitely, the
-  // dispatchToRole call chain still completes its lock-protected work
-  // (enqueue + markHandoffDelivered) and then awaits ensureRunning. With the
-  // old code where ensureRunning ran INSIDE the lock, this test would still
-  // pass — the lock-protected work always completes before ensureRunning is
-  // awaited. The discriminating behavioral difference (lock release timing)
-  // is hard to observe via public API without exposing the mutex; the move
-  // itself is verifiable by reading deliverDispatchIntent in
-  // packages/team-runtime/src/coordination-engine.ts. This test instead pins
-  // the surrounding invariant: a hung ensureRunning does not prevent the
-  // edge state from advancing to "delivered" before its hang.
-  const thread: TeamThread = {
-    threadId: "thread-r1",
-    teamId: "team-r1",
-    teamName: "Demo",
-    leadRoleId: "lead",
-    roles: [
-      { roleId: "lead", name: "Lead", seat: "lead", runtime: "local" },
-      { roleId: "operator", name: "Operator", seat: "member", runtime: "local" },
-    ],
-    participantLinks: [],
-    metadataVersion: 1,
-    createdAt: 1,
-    updatedAt: 1,
-  };
+test("coordination engine: deliverDispatchIntent advances edge to delivered + invokes ensureRunning (outbox path coverage)", async () => {
+  // P1.4a — exercises the outbox-driven dispatch path (the actual code site
+  // affected by the R1 ensureRunning move). Codex review of this PR's first
+  // version pointed out that without `dispatchOutboxRootDir` configured,
+  // dispatchToRole takes a non-outbox shortcut at coordination-engine.ts:403
+  // and never invokes deliverDispatchIntent at all.
+  //
+  // The structural R1 change (releasing dispatchDeliveryMutex BEFORE
+  // awaiting ensureRunning) is verifiable by reading deliverDispatchIntent
+  // and the surrounding inline comment in coordination-engine.ts:1424. A
+  // public-API test that *discriminates* old vs. new lock behavior would
+  // need to either expose the mutex or drive an outbox dead-letter — both
+  // out of scope. This test instead exercises the outbox path end-to-end
+  // and pins the observable invariants: lock-protected work happens, the
+  // role loop runner is signaled, and the dispatch completes successfully.
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "coordination-r1-"));
+  try {
+    const thread: TeamThread = {
+      threadId: "thread-r1",
+      teamId: "team-r1",
+      teamName: "Demo",
+      leadRoleId: "lead",
+      roles: [
+        { roleId: "lead", name: "Lead", seat: "lead", runtime: "local" },
+        { roleId: "operator", name: "Operator", seat: "member", runtime: "local" },
+      ],
+      participantLinks: [],
+      metadataVersion: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    };
 
-  let storedFlow: FlowLedger = {
-    flowId: "flow-r1",
-    threadId: thread.threadId,
-    rootMessageId: "msg-root",
-    mode: "serial",
-    status: "running",
-    currentStageIndex: 0,
-    activeRoleIds: [],
-    completedRoleIds: [],
-    failedRoleIds: [],
-    nextExpectedRoleId: "lead",
-    hopCount: 0,
-    maxHops: 5,
-    edges: [],
-    createdAt: 1,
-    updatedAt: 1,
-  };
+    let storedFlow: FlowLedger = {
+      flowId: "flow-r1",
+      threadId: thread.threadId,
+      rootMessageId: "msg-root",
+      mode: "serial",
+      status: "running",
+      currentStageIndex: 0,
+      activeRoleIds: [],
+      completedRoleIds: [],
+      failedRoleIds: [],
+      nextExpectedRoleId: "lead",
+      hopCount: 0,
+      maxHops: 5,
+      edges: [],
+      createdAt: 1,
+      updatedAt: 1,
+    };
 
-  const flowLedgerStore: FlowLedgerStore = {
-    async get() {
-      return storedFlow;
-    },
-    async put(flow) {
-      storedFlow = flow;
-    },
-    async listByThread() {
-      return [storedFlow];
-    },
-  };
-  const teamThreadStore: TeamThreadStore = {
-    async get() {
-      return thread;
-    },
-    async list() {
-      return [thread];
-    },
-    async create() {
-      throw new Error("not used");
-    },
-    async update() {
-      throw new Error("not used");
-    },
-    async delete() {},
-  };
-  const teamMessageStore: TeamMessageStore = {
-    async append() {},
-    async list() {
-      return [];
-    },
-    async get() {
-      return null;
-    },
-  };
-  const enqueued: HandoffEnvelope[] = [];
-  const roleRunCoordinator: RoleRunCoordinator = {
-    async getOrCreate(threadId, roleId): Promise<RoleRunState> {
-      return {
-        runKey: `${threadId}:${roleId}`,
-        threadId,
-        roleId,
-        mode: "group",
-        status: "idle",
-        iterationCount: 0,
-        maxIterations: 5,
-        inbox: [],
-        lastActiveAt: 0,
-      };
-    },
-    async enqueue(runKey, handoff): Promise<RoleRunState> {
-      enqueued.push(handoff);
-      return {
-        runKey,
-        threadId: handoff.threadId,
-        roleId: handoff.targetRoleId,
-        mode: "group",
-        status: "queued",
-        iterationCount: 0,
-        maxIterations: 5,
-        inbox: [handoff],
-        lastActiveAt: 0,
-      };
-    },
-    async dequeue() {
-      return null;
-    },
-    async ack() {},
-    async bindWorkerSession() {},
-    async clearWorkerSession() {},
-    async setStatus() {},
-    async incrementIteration() {
-      return 1;
-    },
-    async fail() {},
-    async finish() {},
-  };
+    const flowLedgerStore: FlowLedgerStore = {
+      async get() {
+        return storedFlow;
+      },
+      async put(flow) {
+        storedFlow = flow;
+      },
+      async listByThread() {
+        return [storedFlow];
+      },
+    };
+    const teamThreadStore: TeamThreadStore = {
+      async get() {
+        return thread;
+      },
+      async list() {
+        return [thread];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    };
+    const teamMessageStore: TeamMessageStore = {
+      async append() {},
+      async list() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    };
+    const enqueued: HandoffEnvelope[] = [];
+    const roleRunCoordinator: RoleRunCoordinator = {
+      async getOrCreate(threadId, roleId): Promise<RoleRunState> {
+        return {
+          runKey: `${threadId}:${roleId}`,
+          threadId,
+          roleId,
+          mode: "group",
+          status: "idle",
+          iterationCount: 0,
+          maxIterations: 5,
+          inbox: [],
+          lastActiveAt: 0,
+        };
+      },
+      async enqueue(runKey, handoff): Promise<RoleRunState> {
+        enqueued.push(handoff);
+        return {
+          runKey,
+          threadId: handoff.threadId,
+          roleId: handoff.targetRoleId,
+          mode: "group",
+          status: "queued",
+          iterationCount: 0,
+          maxIterations: 5,
+          inbox: [handoff],
+          lastActiveAt: 0,
+        };
+      },
+      async dequeue() {
+        return null;
+      },
+      async ack() {},
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus() {},
+      async incrementIteration() {
+        return 1;
+      },
+      async fail() {},
+      async finish() {},
+    };
 
-  let ensureRunningInvoked = false;
-  let releaseEnsureRunning!: () => void;
-  const ensureRunningHang = new Promise<void>((resolve) => {
-    releaseEnsureRunning = resolve;
-  });
-  const roleLoopRunner: RoleLoopRunner = {
-    async ensureRunning() {
-      ensureRunningInvoked = true;
-      await ensureRunningHang;
-    },
-  };
+    let ensureRunningCalls = 0;
+    const roleLoopRunner: RoleLoopRunner = {
+      async ensureRunning() {
+        ensureRunningCalls += 1;
+      },
+    };
 
-  const sourceMessage: TeamMessage = {
-    id: "msg-r1-src",
-    threadId: thread.threadId,
-    role: "user",
-    name: "Chris",
-    content: "ping",
-    createdAt: 1,
-    updatedAt: 1,
-  };
+    const sourceMessage: TeamMessage = {
+      id: "msg-r1-src",
+      threadId: thread.threadId,
+      role: "user",
+      name: "Chris",
+      content: "ping",
+      createdAt: 1,
+      updatedAt: 1,
+    };
 
-  const engine = buildEngine({
-    teamThreadStore,
-    teamMessageStore,
-    flowLedgerStore,
-    roleRunCoordinator,
-    roleLoopRunner,
-  });
+    let flowIdCounter = 0;
+    let messageIdCounter = 0;
+    let taskIdCounter = 0;
+    const engine = new CoordinationEngine({
+      teamThreadStore,
+      teamMessageStore,
+      flowLedgerStore,
+      roleRunCoordinator,
+      handoffPlanner: {
+        parseMentions() {
+          return [];
+        },
+        async validateMentionTargets() {
+          return { allowed: true, mode: "serial", targetRoleIds: [] };
+        },
+        async buildHandoffs() {
+          return [];
+        },
+      },
+      recoveryDirector: {
+        async onUserMessage() {
+          return { action: "complete" };
+        },
+        async onRoleReply() {
+          return { action: "complete" };
+        },
+        async onRoleFailure() {
+          return { action: "abort", reason: "fail" };
+        },
+      },
+      roleLoopRunner,
+      summaryBuilder: { async getRecentMessages() { return []; } },
+      relayBriefBuilder: { build() { return "brief"; } },
+      idGenerator: {
+        flowId: () => `flow-r1-${++flowIdCounter}`,
+        messageId: () => `msg-r1-${++messageIdCounter}`,
+        taskId: () => `task-r1-${++taskIdCounter}`,
+      },
+      runtimeLimits: { flowMaxHops: 5 },
+      // Real clock here is intentional — the outbox shipper internally compares
+      // its own Date.now() against the lease expiry stored by the outbox. If
+      // the engine clock is faked to a small value (e.g. 2), the lease stamps
+      // as 30002 and the shipper's background drain immediately sees it as
+      // expired and re-processes the batch, causing a spurious second
+      // ensureRunning invocation.
+      clock: { now: () => Date.now() },
+      dispatchOutboxRootDir: path.join(tempDir, "dispatch-outbox"),
+    });
 
-  // Fire-and-forget the dispatch so we can observe state while ensureRunning hangs.
-  const dispatchPromise = engine.dispatchToRole({
-    thread,
-    flow: storedFlow,
-    sourceMessage,
-    toRoleId: "operator",
-    activationType: "cascade",
-  });
+    await engine.dispatchToRole({
+      thread,
+      flow: storedFlow,
+      sourceMessage,
+      toRoleId: "operator",
+      activationType: "cascade",
+    });
 
-  // Give event loop a tick or two to let dispatch reach the lock-protected work
-  // and the eventual ensureRunning call.
-  await waitFor(async () => ensureRunningInvoked, 500, 5);
-
-  // Lock-protected work has happened by the time ensureRunning was called.
-  assert.equal(enqueued.length, 1, "handoff should have been enqueued before ensureRunning was awaited");
-  assert.equal(
-    storedFlow.edges.some((edge) => edge.state === "delivered"),
-    true,
-    "edge should be marked delivered (inside the lock) before ensureRunning was awaited"
-  );
-
-  // Release the hang and let dispatchPromise settle.
-  releaseEnsureRunning();
-  await dispatchPromise;
+    // Lock-protected work observable from outside:
+    assert.equal(enqueued.length, 1, "handoff enqueued exactly once");
+    assert.equal(
+      storedFlow.edges.some((edge) => edge.state === "delivered"),
+      true,
+      "edge advanced to delivered state",
+    );
+    // ensureRunning was signaled (the post-lock handoff in deliverDispatchIntent):
+    assert.equal(ensureRunningCalls, 1, "role loop runner signaled exactly once");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("coordination engine: concurrent user posts on same thread persist both messages (R2 snapshot)", async () => {

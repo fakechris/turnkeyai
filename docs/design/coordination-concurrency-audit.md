@@ -18,11 +18,13 @@
 
 `coordination-engine.ts` 里的全部 `KeyedAsyncMutex`：
 
+_Reflects current `main` after this PR's R1 fix (see §5)._
+
 | 锁字段 | 锁 key | 保护对象 | 锁内 await | 是否调用外部 I/O |
 |---|---|---|---|---|
 | `flowMutex` | `flowId` | FlowLedger 边/状态/shard group 的 read-modify-write | `flowLedgerStore.{get,put}`, `runtimeChainRecorder.*`（best-effort） | 否（纯 store I/O） |
-| `flowStartIntentMutex` | `intentId` | 同一 ingress intent 不被重复 materialize | `teamMessageStore.appendIfAbsent`, `flowLedgerStore.put`, `dispatchToLead` / `dispatchToRole` | 否（这两个 dispatch 函数自己进 flowMutex / dispatchOutboxShipper，不直调 LLM） |
-| `dispatchDeliveryMutex` | `edgeId` | 同一 handoff edge 不被重复 deliver | `flowLedgerStore.get`, `roleRunCoordinator.{getOrCreate,enqueue}`, `markHandoffDelivered`, **`roleLoopRunner.ensureRunning`** | **是（间接）**——见 §5 |
+| `flowStartIntentMutex` | `intentId` | 同一 ingress intent 不被重复 materialize | `teamMessageStore.appendIfAbsent`, `flowLedgerStore.put`, `dispatchToLead` / `dispatchToRole`，**包括它们传递性触发的 `summaryBuilder.getRecentMessages`** | 否（dispatch 内部进 dispatchOutboxShipper / flowMutex，不直调 LLM；但 summary builder 可能慢，见 §4 R3） |
+| `dispatchDeliveryMutex` | `edgeId` | 同一 handoff edge 不被重复 deliver；只覆盖 read-modify-write 的 edge state | `flowLedgerStore.get`, `roleRunCoordinator.{getOrCreate,enqueue}`, `markHandoffDelivered` | 否（`roleLoopRunner.ensureRunning` 现在在锁外 await，见 §5 R1） |
 | `roleOutcomeIntentMutex` | `intentId` | 同一 role reply/failure intent 不被重复 materialize | `teamThreadStore.get`, `requireFlow`, `materializeRoleReplyIntent` / `materializeRoleFailureIntent` | 否（reply/failure 内部进 flowMutex） |
 
 `withFlowLock` 调用站点（9 处）：`recordHandoff`, `markHandoffResponded`, `markHandoffDelivered`, `markHandoffClosed`, `markHandoffCancelled`, `markRoleCompleted`, `markRoleFailed`, `removeActiveRole`, `recordShardReply`. 全部是 read-flow → mutate → put 的 CAS，受 `expectedVersion` 保护（见 `putFlow` 在 `coordination-engine.ts:1714`）。
@@ -41,30 +43,38 @@
 
 **这就是真正的"queue model"，只是还没被正式命名。**未来如果要把 coordination 整体 queue 化，正确做法不是新发明一套，而是把现有这三类 intent 的语义和不变量正式写下来（本文档在做这件事的第一步），再决定是否需要更强的有序保证（见 §6）。
 
-## 4. 锁外做了什么（重要）
+## 4. 锁外做了什么 / 仍在锁内的是什么
 
-下面这些**不在 coordination engine 任何锁里**：
+完全在锁外（不持任何 coordination engine 锁）：
 
-- LLM 调用：`PolicyRoleRuntime.runActivation` 在 `InlineRoleLoopRunner.ensureRunning` 的 `while(true)` 循环里，不持任何 coordination 锁。
-- Worker / browser action：同上，由 role runtime 派遣给 worker runtime，不进 coordination 锁。
-- `summaryBuilder.getRecentMessages`：在 `dispatchToRole` 里同步调用（`coordination-engine.ts:314` 附近），但**不在 flowMutex 里**——`dispatchToRole` 自己内部短暂进 flowMutex 做 `recordHandoff`，summary 取在外面。会影响 dispatch latency，但不会卡其他 flow 状态收敛。
+- **LLM 调用**：`PolicyRoleRuntime.runActivation` 在 `InlineRoleLoopRunner.ensureRunning` 的 `while(true)` 循环里，与 coordination engine 完全解耦。
+- **Worker / browser action**：同上。
+- **`roleLoopRunner.ensureRunning` 自身**：现在在 `dispatchDeliveryMutex` 之外 await（见 §5 R1）。
+
+**仍可能在锁内**（部分场景）：
+
+- **`summaryBuilder.getRecentMessages`**：`dispatchToRole` 里同步调用（`coordination-engine.ts:314` 附近）。**不在 `flowMutex` 里**——`dispatchToRole` 只在 `recordHandoff` 那一段进 `flowMutex`。但是当 `dispatchToRole` 是从 `materializeFlowStartIntent` 调用过来时（ingress 路径：`flowStartIntentMutex` → `dispatchToLead` → `dispatchToRole` → `summaryBuilder.getRecentMessages`），summary 调用确实在 `flowStartIntentMutex(intentId)` 内。
+  - 影响范围：**同一个 intent** 的并发尝试会被排队（这本就是 flowStartIntentMutex 的目的）；不会跨 intent 影响其他 ingress。
+  - 是否需要修：**不需要**。当前 summary 是纯 message store list 操作，毫秒级。如果未来 summary 接入 LLM 加工，这里要重新评估。
 
 ## 5. 已知风险点（按优先级排序）
 
-### R1 — `deliverDispatchIntent` 在 `dispatchDeliveryMutex` 内调用 `ensureRunning`（这个 PR 修）
+### R1 — `deliverDispatchIntent` 历史上在 `dispatchDeliveryMutex` 内调用 `ensureRunning`（**已修，本 PR 修**）
 
-`coordination-engine.ts:1441` 在锁内 `await this.deps.roleLoopRunner.ensureRunning(runState.runKey)`。
+**修复前**：`coordination-engine.ts:1441` 在锁内 `await this.deps.roleLoopRunner.ensureRunning(runState.runKey)`。
 
 `ensureRunning`：
 - 第一次调用某 runKey 时，进入 `while(true)` 循环驱动整个 role loop，每轮 `await roleRuntime.runActivation(...)`（含 LLM 调用）。直到循环 return（done / delegated / iteration 上限）才解锁。
 - 第二次（含）调用同 runKey 时，`activeRuns.has(runKey)` 命中，立即 return。
 
-后果：**该 edge 的 first-time 派发会把 `dispatchDeliveryMutex(edgeId)` 持有到 role loop 结束**。其他需要同 edgeId 的操作（最相关的是 `abandonDispatchIntent` 在 outbox dead-letter 路径上，`coordination-engine.ts:1446`）会被卡住。
+修复前的后果：**该 edge 的 first-time 派发会把 `dispatchDeliveryMutex(edgeId)` 持有到 role loop 结束**。其他需要同 edgeId 的操作（最相关的是 `abandonDispatchIntent` 在 outbox dead-letter 路径上，`coordination-engine.ts:1446`）会被卡住。
 
-修法：**只在锁内做状态变更（lines 1426–1440），出锁后再调 `ensureRunning`**。安全性论证：
-- `ensureRunning` 自身幂等（`activeRuns.has` 短路）。
-- 锁释放后的状态变更（abandon、第二次 deliver）都会重新读 edge state，不依赖 `ensureRunning` 完成。
-- outbox replay 同 intent：到锁里看到 edge 已 `delivered`，按现有逻辑走"do nothing"分支，再调 `ensureRunning`，幂等命中。
+**修法**：只在锁内做状态变更（lines 1426–1440 的 read-modify-write），出锁后再 await `ensureRunning`。本 PR 的 `deliverDispatchIntent` 现在是这个形状。
+
+安全性论证：
+- `ensureRunning` 自身幂等（`InlineRoleLoopRunner.ensureRunning` 在 `inline-role-loop-runner.ts:72-77` 通过 `activeRuns.has(runKey)` 短路）。
+- 锁释放后任何争抢 `dispatchDeliveryMutex(edgeId)` 的 caller（abandon、replay）都会重新读 edge state，按 edge 当前状态走自己的分支；不依赖 first 的 `ensureRunning` 完成。
+- 关键不变量：**至多一个 caller 真正进入 role loop body**——不论是 first 的 ensureRunning 先到，还是 replay 的 ensureRunning 先到。`activeRuns.has` 决定谁是 "first"，剩下的都立即 return。
 
 ### R2 — `flowStartIntentMutex` 用 `intentId` 而不是 `threadId`（不修，**只记录**）
 
@@ -96,14 +106,19 @@
 
 ## 7. 本 PR 的具体动作
 
+实际落地的范围比最初计划的窄，原因见每条说明：
+
 1. **写本文档**（你正在读）。
-2. **加 5 条并发回归测试**到 `coordination-engine.test.ts`：
-   - 同 thread 并发两个 user post → 无消息丢失、无 duplicate lead dispatch（行为快照——见 R2）。
-   - 同 flow 并发多个 shard reply → merge 只触发一次。
-   - dispatch intent 重放 → 不重复 enqueue handoff。
-   - role outcome 重放 → 不重复 close edge / 不重复 recovery dispatch。
-   - role loop 长时间运行时，同 edge 的 abandon path 不被无谓阻塞（**直接证明 ensureRunning 移到锁外是安全的、且解决了一个真实问题**）。
-3. **一处代码改动**：`deliverDispatchIntent` 把 `ensureRunning` 移出 `dispatchDeliveryMutex`。
+2. **一处代码改动**：`deliverDispatchIntent` 把 `ensureRunning` 移出 `dispatchDeliveryMutex`。
+3. **加 2 条 coordination-engine 回归测试**到 `coordination-engine.test.ts`：
+   - **outbox-driven dispatch path coverage**：通过 `dispatchOutboxRootDir` 配置走真正的 `deliverDispatchIntent` 路径，验证 lock-protected work（enqueue + markHandoffDelivered）+ ensureRunning 信号都被触发。锁释放时机的差异（R1 修法的核心）通过代码 diff + 内联注释验证，**不通过单测的行为差异验证**——理由见下。
+   - **R2 行为快照**：同 thread 并发两个 user post → 两条消息都持久化、产生两个独立 flow、各自 dispatch lead 一次。
+
+**没做的测试 + 原因：**
+
+- **同 flow 并发 shard reply → merge 只触发一次**：需要构造 fan-out + shard group 状态机 fixture，单 PR 范围太大。已有的 fan-out 测试在 `coordination-engine.test.ts:3490` 起覆盖了相关路径，单线程 happy path。
+- **dispatch intent / role outcome replay 不重复 enqueue/close edge**：这是现有 `dispatchDeliveryMutex` / `roleOutcomeIntentMutex` 的语义。outbox 自身的 claim/lease 也已守住——本 PR 不引入新的 replay 风险，单写专用测试边际收益不大；如果未来真要补，正确位置在 outbox shipper 层级，不在 coordination engine。
+- **role loop 长跑时 abandon path 不被阻塞**：这是 R1 修法的本质收益，但触发 abandon 路径需要让 outbox shipper dead-letter，这要么 mock 整套 shipper 行为（脆弱），要么需要 expose mutex（污染 API）。当前以 R1 的源码 diff + 安全性论证（§5）作为变更证明；未来如果做 outbox shipper 单测，可以在那里直接验证。
 
 ## 8. 之后再谈
 
