@@ -51,6 +51,17 @@ export interface MissionRouteDeps {
     replaceAll(sources: import("@turnkeyai/core-types/mission").ContextSource[]): Promise<void>;
   };
   clock: { now(): number };
+  /**
+   * Optional. When supplied, GET /mission-context-sources returns
+   * `[...live browser sessions, ...registry entries]` so the Mission
+   * Detail right pane reflects the bridge's actual current state
+   * instead of only what the registry has cached. Live entries use a
+   * synthetic `ctx.browser.session.<sessionId>` id so they line up with
+   * the recorder-emitted ActivityEvent.target field.
+   */
+  browserContextSourceProvider?: {
+    listLive(): Promise<import("@turnkeyai/core-types/mission").ContextSource[]>;
+  };
 }
 
 export async function handleMissionRoutes(input: {
@@ -74,7 +85,27 @@ export async function handleMissionRoutes(input: {
   }
 
   if (method === "GET" && pathname === "/mission-context-sources") {
-    sendJson(res, 200, await deps.contextSourceRegistry.list());
+    // Live browser sessions first so the right pane defaults to the
+    // currently-attached context. Falling back to [] on provider
+    // failure is handled inside the provider itself.
+    const [live, registry] = await Promise.all([
+      deps.browserContextSourceProvider
+        ? deps.browserContextSourceProvider.listLive()
+        : Promise.resolve(
+            [] as import("@turnkeyai/core-types/mission").ContextSource[]
+          ),
+      deps.contextSourceRegistry.list(),
+    ]);
+    // De-dupe by id so a registry record that happens to share an id
+    // with a live session (rare today, but possible once K4 starts
+    // persisting browser sessions) doesn't appear twice. Live wins —
+    // its state/lastUse reflect the bridge's actual moment-in-time.
+    const seen = new Set(live.map((entry) => entry.id));
+    const merged = [
+      ...live,
+      ...registry.filter((entry) => !seen.has(entry.id)),
+    ];
+    sendJson(res, 200, merged);
     return true;
   }
 

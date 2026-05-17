@@ -229,6 +229,70 @@ describe("mission-routes", () => {
     }
   });
 
+  it("GET /mission-context-sources merges live browser sessions with registry entries", async () => {
+    // PR K3: the daemon stitches live browser sessions (from the bridge)
+    // in front of the registry-backed ContextSource list so the Mission
+    // Detail right pane reflects the actual bridge state. The route
+    // de-dupes by id (live wins) so a registry record with the same
+    // synthetic id doesn't double-render.
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      // Seed a registry-backed source — same id as the live one we'll
+      // emit, plus a distinct one that must survive the merge.
+      await deps.contextSourceRegistry.replaceAll([
+        {
+          id: "ctx.browser.session.sess_a",
+          kind: "browser",
+          title: "stale registry record",
+          url: "",
+          state: "registered",
+          lastUse: "—",
+        },
+        {
+          id: "ctx.doc.notes",
+          kind: "doc",
+          title: "Notes",
+          url: "",
+          state: "watching",
+          lastUse: "—",
+        },
+      ]);
+      const browserContextSourceProvider = {
+        async listLive() {
+          return [
+            {
+              id: "ctx.browser.session.sess_a",
+              kind: "browser" as const,
+              title: "Browser session sess_a",
+              url: "",
+              state: "attached",
+              lastUse: "just now",
+              transport: "direct-cdp",
+              session: "sess_a",
+            },
+          ];
+        },
+      };
+      const { res, getJson, getStatus } = createResponse();
+      await handleMissionRoutes({
+        req: createRequest({ method: "GET", url: "/mission-context-sources" }),
+        res,
+        url: new URL("http://127.0.0.1/mission-context-sources"),
+        deps: { ...deps, browserContextSourceProvider },
+      });
+      assert.equal(getStatus(), 200);
+      const list = getJson() as Array<{ id: string; state: string }>;
+      // Two entries: live browser (wins over stale registry) + doc.
+      assert.equal(list.length, 2);
+      const live = list.find((c) => c.id === "ctx.browser.session.sess_a");
+      assert.equal(live?.state, "attached", "live entry must win the merge");
+      assert.ok(list.some((c) => c.id === "ctx.doc.notes"), "doc registry entry must survive");
+    } finally {
+      t.cleanup();
+    }
+  });
+
   it("ignores routes outside the /missions / /approvals namespace", async () => {
     const t = tmpDir();
     try {

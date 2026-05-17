@@ -11,6 +11,15 @@ import {
   type BridgeRouteDeps,
   type BridgeStatusInfo,
 } from "./bridge-routes";
+import type {
+  ActivityEvent,
+  ActivityEventStore,
+  Mission,
+  MissionStore,
+  WorkItem,
+  WorkItemStore,
+} from "@turnkeyai/core-types/mission";
+import { createBridgeMissionActivityRecorder } from "../bridge-mission-activity-recorder";
 
 function createRequest(input: {
   method: string;
@@ -463,5 +472,408 @@ describe("bridge-routes", () => {
     });
     assert.equal(response.getStatus(), 200);
     assert.equal(dispatchCalls, 1);
+  });
+
+  // ── PR K3: mission/work-item metadata wiring ────────────────────────
+
+  describe("/bridge/command — mission context wiring", () => {
+    const fixtureMission: Mission = {
+      id: "msn.1",
+      shortId: "MSN-1",
+      title: "t",
+      desc: "",
+      status: "working",
+      mode: "research",
+      modeLabel: "Research",
+      owner: "you",
+      ownerLabel: "You",
+      createdAt: "today",
+      createdAtMs: 0,
+      agents: [],
+      progress: 0,
+      pendingApprovals: 0,
+      blockers: 0,
+      contextSummary: [],
+    };
+    const fixtureWorkItem: WorkItem = {
+      id: "wi.1",
+      missionId: "msn.1",
+      n: 1,
+      title: "t",
+      agent: "agent.a",
+      status: "working",
+      started: "—",
+      duration: "—",
+      contextRefs: [],
+      output: "—",
+    };
+
+    function memActivityStore(): ActivityEventStore & { events: ActivityEvent[] } {
+      const events: ActivityEvent[] = [];
+      return {
+        events,
+        async listByMission(missionId) {
+          return events.filter((e) => e.missionId === missionId);
+        },
+        async append(event) {
+          events.push(event);
+        },
+      };
+    }
+
+    function failingActivityStore(): ActivityEventStore {
+      return {
+        async listByMission() {
+          return [];
+        },
+        async append() {
+          throw new Error("disk full");
+        },
+      };
+    }
+
+    function buildMissionDeps(activityStore: ActivityEventStore): NonNullable<
+      BridgeRouteDeps["missionContext"]
+    > {
+      const missionStore: Pick<MissionStore, "get"> = {
+        async get(id) {
+          return id === fixtureMission.id ? fixtureMission : null;
+        },
+      };
+      const workItemStore: Pick<WorkItemStore, "listByMission"> = {
+        async listByMission(missionId) {
+          return missionId === "msn.1" ? [fixtureWorkItem] : [];
+        },
+      };
+      let counter = 0;
+      const recorder = createBridgeMissionActivityRecorder({
+        activityStore,
+        newEventId: () => `evt.${++counter}`,
+        clock: { now: () => 1_700_000_000_000 },
+      });
+      return {
+        validator: { missionStore, workItemStore },
+        recorder,
+      };
+    }
+
+    it("appends a tool event on success", async () => {
+      const activityStore = memActivityStore();
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        commandDispatcher: {
+          async dispatch(): Promise<BridgeCommandResponse> {
+            return {
+              status: 200,
+              body: {
+                ok: true,
+                sessionId: "sess_a",
+                tool: "snapshot",
+                result: { transport: { label: "direct-cdp" } },
+              },
+            };
+          },
+        },
+        missionContext: buildMissionDeps(activityStore),
+      };
+
+      const response = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/bridge/command",
+          body: { tool: "snapshot", missionId: "msn.1", workItemId: "wi.1" },
+        }),
+        res: response.res,
+        url: new URL("http://127.0.0.1/bridge/command"),
+        deps,
+      });
+
+      assert.equal(response.getStatus(), 200);
+      assert.equal(activityStore.events.length, 1);
+      const event = activityStore.events[0]!;
+      assert.equal(event.kind, "tool");
+      assert.equal(event.missionId, "msn.1");
+      assert.equal(event.runtime?.workItemId, "wi.1");
+    });
+
+    it("appends a recovery event on dispatcher failure", async () => {
+      const activityStore = memActivityStore();
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        commandDispatcher: {
+          async dispatch(): Promise<BridgeCommandResponse> {
+            return {
+              status: 503,
+              body: {
+                ok: false,
+                error: "relay peer offline",
+                code: "transport_unavailable",
+              },
+            };
+          },
+        },
+        missionContext: buildMissionDeps(activityStore),
+      };
+
+      const response = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/bridge/command",
+          body: { tool: "click", missionId: "msn.1" },
+        }),
+        res: response.res,
+        url: new URL("http://127.0.0.1/bridge/command"),
+        deps,
+      });
+
+      // The bridge response status is preserved — the route does NOT
+      // turn dispatcher errors into 200s just because the recorder ran.
+      assert.equal(response.getStatus(), 503);
+      assert.equal(activityStore.events.length, 1);
+      const event = activityStore.events[0]!;
+      assert.equal(event.kind, "recovery");
+      assert.equal(event.emph, "danger");
+      assert.equal(event.runtime?.bucket, "transport_unavailable");
+      assert.equal(event.text, "relay peer offline");
+    });
+
+    it("rejects unknown missionId with 404 before dispatching", async () => {
+      const activityStore = memActivityStore();
+      let dispatched = 0;
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        commandDispatcher: {
+          async dispatch(): Promise<BridgeCommandResponse> {
+            dispatched += 1;
+            return { status: 200, body: { ok: true } };
+          },
+        },
+        missionContext: buildMissionDeps(activityStore),
+      };
+
+      const response = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/bridge/command",
+          body: { tool: "snapshot", missionId: "msn.ghost" },
+        }),
+        res: response.res,
+        url: new URL("http://127.0.0.1/bridge/command"),
+        deps,
+      });
+
+      assert.equal(response.getStatus(), 404);
+      const body = response.getJson() as { code: string };
+      assert.equal(body.code, "mission_not_found");
+      assert.equal(dispatched, 0, "must not dispatch when mission validation fails");
+      assert.equal(activityStore.events.length, 0);
+    });
+
+    it("rejects workItemId that does not belong to the mission with 400", async () => {
+      const activityStore = memActivityStore();
+      let dispatched = 0;
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        commandDispatcher: {
+          async dispatch(): Promise<BridgeCommandResponse> {
+            dispatched += 1;
+            return { status: 200, body: { ok: true } };
+          },
+        },
+        missionContext: buildMissionDeps(activityStore),
+      };
+
+      const response = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/bridge/command",
+          body: { tool: "snapshot", missionId: "msn.1", workItemId: "wi.other" },
+        }),
+        res: response.res,
+        url: new URL("http://127.0.0.1/bridge/command"),
+        deps,
+      });
+
+      assert.equal(response.getStatus(), 400);
+      const body = response.getJson() as { code: string };
+      assert.equal(body.code, "work_item_mission_mismatch");
+      assert.equal(dispatched, 0);
+    });
+
+    it("returns 502 when the browser action succeeded but the timeline append failed", async () => {
+      const activityStore = failingActivityStore();
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        commandDispatcher: {
+          async dispatch(): Promise<BridgeCommandResponse> {
+            return {
+              status: 200,
+              body: { ok: true, sessionId: "sess_a", tool: "snapshot" },
+            };
+          },
+        },
+        missionContext: buildMissionDeps(activityStore),
+      };
+
+      const response = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/bridge/command",
+          body: { tool: "snapshot", missionId: "msn.1" },
+        }),
+        res: response.res,
+        url: new URL("http://127.0.0.1/bridge/command"),
+        deps,
+      });
+
+      // Critical contract: the browser action ALREADY HAPPENED. The
+      // caller needs to know that explicitly so they don't retry — a
+      // bare 500 would suggest the dispatch failed. 502 + explicit flags
+      // is the signal that the underlying mutation is durable but the
+      // audit trail is missing.
+      assert.equal(response.getStatus(), 502);
+      const body = response.getJson() as {
+        code: string;
+        browserActionExecuted: boolean;
+        timelineRecorded: boolean;
+        timelineError: string;
+        bridgeResponse: { sessionId: string };
+      };
+      assert.equal(body.code, "timeline_append_failed");
+      assert.equal(body.browserActionExecuted, true);
+      assert.equal(body.timelineRecorded, false);
+      assert.equal(body.timelineError, "disk full");
+      assert.equal(body.bridgeResponse.sessionId, "sess_a");
+    });
+
+    it("idempotency replay does NOT double-append the timeline event", async () => {
+      const activityStore = memActivityStore();
+      let dispatched = 0;
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        commandDispatcher: {
+          async dispatch(): Promise<BridgeCommandResponse> {
+            dispatched += 1;
+            return {
+              status: 200,
+              body: { ok: true, sessionId: "sess_a", tool: "snapshot" },
+            };
+          },
+        },
+        idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+        missionContext: buildMissionDeps(activityStore),
+      };
+
+      const body = { tool: "snapshot", missionId: "msn.1" };
+      const headers = { "idempotency-key": "k3-1" };
+      for (let i = 0; i < 2; i += 1) {
+        const r = createResponse();
+        await handleBridgeRoutes({
+          req: createRequest({ method: "POST", url: "/bridge/command", headers, body }),
+          res: r.res,
+          url: new URL("http://127.0.0.1/bridge/command"),
+          deps,
+        });
+      }
+      assert.equal(dispatched, 1, "idempotency must dedupe the dispatch");
+      assert.equal(
+        activityStore.events.length,
+        1,
+        "replay must NOT double-append the timeline event"
+      );
+    });
+
+    it("missionId differences DO break idempotency replay (409 conflict)", async () => {
+      const activityStore = memActivityStore();
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        commandDispatcher: {
+          async dispatch(): Promise<BridgeCommandResponse> {
+            return { status: 200, body: { ok: true } };
+          },
+        },
+        idempotencyStore: createRouteIdempotencyStore({ now: () => 1000 }),
+        missionContext: buildMissionDeps(activityStore),
+      };
+
+      const headers = { "idempotency-key": "k3-collide" };
+      const first = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/bridge/command",
+          headers,
+          body: { tool: "snapshot", missionId: "msn.1" },
+        }),
+        res: first.res,
+        url: new URL("http://127.0.0.1/bridge/command"),
+        deps,
+      });
+      assert.equal(first.getStatus(), 200);
+
+      // Same key, no missionId — must NOT silently replay (which would
+      // have ended up writing the event onto the wrong mission, or
+      // skipping it entirely). Fingerprint mismatch surfaces as 409.
+      const collide = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/bridge/command",
+          headers,
+          body: { tool: "snapshot" },
+        }),
+        res: collide.res,
+        url: new URL("http://127.0.0.1/bridge/command"),
+        deps,
+      });
+      assert.equal(collide.getStatus(), 409);
+    });
+
+    it("missionId is optional — calls without it dispatch normally without recording", async () => {
+      const activityStore = memActivityStore();
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        commandDispatcher: {
+          async dispatch(): Promise<BridgeCommandResponse> {
+            return { status: 200, body: { ok: true } };
+          },
+        },
+        missionContext: buildMissionDeps(activityStore),
+      };
+      const response = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/bridge/command",
+          body: { tool: "snapshot" },
+        }),
+        res: response.res,
+        url: new URL("http://127.0.0.1/bridge/command"),
+        deps,
+      });
+      assert.equal(response.getStatus(), 200);
+      assert.equal(activityStore.events.length, 0);
+    });
   });
 });
