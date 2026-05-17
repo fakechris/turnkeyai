@@ -67,6 +67,7 @@ import { createBrowserRouteHelpers } from "./composition/browser-route-helpers";
 import { resolveControlCenterAssetDir } from "./composition/control-center-assets";
 import { buildDemoRoles } from "./composition/demo-roles";
 import { createInspectionRouteDeps } from "./composition/inspection-deps";
+import { composeMissionDeps } from "./composition/mission-deps";
 import { createRecoveryRouteDeps } from "./composition/recovery-deps";
 import { runBrowserTransportSoakViaCli } from "./composition/transport-soak-cli";
 
@@ -110,6 +111,7 @@ import {
 import { handleControlCenterRoutes } from "./routes/control-center-routes";
 import { handleDiagnosticsRoutes } from "./routes/diagnostics-routes";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
+import { handleMissionRoutes } from "./routes/mission-routes";
 import { handleRecoveryRoutes } from "./routes/recovery-routes";
 import { handleRelayRoutes } from "./routes/relay-routes";
 import { handleValidationRoutes } from "./routes/validation-routes";
@@ -313,6 +315,12 @@ const recoveryDeps = createRecoveryRouteDeps({
   idempotencyStore: routeIdempotencyStore,
 });
 
+// PR K2 — Mission Control stores (mission/work-item/activity/approval/
+// artifact + agent + context-source registries). Composed separately
+// from foundations.ts because the mission model is a self-contained
+// addition with no cyclic deps on the rest of the daemon.
+const missionDeps = composeMissionDeps({ dataDir: DATA_DIR, clock });
+
 await mkdir(DATA_DIR, { recursive: true });
 
 const server = http.createServer(async (req, res) => {
@@ -451,6 +459,17 @@ const server = http.createServer(async (req, res) => {
         res,
         url,
         deps: inspectionDeps,
+      })
+    ) {
+      return;
+    }
+
+    if (
+      await handleMissionRoutes({
+        req,
+        res,
+        url,
+        deps: missionDeps,
       })
     ) {
       return;

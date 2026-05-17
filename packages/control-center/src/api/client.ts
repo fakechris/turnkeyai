@@ -44,28 +44,43 @@ export interface ApiClientOptions {
 }
 
 export function createApiClient(options: ApiClientOptions) {
+  async function send<T>(
+    method: "GET" | "POST",
+    pathname: string,
+    body?: unknown
+  ): Promise<T> {
+    const requestToken = options.getToken();
+    const headers: Record<string, string> = { accept: "application/json" };
+    if (requestToken) {
+      headers.authorization = `Bearer ${requestToken}`;
+      headers["x-turnkeyai-token"] = requestToken;
+    }
+    const init: RequestInit = { method, headers };
+    if (body !== undefined) {
+      headers["content-type"] = "application/json";
+      init.body = JSON.stringify(body);
+    }
+    const response = await fetch(pathname, init);
+    if (response.status === 401) {
+      if (options.getToken() === requestToken) {
+        options.onUnauthorized?.(pathname);
+      }
+      throw new UnauthorizedError(pathname);
+    }
+    if (!response.ok) {
+      throw new ApiError(
+        response.status,
+        pathname,
+        `${pathname} responded ${response.status}`
+      );
+    }
+    // 204 No Content is rare on our routes today but be defensive.
+    if (response.status === 204) return undefined as T;
+    return (await response.json()) as T;
+  }
+
   return {
-    async get<T>(pathname: string): Promise<T> {
-      const requestToken = options.getToken();
-      const headers: Record<string, string> = { accept: "application/json" };
-      if (requestToken) {
-        headers.authorization = `Bearer ${requestToken}`;
-        headers["x-turnkeyai-token"] = requestToken;
-      }
-      const response = await fetch(pathname, { headers });
-      if (response.status === 401) {
-        // Stale-401 defense: only fire the unauthorized callback if the
-        // token used for this request is still the one stored in state.
-        // If the user just pasted a new token, we must NOT wipe it.
-        if (options.getToken() === requestToken) {
-          options.onUnauthorized?.(pathname);
-        }
-        throw new UnauthorizedError(pathname);
-      }
-      if (!response.ok) {
-        throw new ApiError(response.status, pathname, `${pathname} responded ${response.status}`);
-      }
-      return (await response.json()) as T;
-    },
+    get: <T>(pathname: string) => send<T>("GET", pathname),
+    post: <T>(pathname: string, body?: unknown) => send<T>("POST", pathname, body),
   };
 }

@@ -6,11 +6,13 @@
 
 import { useState } from "react";
 
-import { MOCK_DATA, type Mission } from "../mock/mission-data";
+import { MOCK_DATA } from "../mock/mission-data";
+import type { Mission } from "../api/mission-api";
+import { useApprovals, useBootstrapDemo, useMissions } from "../api/useMissionData";
 import { Icon } from "../components/Icon";
 import { AgentStack, StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
-import { STATUS_LABEL, type MissionStatus } from "../state/types";
+import { type MissionStatus } from "../state/types";
 
 interface Filter {
   id: "all" | MissionStatus;
@@ -19,23 +21,51 @@ interface Filter {
 }
 
 export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
-  const { setRoute, openMission } = useAppState();
+  const { state, setRoute, openMission } = useAppState();
   const [filter, setFilter] = useState<Filter["id"]>("all");
+  // Live missions from /missions. Falls back to MOCK_DATA so the page
+  // renders even when the daemon has never been bootstrapped — once
+  // /missions returns content (initially or after the user clicks "Load
+  // demo missions"), `missions.value` flips to live.
+  const missions = useMissions(MOCK_DATA.missions);
+  const approvals = useApprovals(
+    MOCK_DATA.approvals.map((a) => ({ ...a, decision: null }))
+  );
+  const bootstrap = useBootstrapDemo();
+  const [bootstrapStatus, setBootstrapStatus] = useState<"idle" | "loading" | "error">("idle");
 
+  const missionList = missions.value;
   const filters: Filter[] = [
-    { id: "all", label: "All", count: MOCK_DATA.missions.length },
-    { id: "working", label: "Working", count: count("working") },
-    { id: "needs_approval", label: "Needs approval", count: count("needs_approval") },
-    { id: "blocked", label: "Blocked", count: count("blocked") },
-    { id: "done", label: "Done", count: count("done") },
-    { id: "draft", label: "Draft", count: count("draft") },
+    { id: "all", label: "All", count: missionList.length },
+    { id: "working", label: "Working", count: countBy(missionList, "working") },
+    { id: "needs_approval", label: "Needs approval", count: countBy(missionList, "needs_approval") },
+    { id: "blocked", label: "Blocked", count: countBy(missionList, "blocked") },
+    { id: "done", label: "Done", count: countBy(missionList, "done") },
+    { id: "draft", label: "Draft", count: countBy(missionList, "draft") },
   ];
 
-  const list = filter === "all"
-    ? MOCK_DATA.missions
-    : MOCK_DATA.missions.filter((m) => m.status === filter);
+  const list = filter === "all" ? missionList : missionList.filter((m) => m.status === filter);
+  const pendingTotal = approvals.value.filter((a) => !a.decision).length;
 
-  const pendingTotal = MOCK_DATA.approvals.length;
+  // Show a "Load demo missions" button when the daemon is reachable but
+  // empty — operator click triggers POST /missions/bootstrap-demo, then
+  // refetches. Gated on scope (codex K2 #5): bootstrap-demo is
+  // operator-only, so a read-token user clicking would 401 and apiClient
+  // would clear their token, dropping them to the no-token page. Hide
+  // the button entirely for read scope to avoid the trap.
+  const canBootstrap = state.scope !== "read";
+  const emptyButLive = missions.isLive && missionList.length === 0 && canBootstrap;
+  const onLoadDemo = async () => {
+    setBootstrapStatus("loading");
+    try {
+      await bootstrap();
+      missions.refetch();
+      approvals.refetch();
+      setBootstrapStatus("idle");
+    } catch {
+      setBootstrapStatus("error");
+    }
+  };
 
   return (
     <div className="page">
@@ -44,9 +74,23 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
           <h2>Missions</h2>
           <div className="sub">
             本地多 Agent 工作台 · 你给目标，TurnkeyAI 协调 agents 完成、留痕。
+            {!missions.isLive && (
+              <span className="mono faint" style={{ marginLeft: 8, fontSize: 11 }}>· offline fallback</span>
+            )}
           </div>
         </div>
         <div className="right">
+          {emptyButLive && (
+            <button
+              type="button"
+              className="btn"
+              onClick={onLoadDemo}
+              disabled={bootstrapStatus === "loading"}
+            >
+              <Icon name="play" size={13} />{" "}
+              {bootstrapStatus === "loading" ? "Loading…" : "Load demo missions"}
+            </button>
+          )}
           <button type="button" className="btn" onClick={() => setRoute("approvals")}>
             <Icon name="approvals" size={13} /> {pendingTotal} pending
           </button>
@@ -133,6 +177,6 @@ function MissionCard({ mission, onOpen }: { mission: Mission; onOpen: () => void
   );
 }
 
-function count(status: MissionStatus): number {
-  return MOCK_DATA.missions.filter((m) => m.status === status).length;
+function countBy(missions: Mission[], status: MissionStatus): number {
+  return missions.filter((m) => m.status === status).length;
 }

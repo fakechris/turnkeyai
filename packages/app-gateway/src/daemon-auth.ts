@@ -171,6 +171,12 @@ export function resolveDaemonRequestAccess(
     return "operator";
   }
 
+  // Mission Control bootstrap (PR K2). Operator-gated because it writes
+  // fixture data; the GET routes fall through to the default "read".
+  if (req.method === "POST" && url.pathname === "/missions/bootstrap-demo") {
+    return "operator";
+  }
+
   if (req.method === "GET" && url.pathname === "/scheduled-tasks") {
     return "read";
   }

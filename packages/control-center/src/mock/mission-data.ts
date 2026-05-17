@@ -1,95 +1,49 @@
-// Mock data for the Mission Control shell (PR K1).
+// Mock data for the Mission Control shell.
 //
-// The daemon does not yet expose Mission, WorkItem, Activity, Approval, or
-// Recovery objects — those land in K2 (Mission Data Model). Until then,
-// the dashboard renders against this fixture so the IA, navigation, and
-// page layouts can be reviewed and iterated before backend work.
+// PR K1 — original purpose: full local fixture so the dashboard renders
+// before the daemon has any mission stores.
 //
-// Source: 1:1 port of /tmp/design-extract/turnkeyai/project/data.js from
-// the claude.ai/design handoff bundle. Kept as a single module so the K2
-// swap is a search-and-replace from `MOCK_DATA` to a typed API client.
+// PR K2 — current purpose: OFFLINE FALLBACK. Each page that previously
+// imported MOCK_DATA directly now consumes useMissions/useWorkItems/etc
+// from src/api/useMissionData.ts and only falls back to MOCK_DATA while
+// loading, on fetch failure, or when the daemon hasn't been bootstrapped
+// (operator can hit "Load demo missions" on the Missions page to seed).
+//
+// Types: re-exported from src/api/mission-api.ts so the fallback shape
+// matches the live shape exactly — adding a new field on the daemon side
+// + the api types module is enough; the mock auto-conforms.
+
+import type {
+  ActivityEvent as ApiActivityEvent,
+  Agent as ApiAgent,
+  ApprovalRequest as ApiApprovalRequest,
+  ApprovalRow,
+  ContextSource as ApiContextSource,
+  Mission as ApiMission,
+  WorkItem as ApiWorkItem,
+} from "../api/mission-api";
+
+// Re-export the API types under the old mock-data names so existing
+// page imports don't break.
+export type Mission = ApiMission;
+export type WorkItem = ApiWorkItem;
+export type Agent = ApiAgent;
+export type ContextSource = ApiContextSource;
+export type ActivityEvent = ApiActivityEvent;
+export type ApprovalRequest = ApiApprovalRequest;
+export type ContextKind = ApiContextSource["kind"];
+export type ColorTag = ApiAgent["color"];
+export type Severity = ApiApprovalRequest["severity"];
 
 import type { MissionStatus } from "../state/types";
 
-// ── Color palette tags ─────────────────────────────────────────────────
-// Maps to the design's COLOR_BG / COLOR_FG css-var mapping for agent
-// avatars and similar accent surfaces.
-export type ColorTag = "info" | "accent" | "success" | "warning" | "danger" | "muted";
+// ── Local-only types not yet on the daemon ───────────────────────────
+// RecoveryCase, AgentPreset, RuntimeMetric/Session/Log: K1 surfaces
+// that don't have backing stores yet. K3 wires recovery to real cases
+// (from the existing recovery-action-service); K4 wires presets through
+// /daemon/agent-connect/presets. Keeping these as local types so the
+// dashboard renders something today.
 
-// ── Agents ────────────────────────────────────────────────────────────
-export type AgentStatus = MissionStatus;
-
-export interface Agent {
-  id: string;
-  name: string;
-  nameCn: string;
-  role: string;
-  provider: string;
-  providerNote: string;
-  status: AgentStatus;
-  ava: string;
-  color: ColorTag;
-  capabilities: string[];
-  missions: number;
-  tokensIn: string;
-  tokensOut: string;
-}
-
-// ── Context sources ───────────────────────────────────────────────────
-export type ContextKind = "browser" | "doc" | "folder" | "api" | "desktop";
-
-export interface ContextSource {
-  id: string;
-  kind: ContextKind;
-  title: string;
-  cn: string;
-  url: string;
-  state: string;
-  lastUse: string;
-  transport?: string;
-  session?: string;
-  writer?: string;
-  counts?: { files: number; snapshots: number; screenshots: number };
-}
-
-// ── Work items ────────────────────────────────────────────────────────
-export interface WorkItem {
-  n: number;
-  id: string;
-  title: string;
-  cn: string;
-  agent: string;
-  status: MissionStatus;
-  started: string;
-  duration: string;
-  contextRefs: string[];
-  output: string;
-  progress?: number;
-  blocker?: string;
-  approvalId?: string;
-}
-
-// ── Approvals ─────────────────────────────────────────────────────────
-export type Severity = "low" | "med" | "high";
-
-export interface ApprovalRequest {
-  id: string;
-  severity: Severity;
-  mission: string;
-  missionTitle: string;
-  agent: string;
-  action: string;
-  title: string;
-  cn: string;
-  affects: string[];
-  risk: string;
-  requestedAt: string;
-  requestedAgo: string;
-  policyHint: string;
-  payload?: Record<string, unknown>;
-}
-
-// ── Recovery cases ────────────────────────────────────────────────────
 export interface RecoveryCase {
   id: string;
   bucket: string;
@@ -104,66 +58,6 @@ export interface RecoveryCase {
   nextAction: string;
   requiresApproval: boolean;
   runtime: { transport: string; lastError: string; peer: string };
-}
-
-// ── Timeline events ───────────────────────────────────────────────────
-export type EventKind =
-  | "plan"
-  | "tool"
-  | "thought"
-  | "browser"
-  | "doc"
-  | "recovery"
-  | "approval"
-  | "artifact";
-
-export interface EvidenceRef {
-  kind: "snapshot" | "screenshot" | "extract" | "diff" | "json";
-  id: string;
-  label: string;
-}
-
-export interface ActivityEvent {
-  t: string;
-  /** Day header (only set on the first event of a day). */
-  day?: string;
-  kind: EventKind;
-  actor: string;
-  target?: string;
-  text: string;
-  evidence?: EvidenceRef[];
-  tags?: string[];
-  emph?: "warn" | "danger" | "success";
-  runtime?: Record<string, string>;
-  approvalId?: string;
-}
-
-// ── Mission ───────────────────────────────────────────────────────────
-export type MissionMode =
-  | "research"
-  | "monitor"
-  | "browser"
-  | "review"
-  | "investigation"
-  | "custom";
-
-export interface Mission {
-  id: string;
-  shortId: string;
-  title: string;
-  titleEn: string;
-  desc: string;
-  status: MissionStatus;
-  mode: MissionMode;
-  modeLabel: string;
-  owner: string;
-  ownerLabel: string;
-  createdAt: string;
-  agents: string[];
-  progress: number;
-  pendingApprovals: number;
-  blockers: number;
-  contextSummary: string[];
 }
 
 // ── Agent Connect presets ─────────────────────────────────────────────
@@ -221,8 +115,10 @@ export interface MockData {
 
 // The dataset — translated 1:1 from the design's data.js. Strings (incl.
 // the bilingual zh-CN copy) preserved so the design's visual rhythm is
-// reproduced.
-export const MOCK_DATA: MockData = {
+// reproduced. Stored as RAW_MOCK; the exported MOCK_DATA wraps it to add
+// the type-required `id`/`missionId`/`*Ms` fields that the daemon also
+// emits, so the fallback data conforms to mission-api types.
+const RAW_MOCK = {
   agents: [
     {
       id: "agent.coord",
@@ -736,6 +632,53 @@ export const MOCK_DATA: MockData = {
     { id: "kimi", name: "Kimi (Moonshot)", note: "OpenAPI client", state: "connected", color: "success" },
     { id: "custom", name: "Custom OpenAPI client", note: "Token-based · operator", state: "not-connected", color: "muted" },
   ],
+};
+
+// Anchor all "*Ms" timestamps to module-load time, offset such that the
+// timeline reads "~43 minutes ago". Stable for the life of the page.
+const NOW_MS = Date.now();
+const TIMELINE_SPAN_MS = 43 * 60 * 1000;
+const TIMELINE_T0 = NOW_MS - TIMELINE_SPAN_MS;
+
+// ── Augmented MOCK_DATA ──────────────────────────────────────────────
+// Fills in id/missionId/*Ms fields so the raw fixture data conforms to
+// mission-api types. The K1 fixture only has a timeline for msn.01;
+// every event is stamped with that mission.
+//
+// The `as` casts are because TS widens RAW_MOCK's literal status / kind
+// strings to plain `string` — the runtime shape is still correct, the
+// casts just re-narrow back to the mission-api enums.
+export const MOCK_DATA: MockData = {
+  agents: RAW_MOCK.agents as Agent[],
+  contextSources: RAW_MOCK.contextSources as ContextSource[],
+  presets: RAW_MOCK.presets as AgentPreset[],
+  recoveries: RAW_MOCK.recoveries as RecoveryCase[],
+  runtime: RAW_MOCK.runtime as RuntimeData,
+  missions: (RAW_MOCK.missions as Omit<Mission, "createdAtMs">[]).map((m) => ({
+    ...m,
+    createdAtMs: TIMELINE_T0,
+  })),
+  workItems: (RAW_MOCK.workItems as Omit<WorkItem, "missionId">[]).map((w) => ({
+    ...w,
+    missionId: "msn.01",
+  })),
+  approvals: (RAW_MOCK.approvals as Array<Omit<ApprovalRequest, "missionId" | "requestedAtMs"> & { mission: string }>).map(
+    ({ mission, ...rest }) => ({
+      ...rest,
+      missionId: mission,
+      requestedAtMs: NOW_MS - 60 * 1000,
+    })
+  ),
+  timeline: (RAW_MOCK.timeline as Array<Omit<ActivityEvent, "id" | "missionId" | "tMs">>).map(
+    (e, i) => ({
+      ...e,
+      id: `ev.mock.${i.toString().padStart(2, "0")}`,
+      missionId: "msn.01",
+      tMs:
+        TIMELINE_T0 +
+        Math.round((i / Math.max(1, RAW_MOCK.timeline.length - 1)) * TIMELINE_SPAN_MS),
+    })
+  ),
 };
 
 // ── Lookup helpers ────────────────────────────────────────────────────
