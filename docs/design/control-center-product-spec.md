@@ -117,7 +117,7 @@ The user proposed six. Spec'ing each as: **goal · entry point · happy path · 
    - Left: list of browser sessions (relay peer + tab list, or local sessions if transport=local).
    - Right: per-session detail — selected session, current tab, allowed action list, last action result.
 2. **Selected-session model** (canonical client state):
-   ```
+   ```typescript
    workbench = {
      selectedSessionId: string | null
      selectedTabId: string | null      // within the selected session
