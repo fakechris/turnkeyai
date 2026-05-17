@@ -729,7 +729,7 @@ function DesktopContextBody({ source }: { source: ContextSource }) {
 function PendingApprovalCard() {
   const { state, decideApproval } = useAppState();
   const pending = MOCK_DATA.approvals.filter(
-    (a) => a.mission === "msn.01" && !state.decisions[a.id]
+    (a) => a.missionId === "msn.01" && !state.decisions[a.id]
   );
   if (pending.length === 0) return null;
   return (

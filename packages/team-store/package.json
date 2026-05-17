@@ -24,6 +24,13 @@
     "./recovery/file-recovery-run-event-store": "./src/recovery/file-recovery-run-event-store.ts",
     "./recovery/file-recovery-run-store": "./src/recovery/file-recovery-run-store.ts",
     "./scheduled/file-scheduled-task-store": "./src/scheduled/file-scheduled-task-store.ts",
-    "./worker/file-worker-session-store": "./src/worker/file-worker-session-store.ts"
+    "./worker/file-worker-session-store": "./src/worker/file-worker-session-store.ts",
+    "./mission/file-mission-store": "./src/mission/file-mission-store.ts",
+    "./mission/file-work-item-store": "./src/mission/file-work-item-store.ts",
+    "./mission/file-activity-event-store": "./src/mission/file-activity-event-store.ts",
+    "./mission/file-approval-request-store": "./src/mission/file-approval-request-store.ts",
+    "./mission/file-artifact-store": "./src/mission/file-artifact-store.ts",
+    "./mission/file-agent-registry": "./src/mission/file-agent-registry.ts",
+    "./mission/file-context-source-registry": "./src/mission/file-context-source-registry.ts"
   }
 }

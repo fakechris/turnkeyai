@@ -68,7 +68,7 @@ export function ApprovalsPage() {
           decision={state.decisions[ap.id]}
           onApprove={() => decideApproval(ap.id, "approved")}
           onDeny={() => decideApproval(ap.id, "denied")}
-          onOpenMission={() => openMission(ap.mission)}
+          onOpenMission={() => openMission(ap.missionId)}
         />
       ))}
     </div>

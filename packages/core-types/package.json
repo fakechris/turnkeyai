@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     "./team": "./src/team.ts",
+    "./mission": "./src/mission-core.ts",
     "./async-mutex": "./src/async-mutex.ts",
     "./file-store-utils": "./src/file-store-utils.ts",
     "./browser-session-payload": "./src/browser-session-payload.ts",

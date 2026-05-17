@@ -77,6 +77,13 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "GET", pathname: "/relay/peers", expected: "read" },
     { method: "GET", pathname: "/relay/targets", expected: "read" },
     { method: "GET", pathname: "/relay/actions", expected: "read" },
+    // Mission Control (PR K2): GET routes are read; bootstrap-demo is operator.
+    { method: "GET", pathname: "/missions", expected: "read" },
+    { method: "GET", pathname: "/missions/msn.01", expected: "read" },
+    { method: "GET", pathname: "/missions/msn.01/timeline", expected: "read" },
+    { method: "GET", pathname: "/approvals", expected: "read" },
+    { method: "GET", pathname: "/mission-agents", expected: "read" },
+    { method: "POST", pathname: "/missions/bootstrap-demo", expected: "operator" },
   ] as const;
 
   for (const entry of cases) {
