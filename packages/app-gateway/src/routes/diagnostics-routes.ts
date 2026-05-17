@@ -35,6 +35,13 @@ export interface DiagnosticsRouteDeps {
   transport: { mode: string; label: string };
   /** Auth mode reported by daemon-auth. */
   authMode: "disabled" | "token" | "token-layered";
+  /**
+   * Tokens the daemon was configured with. /diagnostics/logs scrubs any
+   * literal occurrences from log lines before sending them to the
+   * dashboard, so a copy-pasted diagnostics bundle is safe to attach to a
+   * bug report. Empty array when auth is disabled.
+   */
+  redactionTokens: readonly string[];
   /** Snapshot of session count + relay peer/target counts. */
   snapshotCounters(): Promise<{
     sessionCount: number;
@@ -151,14 +158,47 @@ async function handleDiagnosticsLogs(
     return true;
   }
 
+  const redactedLines = tail.lines.map((line) => redactLogLine(line, deps.redactionTokens));
   sendJson(res, 200, {
     logFile: deps.logFile,
     limit,
-    lineCount: tail.lines.length,
-    lines: tail.lines,
+    lineCount: redactedLines.length,
+    lines: redactedLines,
     truncatedFromHead: tail.truncatedFromHead,
+    // Surface that redaction is happening so a user looking at the bundle
+    // doesn't think the daemon is just naive about secrets.
+    redacted: true,
   });
   return true;
+}
+
+/**
+ * Scrubs secrets from a single log line before serving it to the dashboard.
+ *
+ * Two passes:
+ *  1. Configured tokens — exact-substring replace. Cheap and the most
+ *     important case (the daemon's own token will appear in startup logs
+ *     and auth-related error paths).
+ *  2. Bearer-token / x-turnkeyai-token shaped strings in arbitrary text —
+ *     catches tokens from peers / agents that the daemon doesn't know
+ *     about but might still log on auth failure.
+ *
+ * Exposed for unit testing.
+ */
+export function redactLogLine(line: string, configuredTokens: readonly string[]): string {
+  let out = line;
+  for (const token of configuredTokens) {
+    if (token && token.length >= 8 && out.includes(token)) {
+      out = out.split(token).join("[REDACTED]");
+    }
+  }
+  // "Authorization: Bearer xxx" / "authorization: bearer xxx"
+  out = out.replace(/(authorization\s*:\s*bearer\s+)\S+/gi, "$1[REDACTED]");
+  // "x-turnkeyai-token: xxx"
+  out = out.replace(/(x-turnkeyai-token\s*:\s*)\S+/gi, "$1[REDACTED]");
+  // Bare "token=xxx" / "token: xxx" in arbitrary message text
+  out = out.replace(/(\btoken[=:\s]+)([A-Za-z0-9_-]{12,})/g, "$1[REDACTED]");
+  return out;
 }
 
 function clampLogLimit(raw: string | null): number {

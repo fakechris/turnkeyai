@@ -8,6 +8,7 @@ import { Readable } from "node:stream";
 
 import {
   handleDiagnosticsRoutes,
+  redactLogLine,
   tailFile,
   type DiagnosticsRouteDeps,
 } from "./diagnostics-routes";
@@ -66,6 +67,7 @@ function makeDeps(overrides: Partial<DiagnosticsRouteDeps> = {}): DiagnosticsRou
     processStartedAtMs: 1_700_000_000_000,
     transport: { mode: "local", label: "playwright-chromium" },
     authMode: "token",
+    redactionTokens: [],
     snapshotCounters: async () => ({
       sessionCount: 0,
       relayPeerCount: 0,
@@ -289,6 +291,70 @@ describe("diagnostics-routes", () => {
           assert.ok(!line.includes("\0"), `line "${line}" must not contain NUL bytes`);
         }
         assert.deepEqual(result.lines, ["line-a", "line-b", "line-c"]);
+      } finally {
+        log.cleanup();
+      }
+    });
+  });
+
+  describe("log redaction (PR I)", () => {
+    it("strips configured tokens from log lines", () => {
+      const out = redactLogLine(
+        "auth ok: token=secret-token-abcdef granted operator",
+        ["secret-token-abcdef"]
+      );
+      assert.equal(out, "auth ok: token=[REDACTED] granted operator");
+    });
+
+    it("strips bearer-token patterns even when the daemon doesn't know the token", () => {
+      const out = redactLogLine(
+        "401 from agent — header was Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.xxxxxx",
+        []
+      );
+      assert.equal(
+        out,
+        "401 from agent — header was Authorization: Bearer [REDACTED]"
+      );
+    });
+
+    it("strips x-turnkeyai-token headers", () => {
+      const out = redactLogLine("incoming x-turnkeyai-token: abc-def-ghi-jkl", []);
+      assert.equal(out, "incoming x-turnkeyai-token: [REDACTED]");
+    });
+
+    it("redacts bare token=xxx patterns over 12 chars", () => {
+      const out = redactLogLine("config snapshot: token=long-enough-token-value", []);
+      assert.equal(out, "config snapshot: token=[REDACTED]");
+    });
+
+    it("leaves short tokens alone (avoid false positives on short hex words)", () => {
+      // 11 chars — below the 12-char threshold on the bare-token regex,
+      // and below the 8-char threshold on the configured-token check.
+      const out = redactLogLine("token=abc1234567", []);
+      assert.equal(out, "token=abc1234567");
+    });
+
+    it("end-to-end: /diagnostics/logs response redacts before returning", async () => {
+      const log = makeTempLog(
+        "starting daemon\n" +
+          "config: token=super-secret-daemon-token-xyz123\n" +
+          "incoming Authorization: Bearer eyJlongtokenstring\n"
+      );
+      try {
+        const { res, getJson } = createResponse();
+        await handleDiagnosticsRoutes({
+          req: createRequest({ method: "GET", url: "/diagnostics/logs" }),
+          res,
+          url: new URL("http://127.0.0.1/diagnostics/logs"),
+          deps: makeDeps({
+            logFile: log.path,
+            redactionTokens: ["super-secret-daemon-token-xyz123"],
+          }),
+        });
+        const body = getJson() as { lines: string[]; redacted: boolean };
+        assert.equal(body.redacted, true);
+        assert.ok(!body.lines.some((line) => line.includes("super-secret-daemon-token-xyz123")));
+        assert.ok(!body.lines.some((line) => line.includes("eyJlongtokenstring")));
       } finally {
         log.cleanup();
       }

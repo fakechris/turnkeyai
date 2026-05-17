@@ -2,7 +2,30 @@
 
 TurnkeyAI 的本地优先 Agent Runtime CLI。
 
-## Usage
+## Quick start
+
+```bash
+# Open the Control Center. Auto-starts the daemon if it isn't already
+# running, then opens http://127.0.0.1:4100/app in your default browser
+# with the daemon token preloaded.
+npx @turnkeyai/cli app
+```
+
+That's the recommended product entry point — five pages: Setup, Bridge,
+Tabs, Agent Connect, Diagnostics. All polling, no build step.
+
+```bash
+# Open straight to a specific page
+npx @turnkeyai/cli app --route diagnostics
+
+# Print the URL instead of launching a browser (CI / SSH / headless)
+npx @turnkeyai/cli app --no-open
+
+# Require an existing daemon — don't auto-start
+npx @turnkeyai/cli app --no-start
+```
+
+## Daemon lifecycle (advanced)
 
 ```bash
 # Start the daemon (detached, writes ~/.turnkeyai/{config.json,daemon.pid,logs/daemon.log})
@@ -63,7 +86,10 @@ into Chrome / Comet via `chrome://extensions` → Developer mode → Load unpack
 | `TURNKEYAI_HOME` | Override `~/.turnkeyai` root |
 | `TURNKEYAI_DAEMON_PORT` | Daemon listen port (default 4100) |
 | `TURNKEYAI_DAEMON_URL` | Override the base URL CLI/TUI uses to reach the daemon |
-| `TURNKEYAI_DAEMON_TOKEN` | Override the auth token (skips auto-generation) |
+| `TURNKEYAI_DAEMON_TOKEN` | Legacy single-token override (treated as full access) |
+| `TURNKEYAI_DAEMON_OPERATOR_TOKEN` | Layered: covers `/bridge/*` + browser routes (preferred for `turnkeyai app`) |
+| `TURNKEYAI_DAEMON_ADMIN_TOKEN` | Layered: covers everything (only chosen by `turnkeyai app` if no operator token is set) |
+| `TURNKEYAI_DAEMON_READ_TOKEN` | Layered: inspection only (Agent Connect downgrades when this is all that's available) |
 | `TURNKEYAI_DATA_DIR` | Override the data directory |
 | `TURNKEYAI_BROWSER_TRANSPORT` | `local` / `relay` / `direct-cdp` |
 | `TURNKEYAI_BROWSER_RELAY_ENDPOINT` | Relay endpoint URL |

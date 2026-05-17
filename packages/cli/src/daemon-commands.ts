@@ -124,17 +124,41 @@ function findDaemonEntry(): string {
   return path.join(here, "daemon.js");
 }
 
-export async function runDaemonStart(args: string[]): Promise<void> {
-  if (args.includes("--foreground") || args.includes("-f")) {
-    return runDaemonForeground(args.filter((arg) => arg !== "--foreground" && arg !== "-f"));
-  }
+/**
+ * Outcome of an ensureDaemonRunning() call. Programmatic callers (e.g.
+ * `turnkeyai app`) inspect this rather than relying on process.exit so the
+ * caller can keep running — opening the browser, printing a tailored
+ * message — after the daemon comes up.
+ */
+export type EnsureDaemonRunningResult =
+  | { kind: "already-running"; pid: number; baseUrl: string; healthy: boolean }
+  | { kind: "started"; pid: number; baseUrl: string; logFile: string; configFile: string }
+  | { kind: "failed-to-start"; baseUrl: string; logFile: string };
+
+export interface EnsureDaemonRunningOptions {
+  /** Args forwarded to the spawned daemon (kept empty in the common case). */
+  args?: string[];
+  /** How long to wait for /health to respond before giving up. */
+  healthDeadlineMs?: number;
+}
+
+/**
+ * Programmatic equivalent of `turnkeyai daemon start` that never calls
+ * process.exit. Used by `turnkeyai app` so the CLI can keep running after
+ * the daemon is up (open the browser, etc.).
+ */
+export async function ensureDaemonRunning(
+  options: EnsureDaemonRunningOptions = {}
+): Promise<EnsureDaemonRunningResult> {
+  const args = options.args ?? [];
+  const healthDeadlineMs = options.healthDeadlineMs ?? 10_000;
   const paths = getRuntimePaths();
+  const baseUrl = resolveDaemonUrl(paths);
+
   const existingPid = readPid(paths);
   if (existingPid && isAlive(existingPid)) {
-    const baseUrl = resolveDaemonUrl(paths);
     const healthy = await pingHealth(baseUrl);
-    console.log(`daemon already running (pid ${existingPid})${healthy ? "" : " — health probe failed"}`);
-    process.exit(0);
+    return { kind: "already-running", pid: existingPid, baseUrl, healthy };
   }
 
   const entry = findDaemonEntry();
@@ -148,17 +172,42 @@ export async function runDaemonStart(args: string[]): Promise<void> {
   });
   child.unref();
 
-  const baseUrl = resolveDaemonUrl(paths);
-  const healthy = await waitForHealth(baseUrl, 10_000);
+  const healthy = await waitForHealth(baseUrl, healthDeadlineMs);
   if (!healthy) {
-    console.error(`daemon failed to become healthy within 10s at ${baseUrl}`);
-    console.error(`check logs at ${paths.logFile}`);
-    process.exit(1);
+    return { kind: "failed-to-start", baseUrl, logFile: paths.logFile };
   }
-  console.log(`daemon started (pid ${child.pid}) at ${baseUrl}`);
-  console.log(`logs: ${paths.logFile}`);
-  if (existsSync(paths.configFile)) {
-    console.log(`config: ${paths.configFile}`);
+  return {
+    kind: "started",
+    pid: child.pid ?? -1,
+    baseUrl,
+    logFile: paths.logFile,
+    configFile: paths.configFile,
+  };
+}
+
+export async function runDaemonStart(args: string[]): Promise<void> {
+  if (args.includes("--foreground") || args.includes("-f")) {
+    return runDaemonForeground(args.filter((arg) => arg !== "--foreground" && arg !== "-f"));
+  }
+  const result = await ensureDaemonRunning({ args });
+  switch (result.kind) {
+    case "already-running":
+      console.log(
+        `daemon already running (pid ${result.pid})${result.healthy ? "" : " — health probe failed"}`
+      );
+      process.exit(0);
+    // eslint-disable-next-line no-fallthrough
+    case "started":
+      console.log(`daemon started (pid ${result.pid}) at ${result.baseUrl}`);
+      console.log(`logs: ${result.logFile}`);
+      if (existsSync(result.configFile)) {
+        console.log(`config: ${result.configFile}`);
+      }
+      return;
+    case "failed-to-start":
+      console.error(`daemon failed to become healthy within 10s at ${result.baseUrl}`);
+      console.error(`check logs at ${result.logFile}`);
+      process.exit(1);
   }
 }
 

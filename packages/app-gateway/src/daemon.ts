@@ -398,6 +398,22 @@ const server = http.createServer(async (req, res) => {
             label: browserBridge.transportLabel,
           },
           authMode: DAEMON_AUTH.authMode,
+          // Tokens the daemon was configured with — passed in so the log
+          // redactor can strip literal occurrences before serving log
+          // lines to the dashboard. De-duplicated and filtered for empty
+          // strings; the redactor itself also requires length >= 8 to
+          // avoid pathological short-token false positives.
+          redactionTokens: Array.from(
+            new Set(
+              [
+                DAEMON_AUTH.readToken,
+                DAEMON_AUTH.operatorToken,
+                DAEMON_AUTH.relayPeerToken,
+                DAEMON_AUTH.adminToken,
+                TOKEN_BOOTSTRAP.token,
+              ].filter((value): value is string => typeof value === "string" && value.length > 0)
+            )
+          ),
           snapshotCounters: async () => {
             // Per-source fallback (codex nit). The outer route catches
             // exceptions and zeros ALL counters; without per-source

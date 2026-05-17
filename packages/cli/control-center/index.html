@@ -102,6 +102,14 @@
     <h1>Agent Connect</h1>
     <p class="page-lede">Endpoints and snippets for plugging Claude / Codex / Comet / Kimi into this daemon.</p>
 
+    <div class="scope-banner" data-field="scope-banner" hidden></div>
+
+    <table class="kv" style="margin-bottom: 16px;">
+      <tbody>
+        <tr><th>Token scope</th><td><code data-field="scope-label">—</code> <span data-field="scope-detail" class="note" style="margin-left: 8px;"></span></td></tr>
+      </tbody>
+    </table>
+
     <h2>Endpoints</h2>
     <table class="kv">
       <tbody>
@@ -119,13 +127,15 @@
     <pre class="snippet" data-snippet="auth"></pre>
     <button class="copy" data-copy="auth">Copy auth header</button>
 
-    <h2>Curl example — Tier 1 click</h2>
-    <pre class="snippet" data-snippet="curl"></pre>
-    <button class="copy" data-copy="curl">Copy curl</button>
+    <div data-field="mutation-snippets">
+      <h2>Curl example — Tier 1 click</h2>
+      <pre class="snippet" data-snippet="curl"></pre>
+      <button class="copy" data-copy="curl">Copy curl</button>
 
-    <h2>Claude Code skill (snippet)</h2>
-    <pre class="snippet" data-snippet="skill"></pre>
-    <button class="copy" data-copy="skill">Copy skill snippet</button>
+      <h2>Claude Code skill (snippet)</h2>
+      <pre class="snippet" data-snippet="skill"></pre>
+      <button class="copy" data-copy="skill">Copy skill snippet</button>
+    </div>
 
     <p class="note">For a full skill bundle, run <code>turnkeyai bridge install-skill</code> from your terminal. That writes a generated skill doc into <code>~/.turnkeyai/skills/</code>.</p>
   </section>
