@@ -70,6 +70,28 @@ export function RuntimePage() {
     setLive({ diagnostics, status, logs, reachable });
   }, POLL_MS);
 
+  const exportBundle = () => {
+    // Restored from PR H's DiagnosticsBundle (lost in the K1 rewrite).
+    // Serializes the live snapshot + log tail as a JSON blob for bug
+    // reports. When fetches haven't returned yet the button is disabled
+    // by `bundleReady`.
+    if (!live.diagnostics) return;
+    const bundle = {
+      diagnostics: live.diagnostics,
+      bridgeStatus: live.status,
+      logTail: live.logs,
+      capturedAt: new Date().toISOString(),
+    };
+    const text = JSON.stringify(bundle, null, 2);
+    void navigator.clipboard.writeText(text).catch(() => {
+      // Clipboard can be blocked in non-HTTPS / unfocused contexts.
+      // K2's diagnostics drawer will offer a "select manually" fallback;
+      // for K1 we just no-op so the button doesn't appear to do
+      // anything wrong.
+    });
+  };
+  const bundleReady = live.diagnostics != null;
+
   return (
     <div className="page">
       <div className="page-head">
@@ -80,7 +102,15 @@ export function RuntimePage() {
           </div>
         </div>
         <div className="right">
-          <button type="button" className="btn"><Icon name="diagnose" size={13} /> Export diagnostics</button>
+          <button
+            type="button"
+            className="btn"
+            onClick={exportBundle}
+            disabled={!bundleReady}
+            title={bundleReady ? "Copy diagnostics bundle to clipboard" : "Waiting for first poll…"}
+          >
+            <Icon name="diagnose" size={13} /> Export diagnostics
+          </button>
           <button type="button" className="btn"><Icon name="play" size={13} /> Open replay</button>
         </div>
       </div>

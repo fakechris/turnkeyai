@@ -20,6 +20,15 @@ export function AgentConnectPage() {
   // For K1 we keep the design's tokens display (sk-•••… style mask).
   // K3 will source the real daemon token + scope from AppState.
   const tokenMasked = state.token ? maskToken(state.token) : "tk_op_••••••••••••••••4f12";
+  const endpoint = `${window.location.origin}/bridge/command`;
+
+  const copy = (text: string) => {
+    void navigator.clipboard.writeText(text).catch(() => {
+      // Clipboard can fail in non-HTTPS / unfocused contexts; for K1
+      // we just swallow — the value is still visible in the readOnly
+      // input so the user can select+copy manually.
+    });
+  };
 
   return (
     <div className="page">
@@ -94,26 +103,47 @@ export function AgentConnectPage() {
             <div className="setting-row" style={{ paddingTop: 4 }}>
               <div className="lbl"><b>Endpoint</b><span>本地 daemon · 不出网</span></div>
               <div>
-                <input
-                  className="field"
-                  defaultValue={`${window.location.origin}/bridge/command`}
-                />
+                <input className="field" readOnly value={endpoint} />
               </div>
               <div className="row" style={{ justifyContent: "flex-end" }}>
-                <button type="button" className="btn ghost">Copy</button>
+                <button type="button" className="btn ghost" onClick={() => copy(endpoint)}>
+                  Copy
+                </button>
               </div>
             </div>
             <div className="setting-row">
               <div className="lbl"><b>Token</b><span>本地存储 · 启动 daemon 时生成</span></div>
-              <div><input className="field" defaultValue={tokenMasked} type="password" /></div>
+              <div>
+                {/* readOnly, no type=password — the value is already
+                    masked client-side. Double-masking with input type
+                    would render dots-over-dots. Copy button puts the
+                    UNMASKED token on the clipboard so the user can
+                    actually plug it into an agent config. */}
+                <input className="field" readOnly value={tokenMasked} />
+              </div>
               <div className="row" style={{ justifyContent: "flex-end" }}>
-                <button type="button" className="btn ghost">Rotate</button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={!state.token}
+                  onClick={() => state.token && copy(state.token)}
+                >
+                  Copy
+                </button>
               </div>
             </div>
             <div className="setting-row">
               <div className="lbl"><b>Scope</b><span>operator = 调度 + 工具调用 · 不含 raw CDP</span></div>
               <div>
-                <select className="field" defaultValue={state.scope === "unknown" ? "operator" : state.scope}>
+                {/* disabled (read-only) — scope changes need K3's
+                    /daemon/auth/regenerate-token endpoint. Showing
+                    the current scope here is informational. */}
+                <select
+                  className="field"
+                  disabled
+                  value={state.scope === "unknown" ? "operator" : state.scope}
+                  onChange={() => undefined}
+                >
                   <option value="read">read · 只读视图 / 不可写入</option>
                   <option value="operator">operator · 调度 + 工具 + 审批触发</option>
                   <option value="admin">admin · 含 raw-CDP / 配置变更（不推荐）</option>

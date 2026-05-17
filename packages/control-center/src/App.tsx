@@ -4,7 +4,7 @@
 // own mission-bar header (with mission title + status). Other pages get
 // a breadcrumb toolbar.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Sidebar, type SidebarCounts } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
@@ -29,13 +29,20 @@ export function App() {
   // ship the modal because mission creation needs a real backing store.
   const [, setNewMissionOpen] = useState(false);
 
-  const counts: SidebarCounts = {
-    missions: MOCK_DATA.missions.filter((m) => m.status !== "archived").length,
-    approvals: MOCK_DATA.approvals.filter((a) => !state.decisions[a.id]).length,
-    agents: MOCK_DATA.agents.length,
-    context: MOCK_DATA.contextSources.length,
-    recoveries: MOCK_DATA.recoveries.length,
-  };
+  // Memoized because App re-renders on every AppState change (route,
+  // pill updates from polling, etc.) but counts only actually move when
+  // a decision is recorded. Mock data is module-static, so depend on
+  // state.decisions and ignore the rest. (Gemini K1 review.)
+  const counts: SidebarCounts = useMemo(
+    () => ({
+      missions: MOCK_DATA.missions.filter((m) => m.status !== "archived").length,
+      approvals: MOCK_DATA.approvals.filter((a) => !state.decisions[a.id]).length,
+      agents: MOCK_DATA.agents.length,
+      context: MOCK_DATA.contextSources.length,
+      recoveries: MOCK_DATA.recoveries.length,
+    }),
+    [state.decisions]
+  );
 
   if (state.token === null) {
     return (
