@@ -11,27 +11,46 @@ export interface ParsedFragment {
   token: string | null;
   scope: string | null;
   route: Route | null;
+  /**
+   * Mission id, when the fragment carries `#/mission/<id>` (K1 introduces
+   * deep links into Mission Detail). Null for every other route shape.
+   */
+  missionId: string | null;
 }
 
 /**
  * Parses the URL hash fragment shapes the CLI emits and the user types:
- *   #/setup
+ *   #/missions
+ *   #/mission/<missionId>        (K1: deep link into Mission Detail)
  *   #token=ABC
- *   #token=ABC&scope=operator&route=bridge
- *   #/bridge?token=ABC&scope=admin   (legacy mixed form)
+ *   #token=ABC&scope=operator&route=missions
+ *   #/missions?token=ABC&scope=admin   (legacy mixed form)
  *
  * Unknown routes return route=null so the caller falls back to DEFAULT_ROUTE.
+ * For `#/mission/<id>`, missionId is captured but not validated here — the
+ * page renderer checks the id against the data layer and shows an empty
+ * state when the id is stale (e.g. mission was archived).
  */
 export function parseFragment(rawHash: string): ParsedFragment {
   const hash = rawHash.replace(/^#/, "");
-  if (!hash) return { token: null, scope: null, route: null };
+  if (!hash) return { token: null, scope: null, route: null, missionId: null };
   if (hash.startsWith("/")) {
-    const [routePart, queryPart] = hash.slice(1).split("?");
+    const [pathPart, queryPart] = hash.slice(1).split("?");
     const params = new URLSearchParams(queryPart ?? "");
+    const segments = (pathPart ?? "").split("/").filter(Boolean);
+    const routeName = normalizeRoute(segments[0]);
+    // `#/mission/<id>` → route=mission, missionId=<id>. We only honor the
+    // second segment when the first is "mission" (singular) — every other
+    // route is a leaf and any trailing path is ignored.
+    const missionId =
+      routeName === "mission" && typeof segments[1] === "string" && segments[1].length > 0
+        ? decodeURIComponent(segments[1])
+        : null;
     return {
       token: params.get("token"),
       scope: params.get("scope"),
-      route: normalizeRoute(routePart),
+      route: routeName,
+      missionId,
     };
   }
   const params = new URLSearchParams(hash);
@@ -39,6 +58,7 @@ export function parseFragment(rawHash: string): ParsedFragment {
     token: params.get("token"),
     scope: params.get("scope"),
     route: normalizeRoute(params.get("route")),
+    missionId: null,
   };
 }
 

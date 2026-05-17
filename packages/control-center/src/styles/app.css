@@ -849,7 +849,7 @@ a { color: inherit; text-decoration: none; }
 }
 .tl-thumb .thumb-tag {
   position: absolute; left: 4px; bottom: 4px;
-  background: rgba(0,0,0,0.6); color: #fff;
+  background: var(--overlay-scrim); color: var(--overlay-scrim-fg);
   padding: 1px 5px; border-radius: 3px;
   font-size: 9px;
 }

@@ -227,9 +227,16 @@ function WorkItemRow({ wi }: { wi: WorkItem }) {
   const agent = agentById(wi.agent);
 
   return (
-    <div
+    // Keyboard-accessible expander (codex K1 should-fix). Using a <button>
+    // instead of a <div onClick> so Enter/Space toggle natively, the row
+    // is in the tab order, and screen readers announce the expanded state
+    // via aria-expanded.
+    <button
+      type="button"
       className={"work-item " + wi.status + (expanded ? " expanded" : "") + (wi.status === "done" ? " done" : "")}
       onClick={() => setExpanded((v) => !v)}
+      aria-expanded={expanded}
+      style={{ font: "inherit", color: "inherit", textAlign: "left", width: "100%" }}
     >
       <div className="wi-row">
         <span className="wi-num mono">{String(wi.n).padStart(2, "0")}</span>
@@ -278,7 +285,7 @@ function WorkItemRow({ wi }: { wi: WorkItem }) {
           )}
         </div>
       )}
-    </div>
+    </button>
   );
 }
 

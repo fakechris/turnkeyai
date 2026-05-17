@@ -144,6 +144,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const openMission = useCallback((missionId: string) => {
     dispatch({ type: "set-mission", missionId });
     dispatch({ type: "set-route", route: "mission" });
+    // Codex K1 should-fix: also update the URL hash so refresh/back/
+    // bookmark all go back to the same mission. We encode as
+    // `#/mission/<id>` — useHashRoute knows to parse that into both
+    // route="mission" AND selectedMissionId=<id> on reload.
+    if (typeof window !== "undefined") {
+      window.location.hash = `#/mission/${missionId}`;
+    }
   }, []);
   // Side effect (sessionStorage write) happens in the callback, NOT in
   // the reducer (gemini PR J1 review). Same for clearToken below.

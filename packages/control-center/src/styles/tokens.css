@@ -69,6 +69,14 @@
   --h-weight: 500;
   --case: none;
   --letter-label: 0.04em;
+
+  /* Overlay scrim — used by thumbnail tag chips that sit ON TOP of an
+     image / preview. Black/white because they need to be legible against
+     arbitrary content regardless of theme. Codex K1 nit: keep these as
+     tokens so future theme tweaks (e.g. high-contrast mode) override
+     them in one place. */
+  --overlay-scrim: rgba(0, 0, 0, 0.6);
+  --overlay-scrim-fg: #fff;
 }
 
 /* ── CALM MODERN, LIGHT (default) ─────────────────────────────────────── */
@@ -134,8 +142,17 @@
   --muted-soft: #25231f;
 }
 
-/* Density variants (data-attribute on <html>) — kept identical to the
-   design tokens so the Tweaks panel can drive them later. */
+/*
+ * Density variants (data-attribute on <html>) — kept identical to the
+ * design tokens so a future Tweaks panel can drive them.
+ *
+ * Coverage in K1 (codex nit): density-pad-x/y + density-label are wired
+ * through .card-hd, .card-bd, .label. body font-size uses --density-text.
+ * High-traffic controls like .btn and form .field still ship fixed
+ * sizing — translating those to density tokens is a follow-up before
+ * K2 ships an actual density toggle. For now switching data-density
+ * only affects card-level chrome.
+ */
 [data-density="compact"] {
   --density-row: 26px;
   --density-pad-x: 10px;
