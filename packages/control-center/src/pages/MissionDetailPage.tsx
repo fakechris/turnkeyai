@@ -22,6 +22,7 @@ import {
   type WorkItem,
 } from "../mock/mission-data";
 import { useContextSources } from "../api/useMissionData";
+import { formatRelativeAgo, formatTimeOfDay } from "../util/format-time";
 import { Icon, CtxIcon } from "../components/Icon";
 import { AgentAvatar, AgentStack, StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
@@ -356,7 +357,7 @@ function TimelineEventRow({
 
   return (
     <div className="tl-event" data-kind={event.kind}>
-      <div className="tl-time mono">{event.t}</div>
+      <div className="tl-time mono">{event.t ?? formatTimeOfDay(event.tMs)}</div>
       <div className="tl-gutter">
         <div className="tl-marker" />
       </div>
@@ -509,15 +510,40 @@ function ContextPane() {
         ))}
       </div>
 
-      {tab === "browser" && selected && (
-        <BrowserContextBody source={selected} sources={sources} onSelect={setSelectedId} />
+      {selected ? (
+        <>
+          {tab === "browser" && (
+            <BrowserContextBody source={selected} sources={sources} onSelect={setSelectedId} />
+          )}
+          {tab === "doc" && <DocContextBody source={selected} />}
+          {tab === "folder" && <FolderContextBody source={selected} />}
+          {tab === "api" && <ApiContextBody source={selected} />}
+          {tab === "desktop" && <DesktopContextBody source={selected} />}
+        </>
+      ) : (
+        <EmptyContextState kind={tab} />
       )}
-      {tab === "doc" && selected && <DocContextBody source={selected} />}
-      {tab === "folder" && selected && <FolderContextBody source={selected} />}
-      {tab === "api" && selected && <ApiContextBody source={selected} />}
-      {tab === "desktop" && selected && <DesktopContextBody source={selected} />}
 
       <PendingApprovalCard />
+    </div>
+  );
+}
+
+function EmptyContextState({ kind }: { kind: ContextKind }) {
+  const labels: Record<ContextKind, string> = {
+    browser: "No browser sessions yet. Agents will spawn one when they need to navigate.",
+    doc: "No documents attached. Use mission setup to attach a document watcher.",
+    folder: "No folders attached.",
+    api: "No API integrations attached.",
+    desktop: "No desktop sources attached.",
+  };
+  return (
+    <div className="ctx-body">
+      <div className="card">
+        <div className="card-bd" style={{ padding: 16, textAlign: "center", color: "var(--text-muted)", fontSize: 11.5 }}>
+          {labels[kind]}
+        </div>
+      </div>
     </div>
   );
 }
@@ -601,7 +627,7 @@ function BrowserContextBody({
             />
             {source.state}
           </span>
-          <span className="k">Last action</span><span className="v mono">{source.lastUse}</span>
+          <span className="k">Last action</span><span className="v mono">{source.lastUse || (source.lastUseAtMs ? formatRelativeAgo(source.lastUseAtMs) : "—")}</span>
         </div>
       </div>
 

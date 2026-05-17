@@ -31,7 +31,6 @@ describe("createBrowserContextSourceProvider", () => {
         transportMode: "direct-cdp",
         transportLabel: "direct-cdp",
       },
-      clock: { now: () => 10_000 },
     });
     const out = await provider.listLive();
     assert.equal(out.length, 2);
@@ -52,23 +51,24 @@ describe("createBrowserContextSourceProvider", () => {
         transportMode: "relay",
         transportLabel: "relay",
       },
-      clock: { now: () => 0 },
     });
     assert.deepEqual(await provider.listLive(), []);
   });
 
-  it("formats lastUse as a human-friendly age", async () => {
+  it("exposes raw lastUseAtMs without formatting (client formats)", async () => {
+    // gemini K3 review: daemon doesn't format display strings. Server
+    // returns the monotonic timestamp; client renders "Xm ago".
     const provider = createBrowserContextSourceProvider({
       browserBridge: {
         async listSessions() {
-          return [{ ...baseSession, lastActiveAt: 0 }];
+          return [{ ...baseSession, lastActiveAt: 1_700_000_000_000 }];
         },
         transportMode: "local",
         transportLabel: "local-automation",
       },
-      clock: { now: () => 5 * 60 * 1000 },
     });
     const out = await provider.listLive();
-    assert.equal(out[0]!.lastUse, "5m ago");
+    assert.equal(out[0]!.lastUse, "");
+    assert.equal(out[0]!.lastUseAtMs, 1_700_000_000_000);
   });
 });

@@ -336,7 +336,6 @@ const bridgeMissionRecorder = createBridgeMissionActivityRecorder({
 });
 const browserContextSourceProvider = createBrowserContextSourceProvider({
   browserBridge,
-  clock,
 });
 
 await mkdir(DATA_DIR, { recursive: true });

@@ -293,6 +293,46 @@ describe("mission-routes", () => {
     }
   });
 
+  it("GET /mission-context-sources survives a provider that rejects (codex K3)", async () => {
+    // Even though the bundled BrowserContextSourceProvider catches its
+    // own errors, the route MUST also defend against a future provider
+    // that rejects (or non-Error throws). Falling back to registry-only
+    // results means the read endpoint still returns useful data when
+    // the bridge layer is mid-recovery.
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      await deps.contextSourceRegistry.replaceAll([
+        {
+          id: "ctx.doc.notes",
+          kind: "doc",
+          title: "Notes",
+          url: "",
+          state: "watching",
+          lastUse: "—",
+        },
+      ]);
+      const browserContextSourceProvider = {
+        async listLive(): Promise<never> {
+          throw new Error("provider went pop");
+        },
+      };
+      const { res, getStatus, getJson } = createResponse();
+      await handleMissionRoutes({
+        req: createRequest({ method: "GET", url: "/mission-context-sources" }),
+        res,
+        url: new URL("http://127.0.0.1/mission-context-sources"),
+        deps: { ...deps, browserContextSourceProvider },
+      });
+      assert.equal(getStatus(), 200);
+      const list = getJson() as Array<{ id: string }>;
+      assert.equal(list.length, 1);
+      assert.equal(list[0]!.id, "ctx.doc.notes");
+    } finally {
+      t.cleanup();
+    }
+  });
+
   it("ignores routes outside the /missions / /approvals namespace", async () => {
     const t = tmpDir();
     try {

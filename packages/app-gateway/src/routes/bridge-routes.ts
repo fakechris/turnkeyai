@@ -233,15 +233,18 @@ export async function handleBridgeRoutes(input: {
       scope: `bridge:batch:${deriveBridgePrincipal(token)}`,
       // missionId/workItemId in the fingerprint: same Idempotency-Key
       // reused under a different mission must NOT replay the cached
-      // response, since the timeline event semantics differ. Mismatch
-      // here surfaces as a 409 conflict.
+      // response, since the timeline event semantics differ. We serialize
+      // the full tri-state (absent/blank/value) so a request that omits
+      // missionId fingerprints differently from one that supplies a
+      // blank string — both produce different responses (no-op vs 400)
+      // and must not share a cache slot.
       fingerprint: {
         actions,
         sessionId: sessionId ?? null,
         threadId: threadId ?? null,
         instructions: instructions ?? null,
-        missionId: parsedMission.missionId,
-        workItemId: parsedMission.workItemId,
+        mission: parsedMission.mission,
+        workItem: parsedMission.workItem,
       },
       execute: async () => {
         const validation = deps.missionContext
@@ -321,19 +324,22 @@ async function dispatchSingleTool(input: {
     // Token deliberately NOT fingerprinted — agent retries share the same token
     // and must replay. SessionId, threadId, tool, args, instructions all
     // describe what the agent asked the bridge to do; identical asks dedupe.
-    // missionId/workItemId ARE fingerprinted: same idempotency key reused
+    // mission/workItem ARE fingerprinted: same idempotency key reused
     // under a different mission must NOT replay, because the timeline event
-    // would land on the wrong mission (or get skipped silently). A mismatch
-    // here surfaces as a 409 conflict so the caller fixes the key.
-    // Cross-principal isolation is handled by the scope, not the fingerprint.
+    // would land on the wrong mission (or get skipped silently). The full
+    // tri-state (absent/blank/value) is serialized so that omitting a
+    // field fingerprints differently from supplying a blank one (one
+    // dispatches, the other 400s). A mismatch surfaces as 409 so the
+    // caller fixes the key. Cross-principal isolation is handled by the
+    // scope, not the fingerprint.
     fingerprint: {
       tool,
       args: args ?? null,
       sessionId: sessionId ?? null,
       threadId: threadId ?? null,
       instructions: instructions ?? null,
-      missionId: parsedMission.missionId,
-      workItemId: parsedMission.workItemId,
+      mission: parsedMission.mission,
+      workItem: parsedMission.workItem,
     },
     execute: async () => {
       const validation = input.missionContext

@@ -62,17 +62,35 @@ const fixtureWorkItem: WorkItem = {
 };
 
 describe("parseBridgeMissionContext", () => {
-  it("trims whitespace and rejects empty strings", () => {
-    assert.deepEqual(
-      parseBridgeMissionContext({ missionId: "  msn.1  ", workItemId: "" }),
-      { missionId: "msn.1", workItemId: null }
-    );
+  it("trims whitespace into value state", () => {
+    assert.deepEqual(parseBridgeMissionContext({ missionId: "  msn.1  " }), {
+      mission: { state: "value", value: "msn.1" },
+      workItem: { state: "absent" },
+    });
   });
 
-  it("returns nulls for non-string input", () => {
-    assert.deepEqual(parseBridgeMissionContext({ missionId: 42, workItemId: null }), {
-      missionId: null,
-      workItemId: null,
+  it("distinguishes absent from blank (key codex K3 finding)", () => {
+    // The whole point of the tri-state: caller-omitted the field
+    // (absent → no-op) MUST NOT collapse to "supplied a blank value"
+    // (blank → 400). Otherwise a typo'd "   " silently disables audit.
+    assert.deepEqual(parseBridgeMissionContext({}), {
+      mission: { state: "absent" },
+      workItem: { state: "absent" },
+    });
+    assert.deepEqual(parseBridgeMissionContext({ missionId: "   " }), {
+      mission: { state: "blank" },
+      workItem: { state: "absent" },
+    });
+    assert.deepEqual(parseBridgeMissionContext({ missionId: "" }), {
+      mission: { state: "blank" },
+      workItem: { state: "absent" },
+    });
+  });
+
+  it("treats non-string values as blank (caller sent something but not a usable id)", () => {
+    assert.deepEqual(parseBridgeMissionContext({ missionId: 42 }), {
+      mission: { state: "blank" },
+      workItem: { state: "absent" },
     });
   });
 });
@@ -85,15 +103,42 @@ describe("validateBridgeMissionContext", () => {
 
   it("passes through when no metadata is supplied", async () => {
     const result = await validateBridgeMissionContext({
-      context: { missionId: null, workItemId: null },
+      context: { mission: { state: "absent" }, workItem: { state: "absent" } },
       deps,
     });
     assert.deepEqual(result, { ok: true, missionId: null, workItemId: null });
   });
 
+  it("rejects blank missionId with 400 (codex K3 — must not silently disable audit)", async () => {
+    const result = await validateBridgeMissionContext({
+      context: { mission: { state: "blank" }, workItem: { state: "absent" } },
+      deps,
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.statusCode, 400);
+      assert.equal(result.body.code, "invalid_mission_context");
+    }
+  });
+
+  it("rejects blank workItemId with 400", async () => {
+    const result = await validateBridgeMissionContext({
+      context: {
+        mission: { state: "value", value: "msn.1" },
+        workItem: { state: "blank" },
+      },
+      deps,
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.statusCode, 400);
+  });
+
   it("rejects workItemId without missionId (can't validate scope)", async () => {
     const result = await validateBridgeMissionContext({
-      context: { missionId: null, workItemId: "wi.1" },
+      context: {
+        mission: { state: "absent" },
+        workItem: { state: "value", value: "wi.1" },
+      },
       deps,
     });
     assert.equal(result.ok, false);
@@ -105,7 +150,10 @@ describe("validateBridgeMissionContext", () => {
 
   it("returns 404 when missionId does not exist", async () => {
     const result = await validateBridgeMissionContext({
-      context: { missionId: "msn.ghost", workItemId: null },
+      context: {
+        mission: { state: "value", value: "msn.ghost" },
+        workItem: { state: "absent" },
+      },
       deps,
     });
     assert.equal(result.ok, false);
@@ -117,7 +165,10 @@ describe("validateBridgeMissionContext", () => {
 
   it("returns 400 when workItemId does not belong to mission", async () => {
     const result = await validateBridgeMissionContext({
-      context: { missionId: "msn.1", workItemId: "wi.other" },
+      context: {
+        mission: { state: "value", value: "msn.1" },
+        workItem: { state: "value", value: "wi.other" },
+      },
       deps,
     });
     assert.equal(result.ok, false);
@@ -129,7 +180,10 @@ describe("validateBridgeMissionContext", () => {
 
   it("accepts a valid mission + work-item pair", async () => {
     const result = await validateBridgeMissionContext({
-      context: { missionId: "msn.1", workItemId: "wi.1" },
+      context: {
+        mission: { state: "value", value: "msn.1" },
+        workItem: { state: "value", value: "wi.1" },
+      },
       deps,
     });
     assert.deepEqual(result, { ok: true, missionId: "msn.1", workItemId: "wi.1" });

@@ -30,7 +30,6 @@ export interface BrowserSessionLister {
 
 export interface CreateBrowserContextSourceProviderOptions {
   browserBridge: BrowserSessionLister;
-  clock: { now(): number };
 }
 
 export function createBrowserContextSourceProvider(
@@ -47,25 +46,26 @@ export function createBrowserContextSourceProvider(
         // glitch) should just hide live sessions, not 500 the read.
         return [];
       }
-      const now = options.clock.now();
-      return sessions.map((session) => sessionToContextSource(session, options.browserBridge, now));
+      return sessions.map((session) => sessionToContextSource(session, options.browserBridge));
     },
   };
 }
 
 function sessionToContextSource(
   session: BrowserSession,
-  bridge: BrowserSessionLister,
-  now: number
+  bridge: BrowserSessionLister
 ): ContextSource {
-  const ageMs = Math.max(0, now - session.lastActiveAt);
+  // `lastUse` left blank — clients format relative-time on display from
+  // `lastUseAtMs`. The daemon doesn't own localized formatting (general
+  // rule: server returns raw timestamps; client formats).
   return {
     id: browserSessionContextId(session.browserSessionId),
     kind: "browser",
     title: `Browser session ${session.browserSessionId}`,
     url: "",
     state: mapSessionStatus(session.status),
-    lastUse: formatAgo(ageMs),
+    lastUse: "",
+    lastUseAtMs: session.lastActiveAt,
     transport: bridge.transportLabel,
     session: session.browserSessionId,
   };
@@ -85,16 +85,4 @@ function mapSessionStatus(status: BrowserSession["status"]): string {
     default:
       return status;
   }
-}
-
-function formatAgo(ageMs: number): string {
-  if (ageMs < 1000) return "just now";
-  const seconds = Math.floor(ageMs / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
 }

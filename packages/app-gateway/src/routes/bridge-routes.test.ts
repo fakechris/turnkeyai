@@ -848,6 +848,39 @@ describe("bridge-routes", () => {
       assert.equal(collide.getStatus(), 409);
     });
 
+    it("rejects whitespace-only missionId with 400 (codex K3 — must not silently disable audit)", async () => {
+      const activityStore = memActivityStore();
+      let dispatched = 0;
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        commandDispatcher: {
+          async dispatch(): Promise<BridgeCommandResponse> {
+            dispatched += 1;
+            return { status: 200, body: { ok: true } };
+          },
+        },
+        missionContext: buildMissionDeps(activityStore),
+      };
+      const response = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/bridge/command",
+          body: { tool: "snapshot", missionId: "   " },
+        }),
+        res: response.res,
+        url: new URL("http://127.0.0.1/bridge/command"),
+        deps,
+      });
+      assert.equal(response.getStatus(), 400);
+      const body = response.getJson() as { code: string };
+      assert.equal(body.code, "invalid_mission_context");
+      assert.equal(dispatched, 0, "must not dispatch when missionId is blank");
+      assert.equal(activityStore.events.length, 0);
+    });
+
     it("missionId is optional — calls without it dispatch normally without recording", async () => {
       const activityStore = memActivityStore();
       const deps: BridgeRouteDeps = {

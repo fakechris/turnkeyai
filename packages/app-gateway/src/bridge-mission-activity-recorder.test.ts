@@ -68,6 +68,9 @@ describe("createBridgeMissionActivityRecorder", () => {
     assert.equal(event.runtime?.sessionId, "sess_a");
     assert.equal(event.runtime?.transport, "direct-cdp");
     assert.equal(event.tMs, clock.now());
+    // Daemon does NOT emit a display-time `t` field — client formats
+    // from tMs. gemini K3 review: server doesn't own localized strings.
+    assert.equal(event.t, undefined);
   });
 
   it("recordFailure appends a recovery event with bucket runtime + danger emph", async () => {

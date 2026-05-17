@@ -138,10 +138,12 @@ function buildBaseEvent(input: BuildBaseEventInput): ActivityEvent {
   };
   if (input.sessionId) runtime.sessionId = input.sessionId;
   if (input.workItemId) runtime.workItemId = input.workItemId;
+  // `t` is intentionally left unset — the daemon doesn't format display
+  // strings (general rule: client owns localized formatting). `tMs` is
+  // authoritative; the dashboard derives the HH:MM:SS column from it.
   const event: ActivityEvent = {
     id: input.eventId,
     missionId: input.missionId,
-    t: formatDisplayTime(input.nowMs),
     tMs: input.nowMs,
     kind: input.kind,
     actor: "agent.browser",
@@ -164,14 +166,6 @@ function buildBaseEvent(input: BuildBaseEventInput): ActivityEvent {
  */
 export function browserSessionContextId(sessionId: string): string {
   return `ctx.browser.session.${sessionId}`;
-}
-
-function formatDisplayTime(epochMs: number): string {
-  const d = new Date(epochMs);
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  const ss = String(d.getUTCSeconds()).padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
 }
 
 async function safeAppend(

@@ -141,7 +141,15 @@ export interface ContextSource {
   cn?: string;
   url: string;
   state: string;
+  /** Optional display hint (the K1 design fixtures use "Xm ago" style
+   *  strings). The daemon does NOT format relative ages — server-emitted
+   *  entries leave this empty and populate `lastUseAtMs` instead.
+   *  Clients format relative-time on display. K2 fixtures still populate
+   *  it for the recorded narrative. */
   lastUse: string;
+  /** Monotonic timestamp of the last activity touching this source.
+   *  Authoritative for "how long since X" calculations on the client. */
+  lastUseAtMs?: number;
   transport?: string;
   session?: string;
   writer?: AgentId;
@@ -169,8 +177,11 @@ export interface EvidenceRef {
 export interface ActivityEvent {
   id: ActivityEventId;
   missionId: MissionId;
-  /** Display time (the design uses "HH:MM:SS"). */
-  t: string;
+  /** Optional display hint (the K1 design fixtures use "HH:MM:SS"). The
+   *  daemon does NOT format this — server-emitted events leave it
+   *  unset; clients derive display from `tMs`. K2 demo fixtures still
+   *  populate it for the recorded narrative. */
+  t?: string;
   /** Monotonic timestamp — used for ordering. */
   tMs: number;
   /** Day header. Only set when this event opens a new day in the timeline. */

@@ -22,9 +22,24 @@ export interface BridgeMissionValidatorDeps {
   workItemStore: Pick<WorkItemStore, "listByMission">;
 }
 
+/**
+ * Tri-state per field:
+ *   - { state: "absent" }  → caller omitted the field
+ *   - { state: "blank" }   → caller supplied a value but it was empty /
+ *                            whitespace-only (validation MUST reject; a
+ *                            mission-bound call with a typo'd mission ID
+ *                            silently disabling audit recording is the
+ *                            failure mode codex flagged)
+ *   - { state: "value" }   → trimmed non-empty string
+ */
+type FieldState =
+  | { state: "absent" }
+  | { state: "blank" }
+  | { state: "value"; value: string };
+
 export interface ParsedBridgeMissionContext {
-  missionId: MissionId | null;
-  workItemId: WorkItemId | null;
+  mission: FieldState;
+  workItem: FieldState;
 }
 
 export type BridgeMissionValidationResult =
@@ -35,18 +50,40 @@ export function parseBridgeMissionContext(input: {
   missionId?: unknown;
   workItemId?: unknown;
 }): ParsedBridgeMissionContext {
-  const missionId = nonEmptyString(input.missionId);
-  const workItemId = nonEmptyString(input.workItemId);
-  return { missionId, workItemId };
+  return {
+    mission: parseField(input.missionId),
+    workItem: parseField(input.workItemId),
+  };
 }
 
 export async function validateBridgeMissionContext(input: {
   context: ParsedBridgeMissionContext;
   deps: BridgeMissionValidatorDeps;
 }): Promise<BridgeMissionValidationResult> {
-  const { missionId, workItemId } = input.context;
+  const { mission, workItem } = input.context;
 
-  if (workItemId && !missionId) {
+  if (mission.state === "blank") {
+    return {
+      ok: false,
+      statusCode: 400,
+      body: {
+        error: "missionId must be a non-empty string",
+        code: "invalid_mission_context",
+      },
+    };
+  }
+  if (workItem.state === "blank") {
+    return {
+      ok: false,
+      statusCode: 400,
+      body: {
+        error: "workItemId must be a non-empty string",
+        code: "invalid_mission_context",
+      },
+    };
+  }
+
+  if (workItem.state === "value" && mission.state !== "value") {
     return {
       ok: false,
       statusCode: 400,
@@ -57,12 +94,13 @@ export async function validateBridgeMissionContext(input: {
     };
   }
 
-  if (!missionId) {
+  if (mission.state !== "value") {
     return { ok: true, missionId: null, workItemId: null };
   }
 
-  const mission = await input.deps.missionStore.get(missionId);
-  if (!mission) {
+  const missionId = mission.value;
+  const missionRecord = await input.deps.missionStore.get(missionId);
+  if (!missionRecord) {
     return {
       ok: false,
       statusCode: 404,
@@ -70,9 +108,13 @@ export async function validateBridgeMissionContext(input: {
     };
   }
 
-  if (workItemId) {
+  if (workItem.state === "value") {
+    // listByMission instead of get(id): WorkItemStore has no by-id
+    // accessor today (gemini flagged the O(N) here). Per-mission work
+    // item count is bounded by design (demo: 8). When K4 adds
+    // mutations and the count grows, add WorkItemStore.get and switch.
     const items = await input.deps.workItemStore.listByMission(missionId);
-    const owned = items.some((item) => item.id === workItemId);
+    const owned = items.some((item) => item.id === workItem.value);
     if (!owned) {
       return {
         ok: false,
@@ -85,11 +127,17 @@ export async function validateBridgeMissionContext(input: {
     }
   }
 
-  return { ok: true, missionId, workItemId: workItemId ?? null };
+  return {
+    ok: true,
+    missionId,
+    workItemId: workItem.state === "value" ? workItem.value : null,
+  };
 }
 
-function nonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") return null;
+function parseField(value: unknown): FieldState {
+  if (value === undefined || value === null) return { state: "absent" };
+  if (typeof value !== "string") return { state: "blank" };
   const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  if (trimmed.length === 0) return { state: "blank" };
+  return { state: "value", value: trimmed };
 }
