@@ -1,26 +1,70 @@
-// Cross-cutting types for the Control Center app.
+// Cross-cutting types for the Mission Control app (PR K1).
+//
+// The Control Center → Mission Control rename means the route map changes
+// shape: Setup/Bridge/Tabs/Agent Connect/Diagnostics fold into a new IA
+// centered on Missions (the user's primary unit of work). See
+// docs/design/mission-control-product-design.md §5.
 
-// Token scopes the dashboard knows about. Matches the daemon-side
-// resolveAppToken output from packages/cli/src/app-command.ts.
+// Token scopes from the daemon's resolveAppToken output.
 export type Scope = "read" | "operator" | "admin" | "unknown";
-
 export const KNOWN_SCOPES: readonly Scope[] = ["read", "operator", "admin", "unknown"];
 
-// Hash routes the dashboard knows about. Adding a route requires updating
-// this list AND adding a <route -> renderer> entry in App.tsx.
-export type Route = "setup" | "bridge" | "tabs" | "agent" | "diagnostics";
+// Mission Control routes. K1 ships the full IA; pages whose backend
+// objects don't exist yet (Missions, Approvals, Agents) render against
+// the mock data layer.
+export type Route =
+  | "missions"
+  | "mission"
+  | "approvals"
+  | "agents"
+  | "context"
+  | "agent-connect"
+  | "runtime"
+  | "settings";
 
 export const KNOWN_ROUTES: readonly Route[] = [
-  "setup",
-  "bridge",
-  "tabs",
-  "agent",
-  "diagnostics",
+  "missions",
+  "mission",
+  "approvals",
+  "agents",
+  "context",
+  "agent-connect",
+  "runtime",
+  "settings",
 ];
 
-// State of the persistent connection pill in the top bar.
-export type ConnectionPillState = "unknown" | "ok" | "warn" | "bad";
+// Mission lifecycle states. Mapped to status-dot CSS classes by exact name.
+export type MissionStatus =
+  | "draft"
+  | "planning"
+  | "working"
+  | "needs_approval"
+  | "blocked"
+  | "done"
+  | "archived";
 
+export const STATUS_LABEL: Record<MissionStatus, string> = {
+  draft: "Draft",
+  planning: "Planning",
+  working: "Working",
+  needs_approval: "Needs approval",
+  blocked: "Blocked",
+  done: "Done",
+  archived: "Archived",
+};
+
+export type StatusTagTone = "" | "info" | "success" | "warning" | "danger" | "accent";
+export const STATUS_TAG: Record<MissionStatus, StatusTagTone> = {
+  draft: "",
+  planning: "info",
+  working: "success",
+  needs_approval: "warning",
+  blocked: "danger",
+  done: "",
+  archived: "",
+};
+
+export type ConnectionPillState = "unknown" | "ok" | "warn" | "bad";
 export interface ConnectionPill {
   state: ConnectionPillState;
   label: string;

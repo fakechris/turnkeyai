@@ -168,19 +168,46 @@ export function buildDashboardUrl(
   return `${baseUrl}/app#${fragments.join("&")}`;
 }
 
-/** Exposed for unit tests. Validates against a closed set of routes. */
+/**
+ * Exposed for unit tests. Validates against a closed set of routes.
+ *
+ * Routes match the Mission Control IA (PR K1). The old PR F→J routes
+ * (`setup` / `bridge` / `tabs` / `diagnostics`) folded into the new IA
+ * but `--route setup` no longer works — they're rejected back to the
+ * default ("missions") so the user lands somewhere valid instead of on
+ * a route the dashboard doesn't know about.
+ */
 export function parseAppRoute(args: string[]): string {
-  const VALID = new Set(["setup", "bridge", "tabs", "agent", "diagnostics"]);
+  const VALID = new Set([
+    "missions",
+    "approvals",
+    "agents",
+    "context",
+    "agent",
+    "agent-connect",
+    "runtime",
+    "settings",
+  ]);
   const idx = args.findIndex((arg) => arg === "--route");
   const next = idx >= 0 ? args[idx + 1] : undefined;
-  if (next && VALID.has(next)) return next;
+  const normalize = (raw: string): string | null => {
+    // `agent` is a short alias for `agent-connect` (carried over from the
+    // PR F→I help text where the page was just called "Agent Connect").
+    if (raw === "agent") return "agent-connect";
+    return VALID.has(raw) ? raw : null;
+  };
+  if (next) {
+    const normalized = normalize(next);
+    if (normalized) return normalized;
+  }
   for (const arg of args) {
     if (arg.startsWith("--route=")) {
       const value = arg.slice("--route=".length);
-      if (VALID.has(value)) return value;
+      const normalized = normalize(value);
+      if (normalized) return normalized;
     }
   }
-  return "setup";
+  return "missions";
 }
 
 function hasFlag(args: string[], name: string): boolean {
@@ -290,17 +317,18 @@ export async function runAppCommand(args: string[]): Promise<void> {
 
 export function runAppHelp(exitCode: number): never {
   const lines = [
-    "TurnkeyAI Control Center",
+    "TurnkeyAI Mission Control",
     "",
     "Usage:",
     "  turnkeyai app [--route <name>] [--no-open] [--no-start]",
     "",
     "Auto-starts the daemon if it is not already running, then opens the local",
-    "Control Center in your default browser with the daemon token preloaded.",
+    "Mission Control in your default browser with the daemon token preloaded.",
     "",
     "Options:",
-    "  --route <name>     Open a specific page (setup | bridge | tabs | agent | diagnostics).",
-    "                     Default: setup",
+    "  --route <name>     Open a specific page (missions | approvals | agents |",
+    "                     context | agent-connect | runtime | settings).",
+    "                     Default: missions",
     "  --no-open          Print the URL instead of launching a browser",
     "  --no-start         Do not auto-start the daemon; require an existing one",
     "",

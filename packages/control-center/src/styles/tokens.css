@@ -1,37 +1,59 @@
 /*
- * Design tokens — single source of truth for color, type, spacing.
+ * Design tokens — Mission Control design system (PR K1).
  *
- * Every component below MUST consume these via var(--token-name); inline
- * literal hex / rgb values are an anti-pattern. When the user's spec calls
- * for theme switching or color tweaks later, the change happens here once.
+ * Translated from the claude.ai/design handoff under
+ * /tmp/design-extract/turnkeyai/project/styles.css (kept locally during
+ * implementation; not committed). Two themes (light/dark) ship in K1;
+ * "calm modern" direction is the default. The "terminal" direction from
+ * the design mock is intentionally NOT shipped — single direction in K1
+ * keeps the surface small. We can add it later by data-attribute swap.
  *
- * Token naming convention:
- *   --color-{semantic}        semantic colors (bg, panel, border, text, muted)
- *   --color-state-{ok|warn|bad|accent}   state-conveying colors
- *   --space-{n}               spacing scale (0.5 -> 8 in units of 4px)
- *   --radius-{sm|md|pill}     border-radius scale
- *   --font-{family}           type families
- *   --text-{size|weight}      typography scale (text-size-xs, text-weight-bold, etc.)
+ * Token convention:
+ *   --color-{semantic}   semantic surfaces + content (bg, surface, text, …)
+ *   --color-state-{ok|warn|bad|accent|info}  state-conveying colors
+ *   --color-{state}-soft soft / fill variants for tags + banners
+ *   --r-{sm|md|lg|xl}    radius scale
+ *   --space-{n}          spacing (4px base)
+ *   --shadow-{xs|sm|md|lg}
+ *   --font-{sans|display|mono}
+ *   --density-*          row height / padding / gap / text size
+ *   --letter-label       label letter-spacing (controlled by direction)
+ *   --case               text-transform for labels
+ *   --h-weight           heading font-weight
+ *
+ * Theme switching: set data-theme="dark" on <html> to flip.
  */
 
 :root {
-  /* Color — surfaces */
-  --color-bg: #0e1116;
-  --color-panel: #161b22;
-  --color-panel-2: #1f2630;
-  --color-border: #2a313c;
+  /* Fonts */
+  --font-sans:
+    "IBM Plex Sans", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
+  --font-display:
+    "Source Serif 4", "Noto Serif SC", ui-serif, Georgia, serif;
+  --font-mono:
+    "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  /* Color — content */
-  --color-text: #e8edf3;
-  --color-muted: #8b95a4;
+  /* Radius */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-xl: 14px;
 
-  /* Color — state */
-  --color-state-accent: #58a6ff;
-  --color-state-ok: #3fb950;
-  --color-state-warn: #d29922;
-  --color-state-bad: #f85149;
+  /* Shadows */
+  --shadow-xs: 0 1px 0 rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 1px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 6px 24px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.18), 0 6px 12px rgba(0, 0, 0, 0.06);
 
-  /* Spacing — 4px base */
+  /* Density — "regular" defaults */
+  --density-row: 32px;
+  --density-pad-x: 14px;
+  --density-pad-y: 10px;
+  --density-gap: 10px;
+  --density-text: 13px;
+  --density-label: 11px;
+
+  /* Spacing scale (used for layouts that need explicit dimensions) */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -41,31 +63,109 @@
   --space-7: 28px;
   --space-8: 32px;
 
-  /* Radius */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-pill: 999px;
+  /* Direction-controlled type knobs (calm modern defaults) */
+  --font-body: var(--font-sans);
+  --font-h: var(--font-display);
+  --h-weight: 500;
+  --case: none;
+  --letter-label: 0.04em;
 
-  /* Type */
-  --font-sans:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+  /* Overlay scrim — used by thumbnail tag chips that sit ON TOP of an
+     image / preview. Black/white because they need to be legible against
+     arbitrary content regardless of theme. Codex K1 nit: keep these as
+     tokens so future theme tweaks (e.g. high-contrast mode) override
+     them in one place. */
+  --overlay-scrim: rgba(0, 0, 0, 0.6);
+  --overlay-scrim-fg: #fff;
+}
 
-  --text-size-xs: 11px;
-  --text-size-sm: 12px;
-  --text-size-md: 13px;
-  --text-size-base: 14px;
-  --text-size-lg: 20px;
-  --text-size-xl: 24px;
+/* ── CALM MODERN, LIGHT (default) ─────────────────────────────────────── */
+:root,
+[data-theme="light"] {
+  --bg: #f6f4ef;
+  --bg-2: #efece5;
+  --surface: #ffffff;
+  --surface-2: #faf8f3;
+  --surface-sunken: #f0ede6;
+  --border: #e6e1d6;
+  --border-strong: #d3cdbe;
+  --border-faint: #efebe1;
+  --text: #1a1a18;
+  --text-muted: #5e5b53;
+  --text-faint: #918d83;
+  --text-inv: #fdfcf8;
 
-  --text-weight-normal: 400;
-  --text-weight-medium: 500;
-  --text-weight-semibold: 600;
-  --text-weight-bold: 700;
+  --accent: #b3541e;
+  --accent-2: #d8804a;
+  --accent-fg: #fdfcf8;
+  --accent-soft: #f6e6da;
 
-  /* Letter spacing — used for caps section titles + tag eyebrows */
-  --tracking-tight: -0.01em;
-  --tracking-wide: 0.08em;
-  --tracking-eyebrow: 0.06em;
+  --info: #1f5bd3;
+  --info-soft: #e3ecfb;
+  --success: #1f6f4a;
+  --success-soft: #dfeee6;
+  --warning: #a45a07;
+  --warning-soft: #fcecd2;
+  --danger: #a31818;
+  --danger-soft: #f7dada;
+  --muted-soft: #ecebe5;
+}
+
+/* ── CALM MODERN, DARK ────────────────────────────────────────────────── */
+[data-theme="dark"] {
+  --bg: #161513;
+  --bg-2: #100f0d;
+  --surface: #1d1c19;
+  --surface-2: #232220;
+  --surface-sunken: #110f0d;
+  --border: #2e2c28;
+  --border-strong: #45423c;
+  --border-faint: #26241f;
+  --text: #ecead8;
+  --text-muted: #9b988b;
+  --text-faint: #6c6960;
+  --text-inv: #161513;
+
+  --accent: #e09563;
+  --accent-2: #f1ad7e;
+  --accent-fg: #1a130c;
+  --accent-soft: #3a2b1d;
+
+  --info: #6c9dff;
+  --info-soft: #1c2a48;
+  --success: #5cb389;
+  --success-soft: #1c2f25;
+  --warning: #e0a55a;
+  --warning-soft: #3a2d18;
+  --danger: #e8736a;
+  --danger-soft: #3a201d;
+  --muted-soft: #25231f;
+}
+
+/*
+ * Density variants (data-attribute on <html>) — kept identical to the
+ * design tokens so a future Tweaks panel can drive them.
+ *
+ * Coverage in K1 (codex nit): density-pad-x/y + density-label are wired
+ * through .card-hd, .card-bd, .label. body font-size uses --density-text.
+ * High-traffic controls like .btn and form .field still ship fixed
+ * sizing — translating those to density tokens is a follow-up before
+ * K2 ships an actual density toggle. For now switching data-density
+ * only affects card-level chrome.
+ */
+[data-density="compact"] {
+  --density-row: 26px;
+  --density-pad-x: 10px;
+  --density-pad-y: 6px;
+  --density-gap: 6px;
+  --density-text: 12.5px;
+  --density-label: 10.5px;
+}
+[data-density="comfy"] {
+  --density-row: 38px;
+  --density-pad-x: 18px;
+  --density-pad-y: 14px;
+  --density-gap: 14px;
+  --density-text: 14px;
+  --density-label: 11.5px;
 }

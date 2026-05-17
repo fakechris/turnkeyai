@@ -36,17 +36,32 @@ export interface AppStateValue {
   token: string | null;
   scope: Scope;
   route: Route;
+  /**
+   * When route === "mission", which mission to render. Selected from the
+   * Missions list, persisted across hash changes so the URL can be
+   * #/mission/msn.01 (or just #/mission with the most-recently-selected
+   * mission as fallback).
+   */
+  selectedMissionId: string | null;
   pill: ConnectionPill;
   lastStatus: BridgeStatus | null;
+  /**
+   * Approval decisions made in the current session, keyed by approvalId.
+   * In K1 these are local-only — there's no daemon endpoint yet.
+   * Persisted at K4 when the approval queue lands.
+   */
+  decisions: Record<string, "approved" | "denied">;
 }
 
 export type AppAction =
   | { type: "set-route"; route: Route }
+  | { type: "set-mission"; missionId: string | null }
   | { type: "set-token-manual"; token: string }
   | { type: "set-token-from-fragment"; token: string; scope: Scope }
   | { type: "clear-token" }
   | { type: "set-pill"; pill: ConnectionPill }
-  | { type: "set-last-status"; status: BridgeStatus | null };
+  | { type: "set-last-status"; status: BridgeStatus | null }
+  | { type: "decide-approval"; approvalId: string; decision: "approved" | "denied" };
 
 // Pure reducer (gemini PR J1 review): NO side effects (no sessionStorage,
 // no history.replaceState, no fetch). Side effects live in the action-
@@ -56,6 +71,10 @@ function reducer(state: AppStateValue, action: AppAction): AppStateValue {
   switch (action.type) {
     case "set-route":
       return state.route === action.route ? state : { ...state, route: action.route };
+    case "set-mission":
+      return state.selectedMissionId === action.missionId
+        ? state
+        : { ...state, selectedMissionId: action.missionId };
     case "set-token-manual":
       return { ...state, token: action.token, scope: "unknown" };
     case "set-token-from-fragment":
@@ -66,6 +85,11 @@ function reducer(state: AppStateValue, action: AppAction): AppStateValue {
       return { ...state, pill: action.pill };
     case "set-last-status":
       return { ...state, lastStatus: action.status };
+    case "decide-approval":
+      return {
+        ...state,
+        decisions: { ...state.decisions, [action.approvalId]: action.decision },
+      };
     default:
       return state;
   }
@@ -81,8 +105,10 @@ function makeInitialState(): AppStateValue {
     token: boot.token,
     scope: boot.scope,
     route: boot.route,
+    selectedMissionId: null,
     pill: { state: "unknown", label: "Checking…" },
     lastStatus: null,
+    decisions: {},
   };
 }
 
@@ -92,10 +118,12 @@ interface AppStateContextValue {
   // Convenience helpers — encapsulate the {dispatch, action-object} dance
   // for the common operations so call sites read like a normal API.
   setRoute: (route: Route) => void;
+  openMission: (missionId: string) => void;
   setToken: (token: string) => void;
   clearToken: () => void;
   setPill: (pill: ConnectionPill) => void;
   setLastStatus: (status: BridgeStatus | null) => void;
+  decideApproval: (approvalId: string, decision: "approved" | "denied") => void;
 }
 
 const AppStateContext = createContext<AppStateContextValue | null>(null);
@@ -113,6 +141,17 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setRoute = useCallback((route: Route) => dispatch({ type: "set-route", route }), []);
+  const openMission = useCallback((missionId: string) => {
+    dispatch({ type: "set-mission", missionId });
+    dispatch({ type: "set-route", route: "mission" });
+    // Codex K1 should-fix: also update the URL hash so refresh/back/
+    // bookmark all go back to the same mission. We encode as
+    // `#/mission/<id>` — useHashRoute knows to parse that into both
+    // route="mission" AND selectedMissionId=<id> on reload.
+    if (typeof window !== "undefined") {
+      window.location.hash = `#/mission/${missionId}`;
+    }
+  }, []);
   // Side effect (sessionStorage write) happens in the callback, NOT in
   // the reducer (gemini PR J1 review). Same for clearToken below.
   const setToken = useCallback((token: string) => {
@@ -128,10 +167,34 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     (status: BridgeStatus | null) => dispatch({ type: "set-last-status", status }),
     []
   );
+  const decideApproval = useCallback(
+    (approvalId: string, decision: "approved" | "denied") =>
+      dispatch({ type: "decide-approval", approvalId, decision }),
+    []
+  );
 
   const value = useMemo<AppStateContextValue>(
-    () => ({ state, dispatch, setRoute, setToken, clearToken, setPill, setLastStatus }),
-    [state, setRoute, setToken, clearToken, setPill, setLastStatus]
+    () => ({
+      state,
+      dispatch,
+      setRoute,
+      openMission,
+      setToken,
+      clearToken,
+      setPill,
+      setLastStatus,
+      decideApproval,
+    }),
+    [
+      state,
+      setRoute,
+      openMission,
+      setToken,
+      clearToken,
+      setPill,
+      setLastStatus,
+      decideApproval,
+    ]
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

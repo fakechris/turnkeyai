@@ -78,49 +78,69 @@ describe("app-command", () => {
 
   describe("buildDashboardUrl", () => {
     it("emits token + scope + route in the URL fragment", () => {
-      const url = buildDashboardUrl("http://127.0.0.1:4100", "abc", "operator", "tabs");
-      assert.equal(url, "http://127.0.0.1:4100/app#token=abc&scope=operator&route=tabs");
+      const url = buildDashboardUrl("http://127.0.0.1:4100", "abc", "operator", "agents");
+      assert.equal(url, "http://127.0.0.1:4100/app#token=abc&scope=operator&route=agents");
     });
 
     it("URL-encodes token characters that would otherwise break fragment parsing", () => {
-      const url = buildDashboardUrl("http://127.0.0.1:4100", "a+b=c&d", "read", "setup");
+      const url = buildDashboardUrl("http://127.0.0.1:4100", "a+b=c&d", "read", "missions");
       // & inside the token must be encoded so the dashboard's
       // URLSearchParams parser doesn't split it as a fragment separator.
       assert.equal(
         url,
-        "http://127.0.0.1:4100/app#token=a%2Bb%3Dc%26d&scope=read&route=setup"
+        "http://127.0.0.1:4100/app#token=a%2Bb%3Dc%26d&scope=read&route=missions"
       );
     });
 
     it("omits token + scope when null but still includes route", () => {
-      const url = buildDashboardUrl("http://127.0.0.1:4100", null, null, "diagnostics");
-      assert.equal(url, "http://127.0.0.1:4100/app#route=diagnostics");
+      const url = buildDashboardUrl("http://127.0.0.1:4100", null, null, "runtime");
+      assert.equal(url, "http://127.0.0.1:4100/app#route=runtime");
     });
   });
 
   describe("parseAppRoute", () => {
-    it("defaults to setup when no --route is present", () => {
-      assert.equal(parseAppRoute([]), "setup");
-      assert.equal(parseAppRoute(["--no-open"]), "setup");
+    // K1 IA: routes match the Mission Control shell (missions/approvals/
+    // agents/context/agent-connect/runtime/settings). The old PR F→I routes
+    // (setup/bridge/tabs/diagnostics) folded into those, so they're
+    // rejected back to the new default ("missions").
+    it("defaults to missions when no --route is present", () => {
+      assert.equal(parseAppRoute([]), "missions");
+      assert.equal(parseAppRoute(["--no-open"]), "missions");
     });
 
-    it("accepts --route <name> form", () => {
-      assert.equal(parseAppRoute(["--route", "bridge"]), "bridge");
-      assert.equal(parseAppRoute(["--route", "tabs"]), "tabs");
-      assert.equal(parseAppRoute(["--route", "diagnostics"]), "diagnostics");
+    it("accepts --route <name> form for K1 routes", () => {
+      assert.equal(parseAppRoute(["--route", "missions"]), "missions");
+      assert.equal(parseAppRoute(["--route", "approvals"]), "approvals");
+      assert.equal(parseAppRoute(["--route", "runtime"]), "runtime");
+      assert.equal(parseAppRoute(["--route", "settings"]), "settings");
     });
 
     it("accepts --route=name form", () => {
-      assert.equal(parseAppRoute(["--route=agent"]), "agent");
+      assert.equal(parseAppRoute(["--route=context"]), "context");
+      assert.equal(parseAppRoute(["--route=agent-connect"]), "agent-connect");
     });
 
-    it("rejects unknown route names by falling back to setup", () => {
-      assert.equal(parseAppRoute(["--route", "evil"]), "setup");
-      assert.equal(parseAppRoute(["--route=../etc/passwd"]), "setup");
+    it("normalizes the short `agent` alias to `agent-connect`", () => {
+      // PR I help text used "agent" for the Agent Connect page; preserve
+      // the alias so old muscle-memory keeps working.
+      assert.equal(parseAppRoute(["--route", "agent"]), "agent-connect");
+      assert.equal(parseAppRoute(["--route=agent"]), "agent-connect");
+    });
+
+    it("rejects old PR F→I route names (Mission Control no longer has them)", () => {
+      assert.equal(parseAppRoute(["--route", "setup"]), "missions");
+      assert.equal(parseAppRoute(["--route", "bridge"]), "missions");
+      assert.equal(parseAppRoute(["--route", "tabs"]), "missions");
+      assert.equal(parseAppRoute(["--route", "diagnostics"]), "missions");
+    });
+
+    it("rejects unknown route names by falling back to missions", () => {
+      assert.equal(parseAppRoute(["--route", "evil"]), "missions");
+      assert.equal(parseAppRoute(["--route=../etc/passwd"]), "missions");
     });
 
     it("ignores --route when the next arg is missing", () => {
-      assert.equal(parseAppRoute(["--route"]), "setup");
+      assert.equal(parseAppRoute(["--route"]), "missions");
     });
   });
 });
