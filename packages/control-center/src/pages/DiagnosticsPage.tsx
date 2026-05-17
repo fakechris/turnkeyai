@@ -176,20 +176,35 @@ function NodeSection({ snapshot }: { snapshot: DiagnosticsSnapshot | null }) {
 
 function LogSection({ logs }: { logs: DiagnosticsLogs | null }) {
   const paneRef = useRef<HTMLPreElement>(null);
-  // PR I (codex S2): capture scroll position BEFORE textContent mutates so
-  // the "near bottom" check isn't fooled by the inflated scrollHeight of
-  // the about-to-render-larger content.
+  // PR I (codex S2) + PR J1 (codex re-review #2 blocker): the original
+  // vanilla version captured `wasNearBottom` BEFORE textContent mutated.
+  // A naive React port using useLayoutEffect breaks the invariant because
+  // useLayoutEffect runs AFTER React has committed the new children — so
+  // pane.scrollHeight is already inflated by the new lines and the
+  // 40-px check falsely reads "not near bottom" even when the user is
+  // pinned to the end.
+  //
+  // Fix: track near-bottom in a ref that's updated by the user's scroll
+  // events. Between renders, this ref holds the user's last intent. When
+  // logs change and useLayoutEffect runs, we consult the saved value
+  // (which was set BEFORE the new content arrived) to decide whether to
+  // snap. Default true so the first render auto-scrolls.
+  const wasNearBottomRef = useRef(true);
+
+  const handleScroll = () => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    wasNearBottomRef.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
+  };
+
   useLayoutEffect(() => {
     if (!logs || !paneRef.current) return;
-    const pane = paneRef.current;
-    const wasNearBottom =
-      pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
-    if (wasNearBottom) {
-      // Defer to next frame so the new layout has settled.
-      requestAnimationFrame(() => {
-        if (paneRef.current) paneRef.current.scrollTop = paneRef.current.scrollHeight;
-      });
-    }
+    if (!wasNearBottomRef.current) return;
+    // Snap after layout has settled so we hit the new (post-mutation)
+    // scrollHeight.
+    requestAnimationFrame(() => {
+      if (paneRef.current) paneRef.current.scrollTop = paneRef.current.scrollHeight;
+    });
   }, [logs]);
 
   const lines = logs?.lines ?? [];
@@ -206,7 +221,11 @@ function LogSection({ logs }: { logs: DiagnosticsLogs | null }) {
       <h2>
         Recent log <span className="muted-count">{meta}</span>
       </h2>
-      <pre ref={paneRef} className={`log-tail${empty ? " log-empty" : ""}`}>
+      <pre
+        ref={paneRef}
+        className={`log-tail${empty ? " log-empty" : ""}`}
+        onScroll={handleScroll}
+      >
         {empty ? (logs?.note ?? "Loading…") : lines.join("\n")}
       </pre>
     </>

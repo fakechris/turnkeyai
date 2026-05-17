@@ -100,15 +100,19 @@ function hasViteAssetsDir(dir: string): boolean {
 
 function hasLegacyTopLevelAssets(dir: string): boolean {
   // Legacy vanilla layout had app.js + app.css siblings to index.html.
+  // Require BOTH to be present (codex J1 review): index.html links both
+  // files, so missing either yields a broken bundle (no JS bootstrap or
+  // no styles). A partial bundle with only one of the two should fall
+  // through to the next candidate, not be served as complete.
   for (const name of ["app.js", "app.css"] as const) {
     try {
       const stats = lstatSync(path.join(dir, name));
-      if (stats.isFile() && stats.size >= MIN_BUNDLE_FILE_BYTES) {
-        return true;
-      }
-    } catch {}
+      if (!stats.isFile() || stats.size < MIN_BUNDLE_FILE_BYTES) return false;
+    } catch {
+      return false;
+    }
   }
-  return false;
+  return true;
 }
 
 function candidateDirs(): string[] {

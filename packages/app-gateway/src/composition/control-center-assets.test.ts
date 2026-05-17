@@ -73,6 +73,42 @@ describe("resolveControlCenterAssetDir", () => {
     }
   });
 
+  it("rejects a partial legacy bundle (app.js without app.css, codex J1 review)", () => {
+    const bundle = makeBundleDir();
+    try {
+      writeFileSync(
+        path.join(bundle.dir, "index.html"),
+        "<!doctype html><html><head><title>x</title></head><body></body></html>"
+      );
+      writeFileSync(
+        path.join(bundle.dir, "app.js"),
+        "console.log('non-truncated bundle content here');"
+      );
+      // app.css intentionally missing — bundle would render index.html
+      // but immediately fail to load styles.
+      const resolved = resolveControlCenterAssetDir({ override: bundle.dir });
+      assert.equal(resolved, null, "legacy bundle missing app.css must be rejected");
+    } finally {
+      bundle.cleanup();
+    }
+  });
+
+  it("rejects a partial legacy bundle (app.css without app.js)", () => {
+    const bundle = makeBundleDir();
+    try {
+      writeFileSync(
+        path.join(bundle.dir, "index.html"),
+        "<!doctype html><html><head><title>x</title></head><body></body></html>"
+      );
+      writeFileSync(path.join(bundle.dir, "app.css"), ":root{ --x:0 } body { margin: 0 }");
+      // app.js intentionally missing — no JS bootstrap means a blank page.
+      const resolved = resolveControlCenterAssetDir({ override: bundle.dir });
+      assert.equal(resolved, null, "legacy bundle missing app.js must be rejected");
+    } finally {
+      bundle.cleanup();
+    }
+  });
+
   it("rejects a bundle with index.html but no assets dir or sibling assets", () => {
     const bundle = makeBundleDir();
     try {
