@@ -7,7 +7,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @turnkeyai/browser-relay-peer && npm run build --workspace @turnkeyai/cli",
+    "build": "npm run build --workspace @turnkeyai/browser-relay-peer && npm run build --workspace @turnkeyai/control-center && npm run build --workspace @turnkeyai/cli",
+    "build:control-center": "npm run build --workspace @turnkeyai/control-center",
     "build:relay-extension": "npm run build --workspace @turnkeyai/browser-relay-peer",
     "verify:relay-extension": "tsx packages/browser-relay-peer/scripts/verify-extension-dist.ts",
     "relay:install-smoke": "tsx scripts/relay-extension-install-smoke.ts",

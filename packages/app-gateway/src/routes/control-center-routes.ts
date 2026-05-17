@@ -3,13 +3,15 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type http from "node:http";
 
-// Serves the Control Center static bundle (HTML/CSS/JS) at /app and /app/*.
+// Serves the Control Center static bundle (HTML/CSS/JS + hashed assets)
+// at /app and /app/*.
 //
-// The bundle ships inside the @turnkeyai/cli package at
-// packages/cli/control-center/ and is copied into dist/control-center during
-// the CLI build. The daemon resolves the asset directory at startup; if the
-// directory is missing (e.g. a developer running the daemon from source
-// without having built the CLI), every /app request returns 404 instead of
+// PR J1+: the bundle is built by the @turnkeyai/control-center workspace
+// (Vite + React + TS) into packages/control-center/dist, and the CLI's
+// copy-control-center.mjs script copies that into packages/cli/dist/control-center.
+// The daemon resolves the asset directory at startup; if the directory
+// is missing (e.g. a developer running the daemon from source without
+// having built the CLI), every /app request returns 404 instead of
 // crashing — the rest of the API keeps working.
 
 const ASSET_EXTENSIONS: Record<string, string> = {

@@ -5,5 +5,10 @@
   },
   "include": [
     "packages/**/*.ts"
+  ],
+  "exclude": [
+    "packages/control-center",
+    "**/dist",
+    "**/node_modules"
   ]
 }

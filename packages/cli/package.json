@@ -9,13 +9,12 @@
   },
   "files": [
     "bin",
-    "control-center",
     "dist",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup --config tsup.config.ts && node scripts/copy-relay-extension.mjs && node scripts/copy-control-center.mjs",
+    "build": "node scripts/build-control-center-dep.mjs && tsup --config tsup.config.ts && node scripts/copy-relay-extension.mjs && node scripts/copy-control-center.mjs",
     "prepack": "npm run build"
   },
   "dependencies": {

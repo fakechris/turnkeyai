@@ -12,7 +12,9 @@ npx @turnkeyai/cli app
 ```
 
 That's the recommended product entry point — five pages: Setup, Bridge,
-Tabs, Agent Connect, Diagnostics. All polling, no build step.
+Tabs, Agent Connect, Diagnostics. The dashboard is a React + Vite + TS
+app shipped inside the CLI tarball; daemon serves it as static assets at
+`/app`. Built from `@turnkeyai/control-center` workspace.
 
 ```bash
 # Open straight to a specific page
