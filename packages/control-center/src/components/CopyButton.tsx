@@ -1,6 +1,18 @@
 import { useState } from "react";
 
-export function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
+export interface CopyButtonProps {
+  text: string;
+  label?: string;
+  /**
+   * Called when clipboard.writeText rejects. Lets the caller surface a
+   * fallback path (e.g. reveal a hidden <pre> the user can select
+   * manually). Carries over the PR I vanilla behavior — gemini PR J1
+   * review caught that the new component swallowed failures silently.
+   */
+  onCopyFailed?(): void;
+}
+
+export function CopyButton({ text, label = "Copy", onCopyFailed }: CopyButtonProps) {
   // Three transient states for the button label: idle ("Copy"),
   // success ("Copied"), failure ("Copy failed"). All return to idle
   // after a short timeout so the button doesn't lie about its state.
@@ -15,6 +27,7 @@ export function CopyButton({ text, label = "Copy" }: { text: string; label?: str
       })
       .catch(() => {
         setStatus("failed");
+        onCopyFailed?.();
         window.setTimeout(() => setStatus("idle"), 1_500);
       });
   };

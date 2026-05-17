@@ -55,26 +55,32 @@ export function normalizeScope(value: string | null | undefined): Scope {
 }
 
 /**
- * Bootstrap result the App reads on mount. Side-effect: when the URL
- * fragment carries a token, the token is stashed in sessionStorage and
- * stripped from the address bar via history.replaceState (so it doesn't
- * linger in window.title / referrer / back-button history).
+ * Bootstrap result the App reads on mount. Pure — see commitBootstrap()
+ * for the side-effecting half.
+ *
+ * Split into pure read + side-effect commit (gemini PR J1 review) so the
+ * pure half can safely be called from a useReducer state initializer
+ * even in React 18 Strict Mode, which intentionally double-invokes
+ * initializers to surface side-effect bugs.
  */
 export interface BootstrapResult {
   token: string | null;
   scope: Scope;
   route: Route;
+  /** True when the token came from the URL fragment (needs commit). */
+  fromFragment: boolean;
 }
 
 export function bootstrapAuth(): BootstrapResult {
   const fragment = parseFragment(window.location.hash);
   if (fragment.token) {
     const scope = normalizeScope(fragment.scope);
-    sessionStorage.setItem(TOKEN_STORAGE_KEY, fragment.token);
-    sessionStorage.setItem(SCOPE_STORAGE_KEY, scope);
-    const cleanedRoute = fragment.route ?? DEFAULT_ROUTE;
-    history.replaceState(null, "", `#/${cleanedRoute}`);
-    return { token: fragment.token, scope, route: cleanedRoute };
+    return {
+      token: fragment.token,
+      scope,
+      route: fragment.route ?? DEFAULT_ROUTE,
+      fromFragment: true,
+    };
   }
   const storedToken = sessionStorage.getItem(TOKEN_STORAGE_KEY);
   const storedScope = normalizeScope(sessionStorage.getItem(SCOPE_STORAGE_KEY));
@@ -82,16 +88,41 @@ export function bootstrapAuth(): BootstrapResult {
     token: storedToken,
     scope: storedScope,
     route: fragment.route ?? DEFAULT_ROUTE,
+    fromFragment: false,
   };
 }
 
-/** Clears the persisted token + scope. Called by apiClient on 401. */
+/**
+ * Side-effecting commit for a bootstrap result. Idempotent — safe to
+ * call from a useEffect that may run after a double-invoked initializer
+ * in Strict Mode. Persists the URL-fragment-supplied token to
+ * sessionStorage and strips it from the URL so it doesn't linger in
+ * window.title / referrer / back-button history.
+ */
+export function commitBootstrap(result: BootstrapResult): void {
+  if (!result.fromFragment) return;
+  if (result.token) {
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, result.token);
+    sessionStorage.setItem(SCOPE_STORAGE_KEY, result.scope);
+    history.replaceState(null, "", `#/${result.route}`);
+  }
+}
+
+/**
+ * Clears the persisted token + scope. Side-effecting; called by the
+ * action-dispatching helper in AppState.tsx, NOT from inside the reducer
+ * (gemini PR J1 review: reducers must be pure).
+ */
 export function clearStoredAuth(): void {
   sessionStorage.removeItem(TOKEN_STORAGE_KEY);
   sessionStorage.removeItem(SCOPE_STORAGE_KEY);
 }
 
-/** Persists a hand-pasted token (from the no-token form). Scope unknown. */
+/**
+ * Persists a hand-pasted token (from the no-token form). Scope unknown.
+ * Side-effecting; called by the action-dispatching helper, not inside
+ * the reducer.
+ */
 export function persistManualToken(token: string): void {
   sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
   sessionStorage.setItem(SCOPE_STORAGE_KEY, "unknown");

@@ -176,35 +176,28 @@ function NodeSection({ snapshot }: { snapshot: DiagnosticsSnapshot | null }) {
 
 function LogSection({ logs }: { logs: DiagnosticsLogs | null }) {
   const paneRef = useRef<HTMLPreElement>(null);
-  // PR I (codex S2) + PR J1 (codex re-review #2 blocker): the original
-  // vanilla version captured `wasNearBottom` BEFORE textContent mutated.
-  // A naive React port using useLayoutEffect breaks the invariant because
-  // useLayoutEffect runs AFTER React has committed the new children — so
-  // pane.scrollHeight is already inflated by the new lines and the
-  // 40-px check falsely reads "not near bottom" even when the user is
-  // pinned to the end.
+  // PR I (codex S2) + PR J1 (gemini blocker fix): the original vanilla
+  // version captured `wasNearBottom` BEFORE textContent mutated. A naive
+  // React port using useLayoutEffect breaks the invariant because the
+  // effect runs AFTER React has committed the new children, so
+  // pane.scrollHeight is already inflated.
   //
-  // Fix: track near-bottom in a ref that's updated by the user's scroll
-  // events. Between renders, this ref holds the user's last intent. When
-  // logs change and useLayoutEffect runs, we consult the saved value
-  // (which was set BEFORE the new content arrived) to decide whether to
-  // snap. Default true so the first render auto-scrolls.
-  const wasNearBottomRef = useRef(true);
-
-  const handleScroll = () => {
-    const pane = paneRef.current;
-    if (!pane) return;
-    wasNearBottomRef.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
-  };
+  // Fix: track the PREVIOUS scrollHeight in a ref. After React commits,
+  // useLayoutEffect computes "was near bottom" using the previous height
+  // (not the inflated current one), then snaps if needed, then updates
+  // the ref for the next round. Initial value is 0 so the first render
+  // satisfies `0 - 0 - clientHeight < 40` and auto-scrolls.
+  const prevScrollHeightRef = useRef(0);
 
   useLayoutEffect(() => {
     if (!logs || !paneRef.current) return;
-    if (!wasNearBottomRef.current) return;
-    // Snap after layout has settled so we hit the new (post-mutation)
-    // scrollHeight.
-    requestAnimationFrame(() => {
-      if (paneRef.current) paneRef.current.scrollTop = paneRef.current.scrollHeight;
-    });
+    const pane = paneRef.current;
+    const wasNearBottom =
+      prevScrollHeightRef.current - pane.scrollTop - pane.clientHeight < 40;
+    if (wasNearBottom) {
+      pane.scrollTop = pane.scrollHeight;
+    }
+    prevScrollHeightRef.current = pane.scrollHeight;
   }, [logs]);
 
   const lines = logs?.lines ?? [];
@@ -221,11 +214,7 @@ function LogSection({ logs }: { logs: DiagnosticsLogs | null }) {
       <h2>
         Recent log <span className="muted-count">{meta}</span>
       </h2>
-      <pre
-        ref={paneRef}
-        className={`log-tail${empty ? " log-empty" : ""}`}
-        onScroll={handleScroll}
-      >
+      <pre ref={paneRef} className={`log-tail${empty ? " log-empty" : ""}`}>
         {empty ? (logs?.note ?? "Loading…") : lines.join("\n")}
       </pre>
     </>
@@ -240,6 +229,12 @@ function DiagnosticsBundle({
   logs: DiagnosticsLogs | null;
 }) {
   const [bundleText, setBundleText] = useState<string | null>(null);
+  // Reveal the hidden <pre> when navigator.clipboard fails (gemini PR J1
+  // review). The vanilla version did this automatically; we lost the
+  // affordance in the React port because the button owns its own
+  // failure state. Hoisting the reveal here keeps CopyButton generic.
+  const [fallbackVisible, setFallbackVisible] = useState(false);
+
   // Recompute the bundle each render that snapshot/logs change so the
   // Copy button always grabs the latest data.
   useEffect(() => {
@@ -264,10 +259,19 @@ function DiagnosticsBundle({
   }
   return (
     <>
-      <CopyButton text={bundleText} label="Copy diagnostics bundle" />
-      <pre className="snippet" hidden>
-        {bundleText}
-      </pre>
+      <CopyButton
+        text={bundleText}
+        label="Copy diagnostics bundle"
+        onCopyFailed={() => setFallbackVisible(true)}
+      />
+      {fallbackVisible && (
+        <>
+          <p className="note">
+            Clipboard write failed. Select the text below manually and copy with your shortcut.
+          </p>
+          <pre className="snippet">{bundleText}</pre>
+        </>
+      )}
     </>
   );
 }
