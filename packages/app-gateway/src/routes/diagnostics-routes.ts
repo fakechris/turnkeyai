@@ -35,6 +35,13 @@ export interface DiagnosticsRouteDeps {
   transport: { mode: string; label: string };
   /** Auth mode reported by daemon-auth. */
   authMode: "disabled" | "token" | "token-layered";
+  /**
+   * Tokens the daemon was configured with. /diagnostics/logs scrubs any
+   * literal occurrences from log lines before sending them to the
+   * dashboard, so a copy-pasted diagnostics bundle is safe to attach to a
+   * bug report. Empty array when auth is disabled.
+   */
+  redactionTokens: readonly string[];
   /** Snapshot of session count + relay peer/target counts. */
   snapshotCounters(): Promise<{
     sessionCount: number;
@@ -151,14 +158,74 @@ async function handleDiagnosticsLogs(
     return true;
   }
 
+  const redactedLines = tail.lines.map((line) => redactLogLine(line, deps.redactionTokens));
   sendJson(res, 200, {
     logFile: deps.logFile,
     limit,
-    lineCount: tail.lines.length,
-    lines: tail.lines,
+    lineCount: redactedLines.length,
+    lines: redactedLines,
     truncatedFromHead: tail.truncatedFromHead,
+    // Surface that redaction is happening so a user looking at the bundle
+    // doesn't think the daemon is just naive about secrets.
+    redacted: true,
   });
   return true;
+}
+
+/**
+ * Scrubs secrets from a single log line before serving it to the dashboard.
+ *
+ * Defense in depth — /diagnostics/logs is `read`-scoped, so anything that
+ * reads `/bridge/status` can also read the log tail. The daemon shouldn't
+ * be logging raw secrets in the first place, but operational reality
+ * means it sometimes does (LLM error responses include API keys, agents
+ * sometimes include their token in user-agent strings, etc). This
+ * scrubber is a backstop, not a substitute for not logging secrets.
+ *
+ * Patterns (codex PR I round-2 broadening):
+ *  1. Configured tokens — exact substring replace, len >= 8 to avoid
+ *     pathological short-token false positives.
+ *  2. `Authorization: Bearer xxx` / `authorization: bearer xxx`
+ *  3. `x-turnkeyai-token: xxx`
+ *  4. `x-api-key: xxx` / `x-api-key=xxx` — generic API-key header
+ *  5. `cookie: xxx` / `set-cookie: xxx` — session cookies
+ *  6. `api_key=xxx` / `api-key=xxx` — query-string / config-style API keys
+ *  7. `sk-...` / `sk_live_...` — OpenAI / Stripe-shaped secret tokens
+ *  8. Bare `token=xxx` / `token: xxx` in arbitrary message text
+ *
+ * Exposed for unit testing.
+ */
+export function redactLogLine(line: string, configuredTokens: readonly string[]): string {
+  let out = line;
+  // Sort tokens descending by length so a shorter token that happens to
+  // be a prefix of a longer one doesn't get redacted first and leave
+  // the longer one's suffix exposed (gemini PR I round-2 catch).
+  const sortedTokens = [...configuredTokens].sort((a, b) => b.length - a.length);
+  for (const token of sortedTokens) {
+    if (token && token.length >= 8 && out.includes(token)) {
+      out = out.split(token).join("[REDACTED]");
+    }
+  }
+  // Token-shaped value class: a-z, A-Z, 0-9, and the chars commonly seen
+  // in JWTs / base64url / hex tokens. Crucially does NOT include "}" "]"
+  // ";" "," or quote characters, so a "log message that happens to look
+  // like {api-key: secret-thing}" gets the secret-thing redacted without
+  // eating the trailing brace.
+  const TOKEN_VALUE = `[A-Za-z0-9._~+/=-]+`;
+  // Auth headers
+  out = out.replace(new RegExp(`(authorization\\s*:\\s*bearer\\s+)${TOKEN_VALUE}`, "gi"), "$1[REDACTED]");
+  out = out.replace(new RegExp(`(x-turnkeyai-token\\s*:\\s*)${TOKEN_VALUE}`, "gi"), "$1[REDACTED]");
+  out = out.replace(new RegExp(`(x-api-key\\s*[:=]\\s*)${TOKEN_VALUE}`, "gi"), "$1[REDACTED]");
+  // Cookies (request and response)
+  out = out.replace(/((?:^|\W)(?:set-)?cookie\s*:\s*)[^\r\n;]+/gi, "$1[REDACTED]");
+  // Common API-key parameter shapes
+  out = out.replace(new RegExp(`(\\bapi[_-]?key\\s*[=:]\\s*)${TOKEN_VALUE}`, "gi"), "$1[REDACTED]");
+  // OpenAI / Stripe / generic "sk-..." secrets (12+ chars after the prefix)
+  out = out.replace(/\b(sk[-_](?:live|test)?[-_]?)[A-Za-z0-9_-]{12,}/g, "$1[REDACTED]");
+  // Bare "token=xxx" / "Token: xxx" / "TOKEN: xxx" in arbitrary message text.
+  // Case-insensitive to match the other patterns (gemini PR I round-2).
+  out = out.replace(/(\btoken[=:\s]+)([A-Za-z0-9_-]{12,})/gi, "$1[REDACTED]");
+  return out;
 }
 
 function clampLogLimit(raw: string | null): number {

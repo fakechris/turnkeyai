@@ -7,6 +7,11 @@
 // `turnkeyai app`.
 
 const TOKEN_STORAGE_KEY = "turnkeyai.controlCenter.token";
+// PR I: scope is bootstrapped from the URL fragment (set by `turnkeyai app`)
+// or — for users who paste a token via the no-token form — defaults to
+// "unknown" since we can't introspect a hand-pasted token's grants.
+const SCOPE_STORAGE_KEY = "turnkeyai.controlCenter.scope";
+const KNOWN_SCOPES = ["read", "operator", "admin", "unknown"];
 const DEFAULT_ROUTE = "setup";
 const KNOWN_ROUTES = ["setup", "bridge", "tabs", "agent", "diagnostics"];
 const POLL_INTERVAL_MS = 5_000;
@@ -17,6 +22,7 @@ const navLinks = Array.from(document.querySelectorAll(".nav a[data-route]"));
 
 const state = {
   token: null,
+  scope: "unknown",
   route: DEFAULT_ROUTE,
   pollTimer: null,
   // Epoch counter for the polling loop. Each startPolling() bumps this;
@@ -36,39 +42,49 @@ function bootstrapToken() {
   const fragment = parseFragment(window.location.hash);
   if (fragment.token) {
     state.token = fragment.token;
+    state.scope = normalizeScope(fragment.scope);
     sessionStorage.setItem(TOKEN_STORAGE_KEY, fragment.token);
-    // Strip the token from the URL fragment so it does not linger in the
-    // address bar / window title. Keep the route piece, if any, as the
-    // canonical hash route.
+    sessionStorage.setItem(SCOPE_STORAGE_KEY, state.scope);
+    // Strip the token + scope from the URL fragment so they do not linger
+    // in the address bar / window title. Keep the route piece, if any, as
+    // the canonical hash route.
     const cleanedRoute = fragment.route ?? DEFAULT_ROUTE;
     history.replaceState(null, "", `#/${cleanedRoute}`);
   } else {
     const stored = sessionStorage.getItem(TOKEN_STORAGE_KEY);
     if (stored) {
       state.token = stored;
+      state.scope = normalizeScope(sessionStorage.getItem(SCOPE_STORAGE_KEY));
     }
   }
+}
+
+function normalizeScope(raw) {
+  if (typeof raw === "string" && KNOWN_SCOPES.includes(raw)) return raw;
+  return "unknown";
 }
 
 function parseFragment(rawHash) {
   // Accepted shapes:
   //   #/setup
   //   #token=ABC
-  //   #token=ABC&route=bridge
-  //   #/bridge?token=ABC (legacy — also accepted)
+  //   #token=ABC&scope=operator&route=bridge
+  //   #/bridge?token=ABC&scope=admin (legacy — also accepted)
   const hash = rawHash.replace(/^#/, "");
-  if (!hash) return { token: null, route: null };
+  if (!hash) return { token: null, scope: null, route: null };
   if (hash.startsWith("/")) {
     const [routePart, queryPart] = hash.slice(1).split("?");
     const params = new URLSearchParams(queryPart ?? "");
     return {
       token: params.get("token"),
+      scope: params.get("scope"),
       route: normalizeRoute(routePart),
     };
   }
   const params = new URLSearchParams(hash);
   return {
     token: params.get("token"),
+    scope: params.get("scope"),
     route: normalizeRoute(params.get("route")),
   };
 }
@@ -154,7 +170,9 @@ async function apiFetch(pathname) {
       // stale 401 for a token the user has already replaced.
       stopPolling();
       sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+      sessionStorage.removeItem(SCOPE_STORAGE_KEY);
       state.token = null;
+      state.scope = "unknown";
       renderTemplate("page-no-token", wireTokenForm);
       setConnectionPill("bad", "Unauthorized");
     }
@@ -211,7 +229,12 @@ function wireTokenForm(root) {
     const value = input.value.trim();
     if (!value) return;
     state.token = value;
+    // Hand-pasted tokens have no scope hint — we can't know what the user
+    // pasted. Default to "unknown" which the dashboard treats as
+    // "probably operator+", same as a legacy single-token setup.
+    state.scope = "unknown";
     sessionStorage.setItem(TOKEN_STORAGE_KEY, value);
+    sessionStorage.setItem(SCOPE_STORAGE_KEY, state.scope);
     handleHashChange();
   });
 }
@@ -623,6 +646,14 @@ function renderAgentPage(root) {
   const baseUrl = window.location.origin;
   setField(root, "base-url", baseUrl);
 
+  // PR I: surface the token scope. The Agent Connect page used to ALWAYS
+  // render a POST /bridge/command curl snippet, but if the daemon was
+  // configured with only TURNKEYAI_DAEMON_READ_TOKEN that snippet would
+  // 401 silently — which is the worst kind of "looks fine, but broken"
+  // UX. Now: if scope is "read", show a banner explaining the gap and
+  // hide the mutation snippets entirely.
+  applyScopeAffordances(root, state.scope);
+
   const snippets = buildAgentSnippets(baseUrl, state.token);
   for (const [name, value] of Object.entries(snippets)) {
     const slot = root.querySelector(`[data-snippet="${name}"]`);
@@ -663,6 +694,83 @@ function renderAgentPage(root) {
         setConnectionPill("bad", "Unreachable");
       }
     });
+}
+
+function applyScopeAffordances(root, scope) {
+  const label = root.querySelector('[data-field="scope-label"]');
+  const detail = root.querySelector('[data-field="scope-detail"]');
+  const banner = root.querySelector('[data-field="scope-banner"]');
+  const mutation = root.querySelector('[data-field="mutation-snippets"]');
+
+  // Codex PR I round-2: avoid innerHTML even with hardcoded strings —
+  // a future hand sprinkling a dynamic value into one of these would
+  // create an XSS without any visible code change. Use a tiny segment
+  // builder that takes (tag, text) pairs and constructs nodes instead.
+  const descriptions = {
+    operator: {
+      summary: "operator — can call /bridge/command + browser routes",
+      banner: null,
+    },
+    admin: {
+      summary: "admin — can call everything (validation/relay/admin routes too)",
+      banner: {
+        kind: "ok",
+        segments: [
+          ["strong", "Heads up:"],
+          ["text", " this token has admin scope. Prefer a "],
+          ["code", "TURNKEYAI_DAEMON_OPERATOR_TOKEN"],
+          ["text",
+            " if you only need to drive the browser — admin tokens can call validation and relay-admin routes the dashboard never needs."],
+        ],
+      },
+    },
+    read: {
+      summary: "read — inspection only, cannot drive the browser",
+      banner: {
+        kind: "warn",
+        segments: [
+          ["strong", "Read-only token."],
+          ["text", " The "],
+          ["code", "POST /bridge/command"],
+          ["text", " snippet would 401 with this token, so it is hidden. To plug an agent in, set "],
+          ["code", "TURNKEYAI_DAEMON_OPERATOR_TOKEN"],
+          ["text", " and restart the daemon, then re-run "],
+          ["code", "turnkeyai app"],
+          ["text", "."],
+        ],
+      },
+    },
+    unknown: {
+      summary: "unknown — single-token setup (assumed to grant full access)",
+      banner: null,
+    },
+  };
+  const entry = descriptions[scope] ?? descriptions.unknown;
+
+  if (label) label.textContent = scope;
+  if (detail) detail.textContent = entry.summary;
+  if (banner) {
+    if (entry.banner) {
+      banner.hidden = false;
+      banner.className = `scope-banner scope-${entry.banner.kind}`;
+      banner.replaceChildren(...entry.banner.segments.map(buildBannerNode));
+    } else {
+      banner.hidden = true;
+    }
+  }
+  if (mutation) {
+    // Hide mutation snippets entirely when scope is read — better than
+    // showing a snippet the user will copy-paste into Claude and then
+    // wonder why it 401s.
+    mutation.hidden = scope === "read";
+  }
+}
+
+function buildBannerNode([kind, text]) {
+  if (kind === "text") return document.createTextNode(text);
+  const el = document.createElement(kind);
+  el.textContent = text;
+  return el;
 }
 
 function buildAgentSnippets(baseUrl, token) {

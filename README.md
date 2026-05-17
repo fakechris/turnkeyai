@@ -135,23 +135,33 @@ Phase 1 的机制主线已经完成。剩余工作按验收顺序推进：
 
 当前仓库与公开 CLI 包统一要求 `Node.js 24+`。
 
-使用公开 npm CLI：
+**推荐入口** —— 直接打开 Control Center：
 
 ```bash
-npx @turnkeyai/cli --help
-npx @turnkeyai/cli daemon
+npx @turnkeyai/cli app
 ```
 
-另一个终端中连接 TUI：
+该命令会：
 
-```bash
-npx @turnkeyai/cli tui
-```
+1. 检查本地 daemon 是否在运行，没有就自动启动（detached，写入 `~/.turnkeyai/logs/daemon.log`）
+2. 等待 `/health` 就绪
+3. 在浏览器打开 `http://127.0.0.1:4100/app`，并把 daemon token 通过 URL fragment 预填
+
+Control Center 现在覆盖五个页面：Setup / Bridge / Tabs / Agent Connect / Diagnostics。无需额外构建步骤，daemon 直接服务静态 bundle。
 
 如果希望安装成全局命令：
 
 ```bash
 npm install -g @turnkeyai/cli
+turnkeyai app                         # 推荐入口
+turnkeyai app --route diagnostics     # 直接打开某个页面
+turnkeyai app --no-open               # 只打印 URL（CI / SSH / headless 适用）
+turnkeyai app --no-start              # 要求 daemon 已运行，禁用 auto-start
+```
+
+### 高级用法（手动管理 daemon）
+
+```bash
 turnkeyai daemon start      # detached; logs to ~/.turnkeyai/logs/daemon.log
 turnkeyai daemon status
 turnkeyai daemon logs -f

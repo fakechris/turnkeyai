@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { openSync, existsSync, readFileSync } from "node:fs";
+import { openSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -85,6 +86,33 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Attempts to bind 127.0.0.1:port. If we succeed, no one is listening — so
+ * the daemon's port is free and any PID we read from the pid file points
+ * at an unrelated recycled process (or a daemon that died but never cleaned
+ * up). Used to distinguish "stale PID file" from "stuck daemon".
+ */
+async function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+function extractPortFromBaseUrl(baseUrl: string): number {
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.port) return Number(parsed.port);
+    return parsed.protocol === "https:" ? 443 : 80;
+  } catch {
+    return DEFAULT_PORT;
+  }
+}
+
 async function pingHealth(baseUrl: string, timeoutMs = 1500): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -124,17 +152,73 @@ function findDaemonEntry(): string {
   return path.join(here, "daemon.js");
 }
 
-export async function runDaemonStart(args: string[]): Promise<void> {
-  if (args.includes("--foreground") || args.includes("-f")) {
-    return runDaemonForeground(args.filter((arg) => arg !== "--foreground" && arg !== "-f"));
-  }
+/**
+ * Outcome of an ensureDaemonRunning() call. Programmatic callers (e.g.
+ * `turnkeyai app`) inspect this rather than relying on process.exit so the
+ * caller can keep running — opening the browser, printing a tailored
+ * message — after the daemon comes up.
+ *
+ * The "stuck-daemon" variant exists to defend against PID recycling: when
+ * the pid file points at a live process AND the daemon's port is bound,
+ * we treat it as a real (but unhealthy) daemon and refuse to act. When the
+ * pid file points at a live process but the port is FREE, we infer the
+ * pid is a recycled unrelated process; we silently clean the pid file
+ * and fall through to start. (Killing the recycled pid would harm an
+ * unrelated process — the original PR I message recommended that.)
+ */
+export type EnsureDaemonRunningResult =
+  | { kind: "already-running"; pid: number; baseUrl: string; healthy: boolean }
+  | { kind: "started"; pid: number; baseUrl: string; logFile: string; configFile: string }
+  | { kind: "failed-to-start"; baseUrl: string; logFile: string }
+  | { kind: "stuck-daemon"; pid: number; baseUrl: string; logFile: string };
+
+export interface EnsureDaemonRunningOptions {
+  /** Args forwarded to the spawned daemon (kept empty in the common case). */
+  args?: string[];
+  /** How long to wait for /health to respond before giving up. */
+  healthDeadlineMs?: number;
+}
+
+/**
+ * Programmatic equivalent of `turnkeyai daemon start` that never calls
+ * process.exit. Used by `turnkeyai app` so the CLI can keep running after
+ * the daemon is up (open the browser, etc.).
+ */
+export async function ensureDaemonRunning(
+  options: EnsureDaemonRunningOptions = {}
+): Promise<EnsureDaemonRunningResult> {
+  const args = options.args ?? [];
+  const healthDeadlineMs = options.healthDeadlineMs ?? 10_000;
   const paths = getRuntimePaths();
+  const baseUrl = resolveDaemonUrl(paths);
+  const port = extractPortFromBaseUrl(baseUrl);
+
   const existingPid = readPid(paths);
   if (existingPid && isAlive(existingPid)) {
-    const baseUrl = resolveDaemonUrl(paths);
     const healthy = await pingHealth(baseUrl);
-    console.log(`daemon already running (pid ${existingPid})${healthy ? "" : " — health probe failed"}`);
-    process.exit(0);
+    if (healthy) {
+      return { kind: "already-running", pid: existingPid, baseUrl, healthy: true };
+    }
+    // PID is alive but /health didn't answer. Two possibilities:
+    //   (a) Our daemon is genuinely stuck (port still bound).
+    //   (b) The OS recycled `existingPid` to an unrelated process and our
+    //       pid file is stale. In that case the daemon's port is FREE.
+    // Distinguishing matters because the prior version suggested
+    // `daemon restart` — which would SIGTERM `existingPid`. If (b), that
+    // SIGTERMs an innocent process. So:
+    if (await isPortFree(port)) {
+      // Stale pid file — clean it up and fall through to start.
+      try {
+        unlinkSync(paths.pidFile);
+      } catch {
+        // best-effort; if we can't unlink the file the worst case is the
+        // user sees a 'daemon failed to start' below.
+      }
+    } else {
+      // Something is holding the port AND the pid is alive. Refuse, but
+      // don't suggest a fix that could SIGKILL the unrelated pid.
+      return { kind: "stuck-daemon", pid: existingPid, baseUrl, logFile: paths.logFile };
+    }
   }
 
   const entry = findDaemonEntry();
@@ -148,17 +232,49 @@ export async function runDaemonStart(args: string[]): Promise<void> {
   });
   child.unref();
 
-  const baseUrl = resolveDaemonUrl(paths);
-  const healthy = await waitForHealth(baseUrl, 10_000);
+  const healthy = await waitForHealth(baseUrl, healthDeadlineMs);
   if (!healthy) {
-    console.error(`daemon failed to become healthy within 10s at ${baseUrl}`);
-    console.error(`check logs at ${paths.logFile}`);
-    process.exit(1);
+    return { kind: "failed-to-start", baseUrl, logFile: paths.logFile };
   }
-  console.log(`daemon started (pid ${child.pid}) at ${baseUrl}`);
-  console.log(`logs: ${paths.logFile}`);
-  if (existsSync(paths.configFile)) {
-    console.log(`config: ${paths.configFile}`);
+  return {
+    kind: "started",
+    pid: child.pid ?? -1,
+    baseUrl,
+    logFile: paths.logFile,
+    configFile: paths.configFile,
+  };
+}
+
+export async function runDaemonStart(args: string[]): Promise<void> {
+  if (args.includes("--foreground") || args.includes("-f")) {
+    return runDaemonForeground(args.filter((arg) => arg !== "--foreground" && arg !== "-f"));
+  }
+  const result = await ensureDaemonRunning({ args });
+  switch (result.kind) {
+    case "already-running":
+      console.log(
+        `daemon already running (pid ${result.pid})${result.healthy ? "" : " — health probe failed"}`
+      );
+      process.exit(0);
+    // eslint-disable-next-line no-fallthrough
+    case "started":
+      console.log(`daemon started (pid ${result.pid}) at ${result.baseUrl}`);
+      console.log(`logs: ${result.logFile}`);
+      if (existsSync(result.configFile)) {
+        console.log(`config: ${result.configFile}`);
+      }
+      return;
+    case "failed-to-start":
+      console.error(`daemon failed to become healthy within 10s at ${result.baseUrl}`);
+      console.error(`check logs at ${result.logFile}`);
+      process.exit(1);
+    // eslint-disable-next-line no-fallthrough
+    case "stuck-daemon":
+      console.error(
+        `pid ${result.pid} owns the daemon port at ${result.baseUrl} but /health is unresponsive.`
+      );
+      console.error(`check logs at ${result.logFile} and stop the process manually before retrying.`);
+      process.exit(1);
   }
 }
 

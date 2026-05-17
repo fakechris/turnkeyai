@@ -8,6 +8,7 @@ import { Readable } from "node:stream";
 
 import {
   handleDiagnosticsRoutes,
+  redactLogLine,
   tailFile,
   type DiagnosticsRouteDeps,
 } from "./diagnostics-routes";
@@ -66,6 +67,7 @@ function makeDeps(overrides: Partial<DiagnosticsRouteDeps> = {}): DiagnosticsRou
     processStartedAtMs: 1_700_000_000_000,
     transport: { mode: "local", label: "playwright-chromium" },
     authMode: "token",
+    redactionTokens: [],
     snapshotCounters: async () => ({
       sessionCount: 0,
       relayPeerCount: 0,
@@ -289,6 +291,141 @@ describe("diagnostics-routes", () => {
           assert.ok(!line.includes("\0"), `line "${line}" must not contain NUL bytes`);
         }
         assert.deepEqual(result.lines, ["line-a", "line-b", "line-c"]);
+      } finally {
+        log.cleanup();
+      }
+    });
+  });
+
+  describe("log redaction (PR I)", () => {
+    it("strips configured tokens from log lines", () => {
+      const out = redactLogLine(
+        "auth ok: token=secret-token-abcdef granted operator",
+        ["secret-token-abcdef"]
+      );
+      assert.equal(out, "auth ok: token=[REDACTED] granted operator");
+    });
+
+    it("strips bearer-token patterns even when the daemon doesn't know the token", () => {
+      const out = redactLogLine(
+        "401 from agent — header was Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.xxxxxx",
+        []
+      );
+      assert.equal(
+        out,
+        "401 from agent — header was Authorization: Bearer [REDACTED]"
+      );
+    });
+
+    it("strips x-turnkeyai-token headers", () => {
+      const out = redactLogLine("incoming x-turnkeyai-token: abc-def-ghi-jkl", []);
+      assert.equal(out, "incoming x-turnkeyai-token: [REDACTED]");
+    });
+
+    it("redacts bare token=xxx patterns over 12 chars", () => {
+      const out = redactLogLine("config snapshot: token=long-enough-token-value", []);
+      assert.equal(out, "config snapshot: token=[REDACTED]");
+    });
+
+    it("leaves short tokens alone (avoid false positives on short hex words)", () => {
+      // 11 chars — below the 12-char threshold on the bare-token regex,
+      // and below the 8-char threshold on the configured-token check.
+      const out = redactLogLine("token=abc1234567", []);
+      assert.equal(out, "token=abc1234567");
+    });
+
+    it("strips x-api-key headers (codex PR I round-2)", () => {
+      assert.equal(
+        redactLogLine("upstream replied 401: x-api-key: sk_live_abcdefghijkl", []),
+        "upstream replied 401: x-api-key: [REDACTED]"
+      );
+      assert.equal(
+        redactLogLine("opts.headers = { x-api-key=plain-value }", []),
+        "opts.headers = { x-api-key=[REDACTED] }"
+      );
+    });
+
+    it("strips cookie + set-cookie headers", () => {
+      assert.equal(
+        redactLogLine("request had cookie: session=abcdef1234567890", []),
+        "request had cookie: [REDACTED]"
+      );
+      // For Set-Cookie, we mask the value but leave the attributes (Path,
+      // HttpOnly, etc.) intact since those don't carry secrets — it's
+      // useful for diagnostics to see the cookie flags even when the
+      // value is hidden.
+      assert.equal(
+        redactLogLine("Set-Cookie: sid=xyz123; Path=/; HttpOnly", []),
+        "Set-Cookie: [REDACTED]; Path=/; HttpOnly"
+      );
+    });
+
+    it("strips api_key / api-key parameter shapes", () => {
+      assert.equal(
+        redactLogLine("calling openai with api_key=sk-1234567890abcdef", []),
+        "calling openai with api_key=[REDACTED]"
+      );
+      assert.equal(
+        redactLogLine("config: {api-key: my-secret-key-value-1234}", []),
+        "config: {api-key: [REDACTED]}"
+      );
+    });
+
+    it("redacts longer tokens before shorter prefixes (gemini PR I round-2)", () => {
+      // "short-prefix" is a prefix of "short-prefix-extended-secret".
+      // Without descending-by-length sort, the shorter token would be
+      // redacted first, leaving "-extended-secret" visible.
+      const out = redactLogLine(
+        "boot: token=short-prefix-extended-secret active",
+        ["short-prefix", "short-prefix-extended-secret"]
+      );
+      assert.equal(out, "boot: token=[REDACTED] active");
+    });
+
+    it("redacts bare token= patterns case-insensitively (gemini PR I round-2)", () => {
+      // Pre-fix only lowercase "token" matched; now all casings.
+      assert.equal(
+        redactLogLine("TOKEN=abcdef1234567890 active", []),
+        "TOKEN=[REDACTED] active"
+      );
+      assert.equal(
+        redactLogLine("Token: longvalue1234567890", []),
+        "Token: [REDACTED]"
+      );
+    });
+
+    it("strips sk-... / sk_live_... style API secrets", () => {
+      assert.equal(
+        redactLogLine("error payload included sk-abcdefghijklmnopqrstuvwxyz", []),
+        "error payload included sk-[REDACTED]"
+      );
+      assert.equal(
+        redactLogLine("stripe key sk_live_1234567890abcdefXYZ in payload", []),
+        "stripe key sk_live_[REDACTED] in payload"
+      );
+    });
+
+    it("end-to-end: /diagnostics/logs response redacts before returning", async () => {
+      const log = makeTempLog(
+        "starting daemon\n" +
+          "config: token=super-secret-daemon-token-xyz123\n" +
+          "incoming Authorization: Bearer eyJlongtokenstring\n"
+      );
+      try {
+        const { res, getJson } = createResponse();
+        await handleDiagnosticsRoutes({
+          req: createRequest({ method: "GET", url: "/diagnostics/logs" }),
+          res,
+          url: new URL("http://127.0.0.1/diagnostics/logs"),
+          deps: makeDeps({
+            logFile: log.path,
+            redactionTokens: ["super-secret-daemon-token-xyz123"],
+          }),
+        });
+        const body = getJson() as { lines: string[]; redacted: boolean };
+        assert.equal(body.redacted, true);
+        assert.ok(!body.lines.some((line) => line.includes("super-secret-daemon-token-xyz123")));
+        assert.ok(!body.lines.some((line) => line.includes("eyJlongtokenstring")));
       } finally {
         log.cleanup();
       }
