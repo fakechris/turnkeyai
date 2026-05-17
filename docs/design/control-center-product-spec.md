@@ -56,24 +56,28 @@ The user proposed six. Spec'ing each as: **goal · entry point · happy path · 
 
 > A new user opens TurnkeyAI for the first time and gets to "Ready for agents" without touching a terminal beyond `turnkeyai app`.
 
-**Entry point**: `turnkeyai app` (CLI), opens `/app#/onboarding` when daemon has no recorded transport or extension install history.
+**Entry point**: `turnkeyai app` (CLI) opens the dashboard at the default `#/setup` route. The dashboard then calls `GET /onboarding/state` on mount; if `completedAt === null` it routes to `#/onboarding` and replaces the URL via `history.replaceState`. This makes the dashboard authoritative for routing — the CLI doesn't need to know whether onboarding is needed.
 
 **Happy path:**
 
 1. CLI launches daemon (PR I shipped this), opens dashboard with operator-token preloaded.
-2. Dashboard detects first-run (no transport selected, no extension marker) → routes to a one-page wizard:
-   - Step 1: pick transport (Local / Relay / Direct-CDP), each with a one-sentence tradeoff.
-   - Step 2: if Relay or Direct-CDP, guided extension/endpoint setup (see US-3).
-   - Step 3: "Ready for agents" with a link to Agent Connect.
-3. After completion, set a `~/.turnkeyai/onboarding.json` marker so subsequent `turnkeyai app` invocations land on the default Plugger view.
+2. Dashboard fetches `GET /onboarding/state` on first load. If `completedAt === null`, route to `#/onboarding`.
+3. Wizard renders as three steps; **the marker is updated after EACH step**, not just the last (so a user who exits the wizard halfway is not trapped on next launch):
+   - **Step 1** — pick transport (Local / Relay / Direct-CDP), each with a one-sentence tradeoff. On select: `PUT /daemon/config/browser-transport` (admin-gated; if scope < admin the wizard surfaces a "rerun `turnkeyai app` as admin" instruction). On success: `PUT /onboarding/state` with `{step: "transport-chosen"}`.
+   - **Step 2** — if Relay or Direct-CDP, guided extension/endpoint setup (see US-3). On success: `PUT /onboarding/state` with `{step: "transport-verified"}`.
+   - **Step 3** — "Ready for agents" with a link to Agent Connect. On click: `PUT /onboarding/state` with `{completedAt: <now>}`.
+4. **Daemon restart after transport change**: changing `browser-transport` requires a daemon restart to take effect. The dashboard shows a "Restarting daemon…" overlay, calls `POST /daemon/restart` (NEW — admin-gated, see §6), then polls `GET /health` until ready (max 15s). On failure: surface the error + manual `turnkeyai daemon restart` instruction. The user is NEVER left with a connection-failed error and no explanation.
 
 **Failure paths:**
 
 - Daemon failed to start → CLI surfaces (PR I shipped). Dashboard never loads.
 - Extension install fails → Step 2 keeps the user there with a retry button + manual instructions (`chrome://extensions`).
 - Direct-CDP endpoint unreachable → Step 2 shows the probe failure inline.
+- Onboarding-state PUT 401 → wizard surfaces "this dashboard's token can't write onboarding state; run `turnkeyai app` with an operator-or-above token". (Should not happen in practice — `turnkeyai app` defaults to operator scope when one is available.)
 
-**Permission gate**: dashboard runs on whatever token `turnkeyai app` resolved. First-run wizard does no mutations beyond writing onboarding.json; needs `operator` to call `/browser-sessions/spawn` if user tests transport.
+**Permission gate**: dashboard runs on whatever token `turnkeyai app` resolved. `GET /onboarding/state` is `read`. `PUT /onboarding/state` (marker only) is `operator`. **Transport selection itself is `admin`** via `/daemon/config/browser-transport` — the wizard step renders an admin-required hint if scope < admin (gemini-HIGH catch: onboarding cannot be a back-door around admin-gated config changes).
+
+**Marker location**: `<runtimeRoot>/onboarding.json` where `runtimeRoot` is resolved via `getRuntimePaths()` (already platform-aware: honors `TURNKEYAI_HOME` env var, defaults to `path.join(homedir(), ".turnkeyai")` cross-platform). Separate from `config.json` so auth config stays purely about auth + port.
 
 ### US-2 — Connect An Agent
 
@@ -128,8 +132,8 @@ The user proposed six. Spec'ing each as: **goal · entry point · happy path · 
    - **Navigate**: `POST /bridge/command` with `{tool: "navigate", args: {url}}`. Confirms when navigating away from a non-blank URL.
    - **Snapshot**: `POST /bridge/command` with `{tool: "snapshot"}`. Inline JSON viewer.
    - **Screenshot**: `POST /bridge/command` with `{tool: "screenshot"}`. Inline image preview.
-   - **Revoke session**: `POST /browser-sessions/:id/revoke`. Confirmation dialog with the session ID + thread ID typed back.
-4. **Visible-state guarantee**: every active session has a row in the left pane. The dashboard never lets an agent silently control a browser session that's hidden from the operator. If a session is created via `/browser-sessions/spawn` while the dashboard is open, the 5s poll picks it up and surfaces it within the next tick.
+   - **Revoke session**: `POST /browser-sessions/:id/revoke`. Confirmation dialog requires the user to type the literal string `REVOKE` (constant — auto-generated IDs in the dialog are too easy to mis-type). Dialog also shows the session ID + thread ID + how many actions the session has executed so the user has context for the decision.
+4. **Visible-state guarantee** (with caveat): every active session has a row in the left pane within at most one poll tick. **The current 5s polling makes this an aspiration, not an enforcement** (gemini catch) — a fast-running agent can execute multiple actions before the next tick surfaces the session. WebSocket events (see §6, J4+) are the real fix. Until then: the dashboard is a fast-converging mirror of daemon state, not an instantaneous one. **The hard guarantee that DOES hold** (because the daemon enforces it server-side) is that no session can run without being persisted to the daemon's session store — so any dashboard reload AT WORST has a 5s lag before showing it. Sessions cannot be hidden from inspection, only delayed.
 
 **Failure paths:**
 
@@ -252,12 +256,13 @@ Almost everything J2/J3 needs already exists. Two new endpoints required:
 | Endpoint                              | Method | Purpose                                                                         | Auth   |
 | ------------------------------------- | ------ | ------------------------------------------------------------------------------- | ------ |
 | `/daemon/auth/regenerate-token`       | POST   | Rotate the daemon's auth token; invalidates the current one. Used by Settings. | admin  |
+| `/daemon/restart`                     | POST   | Trigger an in-place daemon restart so a config change (transport, etc.) takes effect. Returns immediately; dashboard polls `/health` to detect ready. | admin |
 | `/daemon/config/llm-providers`        | GET    | Read current model catalog (file contents + which file).                       | read   |
 | `/daemon/config/llm-providers`        | PUT    | Replace model catalog (validated against the catalog schema).                  | admin  |
 | `/daemon/config/browser-transport`    | GET    | Current transport mode + endpoint (subset of /bridge/status formalised).       | read   |
 | `/daemon/config/browser-transport`    | PUT    | Change transport mode; requires daemon restart to take effect.                 | admin  |
-| `/onboarding/state`                   | GET    | Has the user completed first-run? (`{completedAt: number | null}`)             | read   |
-| `/onboarding/state`                   | PUT    | Mark first-run complete.                                                       | operator |
+| `/onboarding/state`                   | GET    | Has the user completed first-run? Returns `{completedAt: number \| null, transportChosen: string \| null}`. | read   |
+| `/onboarding/state`                   | PUT    | Update onboarding markers (which step the user reached, completedAt timestamp). Body: `{step?: string, completedAt?: number}`. **Does NOT change transport** — that goes through the admin-gated `/daemon/config/browser-transport` PUT. | operator |
 
 ### Already exists (no change needed)
 
@@ -285,6 +290,8 @@ These block PR J1. I am NOT making the call unilaterally.
 **Q6. Token regeneration scope** — `admin` (matches "could lock out other holders") feels right, but it means a user with only `TURNKEYAI_DAEMON_OPERATOR_TOKEN` can never regenerate from the dashboard. Acceptable? **Recommendation**: yes — token rotation is a security operation and admin-gating it is appropriate.
 
 **Q7. Recovery-run mutations** — confirmed deferred to a follow-up, but is "Show advanced recovery (read-only)" worth in J2 as a viewer, with no buttons? Or wait entirely?
+
+**Q8. WebSocket events vs polling — bring forward?** The "visible-state guarantee" in US-3 is currently aspirational with 5s polling (gemini caught this). A fast agent can run several actions before the dashboard reflects the new session. WebSocket `/events` would close the gap. Cost: meaningful daemon work (new endpoint, event-bus plumbing, dashboard reconnect logic). **Recommendation**: keep deferred for J series — the daemon enforces the hard guarantee that no session can run unpersisted, so the 5s lag is a UX issue, not a security one. Promote WebSocket to J4 (post-Settings) if real users complain.
 
 ## 8. PR split
 
