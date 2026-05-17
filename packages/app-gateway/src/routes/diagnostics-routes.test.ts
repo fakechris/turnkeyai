@@ -371,6 +371,29 @@ describe("diagnostics-routes", () => {
       );
     });
 
+    it("redacts longer tokens before shorter prefixes (gemini PR I round-2)", () => {
+      // "short-prefix" is a prefix of "short-prefix-extended-secret".
+      // Without descending-by-length sort, the shorter token would be
+      // redacted first, leaving "-extended-secret" visible.
+      const out = redactLogLine(
+        "boot: token=short-prefix-extended-secret active",
+        ["short-prefix", "short-prefix-extended-secret"]
+      );
+      assert.equal(out, "boot: token=[REDACTED] active");
+    });
+
+    it("redacts bare token= patterns case-insensitively (gemini PR I round-2)", () => {
+      // Pre-fix only lowercase "token" matched; now all casings.
+      assert.equal(
+        redactLogLine("TOKEN=abcdef1234567890 active", []),
+        "TOKEN=[REDACTED] active"
+      );
+      assert.equal(
+        redactLogLine("Token: longvalue1234567890", []),
+        "Token: [REDACTED]"
+      );
+    });
+
     it("strips sk-... / sk_live_... style API secrets", () => {
       assert.equal(
         redactLogLine("error payload included sk-abcdefghijklmnopqrstuvwxyz", []),

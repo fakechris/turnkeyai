@@ -197,7 +197,11 @@ async function handleDiagnosticsLogs(
  */
 export function redactLogLine(line: string, configuredTokens: readonly string[]): string {
   let out = line;
-  for (const token of configuredTokens) {
+  // Sort tokens descending by length so a shorter token that happens to
+  // be a prefix of a longer one doesn't get redacted first and leave
+  // the longer one's suffix exposed (gemini PR I round-2 catch).
+  const sortedTokens = [...configuredTokens].sort((a, b) => b.length - a.length);
+  for (const token of sortedTokens) {
     if (token && token.length >= 8 && out.includes(token)) {
       out = out.split(token).join("[REDACTED]");
     }
@@ -218,8 +222,9 @@ export function redactLogLine(line: string, configuredTokens: readonly string[])
   out = out.replace(new RegExp(`(\\bapi[_-]?key\\s*[=:]\\s*)${TOKEN_VALUE}`, "gi"), "$1[REDACTED]");
   // OpenAI / Stripe / generic "sk-..." secrets (12+ chars after the prefix)
   out = out.replace(/\b(sk[-_](?:live|test)?[-_]?)[A-Za-z0-9_-]{12,}/g, "$1[REDACTED]");
-  // Bare "token=xxx" / "token: xxx" in arbitrary message text
-  out = out.replace(/(\btoken[=:\s]+)([A-Za-z0-9_-]{12,})/g, "$1[REDACTED]");
+  // Bare "token=xxx" / "Token: xxx" / "TOKEN: xxx" in arbitrary message text.
+  // Case-insensitive to match the other patterns (gemini PR I round-2).
+  out = out.replace(/(\btoken[=:\s]+)([A-Za-z0-9_-]{12,})/gi, "$1[REDACTED]");
   return out;
 }
 
