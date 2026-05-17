@@ -3,6 +3,7 @@
 > 更新日期：2026-05-15
 > 范围：当前 `main` 真实可用的能力面 + 已经写进 README/MILESTONES 但仍在验收的能力面 + 明确的非目标
 > 与 `docs/VISION.md` / `docs/MILESTONES.md` 的关系：Vision 讲为什么、Milestones 讲什么时候、本文档讲谁、用什么、做完什么算可用
+> 产品入口方向：`docs/design/mission-control-product-design.md` 定义下一阶段用户端产品叙事。TurnkeyAI 的用户入口应收敛为 Mission Control：多 agent 围绕用户任务协同，browser bridge 只是 context/tool surface 之一。
 
 ## 1. Personas
 

@@ -1,6 +1,7 @@
 # Control Center — Product Spec (PR J0)
 
-> Status: **draft, awaiting sign-off**. PR J1–J3 implementation is gated on agreement here. Edits welcome.
+> Status: **superseded as the product north star**.
+> This document remains useful as the implementation history for the daemon-served Control Center and browser workbench thinking. The current product direction is `docs/design/mission-control-product-design.md`: TurnkeyAI should present as a multi-agent Mission Control workbench, with browser control as one execution surface rather than the primary user story.
 
 ## 0. Why this exists
 
