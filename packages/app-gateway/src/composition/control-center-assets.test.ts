@@ -18,8 +18,28 @@ function makeBundleDir(): { dir: string; cleanup: () => void } {
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-function writeCompleteBundle(dir: string): void {
-  // All files >32 bytes so they clear MIN_BUNDLE_FILE_BYTES.
+// Vite-style bundle: index.html at top level + hashed assets in /assets/.
+// Bundle-completeness check (PR J1) requires the assets subdir to contain
+// ≥1 regular file with non-trivial size (we can't probe the exact hash).
+function writeViteBundle(dir: string): void {
+  writeFileSync(
+    path.join(dir, "index.html"),
+    "<!doctype html><html><head><title>Test</title></head><body></body></html>"
+  );
+  mkdirSync(path.join(dir, "assets"));
+  writeFileSync(
+    path.join(dir, "assets", "index-deadbeef.js"),
+    "console.log('test bundle non-truncated content here');"
+  );
+  writeFileSync(
+    path.join(dir, "assets", "index-deadbeef.css"),
+    ":root{ --x: 0 } body { margin: 0; padding: 0 }"
+  );
+}
+
+// Legacy vanilla bundle layout (PR F→I). Kept passing during transition
+// so dev checkouts with stale build artifacts still serve.
+function writeLegacyBundle(dir: string): void {
   writeFileSync(
     path.join(dir, "index.html"),
     "<!doctype html><html><head><title>Test</title></head><body></body></html>"
@@ -29,10 +49,10 @@ function writeCompleteBundle(dir: string): void {
 }
 
 describe("resolveControlCenterAssetDir", () => {
-  it("returns the override when it is a complete bundle", () => {
+  it("returns the override when it's a complete Vite-style bundle", () => {
     const bundle = makeBundleDir();
     try {
-      writeCompleteBundle(bundle.dir);
+      writeViteBundle(bundle.dir);
       const resolved = resolveControlCenterAssetDir({ override: bundle.dir });
       assert.equal(resolved, path.resolve(bundle.dir));
     } finally {
@@ -40,18 +60,41 @@ describe("resolveControlCenterAssetDir", () => {
     }
   });
 
-  it("rejects an override that is missing app.css (incomplete)", () => {
+  it("still accepts legacy vanilla bundles (app.js + app.css siblings)", () => {
+    // Transitional support — dev checkouts that built the old layout
+    // should keep working until they rebuild.
+    const bundle = makeBundleDir();
+    try {
+      writeLegacyBundle(bundle.dir);
+      const resolved = resolveControlCenterAssetDir({ override: bundle.dir });
+      assert.equal(resolved, path.resolve(bundle.dir));
+    } finally {
+      bundle.cleanup();
+    }
+  });
+
+  it("rejects a bundle with index.html but no assets dir or sibling assets", () => {
     const bundle = makeBundleDir();
     try {
       writeFileSync(
         path.join(bundle.dir, "index.html"),
         "<!doctype html><html><head><title>x</title></head><body></body></html>"
       );
+      const resolved = resolveControlCenterAssetDir({ override: bundle.dir });
+      assert.equal(resolved, null, "index.html without any assets should not be considered complete");
+    } finally {
+      bundle.cleanup();
+    }
+  });
+
+  it("rejects a Vite bundle with an empty assets/ directory", () => {
+    const bundle = makeBundleDir();
+    try {
       writeFileSync(
-        path.join(bundle.dir, "app.js"),
-        "console.log('non-truncated bundle content here')"
+        path.join(bundle.dir, "index.html"),
+        "<!doctype html><html><head><title>x</title></head><body></body></html>"
       );
-      // app.css intentionally missing
+      mkdirSync(path.join(bundle.dir, "assets"));
       const resolved = resolveControlCenterAssetDir({ override: bundle.dir });
       assert.equal(resolved, null);
     } finally {
@@ -59,15 +102,14 @@ describe("resolveControlCenterAssetDir", () => {
     }
   });
 
-  it("rejects a directory named index.html instead of a file (codex re-review #3)", () => {
+  it("rejects a directory named index.html instead of a file", () => {
     const bundle = makeBundleDir();
     try {
-      // index.html is a DIRECTORY, not a file. existsSync alone would call
-      // this a complete bundle; the lstatSync check must catch it.
+      // index.html is a DIRECTORY, not a file. lstatSync().isFile() catches it.
       mkdirSync(path.join(bundle.dir, "index.html"));
-      writeFileSync(path.join(bundle.dir, "app.css"), ":root{ --x:0 } body { margin: 0 }");
+      mkdirSync(path.join(bundle.dir, "assets"));
       writeFileSync(
-        path.join(bundle.dir, "app.js"),
+        path.join(bundle.dir, "assets", "index-x.js"),
         "console.log('non-truncated bundle content here')"
       );
       const resolved = resolveControlCenterAssetDir({ override: bundle.dir });
@@ -77,16 +119,15 @@ describe("resolveControlCenterAssetDir", () => {
     }
   });
 
-  it("rejects a bundle where one required file is zero bytes", () => {
+  it("rejects a bundle where index.html is zero bytes", () => {
     const bundle = makeBundleDir();
     try {
+      writeFileSync(path.join(bundle.dir, "index.html"), "");
+      mkdirSync(path.join(bundle.dir, "assets"));
       writeFileSync(
-        path.join(bundle.dir, "index.html"),
-        "<!doctype html><html><head><title>x</title></head><body></body></html>"
+        path.join(bundle.dir, "assets", "index-x.js"),
+        "console.log('non-truncated bundle content here')"
       );
-      writeFileSync(path.join(bundle.dir, "app.css"), ":root{ --x:0 } body { margin: 0 }");
-      // app.js is zero bytes — corrupt placeholder. Don't ship it.
-      writeFileSync(path.join(bundle.dir, "app.js"), "");
       const resolved = resolveControlCenterAssetDir({ override: bundle.dir });
       assert.equal(resolved, null);
     } finally {
@@ -94,14 +135,15 @@ describe("resolveControlCenterAssetDir", () => {
     }
   });
 
-  it("rejects a bundle where a required file is truncated below the floor (codex 3rd-round)", () => {
+  it("rejects a bundle where index.html is truncated below the floor", () => {
     const bundle = makeBundleDir();
     try {
-      // Single byte — definitely not a real asset, even though it's non-zero.
-      // size > 0 alone would have accepted it.
-      writeFileSync(path.join(bundle.dir, "index.html"), "x");
-      writeFileSync(path.join(bundle.dir, "app.css"), ":root{}");
-      writeFileSync(path.join(bundle.dir, "app.js"), "console.log('x')");
+      writeFileSync(path.join(bundle.dir, "index.html"), "x"); // 1 byte
+      mkdirSync(path.join(bundle.dir, "assets"));
+      writeFileSync(
+        path.join(bundle.dir, "assets", "index-x.js"),
+        "console.log('non-truncated bundle content here')"
+      );
       const resolved = resolveControlCenterAssetDir({ override: bundle.dir });
       assert.equal(resolved, null);
     } finally {
@@ -109,21 +151,20 @@ describe("resolveControlCenterAssetDir", () => {
     }
   });
 
-  it("rejects a bundle where a required file is a symlink to a non-zero outside file (codex 3rd-round)", () => {
-    // statSync follows symlinks: a malicious or accidental symlink from
-    // index.html → /etc/hosts would pass isFile()+size>0. lstatSync sees
-    // the symlink itself (isFile() === false) and rejects.
+  it("rejects a bundle where index.html is a symlink to an outside file", () => {
     const bundle = makeBundleDir();
     const outside = mkdtempSync(path.join(tmpdir(), "tk-cc-outside-bundle-"));
     try {
       const outsideTarget = path.join(outside, "hijack.html");
       writeFileSync(outsideTarget, "<!doctype html>this is outside the bundle");
-      // index.html is a symlink to the outside file.
       symlinkSync(outsideTarget, path.join(bundle.dir, "index.html"));
-      writeFileSync(path.join(bundle.dir, "app.css"), ":root{ color: red }");
-      writeFileSync(path.join(bundle.dir, "app.js"), "console.log('ok ok ok')");
+      mkdirSync(path.join(bundle.dir, "assets"));
+      writeFileSync(
+        path.join(bundle.dir, "assets", "index-x.js"),
+        "console.log('non-truncated bundle content here')"
+      );
       const resolved = resolveControlCenterAssetDir({ override: bundle.dir });
-      assert.equal(resolved, null, "symlinked required bundle file must be rejected");
+      assert.equal(resolved, null, "symlinked index.html must be rejected");
     } finally {
       rmSync(outside, { recursive: true, force: true });
       bundle.cleanup();
@@ -138,18 +179,12 @@ describe("resolveControlCenterAssetDir", () => {
   });
 
   it("returns null when no override is supplied and no candidate dir exists", () => {
-    // Without override + with no real bundle co-located with this test file,
-    // the probe should fall through. Note this assumes the test isn't being
-    // run from a tree where one of the candidate paths happens to have a
-    // complete bundle. In this repo's source-checkout layout
-    // (packages/cli/control-center/) it WILL find one — so we just verify
-    // the result is either null or a directory containing the bundle.
+    // In this repo's source-checkout layout
+    // (packages/control-center/dist/) it WILL find one if a build has
+    // happened. Just verify the result is either null or a valid bundle.
     const resolved = resolveControlCenterAssetDir();
     if (resolved !== null) {
-      // Must be a directory holding a real bundle.
       assert.ok(statSync(path.join(resolved, "index.html")).isFile());
-      assert.ok(statSync(path.join(resolved, "app.css")).isFile());
-      assert.ok(statSync(path.join(resolved, "app.js")).isFile());
     }
   });
 });

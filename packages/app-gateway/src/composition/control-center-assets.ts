@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,11 +16,22 @@ import { fileURLToPath } from "node:url";
 // index.html. Returning null is acceptable — the daemon still boots and the
 // /app routes simply respond 404 with a hint to rebuild the CLI bundle.
 
-// Files the dashboard cannot run without. If any are missing from a
-// candidate directory we skip it — better to fall through to a later
-// candidate (or a friendly 404) than to load index.html that immediately
-// fails to fetch app.js.
-const REQUIRED_BUNDLE_FILES = ["index.html", "app.css", "app.js"] as const;
+// What "a valid bundle directory" looks like.
+//
+// Vite output (PR J1+):
+//   <dir>/index.html
+//   <dir>/assets/index-<hash>.js
+//   <dir>/assets/index-<hash>.css
+//
+// We can't probe a specific hashed filename — Vite changes the hash on
+// every content change. Instead we require:
+//   1. index.html exists, is a regular file, and is non-trivial in size
+//   2. The bundle has at least one served asset (either:
+//      a. an "assets/" directory with ≥1 file inside — Vite-style, or
+//      b. ≥1 sibling .js file — vanilla legacy layout)
+// Approach (b) is kept transitional so a dev with stale legacy assets
+// still gets them served until they rebuild.
+const REQUIRED_INDEX_FILE = "index.html";
 
 export function resolveControlCenterAssetDir(
   options: { override?: string | null } = {}
@@ -46,22 +57,58 @@ export function resolveControlCenterAssetDir(
 const MIN_BUNDLE_FILE_BYTES = 32;
 
 function isCompleteBundle(dir: string): boolean {
-  // lstatSync (not statSync) — don't follow symlinks. A required bundle
-  // file should be a regular file shipped inside the bundle dir; a symlink
-  // pointing to e.g. /etc/hosts could otherwise satisfy isFile()+size>0
-  // and win candidate selection (codex 3rd-round #3). lstat().isFile()
-  // returns false for symlinks regardless of where they point, which is
-  // exactly what we want.
-  return REQUIRED_BUNDLE_FILES.every((name) => {
+  // index.html must exist as a real file (not a symlink, not a directory).
+  // lstatSync — don't follow symlinks. A required bundle file should be
+  // a regular file shipped inside the bundle dir; a symlink pointing to
+  // /etc/hosts could otherwise satisfy isFile()+size>0 and win candidate
+  // selection (codex 3rd-round #3).
+  const indexPath = path.join(dir, REQUIRED_INDEX_FILE);
+  try {
+    const stats = lstatSync(indexPath);
+    if (!stats.isFile()) return false;
+    if (stats.size < MIN_BUNDLE_FILE_BYTES) return false;
+  } catch {
+    return false;
+  }
+
+  // At least one asset must be available to serve alongside index.html.
+  // Vite emits hashed assets under `assets/` (we can't probe the exact
+  // hashed filename); the legacy vanilla layout had sibling app.js/app.css.
+  // Either is acceptable so a checked-out dev with a stale legacy bundle
+  // still gets serving — until they rebuild.
+  return hasViteAssetsDir(dir) || hasLegacyTopLevelAssets(dir);
+}
+
+function hasViteAssetsDir(dir: string): boolean {
+  const assetsDir = path.join(dir, "assets");
+  try {
+    const stats = lstatSync(assetsDir);
+    if (!stats.isDirectory()) return false;
+    // At least one regular file inside.
+    return readdirSync(assetsDir).some((name) => {
+      try {
+        const entry = lstatSync(path.join(assetsDir, name));
+        return entry.isFile() && entry.size >= MIN_BUNDLE_FILE_BYTES;
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+function hasLegacyTopLevelAssets(dir: string): boolean {
+  // Legacy vanilla layout had app.js + app.css siblings to index.html.
+  for (const name of ["app.js", "app.css"] as const) {
     try {
       const stats = lstatSync(path.join(dir, name));
-      if (!stats.isFile()) return false;
-      if (stats.size < MIN_BUNDLE_FILE_BYTES) return false;
-      return true;
-    } catch {
-      return false;
-    }
-  });
+      if (stats.isFile() && stats.size >= MIN_BUNDLE_FILE_BYTES) {
+        return true;
+      }
+    } catch {}
+  }
+  return false;
 }
 
 function candidateDirs(): string[] {
@@ -84,7 +131,18 @@ function candidateDirs(): string[] {
     } catch {}
   } catch {}
 
-  // Source checkout: packages/app-gateway/src/daemon.ts → ../../cli/control-center
+  // Source checkout (PR J1+): packages/control-center is the canonical
+  // home for the dashboard, built by Vite into packages/control-center/dist.
+  // packages/app-gateway/src/daemon.ts → ../../control-center/dist
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    dirs.push(path.resolve(here, "..", "..", "..", "control-center", "dist"));
+    dirs.push(path.resolve(here, "..", "..", "..", "..", "control-center", "dist"));
+  } catch {}
+
+  // Legacy source-checkout locations (PR F→I vanilla bundle). Kept so a
+  // developer who built the OLD bundle still gets it served — but the new
+  // Vite-built location is probed first.
   try {
     const here = path.dirname(fileURLToPath(import.meta.url));
     dirs.push(path.resolve(here, "..", "..", "cli", "control-center"));
