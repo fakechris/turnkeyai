@@ -42,7 +42,9 @@ export interface MissionRouteDeps {
   activityStore: ActivityEventStore & {
     replaceAll(missionId: MissionId, events: ActivityEvent[]): Promise<void>;
   };
-  approvalStore: ApprovalRequestStore;
+  approvalStore: ApprovalRequestStore & {
+    listDecisions(): Promise<import("@turnkeyai/core-types/mission").ApprovalDecision[]>;
+  };
   artifactStore: ArtifactStore;
   agentRegistry: AgentRegistry & { replaceAll(agents: import("@turnkeyai/core-types/mission").Agent[]): Promise<void> };
   contextSourceRegistry: ContextSourceRegistry & {
@@ -77,15 +79,20 @@ export async function handleMissionRoutes(input: {
   }
 
   if (method === "GET" && pathname === "/approvals") {
-    const approvals = await deps.approvalStore.list();
-    // Attach decisions when present so the dashboard can render the
-    // Decided tab without an extra round-trip.
-    const withDecisions = await Promise.all(
-      approvals.map(async (a) => ({
-        ...a,
-        decision: (await deps.approvalStore.getDecision(a.id)) ?? null,
-      }))
+    // Two single-pass directory scans + a memory join, instead of N+1
+    // per-approval getDecision reads (gemini K2 review). Stays O(N+D)
+    // and lets a 100-approval queue render in one tick.
+    const [approvals, decisions] = await Promise.all([
+      deps.approvalStore.list(),
+      deps.approvalStore.listDecisions(),
+    ]);
+    const decisionByApprovalId = new Map(
+      decisions.map((d) => [d.approvalId, d] as const)
     );
+    const withDecisions = approvals.map((a) => ({
+      ...a,
+      decision: decisionByApprovalId.get(a.id) ?? null,
+    }));
     sendJson(res, 200, withDecisions);
     return true;
   }
@@ -144,7 +151,13 @@ export async function handleMissionRoutes(input: {
       return true;
     }
     if (sub === "timeline") {
-      const limit = parsePositiveLimit(url.searchParams.get("limit"));
+      // limit is optional (defaults to 200). gemini K2 caught the prior
+      // implementation rejected requests without a limit param because
+      // parsePositiveLimit(null) → 100 historically but the call site
+      // treated null as "bad". Explicit handling here: missing param =
+      // default 200, present-but-malformed = 400.
+      const limitParam = url.searchParams.get("limit");
+      const limit = limitParam === null ? 200 : parsePositiveLimit(limitParam);
       if (limit === null) {
         sendJson(res, 400, { error: "limit must be a positive integer" });
         return true;

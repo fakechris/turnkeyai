@@ -60,9 +60,11 @@ export interface Mission {
   /** Owner identifier (the user). For K2 this is informational only. */
   owner: string;
   ownerLabel: string;
-  /** Display string (e.g. "today 09:31"). Stored separately from createdAt
-   *  so the daemon can format it in the right locale; the raw timestamp
-   *  is also in createdAtMs for the dashboard. */
+  /** Display-or-canonical string. The daemon's FileMissionStore.create
+   *  writes an ISO-8601 string here; clients (or future locale-aware
+   *  bootstrap helpers) may overwrite with a localized form like
+   *  "today 09:31". Either way, `createdAtMs` is the authoritative
+   *  sortable timestamp. */
   createdAt: string;
   createdAtMs: number;
   /** Agent IDs participating in the mission. Ordered with coordinator
@@ -284,6 +286,9 @@ export interface ApprovalRequestStore {
   /** Look up a decision if one has been recorded. K2 only reads;
    *  decisions are recorded by K4. */
   getDecision(id: ApprovalRequestId): Promise<ApprovalDecision | null>;
+  /** Bulk-load every recorded decision in a single pass. Used by the
+   *  /approvals route to avoid N+1 reads when joining. */
+  listDecisions(): Promise<ApprovalDecision[]>;
 }
 
 export interface ArtifactStore {

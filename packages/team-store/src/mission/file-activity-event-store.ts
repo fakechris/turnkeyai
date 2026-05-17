@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, appendFile, rename } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -67,12 +67,22 @@ export class FileActivityEventStore implements ActivityEventStore {
   /**
    * Replace the entire log for a mission. Used by bootstrap-demo to
    * rewrite a clean fixture; normal callers append.
+   *
+   * Atomic via temp-file-then-rename (CodeRabbit K2 review): a crash
+   * mid-write on the target file would leave a partial JSONL that the
+   * next listByMission would silently drop most entries from. Writing
+   * to a temp file in the same directory and renaming ensures the
+   * target is either the full new content or untouched.
    */
   async replaceAll(missionId: MissionId, events: ActivityEvent[]): Promise<void> {
     const file = this.missionFile(missionId);
     await mkdir(this.rootDir, { recursive: true });
-    const body = events.map((event) => JSON.stringify(event)).join("\n") + (events.length > 0 ? "\n" : "");
-    await writeFile(file, body, "utf8");
+    const body =
+      events.map((event) => JSON.stringify(event)).join("\n") +
+      (events.length > 0 ? "\n" : "");
+    const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(tmp, body, "utf8");
+    await rename(tmp, file);
   }
 
   private missionFile(missionId: MissionId): string {

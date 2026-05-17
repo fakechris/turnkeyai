@@ -72,6 +72,26 @@ export class FileApprovalRequestStore implements ApprovalRequestStore {
   }
 
   /**
+   * Bulk-load every recorded decision in a single directory scan. Used
+   * by the /approvals route to join decisions with their requests
+   * without doing N+1 reads (gemini K2 review).
+   */
+  async listDecisions(): Promise<ApprovalDecision[]> {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await readdir(this.decisionsDir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const files = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => path.join(this.decisionsDir, entry.name));
+    const all = await Promise.all(files.map((file) => readJsonFile<ApprovalDecision>(file)));
+    return all.filter((d): d is ApprovalDecision => d !== null);
+  }
+
+  /**
    * Record a decision. Used by K4 — exposed here so the K2 bootstrap
    * test can pre-populate.
    */

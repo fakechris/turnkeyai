@@ -59,6 +59,13 @@ function useRemote<T>(
 
   useEffect(() => {
     let cancelled = false;
+    // Reset to the fallback before issuing the new request (CodeRabbit
+    // K2 review): without this, switching mission-scoped hooks (e.g.
+    // useWorkItems(missionA) → useWorkItems(missionB)) would briefly
+    // render the previous mission's data until the new fetch resolved.
+    setValue(fallbackRef.current);
+    setIsLive(false);
+    setError(null);
     void client
       .get<T>(pathname)
       .then((data) => {
@@ -105,9 +112,19 @@ export function useMission(missionId: string | null, fallback: Mission | null): 
     if (!path) {
       setValue(fallback);
       setIsLive(false);
+      // Clear stale error from a prior mission so navigating back to
+      // the missions list doesn't keep showing the previous error
+      // banner (CodeRabbit K2 review).
+      setError(null);
       return;
     }
     let cancelled = false;
+    // Reset to fallback before issuing the new request so a mission ID
+    // change (e.g. opening msn.02 after msn.01) doesn't briefly render
+    // msn.01's data (CodeRabbit K2 review).
+    setValue(fallback);
+    setIsLive(false);
+    setError(null);
     void client
       .get<Mission>(path)
       .then((data) => {
