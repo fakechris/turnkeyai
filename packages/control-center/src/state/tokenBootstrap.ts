@@ -5,7 +5,7 @@ import { KNOWN_ROUTES, KNOWN_SCOPES, type Route, type Scope } from "./types";
 export const TOKEN_STORAGE_KEY = "turnkeyai.controlCenter.token";
 export const SCOPE_STORAGE_KEY = "turnkeyai.controlCenter.scope";
 
-export const DEFAULT_ROUTE: Route = "setup";
+export const DEFAULT_ROUTE: Route = "missions";
 
 export interface ParsedFragment {
   token: string | null;
