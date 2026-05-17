@@ -175,13 +175,23 @@ async function handleDiagnosticsLogs(
 /**
  * Scrubs secrets from a single log line before serving it to the dashboard.
  *
- * Two passes:
- *  1. Configured tokens — exact-substring replace. Cheap and the most
- *     important case (the daemon's own token will appear in startup logs
- *     and auth-related error paths).
- *  2. Bearer-token / x-turnkeyai-token shaped strings in arbitrary text —
- *     catches tokens from peers / agents that the daemon doesn't know
- *     about but might still log on auth failure.
+ * Defense in depth — /diagnostics/logs is `read`-scoped, so anything that
+ * reads `/bridge/status` can also read the log tail. The daemon shouldn't
+ * be logging raw secrets in the first place, but operational reality
+ * means it sometimes does (LLM error responses include API keys, agents
+ * sometimes include their token in user-agent strings, etc). This
+ * scrubber is a backstop, not a substitute for not logging secrets.
+ *
+ * Patterns (codex PR I round-2 broadening):
+ *  1. Configured tokens — exact substring replace, len >= 8 to avoid
+ *     pathological short-token false positives.
+ *  2. `Authorization: Bearer xxx` / `authorization: bearer xxx`
+ *  3. `x-turnkeyai-token: xxx`
+ *  4. `x-api-key: xxx` / `x-api-key=xxx` — generic API-key header
+ *  5. `cookie: xxx` / `set-cookie: xxx` — session cookies
+ *  6. `api_key=xxx` / `api-key=xxx` — query-string / config-style API keys
+ *  7. `sk-...` / `sk_live_...` — OpenAI / Stripe-shaped secret tokens
+ *  8. Bare `token=xxx` / `token: xxx` in arbitrary message text
  *
  * Exposed for unit testing.
  */
@@ -192,10 +202,22 @@ export function redactLogLine(line: string, configuredTokens: readonly string[])
       out = out.split(token).join("[REDACTED]");
     }
   }
-  // "Authorization: Bearer xxx" / "authorization: bearer xxx"
-  out = out.replace(/(authorization\s*:\s*bearer\s+)\S+/gi, "$1[REDACTED]");
-  // "x-turnkeyai-token: xxx"
-  out = out.replace(/(x-turnkeyai-token\s*:\s*)\S+/gi, "$1[REDACTED]");
+  // Token-shaped value class: a-z, A-Z, 0-9, and the chars commonly seen
+  // in JWTs / base64url / hex tokens. Crucially does NOT include "}" "]"
+  // ";" "," or quote characters, so a "log message that happens to look
+  // like {api-key: secret-thing}" gets the secret-thing redacted without
+  // eating the trailing brace.
+  const TOKEN_VALUE = `[A-Za-z0-9._~+/=-]+`;
+  // Auth headers
+  out = out.replace(new RegExp(`(authorization\\s*:\\s*bearer\\s+)${TOKEN_VALUE}`, "gi"), "$1[REDACTED]");
+  out = out.replace(new RegExp(`(x-turnkeyai-token\\s*:\\s*)${TOKEN_VALUE}`, "gi"), "$1[REDACTED]");
+  out = out.replace(new RegExp(`(x-api-key\\s*[:=]\\s*)${TOKEN_VALUE}`, "gi"), "$1[REDACTED]");
+  // Cookies (request and response)
+  out = out.replace(/((?:^|\W)(?:set-)?cookie\s*:\s*)[^\r\n;]+/gi, "$1[REDACTED]");
+  // Common API-key parameter shapes
+  out = out.replace(new RegExp(`(\\bapi[_-]?key\\s*[=:]\\s*)${TOKEN_VALUE}`, "gi"), "$1[REDACTED]");
+  // OpenAI / Stripe / generic "sk-..." secrets (12+ chars after the prefix)
+  out = out.replace(/\b(sk[-_](?:live|test)?[-_]?)[A-Za-z0-9_-]{12,}/g, "$1[REDACTED]");
   // Bare "token=xxx" / "token: xxx" in arbitrary message text
   out = out.replace(/(\btoken[=:\s]+)([A-Za-z0-9_-]{12,})/g, "$1[REDACTED]");
   return out;

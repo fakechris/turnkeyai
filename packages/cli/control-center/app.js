@@ -702,6 +702,10 @@ function applyScopeAffordances(root, scope) {
   const banner = root.querySelector('[data-field="scope-banner"]');
   const mutation = root.querySelector('[data-field="mutation-snippets"]');
 
+  // Codex PR I round-2: avoid innerHTML even with hardcoded strings —
+  // a future hand sprinkling a dynamic value into one of these would
+  // create an XSS without any visible code change. Use a tiny segment
+  // builder that takes (tag, text) pairs and constructs nodes instead.
   const descriptions = {
     operator: {
       summary: "operator — can call /bridge/command + browser routes",
@@ -711,16 +715,29 @@ function applyScopeAffordances(root, scope) {
       summary: "admin — can call everything (validation/relay/admin routes too)",
       banner: {
         kind: "ok",
-        text:
-          "<strong>Heads up:</strong> this token has admin scope. Prefer a TURNKEYAI_DAEMON_OPERATOR_TOKEN if you only need to drive the browser — admin tokens can call validation and relay-admin routes the dashboard never needs.",
+        segments: [
+          ["strong", "Heads up:"],
+          ["text", " this token has admin scope. Prefer a "],
+          ["code", "TURNKEYAI_DAEMON_OPERATOR_TOKEN"],
+          ["text",
+            " if you only need to drive the browser — admin tokens can call validation and relay-admin routes the dashboard never needs."],
+        ],
       },
     },
     read: {
       summary: "read — inspection only, cannot drive the browser",
       banner: {
         kind: "warn",
-        text:
-          "<strong>Read-only token.</strong> The <code>POST /bridge/command</code> snippet would 401 with this token, so it is hidden. To plug an agent in, set <code>TURNKEYAI_DAEMON_OPERATOR_TOKEN</code> and restart the daemon, then re-run <code>turnkeyai app</code>.",
+        segments: [
+          ["strong", "Read-only token."],
+          ["text", " The "],
+          ["code", "POST /bridge/command"],
+          ["text", " snippet would 401 with this token, so it is hidden. To plug an agent in, set "],
+          ["code", "TURNKEYAI_DAEMON_OPERATOR_TOKEN"],
+          ["text", " and restart the daemon, then re-run "],
+          ["code", "turnkeyai app"],
+          ["text", "."],
+        ],
       },
     },
     unknown: {
@@ -736,7 +753,7 @@ function applyScopeAffordances(root, scope) {
     if (entry.banner) {
       banner.hidden = false;
       banner.className = `scope-banner scope-${entry.banner.kind}`;
-      banner.innerHTML = entry.banner.text;
+      banner.replaceChildren(...entry.banner.segments.map(buildBannerNode));
     } else {
       banner.hidden = true;
     }
@@ -747,6 +764,13 @@ function applyScopeAffordances(root, scope) {
     // wonder why it 401s.
     mutation.hidden = scope === "read";
   }
+}
+
+function buildBannerNode([kind, text]) {
+  if (kind === "text") return document.createTextNode(text);
+  const el = document.createElement(kind);
+  el.textContent = text;
+  return el;
 }
 
 function buildAgentSnippets(baseUrl, token) {

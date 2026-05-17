@@ -334,6 +334,54 @@ describe("diagnostics-routes", () => {
       assert.equal(out, "token=abc1234567");
     });
 
+    it("strips x-api-key headers (codex PR I round-2)", () => {
+      assert.equal(
+        redactLogLine("upstream replied 401: x-api-key: sk_live_abcdefghijkl", []),
+        "upstream replied 401: x-api-key: [REDACTED]"
+      );
+      assert.equal(
+        redactLogLine("opts.headers = { x-api-key=plain-value }", []),
+        "opts.headers = { x-api-key=[REDACTED] }"
+      );
+    });
+
+    it("strips cookie + set-cookie headers", () => {
+      assert.equal(
+        redactLogLine("request had cookie: session=abcdef1234567890", []),
+        "request had cookie: [REDACTED]"
+      );
+      // For Set-Cookie, we mask the value but leave the attributes (Path,
+      // HttpOnly, etc.) intact since those don't carry secrets — it's
+      // useful for diagnostics to see the cookie flags even when the
+      // value is hidden.
+      assert.equal(
+        redactLogLine("Set-Cookie: sid=xyz123; Path=/; HttpOnly", []),
+        "Set-Cookie: [REDACTED]; Path=/; HttpOnly"
+      );
+    });
+
+    it("strips api_key / api-key parameter shapes", () => {
+      assert.equal(
+        redactLogLine("calling openai with api_key=sk-1234567890abcdef", []),
+        "calling openai with api_key=[REDACTED]"
+      );
+      assert.equal(
+        redactLogLine("config: {api-key: my-secret-key-value-1234}", []),
+        "config: {api-key: [REDACTED]}"
+      );
+    });
+
+    it("strips sk-... / sk_live_... style API secrets", () => {
+      assert.equal(
+        redactLogLine("error payload included sk-abcdefghijklmnopqrstuvwxyz", []),
+        "error payload included sk-[REDACTED]"
+      );
+      assert.equal(
+        redactLogLine("stripe key sk_live_1234567890abcdefXYZ in payload", []),
+        "stripe key sk_live_[REDACTED] in payload"
+      );
+    });
+
     it("end-to-end: /diagnostics/logs response redacts before returning", async () => {
       const log = makeTempLog(
         "starting daemon\n" +

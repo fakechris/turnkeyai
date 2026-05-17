@@ -69,33 +69,35 @@ function resolveDaemonBaseUrl(paths: AppRuntimePaths): string {
 /**
  * Pure token resolver. Exposed for unit tests.
  *
- * Priority (codex PR I correction): the prior PR F implementation preferred
- * READ first to be "least privilege", but the dashboard's Agent Connect
- * page renders a `POST /bridge/command` curl snippet — which needs
- * operator scope. A read-only token in that snippet would 401 silently and
- * break the user's plug-an-agent workflow. So we prefer scopes the dashboard
- * can ACTUALLY use:
+ * Priority (revised after codex PR I round-2 review): the dashboard should
+ * prefer the LEAST-privilege token that still lets it function. The
+ * Agent Connect page renders a POST /bridge/command curl snippet that
+ * needs operator scope — so operator is the sweet spot.
  *
- *   1. Legacy TURNKEYAI_DAEMON_TOKEN → scope: "unknown"
- *      (single-token setups grant admin; treat as "good enough" without
- *      claiming a specific level)
- *   2. TURNKEYAI_DAEMON_OPERATOR_TOKEN → scope: "operator"
- *      (the sweet spot — covers /bridge/command + browser routes, not
- *      validation/admin)
+ *   1. TURNKEYAI_DAEMON_OPERATOR_TOKEN → scope: "operator"
+ *      Picked FIRST when present. Mixed-migration scenario: if a user
+ *      has a legacy admin TURNKEYAI_DAEMON_TOKEN set from earlier setup
+ *      and then adds the operator-scoped layered token, operator wins
+ *      — the explicit narrower choice beats the older broader one.
+ *   2. Legacy TURNKEYAI_DAEMON_TOKEN → scope: "unknown"
+ *      Single-token setups grant admin; treat as "good enough" without
+ *      claiming a specific level. Picked when no layered operator token
+ *      is set.
  *   3. TURNKEYAI_DAEMON_ADMIN_TOKEN → scope: "admin"
- *      (works for everything, but only chosen if no operator-token is set)
+ *      Works for everything, but only chosen if no operator-token is set.
+ *      The dashboard surfaces a "consider operator instead" banner.
  *   4. TURNKEYAI_DAEMON_READ_TOKEN → scope: "read"
- *      (last resort; the dashboard pages still render, but Agent Connect
- *      shows a warning and hides the mutation snippet)
+ *      Last env-var resort. Agent Connect hides the mutation snippet
+ *      because it would 401 with a read-only token.
  *   5. config.token → scope: "unknown"
- *      (legacy single-token written to ~/.turnkeyai/config.json on first
- *      daemon start)
+ *      Legacy single-token written to ~/.turnkeyai/config.json on
+ *      first daemon start. Always-last fallback.
  */
 export function resolveAppToken(env: NodeJS.ProcessEnv, configToken: string | null): ResolvedAppToken | null {
-  const legacy = env.TURNKEYAI_DAEMON_TOKEN?.trim();
-  if (legacy) return { token: legacy, scope: "unknown", source: "env" };
   const operator = env.TURNKEYAI_DAEMON_OPERATOR_TOKEN?.trim();
   if (operator) return { token: operator, scope: "operator", source: "env" };
+  const legacy = env.TURNKEYAI_DAEMON_TOKEN?.trim();
+  if (legacy) return { token: legacy, scope: "unknown", source: "env" };
   const admin = env.TURNKEYAI_DAEMON_ADMIN_TOKEN?.trim();
   if (admin) return { token: admin, scope: "admin", source: "env" };
   const read = env.TURNKEYAI_DAEMON_READ_TOKEN?.trim();
@@ -217,23 +219,41 @@ export async function runAppCommand(args: string[]): Promise<void> {
     }
     console.log(`daemon not reachable at ${baseUrl} — starting…`);
     const result = await ensureDaemonRunning();
-    if (result.kind === "failed-to-start") {
-      console.error(`daemon failed to become healthy within 10s at ${result.baseUrl}`);
-      console.error(`check logs at ${result.logFile}`);
-      process.exit(1);
-    }
-    if (result.kind === "already-running" && !result.healthy) {
-      // PID exists but /health is silent — likely a stuck process. Don't
-      // try to kill it (user might be debugging); tell the user to
-      // restart explicitly.
-      console.error(
-        `daemon pid ${result.pid} is running at ${result.baseUrl} but /health is unresponsive.`
-      );
-      console.error("try: turnkeyai daemon restart");
-      process.exit(1);
-    }
-    if (result.kind === "started") {
-      console.log(`daemon started (pid ${result.pid}) at ${result.baseUrl}`);
+    switch (result.kind) {
+      case "failed-to-start":
+        console.error(`daemon failed to become healthy within 10s at ${result.baseUrl}`);
+        console.error(`check logs at ${result.logFile}`);
+        process.exit(1);
+      // eslint-disable-next-line no-fallthrough
+      case "stuck-daemon":
+        // PID file points at a live process AND the port is bound — could
+        // be a genuinely stuck daemon, or another process that grabbed
+        // the port. We deliberately do NOT recommend `turnkeyai daemon
+        // restart` here: if the pid was a recycled unrelated process,
+        // restart would SIGTERM it. The user has to decide. Codex
+        // PR I round-2 caught this.
+        console.error(
+          `pid ${result.pid} owns the daemon port at ${result.baseUrl} but /health is unresponsive.`
+        );
+        console.error(`check logs at ${result.logFile} and investigate the process before retrying.`);
+        console.error(
+          "if you confirm pid is your daemon: `turnkeyai daemon stop` (or kill it manually) and re-run."
+        );
+        process.exit(1);
+      // eslint-disable-next-line no-fallthrough
+      case "already-running":
+        // ensureDaemonRunning only returns this kind when the daemon was
+        // actually healthy — the unhealthy branch routes through
+        // stuck-daemon or stale-pid-cleanup now. So if we land here our
+        // initial pingHealth must have raced with the daemon coming up.
+        if (!result.healthy) {
+          console.error(`unexpected daemon state at ${result.baseUrl}; aborting`);
+          process.exit(1);
+        }
+        break;
+      case "started":
+        console.log(`daemon started (pid ${result.pid}) at ${result.baseUrl}`);
+        break;
     }
     healthy = await pingHealth(baseUrl);
     if (!healthy) {

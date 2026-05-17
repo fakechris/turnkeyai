@@ -13,7 +13,12 @@ describe("app-command", () => {
       assert.equal(resolveAppToken({}, null), null);
     });
 
-    it("prefers legacy TURNKEYAI_DAEMON_TOKEN with scope 'unknown'", () => {
+    it("prefers OPERATOR over legacy TURNKEYAI_DAEMON_TOKEN (mixed-migration case)", () => {
+      // Codex PR I round-2: if a user has a legacy admin TURNKEYAI_DAEMON_TOKEN
+      // set from an earlier setup and then adds the operator-scoped layered
+      // token, the operator-scoped token should win. The explicit narrower
+      // choice beats the older broader one. Otherwise the dashboard would
+      // hand admin tokens to agents that only need operator.
       const r = resolveAppToken(
         {
           TURNKEYAI_DAEMON_TOKEN: " legacy ",
@@ -21,7 +26,12 @@ describe("app-command", () => {
         },
         null
       );
-      assert.deepEqual(r, { token: "legacy", scope: "unknown", source: "env" });
+      assert.deepEqual(r, { token: "op", scope: "operator", source: "env" });
+    });
+
+    it("falls back to legacy TURNKEYAI_DAEMON_TOKEN when no operator token is set", () => {
+      const r = resolveAppToken({ TURNKEYAI_DAEMON_TOKEN: "legacy-only" }, null);
+      assert.deepEqual(r, { token: "legacy-only", scope: "unknown", source: "env" });
     });
 
     it("prefers operator over admin over read (PR I priority)", () => {
