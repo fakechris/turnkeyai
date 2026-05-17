@@ -70,6 +70,8 @@ import { createInspectionRouteDeps } from "./composition/inspection-deps";
 import { composeMissionDeps } from "./composition/mission-deps";
 import { createRecoveryRouteDeps } from "./composition/recovery-deps";
 import { runBrowserTransportSoakViaCli } from "./composition/transport-soak-cli";
+import { createBridgeMissionActivityRecorder } from "./bridge-mission-activity-recorder";
+import { createBrowserContextSourceProvider } from "./browser-context-source-provider";
 
 import {
   parsePositiveInteger,
@@ -321,6 +323,21 @@ const recoveryDeps = createRecoveryRouteDeps({
 // addition with no cyclic deps on the rest of the daemon.
 const missionDeps = composeMissionDeps({ dataDir: DATA_DIR, clock });
 
+// PR K3 — bridge ↔ mission wiring. The recorder writes ActivityEvents
+// into the mission timeline; the provider exposes live browser sessions
+// as ContextSources so the Mission Detail right pane reflects what the
+// bridge currently has open instead of just the registry snapshot.
+const bridgeMissionRecorder = createBridgeMissionActivityRecorder({
+  activityStore: missionDeps.activityStore,
+  // Reuse the daemon idGenerator's messageId sequence so event IDs
+  // share the same monotonic ordering as other daemon-emitted IDs.
+  newEventId: () => idGenerator.messageId(),
+  clock,
+});
+const browserContextSourceProvider = createBrowserContextSourceProvider({
+  browserBridge,
+});
+
 await mkdir(DATA_DIR, { recursive: true });
 
 const server = http.createServer(async (req, res) => {
@@ -469,7 +486,7 @@ const server = http.createServer(async (req, res) => {
         req,
         res,
         url,
-        deps: missionDeps,
+        deps: { ...missionDeps, browserContextSourceProvider },
       })
     ) {
       return;
@@ -538,6 +555,13 @@ const server = http.createServer(async (req, res) => {
           expertDispatcher: bridgeExpertDispatcher,
           resolveToken: (request) => extractBridgeRequestToken(request),
           idempotencyStore: routeIdempotencyStore,
+          missionContext: {
+            validator: {
+              missionStore: missionDeps.missionStore,
+              workItemStore: missionDeps.workItemStore,
+            },
+            recorder: bridgeMissionRecorder,
+          },
         },
       })
     ) {

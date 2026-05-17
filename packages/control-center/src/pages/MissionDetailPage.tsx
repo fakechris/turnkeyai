@@ -21,6 +21,8 @@ import {
   type Mission,
   type WorkItem,
 } from "../mock/mission-data";
+import { useContextSources } from "../api/useMissionData";
+import { formatRelativeAgo, formatTimeOfDay } from "../util/format-time";
 import { Icon, CtxIcon } from "../components/Icon";
 import { AgentAvatar, AgentStack, StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
@@ -355,7 +357,7 @@ function TimelineEventRow({
 
   return (
     <div className="tl-event" data-kind={event.kind}>
-      <div className="tl-time mono">{event.t}</div>
+      <div className="tl-time mono">{event.t ?? formatTimeOfDay(event.tMs)}</div>
       <div className="tl-gutter">
         <div className="tl-marker" />
       </div>
@@ -468,17 +470,26 @@ function EvidenceThumb({
 // ── Right: Context + Control ──────────────────────────────────────────
 
 function ContextPane() {
+  // K3: pull the live context-source list from the daemon. The K1 mock
+  // remains the fallback (so the page still has shape when the daemon
+  // isn't running) but once the bridge has any active session, it
+  // appears here automatically — the daemon merges live browser
+  // sessions with the registry-backed entries.
+  const contextSources = useContextSources(MOCK_DATA.contextSources).value;
   const [tab, setTab] = useState<ContextKind>("browser");
-  const [selectedId, setSelectedId] = useState<string>("ctx.browser.notion");
-  const sources = MOCK_DATA.contextSources.filter((c) => c.kind === tab);
+  const [selectedId, setSelectedId] = useState<string>("");
+  const sources = contextSources.filter((c) => c.kind === tab);
   const selected = sources.find((s) => s.id === selectedId) ?? sources[0];
 
-  const tabs: Array<{ id: ContextKind; label: string; ct: number }> = [
-    { id: "browser", label: "Browser", ct: 3 },
-    { id: "doc", label: "Docs", ct: 1 },
-    { id: "folder", label: "Files", ct: 1 },
-    { id: "api", label: "APIs", ct: 1 },
-    { id: "desktop", label: "Desktop", ct: 1 },
+  const countByKind = (kind: ContextKind) =>
+    contextSources.filter((c) => c.kind === kind).length;
+
+  const tabs: Array<{ id: ContextKind; label: string }> = [
+    { id: "browser", label: "Browser" },
+    { id: "doc", label: "Docs" },
+    { id: "folder", label: "Files" },
+    { id: "api", label: "APIs" },
+    { id: "desktop", label: "Desktop" },
   ];
 
   return (
@@ -494,37 +505,66 @@ function ContextPane() {
               setSelectedId("");
             }}
           >
-            {t.label}<span className="ct-count">{t.ct}</span>
+            {t.label}<span className="ct-count">{countByKind(t.id)}</span>
           </button>
         ))}
       </div>
 
-      {tab === "browser" && selected && <BrowserContextBody source={selected} onSelect={setSelectedId} />}
-      {tab === "doc" && selected && <DocContextBody source={selected} />}
-      {tab === "folder" && selected && <FolderContextBody source={selected} />}
-      {tab === "api" && selected && <ApiContextBody source={selected} />}
-      {tab === "desktop" && selected && <DesktopContextBody source={selected} />}
+      {selected ? (
+        <>
+          {tab === "browser" && (
+            <BrowserContextBody source={selected} sources={sources} onSelect={setSelectedId} />
+          )}
+          {tab === "doc" && <DocContextBody source={selected} />}
+          {tab === "folder" && <FolderContextBody source={selected} />}
+          {tab === "api" && <ApiContextBody source={selected} />}
+          {tab === "desktop" && <DesktopContextBody source={selected} />}
+        </>
+      ) : (
+        <EmptyContextState kind={tab} />
+      )}
 
       <PendingApprovalCard />
     </div>
   );
 }
 
+function EmptyContextState({ kind }: { kind: ContextKind }) {
+  const labels: Record<ContextKind, string> = {
+    browser: "No browser sessions yet. Agents will spawn one when they need to navigate.",
+    doc: "No documents attached. Use mission setup to attach a document watcher.",
+    folder: "No folders attached.",
+    api: "No API integrations attached.",
+    desktop: "No desktop sources attached.",
+  };
+  return (
+    <div className="ctx-body">
+      <div className="card">
+        <div className="card-bd" style={{ padding: 16, textAlign: "center", color: "var(--text-muted)", fontSize: 11.5 }}>
+          {labels[kind]}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BrowserContextBody({
   source,
+  sources,
   onSelect,
 }: {
   source: ContextSource;
+  sources: ContextSource[];
   onSelect: (id: string) => void;
 }) {
   return (
     <div className="ctx-body">
       <div className="row">
         <span className="label" style={{ flex: 1 }}>Browser sessions</span>
-        <span className="mono faint" style={{ fontSize: 10 }}>3 sessions</span>
+        <span className="mono faint" style={{ fontSize: 10 }}>{sources.length} session{sources.length === 1 ? "" : "s"}</span>
       </div>
       <div className="col" style={{ gap: 4 }}>
-        {MOCK_DATA.contextSources.filter((c) => c.kind === "browser").map((c) => (
+        {sources.map((c) => (
           <button
             key={c.id}
             type="button"
@@ -587,7 +627,7 @@ function BrowserContextBody({
             />
             {source.state}
           </span>
-          <span className="k">Last action</span><span className="v mono">{source.lastUse}</span>
+          <span className="k">Last action</span><span className="v mono">{source.lastUse || (source.lastUseAtMs ? formatRelativeAgo(source.lastUseAtMs) : "—")}</span>
         </div>
       </div>
 

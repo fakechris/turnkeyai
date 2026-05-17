@@ -16,6 +16,16 @@ import {
   type BridgeCommandDispatcher,
   type BridgeCommandResponse,
 } from "../bridge-command-dispatcher";
+import type {
+  BridgeMissionActivityRecorder,
+  BridgeMissionContext,
+  BridgeRecordResult,
+} from "../bridge-mission-activity-recorder";
+import {
+  parseBridgeMissionContext,
+  validateBridgeMissionContext,
+  type BridgeMissionValidatorDeps,
+} from "../bridge-mission-validators";
 import { readJsonBodySafe, sendJson } from "../http-helpers";
 import { runIdempotently, type RouteIdempotencyStore } from "../idempotency-store";
 
@@ -49,6 +59,23 @@ export interface BridgeStatusInfo {
   };
 }
 
+/**
+ * Mission orchestration deps injected by the daemon. When supplied, the
+ * /bridge/command, /bridge/advanced, and /bridge/batch routes accept
+ * optional `missionId` / `workItemId` body fields, validate them, append
+ * a corresponding ActivityEvent to the mission timeline on success
+ * (kind=tool) or failure (kind=recovery), and surface a 502 if the
+ * browser action ran but the timeline append failed (so the caller knows
+ * the bridge work is real but the audit trail is missing).
+ *
+ * Left optional so existing /bridge/expert callers and pre-mission test
+ * harnesses continue to work unchanged.
+ */
+export interface BridgeMissionRouteDeps {
+  validator: BridgeMissionValidatorDeps;
+  recorder: BridgeMissionActivityRecorder;
+}
+
 export interface BridgeRouteDeps {
   getStatusInfo(): Promise<BridgeStatusInfo>;
   commandDispatcher?: BridgeCommandDispatcher;
@@ -74,6 +101,7 @@ export interface BridgeRouteDeps {
    * double-click / double-upload / double-send.
    */
   idempotencyStore?: RouteIdempotencyStore;
+  missionContext?: BridgeMissionRouteDeps;
 }
 
 interface BridgeCommandBody {
@@ -82,6 +110,8 @@ interface BridgeCommandBody {
   sessionId?: unknown;
   threadId?: unknown;
   instructions?: unknown;
+  missionId?: unknown;
+  workItemId?: unknown;
 }
 
 interface BridgeBatchBody {
@@ -89,6 +119,8 @@ interface BridgeBatchBody {
   sessionId?: unknown;
   threadId?: unknown;
   instructions?: unknown;
+  missionId?: unknown;
+  workItemId?: unknown;
 }
 
 export async function handleBridgeRoutes(input: {
@@ -116,6 +148,7 @@ export async function handleBridgeRoutes(input: {
       dispatcher: deps.commandDispatcher,
       ...(deps.resolveToken ? { resolveToken: deps.resolveToken } : {}),
       idempotencyStore: deps.idempotencyStore,
+      ...(deps.missionContext ? { missionContext: deps.missionContext } : {}),
       scopePrefix: "bridge:command",
       label: "command",
     });
@@ -128,6 +161,7 @@ export async function handleBridgeRoutes(input: {
       dispatcher: deps.advancedDispatcher,
       ...(deps.resolveToken ? { resolveToken: deps.resolveToken } : {}),
       idempotencyStore: deps.idempotencyStore,
+      ...(deps.missionContext ? { missionContext: deps.missionContext } : {}),
       scopePrefix: "bridge:advanced",
       label: "advanced",
     });
@@ -187,19 +221,42 @@ export async function handleBridgeRoutes(input: {
     const sessionId = typeof body.sessionId === "string" ? body.sessionId : null;
     const threadId = typeof body.threadId === "string" ? body.threadId : null;
     const instructions = typeof body.instructions === "string" ? body.instructions : null;
+    const parsedMission = parseBridgeMissionContext({
+      missionId: body.missionId,
+      workItemId: body.workItemId,
+    });
     const token = deps.resolveToken ? deps.resolveToken(req) : null;
     return runIdempotently({
       req,
       res,
       store: deps.idempotencyStore,
       scope: `bridge:batch:${deriveBridgePrincipal(token)}`,
+      // missionId/workItemId in the fingerprint: same Idempotency-Key
+      // reused under a different mission must NOT replay the cached
+      // response, since the timeline event semantics differ. We serialize
+      // the full tri-state (absent/blank/value) so a request that omits
+      // missionId fingerprints differently from one that supplies a
+      // blank string — both produce different responses (no-op vs 400)
+      // and must not share a cache slot.
       fingerprint: {
         actions,
         sessionId: sessionId ?? null,
         threadId: threadId ?? null,
         instructions: instructions ?? null,
+        mission: parsedMission.mission,
+        workItem: parsedMission.workItem,
       },
       execute: async () => {
+        const validation = deps.missionContext
+          ? await validateBridgeMissionContext({
+              context: parsedMission,
+              deps: deps.missionContext.validator,
+            })
+          : ({ ok: true as const, missionId: null, workItemId: null });
+        if (!validation.ok) {
+          return { statusCode: validation.statusCode, body: validation.body };
+        }
+        const context = buildContext(validation.missionId, validation.workItemId);
         const response = await deps.batchDispatcher!.dispatch({
           token,
           actions,
@@ -207,7 +264,16 @@ export async function handleBridgeRoutes(input: {
           threadId,
           instructions,
         });
-        return { statusCode: response.status, body: response.body };
+        return recordAndEnvelope({
+          deps,
+          response,
+          context,
+          tool: "batch",
+          sessionId,
+          // Inside `execute` we are the path that actually ran — never
+          // a replay. The idempotency store handles replay above us.
+          replayed: false,
+        });
       },
     });
   }
@@ -221,6 +287,7 @@ async function dispatchSingleTool(input: {
   dispatcher: BridgeCommandDispatcher | undefined;
   resolveToken?: (req: http.IncomingMessage) => string | null;
   idempotencyStore: RouteIdempotencyStore | undefined;
+  missionContext?: BridgeMissionRouteDeps;
   /**
    * Route-level scope prefix (e.g. `bridge:command`). The actual idempotency
    * cache scope is built as `${scopePrefix}:${principal}` so different bridge
@@ -244,6 +311,10 @@ async function dispatchSingleTool(input: {
   const sessionId = typeof body.sessionId === "string" ? body.sessionId : null;
   const threadId = typeof body.threadId === "string" ? body.threadId : null;
   const instructions = typeof body.instructions === "string" ? body.instructions : null;
+  const parsedMission = parseBridgeMissionContext({
+    missionId: body.missionId,
+    workItemId: body.workItemId,
+  });
   const token = input.resolveToken ? input.resolveToken(input.req) : null;
   return runIdempotently({
     req: input.req,
@@ -253,15 +324,34 @@ async function dispatchSingleTool(input: {
     // Token deliberately NOT fingerprinted — agent retries share the same token
     // and must replay. SessionId, threadId, tool, args, instructions all
     // describe what the agent asked the bridge to do; identical asks dedupe.
-    // Cross-principal isolation is handled by the scope, not the fingerprint.
+    // mission/workItem ARE fingerprinted: same idempotency key reused
+    // under a different mission must NOT replay, because the timeline event
+    // would land on the wrong mission (or get skipped silently). The full
+    // tri-state (absent/blank/value) is serialized so that omitting a
+    // field fingerprints differently from supplying a blank one (one
+    // dispatches, the other 400s). A mismatch surfaces as 409 so the
+    // caller fixes the key. Cross-principal isolation is handled by the
+    // scope, not the fingerprint.
     fingerprint: {
       tool,
       args: args ?? null,
       sessionId: sessionId ?? null,
       threadId: threadId ?? null,
       instructions: instructions ?? null,
+      mission: parsedMission.mission,
+      workItem: parsedMission.workItem,
     },
     execute: async () => {
+      const validation = input.missionContext
+        ? await validateBridgeMissionContext({
+            context: parsedMission,
+            deps: input.missionContext.validator,
+          })
+        : ({ ok: true as const, missionId: null, workItemId: null });
+      if (!validation.ok) {
+        return { statusCode: validation.statusCode, body: validation.body };
+      }
+      const context = buildContext(validation.missionId, validation.workItemId);
       const response = await input.dispatcher!.dispatch({
         token,
         tool,
@@ -270,9 +360,139 @@ async function dispatchSingleTool(input: {
         threadId,
         instructions,
       });
-      return { statusCode: response.status, body: response.body };
+      return recordAndEnvelope({
+        deps: input.missionContext ? { missionContext: input.missionContext } : {},
+        response,
+        context,
+        tool,
+        sessionId,
+        replayed: false,
+      });
     },
   });
+}
+
+function buildContext(
+  missionId: string | null,
+  workItemId: string | null
+): BridgeMissionContext | null {
+  if (!missionId) return null;
+  const context: BridgeMissionContext = { missionId };
+  if (workItemId) context.workItemId = workItemId;
+  return context;
+}
+
+/**
+ * Run the recorder against a dispatcher response and produce the
+ * idempotency envelope the route returns. Returns a 502 (with the
+ * original browser result included) when the browser action ran but the
+ * timeline append failed — the caller needs to know the underlying
+ * mutation actually happened so they don't retry blindly.
+ */
+async function recordAndEnvelope(input: {
+  deps: { missionContext?: BridgeMissionRouteDeps };
+  response: BridgeCommandResponse;
+  context: BridgeMissionContext | null;
+  tool: string;
+  sessionId: string | null;
+  replayed: boolean;
+}): Promise<{ statusCode: number; body: unknown }> {
+  const { response, context, tool, sessionId, replayed } = input;
+  const recorder = input.deps.missionContext?.recorder;
+  const resolvedSessionId = extractResolvedSessionId(response.body, sessionId);
+  const ok = response.status >= 200 && response.status < 300;
+
+  if (!recorder || !context) {
+    return { statusCode: response.status, body: response.body };
+  }
+
+  let recordResult: BridgeRecordResult;
+  if (ok) {
+    recordResult = await recorder.recordSuccess({
+      context,
+      replayed,
+      tool,
+      sessionId: resolvedSessionId,
+      transportLabel: extractTransportLabel(response.body),
+    });
+  } else {
+    recordResult = await recorder.recordFailure({
+      context,
+      replayed,
+      tool,
+      sessionId: resolvedSessionId,
+      bucket: extractErrorCode(response.body),
+      message: extractErrorMessage(response.body) ?? `Browser ${tool} failed.`,
+    });
+  }
+
+  if (recordResult.kind === "failed" && ok) {
+    // Browser executed but we couldn't write the timeline. The browser
+    // mutation is durable, so don't retry it; surface a 502 with both
+    // pieces so the caller can decide whether to forge ahead or alert.
+    return {
+      statusCode: 502,
+      body: {
+        ok: false,
+        error: "browser action succeeded but timeline append failed",
+        code: "timeline_append_failed",
+        browserActionExecuted: true,
+        timelineRecorded: false,
+        timelineError: recordResult.error,
+        bridgeResponse: response.body,
+      },
+    };
+  }
+
+  // For failure paths where the recorder ALSO failed, return the original
+  // bridge error — losing the recovery event is worse than losing the
+  // ability to surface the failure, but not by enough to override the
+  // dispatcher's response. Surface the timeline issue as a runtime hint.
+  if (recordResult.kind === "failed" && !ok) {
+    return {
+      statusCode: response.status,
+      body: {
+        ...(isRecord(response.body) ? response.body : { raw: response.body }),
+        timelineRecorded: false,
+        timelineError: recordResult.error,
+      },
+    };
+  }
+
+  return { statusCode: response.status, body: response.body };
+}
+
+function extractResolvedSessionId(
+  body: unknown,
+  fallback: string | null
+): string | null {
+  if (isRecord(body) && typeof body.sessionId === "string" && body.sessionId.length > 0) {
+    return body.sessionId;
+  }
+  return fallback;
+}
+
+function extractTransportLabel(body: unknown): string | null {
+  if (!isRecord(body)) return null;
+  const result = body.result;
+  if (!isRecord(result)) return null;
+  const transport = result.transport;
+  if (!isRecord(transport)) return null;
+  return typeof transport.label === "string" ? transport.label : null;
+}
+
+function extractErrorCode(body: unknown): string | null {
+  if (isRecord(body) && typeof body.code === "string" && body.code.length > 0) {
+    return body.code;
+  }
+  return null;
+}
+
+function extractErrorMessage(body: unknown): string | null {
+  if (isRecord(body) && typeof body.error === "string" && body.error.length > 0) {
+    return body.error;
+  }
+  return null;
 }
 
 export interface BuildBridgeStatusInput {

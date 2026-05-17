@@ -51,6 +51,17 @@ export interface MissionRouteDeps {
     replaceAll(sources: import("@turnkeyai/core-types/mission").ContextSource[]): Promise<void>;
   };
   clock: { now(): number };
+  /**
+   * Optional. When supplied, GET /mission-context-sources returns
+   * `[...live browser sessions, ...registry entries]` so the Mission
+   * Detail right pane reflects the bridge's actual current state
+   * instead of only what the registry has cached. Live entries use a
+   * synthetic `ctx.browser.session.<sessionId>` id so they line up with
+   * the recorder-emitted ActivityEvent.target field.
+   */
+  browserContextSourceProvider?: {
+    listLive(): Promise<import("@turnkeyai/core-types/mission").ContextSource[]>;
+  };
 }
 
 export async function handleMissionRoutes(input: {
@@ -74,7 +85,39 @@ export async function handleMissionRoutes(input: {
   }
 
   if (method === "GET" && pathname === "/mission-context-sources") {
-    sendJson(res, 200, await deps.contextSourceRegistry.list());
+    // Live browser sessions first so the right pane defaults to the
+    // currently-attached context. The bundled provider catches its
+    // own errors and returns []; we also wrap defensively here so a
+    // future provider that doesn't (or rejects non-Error) cannot turn
+    // the read endpoint into a 500. Failure to list the registry is
+    // still surfaced — that signals corrupt persistence, not transient
+    // bridge state.
+    //
+    // Scope note: this route is `read`-gated while /browser-sessions
+    // is `operator`-gated. Live session IDs are not credentials; they
+    // are opaque identifiers used to pair Mission Detail entries with
+    // recorded ActivityEvents. Read-scope users already see the
+    // mission's activity log; surfacing the session id alongside is
+    // consistent with that view and required for the dashboard to
+    // render. If session IDs become sensitive in a future deployment,
+    // tighten this route — not the activity log.
+    const livePromise = deps.browserContextSourceProvider
+      ? deps.browserContextSourceProvider.listLive().catch(() => [] as import("@turnkeyai/core-types/mission").ContextSource[])
+      : Promise.resolve([] as import("@turnkeyai/core-types/mission").ContextSource[]);
+    const [live, registry] = await Promise.all([
+      livePromise,
+      deps.contextSourceRegistry.list(),
+    ]);
+    // De-dupe by id so a registry record that happens to share an id
+    // with a live session (rare today, but possible once K4 starts
+    // persisting browser sessions) doesn't appear twice. Live wins —
+    // its state/lastUseAtMs reflect the bridge's actual moment-in-time.
+    const seen = new Set(live.map((entry) => entry.id));
+    const merged = [
+      ...live,
+      ...registry.filter((entry) => !seen.has(entry.id)),
+    ];
+    sendJson(res, 200, merged);
     return true;
   }
 
