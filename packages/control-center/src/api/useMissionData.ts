@@ -19,6 +19,7 @@ import type {
   ActivityEvent,
   Agent,
   ApprovalRow,
+  Artifact,
   BootstrapDemoResult,
   ContextSource,
   Mission,
@@ -148,6 +149,14 @@ export function useTimeline(missionId: string, fallback: ActivityEvent[], limit 
 
 export function useApprovals(fallback: ApprovalRow[]): RemoteData<ApprovalRow[]> {
   return useRemote<ApprovalRow[]>("/approvals", fallback);
+}
+
+export function useArtifacts(missionId: string, fallback: Artifact[]): RemoteData<Artifact[]> {
+  return useRemote<Artifact[]>(
+    `/missions/${encodeURIComponent(missionId)}/artifacts`,
+    fallback,
+    { dependsOn: [missionId] }
+  );
 }
 
 export function useAgents(fallback: Agent[]): RemoteData<Agent[]> {

@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -7,7 +7,6 @@ import type {
   MissionId,
 } from "@turnkeyai/core-types/mission";
 import {
-  listJsonFiles,
   readJsonFile,
   writeJsonFileAtomic,
 } from "@turnkeyai/shared-utils/file-store-utils";
@@ -34,9 +33,20 @@ export class FileArtifactStore implements ArtifactStore {
   }
 
   async listByMission(missionId: MissionId): Promise<Artifact[]> {
+    // Read-only: do NOT mkdir on the read path (codex K2 #1). Same
+    // reasoning as FileWorkItemStore — read-token holders shouldn't be
+    // able to mint arbitrary mission directories by hitting unknown IDs.
     const dir = this.missionDir(missionId);
-    await mkdir(dir, { recursive: true });
-    const files = await listJsonFiles(dir);
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const files = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => path.join(dir, entry.name));
     const all = await Promise.all(files.map((file) => readJsonFile<Artifact>(file)));
     const items = all.filter((a): a is Artifact => a !== null);
     items.sort((a, b) => b.createdAtMs - a.createdAtMs);

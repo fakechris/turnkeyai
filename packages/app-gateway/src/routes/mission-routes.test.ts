@@ -105,6 +105,52 @@ describe("mission-routes", () => {
 
       const sources = await runJson<unknown[]>(deps, "GET", "/mission-context-sources");
       assert.ok(sources.length >= 6);
+
+      // Codex K2 #2: bootstrap MUST write artifacts so the timeline's
+      // "Artifact registered" event isn't a lie. Verify the descriptor
+      // landed in /missions/msn.01/artifacts.
+      const artifacts = await runJson<Array<{ id: string; label: string }>>(
+        deps,
+        "GET",
+        "/missions/msn.01/artifacts"
+      );
+      assert.ok(artifacts.length >= 1, "expected at least one demo artifact");
+      assert.ok(
+        artifacts.some((a) => a.label.includes("notion_pricing")),
+        "expected the notion_pricing.json artifact descriptor"
+      );
+
+      // Codex K2 #3: each approval should have a distinct
+      // requestedAtMs derived from its `requestedAgo` string.
+      const approvalsWithTimestamps = await runJson<Array<{ requestedAtMs: number }>>(
+        deps,
+        "GET",
+        "/approvals"
+      );
+      const uniqueTimestamps = new Set(approvalsWithTimestamps.map((a) => a.requestedAtMs));
+      assert.equal(
+        uniqueTimestamps.size,
+        approvalsWithTimestamps.length,
+        "each approval must have a distinct requestedAtMs"
+      );
+
+      // Codex K2 #4: ap.desktop-figma's missionId/missionTitle must
+      // refer to the same mission.
+      const allApprovals = await runJson<
+        Array<{ id: string; missionId: string; missionTitle: string }>
+      >(deps, "GET", "/approvals");
+      const desktopAp = allApprovals.find((a) => a.id === "ap.desktop-figma");
+      assert.ok(desktopAp, "expected ap.desktop-figma fixture");
+      const referencedMission = await runJson<{ title: string }>(
+        deps,
+        "GET",
+        `/missions/${encodeURIComponent(desktopAp.missionId)}`
+      );
+      assert.equal(
+        referencedMission.title,
+        desktopAp.missionTitle,
+        "approval's missionId must point at the mission whose title it claims"
+      );
     } finally {
       t.cleanup();
     }

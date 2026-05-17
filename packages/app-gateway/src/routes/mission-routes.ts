@@ -96,6 +96,11 @@ export async function handleMissionRoutes(input: {
       ...fixtures.missions.map((m) => deps.missionStore.putRaw(m)),
       ...fixtures.workItems.map((w) => deps.workItemStore.put(w)),
       ...fixtures.approvals.map((a) => deps.approvalStore.put(a)),
+      // Artifacts (codex K2 #2 — was missing). The demo timeline
+      // references `evidence/notion_pricing.json` as a registered
+      // artifact; without writing it here, GET /missions/msn.01/artifacts
+      // would lie by returning [].
+      ...fixtures.artifacts.map((a) => deps.artifactStore.put(a)),
       deps.activityStore.replaceAll(
         // The fixtures only have a timeline for msn.01 — find it from
         // the first event.
@@ -110,6 +115,7 @@ export async function handleMissionRoutes(input: {
       missions: fixtures.missions.length,
       workItems: fixtures.workItems.length,
       approvals: fixtures.approvals.length,
+      artifacts: fixtures.artifacts.length,
       timeline: fixtures.timeline.length,
       agents: fixtures.agents.length,
       contextSources: fixtures.contextSources.length,

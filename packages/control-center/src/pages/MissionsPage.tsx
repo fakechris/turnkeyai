@@ -21,7 +21,7 @@ interface Filter {
 }
 
 export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
-  const { setRoute, openMission } = useAppState();
+  const { state, setRoute, openMission } = useAppState();
   const [filter, setFilter] = useState<Filter["id"]>("all");
   // Live missions from /missions. Falls back to MOCK_DATA so the page
   // renders even when the daemon has never been bootstrapped — once
@@ -49,8 +49,12 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
 
   // Show a "Load demo missions" button when the daemon is reachable but
   // empty — operator click triggers POST /missions/bootstrap-demo, then
-  // refetches.
-  const emptyButLive = missions.isLive && missionList.length === 0;
+  // refetches. Gated on scope (codex K2 #5): bootstrap-demo is
+  // operator-only, so a read-token user clicking would 401 and apiClient
+  // would clear their token, dropping them to the no-token page. Hide
+  // the button entirely for read scope to avoid the trap.
+  const canBootstrap = state.scope !== "read";
+  const emptyButLive = missions.isLive && missionList.length === 0 && canBootstrap;
   const onLoadDemo = async () => {
     setBootstrapStatus("loading");
     try {

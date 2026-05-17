@@ -15,6 +15,7 @@ import type {
   ActivityEvent,
   Agent,
   ApprovalRequest,
+  Artifact,
   ContextSource,
   Mission,
   WorkItem,
@@ -354,7 +355,11 @@ export const DEMO_APPROVALS: ApprovalRequest[] = [
   {
     id: "ap.desktop-figma",
     severity: "high",
-    missionId: "msn.04",
+    // The original design data.js had a missionId/title mismatch (codex
+    // K2 #4): missionId="msn.04" but missionTitle was msn.02's name.
+    // Align both to msn.02 (the Vendor portal mission) so the approval
+    // queue opens the mission whose title it shows.
+    missionId: "msn.02",
     missionTitle: "Vendor portal 监控 · ACME 物流",
     agent: "agent.browser",
     action: "desktop.window.read",
@@ -366,6 +371,24 @@ export const DEMO_APPROVALS: ApprovalRequest[] = [
     requestedAtMs: 0,
     requestedAgo: "00:14:13 ago",
     policyHint: "desktop.* 总是需要审批",
+  },
+];
+
+// Demo artifacts (codex K2 #2). The timeline references
+// `evidence/notion_pricing.json` (ev.21 in DEMO_TIMELINE) as an artifact
+// registration event but no actual Artifact was written, so
+// /missions/msn.01/artifacts came back empty. Match the timeline by
+// putting a descriptor here.
+export const DEMO_ARTIFACTS: Artifact[] = [
+  {
+    id: "art.notion-pricing",
+    missionId: "msn.01",
+    label: "evidence/notion_pricing.json",
+    kind: "json",
+    path: "~/turnkey/research/2026-05-competitors/evidence/notion_pricing.json",
+    sizeBytes: 11 * 1024,
+    sha: "4c1d",
+    createdAtMs: 0, // filled in by buildDemoFixtures
   },
 ];
 
@@ -395,7 +418,7 @@ export const DEMO_TIMELINE: ActivityEvent[] = [
 ];
 
 /**
- * Returns the demo dataset with every `*MS` timestamp set to a sensible
+ * Returns the demo dataset with every `*Ms` timestamp set to a sensible
  * offset from `now`. The wall-clock t / createdAt display strings stay
  * as the design's fixed values (the design is set "今天" with "09:31"
  * etc) so the timeline reads the same regardless of bootstrap time.
@@ -404,6 +427,7 @@ export function buildDemoFixtures(now: number): {
   missions: Mission[];
   workItems: WorkItem[];
   approvals: ApprovalRequest[];
+  artifacts: Artifact[];
   timeline: ActivityEvent[];
   agents: Agent[];
   contextSources: ContextSource[];
@@ -420,17 +444,49 @@ export function buildDemoFixtures(now: number): {
   }));
 
   const missions = DEMO_MISSIONS.map((m) => ({ ...m, createdAtMs: t0 }));
+  // Per-approval requestedAtMs derived from each fixture's `requestedAgo`
+  // string (codex K2 #3). Previously every approval shared the same
+  // timestamp, which would have broken "oldest approval" / sort logic
+  // the moment the dashboard tried to use it.
   const approvals = DEMO_APPROVALS.map((a) => ({
     ...a,
-    requestedAtMs: now - 60 * 1000, // ~1 minute ago
+    requestedAtMs: now - parseAgoMs(a.requestedAgo),
+  }));
+  // Anchor each artifact to its corresponding timeline event when
+  // possible. notion_pricing was registered at ev.21 ("Artifact
+  // registered" toward the end of the timeline). Falls back to "now"
+  // when no matching event exists.
+  const artifactRegisterMs = (() => {
+    const evt = stretchTimeline.find((e) => e.kind === "artifact");
+    return evt ? evt.tMs : now;
+  })();
+  const artifacts = DEMO_ARTIFACTS.map((a) => ({
+    ...a,
+    createdAtMs: artifactRegisterMs,
   }));
 
   return {
     missions,
     workItems: DEMO_WORK_ITEMS,
     approvals,
+    artifacts,
     timeline: stretchTimeline,
     agents: DEMO_AGENTS,
     contextSources: DEMO_CONTEXT_SOURCES,
   };
+}
+
+/**
+ * Parses the design's "HH:MM:SS ago" strings into millisecond offsets.
+ * `00:00:51 ago` → 51_000, `00:14:13 ago` → 853_000, etc. Falls back to
+ * 60s when the string doesn't match the expected shape so the bootstrap
+ * never throws on a typo in a fixture.
+ */
+function parseAgoMs(ago: string): number {
+  const match = /^(\d{1,2}):(\d{2}):(\d{2})\s*ago\s*$/.exec(ago);
+  if (!match) return 60 * 1000;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  const s = Number(match[3]);
+  return ((h * 60 + m) * 60 + s) * 1000;
 }

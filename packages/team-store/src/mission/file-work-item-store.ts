@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -7,7 +7,6 @@ import type {
   WorkItemStore,
 } from "@turnkeyai/core-types/mission";
 import {
-  listJsonFiles,
   readJsonFile,
   writeJsonFileAtomic,
 } from "@turnkeyai/shared-utils/file-store-utils";
@@ -32,9 +31,22 @@ export class FileWorkItemStore implements WorkItemStore {
   }
 
   async listByMission(missionId: MissionId): Promise<WorkItem[]> {
+    // Read-only: do NOT mkdir here (codex K2 #1). Any read-scope token
+    // can hit /missions/:id/work-items; auto-creating the dir would let
+    // a caller mint arbitrary mission-id folders just by polling. Walk
+    // the dir directly so the shared listJsonFiles helper (which
+    // auto-mkdirs) is bypassed for this read path.
     const dir = this.missionDir(missionId);
-    await mkdir(dir, { recursive: true });
-    const files = await listJsonFiles(dir);
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const files = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => path.join(dir, entry.name));
     const all = await Promise.all(files.map((file) => readJsonFile<WorkItem>(file)));
     const items = all.filter((w): w is WorkItem => w !== null);
     items.sort((a, b) => a.n - b.n);

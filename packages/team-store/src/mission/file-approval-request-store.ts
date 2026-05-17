@@ -1,3 +1,4 @@
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -8,7 +9,6 @@ import type {
   MissionId,
 } from "@turnkeyai/core-types/mission";
 import {
-  listJsonFiles,
   readJsonFile,
   writeJsonFileAtomic,
 } from "@turnkeyai/shared-utils/file-store-utils";
@@ -41,13 +41,20 @@ export class FileApprovalRequestStore implements ApprovalRequestStore {
   }
 
   async list(): Promise<ApprovalRequest[]> {
-    // listJsonFiles returns every .json file at the top of rootDir but
-    // also reaches into subdirs in some node versions. We filter by
-    // path so the decisions/ subdir doesn't leak into the approvals
-    // list. (The exact-match suffix check is portable across Node versions.)
-    const files = await listJsonFiles(this.rootDir);
-    const topLevel = files.filter((f) => path.dirname(f) === this.rootDir);
-    const all = await Promise.all(topLevel.map((file) => readJsonFile<ApprovalRequest>(file)));
+    // Read-only: do NOT mkdir on read path (codex K2 #1). Walk the
+    // top-level rootDir directly with readdir (non-recursive, so the
+    // decisions/ subdir isn't included).
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await readdir(this.rootDir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const files = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => path.join(this.rootDir, entry.name));
+    const all = await Promise.all(files.map((file) => readJsonFile<ApprovalRequest>(file)));
     return all.filter((a): a is ApprovalRequest => a !== null);
   }
 

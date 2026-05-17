@@ -1,3 +1,4 @@
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -7,7 +8,6 @@ import type {
   MissionStore,
 } from "@turnkeyai/core-types/mission";
 import {
-  listJsonFiles,
   readJsonFile,
   writeJsonFileAtomic,
 } from "@turnkeyai/shared-utils/file-store-utils";
@@ -39,7 +39,18 @@ export class FileMissionStore implements MissionStore {
   }
 
   async list(): Promise<Mission[]> {
-    const files = await listJsonFiles(this.rootDir);
+    // Read-only: do NOT mkdir here. If the rootDir hasn't been created
+    // yet (fresh daemon, no bootstrap run), return [] cleanly.
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await readdir(this.rootDir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const files = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => path.join(this.rootDir, entry.name));
     const all = await Promise.all(files.map((file) => readJsonFile<Mission>(file)));
     return all.filter((m): m is Mission => m !== null);
   }

@@ -172,6 +172,27 @@ export interface ApprovalRow extends ApprovalRequest {
   decision: ApprovalDecision | null;
 }
 
+// ── Artifact ──────────────────────────────────────────────────────────
+
+export interface Artifact {
+  id: string;
+  missionId: string;
+  label: string;
+  kind:
+    | "report"
+    | "screenshot"
+    | "snapshot"
+    | "extract"
+    | "diff"
+    | "json"
+    | "zip"
+    | "other";
+  path: string;
+  sizeBytes?: number;
+  sha?: string;
+  createdAtMs: number;
+}
+
 // ── Bootstrap helper ──────────────────────────────────────────────────
 
 export interface BootstrapDemoResult {

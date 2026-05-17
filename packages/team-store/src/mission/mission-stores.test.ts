@@ -158,6 +158,31 @@ describe("FileWorkItemStore", () => {
       t.cleanup();
     }
   });
+
+  it("read path does NOT create the per-mission directory (codex K2 #1)", async () => {
+    // Regression: prior listByMission mkdir'd the per-mission folder
+    // before reading, which would let any read-token caller mint
+    // arbitrary mission directories on disk by polling unknown IDs.
+    const t = tmp();
+    try {
+      const store = new FileWorkItemStore({ rootDir: t.dir });
+      await store.listByMission("msn.attacker-controlled");
+      const { readdir } = await import("node:fs/promises");
+      let entries: string[] = [];
+      try {
+        entries = await readdir(t.dir);
+      } catch {
+        // rootDir doesn't exist at all → even better.
+      }
+      assert.deepEqual(
+        entries,
+        [],
+        "rootDir must remain empty — read path must not create mission folders"
+      );
+    } finally {
+      t.cleanup();
+    }
+  });
 });
 
 describe("FileActivityEventStore", () => {
