@@ -497,16 +497,19 @@ interface ReductionEnvelopeSnapshot {
 const ROLE_TOOL_RESULT_TRACE_CAP_BYTES = 8 * 1024;
 
 function sliceUtf8(value: string, maxBytes: number): string {
-  // Buffer.byteLength is utf-8 by default; we slice on the buffer
-  // and re-decode so we don't split a multi-byte codepoint in half.
-  // Suffix marker makes it obvious the slice is truncated.
+  // gemini + coderabbit K3.6: keep the persisted slice strictly
+  // <= maxBytes. The earlier version appended an "…[truncated]"
+  // suffix AFTER slicing, blowing the byte budget by 14 bytes.
+  // The trace already carries a `contentTruncated: true` flag so
+  // the UI knows to label it — no need to encode "truncated" in
+  // the bytes themselves.
   const buffer = Buffer.from(value, "utf8");
   if (buffer.length <= maxBytes) return value;
   // Step back if the last byte is a continuation byte (10xxxxxx)
   // until we land on a codepoint boundary.
   let end = maxBytes;
   while (end > 0 && ((buffer[end] ?? 0) & 0xc0) === 0x80) end -= 1;
-  return `${buffer.subarray(0, end).toString("utf8")}…[truncated]`;
+  return buffer.subarray(0, end).toString("utf8");
 }
 
 interface ToolRoundTrace {

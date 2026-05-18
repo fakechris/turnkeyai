@@ -460,7 +460,11 @@ function buildToolCallEvent(input: BuildToolCallEventInput): ActivityEvent {
   // longer than ~80 chars (e.g. "task=Open https://example.com and
   // extract the page title and the first paragraph…") got truncated
   // on the timeline and there was no way to recover them.
-  const inputJson = stableStringify(input.call.input);
+  // gemini K3.6: cap callInput at 16 kB so a pathological agent
+  // sending a multi-MB blob doesn't bloat the activity log (which
+  // is read whole into memory on the dashboard's polling tick).
+  // 16 kB is generous enough for real-world tool args.
+  const inputJson = capJsonString(safeStringify(input.call.input), CALL_INPUT_CAP_BYTES);
   const text = formatToolCallText(input.call.name, input.call.input);
   return {
     id: input.newEventId(),
@@ -575,7 +579,10 @@ function formatToolCallText(
   );
   return `Calling ${name}(\n${sliceForDisplay(
     lines.join("\n"),
-    ACTIVITY_EVENT_TEXT_CAP - name.length - 16
+    // gemini K3.6: guard against negative max when a tool name is
+    // unusually long — `value.slice(0, -N)` would slice from the
+    // END and return garbage. Clamp to 0 as the safe floor.
+    Math.max(0, ACTIVITY_EVENT_TEXT_CAP - name.length - 16)
   )}\n)`;
 }
 
@@ -593,12 +600,41 @@ function sliceForDisplay(value: string, max: number): string {
   return `${value.slice(0, max - 1)}…`;
 }
 
-function stableStringify(value: unknown): string {
+// gemini K3.6: previously named `stableStringify` but did NOT
+// actually order keys deterministically. Renamed to `safeStringify`
+// to match its real behavior (catch-and-return-empty-object on
+// circular-reference failure).
+function safeStringify(value: unknown): string {
   try {
     return JSON.stringify(value);
   } catch {
     return "{}";
   }
+}
+
+// PR K3.6: 16 kB ceiling for the persisted call args JSON. Matches
+// the spirit of ROLE_TOOL_RESULT_TRACE_CAP_BYTES upstream — keeps
+// the activity log bounded so the dashboard's polling read of
+// listByMission stays cheap.
+const CALL_INPUT_CAP_BYTES = 16 * 1024;
+
+// Truncation suffix appended to over-budget JSON strings. Same byte
+// width is reserved BEFORE slicing so the returned value still
+// honors `maxBytes` strictly (coderabbit + gemini K3.6).
+const CAP_SUFFIX = "…[truncated]";
+const CAP_SUFFIX_BYTES = Buffer.byteLength(CAP_SUFFIX, "utf8");
+
+function capJsonString(value: string, maxBytes: number): string {
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.length <= maxBytes) return value;
+  // Reserve room for the suffix so total bytes stay <= maxBytes.
+  const sliceBudget = Math.max(0, maxBytes - CAP_SUFFIX_BYTES);
+  let end = sliceBudget;
+  while (end > 0 && ((buffer[end] ?? 0) & 0xc0) === 0x80) end -= 1;
+  // The slice is no longer valid JSON, but the UI inspector parses
+  // defensively and falls through to a raw text view when JSON
+  // parsing fails — that's preferable to truncating silently.
+  return `${buffer.subarray(0, end).toString("utf8")}${CAP_SUFFIX}`;
 }
 
 function formatBytes(bytes: number): string {
