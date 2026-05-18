@@ -111,7 +111,7 @@ export function buildRequestEnvelopeDiagnostics(
     ...DEFAULT_REQUEST_ENVELOPE_LIMITS,
     ...(limits ?? {}),
   };
-  const promptChars = input.messages.reduce((total, item) => total + item.content.length, 0);
+  const promptChars = input.messages.reduce((total, item) => total + messageContentLength(item.content), 0);
   const promptBytes = Buffer.byteLength(
     JSON.stringify(
       input.messages.map((item) => ({
@@ -123,10 +123,17 @@ export function buildRequestEnvelopeDiagnostics(
   );
   const metadataBytes = input.metadata ? Buffer.byteLength(JSON.stringify(input.metadata), "utf8") : 0;
   const artifactCount = input.envelope?.artifactIds?.length ?? 0;
-  const toolCount = input.envelope?.toolCount ?? 0;
-  const toolSchemaBytes = input.envelope?.toolSchemaBytes ?? 0;
-  const toolResultCount = input.envelope?.toolResultCount ?? 0;
-  const toolResultBytes = input.envelope?.toolResultBytes ?? 0;
+  const toolCount = input.envelope?.toolCount ?? input.tools?.length ?? 0;
+  const toolSchemaBytes =
+    input.envelope?.toolSchemaBytes ?? (input.tools ? Buffer.byteLength(JSON.stringify(input.tools), "utf8") : 0);
+  const toolResultCount =
+    input.envelope?.toolResultCount ??
+    input.messages.filter((message) => message.role === "tool" || hasToolResultBlock(message.content)).length;
+  const toolResultBytes =
+    input.envelope?.toolResultBytes ??
+    input.messages
+      .filter((message) => message.role === "tool" || hasToolResultBlock(message.content))
+      .reduce((total, message) => total + Buffer.byteLength(JSON.stringify(message.content), "utf8"), 0);
   const inlineAttachmentBytes = input.envelope?.inlineAttachmentBytes ?? 0;
   const inlineImageCount = input.envelope?.inlineImageCount ?? 0;
   const inlineImageBytes = input.envelope?.inlineImageBytes ?? 0;
@@ -139,6 +146,8 @@ export function buildRequestEnvelopeDiagnostics(
       messages: input.messages,
       temperature: input.temperature,
       maxOutputTokens: input.maxOutputTokens,
+      tools: input.tools,
+      toolChoice: input.toolChoice,
       metadata: input.metadata,
       envelope: input.envelope,
     }),
@@ -215,6 +224,15 @@ export function buildRequestEnvelopeDiagnostics(
   }
 
   return diagnostics;
+}
+
+function messageContentLength(content: GenerateTextInput["messages"][number]["content"]): number {
+  if (typeof content === "string") return content.length;
+  return JSON.stringify(content).length;
+}
+
+function hasToolResultBlock(content: GenerateTextInput["messages"][number]["content"]): boolean {
+  return Array.isArray(content) && content.some((block) => block.type === "tool_result");
 }
 
 export function resolveRequestEnvelopeLimits(

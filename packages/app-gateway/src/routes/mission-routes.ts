@@ -33,11 +33,49 @@ import type {
   WorkItemStore,
 } from "@turnkeyai/core-types/mission";
 
-import { parsePositiveLimit, sendJson } from "../http-helpers";
+import {
+  parsePositiveLimit,
+  readJsonBodySafe,
+  sendJson,
+} from "../http-helpers";
+import {
+  runIdempotently,
+  type RouteIdempotencyStore,
+} from "../idempotency-store";
 import { buildDemoFixtures } from "../mission-demo-fixtures";
+import type { MissionThreadBridge } from "../mission-thread-bridge";
+
+/**
+ * Optional bundle that turns the read-mostly Mission Control routes
+ * into a real coordination surface (PR K3.5). When supplied, the
+ * `POST /missions` route spawns a linked team-runtime thread on every
+ * mission, and `POST /missions/:id/messages` routes user follow-ups
+ * onto that thread so the coordination engine can react.
+ *
+ * Kept optional so unit tests for read-only behavior don't have to
+ * mount the entire runtime stack.
+ */
+export interface MissionOrchestratorDeps {
+  /** Creates a fresh team-runtime thread for a new mission. */
+  spawnThread(input: {
+    title: string;
+    desc: string;
+    owner: string;
+  }): Promise<{ threadId: string; leadRoleId: string; roleIds: string[] }>;
+  /** Posts a user message onto the linked thread (delegates to the
+   *  coordination engine which wakes the role loop). */
+  postUserMessage(input: { threadId: string; content: string }): Promise<void>;
+  /** Mirrors the linked thread's messages onto the mission activity
+   *  log immediately. Routes call this after each post so the new row
+   *  appears without waiting for the next interval tick. */
+  threadBridge: MissionThreadBridge;
+}
 
 export interface MissionRouteDeps {
-  missionStore: MissionStore & { putRaw(mission: Mission): Promise<void> };
+  missionStore: MissionStore & {
+    putRaw(mission: Mission): Promise<void>;
+    create: MissionStore["create"];
+  };
   workItemStore: WorkItemStore;
   activityStore: ActivityEventStore & {
     replaceAll(missionId: MissionId, events: ActivityEvent[]): Promise<void>;
@@ -51,6 +89,19 @@ export interface MissionRouteDeps {
     replaceAll(sources: import("@turnkeyai/core-types/mission").ContextSource[]): Promise<void>;
   };
   clock: { now(): number };
+  idGenerator: {
+    missionId(): string;
+    shortId(): string;
+  };
+  orchestrator?: MissionOrchestratorDeps;
+  /**
+   * Optional. When supplied, POST /missions/:id/messages honors the
+   * Idempotency-Key header so a retried follow-up doesn't double-post
+   * onto the linked thread. codex K3.5 flagged that the sibling
+   * /messages route uses this store and /missions/:id/messages
+   * didn't.
+   */
+  idempotencyStore?: RouteIdempotencyStore;
   /**
    * Optional. When supplied, GET /mission-context-sources returns
    * `[...live browser sessions, ...registry entries]` so the Mission
@@ -140,6 +191,193 @@ export async function handleMissionRoutes(input: {
     return true;
   }
 
+  if (method === "POST" && pathname === "/missions") {
+    // PR K3.5 — create a mission AND spawn its linked team-runtime
+    // thread atomically. Without the orchestrator we can still persist
+    // the Mission record (useful in tests that exercise read paths),
+    // but a user-facing create without a thread can't get follow-ups
+    // — surface a 501 so the caller is told to bring the orchestrator
+    // up rather than silently filing inert missions.
+    if (!deps.orchestrator) {
+      sendJson(res, 501, { error: "mission orchestrator not configured" });
+      return true;
+    }
+    const bodyResult = await readJsonBodySafe<{
+      title?: unknown;
+      desc?: unknown;
+      mode?: unknown;
+      modeLabel?: unknown;
+      owner?: unknown;
+      ownerLabel?: unknown;
+      agents?: unknown;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
+    const title = readNonEmptyString(body.title);
+    if (!title) {
+      sendJson(res, 400, { error: "title is required" });
+      return true;
+    }
+    const desc = readString(body.desc) ?? "";
+    // coderabbit K3.5 round-1: reject provided-but-invalid mode
+    // with 400 instead of silently coercing to "custom". A missing
+    // `mode` field still defaults to "custom" (intentional — the
+    // dashboard's mode dropdown only sends a value when the user
+    // picks one explicitly).
+    let mode: import("@turnkeyai/core-types/mission").MissionMode = "custom";
+    if (body.mode !== undefined) {
+      const parsed = readMissionMode(body.mode);
+      if (parsed === null) {
+        sendJson(res, 400, { error: "mode is invalid" });
+        return true;
+      }
+      mode = parsed;
+    }
+    const modeLabel = readNonEmptyString(body.modeLabel) ?? defaultModeLabel(mode);
+    const owner = readNonEmptyString(body.owner) ?? "you";
+    const ownerLabel = readNonEmptyString(body.ownerLabel) ?? "You";
+
+    // Spawn the thread FIRST so we never persist a mission whose
+    // threadId references nothing. If spawnThread throws, the mission
+    // is never created.
+    //
+    // coderabbit K3.5: this sequence is NOT fully atomic — if
+    // putRaw or postUserMessage throws after spawnThread succeeded,
+    // we leak an orphan thread (and possibly a half-initialized
+    // mission). We compensate with a best-effort cleanup: on any
+    // failure after spawnThread, log loudly so an operator can
+    // garbage-collect the orphan thread. A real transaction wrapper
+    // lands with the K4 approval queue work, where the cost of
+    // half-states becomes more visible (a pending approval pointing
+    // at a non-existent mission would be much worse than a stray
+    // empty team thread today).
+    const thread = await deps.orchestrator.spawnThread({ title, desc, owner });
+    let createdOk = false;
+    try {
+      const agents = Array.isArray(body.agents) && body.agents.every((a) => typeof a === "string")
+        ? (body.agents as string[])
+        : thread.roleIds;
+      // gemini K3.5: write the fully-formed mission in ONE atomic
+      // putRaw rather than calling create() (which writes once) and
+      // then putRaw() (a second write to attach threadId). The
+      // threadId is server-injected so it doesn't fit
+      // CreateMissionInput; assembling the full Mission shape here
+      // and persisting once keeps the create path single-write.
+      const nowMs = deps.clock.now();
+      const linked: Mission = {
+        id: deps.idGenerator.missionId(),
+        shortId: deps.idGenerator.shortId(),
+        title,
+        desc,
+        status: "working",
+        mode,
+        modeLabel,
+        owner,
+        ownerLabel,
+        createdAt: new Date(nowMs).toISOString(),
+        createdAtMs: nowMs,
+        agents,
+        progress: 0,
+        pendingApprovals: 0,
+        blockers: 0,
+        contextSummary: [],
+        threadId: thread.threadId,
+      };
+      await deps.missionStore.putRaw(linked);
+
+      // Post the initial "goal" message as a user turn so the
+      // coordination engine kicks off (lead role wakes up, plans). The
+      // user sees this immediately on the timeline because we tick the
+      // bridge synchronously below.
+      const initialContent = desc.length > 0 ? `${title}\n\n${desc}` : title;
+      await deps.orchestrator.postUserMessage({
+        threadId: thread.threadId,
+        content: initialContent,
+      });
+      // Mirror right away so the user's prompt shows up in the timeline
+      // on the very next GET — the interval tick is also running, but
+      // explicit mirror cuts demo latency from ~2s to ~0.
+      await deps.orchestrator.threadBridge.tickMission(linked.id);
+      createdOk = true;
+      sendJson(res, 201, linked);
+      return true;
+    } finally {
+      if (!createdOk) {
+        console.error("mission creation failed after thread spawn — orphan thread", {
+          threadId: thread.threadId,
+        });
+      }
+    }
+  }
+
+  // /missions/:id/messages — user follow-up on a linked thread.
+  const followUpMatch = pathname.match(/^\/missions\/([^/]+)\/messages$/);
+  if (method === "POST" && followUpMatch) {
+    if (!deps.orchestrator) {
+      sendJson(res, 501, { error: "mission orchestrator not configured" });
+      return true;
+    }
+    // coderabbit K3.5: decodeURIComponent throws URIError on
+    // malformed escapes (e.g. "%E0%A4%A"). Return 400 instead of
+    // letting the global 500 handler take over.
+    let missionId: string;
+    try {
+      missionId = decodeURIComponent(followUpMatch[1]!);
+    } catch {
+      sendJson(res, 400, { error: "invalid mission id encoding" });
+      return true;
+    }
+    const mission = await deps.missionStore.get(missionId);
+    if (!mission) {
+      sendJson(res, 404, { error: "mission not found" });
+      return true;
+    }
+    if (!mission.threadId) {
+      sendJson(res, 409, {
+        error: "mission has no linked thread",
+        code: "mission_thread_missing",
+      });
+      return true;
+    }
+    const bodyResult = await readJsonBodySafe<{ content?: unknown }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const content = readNonEmptyString(bodyResult.value.content);
+    if (!content) {
+      sendJson(res, 400, { error: "content is required" });
+      return true;
+    }
+    // codex K3.5: honor Idempotency-Key so a retried follow-up
+    // doesn't double-post on the linked thread. Fingerprinting on
+    // (missionId, content) — same key + same payload replays the
+    // cached 202; same key + different content surfaces 409.
+    const orchestrator = deps.orchestrator;
+    const linkedThreadId = mission.threadId;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: `missions:${mission.id}:messages`,
+      fingerprint: { missionId: mission.id, content },
+      execute: async () => {
+        await orchestrator.postUserMessage({
+          threadId: linkedThreadId,
+          content,
+        });
+        await orchestrator.threadBridge.tickMission(mission.id);
+        return {
+          statusCode: 202,
+          body: { accepted: true, missionId: mission.id },
+        };
+      },
+    });
+  }
+
   if (method === "POST" && pathname === "/missions/bootstrap-demo") {
     const fixtures = buildDemoFixtures(deps.clock.now());
     await Promise.all([
@@ -223,4 +461,51 @@ export async function handleMissionRoutes(input: {
   }
 
   return false;
+}
+
+const VALID_MODES = new Set([
+  "research",
+  "monitor",
+  "browser",
+  "review",
+  "investigation",
+  "custom",
+]);
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function readMissionMode(
+  value: unknown
+): import("@turnkeyai/core-types/mission").MissionMode | null {
+  if (typeof value !== "string") return null;
+  return VALID_MODES.has(value)
+    ? (value as import("@turnkeyai/core-types/mission").MissionMode)
+    : null;
+}
+
+function defaultModeLabel(
+  mode: import("@turnkeyai/core-types/mission").MissionMode
+): string {
+  switch (mode) {
+    case "research":
+      return "Research";
+    case "monitor":
+      return "Monitor";
+    case "browser":
+      return "Browser";
+    case "review":
+      return "Review";
+    case "investigation":
+      return "Investigation";
+    case "custom":
+      return "Custom";
+  }
 }

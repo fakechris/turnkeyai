@@ -15,7 +15,6 @@ import { useState } from "react";
 
 import { useApiClient } from "../api/useApiClient";
 import type { BridgeStatus, DiagnosticsLogs, DiagnosticsSnapshot } from "../api/types";
-import { MOCK_DATA } from "../mock/mission-data";
 import { Icon } from "../components/Icon";
 import { usePolling } from "../hooks/usePolling";
 import { useAppState } from "../state/AppState";
@@ -133,13 +132,19 @@ export function RuntimePage() {
 }
 
 function MetricTiles({ live }: { live: Live }) {
-  // Metric tiles. When the daemon is reachable we synthesize tiles from
-  // the live snapshot. When it's NOT (or we're still loading), fall back
-  // to the design mock so the layout stays populated.
+  // Tiles always derive from live data. When the daemon hasn't returned
+  // yet we render placeholder "—" rather than a fake fixture.
   const tiles =
     live.diagnostics || live.status
       ? buildLiveTiles(live)
-      : MOCK_DATA.runtime.metrics;
+      : ([
+          { l: "Daemon", v: "—", d: "connecting…" },
+          { l: "Browser sessions", v: "—", d: "" },
+          { l: "Relay peers", v: "—", d: "" },
+          { l: "Auth mode", v: "—", d: "" },
+          { l: "Expert lane", v: "—", d: "" },
+          { l: "Action queue", v: "—", d: "" },
+        ] as Array<{ l: string; v: string; d: string }>);
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 14 }}>
       {tiles.map((m) => (
@@ -153,7 +158,7 @@ function MetricTiles({ live }: { live: Live }) {
   );
 }
 
-function buildLiveTiles(live: Live): typeof MOCK_DATA.runtime.metrics {
+function buildLiveTiles(live: Live): Array<{ l: string; v: string; d: string }> {
   const d = live.diagnostics;
   const s = live.status;
   const transport = d?.transport.mode ?? s?.transport.mode ?? "?";
@@ -190,35 +195,22 @@ function formatUptimeShort(ms: number): string {
 }
 
 function BrowserSessionsCard() {
-  // K1 still uses mock here — see header comment for context.
   return (
     <div className="card">
       <div className="card-hd">
         <h3>Browser sessions</h3>
         <span className="mono faint" style={{ fontSize: 10 }}>
-          {MOCK_DATA.runtime.sessions.length} · mock data
+          live · see Context for details
         </span>
       </div>
-      <div>
-        <div
-          className="log-row"
-          style={{ background: "var(--surface-2)", fontWeight: 500, color: "var(--text-muted)" }}
-        >
-          <span>SESSION</span>
-          <span>TRANSPORT</span>
-          <span>STATE</span>
-          <span>TARGET · UPTIME</span>
+      <div style={{ padding: 14 }}>
+        <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+          Live sessions are surfaced as Browser context sources on the{" "}
+          <b>Context</b> tab of any mission, and aggregated on{" "}
+          <b>#/context</b>. A dedicated /browser-sessions runtime table
+          will return in a later phase once the daemon exposes per-session
+          uptime alongside the live list.
         </div>
-        {MOCK_DATA.runtime.sessions.map((s) => (
-          <div key={s.id} className="log-row">
-            <span>{s.id}</span>
-            <span>{s.transport}</span>
-            <span className={"sev " + (s.state.startsWith("attached") ? "ok" : "err")}>{s.state}</span>
-            <span>
-              <span className="faint">{s.target}</span> · {s.duration}
-            </span>
-          </div>
-        ))}
       </div>
     </div>
   );
@@ -240,51 +232,46 @@ function DaemonLogCard({
         <span className="mono faint" style={{ fontSize: 10, marginLeft: "auto" }}>
           {isLive
             ? `${lines.length} lines · live${logs?.redacted ? " · redacted" : ""}`
-            : "mock data · daemon not reachable"}
+            : reachable
+              ? "no log lines yet"
+              : "daemon not reachable"}
         </span>
       </div>
       <div>
-        {isLive
-          ? lines.slice(-LOG_LIMIT).map((line, i) => (
-              <div key={i} className="log-row" style={{ gridTemplateColumns: "1fr" }}>
-                <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{line}</span>
-              </div>
-            ))
-          : MOCK_DATA.runtime.logs.map((l, i) => (
-              <div key={i} className="log-row">
-                <span className="ts">{l.ts}</span>
-                <span className="src">{l.src}</span>
-                <span className={"sev " + l.sev}>{l.sev.toUpperCase()}</span>
-                <span>{l.msg}</span>
-              </div>
-            ))}
+        {isLive ? (
+          lines.slice(-LOG_LIMIT).map((line, i) => (
+            <div key={i} className="log-row" style={{ gridTemplateColumns: "1fr" }}>
+              <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{line}</span>
+            </div>
+          ))
+        ) : (
+          <div className="muted" style={{ padding: 14, fontSize: 12 }}>
+            {reachable
+              ? "Daemon log tail will appear here as the runtime emits records."
+              : "Connect to the daemon to see live logs."}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 function RecoveryCard() {
+  // No `/recovery-runs` enumeration for the dashboard yet — leave a
+  // placeholder so the layout stays balanced without lying about
+  // recovery state.
   return (
     <div className="card">
       <div className="card-hd">
         <Icon name="warning" size={13} />
-        <h3 style={{ color: "var(--danger)" }}>Recovery cases · {MOCK_DATA.recoveries.length}</h3>
+        <h3>Recovery cases</h3>
       </div>
       <div style={{ padding: 14 }}>
-        {MOCK_DATA.recoveries.map((r) => (
-          <div key={r.id}>
-            <div style={{ fontFamily: "var(--font-sans)", fontSize: 13, fontWeight: 500 }}>{r.title}</div>
-            <div className="muted" style={{ fontSize: 12, marginTop: 4, lineHeight: 1.5 }}>{r.cn}</div>
-            <div className="mono faint" style={{ fontSize: 10, marginTop: 8, lineHeight: 1.7 }}>
-              <div>bucket · <span style={{ color: "var(--text-muted)" }}>{r.bucket}</span></div>
-              <div>first seen · {r.firstSeen} · attempt {r.attempts}/3</div>
-              <div>last error · {r.runtime.lastError}</div>
-            </div>
-            <button type="button" className="btn warning" style={{ marginTop: 10 }}>
-              Open recovery case →
-            </button>
-          </div>
-        ))}
+        <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+          No active recovery cases. Bridge failures during a mission appear
+          here when a real <code>/recovery-runs</code> enumeration lands
+          (K4+).
+        </div>
       </div>
     </div>
   );
@@ -340,22 +327,10 @@ function TokensCard() {
         <Icon name="key" size={13} />
         <h3>Tokens</h3>
       </div>
-      <div
-        style={{
-          padding: 14,
-          fontFamily: "var(--font-mono)",
-          fontSize: 11,
-          color: "var(--text-muted)",
-          lineHeight: 1.7,
-        }}
-      >
-        <div>tk_op_•••4f12 <span className="faint">operator · agent.research</span></div>
-        <div>tk_op_•••91ab <span className="faint">operator · agent.doc</span></div>
-        <div>tk_rd_•••2c08 <span className="faint">read · agent.review</span></div>
-        <div>tk_ad_•••8e44 <span className="faint" style={{ color: "var(--warning)" }}>admin · daemon-local</span></div>
-        <div style={{ marginTop: 8, fontSize: 9.5 }} className="faint">
-          mock data · K1 doesn't enumerate real per-agent tokens
-        </div>
+      <div style={{ padding: 14, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+        Per-agent token enumeration lands later. For now configure auth
+        via the env vars in <code>~/.turnkeyai/config.json</code> (the
+        daemon prints accepted scopes at startup).
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
 import type { RoleActivationInput, RoleId, RuntimeProgressRecorder } from "@turnkeyai/core-types/team";
+import type { GenerateTextInput, GenerateTextResult, LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 
@@ -6,14 +7,28 @@ import type { GeneratedRoleReply, RoleResponseGenerator } from "./deterministic-
 import type { RolePromptPacket } from "./prompt-policy";
 import { reducePromptPacketForRequestEnvelope, type RequestEnvelopeReductionLevel } from "./request-envelope-reducer";
 import { getRoleModelSelection } from "./role-model-selection";
+import {
+  appendAssistantToolCallMessage,
+  appendToolResultMessages,
+  DEFAULT_ROLE_TOOL_MAX_ROUNDS,
+  recordRoleToolProgress,
+  type RoleToolExecutionResult,
+  type RoleToolLoopOptions,
+} from "./tool-use";
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
+  private readonly toolLoop: RoleToolLoopOptions | undefined;
 
-  constructor(options: { gateway: LLMGateway; runtimeProgressRecorder?: RuntimeProgressRecorder }) {
+  constructor(options: {
+    gateway: LLMGateway;
+    runtimeProgressRecorder?: RuntimeProgressRecorder;
+    toolLoop?: RoleToolLoopOptions;
+  }) {
     this.gateway = options.gateway;
     this.runtimeProgressRecorder = options.runtimeProgressRecorder;
+    this.toolLoop = options.toolLoop;
   }
 
   async generate(input: { activation: RoleActivationInput; packet: RolePromptPacket }): Promise<GeneratedRoleReply> {
@@ -23,8 +38,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       throw new Error(`no model configured for role ${input.activation.runState.roleId}`);
     }
 
-    const attempts: RequestEnvelopeReductionLevel[] = ["compact", "minimal", "reference-only"];
-    let result;
+    let result: GenerateTextResult;
     let reduction:
       | {
           level: RequestEnvelopeReductionLevel;
@@ -40,59 +54,79 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
     await this.recordAssemblyBoundarySafely(input.activation, input.packet, selection);
 
-    try {
-      result = await this.gateway.generate(
-        buildGatewayInput({
-          activation: input.activation,
-          packet: input.packet,
-          ...(selection.modelId ? { modelId: selection.modelId } : {}),
-          ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
-        })
-      );
-    } catch (error) {
-      if (!(error instanceof RequestEnvelopeOverflowError)) {
-        throw error;
-      }
-
-      let overflowError: RequestEnvelopeOverflowError = error;
-      for (const level of attempts) {
-        const reduced = reducePromptPacketForRequestEnvelope(input.packet, { level });
-        try {
-          result = await this.gateway.generate(
-            buildGatewayInput({
-              activation: input.activation,
-              packet: input.packet,
-              ...(selection.modelId ? { modelId: selection.modelId } : {}),
-              ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
-              overrideSystemPrompt: reduced.reducedSystemPrompt,
-              overrideTaskPrompt: reduced.reducedTaskPrompt,
-              artifactIds: reduced.artifactIds,
-              envelopeHint: reduced.envelopeHint,
-            })
-          );
-          reduction = {
-            level,
-            omittedSections: reduced.omittedSections,
-          };
-          reductionSnapshot = {
-            level,
-            omittedSections: reduced.omittedSections,
-            artifactIds: reduced.artifactIds,
-            ...(reduced.envelopeHint ? { envelopeHint: reduced.envelopeHint } : {}),
-          };
-          await this.recordReductionBoundarySafely(input.activation, input.packet, selection, reductionSnapshot);
-          break;
-        } catch (retryError) {
-          if (!(retryError instanceof RequestEnvelopeOverflowError)) {
-            throw retryError;
+    const initialGatewayInput = buildGatewayInput({
+      activation: input.activation,
+      packet: input.packet,
+      ...(selection.modelId ? { modelId: selection.modelId } : {}),
+      ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+      ...(this.toolLoop
+        ? {
+            tools: this.toolLoop.executor.definitions(),
+            toolChoice: "auto" as const,
           }
-          overflowError = retryError;
-        }
+        : {}),
+    });
+
+    const toolTrace: ToolRoundTrace[] = [];
+    let messages: LLMMessage[] = initialGatewayInput.messages;
+    for (let round = 0; ; round++) {
+      const generated = await this.generateWithEnvelopeRetry({
+        activation: input.activation,
+        packet: input.packet,
+        selection,
+        gatewayInput: {
+          ...initialGatewayInput,
+          messages,
+          envelope: {
+            ...(initialGatewayInput.envelope ?? {}),
+            ...deriveToolResultEnvelope(messages),
+          },
+        },
+      });
+      result = generated.result;
+      if (generated.reduction) {
+        reduction = generated.reduction;
+        reductionSnapshot = generated.reductionSnapshot;
       }
 
-      if (!result) {
-        throw overflowError;
+      const toolCalls = result.toolCalls ?? [];
+      if (!this.toolLoop || toolCalls.length === 0) {
+        break;
       }
+      const maxRounds = this.toolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+      if (round >= maxRounds) {
+        throw new Error(`tool-use loop exceeded max rounds (${maxRounds})`);
+      }
+
+      const toolResults = await this.executeToolCalls({
+        activation: input.activation,
+        packet: input.packet,
+        toolCalls,
+      });
+      toolTrace.push({
+        round: round + 1,
+        calls: toolCalls.map((call) => ({
+          id: call.id,
+          name: call.name,
+          input: call.input,
+        })),
+        results: toolResults.map((toolResult) => ({
+          toolCallId: toolResult.toolCallId,
+          toolName: toolResult.toolName,
+          isError: toolResult.isError === true,
+          contentBytes: Buffer.byteLength(toolResult.content, "utf8"),
+        })),
+      });
+      messages = appendAssistantToolCallMessage(messages, {
+        text: result.text,
+        toolCalls,
+        ...(result.contentBlocks ? { contentBlocks: result.contentBlocks } : {}),
+      });
+      messages = appendToolResultMessages(messages, toolResults);
+    }
+
+    if (reductionSnapshot) {
+      await this.recordReductionBoundarySafely(input.activation, input.packet, selection, reductionSnapshot);
     }
 
     return {
@@ -108,8 +142,164 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         stopReason: result.stopReason,
         ...(reduction ? { requestEnvelopeReduction: reduction } : {}),
         ...(result.requestEnvelope ? { requestEnvelope: result.requestEnvelope } : {}),
+        ...(toolTrace.length
+          ? {
+              toolUse: {
+                rounds: toolTrace,
+                toolCallCount: toolTrace.reduce((sum, round) => sum + round.calls.length, 0),
+              },
+            }
+          : {}),
       },
     };
+  }
+
+  private async generateWithEnvelopeRetry(input: {
+    activation: RoleActivationInput;
+    packet: RolePromptPacket;
+    selection: {
+      modelId?: string;
+      modelChainId?: string;
+    };
+    gatewayInput: GenerateTextInput;
+  }): Promise<{
+    result: GenerateTextResult;
+    reduction?: {
+      level: RequestEnvelopeReductionLevel;
+      omittedSections: string[];
+    };
+    reductionSnapshot?: {
+      level: RequestEnvelopeReductionLevel;
+      omittedSections: string[];
+    } & ReductionEnvelopeSnapshot;
+  }> {
+    const attempts: RequestEnvelopeReductionLevel[] = ["compact", "minimal", "reference-only"];
+    try {
+      return {
+        result: await this.gateway.generate(input.gatewayInput),
+      };
+    } catch (error) {
+      if (!(error instanceof RequestEnvelopeOverflowError)) {
+        throw error;
+      }
+
+      let overflowError: RequestEnvelopeOverflowError = error;
+      for (const level of attempts) {
+        const reduced = reducePromptPacketForRequestEnvelope(input.packet, { level });
+        try {
+          const reducedGatewayInput = buildGatewayInput({
+            activation: input.activation,
+            packet: input.packet,
+            ...(input.selection.modelId ? { modelId: input.selection.modelId } : {}),
+            ...(input.selection.modelChainId ? { modelChainId: input.selection.modelChainId } : {}),
+            overrideSystemPrompt: reduced.reducedSystemPrompt,
+            overrideTaskPrompt: reduced.reducedTaskPrompt,
+            artifactIds: reduced.artifactIds,
+            envelopeHint: reduced.envelopeHint,
+            tools: input.gatewayInput.tools,
+            toolChoice: input.gatewayInput.toolChoice,
+          });
+          const reducedMessages = replaceInitialPromptMessages(input.gatewayInput.messages, reducedGatewayInput.messages);
+          const result = await this.gateway.generate({
+            ...input.gatewayInput,
+            messages: reducedMessages,
+            envelope: {
+              ...(input.gatewayInput.envelope ?? {}),
+              ...reduced.envelopeHint,
+              artifactIds: reduced.artifactIds,
+              ...deriveToolResultEnvelope(reducedMessages),
+            },
+          });
+          const reduction = {
+            level,
+            omittedSections: reduced.omittedSections,
+          };
+          const reductionSnapshot = {
+            level,
+            omittedSections: reduced.omittedSections,
+            artifactIds: reduced.artifactIds,
+            ...(reduced.envelopeHint ? { envelopeHint: reduced.envelopeHint } : {}),
+          };
+          return { result, reduction, reductionSnapshot };
+        } catch (retryError) {
+          if (!(retryError instanceof RequestEnvelopeOverflowError)) {
+            throw retryError;
+          }
+          overflowError = retryError;
+        }
+      }
+
+      throw overflowError;
+    }
+  }
+
+  private async executeToolCalls(input: {
+    activation: RoleActivationInput;
+    packet: RolePromptPacket;
+    toolCalls: LLMToolCall[];
+  }): Promise<RoleToolExecutionResult[]> {
+    if (!this.toolLoop) return [];
+    return Promise.all(
+      input.toolCalls.map(async (call) => {
+        await this.recordToolProgressSafely(input.activation, call, {
+          phase: "started",
+          toolName: call.name,
+          summary: `Tool call started: ${call.name}`,
+        });
+        try {
+          const result = await this.toolLoop!.executor.execute({
+            call,
+            activation: input.activation,
+            packet: input.packet,
+          });
+          for (const progress of result.progress ?? []) {
+            await this.recordToolProgressSafely(input.activation, call, progress);
+          }
+          await this.recordToolProgressSafely(input.activation, call, {
+            phase: result.isError ? "failed" : "completed",
+            toolName: call.name,
+            summary: result.isError ? `Tool call failed: ${call.name}` : `Tool call completed: ${call.name}`,
+          });
+          return result;
+        } catch (error) {
+          const content = error instanceof Error ? error.message : String(error);
+          await this.recordToolProgressSafely(input.activation, call, {
+            phase: "failed",
+            toolName: call.name,
+            summary: `Tool call failed: ${call.name}: ${content}`,
+          });
+          return {
+            toolCallId: call.id,
+            toolName: call.name,
+            content,
+            isError: true,
+          };
+        }
+      })
+    );
+  }
+
+  private async recordToolProgressSafely(
+    activation: RoleActivationInput,
+    call: LLMToolCall,
+    progress: Parameters<typeof recordRoleToolProgress>[0]["progress"]
+  ): Promise<void> {
+    try {
+      await recordRoleToolProgress({
+        recorder: this.toolLoop?.runtimeProgressRecorder ?? this.runtimeProgressRecorder,
+        activation,
+        call,
+        progress,
+      });
+    } catch (error) {
+      console.error("runtime tool progress recording failed", {
+        threadId: activation.thread.threadId,
+        flowId: activation.flow.flowId,
+        taskId: activation.handoff.taskId,
+        toolName: call.name,
+        error,
+      });
+    }
   }
 
   private async recordAssemblyBoundary(
@@ -280,6 +470,12 @@ interface ReductionEnvelopeSnapshot {
   };
 }
 
+interface ToolRoundTrace {
+  round: number;
+  calls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+  results: Array<{ toolCallId: string; toolName: string; isError: boolean; contentBytes: number }>;
+}
+
 function buildGatewayInput(input: {
   activation: RoleActivationInput;
   packet: RolePromptPacket;
@@ -298,10 +494,14 @@ function buildGatewayInput(input: {
     inlinePdfBytes?: number;
     multimodalPartCount?: number;
   };
-}) {
+  tools?: GenerateTextInput["tools"];
+  toolChoice?: GenerateTextInput["toolChoice"];
+}): GenerateTextInput {
   return {
     ...(input.modelId ? { modelId: input.modelId } : {}),
     ...(input.modelChainId ? { modelChainId: input.modelChainId } : {}),
+    ...(input.tools?.length ? { tools: input.tools } : {}),
+    ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
     messages: [
       {
         role: "system" as const,
@@ -324,6 +524,8 @@ function buildGatewayInput(input: {
     },
     envelope: {
       artifactIds: input.artifactIds ?? input.packet.promptAssembly?.usedArtifacts ?? [],
+      toolCount: input.tools?.length ?? 0,
+      toolSchemaBytes: input.tools ? Buffer.byteLength(JSON.stringify(input.tools), "utf8") : 0,
       toolResultCount: input.envelopeHint?.toolResultCount ?? input.packet.promptAssembly?.envelopeHint?.toolResultCount ?? 0,
       toolResultBytes: input.envelopeHint?.toolResultBytes ?? input.packet.promptAssembly?.envelopeHint?.toolResultBytes ?? 0,
       inlineAttachmentBytes:
@@ -342,4 +544,17 @@ function extractMentions(content: string): RoleId[] {
   return [...content.matchAll(/@\{(?<roleId>[^}]+)\}/g)]
     .map((match) => match.groups?.roleId)
     .filter((value): value is RoleId => Boolean(value));
+}
+
+function deriveToolResultEnvelope(messages: LLMMessage[]): { toolResultCount: number; toolResultBytes: number } {
+  const toolMessages = messages.filter((message) => message.role === "tool");
+  return {
+    toolResultCount: toolMessages.length,
+    toolResultBytes: Buffer.byteLength(JSON.stringify(toolMessages.map((message) => message.content)), "utf8"),
+  };
+}
+
+function replaceInitialPromptMessages(messages: LLMMessage[], reducedPromptMessages: LLMMessage[]): LLMMessage[] {
+  const toolLoopHistory = messages.slice(2);
+  return [...reducedPromptMessages, ...toolLoopHistory];
 }

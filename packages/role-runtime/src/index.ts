@@ -9,3 +9,4 @@ export * from "./policy-role-runtime";
 export * from "./prompt/prompt-assembler";
 export * from "./prompt-policy";
 export * from "./role-profile";
+export * from "./tool-use";

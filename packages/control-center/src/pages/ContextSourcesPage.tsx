@@ -1,7 +1,9 @@
 // Context Sources index — all sources grouped by kind (browser, doc,
-// folder, api, desktop). Read-only in K1.
+// folder, api, desktop). K3.5: live data from /mission-context-sources.
 
-import { MOCK_DATA, type ContextKind, type ContextSource } from "../mock/mission-data";
+import type { ContextKind, ContextSource } from "../api/mission-api";
+import { useContextSources } from "../api/useMissionData";
+import { formatRelativeAgo } from "../util/format-time";
 import { CtxIcon, Icon } from "../components/Icon";
 
 interface Section {
@@ -19,8 +21,10 @@ const SECTIONS: Section[] = [
 ];
 
 export function ContextSourcesPage() {
+  const sourcesRemote = useContextSources([]);
+  const sources = sourcesRemote.value;
   const grouped: Partial<Record<ContextKind, ContextSource[]>> = {};
-  for (const c of MOCK_DATA.contextSources) {
+  for (const c of sources) {
     (grouped[c.kind] ||= []).push(c);
   }
 
@@ -73,7 +77,9 @@ function ContextRow({ source }: { source: ContextSource }) {
         <div className="url">{source.url}</div>
       </div>
       <div className="meta-col">{source.transport || source.writer || "—"}</div>
-      <div className="meta-col">last {source.lastUse}</div>
+      <div className="meta-col">
+        last {source.lastUse || (source.lastUseAtMs ? formatRelativeAgo(source.lastUseAtMs) : "—")}
+      </div>
       <div>
         <span className={"tag " + stateTone}>
           <span className="dot" />

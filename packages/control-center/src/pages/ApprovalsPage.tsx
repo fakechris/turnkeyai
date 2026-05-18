@@ -1,14 +1,12 @@
-// Approvals queue — pending + decided tabs. Decisions are local-session
-// only in K1; K4 will persist them through a daemon endpoint.
+// Approvals queue — pending + decided tabs. K4 will persist decisions
+// through a daemon endpoint; for now the dashboard records them in
+// local session state (state.decisions) and the daemon-side approvals
+// are read-only.
 
 import { useState } from "react";
 
-import {
-  MOCK_DATA,
-  agentById,
-  ctxById,
-  type ApprovalRequest,
-} from "../mock/mission-data";
+import type { ApprovalRow } from "../api/mission-api";
+import { useAgents, useApprovals, useContextSources } from "../api/useMissionData";
 import { CtxIcon, Icon } from "../components/Icon";
 import { AgentAvatar } from "../components/atoms";
 import { useAppState } from "../state/AppState";
@@ -16,9 +14,19 @@ import { useAppState } from "../state/AppState";
 export function ApprovalsPage() {
   const { state, decideApproval, openMission } = useAppState();
   const [tab, setTab] = useState<"pending" | "decided">("pending");
+  const approvalsRemote = useApprovals([]);
+  const agentsRemote = useAgents([]);
+  const contextRemote = useContextSources([]);
+  const approvals = approvalsRemote.value;
+  const agents = agentsRemote.value;
+  const contextSources = contextRemote.value;
 
-  const allPending = MOCK_DATA.approvals.filter((a) => !state.decisions[a.id]);
-  const allDecided = MOCK_DATA.approvals.filter((a) => state.decisions[a.id]);
+  const allPending = approvals.filter(
+    (a) => !a.decision && !state.decisions[a.id]
+  );
+  const allDecided = approvals.filter(
+    (a) => a.decision || state.decisions[a.id]
+  );
   const list = tab === "pending" ? allPending : allDecided;
 
   return (
@@ -61,34 +69,53 @@ export function ApprovalsPage() {
         </div>
       )}
 
-      {list.map((ap) => (
-        <ApprovalRow
-          key={ap.id}
-          approval={ap}
-          decision={state.decisions[ap.id]}
-          onApprove={() => decideApproval(ap.id, "approved")}
-          onDeny={() => decideApproval(ap.id, "denied")}
-          onOpenMission={() => openMission(ap.missionId)}
-        />
-      ))}
+      {list.map((ap) => {
+        // coderabbit K3.5: prefer local session state if present
+        // (we just clicked Approve/Deny and the daemon hasn't
+        // round-tripped yet) but FALL BACK to the daemon-attached
+        // decision so the Decided tab doesn't render Approve/Deny
+        // buttons for approvals already decided server-side.
+        const localDecision = state.decisions[ap.id];
+        const daemonDecision =
+          ap.decision && (ap.decision.decision === "approved" || ap.decision.decision === "denied")
+            ? ap.decision.decision
+            : undefined;
+        const effective = localDecision ?? daemonDecision;
+        return (
+          <ApprovalRowView
+            key={ap.id}
+            approval={ap}
+            decision={effective}
+            agents={agents}
+            contextSources={contextSources}
+            onApprove={() => decideApproval(ap.id, "approved")}
+            onDeny={() => decideApproval(ap.id, "denied")}
+            onOpenMission={() => openMission(ap.missionId)}
+          />
+        );
+      })}
     </div>
   );
 }
 
-function ApprovalRow({
+function ApprovalRowView({
   approval,
   decision,
+  agents,
+  contextSources,
   onApprove,
   onDeny,
   onOpenMission,
 }: {
-  approval: ApprovalRequest;
+  approval: ApprovalRow;
   decision: "approved" | "denied" | undefined;
+  agents: ReadonlyArray<{ id: string; name: string; role: string; ava: string; color: string }>;
+  contextSources: ReadonlyArray<{ id: string; kind: string; title: string }>;
   onApprove: () => void;
   onDeny: () => void;
   onOpenMission: () => void;
 }) {
-  const agent = agentById(approval.agent);
+  const agent = agents.find((a) => a.id === approval.agent);
   return (
     <div className={"approval-row " + approval.severity}>
       <div className="severity">
@@ -116,16 +143,16 @@ function ApprovalRow({
         <div className="row" style={{ gap: 6, marginTop: 10 }}>
           {agent && (
             <span className="tag">
-              <AgentAvatar agent={agent} size={14} />
+              <AgentAvatar agent={agent as never} size={14} />
               <span style={{ marginLeft: 4 }}>{agent.name}</span>
             </span>
           )}
           {approval.affects.map((id) => {
-            const c = ctxById(id);
+            const c = contextSources.find((s) => s.id === id);
             if (!c) return null;
             return (
               <span key={id} className="tag">
-                <CtxIcon kind={c.kind} /> {c.title}
+                <CtxIcon kind={c.kind as never} /> {c.title}
               </span>
             );
           })}

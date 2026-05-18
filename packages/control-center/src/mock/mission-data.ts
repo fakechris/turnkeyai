@@ -683,7 +683,41 @@ export const MOCK_DATA: MockData = {
 
 // ── Lookup helpers ────────────────────────────────────────────────────
 export function agentById(id: string): Agent | undefined {
-  return MOCK_DATA.agents.find((a) => a.id === id);
+  const known = MOCK_DATA.agents.find((a) => a.id === id);
+  if (known) return known;
+  // K3.5: live missions reference role ids that aren't in the K1 mock
+  // roster (e.g. "role-lead", "role-analyst"). Render a synthesized
+  // fallback so the avatar shows up — better than a hole where the
+  // agent badge should be.
+  if (!id) return undefined;
+  const monogram = id
+    .replace(/^role-/, "")
+    .replace(/^agent\./, "")
+    .slice(0, 2)
+    .toUpperCase()
+    .padEnd(2, "·");
+  const colorPool: ColorTag[] = ["info", "accent", "success", "warning"];
+  const colorIndex = Math.abs(simpleHash(id)) % colorPool.length;
+  return {
+    id,
+    name: id,
+    role: "Agent",
+    provider: "team-runtime",
+    providerNote: "",
+    status: "working",
+    ava: monogram,
+    color: colorPool[colorIndex]!,
+    capabilities: [],
+    missions: 0,
+    tokensIn: "—",
+    tokensOut: "—",
+  };
+}
+
+function simpleHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h;
 }
 export function ctxById(id: string): ContextSource | undefined {
   return MOCK_DATA.contextSources.find((c) => c.id === id);

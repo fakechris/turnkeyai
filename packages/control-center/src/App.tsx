@@ -4,11 +4,12 @@
 // own mission-bar header (with mission title + status). Other pages get
 // a breadcrumb toolbar.
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { Sidebar, type SidebarCounts } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
 import { Icon } from "./components/Icon";
+import { NewMissionModal } from "./components/NewMissionModal";
 import { useHashRoute } from "./hooks/useHashRoute";
 import { AgentConnectPage } from "./pages/AgentConnectPage";
 import { AgentsPage } from "./pages/AgentsPage";
@@ -19,30 +20,42 @@ import { MissionsPage } from "./pages/MissionsPage";
 import { NoTokenPage } from "./pages/NoTokenPage";
 import { RuntimePage } from "./pages/RuntimePage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { MOCK_DATA, missionById } from "./mock/mission-data";
+import {
+  useAgents,
+  useApprovals,
+  useContextSources,
+  useMissions,
+} from "./api/useMissionData";
 import { useAppState } from "./state/AppState";
 
 export function App() {
   useHashRoute();
-  const { state } = useAppState();
-  // Coming-soon "New mission" modal — placeholder for K2. K1 doesn't
-  // ship the modal because mission creation needs a real backing store.
-  const [, setNewMissionOpen] = useState(false);
+  const { state, openMission } = useAppState();
+  // PR K3.5: the modal is now real — it POSTs /missions and the
+  // daemon spawns a linked team-runtime thread. On success we navigate
+  // to Mission Detail so the user can watch the coordination engine
+  // pick the new mission up.
+  const [newMissionOpen, setNewMissionOpen] = useState(false);
 
-  // Memoized because App re-renders on every AppState change (route,
-  // pill updates from polling, etc.) but counts only actually move when
-  // a decision is recorded. Mock data is module-static, so depend on
-  // state.decisions and ignore the rest. (Gemini K1 review.)
-  const counts: SidebarCounts = useMemo(
-    () => ({
-      missions: MOCK_DATA.missions.filter((m) => m.status !== "archived").length,
-      approvals: MOCK_DATA.approvals.filter((a) => !state.decisions[a.id]).length,
-      agents: MOCK_DATA.agents.length,
-      context: MOCK_DATA.contextSources.length,
-      recoveries: MOCK_DATA.recoveries.length,
-    }),
-    [state.decisions]
-  );
+  // K3.5: sidebar counts are LIVE (driven by the daemon stores) instead
+  // of K1 mock fixtures. Each hook falls back to [] so the page renders
+  // immediately and the counts populate as fetches resolve.
+  const missions = useMissions([]).value;
+  const approvals = useApprovals([]).value;
+  const agents = useAgents([]).value;
+  const contextSources = useContextSources([]).value;
+  const counts: SidebarCounts = {
+    missions: missions.filter((m) => m.status !== "archived").length,
+    // Approvals: subtract any locally-decided ones from the count so
+    // the sidebar moves the moment the user clicks Approve/Deny on the
+    // queue (the daemon-backed decision endpoint is K4).
+    approvals: approvals.filter(
+      (a) => !a.decision && !state.decisions[a.id]
+    ).length,
+    agents: agents.length,
+    context: contextSources.length,
+    recoveries: 0,
+  };
 
   if (state.token === null) {
     return (
@@ -64,9 +77,17 @@ export function App() {
       <div className="main">
         {state.route !== "mission" && <PageToolbar />}
         <div className="content">
-          <RoutedPage />
+          <RoutedPage onNewMission={() => setNewMissionOpen(true)} />
         </div>
       </div>
+      <NewMissionModal
+        open={newMissionOpen}
+        onClose={() => setNewMissionOpen(false)}
+        onCreated={(missionId) => {
+          setNewMissionOpen(false);
+          openMission(missionId);
+        }}
+      />
     </div>
   );
 }
@@ -104,26 +125,18 @@ function SearchSlot() {
   );
 }
 
-function RoutedPage() {
-  const { state, openMission } = useAppState();
+function RoutedPage({ onNewMission }: { onNewMission: () => void }) {
+  const { state } = useAppState();
   switch (state.route) {
     case "missions":
-      return (
-        <MissionsPage
-          onNewMission={() => {
-            // K1: no modal yet — open the first existing mission so the
-            // user can at least see Mission Detail.
-            const first = MOCK_DATA.missions[0];
-            if (first) openMission(first.id);
-          }}
-        />
-      );
+      return <MissionsPage onNewMission={onNewMission} />;
     case "mission": {
-      // Default to msn.01 if user landed on /#/mission without picking
-      // one (e.g. via URL or after sidebar nav).
-      const id = state.selectedMissionId ?? "msn.01";
-      const exists = missionById(id);
-      return <MissionDetailPage missionId={exists ? id : "msn.01"} />;
+      // K3.5: route directly to the selected mission. MissionDetailPage
+      // owns the "loading" / "no such mission" empty states.
+      if (!state.selectedMissionId) {
+        return <MissionsPage onNewMission={onNewMission} />;
+      }
+      return <MissionDetailPage missionId={state.selectedMissionId} />;
     }
     case "approvals":
       return <ApprovalsPage />;
@@ -138,6 +151,6 @@ function RoutedPage() {
     case "settings":
       return <SettingsPage />;
     default:
-      return <MissionsPage onNewMission={() => undefined} />;
+      return <MissionsPage onNewMission={onNewMission} />;
   }
 }

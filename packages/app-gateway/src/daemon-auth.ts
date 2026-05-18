@@ -176,6 +176,17 @@ export function resolveDaemonRequestAccess(
   if (req.method === "POST" && url.pathname === "/missions/bootstrap-demo") {
     return "operator";
   }
+  // PR K3.5 — mission creation + user follow-up. Both are user-driven
+  // writes that spawn / drive a team-runtime thread.
+  if (req.method === "POST" && url.pathname === "/missions") {
+    return "operator";
+  }
+  if (
+    req.method === "POST" &&
+    /^\/missions\/[^/]+\/messages$/.test(url.pathname)
+  ) {
+    return "operator";
+  }
 
   if (req.method === "GET" && url.pathname === "/scheduled-tasks") {
     return "read";

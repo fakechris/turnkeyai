@@ -1,12 +1,13 @@
 // Missions home. Grid of mission cards with status filter + sort row.
 //
-// Per K1 scope: cards come from MOCK_DATA. The K2 swap is exactly:
-//   `const list = filtered missions from mockData` → `useMissions()` hook
-//   backed by a real `/missions` daemon endpoint.
+// K3.5: live-only. The /missions endpoint is the single source of truth.
+// MOCK_DATA fallback is gone — an empty list renders an empty state with
+// a clear "Create your first mission" CTA. Bootstrap-demo is still
+// available to operators as a one-shot "show me what populated looks
+// like" button, but it's not the default render path.
 
 import { useState } from "react";
 
-import { MOCK_DATA } from "../mock/mission-data";
 import type { Mission } from "../api/mission-api";
 import { useApprovals, useBootstrapDemo, useMissions } from "../api/useMissionData";
 import { Icon } from "../components/Icon";
@@ -23,14 +24,10 @@ interface Filter {
 export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
   const { state, setRoute, openMission } = useAppState();
   const [filter, setFilter] = useState<Filter["id"]>("all");
-  // Live missions from /missions. Falls back to MOCK_DATA so the page
-  // renders even when the daemon has never been bootstrapped — once
-  // /missions returns content (initially or after the user clicks "Load
-  // demo missions"), `missions.value` flips to live.
-  const missions = useMissions(MOCK_DATA.missions);
-  const approvals = useApprovals(
-    MOCK_DATA.approvals.map((a) => ({ ...a, decision: null }))
-  );
+  // Live missions from /missions. No mock fallback — the page renders
+  // an empty-state CTA when the daemon hasn't received any missions yet.
+  const missions = useMissions([]);
+  const approvals = useApprovals([]);
   const bootstrap = useBootstrapDemo();
   const [bootstrapStatus, setBootstrapStatus] = useState<"idle" | "loading" | "error">("idle");
 
@@ -54,7 +51,6 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
   // would clear their token, dropping them to the no-token page. Hide
   // the button entirely for read scope to avoid the trap.
   const canBootstrap = state.scope !== "read";
-  const emptyButLive = missions.isLive && missionList.length === 0 && canBootstrap;
   const onLoadDemo = async () => {
     setBootstrapStatus("loading");
     try {
@@ -80,17 +76,6 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
           </div>
         </div>
         <div className="right">
-          {emptyButLive && (
-            <button
-              type="button"
-              className="btn"
-              onClick={onLoadDemo}
-              disabled={bootstrapStatus === "loading"}
-            >
-              <Icon name="play" size={13} />{" "}
-              {bootstrapStatus === "loading" ? "Loading…" : "Load demo missions"}
-            </button>
-          )}
           <button type="button" className="btn" onClick={() => setRoute("approvals")}>
             <Icon name="approvals" size={13} /> {pendingTotal} pending
           </button>
@@ -126,11 +111,116 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
         </div>
       </div>
 
-      <div className="mission-grid">
-        {list.map((m) => (
-          <MissionCard key={m.id} mission={m} onOpen={() => openMission(m.id)} />
-        ))}
+      {missionList.length === 0 ? (
+        <EmptyMissionsState
+          isLive={missions.isLive}
+          canBootstrap={canBootstrap}
+          bootstrapStatus={bootstrapStatus}
+          onBootstrap={onLoadDemo}
+          onNewMission={onNewMission}
+        />
+      ) : list.length > 0 ? (
+        <div className="mission-grid">
+          {list.map((m) => (
+            <MissionCard key={m.id} mission={m} onOpen={() => openMission(m.id)} />
+          ))}
+        </div>
+      ) : (
+        // coderabbit K3.5: when missions exist but the current
+        // filter matches none, show a filter-specific empty state
+        // — NOT the "Create your first mission" CTA, which only
+        // applies to a genuinely empty dataset.
+        <div
+          className="card"
+          style={{ marginTop: 16, padding: 24, textAlign: "center" }}
+        >
+          <div className="muted" style={{ fontSize: 12.5 }}>
+            No missions match the “{filter}” filter.{" "}
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => setFilter("all")}
+              style={{ padding: "2px 8px", fontSize: 12 }}
+            >
+              Clear filter
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmptyMissionsState({
+  isLive,
+  canBootstrap,
+  bootstrapStatus,
+  onBootstrap,
+  onNewMission,
+}: {
+  isLive: boolean;
+  canBootstrap: boolean;
+  bootstrapStatus: "idle" | "loading" | "error";
+  onBootstrap: () => void;
+  onNewMission: () => void;
+}) {
+  if (!isLive) {
+    return (
+      <div className="card" style={{ marginTop: 16, padding: 32, textAlign: "center" }}>
+        <div className="muted">Connecting to the daemon…</div>
       </div>
+    );
+  }
+  return (
+    <div
+      className="card"
+      style={{
+        marginTop: 16,
+        padding: 32,
+        textAlign: "center",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 16,
+      }}
+    >
+      <div style={{ fontSize: 14, fontWeight: 600 }}>No missions yet.</div>
+      <div className="muted" style={{ maxWidth: 520, fontSize: 12.5, lineHeight: 1.6 }}>
+        Create a mission to give the agent team a goal. The coordinator
+        breaks it down and dispatches work; you watch progress and follow
+        up from the mission's detail page.
+      </div>
+      <div className="row" style={{ gap: 8 }}>
+        <button type="button" className="btn primary" onClick={onNewMission}>
+          <Icon name="plus" size={13} /> Create your first mission
+        </button>
+        {canBootstrap && (
+          <button
+            type="button"
+            className="btn"
+            onClick={onBootstrap}
+            disabled={bootstrapStatus === "loading"}
+          >
+            <Icon name="play" size={13} />{" "}
+            {bootstrapStatus === "loading" ? "Loading…" : "Load demo fixtures"}
+          </button>
+        )}
+      </div>
+      {canBootstrap && (
+        <div className="muted" style={{ fontSize: 10.5, maxWidth: 460 }}>
+          Demo fixtures populate read-only sample missions (MSN-1042 etc.) so
+          you can preview the populated layout. They do NOT run any agents.
+        </div>
+      )}
+      {bootstrapStatus === "error" && (
+        <div
+          role="alert"
+          className="muted"
+          style={{ fontSize: 11, color: "var(--danger)", maxWidth: 460 }}
+        >
+          Failed to load demo fixtures. Check the daemon log and try again.
+        </div>
+      )}
     </div>
   );
 }

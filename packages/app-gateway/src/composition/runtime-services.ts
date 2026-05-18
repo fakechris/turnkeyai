@@ -39,6 +39,7 @@ import { HybridRoleResponseGenerator } from "@turnkeyai/role-runtime/hybrid-resp
 import { LLMRoleResponseGenerator } from "@turnkeyai/role-runtime/llm-response-generator";
 import { PolicyRoleRuntime } from "@turnkeyai/role-runtime/policy-role-runtime";
 import { DefaultRolePromptPolicy } from "@turnkeyai/role-runtime/prompt-policy";
+import { createWorkerSessionToolExecutor } from "@turnkeyai/role-runtime/tool-use";
 import { LocalWorkerRuntime } from "@turnkeyai/worker-runtime/local-worker-runtime";
 
 import { createRecoveryActionService } from "../recovery-action-service";
@@ -194,6 +195,10 @@ export async function composeDaemonRuntimeServices(
           primary: new LLMRoleResponseGenerator({
             gateway: llmGateway,
             runtimeProgressRecorder,
+            toolLoop: {
+              executor: createWorkerSessionToolExecutor({ workerRuntime }),
+              runtimeProgressRecorder,
+            },
           }),
           fallback: heuristicResponseGenerator,
         })
