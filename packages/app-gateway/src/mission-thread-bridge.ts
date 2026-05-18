@@ -365,6 +365,8 @@ interface ToolUseTrace {
       toolName: string;
       isError: boolean;
       contentBytes: number;
+      content?: string;
+      contentTruncated?: boolean;
     }>;
   }>;
 }
@@ -390,6 +392,8 @@ function extractToolUseTrace(metadata: unknown): ToolUseTrace | null {
             isError: result.isError === true,
             contentBytes:
               typeof result.contentBytes === "number" ? result.contentBytes : 0,
+            ...(typeof result.content === "string" ? { content: result.content } : {}),
+            ...(result.contentTruncated === true ? { contentTruncated: true } : {}),
           }))
         : [];
       return {
@@ -450,7 +454,14 @@ interface BuildToolCallEventInput {
 function buildToolCallEvent(input: BuildToolCallEventInput): ActivityEvent {
   const actor = resolveActor(input.message);
   const sourceId = `${input.message.id}:tool-call:${input.call.id}`;
-  const text = formatToolCallText(input.call);
+  // PR K3.6: surface the inline summary (1-line, capped) AND stash
+  // the full JSON args on runtime.callInput so the UI can expand
+  // and show what the agent actually asked for. Without this, args
+  // longer than ~80 chars (e.g. "task=Open https://example.com and
+  // extract the page title and the first paragraph…") got truncated
+  // on the timeline and there was no way to recover them.
+  const inputJson = stableStringify(input.call.input);
+  const text = formatToolCallText(input.call.name, input.call.input);
   return {
     id: input.newEventId(),
     missionId: input.missionId,
@@ -467,6 +478,7 @@ function buildToolCallEvent(input: BuildToolCallEventInput): ActivityEvent {
       toolCallId: input.call.id,
       toolPhase: "call",
       round: String(input.roundNumber),
+      callInput: inputJson,
     },
   };
 }
@@ -481,6 +493,8 @@ interface BuildToolResultEventInput {
     toolName: string;
     isError: boolean;
     contentBytes: number;
+    content?: string;
+    contentTruncated?: boolean;
   };
   roundNumber: number;
   callName: string;
@@ -489,9 +503,38 @@ interface BuildToolResultEventInput {
 function buildToolResultEvent(input: BuildToolResultEventInput): ActivityEvent {
   const actor = resolveActor(input.message);
   const sourceId = `${input.message.id}:tool-result:${input.result.toolCallId}`;
+  // PR K3.6: surface the actual tool result inline. Error path
+  // shows the error message verbatim (the dispatcher's user-facing
+  // string), success path shows a head slice big enough that the
+  // user can usually see "yes the page title says X". Full result
+  // (capped by the role generator at 8 kB) lives on
+  // runtime.resultContent so the UI can offer an "expand" view.
+  const trimmed = input.result.content?.trim() ?? "";
+  const head = sliceForDisplay(trimmed, ACTIVITY_EVENT_TEXT_CAP);
+  const sizeLabel = formatBytes(input.result.contentBytes);
   const text = input.result.isError
-    ? `Tool ${input.callName} failed (${formatBytes(input.result.contentBytes)}).`
-    : `Tool ${input.callName} returned (${formatBytes(input.result.contentBytes)}).`;
+    ? trimmed
+      ? `Tool ${input.callName} failed: ${head}`
+      : `Tool ${input.callName} failed (${sizeLabel}).`
+    : trimmed
+      ? `Tool ${input.callName} returned (${sizeLabel}):\n${head}`
+      : `Tool ${input.callName} returned (${sizeLabel}).`;
+  const runtime: Record<string, string> = {
+    threadId: input.message.threadId,
+    messageId: input.message.id,
+    activitySourceId: sourceId,
+    toolName: input.result.toolName,
+    toolCallId: input.result.toolCallId,
+    toolPhase: "result",
+    round: String(input.roundNumber),
+    contentBytes: String(input.result.contentBytes),
+  };
+  if (input.result.content !== undefined) {
+    runtime.resultContent = input.result.content;
+  }
+  if (input.result.contentTruncated) {
+    runtime.resultTruncated = "true";
+  }
   const event: ActivityEvent = {
     id: input.newEventId(),
     missionId: input.missionId,
@@ -500,46 +543,62 @@ function buildToolResultEvent(input: BuildToolResultEventInput): ActivityEvent {
     actor,
     text,
     tags: ["thread", "tool-result", input.result.toolName],
-    runtime: {
-      threadId: input.message.threadId,
-      messageId: input.message.id,
-      activitySourceId: sourceId,
-      toolName: input.result.toolName,
-      toolCallId: input.result.toolCallId,
-      toolPhase: "result",
-      round: String(input.roundNumber),
-      contentBytes: String(input.result.contentBytes),
-    },
+    runtime,
   };
   if (input.result.isError) event.emph = "danger";
   return event;
 }
 
-function formatToolCallText(call: {
-  name: string;
-  input: Record<string, unknown>;
-}): string {
-  const argsPreview = formatToolArgs(call.input);
-  return argsPreview
-    ? `Calling ${call.name}(${argsPreview})`
-    : `Calling ${call.name}()`;
+// PR K3.6: cap for the inline `text` of any single tool event. Long
+// enough to show "task=Open https://… and extract the title" or the
+// first paragraph of a fetched page, short enough that the timeline
+// stays readable. The UI offers an expand-for-full view via
+// runtime.callInput / runtime.resultContent.
+const ACTIVITY_EVENT_TEXT_CAP = 600;
+
+function formatToolCallText(
+  name: string,
+  args: Record<string, unknown>
+): string {
+  const entries = Object.entries(args);
+  if (entries.length === 0) return `Calling ${name}()`;
+  // First pass: try the pretty multi-arg single-line.
+  const oneLiner = entries
+    .map(([key, value]) => `${key}=${formatToolArgValue(value)}`)
+    .join(", ");
+  const inline = `Calling ${name}(${oneLiner})`;
+  if (inline.length <= ACTIVITY_EVENT_TEXT_CAP) return inline;
+  // Long-arg fallback: drop to a multi-line key=value list. The full
+  // structured args live on runtime.callInput for an UI inspector.
+  const lines = entries.map(
+    ([key, value]) => `  ${key} = ${formatToolArgValue(value)}`
+  );
+  return `Calling ${name}(\n${sliceForDisplay(
+    lines.join("\n"),
+    ACTIVITY_EVENT_TEXT_CAP - name.length - 16
+  )}\n)`;
 }
 
-function formatToolArgs(args: Record<string, unknown>): string {
-  // Show one-line argument summary (truncated) — full args live in
-  // metadata.toolUse on the source message if a K4 inspector wants
-  // them. Goal here: enough for the user to recognise WHAT the agent
-  // asked for.
-  const entries = Object.entries(args)
-    .slice(0, 3)
-    .map(([key, value]) => `${key}=${truncate(JSON.stringify(value), 80)}`);
-  if (Object.keys(args).length > 3) entries.push(`… +${Object.keys(args).length - 3}`);
-  return entries.join(", ");
+function formatToolArgValue(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
-function truncate(value: string, max: number): string {
+function sliceForDisplay(value: string, max: number): string {
   if (value.length <= max) return value;
   return `${value.slice(0, max - 1)}…`;
+}
+
+function stableStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "{}";
+  }
 }
 
 function formatBytes(bytes: number): string {

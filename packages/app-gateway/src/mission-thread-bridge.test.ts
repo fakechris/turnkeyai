@@ -263,10 +263,16 @@ describe("MissionThreadBridge", () => {
         { kind: "thought", phase: null },
       ]
     );
-    // The tool-call event shows the args summary.
+    // The tool-call event shows the args summary AND stashes the
+    // full structured input on runtime.callInput so the UI can
+    // expand to see the un-truncated JSON (K3.6).
     const callEvent = ordered[1]!;
     assert.match(callEvent.text, /sessions_spawn/);
     assert.match(callEvent.text, /task=/);
+    assert.ok(callEvent.runtime?.callInput, "callInput JSON must be persisted");
+    const parsedCallInput = JSON.parse(callEvent.runtime!.callInput!);
+    assert.equal(parsedCallInput.task, "Open https://example.com");
+    assert.equal(parsedCallInput.agent_id, "browser");
     // The result event shows byte count and links back to the call id.
     const resultEvent = ordered[2]!;
     assert.match(resultEvent.text, /sessions_spawn/);
@@ -274,6 +280,93 @@ describe("MissionThreadBridge", () => {
     assert.equal(resultEvent.runtime?.toolCallId, "call_1");
     // Final answer carries the assistant content.
     assert.equal(ordered[3]!.text, "The page title is Example Domain.");
+  });
+
+  it("tool-result event carries full content on runtime.resultContent (K3.6)", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const fullResult = "Page title: Example Domain.\nFirst paragraph: This domain is for use in documentation examples...";
+    const message: TeamMessage = {
+      ...baseMessage("a", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Done.",
+      metadata: {
+        toolUse: {
+          rounds: [
+            {
+              round: 1,
+              calls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "explore" } }],
+              results: [
+                {
+                  toolCallId: "c1",
+                  toolName: "sessions_spawn",
+                  isError: false,
+                  contentBytes: 105,
+                  content: fullResult,
+                },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([message]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+    await bridge.tickMission("msn.1");
+    const result = activity.events.find((e) => e.runtime?.toolPhase === "result");
+    assert.ok(result, "expected a tool-result event");
+    // Full content on runtime so the UI can expand it.
+    assert.equal(result.runtime?.resultContent, fullResult);
+    // Inline text includes a head slice (not just byte count).
+    assert.match(result.text, /Page title: Example Domain/);
+  });
+
+  it("tool-result with isError uses the error message as text (K3.6)", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const errorMessage = "No worker handler available for browser";
+    const message: TeamMessage = {
+      ...baseMessage("a", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Cannot complete.",
+      metadata: {
+        toolUse: {
+          rounds: [
+            {
+              round: 1,
+              calls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "browser" } }],
+              results: [
+                {
+                  toolCallId: "c1",
+                  toolName: "sessions_spawn",
+                  isError: true,
+                  contentBytes: errorMessage.length,
+                  content: errorMessage,
+                },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([message]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+    await bridge.tickMission("msn.1");
+    const result = activity.events.find((e) => e.runtime?.toolPhase === "result");
+    assert.ok(result);
+    assert.equal(result.emph, "danger");
+    // The actual reason appears inline, not just byte count.
+    assert.match(result.text, /No worker handler available for browser/);
   });
 
   it("tool-use expansion is idempotent — re-ticking does not duplicate events", async () => {

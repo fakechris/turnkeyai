@@ -220,6 +220,18 @@ function LiveTimelineRow({ event }: { event: ActivityEvent }) {
       : isToolEvent && toolPhase === "result"
         ? `tool ← ${toolName ?? "?"}`
         : event.kind;
+
+  // PR K3.6: tool events get an expandable inspector. The inline
+  // `text` is already a capped human-readable preview; the
+  // expanded view shows the full structured JSON (call args) or
+  // full result content (truncated only at the 8 kB server-side
+  // cap). Without this the timeline is a black box —
+  // "returned (2.0 kB)" with no way to see WHAT.
+  const expandable =
+    isToolEvent &&
+    ((toolPhase === "call" && event.runtime?.callInput) ||
+      (toolPhase === "result" && event.runtime?.resultContent));
+
   return (
     <div className="tl-event" data-kind={event.kind}>
       <div className="tl-time mono">{event.t ?? formatTimeOfDay(event.tMs)}</div>
@@ -250,7 +262,72 @@ function LiveTimelineRow({ event }: { event: ActivityEvent }) {
         >
           {event.text}
         </div>
+        {expandable && <ToolEventInspector event={event} />}
       </div>
     </div>
   );
+}
+
+function ToolEventInspector({ event }: { event: ActivityEvent }) {
+  const toolPhase = event.runtime?.toolPhase;
+  const callInput = event.runtime?.callInput;
+  const resultContent = event.runtime?.resultContent;
+  const truncated = event.runtime?.resultTruncated === "true";
+
+  const body =
+    toolPhase === "call" && callInput
+      ? prettyJson(callInput)
+      : toolPhase === "result" && resultContent
+        ? resultContent
+        : null;
+  if (!body) return null;
+  const label =
+    toolPhase === "call"
+      ? "Show full arguments"
+      : truncated
+        ? "Show captured result (truncated at 8 kB)"
+        : "Show full result";
+
+  return (
+    <details style={{ marginTop: 4 }}>
+      <summary
+        style={{
+          cursor: "pointer",
+          fontSize: 10.5,
+          color: "var(--text-muted)",
+          fontFamily: "var(--font-mono)",
+          padding: "2px 0",
+          userSelect: "none",
+        }}
+      >
+        {label}
+      </summary>
+      <pre
+        style={{
+          marginTop: 4,
+          padding: 8,
+          background: "var(--bg)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--r-sm)",
+          fontSize: 11,
+          lineHeight: 1.5,
+          color: "var(--text)",
+          maxHeight: 400,
+          overflow: "auto",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {body}
+      </pre>
+    </details>
+  );
+}
+
+function prettyJson(value: string): string {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
 }
