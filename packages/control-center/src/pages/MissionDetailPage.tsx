@@ -163,6 +163,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
           }}
         >
           <textarea
+            aria-label="Follow-up message to mission team"
             value={pending}
             onChange={(e) => setPending(e.target.value)}
             onKeyDown={(e) => {

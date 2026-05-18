@@ -69,18 +69,31 @@ export function ApprovalsPage() {
         </div>
       )}
 
-      {list.map((ap) => (
-        <ApprovalRowView
-          key={ap.id}
-          approval={ap}
-          decision={state.decisions[ap.id]}
-          agents={agents}
-          contextSources={contextSources}
-          onApprove={() => decideApproval(ap.id, "approved")}
-          onDeny={() => decideApproval(ap.id, "denied")}
-          onOpenMission={() => openMission(ap.missionId)}
-        />
-      ))}
+      {list.map((ap) => {
+        // coderabbit K3.5: prefer local session state if present
+        // (we just clicked Approve/Deny and the daemon hasn't
+        // round-tripped yet) but FALL BACK to the daemon-attached
+        // decision so the Decided tab doesn't render Approve/Deny
+        // buttons for approvals already decided server-side.
+        const localDecision = state.decisions[ap.id];
+        const daemonDecision =
+          ap.decision && (ap.decision.decision === "approved" || ap.decision.decision === "denied")
+            ? ap.decision.decision
+            : undefined;
+        const effective = localDecision ?? daemonDecision;
+        return (
+          <ApprovalRowView
+            key={ap.id}
+            approval={ap}
+            decision={effective}
+            agents={agents}
+            contextSources={contextSources}
+            onApprove={() => decideApproval(ap.id, "approved")}
+            onDeny={() => decideApproval(ap.id, "denied")}
+            onOpenMission={() => openMission(ap.missionId)}
+          />
+        );
+      })}
     </div>
   );
 }

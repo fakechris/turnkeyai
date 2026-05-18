@@ -111,13 +111,7 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
         </div>
       </div>
 
-      {list.length > 0 ? (
-        <div className="mission-grid">
-          {list.map((m) => (
-            <MissionCard key={m.id} mission={m} onOpen={() => openMission(m.id)} />
-          ))}
-        </div>
-      ) : (
+      {missionList.length === 0 ? (
         <EmptyMissionsState
           isLive={missions.isLive}
           canBootstrap={canBootstrap}
@@ -125,6 +119,33 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
           onBootstrap={onLoadDemo}
           onNewMission={onNewMission}
         />
+      ) : list.length > 0 ? (
+        <div className="mission-grid">
+          {list.map((m) => (
+            <MissionCard key={m.id} mission={m} onOpen={() => openMission(m.id)} />
+          ))}
+        </div>
+      ) : (
+        // coderabbit K3.5: when missions exist but the current
+        // filter matches none, show a filter-specific empty state
+        // — NOT the "Create your first mission" CTA, which only
+        // applies to a genuinely empty dataset.
+        <div
+          className="card"
+          style={{ marginTop: 16, padding: 24, textAlign: "center" }}
+        >
+          <div className="muted" style={{ fontSize: 12.5 }}>
+            No missions match the “{filter}” filter.{" "}
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => setFilter("all")}
+              style={{ padding: "2px 8px", fontSize: 12 }}
+            >
+              Clear filter
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -189,6 +210,15 @@ function EmptyMissionsState({
         <div className="muted" style={{ fontSize: 10.5, maxWidth: 460 }}>
           Demo fixtures populate read-only sample missions (MSN-1042 etc.) so
           you can preview the populated layout. They do NOT run any agents.
+        </div>
+      )}
+      {bootstrapStatus === "error" && (
+        <div
+          role="alert"
+          className="muted"
+          style={{ fontSize: 11, color: "var(--danger)", maxWidth: 460 }}
+        >
+          Failed to load demo fixtures. Check the daemon log and try again.
         </div>
       )}
     </div>

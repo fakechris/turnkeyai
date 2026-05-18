@@ -38,28 +38,42 @@ export function NewMissionModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
+  // coderabbit K3.5: track the previous `open` value via a ref so we
+  // can detect a true closed→open transition. Earlier, this effect
+  // depended on `onClose` (which is recreated each parent render), so
+  // any App.tsx re-render while the modal was open would re-fire the
+  // effect body and wipe whatever the user had typed.
+  const wasOpenRef = useRef(false);
+  // Stash latest onClose in a ref so the Esc handler can call it
+  // without making the effect depend on it.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
-  // Reset form on re-open. Esc closes.
   useEffect(() => {
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
     if (!open) return;
-    setTitle("");
-    setDesc("");
-    setMode("research");
-    setSubmitting(false);
-    setError(null);
+    if (justOpened) {
+      // Only reset form on the closed→open transition.
+      setTitle("");
+      setDesc("");
+      setMode("research");
+      setSubmitting(false);
+      setError(null);
+    }
     // Focus title input after the dialog mounts. Tiny timeout so the
     // browser actually shows the modal before stealing focus (which
     // otherwise can interrupt the click that opened it on some browsers).
     const t = setTimeout(() => titleRef.current?.focus(), 0);
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     }
     window.addEventListener("keydown", onKey);
     return () => {
       clearTimeout(t);
       window.removeEventListener("keydown", onKey);
     };
-  }, [open, onClose]);
+  }, [open]);
 
   const handleSubmit = useCallback(async () => {
     const trimmedTitle = title.trim();

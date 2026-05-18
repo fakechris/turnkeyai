@@ -222,7 +222,20 @@ export async function handleMissionRoutes(input: {
       return true;
     }
     const desc = readString(body.desc) ?? "";
-    const mode = readMissionMode(body.mode) ?? "custom";
+    // coderabbit K3.5 round-1: reject provided-but-invalid mode
+    // with 400 instead of silently coercing to "custom". A missing
+    // `mode` field still defaults to "custom" (intentional — the
+    // dashboard's mode dropdown only sends a value when the user
+    // picks one explicitly).
+    let mode: import("@turnkeyai/core-types/mission").MissionMode = "custom";
+    if (body.mode !== undefined) {
+      const parsed = readMissionMode(body.mode);
+      if (parsed === null) {
+        sendJson(res, 400, { error: "mode is invalid" });
+        return true;
+      }
+      mode = parsed;
+    }
     const modeLabel = readNonEmptyString(body.modeLabel) ?? defaultModeLabel(mode);
     const owner = readNonEmptyString(body.owner) ?? "you";
     const ownerLabel = readNonEmptyString(body.ownerLabel) ?? "You";
@@ -230,53 +243,74 @@ export async function handleMissionRoutes(input: {
     // Spawn the thread FIRST so we never persist a mission whose
     // threadId references nothing. If spawnThread throws, the mission
     // is never created.
+    //
+    // coderabbit K3.5: this sequence is NOT fully atomic — if
+    // putRaw or postUserMessage throws after spawnThread succeeded,
+    // we leak an orphan thread (and possibly a half-initialized
+    // mission). We compensate with a best-effort cleanup: on any
+    // failure after spawnThread, log loudly so an operator can
+    // garbage-collect the orphan thread. A real transaction wrapper
+    // lands with the K4 approval queue work, where the cost of
+    // half-states becomes more visible (a pending approval pointing
+    // at a non-existent mission would be much worse than a stray
+    // empty team thread today).
     const thread = await deps.orchestrator.spawnThread({ title, desc, owner });
-    const agents = Array.isArray(body.agents) && body.agents.every((a) => typeof a === "string")
-      ? (body.agents as string[])
-      : thread.roleIds;
-    // gemini K3.5: write the fully-formed mission in ONE atomic
-    // putRaw rather than calling create() (which writes once) and
-    // then putRaw() (a second write to attach threadId). The
-    // threadId is server-injected so it doesn't fit
-    // CreateMissionInput; assembling the full Mission shape here
-    // and persisting once keeps the create path single-write.
-    const nowMs = deps.clock.now();
-    const linked: Mission = {
-      id: deps.idGenerator.missionId(),
-      shortId: deps.idGenerator.shortId(),
-      title,
-      desc,
-      status: "working",
-      mode,
-      modeLabel,
-      owner,
-      ownerLabel,
-      createdAt: new Date(nowMs).toISOString(),
-      createdAtMs: nowMs,
-      agents,
-      progress: 0,
-      pendingApprovals: 0,
-      blockers: 0,
-      contextSummary: [],
-      threadId: thread.threadId,
-    };
-    await deps.missionStore.putRaw(linked);
+    let createdOk = false;
+    try {
+      const agents = Array.isArray(body.agents) && body.agents.every((a) => typeof a === "string")
+        ? (body.agents as string[])
+        : thread.roleIds;
+      // gemini K3.5: write the fully-formed mission in ONE atomic
+      // putRaw rather than calling create() (which writes once) and
+      // then putRaw() (a second write to attach threadId). The
+      // threadId is server-injected so it doesn't fit
+      // CreateMissionInput; assembling the full Mission shape here
+      // and persisting once keeps the create path single-write.
+      const nowMs = deps.clock.now();
+      const linked: Mission = {
+        id: deps.idGenerator.missionId(),
+        shortId: deps.idGenerator.shortId(),
+        title,
+        desc,
+        status: "working",
+        mode,
+        modeLabel,
+        owner,
+        ownerLabel,
+        createdAt: new Date(nowMs).toISOString(),
+        createdAtMs: nowMs,
+        agents,
+        progress: 0,
+        pendingApprovals: 0,
+        blockers: 0,
+        contextSummary: [],
+        threadId: thread.threadId,
+      };
+      await deps.missionStore.putRaw(linked);
 
-    // Post the initial "goal" message as a user turn so the
-    // coordination engine kicks off (lead role wakes up, plans). The
-    // user sees this immediately on the timeline because we tick the
-    // bridge synchronously below.
-    const initialContent = desc.length > 0 ? `${title}\n\n${desc}` : title;
-    await deps.orchestrator.postUserMessage({
-      threadId: thread.threadId,
-      content: initialContent,
-    });
-    // Mirror right away so the user's prompt shows up in the timeline
-    // on the very next GET — the interval tick is also running, but
-    // explicit mirror cuts demo latency from ~2s to ~0.
-    await deps.orchestrator.threadBridge.tickMission(linked.id);
-    sendJson(res, 201, linked);
-    return true;
+      // Post the initial "goal" message as a user turn so the
+      // coordination engine kicks off (lead role wakes up, plans). The
+      // user sees this immediately on the timeline because we tick the
+      // bridge synchronously below.
+      const initialContent = desc.length > 0 ? `${title}\n\n${desc}` : title;
+      await deps.orchestrator.postUserMessage({
+        threadId: thread.threadId,
+        content: initialContent,
+      });
+      // Mirror right away so the user's prompt shows up in the timeline
+      // on the very next GET — the interval tick is also running, but
+      // explicit mirror cuts demo latency from ~2s to ~0.
+      await deps.orchestrator.threadBridge.tickMission(linked.id);
+      createdOk = true;
+      sendJson(res, 201, linked);
+      return true;
+    } finally {
+      if (!createdOk) {
+        console.error("mission creation failed after thread spawn — orphan thread", {
+          threadId: thread.threadId,
+        });
+      }
+    }
   }
 
   // /missions/:id/messages — user follow-up on a linked thread.
@@ -286,7 +320,16 @@ export async function handleMissionRoutes(input: {
       sendJson(res, 501, { error: "mission orchestrator not configured" });
       return true;
     }
-    const missionId = decodeURIComponent(followUpMatch[1]!);
+    // coderabbit K3.5: decodeURIComponent throws URIError on
+    // malformed escapes (e.g. "%E0%A4%A"). Return 400 instead of
+    // letting the global 500 handler take over.
+    let missionId: string;
+    try {
+      missionId = decodeURIComponent(followUpMatch[1]!);
+    } catch {
+      sendJson(res, 400, { error: "invalid mission id encoding" });
+      return true;
+    }
     const mission = await deps.missionStore.get(missionId);
     if (!mission) {
       sendJson(res, 404, { error: "mission not found" });

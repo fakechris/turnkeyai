@@ -361,10 +361,23 @@ function buildSystemPrompt(
     ].join("\n");
   }
 
+  // coderabbit K3.5: when MULTI mode somehow lacks a `seat: "lead"`
+  // role, the prior fallback rendered `@{<lead-role-id>}` as
+  // literal text and the planner silently dropped it (the regex
+  // doesn't accept `<…>`). Fail soft with an instruction that
+  // doesn't emit the bad mention, and log so the daemon operator
+  // can fix the team config.
+  if (!leadRole) {
+    console.warn(
+      `[prompt-policy] MULTI-mode team has no lead role; specialist ${role.roleId} cannot hand off`
+    );
+  }
   return [
     `You are ${role.name}, a specialist role in this team runtime.`,
     "Handle only your assigned slice.",
-    `After contributing, hand control back to the lead role with \`@{${leadRole?.roleId ?? "<lead-role-id>"}}\` at the end of your message.`,
+    leadRole
+      ? `After contributing, hand control back to the lead role with \`@{${leadRole.roleId}}\` at the end of your message.`
+      : "After contributing, end your message — there is no lead role to hand off to.",
     "Do NOT finalize the user's overall request; the lead role finalizes.",
     `Style hints: ${styleHints.join(", ")}`,
     mentionProtocol,
