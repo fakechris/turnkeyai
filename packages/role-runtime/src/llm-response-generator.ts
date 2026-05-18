@@ -103,6 +103,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         packet: input.packet,
         toolCalls,
       });
+      // PR K3.6: persist the actual tool result content (truncated
+       // to ROLE_TOOL_RESULT_TRACE_CAP_BYTES) alongside the byte
+       // count. Without this the mission timeline could only show
+       // "Tool X returned (2 kB)" — a black box from the user's
+       // point of view. We deliberately keep `content` truncated:
+       // the LLM gateway has its own envelope-budgeting math that
+       // operates on the full content in the messages array, but
+       // the assistant message metadata persisted to disk gets a
+       // capped slice so a giant browser snapshot doesn't bloat
+       // every assistant turn forever.
       toolTrace.push({
         round: round + 1,
         calls: toolCalls.map((call) => ({
@@ -110,12 +120,20 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           name: call.name,
           input: call.input,
         })),
-        results: toolResults.map((toolResult) => ({
-          toolCallId: toolResult.toolCallId,
-          toolName: toolResult.toolName,
-          isError: toolResult.isError === true,
-          contentBytes: Buffer.byteLength(toolResult.content, "utf8"),
-        })),
+        results: toolResults.map((toolResult) => {
+          const bytes = Buffer.byteLength(toolResult.content, "utf8");
+          const truncated = bytes > ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
+          return {
+            toolCallId: toolResult.toolCallId,
+            toolName: toolResult.toolName,
+            isError: toolResult.isError === true,
+            contentBytes: bytes,
+            content: truncated
+              ? sliceUtf8(toolResult.content, ROLE_TOOL_RESULT_TRACE_CAP_BYTES)
+              : toolResult.content,
+            ...(truncated ? { contentTruncated: true } : {}),
+          };
+        }),
       });
       messages = appendAssistantToolCallMessage(messages, {
         text: result.text,
@@ -470,10 +488,41 @@ interface ReductionEnvelopeSnapshot {
   };
 }
 
+// PR K3.6: byte cap for the per-result content slice we persist on
+// each assistant message. Generous enough to capture a full HTML
+// snapshot of a typical page, small enough that a chain of
+// long-running browser sessions doesn't bloat the message log to
+// MBs. The full content still flows through the LLM tool loop in
+// memory; this cap only governs what lands on disk.
+const ROLE_TOOL_RESULT_TRACE_CAP_BYTES = 8 * 1024;
+
+function sliceUtf8(value: string, maxBytes: number): string {
+  // gemini + coderabbit K3.6: keep the persisted slice strictly
+  // <= maxBytes. The earlier version appended an "…[truncated]"
+  // suffix AFTER slicing, blowing the byte budget by 14 bytes.
+  // The trace already carries a `contentTruncated: true` flag so
+  // the UI knows to label it — no need to encode "truncated" in
+  // the bytes themselves.
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.length <= maxBytes) return value;
+  // Step back if the last byte is a continuation byte (10xxxxxx)
+  // until we land on a codepoint boundary.
+  let end = maxBytes;
+  while (end > 0 && ((buffer[end] ?? 0) & 0xc0) === 0x80) end -= 1;
+  return buffer.subarray(0, end).toString("utf8");
+}
+
 interface ToolRoundTrace {
   round: number;
   calls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
-  results: Array<{ toolCallId: string; toolName: string; isError: boolean; contentBytes: number }>;
+  results: Array<{
+    toolCallId: string;
+    toolName: string;
+    isError: boolean;
+    contentBytes: number;
+    content?: string;
+    contentTruncated?: boolean;
+  }>;
 }
 
 function buildGatewayInput(input: {
