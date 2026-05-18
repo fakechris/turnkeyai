@@ -67,14 +67,12 @@ function useRemote<T>(
     setIsLive(false);
     setError(null);
 
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-    const issueFetch = (resetBefore: boolean) => {
-      if (resetBefore) {
-        setValue(fallbackRef.current);
-        setIsLive(false);
-        setError(null);
-      }
+    // gemini K3.5: recursive setTimeout instead of setInterval so a
+    // slow fetch doesn't queue overlapping polls. The next tick is
+    // only scheduled AFTER the current fetch settles (success or
+    // failure), giving us at-most-one in-flight request at a time.
+    let pollTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const issueFetch = () => {
       void client
         .get<T>(pathname)
         .then((data) => {
@@ -88,19 +86,19 @@ function useRemote<T>(
           // Unauthorized is handled by the API client (clears token,
           // routes to no-token page). Don't surface it as an inline
           // error here.
-          if (err.message !== "unauthorized") {
-            setError(err.message);
+          if (err.message !== "unauthorized") setError(err.message);
+        })
+        .finally(() => {
+          if (cancelled) return;
+          if (options.pollIntervalMs && options.pollIntervalMs > 0) {
+            pollTimeoutHandle = setTimeout(issueFetch, options.pollIntervalMs);
           }
         });
     };
-
-    issueFetch(false);
-    if (options.pollIntervalMs && options.pollIntervalMs > 0) {
-      pollTimer = setInterval(() => issueFetch(false), options.pollIntervalMs);
-    }
+    issueFetch();
     return () => {
       cancelled = true;
-      if (pollTimer) clearInterval(pollTimer);
+      if (pollTimeoutHandle) clearTimeout(pollTimeoutHandle);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, pathname, refetchEpoch, options.pollIntervalMs, ...deps]);

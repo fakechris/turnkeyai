@@ -95,6 +95,13 @@ export function appendToolResultMessages(
   ];
 }
 
+// gemini K3.5: Date.now() can repeat within the same millisecond
+// when parallel tool calls fire via Promise.all and each emits a
+// "started" + "completed" event. Stamp progressIds with a
+// per-process monotonic counter alongside the timestamp to break
+// ties.
+let roleToolProgressSeq = 0;
+
 export async function recordRoleToolProgress(input: {
   recorder: RuntimeProgressRecorder | undefined;
   activation: RoleActivationInput;
@@ -102,8 +109,9 @@ export async function recordRoleToolProgress(input: {
   progress: RoleToolProgressEvent;
 }): Promise<void> {
   if (!input.recorder) return;
+  const seq = (++roleToolProgressSeq).toString(36);
   await input.recorder.record({
-    progressId: `progress:tool:${input.activation.handoff.taskId}:${input.call.id}:${Date.now()}`,
+    progressId: `progress:tool:${input.activation.handoff.taskId}:${input.call.id}:${Date.now()}:${seq}`,
     threadId: input.activation.thread.threadId,
     chainId: `flow:${input.activation.flow.flowId}`,
     spanId: `role:${input.activation.runState.runKey}`,
@@ -168,6 +176,10 @@ const SESSION_TOOL_DEFINITIONS: LLMToolDefinition[] = [
     inputSchema: {
       type: "object",
       additionalProperties: false,
+      // codex K3.5: `timeout_seconds` removed from the schema until
+      // workerRuntime.send actually honors a timeout. Advertising it
+      // would let the LLM ask for a behavior the runtime silently
+      // ignores. Re-add when the executor accepts a deadline.
       properties: {
         task: { type: "string", description: "The exact task for the sub-agent." },
         agent_id: {
@@ -176,7 +188,6 @@ const SESSION_TOOL_DEFINITIONS: LLMToolDefinition[] = [
           description: "Sub-agent kind.",
         },
         label: { type: "string", description: "Short user-visible label." },
-        timeout_seconds: { type: "number", minimum: 1 },
       },
       required: ["task", "agent_id"],
     },
@@ -191,7 +202,6 @@ const SESSION_TOOL_DEFINITIONS: LLMToolDefinition[] = [
         session_key: { type: "string", description: "Worker session key returned by sessions_spawn/list." },
         message: { type: "string", description: "Follow-up instruction." },
         label: { type: "string" },
-        timeout_seconds: { type: "number", minimum: 1 },
       },
       required: ["session_key", "message"],
     },
@@ -290,6 +300,16 @@ async function executeSessionsSend(
   if (!sessionKey || !message) {
     return errorResult(input.call, "sessions_send requires session_key and message");
   }
+  // codex K3.5: enforce thread ownership before sending — without
+  // this, a lead role on thread A could drive sub-agents owned by
+  // thread B.
+  const callerThreadId = input.activation.thread.threadId;
+  const record = workerRuntime.listSessions
+    ? (await workerRuntime.listSessions()).find((r) => r.workerRunKey === sessionKey)
+    : null;
+  if (!record || record.context?.threadId !== callerThreadId) {
+    return errorResult(input.call, `session not found: ${sessionKey}`);
+  }
   const state = await workerRuntime.getState(sessionKey);
   if (!state) {
     return errorResult(input.call, `session not found: ${sessionKey}`);
@@ -337,10 +357,19 @@ async function executeSessionsList(
   workerRuntime: WorkerRuntime,
   input: RoleToolExecutionInput
 ): Promise<RoleToolExecutionResult> {
+  // codex K3.5: filter to the calling thread. workerRuntime.listSessions
+  // returns sessions from EVERY thread the daemon has ever run;
+  // returning them unfiltered would let one mission's lead role see
+  // and reference sub-agents owned by another mission. Records
+  // without a context.threadId (legacy / pre-K3.5) are excluded —
+  // the lead can't address them anyway since their lifecycle is
+  // unknown.
+  const callerThreadId = input.activation.thread.threadId;
   const records = workerRuntime.listSessions ? await workerRuntime.listSessions() : [];
   const kinds = stringArray(input.call.input.kinds);
   const limit = positiveInteger(input.call.input.limit) ?? 20;
   const filtered = records
+    .filter((record) => record.context?.threadId === callerThreadId)
     .filter((record) => kinds.length === 0 || kinds.includes(record.state.workerType))
     .slice(0, limit)
     .map((record) => ({
@@ -366,6 +395,18 @@ async function executeSessionsHistory(
   const sessionKey = requiredString(input.call.input.session_key);
   if (!sessionKey) {
     return errorResult(input.call, "sessions_history requires session_key");
+  }
+  // codex K3.5: enforce thread ownership. workerRuntime.getState
+  // doesn't take a thread filter; we read the full record and reject
+  // when its context.threadId doesn't match the caller. Same
+  // not-found error code so the lead can't probe for foreign session
+  // existence.
+  const callerThreadId = input.activation.thread.threadId;
+  const record = workerRuntime.listSessions
+    ? (await workerRuntime.listSessions()).find((r) => r.workerRunKey === sessionKey)
+    : null;
+  if (!record || record.context?.threadId !== callerThreadId) {
+    return errorResult(input.call, `session not found: ${sessionKey}`);
   }
   const state = await workerRuntime.getState(sessionKey);
   if (!state) {

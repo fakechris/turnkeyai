@@ -13,6 +13,7 @@ function createRequest(input: {
   method: string;
   url: string;
   body?: unknown;
+  headers?: Record<string, string>;
 }): http.IncomingMessage {
   const chunks =
     input.body === undefined
@@ -21,7 +22,7 @@ function createRequest(input: {
   return Object.assign(Readable.from(chunks), {
     method: input.method,
     url: input.url,
-    headers: {},
+    headers: input.headers ?? {},
   }) as unknown as http.IncomingMessage;
 }
 
@@ -512,6 +513,80 @@ describe("mission-routes", () => {
           deps: { ...deps, orchestrator },
         });
         assert.equal(getStatus(), 404);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("POST /missions/:id/messages dedupes on Idempotency-Key (codex K3.5)", async () => {
+      const { createRouteIdempotencyStore } = await import("../idempotency-store");
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator, posts } = buildOrchestrator();
+        const idempotencyStore = createRouteIdempotencyStore({ now: () => 1000 });
+        // Create a mission to follow up on.
+        const created = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "Dedupe test" },
+          }),
+          res: created.res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator, idempotencyStore },
+        });
+        const mission = created.getJson() as { id: string };
+        const postsBefore = posts.length;
+        // First follow-up with key.
+        const first = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: `/missions/${mission.id}/messages`,
+            headers: { "idempotency-key": "follow-1" },
+            body: { content: "do X" },
+          }),
+          res: first.res,
+          url: new URL(`http://127.0.0.1/missions/${mission.id}/messages`),
+          deps: { ...deps, orchestrator, idempotencyStore },
+        });
+        assert.equal(first.getStatus(), 202);
+        assert.equal(posts.length, postsBefore + 1);
+        // Retry — same key + same body → no extra post, replay.
+        const replay = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: `/missions/${mission.id}/messages`,
+            headers: { "idempotency-key": "follow-1" },
+            body: { content: "do X" },
+          }),
+          res: replay.res,
+          url: new URL(`http://127.0.0.1/missions/${mission.id}/messages`),
+          deps: { ...deps, orchestrator, idempotencyStore },
+        });
+        assert.equal(replay.getStatus(), 202);
+        assert.equal(
+          posts.length,
+          postsBefore + 1,
+          "retry with same idempotency-key must NOT double-post"
+        );
+        // Same key + different body → 409.
+        const collide = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: `/missions/${mission.id}/messages`,
+            headers: { "idempotency-key": "follow-1" },
+            body: { content: "do Y" },
+          }),
+          res: collide.res,
+          url: new URL(`http://127.0.0.1/missions/${mission.id}/messages`),
+          deps: { ...deps, orchestrator, idempotencyStore },
+        });
+        assert.equal(collide.getStatus(), 409);
       } finally {
         t.cleanup();
       }

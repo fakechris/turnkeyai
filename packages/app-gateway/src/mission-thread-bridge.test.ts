@@ -27,8 +27,8 @@ function memMissionStore(missions: Mission[]) {
     async list(): Promise<Mission[]> {
       return missions;
     },
-    async findByThreadId(threadId: string): Promise<Mission | null> {
-      return missions.find((m) => m.threadId === threadId) ?? null;
+    async get(id: string): Promise<Mission | null> {
+      return missions.find((m) => m.id === id) ?? null;
     },
   };
 }

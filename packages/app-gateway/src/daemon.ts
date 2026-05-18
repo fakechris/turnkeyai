@@ -322,8 +322,15 @@ const recoveryDeps = createRecoveryRouteDeps({
 // artifact + agent + context-source registries). Composed separately
 // from foundations.ts because the mission model is a self-contained
 // addition with no cyclic deps on the rest of the daemon.
+//
+// gemini K3.5: missionShortIdSeq must NOT restart at 0 across daemon
+// process lifetimes — every new daemon would mint MSN-0001 and
+// collide with existing on-disk records. Hydrate the seed counter
+// from the largest existing MSN-#### we find in the missions
+// directory before installing the id generator. (missionIdSeq is
+// fine: it's already prefixed with Date.now() in base-36.)
 let missionIdSeq = 0;
-let missionShortIdSeq = 0;
+let missionShortIdSeq = await hydrateMissionShortIdSeed(DATA_DIR);
 const missionDeps = composeMissionDeps({
   dataDir: DATA_DIR,
   clock,
@@ -557,6 +564,7 @@ const server = http.createServer(async (req, res) => {
           ...missionDeps,
           browserContextSourceProvider,
           orchestrator: missionOrchestrator,
+          idempotencyStore: routeIdempotencyStore,
         },
       })
     ) {
@@ -771,6 +779,55 @@ async function writeValidationArtifact(kind: string, runId: string, payload: unk
   const artifactPath = path.join(VALIDATION_ARTIFACT_DIR, kind, `${encodeURIComponent(runId)}.json`);
   await writeJsonFileAtomic(artifactPath, payload);
   return path.relative(process.cwd(), artifactPath);
+}
+
+/**
+ * Hydrate the missionShortId sequence seed from existing on-disk
+ * missions so a daemon restart doesn't reuse MSN-#### values.
+ *
+ * Scans `<dataDir>/mission/missions/` for `*.json` files, reads each,
+ * parses the trailing decimal in `shortId` (formats like "MSN-0007",
+ * "MSN-FX" — the K2 fixture shape — are ignored). Returns the
+ * highest decimal found, or 0 when the directory is empty / absent.
+ *
+ * Best-effort: any IO error falls back to 0 with a console warning.
+ * A duplicate short id is annoying but not catastrophic for K3.5; the
+ * authoritative mission id (`msn.<timestamp>.<seq>`) stays unique.
+ */
+async function hydrateMissionShortIdSeed(dataDir: string): Promise<number> {
+  const missionsDir = path.join(dataDir, "mission", "missions");
+  try {
+    const { readdir, readFile } = await import("node:fs/promises");
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await readdir(missionsDir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw error;
+    }
+    let maxSeq = 0;
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      try {
+        const raw = await readFile(path.join(missionsDir, entry.name), "utf8");
+        const parsed = JSON.parse(raw) as { shortId?: unknown };
+        if (typeof parsed.shortId !== "string") continue;
+        const match = parsed.shortId.match(/^MSN-(\d+)$/);
+        if (!match) continue;
+        const n = Number(match[1]);
+        if (Number.isFinite(n) && n > maxSeq) maxSeq = n;
+      } catch {
+        // Skip unreadable / malformed mission files.
+      }
+    }
+    return maxSeq;
+  } catch (error) {
+    console.warn("mission short-id seed hydration failed", {
+      dataDir,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return 0;
+  }
 }
 
 async function resolveModelCatalogPath(): Promise<string | null> {

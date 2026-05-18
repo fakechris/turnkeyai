@@ -38,6 +38,10 @@ import {
   readJsonBodySafe,
   sendJson,
 } from "../http-helpers";
+import {
+  runIdempotently,
+  type RouteIdempotencyStore,
+} from "../idempotency-store";
 import { buildDemoFixtures } from "../mission-demo-fixtures";
 import type { MissionThreadBridge } from "../mission-thread-bridge";
 
@@ -90,6 +94,14 @@ export interface MissionRouteDeps {
     shortId(): string;
   };
   orchestrator?: MissionOrchestratorDeps;
+  /**
+   * Optional. When supplied, POST /missions/:id/messages honors the
+   * Idempotency-Key header so a retried follow-up doesn't double-post
+   * onto the linked thread. codex K3.5 flagged that the sibling
+   * /messages route uses this store and /missions/:id/messages
+   * didn't.
+   */
+  idempotencyStore?: RouteIdempotencyStore;
   /**
    * Optional. When supplied, GET /mission-context-sources returns
    * `[...live browser sessions, ...registry entries]` so the Mission
@@ -222,27 +234,32 @@ export async function handleMissionRoutes(input: {
     const agents = Array.isArray(body.agents) && body.agents.every((a) => typeof a === "string")
       ? (body.agents as string[])
       : thread.roleIds;
-    const mission = await deps.missionStore.create(
-      {
-        title,
-        desc,
-        mode,
-        modeLabel,
-        owner,
-        ownerLabel,
-        agents,
-      },
-      {
-        missionIdGen: () => deps.idGenerator.missionId(),
-        shortIdGen: () => deps.idGenerator.shortId(),
-        clock: deps.clock,
-      }
-    );
-    // Now attach the threadId. We can't write it via create() because
-    // CreateMissionInput is the public shape — the threadId is a
-    // server-injected linkage. Re-persist via putRaw so the file
-    // reflects the final shape on disk.
-    const linked: Mission = { ...mission, threadId: thread.threadId, status: "working" };
+    // gemini K3.5: write the fully-formed mission in ONE atomic
+    // putRaw rather than calling create() (which writes once) and
+    // then putRaw() (a second write to attach threadId). The
+    // threadId is server-injected so it doesn't fit
+    // CreateMissionInput; assembling the full Mission shape here
+    // and persisting once keeps the create path single-write.
+    const nowMs = deps.clock.now();
+    const linked: Mission = {
+      id: deps.idGenerator.missionId(),
+      shortId: deps.idGenerator.shortId(),
+      title,
+      desc,
+      status: "working",
+      mode,
+      modeLabel,
+      owner,
+      ownerLabel,
+      createdAt: new Date(nowMs).toISOString(),
+      createdAtMs: nowMs,
+      agents,
+      progress: 0,
+      pendingApprovals: 0,
+      blockers: 0,
+      contextSummary: [],
+      threadId: thread.threadId,
+    };
     await deps.missionStore.putRaw(linked);
 
     // Post the initial "goal" message as a user turn so the
@@ -292,13 +309,30 @@ export async function handleMissionRoutes(input: {
       sendJson(res, 400, { error: "content is required" });
       return true;
     }
-    await deps.orchestrator.postUserMessage({
-      threadId: mission.threadId,
-      content,
+    // codex K3.5: honor Idempotency-Key so a retried follow-up
+    // doesn't double-post on the linked thread. Fingerprinting on
+    // (missionId, content) — same key + same payload replays the
+    // cached 202; same key + different content surfaces 409.
+    const orchestrator = deps.orchestrator;
+    const linkedThreadId = mission.threadId;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: `missions:${mission.id}:messages`,
+      fingerprint: { missionId: mission.id, content },
+      execute: async () => {
+        await orchestrator.postUserMessage({
+          threadId: linkedThreadId,
+          content,
+        });
+        await orchestrator.threadBridge.tickMission(mission.id);
+        return {
+          statusCode: 202,
+          body: { accepted: true, missionId: mission.id },
+        };
+      },
     });
-    await deps.orchestrator.threadBridge.tickMission(mission.id);
-    sendJson(res, 202, { accepted: true, missionId: mission.id });
-    return true;
   }
 
   if (method === "POST" && pathname === "/missions/bootstrap-demo") {

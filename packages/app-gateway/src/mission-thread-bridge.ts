@@ -24,6 +24,8 @@
 // messages each). Revisit with a per-thread cursor file when missions
 // run long-form.
 
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
+
 import type {
   ActivityEvent,
   ActivityEventKind,
@@ -38,7 +40,11 @@ import type {
 } from "@turnkeyai/core-types/team";
 
 export interface MissionThreadBridgeOptions {
-  missionStore: Pick<MissionStore, "list" | "findByThreadId">;
+  // `findByThreadId` is no longer needed at this layer (we resolve
+  // missions by direct id in tickMission and iterate via list() in
+  // tickAll). Left out of the Pick to avoid pulling it implicitly
+  // into mocks for no benefit.
+  missionStore: Pick<MissionStore, "get" | "list">;
   teamMessageStore: Pick<TeamMessageStore, "list">;
   activityStore: Pick<ActivityEventStore, "append" | "listByMission">;
   newEventId: () => string;
@@ -78,7 +84,21 @@ export function createMissionThreadBridge(
   const perThreadLimit = options.perThreadLimit ?? 500;
   let interval: NodeJS.Timeout | null = null;
 
+  // codex K3.5: per-mission serialization of mirror() runs. Two
+  // calls for the same mission can otherwise overlap (the background
+  // interval fires while a route handler also calls tickMission),
+  // each snapshots the same existing-events set, and both go on to
+  // append the same sourceIds — duplicating tool events on the
+  // timeline. The keyed mutex makes concurrent callers queue
+  // sequentially per mission, so the second pass observes the first
+  // pass's appends and dedupes correctly. Different missions are
+  // still parallel.
+  const mirrorMutex = new KeyedAsyncMutex<string>();
   async function mirror(mission: Mission, threadId: string): Promise<number> {
+    return mirrorMutex.run(mission.id, () => mirrorInner(mission, threadId));
+  }
+
+  async function mirrorInner(mission: Mission, threadId: string): Promise<number> {
     let messages: TeamMessage[];
     try {
       messages = await options.teamMessageStore.list(threadId, perThreadLimit);
@@ -114,7 +134,12 @@ export function createMissionThreadBridge(
       }
     }
 
-    let appended = 0;
+    // gemini K3.5: collect every event to append in this tick into
+    // a single list, then write them concurrently. The activity log
+    // is a JSONL append per event so independent appends are safe to
+    // parallelize; this cuts a tick that has N new events from
+    // O(N * file-flush-latency) to ~one file-flush worth of latency.
+    const toAppend: ActivityEvent[] = [];
     for (const message of messages) {
       const expanded = expandMessage({
         missionId: mission.id,
@@ -126,17 +151,24 @@ export function createMissionThreadBridge(
         if (typeof sourceId === "string" && mirroredSourceIds.has(sourceId)) {
           continue;
         }
-        try {
-          await options.activityStore.append(event);
-          if (sourceId) mirroredSourceIds.add(sourceId);
-          appended += 1;
-        } catch (error) {
-          logger.warn("activity append failed", {
-            missionId: mission.id,
-            messageId: message.id,
-            error: errorMessage(error),
-          });
-        }
+        toAppend.push(event);
+        if (sourceId) mirroredSourceIds.add(sourceId);
+      }
+    }
+    if (toAppend.length === 0) return 0;
+    const results = await Promise.allSettled(
+      toAppend.map((event) => options.activityStore.append(event))
+    );
+    let appended = 0;
+    for (const [index, result] of results.entries()) {
+      if (result.status === "fulfilled") {
+        appended += 1;
+      } else {
+        logger.warn("activity append failed", {
+          missionId: mission.id,
+          eventId: toAppend[index]?.id,
+          error: errorMessage(result.reason),
+        });
       }
     }
     return appended;
@@ -149,9 +181,10 @@ export function createMissionThreadBridge(
   }
 
   async function safeFindMission(missionId: string): Promise<Mission | null> {
+    // gemini K3.5: direct by-id read instead of list().find — O(1)
+    // file open vs O(N) directory scan + read of every mission JSON.
     try {
-      const all = await options.missionStore.list();
-      return all.find((m) => m.id === missionId) ?? null;
+      return await options.missionStore.get(missionId);
     } catch (error) {
       logger.warn("mission lookup failed", {
         missionId,
