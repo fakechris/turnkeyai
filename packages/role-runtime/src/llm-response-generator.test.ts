@@ -8,6 +8,7 @@ import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
 import { LLMRoleResponseGenerator } from "./llm-response-generator";
 import type { RolePromptPacket } from "./prompt-policy";
+import type { RoleToolExecutionInput, RoleToolExecutor } from "./tool-use";
 
 test("llm role response generator retries with a smaller request envelope after overflow", async () => {
   const inputs: Array<{ prompt: string; artifactIds: string[] }> = [];
@@ -15,7 +16,10 @@ test("llm role response generator retries with a smaller request envelope after 
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     inputs.push({
-      prompt: input.messages[1]?.content ?? "",
+      prompt:
+        typeof input.messages[1]?.content === "string"
+          ? input.messages[1]?.content
+          : JSON.stringify(input.messages[1]?.content ?? ""),
       artifactIds: input.envelope?.artifactIds ?? [],
     });
     if (inputs.length <= 3) {
@@ -234,6 +238,175 @@ test("llm role response generator ignores boundary recorder failures", async () 
   assert.equal(result.content, "ok");
 });
 
+test("llm role response generator runs native tool-use loop and feeds tool results back", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const progressEvents: Array<{ summary: string; metadata?: Record<string, unknown> }> = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "I need a browser worker.",
+        contentBlocks: [
+          { type: "text", text: "I need a browser worker." },
+          {
+            type: "tool_use",
+            id: "toolu-1",
+            name: "sessions_spawn",
+            input: { agent_id: "browser", task: "Open example.com" },
+          },
+        ],
+        toolCalls: [
+          {
+            id: "toolu-1",
+            name: "sessions_spawn",
+            input: { agent_id: "browser", task: "Open example.com" },
+          },
+        ],
+        stopReason: "tool_use",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "The browser worker reported Example Domain.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      assert.equal(input.call.name, "sessions_spawn");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({ task_id: "task-1", status: "completed", result: "Example Domain" }),
+        progress: [
+          {
+            phase: "completed",
+            toolName: input.call.name,
+            summary: "sessions_spawn completed",
+          },
+        ],
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 4 },
+    runtimeProgressRecorder: {
+      async record(event) {
+        progressEvents.push({
+          summary: event.summary,
+          ...(event.metadata ? { metadata: event.metadata } : {}),
+        });
+      },
+    },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "The browser worker reported Example Domain.");
+  assert.equal(gatewayInputs.length, 2);
+  assert.equal(gatewayInputs[0]?.tools?.[0]?.name, "sessions_spawn");
+  assert.equal(gatewayInputs[0]?.toolChoice, "auto");
+  assert.equal(gatewayInputs[1]?.messages.at(-2)?.role, "assistant");
+  assert.equal(gatewayInputs[1]?.messages.at(-1)?.role, "tool");
+  assert.equal(gatewayInputs[1]?.messages.at(-1)?.toolCallId, "toolu-1");
+  assert.equal((result.metadata?.toolUse as { toolCallCount?: number } | undefined)?.toolCallCount, 1);
+  assert.ok(progressEvents.some((event) => event.summary.includes("Tool call started: sessions_spawn")));
+  assert.ok(progressEvents.some((event) => event.summary.includes("sessions_spawn completed")));
+});
+
+test("llm role response generator preserves tool history when envelope retry reduces later rounds", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "I will ask a specialist.",
+        toolCalls: [
+          {
+            id: "toolu-retry",
+            name: "sessions_spawn",
+            input: { agent_id: "browser", task: "Inspect the page" },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 2) {
+      assert.equal(input.messages.at(-1)?.role, "tool");
+      throw makeOverflowError();
+    }
+    return {
+      text: "Specialist result preserved.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({ status: "completed", result: "Page inspected" }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 4 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Specialist result preserved.");
+  assert.equal(gatewayInputs.length, 3);
+  assert.equal(gatewayInputs[2]?.messages.at(-2)?.role, "assistant");
+  assert.equal(gatewayInputs[2]?.messages.at(-1)?.role, "tool");
+  assert.equal(gatewayInputs[2]?.messages.at(-1)?.toolCallId, "toolu-retry");
+  assert.equal(gatewayInputs[2]?.envelope?.toolResultCount, 1);
+});
+
 function buildActivation(
   roleOverrides?: Partial<RoleActivationInput["thread"]["roles"][number]>,
   options?: { omitLegacyModel?: boolean }
@@ -311,6 +484,30 @@ function buildActivation(
       createdAt: 1,
     },
   };
+}
+
+function makeOverflowError(): RequestEnvelopeOverflowError {
+  return new RequestEnvelopeOverflowError({
+    diagnostics: {
+      messageCount: 4,
+      promptChars: 180_000,
+      promptBytes: 200_000,
+      metadataBytes: 64,
+      artifactCount: 18,
+      toolCount: 1,
+      toolSchemaBytes: 512,
+      toolResultCount: 1,
+      toolResultBytes: 256,
+      inlineAttachmentBytes: 0,
+      inlineImageCount: 0,
+      inlineImageBytes: 0,
+      inlinePdfCount: 0,
+      inlinePdfBytes: 0,
+      multimodalPartCount: 0,
+      totalSerializedBytes: 210_000,
+      overLimitKeys: ["promptChars", "promptBytes", "artifactCount"],
+    },
+  });
 }
 
 function buildPacket(): RolePromptPacket {

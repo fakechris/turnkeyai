@@ -13,6 +13,7 @@
     "./policy-role-runtime": "./src/policy-role-runtime.ts",
     "./prompt/prompt-assembler": "./src/prompt/prompt-assembler.ts",
     "./prompt-policy": "./src/prompt-policy.ts",
-    "./role-profile": "./src/role-profile.ts"
+    "./role-profile": "./src/role-profile.ts",
+    "./tool-use": "./src/tool-use.ts"
   }
 }
