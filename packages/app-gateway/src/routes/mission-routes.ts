@@ -33,11 +33,45 @@ import type {
   WorkItemStore,
 } from "@turnkeyai/core-types/mission";
 
-import { parsePositiveLimit, sendJson } from "../http-helpers";
+import {
+  parsePositiveLimit,
+  readJsonBodySafe,
+  sendJson,
+} from "../http-helpers";
 import { buildDemoFixtures } from "../mission-demo-fixtures";
+import type { MissionThreadBridge } from "../mission-thread-bridge";
+
+/**
+ * Optional bundle that turns the read-mostly Mission Control routes
+ * into a real coordination surface (PR K3.5). When supplied, the
+ * `POST /missions` route spawns a linked team-runtime thread on every
+ * mission, and `POST /missions/:id/messages` routes user follow-ups
+ * onto that thread so the coordination engine can react.
+ *
+ * Kept optional so unit tests for read-only behavior don't have to
+ * mount the entire runtime stack.
+ */
+export interface MissionOrchestratorDeps {
+  /** Creates a fresh team-runtime thread for a new mission. */
+  spawnThread(input: {
+    title: string;
+    desc: string;
+    owner: string;
+  }): Promise<{ threadId: string; leadRoleId: string; roleIds: string[] }>;
+  /** Posts a user message onto the linked thread (delegates to the
+   *  coordination engine which wakes the role loop). */
+  postUserMessage(input: { threadId: string; content: string }): Promise<void>;
+  /** Mirrors the linked thread's messages onto the mission activity
+   *  log immediately. Routes call this after each post so the new row
+   *  appears without waiting for the next interval tick. */
+  threadBridge: MissionThreadBridge;
+}
 
 export interface MissionRouteDeps {
-  missionStore: MissionStore & { putRaw(mission: Mission): Promise<void> };
+  missionStore: MissionStore & {
+    putRaw(mission: Mission): Promise<void>;
+    create: MissionStore["create"];
+  };
   workItemStore: WorkItemStore;
   activityStore: ActivityEventStore & {
     replaceAll(missionId: MissionId, events: ActivityEvent[]): Promise<void>;
@@ -51,6 +85,11 @@ export interface MissionRouteDeps {
     replaceAll(sources: import("@turnkeyai/core-types/mission").ContextSource[]): Promise<void>;
   };
   clock: { now(): number };
+  idGenerator: {
+    missionId(): string;
+    shortId(): string;
+  };
+  orchestrator?: MissionOrchestratorDeps;
   /**
    * Optional. When supplied, GET /mission-context-sources returns
    * `[...live browser sessions, ...registry entries]` so the Mission
@@ -140,6 +179,128 @@ export async function handleMissionRoutes(input: {
     return true;
   }
 
+  if (method === "POST" && pathname === "/missions") {
+    // PR K3.5 — create a mission AND spawn its linked team-runtime
+    // thread atomically. Without the orchestrator we can still persist
+    // the Mission record (useful in tests that exercise read paths),
+    // but a user-facing create without a thread can't get follow-ups
+    // — surface a 501 so the caller is told to bring the orchestrator
+    // up rather than silently filing inert missions.
+    if (!deps.orchestrator) {
+      sendJson(res, 501, { error: "mission orchestrator not configured" });
+      return true;
+    }
+    const bodyResult = await readJsonBodySafe<{
+      title?: unknown;
+      desc?: unknown;
+      mode?: unknown;
+      modeLabel?: unknown;
+      owner?: unknown;
+      ownerLabel?: unknown;
+      agents?: unknown;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value;
+    const title = readNonEmptyString(body.title);
+    if (!title) {
+      sendJson(res, 400, { error: "title is required" });
+      return true;
+    }
+    const desc = readString(body.desc) ?? "";
+    const mode = readMissionMode(body.mode) ?? "custom";
+    const modeLabel = readNonEmptyString(body.modeLabel) ?? defaultModeLabel(mode);
+    const owner = readNonEmptyString(body.owner) ?? "you";
+    const ownerLabel = readNonEmptyString(body.ownerLabel) ?? "You";
+
+    // Spawn the thread FIRST so we never persist a mission whose
+    // threadId references nothing. If spawnThread throws, the mission
+    // is never created.
+    const thread = await deps.orchestrator.spawnThread({ title, desc, owner });
+    const agents = Array.isArray(body.agents) && body.agents.every((a) => typeof a === "string")
+      ? (body.agents as string[])
+      : thread.roleIds;
+    const mission = await deps.missionStore.create(
+      {
+        title,
+        desc,
+        mode,
+        modeLabel,
+        owner,
+        ownerLabel,
+        agents,
+      },
+      {
+        missionIdGen: () => deps.idGenerator.missionId(),
+        shortIdGen: () => deps.idGenerator.shortId(),
+        clock: deps.clock,
+      }
+    );
+    // Now attach the threadId. We can't write it via create() because
+    // CreateMissionInput is the public shape — the threadId is a
+    // server-injected linkage. Re-persist via putRaw so the file
+    // reflects the final shape on disk.
+    const linked: Mission = { ...mission, threadId: thread.threadId, status: "working" };
+    await deps.missionStore.putRaw(linked);
+
+    // Post the initial "goal" message as a user turn so the
+    // coordination engine kicks off (lead role wakes up, plans). The
+    // user sees this immediately on the timeline because we tick the
+    // bridge synchronously below.
+    const initialContent = desc.length > 0 ? `${title}\n\n${desc}` : title;
+    await deps.orchestrator.postUserMessage({
+      threadId: thread.threadId,
+      content: initialContent,
+    });
+    // Mirror right away so the user's prompt shows up in the timeline
+    // on the very next GET — the interval tick is also running, but
+    // explicit mirror cuts demo latency from ~2s to ~0.
+    await deps.orchestrator.threadBridge.tickMission(linked.id);
+    sendJson(res, 201, linked);
+    return true;
+  }
+
+  // /missions/:id/messages — user follow-up on a linked thread.
+  const followUpMatch = pathname.match(/^\/missions\/([^/]+)\/messages$/);
+  if (method === "POST" && followUpMatch) {
+    if (!deps.orchestrator) {
+      sendJson(res, 501, { error: "mission orchestrator not configured" });
+      return true;
+    }
+    const missionId = decodeURIComponent(followUpMatch[1]!);
+    const mission = await deps.missionStore.get(missionId);
+    if (!mission) {
+      sendJson(res, 404, { error: "mission not found" });
+      return true;
+    }
+    if (!mission.threadId) {
+      sendJson(res, 409, {
+        error: "mission has no linked thread",
+        code: "mission_thread_missing",
+      });
+      return true;
+    }
+    const bodyResult = await readJsonBodySafe<{ content?: unknown }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const content = readNonEmptyString(bodyResult.value.content);
+    if (!content) {
+      sendJson(res, 400, { error: "content is required" });
+      return true;
+    }
+    await deps.orchestrator.postUserMessage({
+      threadId: mission.threadId,
+      content,
+    });
+    await deps.orchestrator.threadBridge.tickMission(mission.id);
+    sendJson(res, 202, { accepted: true, missionId: mission.id });
+    return true;
+  }
+
   if (method === "POST" && pathname === "/missions/bootstrap-demo") {
     const fixtures = buildDemoFixtures(deps.clock.now());
     await Promise.all([
@@ -223,4 +384,51 @@ export async function handleMissionRoutes(input: {
   }
 
   return false;
+}
+
+const VALID_MODES = new Set([
+  "research",
+  "monitor",
+  "browser",
+  "review",
+  "investigation",
+  "custom",
+]);
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function readMissionMode(
+  value: unknown
+): import("@turnkeyai/core-types/mission").MissionMode | null {
+  if (typeof value !== "string") return null;
+  return VALID_MODES.has(value)
+    ? (value as import("@turnkeyai/core-types/mission").MissionMode)
+    : null;
+}
+
+function defaultModeLabel(
+  mode: import("@turnkeyai/core-types/mission").MissionMode
+): string {
+  switch (mode) {
+    case "research":
+      return "Research";
+    case "monitor":
+      return "Monitor";
+    case "browser":
+      return "Browser";
+    case "review":
+      return "Review";
+    case "investigation":
+      return "Investigation";
+    case "custom":
+      return "Custom";
+  }
 }

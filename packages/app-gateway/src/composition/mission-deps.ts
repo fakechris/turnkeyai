@@ -19,6 +19,11 @@ import type { MissionRouteDeps } from "../routes/mission-routes";
 export interface MissionDepsInputs {
   dataDir: string;
   clock: Clock;
+  /**
+   * Stable id generator for missions. Optional in tests; production
+   * pulls one from the daemon's main IdGenerator.
+   */
+  idGenerator?: { missionId(): string; shortId(): string };
 }
 
 /**
@@ -38,5 +43,20 @@ export function composeMissionDeps(inputs: MissionDepsInputs): MissionRouteDeps 
     agentRegistry: new FileAgentRegistry({ rootDir: path.join(root, "registry") }),
     contextSourceRegistry: new FileContextSourceRegistry({ rootDir: path.join(root, "registry") }),
     clock: inputs.clock,
+    // Default id generator: stable counters scoped to this process.
+    // Production injects the daemon's main IdGenerator so the IDs
+    // share the daemon-wide monotonic sequence.
+    idGenerator: inputs.idGenerator ?? createDefaultMissionIdGenerator(),
+  };
+}
+
+function createDefaultMissionIdGenerator(): {
+  missionId(): string;
+  shortId(): string;
+} {
+  let seq = 0;
+  return {
+    missionId: () => `msn.${Date.now().toString(36)}.${++seq}`,
+    shortId: () => `MSN-${seq.toString().padStart(4, "0")}`,
   };
 }

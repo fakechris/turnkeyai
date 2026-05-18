@@ -200,7 +200,7 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
       roleId: currentRole.roleId,
       roleName: currentRole.name,
       seat: currentRole.seat,
-      systemPrompt: [this.buildCachedSystemPrompt(currentRole, profile.styleHints), "", assembly.systemPrompt].join("\n"),
+      systemPrompt: [this.buildCachedSystemPrompt(currentRole, profile.styleHints, input.thread.roles), "", assembly.systemPrompt].join("\n"),
       taskPrompt: [
         assembly.userPrompt,
         continuationSection,
@@ -256,18 +256,33 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
     }
   }
 
-  private buildCachedSystemPrompt(role: RoleSlot, styleHints: string[]): string {
+  private buildCachedSystemPrompt(
+    role: RoleSlot,
+    styleHints: string[],
+    teamRoles: ReadonlyArray<RoleSlot>
+  ): string {
+    // PR K3.5: cache key now includes the team roster + each member's
+    // id+name+seat. Real LLMs need the exact mention syntax (`@{roleId}`)
+    // AND the list of role IDs that actually exist on this thread — the
+    // K1 prompt left both implicit and the deterministic generator filled
+    // in the blanks by hardcoding `@{role-analyst}`. Without this real
+    // models invent role names (`@role-explore`) that the handoff
+    // planner can't dispatch to, and the flow stalls.
+    const teamRosterKey = teamRoles
+      .map((r) => `${r.roleId}|${r.name}|${r.seat}`)
+      .join(",");
     const cacheKey = JSON.stringify({
       roleId: role.roleId,
       name: role.name,
       seat: role.seat,
       styleHints,
+      teamRosterKey,
     });
     const cached = this.systemPromptCache.get(cacheKey);
     if (cached) {
       return cached;
     }
-    const built = buildSystemPrompt(role, styleHints);
+    const built = buildSystemPrompt(role, styleHints, teamRoles);
     this.systemPromptCache.set(cacheKey, built);
     while (this.systemPromptCache.size > DefaultRolePromptPolicy.MAX_SYSTEM_PROMPT_CACHE_ENTRIES) {
       const oldestKey = this.systemPromptCache.keys().next().value as string | undefined;
@@ -280,21 +295,79 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
   }
 }
 
-function buildSystemPrompt(role: RoleSlot, styleHints: string[]): string {
+function buildSystemPrompt(
+  role: RoleSlot,
+  styleHints: string[],
+  teamRoles: ReadonlyArray<RoleSlot>
+): string {
+  // Two operating modes based on team shape:
+  //   - SOLO (1 role on thread): no one to delegate to. The lead must
+  //     answer the user directly every turn. No @{...} protocol at all,
+  //     because the runtime has no peers to dispatch to and any mention
+  //     would stall the flow with "unknown role".
+  //   - MULTI (2+ roles on thread): real team. Lead either delegates to
+  //     a named peer via `@{<role-id>}` or closes the flow with a final
+  //     answer + no mention.
+  // The mention protocol section is omitted entirely in SOLO mode so
+  // real LLMs don't even see the syntax and won't reach for it.
+  const isSolo = teamRoles.length <= 1;
+  const otherRoles = teamRoles.filter((r) => r.roleId !== role.roleId);
+  const rosterLines = otherRoles.map(
+    (r) => `  - ${r.roleId} (${r.name}, seat=${r.seat})`
+  );
+  const leadRole = teamRoles.find((r) => r.seat === "lead");
+
+  if (isSolo) {
+    // Solo-agent path. The thread has exactly one role (this one).
+    // The user is talking directly to it, and there is nowhere to
+    // hand off to.
+    return [
+      `You are ${role.name}.`,
+      "You are the only agent on this thread. Answer the user directly.",
+      "Do NOT use any @{...} mentions or attempt to delegate — there are no other roles to dispatch to.",
+      `Style hints: ${styleHints.join(", ")}`,
+    ].join("\n");
+  }
+
+  // Multi-agent path. The handoff planner regex is
+  // /@\{(?<roleId>[^}]+)\}/ — only role IDs INSIDE curly braces are
+  // parsed and dispatched. Anything else (`@role-analyst`,
+  // `[ANALYST]`, free prose) is dropped and the flow stalls. The
+  // explicit protocol + verbatim roster are the only way real models
+  // converge on the syntax.
+  const mentionProtocol = [
+    "",
+    "## Mention protocol (STRICT)",
+    "To hand control to another role, include EXACTLY this token verbatim:",
+    "  @{<role-id>}",
+    "Curly braces are required. Plain `@name`, `[ROLE]`, or free prose will be ignored and the flow will stall.",
+    "Only the role IDs listed below are dispatchable. Inventing a new role ID does NOT spawn one.",
+    "",
+    "## Team roster",
+    rosterLines.join("\n"),
+  ].join("\n");
+
   if (role.seat === "lead") {
     return [
       `You are ${role.name}, the lead role in this team runtime.`,
       "Own delegation, convergence, and final delivery.",
-      "When another role must act, mention exactly one next role.",
+      "Each turn, decide ONE of:",
+      "  (a) Delegate to exactly one specialist by ending your message with `@{<role-id>}` from the roster, or",
+      "  (b) Finalize the user's request with a complete answer and NO @{...} mention (this closes the flow).",
+      "Do NOT invent role IDs. Do NOT use plain @name or [BRACKET] forms.",
+      "If you have enough information to answer the user directly, just answer — do not force a delegation.",
       `Style hints: ${styleHints.join(", ")}`,
+      mentionProtocol,
     ].join("\n");
   }
 
   return [
     `You are ${role.name}, a specialist role in this team runtime.`,
     "Handle only your assigned slice.",
-    "After contributing, hand control back to the lead role.",
+    `After contributing, hand control back to the lead role with \`@{${leadRole?.roleId ?? "<lead-role-id>"}}\` at the end of your message.`,
+    "Do NOT finalize the user's overall request; the lead role finalizes.",
     `Style hints: ${styleHints.join(", ")}`,
+    mentionProtocol,
   ].join("\n");
 }
 

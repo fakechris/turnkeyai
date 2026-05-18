@@ -55,6 +55,18 @@ export class FileMissionStore implements MissionStore {
     return all.filter((m): m is Mission => m !== null);
   }
 
+  /**
+   * Reverse lookup used by the MissionThreadBridge (K3.5) when a
+   * team-runtime message lands and we need to know which mission owns
+   * the linked thread. Scans the whole directory — fine while mission
+   * counts are bounded; revisit with an index file if counts grow into
+   * the thousands.
+   */
+  async findByThreadId(threadId: string): Promise<Mission | null> {
+    const all = await this.list();
+    return all.find((m) => m.threadId === threadId) ?? null;
+  }
+
   async create(
     input: CreateMissionInput,
     ids: { missionIdGen: () => MissionId; shortIdGen: () => string; clock: { now(): number } }

@@ -40,7 +40,7 @@ export interface RemoteData<T> {
 function useRemote<T>(
   pathname: string,
   fallback: T,
-  options: { dependsOn?: ReadonlyArray<unknown> } = {}
+  options: { dependsOn?: ReadonlyArray<unknown>; pollIntervalMs?: number } = {}
 ): RemoteData<T> {
   const client = useApiClient();
   const [value, setValue] = useState<T>(fallback);
@@ -59,35 +59,51 @@ function useRemote<T>(
 
   useEffect(() => {
     let cancelled = false;
-    // Reset to the fallback before issuing the new request (CodeRabbit
-    // K2 review): without this, switching mission-scoped hooks (e.g.
-    // useWorkItems(missionA) → useWorkItems(missionB)) would briefly
-    // render the previous mission's data until the new fetch resolved.
+    // First fetch resets to fallback so a hook-key change (e.g. switching
+    // mission ids) doesn't render stale data while the new request is
+    // in flight (CodeRabbit K2 review). Subsequent poll-driven refetches
+    // do NOT reset — that would cause a visible flicker every interval.
     setValue(fallbackRef.current);
     setIsLive(false);
     setError(null);
-    void client
-      .get<T>(pathname)
-      .then((data) => {
-        if (cancelled) return;
-        setValue(data);
-        setIsLive(true);
+
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    const issueFetch = (resetBefore: boolean) => {
+      if (resetBefore) {
+        setValue(fallbackRef.current);
+        setIsLive(false);
         setError(null);
-      })
-      .catch((err: Error) => {
-        if (cancelled) return;
-        // Unauthorized is handled by the API client (clears token,
-        // routes to no-token page). Don't surface it as an inline
-        // error here.
-        if (err.message !== "unauthorized") {
-          setError(err.message);
-        }
-      });
+      }
+      void client
+        .get<T>(pathname)
+        .then((data) => {
+          if (cancelled) return;
+          setValue(data);
+          setIsLive(true);
+          setError(null);
+        })
+        .catch((err: Error) => {
+          if (cancelled) return;
+          // Unauthorized is handled by the API client (clears token,
+          // routes to no-token page). Don't surface it as an inline
+          // error here.
+          if (err.message !== "unauthorized") {
+            setError(err.message);
+          }
+        });
+    };
+
+    issueFetch(false);
+    if (options.pollIntervalMs && options.pollIntervalMs > 0) {
+      pollTimer = setInterval(() => issueFetch(false), options.pollIntervalMs);
+    }
     return () => {
       cancelled = true;
+      if (pollTimer) clearInterval(pollTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, pathname, refetchEpoch, ...deps]);
+  }, [client, pathname, refetchEpoch, options.pollIntervalMs, ...deps]);
 
   const refetch = useCallback(() => setRefetchEpoch((n) => n + 1), []);
   return { value, isLive, error, refetch };
@@ -156,11 +172,20 @@ export function useWorkItems(missionId: string, fallback: WorkItem[]): RemoteDat
   );
 }
 
-export function useTimeline(missionId: string, fallback: ActivityEvent[], limit = 200): RemoteData<ActivityEvent[]> {
+export function useTimeline(
+  missionId: string,
+  fallback: ActivityEvent[],
+  options: { limit?: number; pollIntervalMs?: number } = {}
+): RemoteData<ActivityEvent[]> {
+  const limit = options.limit ?? 200;
+  // K3.5: default to 2s polling so new assistant/tool replies show up
+  // in the timeline without forcing the user to refresh. Caller can
+  // disable by passing pollIntervalMs: 0.
+  const pollIntervalMs = options.pollIntervalMs ?? 2000;
   return useRemote<ActivityEvent[]>(
     `/missions/${encodeURIComponent(missionId)}/timeline?limit=${limit}`,
     fallback,
-    { dependsOn: [missionId, limit] }
+    { dependsOn: [missionId, limit], pollIntervalMs }
   );
 }
 
@@ -193,6 +218,54 @@ export function useBootstrapDemo(): () => Promise<BootstrapDemoResult> {
   const client = useApiClient();
   return useCallback(
     () => client.post<BootstrapDemoResult>("/missions/bootstrap-demo"),
+    [client]
+  );
+}
+
+export interface CreateMissionInput {
+  title: string;
+  desc: string;
+  mode?: string;
+}
+
+/**
+ * Create a new mission (K3.5). The daemon spawns a linked team-runtime
+ * thread atomically — the returned Mission carries `threadId` and is
+ * already in `working` status. Callers should navigate to Mission
+ * Detail after success; the timeline will start populating within the
+ * 2-second bridge tick (sooner — the route ticks synchronously after
+ * the initial user message).
+ */
+export function useCreateMission(): (input: CreateMissionInput) => Promise<Mission> {
+  const client = useApiClient();
+  return useCallback(
+    (input: CreateMissionInput) =>
+      client.post<Mission>("/missions", {
+        title: input.title,
+        desc: input.desc,
+        ...(input.mode ? { mode: input.mode } : {}),
+      }),
+    [client]
+  );
+}
+
+/**
+ * Send a follow-up message to a mission's linked thread (K3.5).
+ * Resolves when the daemon has accepted the message (it returns 202
+ * without waiting for the agents to reply). The timeline will pick up
+ * the agent response on its next poll tick.
+ */
+export function useSendMissionMessage(): (input: {
+  missionId: string;
+  content: string;
+}) => Promise<void> {
+  const client = useApiClient();
+  return useCallback(
+    async (input: { missionId: string; content: string }) => {
+      await client.post(`/missions/${encodeURIComponent(input.missionId)}/messages`, {
+        content: input.content,
+      });
+    },
     [client]
   );
 }

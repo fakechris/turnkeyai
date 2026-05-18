@@ -77,6 +77,12 @@ export interface Mission {
   blockers: number;
   /** Short labels for the mission card footer (e.g. "3 browser", "1 doc"). */
   contextSummary: string[];
+  /** Linked team-runtime thread id (PR K3.5). Set when the daemon spawns
+   *  a coordination thread on mission creation; absent for missions
+   *  imported via bootstrap-demo. The MissionThreadBridge uses this to
+   *  translate assistant/tool messages on the thread into ActivityEvents
+   *  on this mission's timeline. */
+  threadId?: string;
 }
 
 export interface CreateMissionInput {
@@ -278,6 +284,10 @@ export interface MissionStore {
   get(id: MissionId): Promise<Mission | null>;
   list(): Promise<Mission[]>;
   create(input: CreateMissionInput, ids: { missionIdGen: () => MissionId; shortIdGen: () => string; clock: { now(): number } }): Promise<Mission>;
+  /** Reverse lookup used by the K3.5 thread bridge to find which
+   *  mission a team-runtime message belongs to. Implementations may
+   *  scan; per-mission count is bounded today. */
+  findByThreadId?(threadId: string): Promise<Mission | null>;
 }
 
 export interface WorkItemStore {

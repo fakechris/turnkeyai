@@ -12,8 +12,13 @@ import { handleMissionRoutes } from "./mission-routes";
 function createRequest(input: {
   method: string;
   url: string;
+  body?: unknown;
 }): http.IncomingMessage {
-  return Object.assign(Readable.from([]), {
+  const chunks =
+    input.body === undefined
+      ? []
+      : [Buffer.from(typeof input.body === "string" ? input.body : JSON.stringify(input.body))];
+  return Object.assign(Readable.from(chunks), {
     method: input.method,
     url: input.url,
     headers: {},
@@ -331,6 +336,232 @@ describe("mission-routes", () => {
     } finally {
       t.cleanup();
     }
+  });
+
+  // PR K3.5 — mission lifecycle (create → run → follow-up).
+  describe("POST /missions + /missions/:id/messages (K3.5)", () => {
+    function buildOrchestrator() {
+      const posts: Array<{ threadId: string; content: string }> = [];
+      const ticks: string[] = [];
+      let nextThread = 0;
+      const orchestrator = {
+        async spawnThread(input: { title: string; desc: string; owner: string }) {
+          nextThread += 1;
+          return {
+            threadId: `thread-${nextThread}`,
+            leadRoleId: "role-lead",
+            roleIds: ["role-lead", "role-analyst"],
+          };
+        },
+        async postUserMessage(input: { threadId: string; content: string }) {
+          posts.push(input);
+        },
+        threadBridge: {
+          async tickAll() {
+            return [];
+          },
+          async tickMission(missionId: string) {
+            ticks.push(missionId);
+            return 0;
+          },
+          start() {
+            return () => undefined;
+          },
+        },
+      };
+      return { orchestrator, posts, ticks };
+    }
+
+    it("creates a mission, spawns a thread, posts the initial message, and ticks the bridge", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator, posts, ticks } = buildOrchestrator();
+        const { res, getStatus, getJson } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "研究竞品", desc: "看 5 款笔记软件的定价", mode: "research" },
+          }),
+          res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(getStatus(), 201);
+        const mission = getJson() as { id: string; threadId: string; status: string; title: string };
+        assert.equal(mission.title, "研究竞品");
+        assert.equal(mission.threadId, "thread-1");
+        // Status promoted from "draft" → "working" because the
+        // coordination thread is live the moment the route returns.
+        assert.equal(mission.status, "working");
+        // Initial message: title + desc.
+        assert.equal(posts.length, 1);
+        assert.ok(posts[0]!.content.includes("研究竞品"));
+        assert.ok(posts[0]!.content.includes("5 款笔记"));
+        // Bridge ticked synchronously so the user's prompt is on the
+        // timeline by the time the response returns.
+        assert.deepEqual(ticks, [mission.id]);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("returns 501 when orchestrator is not configured (test-only path)", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { res, getStatus, getJson } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "x" },
+          }),
+          res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps,
+        });
+        assert.equal(getStatus(), 501);
+        const body = getJson() as { error: string };
+        assert.match(body.error, /orchestrator/);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("rejects blank title with 400", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator } = buildOrchestrator();
+        const { res, getStatus } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "   " },
+          }),
+          res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(getStatus(), 400);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("POST /missions/:id/messages posts to the linked thread and ticks the bridge", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator, posts, ticks } = buildOrchestrator();
+        // Create first to get a linked mission.
+        const createResp = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "test" },
+          }),
+          res: createResp.res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        const created = createResp.getJson() as { id: string; threadId: string };
+        // Follow-up.
+        const { res, getStatus, getJson } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: `/missions/${created.id}/messages`,
+            body: { content: "继续看 macOS 平台支持" },
+          }),
+          res,
+          url: new URL(`http://127.0.0.1/missions/${created.id}/messages`),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(getStatus(), 202);
+        assert.deepEqual(getJson(), { accepted: true, missionId: created.id });
+        // Second post: the follow-up content lands on the linked thread.
+        assert.equal(posts.length, 2);
+        assert.equal(posts[1]!.threadId, created.threadId);
+        assert.equal(posts[1]!.content, "继续看 macOS 平台支持");
+        // Bridge ticked twice — once after create, once after follow-up.
+        assert.deepEqual(ticks, [created.id, created.id]);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("POST /missions/:id/messages returns 404 for unknown mission", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator } = buildOrchestrator();
+        const { res, getStatus } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions/msn.ghost/messages",
+            body: { content: "hi" },
+          }),
+          res,
+          url: new URL("http://127.0.0.1/missions/msn.ghost/messages"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(getStatus(), 404);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("POST /missions/:id/messages returns 409 if mission has no linked thread", async () => {
+      // bootstrap-demo missions never get a threadId because they are
+      // fixtures, not interactive missions. Follow-up must fail loudly
+      // rather than silently disappear into the void.
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator } = buildOrchestrator();
+        // Seed an unlinked mission directly.
+        await deps.missionStore.putRaw({
+          id: "msn.fixture",
+          shortId: "MSN-FX",
+          title: "fixture",
+          desc: "",
+          status: "working",
+          mode: "custom",
+          modeLabel: "Custom",
+          owner: "you",
+          ownerLabel: "You",
+          createdAt: "today",
+          createdAtMs: clock.now(),
+          agents: [],
+          progress: 0,
+          pendingApprovals: 0,
+          blockers: 0,
+          contextSummary: [],
+        });
+        const { res, getStatus, getJson } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions/msn.fixture/messages",
+            body: { content: "hi" },
+          }),
+          res,
+          url: new URL("http://127.0.0.1/missions/msn.fixture/messages"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(getStatus(), 409);
+        const body = getJson() as { code: string };
+        assert.equal(body.code, "mission_thread_missing");
+      } finally {
+        t.cleanup();
+      }
+    });
   });
 
   it("ignores routes outside the /missions / /approvals namespace", async () => {

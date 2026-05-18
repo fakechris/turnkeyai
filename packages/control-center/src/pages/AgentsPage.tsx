@@ -1,10 +1,13 @@
 // Agents roster — grid of connected agents with capabilities + usage.
 
-import { MOCK_DATA } from "../mock/mission-data";
+import { useAgents } from "../api/useMissionData";
 import { Icon } from "../components/Icon";
 import { AgentAvatar, StatusTag } from "../components/atoms";
 
 export function AgentsPage() {
+  const agentsRemote = useAgents([]);
+  const agents = agentsRemote.value;
+
   return (
     <div className="page">
       <div className="page-head">
@@ -19,8 +22,17 @@ export function AgentsPage() {
           <button type="button" className="btn primary"><Icon name="plus" size={13} /> Connect agent</button>
         </div>
       </div>
+      {agents.length === 0 ? (
+        <div className="card" style={{ marginTop: 16, padding: 28, textAlign: "center" }}>
+          <div className="muted" style={{ fontSize: 12.5 }}>
+            {agentsRemote.isLive
+              ? "No agents registered yet. Connect an external agent from Agent Connect, or run a mission to spawn the default coordinator team."
+              : "Connecting to the daemon…"}
+          </div>
+        </div>
+      ) : (
       <div className="agent-grid">
-        {MOCK_DATA.agents.map((a) => (
+        {agents.map((a) => (
           <div key={a.id} className="agent-card">
             <div className="hd">
               <AgentAvatar agent={a} size={36} />
@@ -54,6 +66,7 @@ export function AgentsPage() {
           </div>
         ))}
       </div>
+      )}
     </div>
   );
 }

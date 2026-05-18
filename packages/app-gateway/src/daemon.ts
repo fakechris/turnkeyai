@@ -72,6 +72,7 @@ import { createRecoveryRouteDeps } from "./composition/recovery-deps";
 import { runBrowserTransportSoakViaCli } from "./composition/transport-soak-cli";
 import { createBridgeMissionActivityRecorder } from "./bridge-mission-activity-recorder";
 import { createBrowserContextSourceProvider } from "./browser-context-source-provider";
+import { createMissionThreadBridge } from "./mission-thread-bridge";
 
 import {
   parsePositiveInteger,
@@ -321,7 +322,16 @@ const recoveryDeps = createRecoveryRouteDeps({
 // artifact + agent + context-source registries). Composed separately
 // from foundations.ts because the mission model is a self-contained
 // addition with no cyclic deps on the rest of the daemon.
-const missionDeps = composeMissionDeps({ dataDir: DATA_DIR, clock });
+let missionIdSeq = 0;
+let missionShortIdSeq = 0;
+const missionDeps = composeMissionDeps({
+  dataDir: DATA_DIR,
+  clock,
+  idGenerator: {
+    missionId: () => `msn.${Date.now().toString(36)}.${++missionIdSeq}`,
+    shortId: () => `MSN-${(++missionShortIdSeq).toString().padStart(4, "0")}`,
+  },
+});
 
 // PR K3 — bridge ↔ mission wiring. The recorder writes ActivityEvents
 // into the mission timeline; the provider exposes live browser sessions
@@ -337,6 +347,63 @@ const bridgeMissionRecorder = createBridgeMissionActivityRecorder({
 const browserContextSourceProvider = createBrowserContextSourceProvider({
   browserBridge,
 });
+
+// PR K3.5 — Mission ↔ team-runtime orchestrator. Spawns a team thread
+// per mission, posts user messages onto it, and mirrors assistant /
+// tool replies onto the mission timeline via the thread bridge.
+const missionThreadBridge = createMissionThreadBridge({
+  missionStore: missionDeps.missionStore,
+  teamMessageStore,
+  activityStore: missionDeps.activityStore,
+  newEventId: () => idGenerator.messageId(),
+  clock,
+});
+const stopMissionThreadBridge = missionThreadBridge.start(2000);
+const missionOrchestrator = {
+  async spawnThread(input: { title: string; desc: string; owner: string }) {
+    // PR K3.5: default to SOLO (single lead role). The prior K3.5 init
+    // forced every mission into a lead+analyst team, which wasted a
+    // delegation hop on simple questions ("explain X") that the lead
+    // could answer directly. Multi-agent teams will be opt-in via a
+    // mission `mode`-driven roster in K4 (research → analyst, browser
+    // → operator+browser-worker, etc.). The prompt-policy is already
+    // mode-aware: a 1-role team gets a solo prompt with no @-mention
+    // protocol at all, so real LLMs simply answer.
+    const lead = {
+      roleId: "role-lead",
+      name: "Lead",
+      seat: "lead" as const,
+      runtime: "local" as const,
+      modelRef: "claude-opus",
+      modelChain: "lead_reasoning",
+    };
+    const roles = [lead];
+    const thread = await teamThreadStore.create({
+      teamName: `Mission: ${input.title}`,
+      leadRoleId: roles[0]!.roleId,
+      roles,
+    });
+    await teamEventBus.publish({
+      eventId: idGenerator.messageId(),
+      threadId: thread.threadId,
+      kind: "thread.created",
+      createdAt: clock.now(),
+      payload: { teamId: thread.teamId, teamName: thread.teamName },
+    });
+    return {
+      threadId: thread.threadId,
+      leadRoleId: thread.leadRoleId,
+      roleIds: roles.map((r) => r.roleId),
+    };
+  },
+  async postUserMessage(input: { threadId: string; content: string }) {
+    await coordinationEngine.handleUserPost({
+      threadId: input.threadId,
+      content: input.content,
+    });
+  },
+  threadBridge: missionThreadBridge,
+};
 
 await mkdir(DATA_DIR, { recursive: true });
 
@@ -486,7 +553,11 @@ const server = http.createServer(async (req, res) => {
         req,
         res,
         url,
-        deps: { ...missionDeps, browserContextSourceProvider },
+        deps: {
+          ...missionDeps,
+          browserContextSourceProvider,
+          orchestrator: missionOrchestrator,
+        },
       })
     ) {
       return;
@@ -656,6 +727,7 @@ function shutdownDaemon(signal: NodeJS.Signals | "exit"): void {
   // Stop the background reconciliation timer first so no new pass is
   // scheduled while the HTTP server is draining.
   runtimeServices.stop();
+  stopMissionThreadBridge();
   const closeTimeout = setTimeout(() => {
     console.error("daemon shutdown timed out, exiting");
     removePidFile(RUNTIME_PATHS);
