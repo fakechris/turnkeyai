@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
 
+import type { TeamMessage } from "@turnkeyai/core-types/team";
+
 import { createRouteIdempotencyStore } from "../idempotency-store";
 import { handleWorkflowRoutes, type WorkflowRouteDeps } from "./workflow-routes";
 
@@ -37,12 +39,30 @@ function createResponse() {
 }
 
 function createDeps(overrides: Partial<WorkflowRouteDeps> = {}): WorkflowRouteDeps {
+  const messages = new Map<string, TeamMessage>();
   return {
     coordinationEngine: {
       async handleUserPost() {},
     },
     teamEventBus: {
       async publish() {},
+    },
+    teamMessageStore: {
+      async append(message) {
+        messages.set(message.id, message);
+      },
+      async appendIfAbsent(message) {
+        const existing = messages.get(message.id);
+        if (existing) return { written: false, existing };
+        messages.set(message.id, message);
+        return { written: true };
+      },
+      async list(threadId) {
+        return [...messages.values()].filter((message) => message.threadId === threadId);
+      },
+      async get(messageId) {
+        return messages.get(messageId) ?? null;
+      },
     },
     scheduledTaskRuntime: {
       async listByThread(threadId: string) {
@@ -121,6 +141,95 @@ test("workflow routes return 400 for malformed message JSON", async () => {
 
   assert.equal(response.res.statusCode, 400);
   assert.deepEqual(response.json, { error: "Invalid JSON" });
+});
+
+test("workflow routes cancel assistant tool calls and append cancelled tool results", async () => {
+  const messages = new Map<string, TeamMessage>();
+  messages.set("assistant-1", {
+    id: "assistant-1",
+    threadId: "thread-1",
+    role: "assistant",
+    name: "Lead",
+    content: "",
+    createdAt: 100,
+    updatedAt: 100,
+    toolCalls: [
+      {
+        id: "call-1",
+        name: "sessions_spawn",
+        arguments: { agent_id: "browser", task: "Open page" },
+      },
+      {
+        id: "call-2",
+        name: "sessions_history",
+        arguments: { session_key: "worker:browser:1" },
+      },
+    ],
+    toolProgress: [
+      {
+        toolCallId: "call-1",
+        toolName: "sessions_spawn",
+        phase: "started",
+        summary: "started",
+        ts: 100,
+      },
+    ],
+    toolStatus: "pending",
+  });
+  const deps = createDeps({
+    clock: { now: () => 200 },
+    teamMessageStore: {
+      async append(message) {
+        messages.set(message.id, message);
+      },
+      async appendIfAbsent(message) {
+        const existing = messages.get(message.id);
+        if (existing) return { written: false, existing };
+        messages.set(message.id, message);
+        return { written: true };
+      },
+      async list(threadId) {
+        return [...messages.values()].filter((message) => message.threadId === threadId);
+      },
+      async get(messageId) {
+        return messages.get(messageId) ?? null;
+      },
+    },
+  });
+  const response = createResponse();
+
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/message/cancel-tools",
+      body: {
+        messageId: "assistant-1",
+        threadId: "thread-1",
+        toolCallIds: ["call-1"],
+        reason: "operator cancelled browser work",
+      },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/message/cancel-tools"),
+    deps,
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.deepEqual(response.json, {
+    cancelled: true,
+    messageId: "assistant-1",
+    threadId: "thread-1",
+    toolCallIds: ["call-1"],
+  });
+  const assistant = messages.get("assistant-1");
+  assert.equal(assistant?.toolStatus, "pending");
+  assert.equal(assistant?.toolProgress?.at(-1)?.phase, "cancelled");
+  assert.equal(assistant?.toolProgress?.at(-1)?.summary, "operator cancelled browser work");
+  const toolResult = messages.get("assistant-1:tool-cancelled:call-1");
+  assert.equal(toolResult?.role, "tool");
+  assert.equal(toolResult?.toolCallId, "call-1");
+  assert.equal(toolResult?.toolStatus, "cancelled");
+  assert.equal(toolResult?.content, "operator cancelled browser work");
 });
 
 test("workflow routes trim message body before publishing", async () => {

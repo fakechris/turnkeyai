@@ -27,6 +27,7 @@ interface InlineRoleLoopRunnerOptions {
     runState: RoleRunState;
     handoff: HandoffEnvelope;
     message: Awaited<ReturnType<RoleRuntime["runActivation"]>> extends { message?: infer T } ? T : never;
+    messages?: Awaited<ReturnType<RoleRuntime["runActivation"]>> extends { messages?: infer T } ? T : never;
   }) => Promise<void>;
   onRoleFailure: (input: {
     flow: NonNullable<Awaited<ReturnType<FlowLedgerStore["get"]>>>;
@@ -167,6 +168,7 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
             runState: refreshedRun,
             handoff,
             message: result.message,
+            ...(result.messages?.length ? { messages: result.messages } : {}),
           });
           continue;
         }

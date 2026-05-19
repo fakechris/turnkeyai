@@ -226,6 +226,80 @@ test("policy role runtime persists worker evidence and appends worker summary to
   }
 });
 
+test("policy role runtime returns native tool-use message sequence before the final assistant answer", async () => {
+  const promptPolicy: RolePromptPolicy = {
+    async buildPacket(): Promise<RolePromptPacket> {
+      return {
+        roleId: "role-operator",
+        roleName: "Operator",
+        seat: "member",
+        systemPrompt: "Operate carefully.",
+        taskPrompt: "Use the browser sub-agent.",
+        outputContract: "Return a concise result.",
+        suggestedMentions: [],
+      };
+    },
+  };
+  const responseGenerator: RoleResponseGenerator = {
+    async generate(): Promise<GeneratedRoleReply> {
+      return {
+        content: "Final answer from the lead.",
+        mentions: [],
+        metadata: {
+          toolUse: {
+            toolCallCount: 1,
+            rounds: [
+              {
+                round: 1,
+                calls: [
+                  {
+                    id: "toolu-1",
+                    name: "sessions_spawn",
+                    input: { agent_id: "browser", task: "Open example.com" },
+                  },
+                ],
+                results: [
+                  {
+                    toolCallId: "toolu-1",
+                    toolName: "sessions_spawn",
+                    isError: false,
+                    contentBytes: 20,
+                    content: "Example Domain",
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      };
+    },
+  };
+  const runtime = new PolicyRoleRuntime({
+    idGenerator: {
+      messageId: () => "msg-final",
+    },
+    clock: {
+      now: () => 1000,
+    },
+    promptPolicy,
+    responseGenerator,
+  });
+
+  const result = await runtime.runActivation(buildOperatorActivationInput());
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.message?.id, "msg-final");
+  assert.equal(result.message?.metadata?.toolUse, undefined);
+  assert.equal(result.messages?.length, 3);
+  assert.equal(result.messages?.[0]?.role, "assistant");
+  assert.equal(result.messages?.[0]?.toolCalls?.[0]?.name, "sessions_spawn");
+  assert.equal(result.messages?.[0]?.toolProgress?.at(-1)?.phase, "completed");
+  assert.equal(result.messages?.[1]?.role, "tool");
+  assert.equal(result.messages?.[1]?.toolCallId, "toolu-1");
+  assert.equal(result.messages?.[1]?.content, "Example Domain");
+  assert.equal(result.messages?.[2]?.id, "msg-final");
+});
+
 test("policy role runtime preserves explicit request envelope overflow errors", async () => {
   const activation = {
     thread: {

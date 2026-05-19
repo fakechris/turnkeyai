@@ -102,6 +102,7 @@ interface RoleOutcomeIntent {
   roleId: RoleId;
   handoff: HandoffEnvelope;
   message: TeamMessage;
+  messages?: TeamMessage[];
   error?: RuntimeError;
 }
 
@@ -430,6 +431,7 @@ export class CoordinationEngine {
     runState: RoleRunState;
     handoff: HandoffEnvelope;
     message: TeamMessage;
+    messages?: TeamMessage[];
   }): Promise<void> {
     const intent: RoleOutcomeIntent = {
       intentId: `${input.handoff.taskId}:reply:${input.message.id}`,
@@ -439,6 +441,7 @@ export class CoordinationEngine {
       roleId: input.runState.roleId,
       handoff: input.handoff,
       message: input.message,
+      ...(input.messages?.length ? { messages: input.messages } : {}),
     };
     if (this.roleOutcomeOutboxShipper) {
       await this.startRoleOutcomeViaOutbox(intent);
@@ -498,7 +501,9 @@ export class CoordinationEngine {
     intent: RoleOutcomeIntent
   ): Promise<void> {
     await this.markHandoffResponded(flow.flowId, intent.handoff.taskId);
-    await this.ensureMessagePersisted(intent.message);
+    for (const message of this.normalizeRoleOutcomeMessages(intent)) {
+      await this.ensureMessagePersisted(message);
+    }
     await this.refreshRoleContext(thread.threadId, intent.roleId);
     await this.markRoleCompleted(flow.flowId, intent.roleId);
     await this.markHandoffClosed(flow.flowId, intent.handoff.taskId);
@@ -1514,6 +1519,14 @@ export class CoordinationEngine {
     }
 
     await store.append(message);
+  }
+
+  private normalizeRoleOutcomeMessages(intent: RoleOutcomeIntent): TeamMessage[] {
+    const messages = intent.messages?.length ? intent.messages : [intent.message];
+    if (messages.some((message) => message.id === intent.message.id)) {
+      return messages;
+    }
+    return [...messages, intent.message];
   }
 
   private async ensureFlowPersisted(flow: FlowLedger): Promise<FlowLedger> {

@@ -326,6 +326,54 @@ describe("MissionThreadBridge", () => {
     assert.match(result.text, /Page title: Example Domain/);
   });
 
+  it("expands native assistant toolCalls/toolProgress without metadata trace", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const message: TeamMessage = {
+      ...baseMessage("a-native", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Done.",
+      toolCalls: [
+        {
+          id: "c-native",
+          name: "sessions_send",
+          arguments: { session_key: "worker:browser:1", message: "continue" },
+        },
+      ],
+      toolProgress: [
+        {
+          toolCallId: "c-native",
+          toolName: "sessions_send",
+          phase: "completed",
+          summary: "Browser follow-up completed.",
+          ts: 4_900,
+        },
+      ],
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([message]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const ordered = [...activity.events].sort((a, b) => a.tMs - b.tMs);
+    assert.deepEqual(
+      ordered.map((event) => ({ kind: event.kind, phase: event.runtime?.toolPhase ?? null })),
+      [
+        { kind: "tool", phase: "call" },
+        { kind: "tool", phase: "result" },
+        { kind: "thought", phase: null },
+      ]
+    );
+    assert.match(ordered[0]!.text, /sessions_send/);
+    assert.match(ordered[1]!.text, /Browser follow-up completed/);
+    assert.equal(ordered[1]!.runtime?.toolCallId, "c-native");
+  });
+
   it("tool-result with isError uses the error message as text (K3.6)", async () => {
     counter = 0;
     const activity = memActivityStore();
