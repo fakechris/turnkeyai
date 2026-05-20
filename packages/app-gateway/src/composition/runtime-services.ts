@@ -45,6 +45,7 @@ import {
   InMemoryToolCancellationRegistry,
   type ToolCancellationRegistry,
 } from "@turnkeyai/role-runtime/tool-cancellation-registry";
+import type { TaskToolService } from "@turnkeyai/role-runtime/task-tool-service";
 import type { ToolPermissionService } from "@turnkeyai/role-runtime/tool-permission-service";
 import { createWorkerSessionToolExecutor } from "@turnkeyai/role-runtime/tool-use";
 import { LocalWorkerRuntime } from "@turnkeyai/worker-runtime/local-worker-runtime";
@@ -78,6 +79,7 @@ export interface DaemonRuntimeServicesInputs {
   recoveryRunStaleAfterMs: number;
   runtimeReconciliationIntervalMs: number;
   toolPermissionService?: ToolPermissionService;
+  taskToolService?: TaskToolService;
 }
 
 export interface DaemonRuntimeServices {
@@ -192,6 +194,7 @@ export async function composeDaemonRuntimeServices(
     availableWorkerKinds: foundations.workerHandlers.map((handler) => handler.kind),
     permissionsEnabled: Boolean(inputs.toolPermissionService),
     memoryEnabled: true,
+    tasksEnabled: Boolean(inputs.taskToolService),
   });
   const toolCancellationRegistry = new InMemoryToolCancellationRegistry();
 
@@ -226,6 +229,7 @@ export async function composeDaemonRuntimeServices(
                 toolCancellationRegistry,
                 memoryResolver: roleMemoryResolver,
                 ...(inputs.toolPermissionService ? { toolPermissionService: inputs.toolPermissionService } : {}),
+                ...(inputs.taskToolService ? { taskToolService: inputs.taskToolService } : {}),
               }),
               runtimeProgressRecorder,
             },

@@ -73,6 +73,7 @@ import { runBrowserTransportSoakViaCli } from "./composition/transport-soak-cli"
 import { createBridgeMissionActivityRecorder } from "./bridge-mission-activity-recorder";
 import { createBrowserContextSourceProvider } from "./browser-context-source-provider";
 import { createMissionThreadBridge } from "./mission-thread-bridge";
+import { createMissionTaskToolService } from "./mission-task-tool-service";
 import { createMissionToolPermissionService } from "./tool-permission-service";
 
 import {
@@ -305,6 +306,13 @@ const toolPermissionService = createMissionToolPermissionService({
   clock,
   newEventId: () => idGenerator.messageId(),
 });
+const taskToolService = createMissionTaskToolService({
+  missionStore: missionDeps.missionStore,
+  workItemStore: missionDeps.workItemStore,
+  activityStore: missionDeps.activityStore,
+  clock,
+  idGenerator,
+});
 
 const runtimeServices = await composeDaemonRuntimeServices({
   foundations,
@@ -317,6 +325,7 @@ const runtimeServices = await composeDaemonRuntimeServices({
   recoveryRunStaleAfterMs: RECOVERY_RUN_STALE_AFTER_MS,
   runtimeReconciliationIntervalMs: RUNTIME_RECONCILIATION_INTERVAL_MS,
   toolPermissionService,
+  taskToolService,
 });
 const {
   workerRuntime,

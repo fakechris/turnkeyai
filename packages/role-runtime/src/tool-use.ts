@@ -20,6 +20,7 @@ import {
   type ToolCapabilityRegistry,
 } from "./tool-capability-registry";
 import type { MemoryHit, RoleMemoryResolver } from "./context/role-memory-resolver";
+import type { TaskToolService } from "./task-tool-service";
 import type { ToolCancellationRegistry } from "./tool-cancellation-registry";
 import type { ToolPermissionQueryResult, ToolPermissionService } from "./tool-permission-service";
 
@@ -163,6 +164,7 @@ export function createWorkerSessionToolExecutor(options: {
   toolCapabilityRegistry?: ToolCapabilityRegistry;
   toolCancellationRegistry?: ToolCancellationRegistry;
   toolPermissionService?: ToolPermissionService;
+  taskToolService?: TaskToolService;
   memoryResolver?: Pick<RoleMemoryResolver, "retrieveMemory" | "getMemory">;
 }): RoleToolExecutor {
   const { workerRuntime } = options;
@@ -172,6 +174,7 @@ export function createWorkerSessionToolExecutor(options: {
       ...(options.availableWorkerKinds ? { availableWorkerKinds: options.availableWorkerKinds } : {}),
       permissionsEnabled: Boolean(options.toolPermissionService),
       memoryEnabled: Boolean(options.memoryResolver),
+      tasksEnabled: Boolean(options.taskToolService),
     });
   const definitions = toolCapabilityRegistry.definitions();
   const executableWorkerKinds = new Set(toolCapabilityRegistry.availableWorkerKinds());
@@ -206,6 +209,12 @@ export function createWorkerSessionToolExecutor(options: {
           return executeMemorySearch(input, options.memoryResolver);
         case "memory_get":
           return executeMemoryGet(input, options.memoryResolver);
+        case "tasks_list":
+          return executeTasksList(input, options.taskToolService);
+        case "tasks_create":
+          return executeTasksCreate(input, options.taskToolService);
+        case "tasks_update":
+          return executeTasksUpdate(input, options.taskToolService);
         default:
           return {
             toolCallId: input.call.id,
@@ -883,6 +892,107 @@ async function executeSessionsHistory(
   };
 }
 
+async function executeTasksList(
+  input: RoleToolExecutionInput,
+  taskToolService?: TaskToolService
+): Promise<RoleToolExecutionResult> {
+  if (!taskToolService) {
+    return errorResult(input.call, "task tool service is not configured");
+  }
+  const limit = Math.min(positiveInteger(input.call.input.limit) ?? 20, 50);
+  return runTaskTool(input.call, "Listed mission tasks.", () =>
+    taskToolService.list({
+      threadId: input.activation.thread.threadId,
+      roleId: input.activation.runState.roleId,
+      ...(requiredString(input.call.input.mission_id) ? { missionId: requiredString(input.call.input.mission_id)! } : {}),
+      ...(parseMissionStatus(input.call.input.status) ? { status: parseMissionStatus(input.call.input.status)! } : {}),
+      ...(requiredString(input.call.input.agent_id) ? { agentId: requiredString(input.call.input.agent_id)! } : {}),
+      limit,
+    })
+  );
+}
+
+async function executeTasksCreate(
+  input: RoleToolExecutionInput,
+  taskToolService?: TaskToolService
+): Promise<RoleToolExecutionResult> {
+  if (!taskToolService) {
+    return errorResult(input.call, "task tool service is not configured");
+  }
+  const title = requiredString(input.call.input.title);
+  if (!title) {
+    return errorResult(input.call, "tasks_create requires title");
+  }
+  return runTaskTool(input.call, "Created mission task.", () =>
+    taskToolService.create({
+      threadId: input.activation.thread.threadId,
+      roleId: input.activation.runState.roleId,
+      title,
+      ...(requiredString(input.call.input.mission_id) ? { missionId: requiredString(input.call.input.mission_id)! } : {}),
+      ...(requiredString(input.call.input.agent_id) ? { agentId: requiredString(input.call.input.agent_id)! } : {}),
+      ...(parseMissionStatus(input.call.input.status) ? { status: parseMissionStatus(input.call.input.status)! } : {}),
+      ...(readStringArray(input.call.input.context_refs).length
+        ? { contextRefs: readStringArray(input.call.input.context_refs) }
+        : {}),
+      ...(requiredString(input.call.input.output) ? { output: requiredString(input.call.input.output)! } : {}),
+    })
+  );
+}
+
+async function executeTasksUpdate(
+  input: RoleToolExecutionInput,
+  taskToolService?: TaskToolService
+): Promise<RoleToolExecutionResult> {
+  if (!taskToolService) {
+    return errorResult(input.call, "task tool service is not configured");
+  }
+  const workItemId = requiredString(input.call.input.work_item_id);
+  if (!workItemId) {
+    return errorResult(input.call, "tasks_update requires work_item_id");
+  }
+  const clearBlocker = input.call.input.clear_blocker === true;
+  return runTaskTool(input.call, "Updated mission task.", () =>
+    taskToolService.update({
+      threadId: input.activation.thread.threadId,
+      roleId: input.activation.runState.roleId,
+      workItemId,
+      ...(requiredString(input.call.input.mission_id) ? { missionId: requiredString(input.call.input.mission_id)! } : {}),
+      ...(parseMissionStatus(input.call.input.status) ? { status: parseMissionStatus(input.call.input.status)! } : {}),
+      ...(requiredString(input.call.input.output) ? { output: requiredString(input.call.input.output)! } : {}),
+      ...(clearBlocker ? { blocker: null } : requiredString(input.call.input.blocker) ? { blocker: requiredString(input.call.input.blocker)! } : {}),
+      ...(boundedProgress(input.call.input.progress) !== null ? { progress: boundedProgress(input.call.input.progress)! } : {}),
+    })
+  );
+}
+
+async function runTaskTool(
+  call: LLMToolCall,
+  summary: string,
+  operation: () => Promise<unknown>
+): Promise<RoleToolExecutionResult> {
+  try {
+    return taskToolResult(call, await operation(), summary);
+  } catch (error) {
+    return errorResult(call, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function taskToolResult(call: LLMToolCall, result: unknown, summary: string): RoleToolExecutionResult {
+  return {
+    toolCallId: call.id,
+    toolName: call.name,
+    content: JSON.stringify(result, null, 2),
+    progress: [
+      {
+        phase: "completed",
+        toolName: call.name,
+        summary,
+      },
+    ],
+    raw: result,
+  };
+}
+
 function createLegacyWorkerHistoryEntry(
   sessionKey: string,
   state: WorkerSessionState
@@ -1059,6 +1169,29 @@ function parseWorkerKind(value: unknown): WorkerKind | null {
   return typeof value === "string" && value.trim().length > 0 ? (value.trim() as WorkerKind) : null;
 }
 
+function parseMissionStatus(value: unknown):
+  | "draft"
+  | "planning"
+  | "working"
+  | "needs_approval"
+  | "blocked"
+  | "done"
+  | "archived"
+  | null {
+  switch (value) {
+    case "draft":
+    case "planning":
+    case "working":
+    case "needs_approval":
+    case "blocked":
+    case "done":
+    case "archived":
+      return value;
+    default:
+      return null;
+  }
+}
+
 function readStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
@@ -1096,6 +1229,10 @@ function formatTimeoutSeconds(timeoutMs: number | null): string {
 
 function nonNegativeInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function boundedProgress(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 }
 
 function matchesParentSessionKey(parentSpanId: string | undefined, parentSessionKey: string): boolean {
