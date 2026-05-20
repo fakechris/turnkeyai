@@ -96,16 +96,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const toolTrace: NativeToolRoundTrace[] = [];
     let messages: LLMMessage[] = initialGatewayInput.messages;
     for (let round = 0; ; round++) {
+      const gatewayMessages = pruneToolResultMessagesForGateway(messages);
       const generated = await this.generateWithEnvelopeRetry({
         activation: input.activation,
         packet: input.packet,
         selection,
         gatewayInput: {
           ...initialGatewayInput,
-          messages,
+          messages: gatewayMessages,
           envelope: {
             ...(initialGatewayInput.envelope ?? {}),
-            ...deriveToolResultEnvelope(messages),
+            ...deriveToolResultEnvelope(gatewayMessages),
           },
         },
       });
@@ -604,6 +605,9 @@ interface ReductionEnvelopeSnapshot {
 // MBs. The full content still flows through the LLM tool loop in
 // memory; this cap only governs what lands on disk.
 const ROLE_TOOL_RESULT_TRACE_CAP_BYTES = 8 * 1024;
+const TOOL_RESULT_RECENT_FULL_COUNT = 2;
+const TOOL_RESULT_SOFT_PRUNE_MAX_BYTES = 16 * 1024;
+const TOOL_RESULT_HARD_PRUNE_MAX_BYTES = 64 * 1024;
 
 function sliceUtf8(value: string, maxBytes: number): string {
   // gemini + coderabbit K3.6: keep the persisted slice strictly
@@ -726,6 +730,78 @@ function deriveToolResultEnvelope(messages: LLMMessage[]): { toolResultCount: nu
     toolResultCount: toolMessages.length,
     toolResultBytes: Buffer.byteLength(JSON.stringify(toolMessages.map((message) => message.content)), "utf8"),
   };
+}
+
+function pruneToolResultMessagesForGateway(messages: LLMMessage[]): LLMMessage[] {
+  const toolMessageIndexes = messages
+    .map((message, index) => (message.role === "tool" ? index : -1))
+    .filter((index) => index >= 0);
+  const recentFullIndexes = new Set(toolMessageIndexes.slice(-TOOL_RESULT_RECENT_FULL_COUNT));
+
+  return messages.map((message, index) => {
+    if (message.role !== "tool") {
+      return message;
+    }
+    const content = readToolResultContentText(message.content);
+    const contentBytes = Buffer.byteLength(content, "utf8");
+    const shouldHardPrune = contentBytes > TOOL_RESULT_HARD_PRUNE_MAX_BYTES;
+    const shouldSoftPrune = !recentFullIndexes.has(index) && contentBytes > TOOL_RESULT_SOFT_PRUNE_MAX_BYTES;
+    if (!shouldHardPrune && !shouldSoftPrune) {
+      return message;
+    }
+    const prunedContent = JSON.stringify(
+      {
+        tool_result_pruned: true,
+        tool_call_id: message.toolCallId ?? null,
+        tool_name: message.name ?? null,
+        original_bytes: contentBytes,
+        reason: shouldHardPrune ? "over_hard_limit" : "older_than_recent_window",
+        retained_summary: summarizeToolResultContent(content),
+      },
+      null,
+      2
+    );
+    return replaceToolResultContent(message, prunedContent);
+  });
+}
+
+function readToolResultContentText(content: LLMMessage["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  return content
+    .map((block) => {
+      if (block.type === "tool_result") return block.content;
+      if (block.type === "text") return block.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function replaceToolResultContent(message: LLMMessage, content: string): LLMMessage {
+  if (typeof message.content === "string") {
+    return { ...message, content };
+  }
+  return {
+    ...message,
+    content: message.content.map((block) =>
+      block.type === "tool_result"
+        ? {
+            ...block,
+            content,
+          }
+        : block
+    ),
+  };
+}
+
+function summarizeToolResultContent(content: string): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "(empty tool result)";
+  }
+  return normalized.length > 512 ? `${normalized.slice(0, 512)}...` : normalized;
 }
 
 function replaceInitialPromptMessages(messages: LLMMessage[], reducedPromptMessages: LLMMessage[]): LLMMessage[] {
