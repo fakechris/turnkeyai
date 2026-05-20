@@ -258,6 +258,92 @@ test("sessions_history reads durable session history with pagination and payload
   ]);
 });
 
+test("sessions_history falls back to legacy lastResult when durable history is absent", async () => {
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:legacy",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-legacy",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:legacy",
+            workerType: "browser",
+            status: "done",
+            createdAt: 90,
+            updatedAt: 140,
+            currentTaskId: "task-legacy",
+            lastResult: {
+              workerType: "browser",
+              status: "completed",
+              summary: "Legacy result summary.",
+              payload: { title: "Legacy" },
+            },
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:legacy",
+        workerType: "browser",
+        status: "done",
+        createdAt: 90,
+        updatedAt: 140,
+        currentTaskId: "task-legacy",
+        lastResult: {
+          workerType: "browser",
+          status: "completed",
+          summary: "Legacy result summary.",
+          payload: { title: "Legacy" },
+        },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-legacy",
+      name: "sessions_history",
+      input: {
+        session_key: "worker:browser:legacy",
+        include_tools: true,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Read legacy history.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { messages: Array<Record<string, unknown>> };
+  assert.deepEqual(body.messages, [
+    {
+      id: "worker-history:worker:browser:legacy:legacy-result",
+      role: "tool",
+      content: "Legacy result summary.",
+      created_at: 140,
+      task_id: "task-legacy",
+      name: "browser",
+      status: "completed",
+      payload: { title: "Legacy" },
+    },
+  ]);
+});
+
 function buildActivation(): RoleActivationInput {
   return {
     thread: {

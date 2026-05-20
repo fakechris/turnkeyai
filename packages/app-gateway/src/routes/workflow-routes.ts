@@ -406,7 +406,7 @@ async function cancelToolCallsOnMessage(input: {
   }
 
   const callById = new Map(message.toolCalls.map((call) => [call.id, call] as const));
-  const requestedIds = input.toolCallIds ?? message.toolCalls.map((call) => call.id);
+  const requestedIds = [...new Set(input.toolCallIds ?? message.toolCalls.map((call) => call.id))];
   const unknown = requestedIds.find((id) => !callById.has(id));
   if (unknown) {
     return { statusCode: 400, body: { error: `unknown toolCallId: ${unknown}` } };
@@ -440,14 +440,6 @@ async function cancelToolCallsOnMessage(input: {
       ts: input.now,
     };
   });
-  const updatedMessage: TeamMessage = {
-    ...message,
-    updatedAt: input.now,
-    toolProgress: [...(message.toolProgress ?? []), ...cancelProgress],
-    toolStatus: resolveAssistantToolStatus(message, cancelProgress),
-  };
-  await input.teamMessageStore.append(updatedMessage);
-
   const toolMessages = cancellableIds.map((id, index) => {
     const call = callById.get(id)!;
     return {
@@ -480,6 +472,13 @@ async function cancelToolCallsOnMessage(input: {
         : input.teamMessageStore.append(toolMessage)
     )
   );
+  const updatedMessage: TeamMessage = {
+    ...message,
+    updatedAt: input.now,
+    toolProgress: [...(message.toolProgress ?? []), ...cancelProgress],
+    toolStatus: resolveAssistantToolStatus(message, cancelProgress),
+  };
+  await input.teamMessageStore.append(updatedMessage);
 
   return {
     statusCode: 200,

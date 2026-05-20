@@ -629,9 +629,20 @@ function appendWorkerHistory(
   state: WorkerSessionState,
   entry: WorkerSessionHistoryEntry
 ): WorkerSessionState {
+  const history = state.history ?? [];
+  const existingIds = new Set(history.map((item) => item.id));
+  let nextEntry = entry;
+  let suffix = history.length;
+  while (existingIds.has(nextEntry.id)) {
+    nextEntry = {
+      ...entry,
+      id: `${entry.id}:${suffix}`,
+    };
+    suffix += 1;
+  }
   return {
     ...state,
-    history: [...(state.history ?? []), entry],
+    history: [...history, nextEntry],
   };
 }
 

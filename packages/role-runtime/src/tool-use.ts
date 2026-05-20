@@ -8,6 +8,7 @@ import type {
   RoleActivationInput,
   RuntimeProgressRecorder,
   WorkerSessionHistoryEntry,
+  WorkerSessionState,
   WorkerKind,
   WorkerRuntime,
 } from "@turnkeyai/core-types/team";
@@ -432,18 +433,7 @@ async function executeSessionsHistory(
       ? state.history
       : [
           ...(state.lastResult
-            ? [
-                {
-                  id: `worker-history:${sessionKey}:legacy-result`,
-                  role: "tool" as const,
-                  toolName: state.workerType,
-                  status: state.lastResult.status,
-                  content: state.lastResult.summary,
-                  payload: state.lastResult.payload,
-                  createdAt: state.updatedAt,
-                  ...(state.currentTaskId ? { taskId: state.currentTaskId } : {}),
-                },
-              ]
+            ? [createLegacyWorkerHistoryEntry(sessionKey, state)]
             : []),
         ];
   const messages = history
@@ -465,6 +455,22 @@ async function executeSessionsHistory(
       null,
       2
     ),
+  };
+}
+
+function createLegacyWorkerHistoryEntry(
+  sessionKey: string,
+  state: WorkerSessionState
+): WorkerSessionHistoryEntry {
+  return {
+    id: `worker-history:${sessionKey}:legacy-result`,
+    role: "tool",
+    toolName: state.workerType,
+    status: state.lastResult!.status,
+    content: state.lastResult!.summary,
+    payload: state.lastResult!.payload,
+    createdAt: state.updatedAt,
+    ...(state.currentTaskId ? { taskId: state.currentTaskId } : {}),
   };
 }
 

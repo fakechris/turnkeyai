@@ -270,15 +270,26 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
     ];
   }
   if (message.role === "tool") {
-    return [
-      buildPlainEvent({
-        ...input,
-        kind: "tool",
-        text: message.content,
-        sourceSuffix: "tool",
-        tags: ["thread", "tool"],
-      }),
-    ];
+    const event = buildPlainEvent({
+      ...input,
+      kind: "tool",
+      text: message.content,
+      sourceSuffix: "tool",
+      tags: ["thread", "tool"],
+    });
+    if (message.toolCallId) {
+      event.runtime = {
+        ...(event.runtime ?? {}),
+        toolName: message.name,
+        toolCallId: message.toolCallId,
+        toolPhase: "result",
+        resultContent: message.content,
+      };
+      if (message.toolStatus === "failed" || message.toolStatus === "cancelled") {
+        event.emph = "danger";
+      }
+    }
+    return [event];
   }
   if (message.role !== "assistant") {
     // system: silent — internal scaffolding doesn't belong on the user timeline.
@@ -286,7 +297,10 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
   }
 
   const events: ActivityEvent[] = [];
-  const toolUse = extractNativeToolUseTrace(message) ?? extractToolUseTrace(message.metadata);
+  const toolUse =
+    extractNativeToolUseTrace(message, {
+      includeResults: !isNativeSplitToolEnvelope(message),
+    }) ?? extractToolUseTrace(message.metadata);
   if (toolUse && toolUse.rounds.length > 0) {
     // The final answer is timestamped at message.createdAt. Push the
     // tool events backwards in time using small fractional offsets so
@@ -406,23 +420,29 @@ function extractToolUseTrace(metadata: unknown): ToolUseTrace | null {
   return { rounds };
 }
 
-function extractNativeToolUseTrace(message: TeamMessage): ToolUseTrace | null {
+function extractNativeToolUseTrace(
+  message: TeamMessage,
+  options: { includeResults?: boolean } = {}
+): ToolUseTrace | null {
   if (!message.toolCalls?.length) return null;
   const calls = message.toolCalls.map((call) => ({
     id: call.id,
     name: call.name,
     input: call.arguments,
   }));
-  const results = (message.toolProgress ?? [])
-    .filter((progress) => progress.phase === "completed" || progress.phase === "failed" || progress.phase === "cancelled")
-    .map((progress) => ({
-      toolCallId: progress.toolCallId,
-      toolName: progress.toolName,
-      isError: progress.phase === "failed" || progress.phase === "cancelled",
-      contentBytes: typeof progress.detail?.contentBytes === "number" ? progress.detail.contentBytes : 0,
-      ...(progress.summary ? { content: progress.summary } : {}),
-      ...(progress.detail?.contentTruncated === true ? { contentTruncated: true } : {}),
-    }));
+  const results =
+    options.includeResults === false
+      ? []
+      : (message.toolProgress ?? [])
+          .filter((progress) => progress.phase === "completed" || progress.phase === "failed" || progress.phase === "cancelled")
+          .map((progress) => ({
+            toolCallId: progress.toolCallId,
+            toolName: progress.toolName,
+            isError: progress.phase === "failed" || progress.phase === "cancelled",
+            contentBytes: typeof progress.detail?.contentBytes === "number" ? progress.detail.contentBytes : 0,
+            ...(progress.summary ? { content: progress.summary } : {}),
+            ...(progress.detail?.contentTruncated === true ? { contentTruncated: true } : {}),
+          }));
   return {
     rounds: [
       {
@@ -432,6 +452,10 @@ function extractNativeToolUseTrace(message: TeamMessage): ToolUseTrace | null {
       },
     ],
   };
+}
+
+function isNativeSplitToolEnvelope(message: TeamMessage): boolean {
+  return isRecord(message.metadata) && message.metadata.nativeToolUse === true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

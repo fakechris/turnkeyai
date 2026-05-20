@@ -150,7 +150,9 @@ test("in-memory worker runtime marks partial results as resumable and supports r
     packet: input.packet,
   });
   assert.equal(resumed?.status, "completed");
-  assert.equal((await runtime.getState(spawned.workerRunKey))?.status, "done");
+  const doneState = await runtime.getState(spawned.workerRunKey);
+  assert.equal(doneState?.status, "done");
+  assert.equal(new Set(doneState?.history?.map((entry) => entry.id)).size, doneState?.history?.length);
 
   const cancelled = await runtime.cancel({
     workerRunKey: spawned.workerRunKey,

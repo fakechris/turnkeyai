@@ -374,6 +374,59 @@ describe("MissionThreadBridge", () => {
     assert.equal(ordered[1]!.runtime?.toolCallId, "c-native");
   });
 
+  it("uses split role=tool result for native tool-use envelopes without duplicating assistant progress", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const assistantMessage: TeamMessage = {
+      ...baseMessage("a-native", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "",
+      toolCalls: [
+        {
+          id: "c-native",
+          name: "sessions_send",
+          arguments: { session_key: "worker:browser:1", message: "continue" },
+        },
+      ],
+      toolProgress: [
+        {
+          toolCallId: "c-native",
+          toolName: "sessions_send",
+          phase: "completed",
+          summary: "Assistant-side progress summary.",
+          ts: 4_900,
+        },
+      ],
+      metadata: { nativeToolUse: true, toolRound: 1 },
+    };
+    const toolMessage: TeamMessage = {
+      ...baseMessage("t-native", "tool", 5_001),
+      name: "sessions_send",
+      content: "Durable tool result content.",
+      toolCallId: "c-native",
+      toolStatus: "completed",
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([assistantMessage, toolMessage]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const resultEvents = activity.events.filter(
+      (event) => event.runtime?.toolPhase === "result" && event.runtime.toolCallId === "c-native"
+    );
+    assert.equal(resultEvents.length, 1);
+    assert.equal(resultEvents[0]?.runtime?.messageId, "t-native");
+    assert.equal(resultEvents[0]?.runtime?.resultContent, "Durable tool result content.");
+    assert.ok(
+      activity.events.some((event) => event.runtime?.toolPhase === "call" && event.runtime.toolCallId === "c-native")
+    );
+  });
+
   it("tool-result with isError uses the error message as text (K3.6)", async () => {
     counter = 0;
     const activity = memActivityStore();

@@ -205,7 +205,7 @@ test("workflow routes cancel assistant tool calls and append cancelled tool resu
       body: {
         messageId: "assistant-1",
         threadId: "thread-1",
-        toolCallIds: ["call-1"],
+        toolCallIds: ["call-1", "call-1"],
         reason: "operator cancelled browser work",
       },
     }),
