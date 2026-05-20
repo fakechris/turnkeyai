@@ -27,6 +27,15 @@ export interface MemoryHit {
   rationale?: string;
 }
 
+interface MemoryRecord {
+  memoryId: string;
+  source: MemoryHit["source"];
+  content: string;
+  scoreMultiplier: number;
+  rationale?: string;
+  evidenceDigest?: WorkerEvidenceDigest;
+}
+
 interface MemoryQueryAnalysis {
   queryTerms: Set<string>;
   normalizedQuery: string;
@@ -48,6 +57,7 @@ export interface RoleMemoryResolver {
   loadRoleScratchpad(threadId: ThreadId, roleId: RoleId): Promise<RoleScratchpadRecord | null>;
   loadWorkerEvidence(threadId: ThreadId): Promise<WorkerEvidenceDigest[]>;
   retrieveMemory(input: { threadId: ThreadId; roleId: RoleId; queryText: string }): Promise<MemoryHit[]>;
+  getMemory(input: { threadId: ThreadId; roleId: RoleId; memoryId: string }): Promise<MemoryHit | null>;
 }
 
 interface DefaultRoleMemoryResolverOptions {
@@ -93,6 +103,27 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
   }
 
   async retrieveMemory(input: { threadId: ThreadId; roleId: RoleId; queryText: string }): Promise<MemoryHit[]> {
+    const records = await this.loadMemoryRecords({ threadId: input.threadId, roleId: input.roleId });
+    const query = analyzeQuery(input.queryText);
+
+    return records
+      .filter((record) => !record.evidenceDigest || shouldIncludeEvidenceDigest(record.evidenceDigest, query))
+      .map((record) => buildMemoryHit(record, query))
+      .filter((hit) => hit.score >= minimumMemoryScore(query, hit.source))
+      .sort((left, right) => right.score - left.score)
+      .slice(0, query.explicitRecall ? EXPLICIT_RECALL_HITS : DEFAULT_RECALL_HITS);
+  }
+
+  async getMemory(input: { threadId: ThreadId; roleId: RoleId; memoryId: string }): Promise<MemoryHit | null> {
+    const records = await this.loadMemoryRecords({ threadId: input.threadId, roleId: input.roleId });
+    const record = records.find((item) => item.memoryId === input.memoryId);
+    if (!record) {
+      return null;
+    }
+    return buildMemoryHit(record, analyzeQuery(record.content));
+  }
+
+  private async loadMemoryRecords(input: { threadId: ThreadId; roleId: RoleId }): Promise<MemoryRecord[]> {
     const [threadSummary, roleScratchpad, workerEvidence] = await Promise.all([
       this.loadThreadSummary(input.threadId),
       this.loadRoleScratchpad(input.threadId, input.roleId),
@@ -103,11 +134,10 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
       this.loadThreadSessionMemory(input.threadId),
       this.threadJournalStore?.listByThread(input.threadId, 3) ?? [],
     ]);
-    const query = analyzeQuery(input.queryText);
-    const hits: MemoryHit[] = [];
+    const records: MemoryRecord[] = [];
 
     if (threadMemory) {
-      const records: Array<{ memoryId: string; source: MemoryHit["source"]; content: string }> = [
+      const threadMemoryRecords: Array<{ memoryId: string; source: MemoryHit["source"]; content: string }> = [
         ...threadMemory.preferences.map((value, index) => ({
           memoryId: `${input.threadId}:preference:${index + 1}`,
           source: "user-preference" as const,
@@ -125,11 +155,17 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
         })),
       ];
 
-      hits.push(...records.map((record) => buildMemoryHit(record, query, 1.35, "thread preference/constraint memory")));
+      records.push(
+        ...threadMemoryRecords.map((record) => ({
+          ...record,
+          scoreMultiplier: 1.35,
+          rationale: "thread preference/constraint memory",
+        }))
+      );
     }
 
     if (threadSummary) {
-      const records: Array<{ memoryId: string; source: MemoryHit["source"]; content: string }> = [
+      const summaryRecords: Array<{ memoryId: string; source: MemoryHit["source"]; content: string }> = [
         {
           memoryId: `${input.threadId}:goal`,
           source: "thread-memory",
@@ -152,11 +188,17 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
         })),
       ];
 
-      hits.push(...records.map((record) => buildMemoryHit(record, query, 1.15, "thread summary memory")));
+      records.push(
+        ...summaryRecords.map((record) => ({
+          ...record,
+          scoreMultiplier: 1.15,
+          rationale: "thread summary memory",
+        }))
+      );
     }
 
     if (threadSessionMemory) {
-      const records: Array<{ memoryId: string; source: MemoryHit["source"]; content: string }> = [
+      const sessionRecords: Array<{ memoryId: string; source: MemoryHit["source"]; content: string }> = [
         ...threadSessionMemory.activeTasks.map((value, index) => ({
           memoryId: `${input.threadId}:session:active:${index + 1}`,
           source: "session-memory" as const,
@@ -188,11 +230,17 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
           content: `Recent journal: ${value}`,
         })),
       ];
-      hits.push(...records.map((record) => buildMemoryHit(record, query, 1.25, "session continuity memory")));
+      records.push(
+        ...sessionRecords.map((record) => ({
+          ...record,
+          scoreMultiplier: 1.25,
+          rationale: "session continuity memory",
+        }))
+      );
     }
 
     if (roleScratchpad) {
-      const records: Array<{ memoryId: string; source: MemoryHit["source"]; content: string }> = [
+      const scratchpadRecords: Array<{ memoryId: string; source: MemoryHit["source"]; content: string }> = [
         ...roleScratchpad.completedWork.map((value, index) => ({
           memoryId: `${input.threadId}:${input.roleId}:done:${index + 1}`,
           source: "thread-memory" as const,
@@ -206,66 +254,58 @@ export class DefaultRoleMemoryResolver implements RoleMemoryResolver {
       ];
 
       if (roleScratchpad.waitingOn) {
-        records.push({
+        scratchpadRecords.push({
           memoryId: `${input.threadId}:${input.roleId}:waiting`,
           source: "thread-memory",
           content: `Waiting on: ${roleScratchpad.waitingOn}`,
         });
       }
 
-      hits.push(...records.map((record) => buildMemoryHit(record, query, 1.2, "role scratchpad memory")));
+      records.push(
+        ...scratchpadRecords.map((record) => ({
+          ...record,
+          scoreMultiplier: 1.2,
+          rationale: "role scratchpad memory",
+        }))
+      );
     }
 
-    hits.push(
+    records.push(
       ...workerEvidence.flatMap((digest, digestIndex) =>
-        !shouldIncludeEvidenceDigest(digest, query)
+        digest.admissionMode === "blocked"
           ? []
-          : digest.findings.map((finding, findingIndex) =>
-              buildMemoryHit(
-                {
-                  memoryId: `${digest.workerRunKey}:${digestIndex + 1}:${findingIndex + 1}`,
-                  source: "knowledge-note",
-                  content: buildEvidenceContent(digest, finding),
-                },
-                query,
-                digest.trustLevel === "promotable" ? 1.25 : 0.75,
-                digest.trustLevel === "promotable" ? "verified worker evidence" : "observational worker evidence"
-              )
-            )
+          : digest.findings.map((finding, findingIndex) => ({
+              memoryId: `${digest.workerRunKey}:${digestIndex + 1}:${findingIndex + 1}`,
+              source: "knowledge-note" as const,
+              content: buildEvidenceContent(digest, finding),
+              scoreMultiplier: digest.trustLevel === "promotable" ? 1.25 : 0.75,
+              rationale: digest.trustLevel === "promotable" ? "verified worker evidence" : "observational worker evidence",
+              evidenceDigest: digest,
+            }))
       )
     );
 
-    hits.push(
+    records.push(
       ...journalRecords.flatMap((record, recordIndex) =>
-        record.entries.map((entry, entryIndex) =>
-          buildMemoryHit(
-            {
-              memoryId: `${record.threadId}:${record.dateKey}:${recordIndex + 1}:${entryIndex + 1}`,
-              source: "journal-note",
-              content: `Journal ${record.dateKey}: ${entry}`,
-            },
-            query,
-            0.95 + Math.max(0, journalRecords.length - recordIndex) * 0.05,
-            "recent thread journal"
-          )
-        )
+        record.entries.map((entry, entryIndex) => ({
+          memoryId: `${record.threadId}:${record.dateKey}:${recordIndex + 1}:${entryIndex + 1}`,
+          source: "journal-note" as const,
+          content: `Journal ${record.dateKey}: ${entry}`,
+          scoreMultiplier: 0.95 + Math.max(0, journalRecords.length - recordIndex) * 0.05,
+          rationale: "recent thread journal",
+        }))
       )
     );
 
-    return hits
-      .filter((hit) => hit.score >= minimumMemoryScore(query, hit.source))
-      .sort((left, right) => right.score - left.score)
-      .slice(0, query.explicitRecall ? EXPLICIT_RECALL_HITS : DEFAULT_RECALL_HITS);
+    return records;
   }
 }
 
 function buildMemoryHit(
-  input: { memoryId: string; source: MemoryHit["source"]; content: string },
-  query: MemoryQueryAnalysis,
-  scoreMultiplier = 1,
-  rationale?: string
+  input: { memoryId: string; source: MemoryHit["source"]; content: string; scoreMultiplier?: number; rationale?: string },
+  query: MemoryQueryAnalysis
 ): MemoryHit {
-  let score = scoreContent(input.content, query) * scoreMultiplier * intentWeight(input.content, query);
+  let score = scoreContent(input.content, query) * (input.scoreMultiplier ?? 1) * intentWeight(input.content, query);
   if (query.evidenceSeeking && input.source === "knowledge-note") {
     score = Math.max(score, 0.5);
   }
@@ -274,7 +314,7 @@ function buildMemoryHit(
     source: input.source,
     score,
     content: input.content,
-    ...(rationale ? { rationale } : {}),
+    ...(input.rationale ? { rationale: input.rationale } : {}),
   };
 }
 

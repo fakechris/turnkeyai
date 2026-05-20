@@ -102,6 +102,49 @@ test("role memory resolver prioritizes session memory for continuation queries",
   }
 });
 
+test("role memory resolver reads an exact memory id without depending on search ranking", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "role-memory-resolver-get-memory-"));
+
+  try {
+    const threadSummaryStore = new FileThreadSummaryStore({ rootDir: path.join(tempDir, "summary") });
+    const threadMemoryStore = new FileThreadMemoryStore({ rootDir: path.join(tempDir, "memory") });
+    const roleScratchpadStore = new FileRoleScratchpadStore({ rootDir: path.join(tempDir, "scratchpad") });
+    const workerEvidenceDigestStore = new FileWorkerEvidenceDigestStore({ rootDir: path.join(tempDir, "worker") });
+
+    await threadMemoryStore.put({
+      threadId: "thread-1",
+      updatedAt: 10,
+      preferences: [],
+      constraints: ["Never auto-submit forms without approval."],
+      longTermNotes: ["Use direct provider APIs before browser fallback."],
+    });
+
+    const resolver = new DefaultRoleMemoryResolver({
+      threadSummaryStore,
+      threadMemoryStore,
+      roleScratchpadStore,
+      workerEvidenceDigestStore,
+    });
+
+    const hit = await resolver.getMemory({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      memoryId: "thread-1:note:1",
+    });
+    const missing = await resolver.getMemory({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      memoryId: "thread-1:note:999",
+    });
+
+    assert.equal(hit?.memoryId, "thread-1:note:1");
+    assert.match(hit?.content ?? "", /direct provider APIs/);
+    assert.equal(missing, null);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("role memory resolver suppresses weak observational evidence unless the query explicitly asks for evidence", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "role-memory-resolver-evidence-"));
 

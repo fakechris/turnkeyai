@@ -621,6 +621,98 @@ test("sessions_history falls back to legacy lastResult when durable history is a
   ]);
 });
 
+test("memory_search and memory_get expose durable thread memory to the role", async () => {
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    memoryResolver: {
+      async retrieveMemory(input) {
+        assert.equal(input.threadId, "thread-1");
+        assert.equal(input.roleId, "role-lead");
+        const hits = [
+          {
+            memoryId: "thread-1:decision:1",
+            source: "thread-memory" as const,
+            score: 0.92,
+            content: "Decision: Use direct provider APIs before browser fallback.",
+            rationale: "thread summary memory",
+          },
+          {
+            memoryId: "thread-1:preference:1",
+            source: "user-preference" as const,
+            score: 0.74,
+            content: "Preference: Keep final answers concise.",
+          },
+        ];
+        if (input.queryText.includes("thread 1 decision 1")) {
+          return hits.filter((hit) => hit.memoryId === "thread-1:decision:1");
+        }
+        return hits;
+      },
+      async getMemory(input) {
+        assert.equal(input.threadId, "thread-1");
+        assert.equal(input.roleId, "role-lead");
+        assert.equal(input.memoryId, "thread-1:decision:1");
+        return {
+          memoryId: "thread-1:decision:1",
+          source: "thread-memory" as const,
+          score: 0.92,
+          content: "Decision: Use direct provider APIs before browser fallback.",
+          rationale: "thread summary memory",
+        };
+      },
+    },
+  });
+  assert.deepEqual(
+    executor.definitions().filter((definition) => definition.name.startsWith("memory_")).map((definition) => definition.name),
+    ["memory_search", "memory_get"]
+  );
+
+  const activation = buildActivation();
+  const packet = {
+    roleId: "role-lead",
+    roleName: "Lead",
+    seat: "lead" as const,
+    systemPrompt: "Lead.",
+    taskPrompt: "Recall prior decision.",
+    outputContract: "Return result.",
+    suggestedMentions: [],
+  };
+  const search = await executor.execute({
+    call: {
+      id: "call-memory-search",
+      name: "memory_search",
+      input: { query: "What did we decide about browser fallback?", limit: 1 },
+    },
+    activation,
+    packet,
+  });
+  const searchBody = JSON.parse(search.content) as { showing: number; memories: Array<{ memory_id: string; score: number }> };
+  assert.equal(searchBody.showing, 1);
+  assert.deepEqual(searchBody.memories, [
+    {
+      memory_id: "thread-1:decision:1",
+      source: "thread-memory",
+      score: 0.92,
+      content: "Decision: Use direct provider APIs before browser fallback.",
+      rationale: "thread summary memory",
+    },
+  ]);
+  assert.equal(search.progress?.[0]?.phase, "completed");
+
+  const get = await executor.execute({
+    call: {
+      id: "call-memory-get",
+      name: "memory_get",
+      input: { memory_id: "thread-1:decision:1" },
+    },
+    activation,
+    packet,
+  });
+  const getBody = JSON.parse(get.content) as { memory: { memory_id: string; content: string } };
+  assert.equal(getBody.memory.memory_id, "thread-1:decision:1");
+  assert.match(getBody.memory.content, /direct provider APIs/);
+});
+
 function buildActivation(): RoleActivationInput {
   return {
     thread: {

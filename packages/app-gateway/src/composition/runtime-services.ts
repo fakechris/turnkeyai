@@ -189,6 +189,7 @@ export async function composeDaemonRuntimeServices(
   const toolCapabilityRegistry = createNativeToolCapabilityRegistry({
     availableWorkerKinds: foundations.workerHandlers.map((handler) => handler.kind),
     permissionsEnabled: Boolean(inputs.toolPermissionService),
+    memoryEnabled: true,
   });
   const toolCancellationRegistry = new InMemoryToolCancellationRegistry();
 
@@ -216,6 +217,7 @@ export async function composeDaemonRuntimeServices(
                 workerRuntime,
                 toolCapabilityRegistry,
                 toolCancellationRegistry,
+                memoryResolver: roleMemoryResolver,
                 ...(inputs.toolPermissionService ? { toolPermissionService: inputs.toolPermissionService } : {}),
               }),
               runtimeProgressRecorder,

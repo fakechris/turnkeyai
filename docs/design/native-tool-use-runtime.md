@@ -2,7 +2,7 @@
 
 > Status: implemented runtime foundation
 > Updated: 2026-05-20
-> Scope: provider-neutral tool calling, role loop execution, sessions_* tools, and production parity targets
+> Scope: provider-neutral tool calling, role loop execution, sessions_* tools, memory tools, and production parity targets
 
 ## 1. Why This Exists
 
@@ -107,7 +107,23 @@ Current production wiring usually exposes:
 `coder` and `harness` remain valid `WorkerKind` values, but they are not
 included in native tool schemas until an executable handler is installed.
 
-## 6. Browser Policy
+## 6. Memory Tools
+
+The native tool registry can expose durable memory to the role loop:
+
+| Tool | Purpose |
+| --- | --- |
+| `memory_search` | Search thread memory, session memory, recent journal entries, and admitted worker evidence. |
+| `memory_get` | Fetch one memory hit by `memory_id` returned from `memory_search`. |
+
+Memory tools are enabled only when a `RoleMemoryResolver` is wired into the
+executor. They reuse the same resolver as prompt assembly, so prompt-injected
+memory and tool-queried memory are backed by the same stores and trust/admission
+metadata. Prompt harness text tells the model to use these tools for prior
+decisions, preferences, constraints, unresolved questions, and evidence, and not
+to fabricate remembered facts when search returns no relevant hit.
+
+## 7. Browser Policy
 
 The main role should not call browser primitives directly by default.
 
@@ -145,7 +161,7 @@ explicit URL, the browser task planner may open a configured search-engine URL
 as the first browser action. The default template is intentionally replaceable
 so deployments can use a region- or organization-approved search provider.
 
-## 7. Parity Bar
+## 8. Parity Bar
 
 TurnkeyAI's baseline bar is:
 
@@ -158,8 +174,9 @@ TurnkeyAI's baseline bar is:
 7. Session list/history inspection from the same tool surface.
 8. Permission query/result/applied loop before side-effectful tools are treated as approved.
 9. Mission timeline replay for tool calls, progress, split role=tool results, and final answers.
+10. Native `memory_search` / `memory_get` backed by the same durable memory resolver used for prompt assembly.
 
-## 8. Closed Implementation Work
+## 9. Closed Implementation Work
 
 The implementation now includes:
 
@@ -170,9 +187,10 @@ The implementation now includes:
 - `/message/cancel-tools` for pending/running tool cancellation.
 - Permission query/result/applied governance events and cache updates.
 - Browser/search/worker capability registry alignment so only executable workers are advertised.
+- Native memory tools plus prompt harness guidance for recall without fabrication.
 - Mission-route level regression coverage for `POST /missions/:id/messages` → native tool call/progress/result → `GET /missions/:id/timeline`.
 
-## 9. Remaining Hardening
+## 10. Remaining Hardening
 
 This is not the final product surface. Remaining work is operational hardening:
 
@@ -180,5 +198,6 @@ This is not the final product surface. Remaining work is operational hardening:
 - Add more Mission Detail filters for long tool-heavy timelines.
 - Strengthen prompt-injection defenses around browser text evidence before it enters role prompts.
 - Add scale-oriented cursors for long mission timelines and long sub-session histories.
+- Add pre-compaction memory flush so high-pressure prompt reduction can ask the model to persist important open items before dropping context.
 
 The key architectural decision is fixed: TurnkeyAI's core tool-use path is model-native and session-native, not prompt-only and not browser-bridge-only.

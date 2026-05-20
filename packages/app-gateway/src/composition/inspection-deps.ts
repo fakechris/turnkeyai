@@ -145,6 +145,7 @@ export function createInspectionRouteDeps(
       });
       const registry = createNativeToolCapabilityRegistry({
         availableWorkerKinds: workerHandlers.map((handler) => handler.kind),
+        memoryEnabled: true,
       });
       return {
         ...inspection,

@@ -90,3 +90,22 @@ test("native tool capability registry includes permission tools only when enable
   );
   assert.match(enabled.renderPromptHarness({ seat: "lead" }), /Permission Loop/);
 });
+
+test("native tool capability registry includes memory tools only when enabled", () => {
+  const disabled = createNativeToolCapabilityRegistry({
+    availableWorkerKinds: ["explore"],
+  });
+  assert.equal(disabled.definitions().some((definition) => definition.name === "memory_search"), false);
+  assert.doesNotMatch(disabled.renderPromptHarness({ seat: "lead" }), /Memory Tools/);
+
+  const enabled = createNativeToolCapabilityRegistry({
+    availableWorkerKinds: ["explore"],
+    memoryEnabled: true,
+  });
+  assert.deepEqual(
+    enabled.summaries().filter((summary) => summary.promptGroup === "memory").map((summary) => summary.name),
+    ["memory_search", "memory_get"]
+  );
+  assert.match(enabled.renderPromptHarness({ seat: "lead" }), /Memory Tools/);
+  assert.match(enabled.renderPromptHarness({ seat: "lead" }), /Do not fabricate remembered facts/);
+});
