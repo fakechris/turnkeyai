@@ -1,9 +1,21 @@
-import type { RoleActivationInput, RoleId, RuntimeProgressRecorder } from "@turnkeyai/core-types/team";
+import type {
+  Clock,
+  RoleActivationInput,
+  RoleId,
+  RuntimeProgressRecorder,
+  TeamMessageStore,
+} from "@turnkeyai/core-types/team";
 import type { GenerateTextInput, GenerateTextResult, LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 
 import type { GeneratedRoleReply, RoleResponseGenerator } from "./deterministic-response-generator";
+import {
+  buildNativeToolMessages,
+  type NativeToolProgressTrace,
+  type NativeToolResultTrace,
+  type NativeToolRoundTrace,
+} from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
 import { reducePromptPacketForRequestEnvelope, type RequestEnvelopeReductionLevel } from "./request-envelope-reducer";
 import { getRoleModelSelection } from "./role-model-selection";
@@ -20,15 +32,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
   private readonly toolLoop: RoleToolLoopOptions | undefined;
+  private readonly nativeToolMessageStore: Pick<TeamMessageStore, "append"> | undefined;
+  private readonly clock: Clock;
 
   constructor(options: {
     gateway: LLMGateway;
     runtimeProgressRecorder?: RuntimeProgressRecorder;
     toolLoop?: RoleToolLoopOptions;
+    nativeToolMessageStore?: Pick<TeamMessageStore, "append">;
+    clock?: Clock;
   }) {
     this.gateway = options.gateway;
     this.runtimeProgressRecorder = options.runtimeProgressRecorder;
     this.toolLoop = options.toolLoop;
+    this.nativeToolMessageStore = options.nativeToolMessageStore;
+    this.clock = options.clock ?? { now: () => Date.now() };
   }
 
   async generate(input: { activation: RoleActivationInput; packet: RolePromptPacket }): Promise<GeneratedRoleReply> {
@@ -67,7 +85,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         : {}),
     });
 
-    const toolTrace: ToolRoundTrace[] = [];
+    const toolTrace: NativeToolRoundTrace[] = [];
     let messages: LLMMessage[] = initialGatewayInput.messages;
     for (let round = 0; ; round++) {
       const generated = await this.generateWithEnvelopeRetry({
@@ -98,42 +116,29 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         throw new Error(`tool-use loop exceeded max rounds (${maxRounds})`);
       }
 
-      const toolResults = await this.executeToolCalls({
-        activation: input.activation,
-        packet: input.packet,
-        toolCalls,
-      });
-      // PR K3.6: persist the actual tool result content (truncated
-       // to ROLE_TOOL_RESULT_TRACE_CAP_BYTES) alongside the byte
-       // count. Without this the mission timeline could only show
-       // "Tool X returned (2 kB)" — a black box from the user's
-       // point of view. We deliberately keep `content` truncated:
-       // the LLM gateway has its own envelope-budgeting math that
-       // operates on the full content in the messages array, but
-       // the assistant message metadata persisted to disk gets a
-       // capped slice so a giant browser snapshot doesn't bloat
-       // every assistant turn forever.
-      toolTrace.push({
+      const roundTrace: NativeToolRoundTrace = {
         round: round + 1,
         calls: toolCalls.map((call) => ({
           id: call.id,
           name: call.name,
           input: call.input,
         })),
-        results: toolResults.map((toolResult) => {
-          const bytes = Buffer.byteLength(toolResult.content, "utf8");
-          const truncated = bytes > ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
-          return {
-            toolCallId: toolResult.toolCallId,
-            toolName: toolResult.toolName,
-            isError: toolResult.isError === true,
-            contentBytes: bytes,
-            content: truncated
-              ? sliceUtf8(toolResult.content, ROLE_TOOL_RESULT_TRACE_CAP_BYTES)
-              : toolResult.content,
-            ...(truncated ? { contentTruncated: true } : {}),
-          };
-        }),
+        results: [],
+        progress: [],
+      };
+      toolTrace.push(roundTrace);
+      const toolResults = await this.executeToolCalls({
+        activation: input.activation,
+        packet: input.packet,
+        toolCalls,
+        onProgress: async (call, progress) => {
+          roundTrace.progress?.push(toNativeToolProgressTrace(call, progress, this.clock.now()));
+          await this.persistNativeToolTraceSafely(input.activation, toolTrace);
+        },
+        onResult: async (toolResult) => {
+          roundTrace.results.push(toNativeToolResultTrace(toolResult));
+          await this.persistNativeToolTraceSafely(input.activation, toolTrace);
+        },
       });
       messages = appendAssistantToolCallMessage(messages, {
         text: result.text,
@@ -255,15 +260,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     activation: RoleActivationInput;
     packet: RolePromptPacket;
     toolCalls: LLMToolCall[];
+    onProgress?: (call: LLMToolCall, progress: Parameters<typeof recordRoleToolProgress>[0]["progress"]) => Promise<void>;
+    onResult?: (result: RoleToolExecutionResult) => Promise<void>;
   }): Promise<RoleToolExecutionResult[]> {
     if (!this.toolLoop) return [];
     return Promise.all(
       input.toolCalls.map(async (call) => {
-        await this.recordToolProgressSafely(input.activation, call, {
+        await this.emitToolProgressSafely(input.activation, call, {
           phase: "started",
           toolName: call.name,
           summary: `Tool call started: ${call.name}`,
-        });
+        }, input.onProgress);
         try {
           const result = await this.toolLoop!.executor.execute({
             call,
@@ -271,30 +278,77 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             packet: input.packet,
           });
           for (const progress of result.progress ?? []) {
-            await this.recordToolProgressSafely(input.activation, call, progress);
+            await this.emitToolProgressSafely(input.activation, call, progress, input.onProgress);
           }
-          await this.recordToolProgressSafely(input.activation, call, {
+          await this.emitToolProgressSafely(input.activation, call, {
             phase: result.isError ? "failed" : "completed",
             toolName: call.name,
             summary: result.isError ? `Tool call failed: ${call.name}` : `Tool call completed: ${call.name}`,
-          });
+          }, input.onProgress);
+          await input.onResult?.(result);
           return result;
         } catch (error) {
           const content = error instanceof Error ? error.message : String(error);
-          await this.recordToolProgressSafely(input.activation, call, {
+          await this.emitToolProgressSafely(input.activation, call, {
             phase: "failed",
             toolName: call.name,
             summary: `Tool call failed: ${call.name}: ${content}`,
-          });
-          return {
+          }, input.onProgress);
+          const result = {
             toolCallId: call.id,
             toolName: call.name,
             content,
             isError: true,
           };
+          await input.onResult?.(result);
+          return result;
         }
       })
     );
+  }
+
+  private async emitToolProgressSafely(
+    activation: RoleActivationInput,
+    call: LLMToolCall,
+    progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
+    onProgress: ((call: LLMToolCall, progress: Parameters<typeof recordRoleToolProgress>[0]["progress"]) => Promise<void>) | undefined
+  ): Promise<void> {
+    await this.recordToolProgressSafely(activation, call, progress);
+    try {
+      await onProgress?.(call, progress);
+    } catch (error) {
+      console.error("native tool message progress persistence failed", {
+        threadId: activation.thread.threadId,
+        flowId: activation.flow.flowId,
+        taskId: activation.handoff.taskId,
+        toolName: call.name,
+        error,
+      });
+    }
+  }
+
+  private async persistNativeToolTraceSafely(
+    activation: RoleActivationInput,
+    toolTrace: NativeToolRoundTrace[]
+  ): Promise<void> {
+    if (!this.nativeToolMessageStore) return;
+    try {
+      const messages = buildNativeToolMessages(
+        activation,
+        { toolUse: { rounds: toolTrace } },
+        this.clock.now()
+      );
+      for (const message of messages) {
+        await this.nativeToolMessageStore.append(message);
+      }
+    } catch (error) {
+      console.error("native tool message persistence failed", {
+        threadId: activation.thread.threadId,
+        flowId: activation.flow.flowId,
+        taskId: activation.handoff.taskId,
+        error,
+      });
+    }
   }
 
   private async recordToolProgressSafely(
@@ -512,17 +566,32 @@ function sliceUtf8(value: string, maxBytes: number): string {
   return buffer.subarray(0, end).toString("utf8");
 }
 
-interface ToolRoundTrace {
-  round: number;
-  calls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
-  results: Array<{
-    toolCallId: string;
-    toolName: string;
-    isError: boolean;
-    contentBytes: number;
-    content?: string;
-    contentTruncated?: boolean;
-  }>;
+function toNativeToolResultTrace(toolResult: RoleToolExecutionResult): NativeToolResultTrace {
+  const bytes = Buffer.byteLength(toolResult.content, "utf8");
+  const truncated = bytes > ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
+  return {
+    toolCallId: toolResult.toolCallId,
+    toolName: toolResult.toolName,
+    isError: toolResult.isError === true,
+    contentBytes: bytes,
+    content: truncated ? sliceUtf8(toolResult.content, ROLE_TOOL_RESULT_TRACE_CAP_BYTES) : toolResult.content,
+    ...(truncated ? { contentTruncated: true } : {}),
+  };
+}
+
+function toNativeToolProgressTrace(
+  call: LLMToolCall,
+  progress: Parameters<typeof recordRoleToolProgress>[0]["progress"],
+  ts: number
+): NativeToolProgressTrace {
+  return {
+    toolCallId: call.id,
+    toolName: progress.toolName || call.name,
+    phase: progress.phase,
+    summary: progress.summary,
+    ...(progress.detail ? { detail: progress.detail } : {}),
+    ts,
+  };
 }
 
 function buildGatewayInput(input: {

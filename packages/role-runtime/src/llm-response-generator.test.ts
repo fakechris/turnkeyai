@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { RoleActivationInput } from "@turnkeyai/core-types/team";
+import type { RoleActivationInput, TeamMessage } from "@turnkeyai/core-types/team";
 import type { GenerateTextInput } from "@turnkeyai/llm-adapter/index";
 import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
@@ -334,6 +334,119 @@ test("llm role response generator runs native tool-use loop and feeds tool resul
   assert.equal((result.metadata?.toolUse as { toolCallCount?: number } | undefined)?.toolCallCount, 1);
   assert.ok(progressEvents.some((event) => event.summary.includes("Tool call started: sessions_spawn")));
   assert.ok(progressEvents.some((event) => event.summary.includes("sessions_spawn completed")));
+});
+
+test("llm role response generator persists native tool progress while the tool is running", async () => {
+  const storedMessages = new Map<string, TeamMessage>();
+  const appendedMessages: TeamMessage[] = [];
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "I will use a specialist.",
+        toolCalls: [
+          {
+            id: "toolu-live",
+            name: "sessions_spawn",
+            input: { agent_id: "browser", task: "Open example.com" },
+          },
+        ],
+        stopReason: "tool_use",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "Done.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+
+  let resolveTool!: () => void;
+  let executeStarted!: () => void;
+  const executeStartedPromise = new Promise<void>((resolve) => {
+    executeStarted = resolve;
+  });
+  const toolReleasePromise = new Promise<void>((resolve) => {
+    resolveTool = resolve;
+  });
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executeStarted();
+      await toolReleasePromise;
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: "Example Domain",
+        progress: [
+          {
+            phase: "progress",
+            toolName: input.call.name,
+            summary: "Browser snapshot captured",
+          },
+        ],
+      };
+    },
+  };
+  let now = 1_000;
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 4 },
+    nativeToolMessageStore: {
+      async append(message) {
+        appendedMessages.push(message);
+        storedMessages.set(message.id, message);
+      },
+    },
+    clock: {
+      now: () => now++,
+    },
+  });
+
+  const resultPromise = generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  await executeStartedPromise;
+  const pendingAssistant = storedMessages.get("task-1:tool-round:1:assistant");
+  assert.equal(pendingAssistant?.role, "assistant");
+  assert.equal(pendingAssistant?.toolStatus, "pending");
+  assert.equal(pendingAssistant?.toolCalls?.[0]?.name, "sessions_spawn");
+  assert.equal(pendingAssistant?.toolProgress?.[0]?.phase, "started");
+  assert.equal(storedMessages.has("task-1:tool-round:1:result:toolu-live"), false);
+
+  resolveTool();
+  const result = await resultPromise;
+
+  assert.equal(result.content, "Done.");
+  const completedAssistant = storedMessages.get("task-1:tool-round:1:assistant");
+  const toolMessage = storedMessages.get("task-1:tool-round:1:result:toolu-live");
+  assert.equal(completedAssistant?.toolStatus, "completed");
+  assert.equal(completedAssistant?.toolProgress?.some((event) => event.summary === "Browser snapshot captured"), true);
+  assert.equal(completedAssistant?.toolProgress?.at(-1)?.phase, "completed");
+  assert.equal(toolMessage?.role, "tool");
+  assert.equal(toolMessage?.toolCallId, "toolu-live");
+  assert.equal(toolMessage?.content, "Example Domain");
+  assert.ok(appendedMessages.length >= 3);
 });
 
 test("llm role response generator preserves tool history when envelope retry reduces later rounds", async () => {
