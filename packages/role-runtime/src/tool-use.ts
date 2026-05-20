@@ -427,40 +427,39 @@ async function executeSessionsHistory(
   }
   const offset = nonNegativeInteger(input.call.input.offset) ?? 0;
   const limit = positiveInteger(input.call.input.limit) ?? 50;
-  const allMessages =
+  const history =
     state.history && state.history.length > 0
-      ? state.history.map((entry) => serializeWorkerHistoryEntry(entry, input.call.input.include_tools === true))
+      ? state.history
       : [
           ...(state.lastResult
             ? [
-                serializeWorkerHistoryEntry(
-                  {
-                    id: `worker-history:${sessionKey}:legacy-result`,
-                    role: "tool",
-                    toolName: state.workerType,
-                    status: state.lastResult.status,
-                    content: state.lastResult.summary,
-                    payload: state.lastResult.payload,
-                    createdAt: state.updatedAt,
-                    ...(state.currentTaskId ? { taskId: state.currentTaskId } : {}),
-                  },
-                  input.call.input.include_tools === true
-                ),
+                {
+                  id: `worker-history:${sessionKey}:legacy-result`,
+                  role: "tool" as const,
+                  toolName: state.workerType,
+                  status: state.lastResult.status,
+                  content: state.lastResult.summary,
+                  payload: state.lastResult.payload,
+                  createdAt: state.updatedAt,
+                  ...(state.currentTaskId ? { taskId: state.currentTaskId } : {}),
+                },
               ]
             : []),
         ];
-  const messages = allMessages.slice(offset, offset + limit);
+  const messages = history
+    .slice(offset, offset + limit)
+    .map((entry) => serializeWorkerHistoryEntry(entry, input.call.input.include_tools === true));
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
     content: JSON.stringify(
       {
         session_key: sessionKey,
-        total_messages: allMessages.length,
+        total_messages: history.length,
         showing: messages.length,
         offset,
         limit,
-        has_more: offset + messages.length < allMessages.length,
+        has_more: offset + messages.length < history.length,
         messages,
       },
       null,

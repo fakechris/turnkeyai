@@ -473,13 +473,13 @@ async function cancelToolCallsOnMessage(input: {
       },
     };
   });
-  for (const toolMessage of toolMessages) {
-    if (input.teamMessageStore.appendIfAbsent) {
-      await input.teamMessageStore.appendIfAbsent(toolMessage);
-    } else {
-      await input.teamMessageStore.append(toolMessage);
-    }
-  }
+  await Promise.all(
+    toolMessages.map((toolMessage) =>
+      input.teamMessageStore.appendIfAbsent
+        ? input.teamMessageStore.appendIfAbsent(toolMessage)
+        : input.teamMessageStore.append(toolMessage)
+    )
+  );
 
   return {
     statusCode: 200,

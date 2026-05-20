@@ -501,9 +501,7 @@ export class CoordinationEngine {
     intent: RoleOutcomeIntent
   ): Promise<void> {
     await this.markHandoffResponded(flow.flowId, intent.handoff.taskId);
-    for (const message of this.normalizeRoleOutcomeMessages(intent)) {
-      await this.ensureMessagePersisted(message);
-    }
+    await Promise.all(this.normalizeRoleOutcomeMessages(intent).map((message) => this.ensureMessagePersisted(message)));
     await this.refreshRoleContext(thread.threadId, intent.roleId);
     await this.markRoleCompleted(flow.flowId, intent.roleId);
     await this.markHandoffClosed(flow.flowId, intent.handoff.taskId);
