@@ -99,23 +99,28 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
           message: `Worker runtime restarted but no handler is available for ${record.state.workerType}, so the session cannot resume.`,
         });
       } else if (record.state.status === "running") {
+        const summary = buildHydrationContinuationSummary(record.state);
+        const nextState = {
+          ...record.state,
+          status: "resumable" as const,
+          updatedAt: now,
+          lastError: {
+            code: "WORKER_TIMEOUT" as const,
+            message: "Worker runtime restarted while execution was in progress.",
+            retryable: true,
+          },
+          continuationDigest: {
+            reason: "supervisor_retry" as const,
+            summary,
+            createdAt: now,
+          },
+        };
         nextRecord = {
           ...record,
-          state: {
-            ...record.state,
-            status: "resumable" as const,
-            updatedAt: now,
-            lastError: {
-              code: "WORKER_TIMEOUT" as const,
-              message: "Worker runtime restarted while execution was in progress.",
-              retryable: true,
-            },
-            continuationDigest: {
-              reason: "supervisor_retry" as const,
-              summary: buildHydrationContinuationSummary(record.state),
-              createdAt: now,
-            },
-          },
+          state: appendWorkerHistory(
+            nextState,
+            buildWorkerControlHistoryEntry(nextState, "interrupted", summary, now)
+          ),
         };
         downgradedRunningSessions += 1;
       }
@@ -704,7 +709,7 @@ function buildWorkerFailureHistoryEntry(
 
 function buildWorkerControlHistoryEntry(
   state: WorkerSessionState,
-  status: "cancelled" | "interrupted",
+  status: "cancelled" | "interrupted" | "failed",
   content: string,
   createdAt: number
 ): WorkerSessionHistoryEntry {
@@ -843,17 +848,21 @@ function buildUnrecoverableHydratedRecord(
   now: number,
   input: { message: string }
 ): WorkerSessionRecord {
+  const nextState = {
+    ...record.state,
+    status: "failed" as const,
+    updatedAt: now,
+    lastError: {
+      code: "WORKER_FAILED" as const,
+      message: input.message,
+      retryable: false,
+    },
+  };
   return {
     ...record,
-    state: {
-      ...record.state,
-      status: "failed",
-      updatedAt: now,
-      lastError: {
-        code: "WORKER_FAILED",
-        message: input.message,
-        retryable: false,
-      },
-    },
+    state: appendWorkerHistory(
+      nextState,
+      buildWorkerControlHistoryEntry(nextState, "failed", input.message, now)
+    ),
   };
 }
