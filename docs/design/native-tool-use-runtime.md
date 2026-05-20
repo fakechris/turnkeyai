@@ -1,7 +1,7 @@
 # Native Tool-Use Runtime
 
-> Status: implementation foundation
-> Updated: 2026-05-18
+> Status: implemented runtime foundation
+> Updated: 2026-05-20
 > Scope: provider-neutral tool calling, role loop execution, sessions_* tools, and production parity targets
 
 ## 1. Why This Exists
@@ -59,7 +59,7 @@ The protocol intentionally does not expose provider-specific shapes above the ad
 
 ## 4. Role Tool Loop
 
-The role generator now supports a bounded tool loop:
+The role generator supports a bounded tool loop:
 
 ```text
 messages = system + user
@@ -76,9 +76,11 @@ Runtime safeguards:
 - Default max rounds: 8.
 - Tool schemas are included in request-envelope diagnostics.
 - Tool result counts and bytes are included in envelope diagnostics.
-- Tool progress is recorded as runtime progress events.
+- Tool calls, progress, and results are persisted as first-class message fields.
+- Tool progress is recorded as runtime progress events and replayed in Mission Detail.
 - Tool executor failures become tool result messages with `isError=true`; they do not crash the loop unless the loop itself is misconfigured.
 - Request-envelope overflow reduction still works inside the tool loop.
+- In-flight tool batches can be cancelled through `/message/cancel-tools`; cancellation appends cancelled tool results and calls the runtime cancellation registry when active work exists.
 
 ## 5. Standard Session Tools
 
@@ -154,16 +156,29 @@ TurnkeyAI's baseline bar is:
 5. Bounded loop, request-envelope accounting, and runtime progress recording.
 6. Follow-up via `sessions_send`, not only fresh spawn.
 7. Session list/history inspection from the same tool surface.
+8. Permission query/result/applied loop before side-effectful tools are treated as approved.
+9. Mission timeline replay for tool calls, progress, split role=tool results, and final answers.
 
-## 8. Next Required Work
+## 8. Closed Implementation Work
 
-This foundation is not the final product surface. The next implementation steps are:
+The implementation now includes:
 
-- Persist tool call / tool result messages into the team message log, not only role metadata.
-- Add UI rendering for tool progress in Mission Detail.
-- Add approval gating before side-effectful tools execute.
-- Add first-class browser-agent tool definitions for browser sub-sessions.
-- Add durable per-sub-session message history, beyond the current worker-state summary.
-- Add cancellation support for in-flight tool batches.
+- Provider-neutral tool definitions and provider adapters for Anthropic-compatible and OpenAI-compatible clients.
+- A bounded role loop that appends assistant tool-call messages, linked role=tool result messages, and final assistant replies.
+- Runtime tool progress on assistant messages, including user-visible progress timeline events.
+- Durable worker sub-session history for `sessions_history` and filterable `sessions_list`.
+- `/message/cancel-tools` for pending/running tool cancellation.
+- Permission query/result/applied governance events and cache updates.
+- Browser/search/worker capability registry alignment so only executable workers are advertised.
+- Mission-route level regression coverage for `POST /missions/:id/messages` → native tool call/progress/result → `GET /missions/:id/timeline`.
 
-The key architectural decision is fixed: TurnkeyAI's core tool-use path is now model-native and session-native, not prompt-only and not browser-bridge-only.
+## 9. Remaining Hardening
+
+This is not the final product surface. Remaining work is operational hardening:
+
+- Broaden browser-agent-only direct tool definitions (`browser.open`, `browser.snapshot`, `browser.act`, `browser.screenshot`, `browser.console`) without exposing them to the lead role by default.
+- Add more Mission Detail filters for long tool-heavy timelines.
+- Strengthen prompt-injection defenses around browser text evidence before it enters role prompts.
+- Add scale-oriented cursors for long mission timelines and long sub-session histories.
+
+The key architectural decision is fixed: TurnkeyAI's core tool-use path is model-native and session-native, not prompt-only and not browser-bridge-only.
