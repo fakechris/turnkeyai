@@ -10,4 +10,5 @@ export * from "./prompt/prompt-assembler";
 export * from "./prompt-policy";
 export * from "./role-profile";
 export * from "./tool-capability-registry";
+export * from "./tool-cancellation-registry";
 export * from "./tool-use";

@@ -281,9 +281,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             await this.emitToolProgressSafely(input.activation, call, progress, input.onProgress);
           }
           await this.emitToolProgressSafely(input.activation, call, {
-            phase: result.isError ? "failed" : "completed",
+            phase: result.cancelled ? "cancelled" : result.isError ? "failed" : "completed",
             toolName: call.name,
-            summary: result.isError ? `Tool call failed: ${call.name}` : `Tool call completed: ${call.name}`,
+            summary: result.cancelled
+              ? `Tool call cancelled: ${call.name}`
+              : result.isError
+                ? `Tool call failed: ${call.name}`
+                : `Tool call completed: ${call.name}`,
           }, input.onProgress);
           await input.onResult?.(result);
           return result;
@@ -576,6 +580,7 @@ function toNativeToolResultTrace(toolResult: RoleToolExecutionResult): NativeToo
     contentBytes: bytes,
     content: truncated ? sliceUtf8(toolResult.content, ROLE_TOOL_RESULT_TRACE_CAP_BYTES) : toolResult.content,
     ...(truncated ? { contentTruncated: true } : {}),
+    ...(toolResult.cancelled ? { cancelled: true } : {}),
   };
 }
 

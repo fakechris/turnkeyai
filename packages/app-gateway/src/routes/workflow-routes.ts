@@ -12,6 +12,7 @@ import type {
   TeamMessageStore,
   WorkerKind,
 } from "@turnkeyai/core-types/team";
+import type { ToolCancellationRegistry } from "@turnkeyai/role-runtime/tool-cancellation-registry";
 
 import {
   parseRequiredNonEmptyString,
@@ -68,6 +69,7 @@ export interface WorkflowRouteDeps {
   scheduledTaskRuntime: ScheduledTaskRuntimeDeps;
   idGenerator: IdGenerator;
   clock: Clock;
+  toolCancellationRegistry?: ToolCancellationRegistry;
   idempotencyStore?: RouteIdempotencyStore;
 }
 
@@ -139,6 +141,7 @@ export async function handleWorkflowRoutes(input: {
         requestedThreadId,
         toolCallIds: toolCallIds ?? null,
         reason,
+        ...(deps.toolCancellationRegistry ? { toolCancellationRegistry: deps.toolCancellationRegistry } : {}),
       });
       return {
         statusCode: result.statusCode,
@@ -388,6 +391,7 @@ export async function handleWorkflowRoutes(input: {
 
 async function cancelToolCallsOnMessage(input: {
   teamMessageStore: TeamMessageStore;
+  toolCancellationRegistry?: ToolCancellationRegistry;
   now: number;
   messageId: string;
   requestedThreadId: string | null;
@@ -439,6 +443,11 @@ async function cancelToolCallsOnMessage(input: {
       summary: input.reason,
       ts: input.now,
     };
+  });
+  await input.toolCancellationRegistry?.cancel({
+    threadId: message.threadId,
+    toolCallIds: cancellableIds,
+    reason: input.reason,
   });
   const toolMessages = cancellableIds.map((id, index) => {
     const call = callById.get(id)!;

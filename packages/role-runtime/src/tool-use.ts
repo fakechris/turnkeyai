@@ -7,6 +7,7 @@ import type {
 import type {
   RoleActivationInput,
   RuntimeProgressRecorder,
+  WorkerExecutionResult,
   WorkerSessionHistoryEntry,
   WorkerSessionState,
   WorkerKind,
@@ -18,6 +19,7 @@ import {
   createNativeToolCapabilityRegistry,
   type ToolCapabilityRegistry,
 } from "./tool-capability-registry";
+import type { ToolCancellationRegistry } from "./tool-cancellation-registry";
 
 export interface RoleToolExecutionInput {
   call: LLMToolCall;
@@ -30,12 +32,13 @@ export interface RoleToolExecutionResult {
   toolName: string;
   content: string;
   isError?: boolean;
+  cancelled?: boolean;
   progress?: RoleToolProgressEvent[];
   raw?: unknown;
 }
 
 export interface RoleToolProgressEvent {
-  phase: "started" | "progress" | "completed" | "failed";
+  phase: "started" | "progress" | "completed" | "failed" | "cancelled";
   toolName: string;
   summary: string;
   detail?: Record<string, unknown>;
@@ -126,10 +129,17 @@ export async function recordRoleToolProgress(input: {
       : {}),
     subjectKind: "role_run",
     subjectId: input.activation.runState.runKey,
-    phase: input.progress.phase === "failed" ? "failed" : input.progress.phase === "completed" ? "completed" : "started",
+    phase:
+      input.progress.phase === "failed"
+        ? "failed"
+        : input.progress.phase === "completed"
+          ? "completed"
+          : input.progress.phase === "cancelled"
+            ? "cancelled"
+            : "started",
     progressKind: "boundary",
     heartbeatSource: "control_path",
-    continuityState: input.progress.phase === "failed" ? "terminal" : "alive",
+    continuityState: input.progress.phase === "failed" || input.progress.phase === "cancelled" ? "terminal" : "alive",
     summary: input.progress.summary,
     recordedAt: Date.now(),
     flowId: input.activation.flow.flowId,
@@ -147,6 +157,7 @@ export function createWorkerSessionToolExecutor(options: {
   workerRuntime: WorkerRuntime;
   availableWorkerKinds?: WorkerKind[];
   toolCapabilityRegistry?: ToolCapabilityRegistry;
+  toolCancellationRegistry?: ToolCancellationRegistry;
 }): RoleToolExecutor {
   const { workerRuntime } = options;
   const toolCapabilityRegistry =
@@ -163,9 +174,9 @@ export function createWorkerSessionToolExecutor(options: {
     async execute(input) {
       switch (input.call.name) {
         case "sessions_spawn":
-          return executeSessionsSpawn(workerRuntime, input);
+          return executeSessionsSpawn(workerRuntime, input, options.toolCancellationRegistry);
         case "sessions_send":
-          return executeSessionsSend(workerRuntime, input);
+          return executeSessionsSend(workerRuntime, input, options.toolCancellationRegistry);
         case "sessions_list":
           return executeSessionsList(workerRuntime, input);
         case "sessions_history":
@@ -184,7 +195,8 @@ export function createWorkerSessionToolExecutor(options: {
 
 async function executeSessionsSpawn(
   workerRuntime: WorkerRuntime,
-  input: RoleToolExecutionInput
+  input: RoleToolExecutionInput,
+  toolCancellationRegistry?: ToolCancellationRegistry
 ): Promise<RoleToolExecutionResult> {
   const task = requiredString(input.call.input.task);
   const agentId = requiredString(input.call.input.agent_id) as WorkerKind | null;
@@ -201,11 +213,27 @@ async function executeSessionsSpawn(
   if (!spawned) {
     return errorResult(input.call, `No worker handler available for ${agentId}`);
   }
-  const result = await workerRuntime.send({
-    workerRunKey: spawned.workerRunKey,
-    activation: input.activation,
-    packet,
+  const registration = toolCancellationRegistry?.register({
+    threadId: input.activation.thread.threadId,
+    toolCallId: input.call.id,
+    toolName: input.call.name,
+    cancel: async (reason) => {
+      await workerRuntime.cancel({ workerRunKey: spawned.workerRunKey, reason });
+    },
   });
+  let result: WorkerExecutionResult | null;
+  try {
+    result = await workerRuntime.send({
+      workerRunKey: spawned.workerRunKey,
+      activation: input.activation,
+      packet,
+    });
+  } finally {
+    registration?.unregister();
+  }
+  if (registration?.isCancelled()) {
+    return cancelledResult(input.call, registration.cancellationReason() ?? "Tool call cancelled.");
+  }
   const missingResultMessage = `${agentId} sub-agent returned no executable result. The requested task did not match the worker's implemented capability.`;
   return {
     toolCallId: input.call.id,
@@ -244,7 +272,8 @@ async function executeSessionsSpawn(
 
 async function executeSessionsSend(
   workerRuntime: WorkerRuntime,
-  input: RoleToolExecutionInput
+  input: RoleToolExecutionInput,
+  toolCancellationRegistry?: ToolCancellationRegistry
 ): Promise<RoleToolExecutionResult> {
   const sessionKey = requiredString(input.call.input.session_key);
   const message = requiredString(input.call.input.message);
@@ -271,11 +300,27 @@ async function executeSessionsSend(
     preferredWorkerKinds: [state.workerType],
     continuityMode: "resume-existing" as const,
   };
-  const result = await workerRuntime.send({
-    workerRunKey: sessionKey,
-    activation: input.activation,
-    packet,
+  const registration = toolCancellationRegistry?.register({
+    threadId: input.activation.thread.threadId,
+    toolCallId: input.call.id,
+    toolName: input.call.name,
+    cancel: async (reason) => {
+      await workerRuntime.cancel({ workerRunKey: sessionKey, reason });
+    },
   });
+  let result: WorkerExecutionResult | null;
+  try {
+    result = await workerRuntime.send({
+      workerRunKey: sessionKey,
+      activation: input.activation,
+      packet,
+    });
+  } finally {
+    registration?.unregister();
+  }
+  if (registration?.isCancelled()) {
+    return cancelledResult(input.call, registration.cancellationReason() ?? "Tool call cancelled.");
+  }
   const missingResultMessage = `${state.workerType} sub-agent returned no executable result for the follow-up.`;
   return {
     toolCallId: input.call.id,
@@ -442,6 +487,23 @@ function errorResult(call: LLMToolCall, content: string): RoleToolExecutionResul
     progress: [
       {
         phase: "failed",
+        toolName: call.name,
+        summary: content,
+      },
+    ],
+  };
+}
+
+function cancelledResult(call: LLMToolCall, content: string): RoleToolExecutionResult {
+  return {
+    toolCallId: call.id,
+    toolName: call.name,
+    content,
+    isError: true,
+    cancelled: true,
+    progress: [
+      {
+        phase: "cancelled",
         toolName: call.name,
         summary: content,
       },

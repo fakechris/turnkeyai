@@ -145,6 +145,7 @@ test("workflow routes return 400 for malformed message JSON", async () => {
 
 test("workflow routes cancel assistant tool calls and append cancelled tool results", async () => {
   const messages = new Map<string, TeamMessage>();
+  let runtimeCancelInput: { threadId: string; toolCallIds: string[]; reason: string } | null = null;
   messages.set("assistant-1", {
     id: "assistant-1",
     threadId: "thread-1",
@@ -195,6 +196,15 @@ test("workflow routes cancel assistant tool calls and append cancelled tool resu
         return messages.get(messageId) ?? null;
       },
     },
+    toolCancellationRegistry: {
+      register() {
+        throw new Error("not used");
+      },
+      async cancel(input) {
+        runtimeCancelInput = input;
+        return input.toolCallIds.map((toolCallId) => ({ toolCallId, active: true, cancelled: true }));
+      },
+    },
   });
   const response = createResponse();
 
@@ -225,6 +235,11 @@ test("workflow routes cancel assistant tool calls and append cancelled tool resu
   assert.equal(assistant?.toolStatus, "pending");
   assert.equal(assistant?.toolProgress?.at(-1)?.phase, "cancelled");
   assert.equal(assistant?.toolProgress?.at(-1)?.summary, "operator cancelled browser work");
+  assert.deepEqual(runtimeCancelInput, {
+    threadId: "thread-1",
+    toolCallIds: ["call-1"],
+    reason: "operator cancelled browser work",
+  });
   const toolResult = messages.get("assistant-1:tool-cancelled:call-1");
   assert.equal(toolResult?.role, "tool");
   assert.equal(toolResult?.toolCallId, "call-1");
