@@ -43,6 +43,7 @@ export class ExploreWorkerHandler implements WorkerHandler {
   }
 
   async run(input: WorkerInvocationInput): Promise<WorkerExecutionResult | null> {
+    throwIfAborted(input.signal);
     const target = resolveExploreTarget(input);
     if (!target) {
       return null;
@@ -81,7 +82,8 @@ export class ExploreWorkerHandler implements WorkerHandler {
     }
 
     try {
-      const { response, finalUrl } = await fetchWithValidation(this.fetchFn, safeUrl);
+      const { response, finalUrl } = await fetchWithValidation(this.fetchFn, safeUrl, input.signal);
+      throwIfAborted(input.signal);
       const html = await response.text();
       const page = toPageResult(target.url, finalUrl, response.status, html);
       const browserFallbackAllowed = canUseBrowserFallback(input);
@@ -261,7 +263,11 @@ export class ExploreWorkerHandler implements WorkerHandler {
     failureContext: Record<string, unknown>,
     preferredOrder: TransportKind[]
   ): Promise<WorkerExecutionResult> {
-    const browserPage = await this.browserBridge!.inspectPublicPage(target.url);
+    const browserPage = await raceAbort(
+      this.browserBridge!.inspectPublicPage(target.url),
+      input.signal,
+      "explore worker cancelled"
+    );
     return {
       workerType: this.kind,
       status: "partial",
@@ -419,14 +425,18 @@ function looksBlocked(page: BrowserPageResult): boolean {
 async function fetchWithValidation(
   fetchFn: typeof fetch,
   inputUrl: string,
+  signal?: AbortSignal,
   redirectCount = 0
 ): Promise<{ response: Response; finalUrl: string }> {
-  const response = await fetchFn(inputUrl, {
+  throwIfAborted(signal);
+  const requestInit: RequestInit = {
     redirect: "manual",
     headers: {
       "user-agent": "turnkeyai/0.1",
     },
-  });
+    ...(signal ? { signal } : {}),
+  };
+  const response = await fetchFn(inputUrl, requestInit);
 
   if (response.status >= 300 && response.status < 400) {
     if (redirectCount >= 3) {
@@ -439,13 +449,43 @@ async function fetchWithValidation(
     }
 
     const nextUrl = validatePublicHttpUrl(new URL(location, inputUrl).toString());
-    return fetchWithValidation(fetchFn, nextUrl, redirectCount + 1);
+    return fetchWithValidation(fetchFn, nextUrl, signal, redirectCount + 1);
   }
 
   return {
     response,
     finalUrl: inputUrl,
   };
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  throw new Error(abortReason(signal, "worker cancelled"));
+}
+
+async function raceAbort<T>(work: Promise<T>, signal: AbortSignal | undefined, fallbackReason: string): Promise<T> {
+  if (!signal) {
+    return work;
+  }
+  throwIfAborted(signal);
+  let onAbort: (() => void) | undefined;
+  const abortPromise = new Promise<T>((_resolve, reject) => {
+    onAbort = () => reject(new Error(abortReason(signal, fallbackReason)));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, abortPromise]);
+  } finally {
+    if (onAbort) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+}
+
+function abortReason(signal: AbortSignal, fallback: string): string {
+  return typeof signal.reason === "string" && signal.reason.trim() ? signal.reason : fallback;
 }
 
 function validatePublicHttpUrl(inputUrl: string): string {

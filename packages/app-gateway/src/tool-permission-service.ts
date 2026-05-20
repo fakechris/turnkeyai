@@ -34,7 +34,7 @@ interface MissionToolPermissionServiceOptions {
 export function createMissionToolPermissionService(
   options: MissionToolPermissionServiceOptions
 ): ToolPermissionService {
-  return {
+  const service: ToolPermissionService = {
     async request(input: ToolPermissionRequestInput) {
       const now = options.clock.now();
       const workerType = input.requirement.workerType ?? "browser";
@@ -175,6 +175,23 @@ export function createMissionToolPermissionService(
       return decisionToResult(approval, decision);
     },
 
+    async waitForDecision(
+      input: ToolPermissionResultInput & { timeoutMs: number; pollMs?: number }
+    ): Promise<ToolPermissionDecisionResult> {
+      const startedAt = options.clock.now();
+      const pollMs = Math.max(50, input.pollMs ?? 1_000);
+      for (;;) {
+        const result = await service.result(input);
+        if (result.status !== "pending") {
+          return result;
+        }
+        if (options.clock.now() - startedAt >= input.timeoutMs) {
+          return result;
+        }
+        await sleep(pollMs);
+      }
+    },
+
     async apply(input: ToolPermissionAppliedInput): Promise<ToolPermissionAppliedResult> {
       const approval = await findApproval(options.approvalStore, input.approvalId);
       if (!approval) {
@@ -239,6 +256,7 @@ export function createMissionToolPermissionService(
       };
     },
   };
+  return service;
 }
 
 export async function recordApprovalDecision(input: {
@@ -405,4 +423,8 @@ function isPermissionScope(value: unknown): value is PermissionScope {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

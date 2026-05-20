@@ -48,6 +48,27 @@ test("groupTimelineForReplay keeps failed tool process visible without a final t
   assert.equal(grouped[0].finalThought, undefined);
 });
 
+test("groupTimelineForReplay keeps one tool process when approval events interleave", () => {
+  const events: ActivityEvent[] = [
+    toolWithMessage("call-1", 1_000, "role-lead", "call", "sessions_spawn", "call-browser", "Tool call", "msg-1", "1"),
+    event("approval-1", "approval", 1_200, "operator", "Approved"),
+    toolWithMessage("progress-1", 1_500, "role-lead", "progress", "sessions_spawn", "call-browser", "Applied", "msg-1", "1"),
+    toolWithMessage("result-1", 2_000, "role-lead", "result", "sessions_spawn", "call-browser", "Returned", "msg-1", "1"),
+    event("thought-1", "thought", 2_500, "role-lead", "Final answer"),
+  ];
+
+  const grouped = groupTimelineForReplay(events);
+
+  assert.equal(grouped.length, 2);
+  assert.equal(grouped[0]?.kind, "tool-process");
+  assert.equal(grouped[1]?.kind, "event");
+  if (grouped[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.deepEqual(grouped[0].toolEvents.map((item) => item.id), ["call-1", "progress-1", "result-1"]);
+  assert.equal(grouped[0].finalThought?.id, "thought-1");
+});
+
 test("formatDurationMs normalizes rounded second rollover into minutes", () => {
   assert.equal(formatDurationMs(0, 119_900), "2m");
 });
@@ -67,6 +88,29 @@ function tool(
       toolPhase: phase,
       toolName,
       toolCallId,
+    },
+  };
+}
+
+function toolWithMessage(
+  id: string,
+  tMs: number,
+  actor: string,
+  phase: "call" | "progress" | "result",
+  toolName: string,
+  toolCallId: string,
+  text: string,
+  messageId: string,
+  round: string
+): ActivityEvent {
+  return {
+    ...tool(id, tMs, actor, phase, toolName, toolCallId, text),
+    runtime: {
+      toolPhase: phase,
+      toolName,
+      toolCallId,
+      messageId,
+      round,
     },
   };
 }

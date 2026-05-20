@@ -75,4 +75,5 @@ export interface ToolPermissionService {
   request(input: ToolPermissionRequestInput): Promise<ToolPermissionQueryResult>;
   result(input: ToolPermissionResultInput): Promise<ToolPermissionDecisionResult>;
   apply(input: ToolPermissionAppliedInput): Promise<ToolPermissionAppliedResult>;
+  waitForDecision?(input: ToolPermissionResultInput & { timeoutMs: number; pollMs?: number }): Promise<ToolPermissionDecisionResult>;
 }

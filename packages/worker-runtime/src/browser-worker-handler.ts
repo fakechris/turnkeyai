@@ -61,6 +61,7 @@ export class BrowserWorkerHandler implements WorkerHandler {
   }
 
   async run(input: WorkerInvocationInput): Promise<WorkerExecutionResult | null> {
+    throwIfAborted(input.signal);
     const request = this.planner.buildRequest(input);
     if (!request) {
       return null;
@@ -78,9 +79,14 @@ export class BrowserWorkerHandler implements WorkerHandler {
         ...(request.targetId ? { targetId: request.targetId } : {}),
       });
       const stopHeartbeat = this.startBrowserHeartbeat(input, request);
-      const result = await this.executeBrowserDispatch(input, request).finally(() => {
+      const result = await raceAbort(
+        this.executeBrowserDispatch(input, request),
+        input.signal,
+        "browser worker cancelled"
+      ).finally(() => {
         stopHeartbeat();
       });
+      throwIfAborted(input.signal);
       await this.recordBrowserProgress(input, {
         browserSessionId: result.sessionId,
         phase: "completed",
@@ -302,6 +308,36 @@ export class BrowserWorkerHandler implements WorkerHandler {
     }, this.heartbeatIntervalMs);
     return () => clearInterval(timer);
   }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  throw new Error(abortReason(signal, "worker cancelled"));
+}
+
+async function raceAbort<T>(work: Promise<T>, signal: AbortSignal | undefined, fallbackReason: string): Promise<T> {
+  if (!signal) {
+    return work;
+  }
+  throwIfAborted(signal);
+  let onAbort: (() => void) | undefined;
+  const abortPromise = new Promise<T>((_resolve, reject) => {
+    onAbort = () => reject(new Error(abortReason(signal, fallbackReason)));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, abortPromise]);
+  } finally {
+    if (onAbort) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+}
+
+function abortReason(signal: AbortSignal, fallback: string): string {
+  return typeof signal.reason === "string" && signal.reason.trim() ? signal.reason : fallback;
 }
 
 function summarizeBrowserTask(result: Awaited<ReturnType<BrowserBridge["runTask"]>>): string {

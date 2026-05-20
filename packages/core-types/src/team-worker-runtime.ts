@@ -18,6 +18,7 @@ export interface WorkerInvocationInput {
   activation: RoleActivationInput;
   packet: RolePromptPacketLike;
   sessionState?: WorkerSessionState;
+  signal?: AbortSignal;
 }
 
 export interface WorkerHandler {
@@ -44,9 +45,11 @@ export interface WorkerSessionHistoryEntry {
   content: string;
   createdAt: number;
   taskId?: TaskId;
+  toolCallId?: string;
   toolName?: WorkerKind;
   status?: WorkerExecutionResult["status"] | "cancelled" | "interrupted";
   payload?: unknown;
+  metadata?: Record<string, unknown>;
 }
 
 export interface WorkerSessionState {
@@ -111,6 +114,7 @@ export interface WorkerMessageInput {
   workerRunKey: RunKey;
   activation: RoleActivationInput;
   packet: RolePromptPacketLike;
+  toolCallId?: string;
 }
 
 export interface WorkerResumeInput {

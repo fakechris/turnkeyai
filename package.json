@@ -19,6 +19,7 @@
     "relay:wait": "tsx scripts/wait-for-relay-peer.ts",
     "relay:smoke": "tsx scripts/relay-smoke.ts",
     "transport:soak": "tsx scripts/browser-transport-soak.ts",
+    "tooluse:e2e": "tsx scripts/tool-use-e2e.ts",
     "pack:cli": "npm pack --workspace @turnkeyai/cli --dry-run",
     "release:verify": "tsx scripts/release-readiness.ts",
     "phase1:baseline": "tsx scripts/phase1-readiness-baseline.ts",

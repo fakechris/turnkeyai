@@ -40,7 +40,10 @@ import { LLMRoleResponseGenerator } from "@turnkeyai/role-runtime/llm-response-g
 import { PolicyRoleRuntime } from "@turnkeyai/role-runtime/policy-role-runtime";
 import { DefaultPreCompactionMemoryFlusher } from "@turnkeyai/role-runtime/pre-compaction-memory-flusher";
 import { DefaultRolePromptPolicy } from "@turnkeyai/role-runtime/prompt-policy";
-import { createNativeToolCapabilityRegistry } from "@turnkeyai/role-runtime/tool-capability-registry";
+import {
+  createNativeToolCapabilityRegistry,
+  type ToolCapabilityRegistry,
+} from "@turnkeyai/role-runtime/tool-capability-registry";
 import {
   InMemoryToolCancellationRegistry,
   type ToolCancellationRegistry,
@@ -96,6 +99,7 @@ export interface DaemonRuntimeServices {
   scheduledTaskRuntime: DefaultScheduledTaskRuntime;
   runtimeQueryService: ReturnType<typeof createRuntimeQueryService>;
   toolCancellationRegistry: ToolCancellationRegistry;
+  toolCapabilityRegistry: ToolCapabilityRegistry;
   /**
    * Stop the background reconciliation timer. Idempotent — safe to call
    * multiple times. The timer is `.unref()`ed so it does not keep the
@@ -473,6 +477,7 @@ export async function composeDaemonRuntimeServices(
     scheduledTaskRuntime,
     runtimeQueryService,
     toolCancellationRegistry,
+    toolCapabilityRegistry,
     stop,
   };
 }
