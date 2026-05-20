@@ -6,7 +6,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 
+import type { TeamMessage } from "@turnkeyai/core-types/team";
+
 import { composeMissionDeps } from "../composition/mission-deps";
+import { createMissionThreadBridge } from "../mission-thread-bridge";
 import { handleMissionRoutes } from "./mission-routes";
 
 function createRequest(input: {
@@ -534,6 +537,152 @@ describe("mission-routes", () => {
         assert.equal(posts[1]!.content, "继续看 macOS 平台支持");
         // Bridge ticked twice — once after create, once after follow-up.
         assert.deepEqual(ticks, [created.id, created.id]);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("POST /missions/:id/messages mirrors native tool call, progress, result, and final answer", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const messages: TeamMessage[] = [];
+        let messageCounter = 0;
+        let eventCounter = 0;
+        const threadBridge = createMissionThreadBridge({
+          missionStore: deps.missionStore,
+          teamMessageStore: {
+            async list(threadId: string) {
+              return messages
+                .filter((message) => message.threadId === threadId)
+                .sort((a, b) => a.createdAt - b.createdAt);
+            },
+          },
+          activityStore: deps.activityStore,
+          newEventId: () => `ev.tool-replay.${++eventCounter}`,
+          clock,
+        });
+        const orchestrator = {
+          async spawnThread() {
+            return {
+              threadId: "thread-tool-replay",
+              leadRoleId: "role-lead",
+              roleIds: ["role-lead"],
+            };
+          },
+          async postUserMessage(input: { threadId: string; content: string }) {
+            const nextCreatedAt = () => clock.now() + ++messageCounter;
+            messages.push({
+              id: `msg-${messageCounter}`,
+              threadId: input.threadId,
+              role: "user",
+              name: "User",
+              content: input.content,
+              createdAt: nextCreatedAt(),
+              updatedAt: clock.now(),
+            });
+            if (input.content !== "run browser task") return;
+            messages.push({
+              id: "assistant-tool-call",
+              threadId: input.threadId,
+              role: "assistant",
+              name: "Lead",
+              roleId: "role-lead",
+              content: "",
+              createdAt: nextCreatedAt(),
+              updatedAt: clock.now(),
+              toolCalls: [
+                {
+                  id: "call-browser",
+                  name: "sessions_send",
+                  arguments: { session_key: "worker:browser:1", message: "snapshot current page" },
+                },
+              ],
+              toolProgress: [
+                {
+                  toolCallId: "call-browser",
+                  toolName: "sessions_send",
+                  phase: "progress",
+                  summary: "Browser worker captured the current page snapshot.",
+                  detail: { eventType: "browser.snapshot", targetId: "target-1" },
+                  ts: clock.now() + 10,
+                },
+              ],
+              metadata: { nativeToolUse: true, toolRound: 1 },
+            });
+            messages.push({
+              id: "tool-browser-result",
+              threadId: input.threadId,
+              role: "tool",
+              name: "sessions_send",
+              content: "Page title: Example Domain",
+              createdAt: nextCreatedAt(),
+              updatedAt: clock.now(),
+              toolCallId: "call-browser",
+              toolStatus: "completed",
+            });
+            messages.push({
+              id: "assistant-final",
+              threadId: input.threadId,
+              role: "assistant",
+              name: "Lead",
+              roleId: "role-lead",
+              content: "The browser task completed with title Example Domain.",
+              createdAt: nextCreatedAt(),
+              updatedAt: clock.now(),
+            });
+          },
+          threadBridge,
+        };
+
+        const created = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "Tool replay" },
+          }),
+          res: created.res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        const mission = created.getJson() as { id: string };
+        const followUp = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: `/missions/${mission.id}/messages`,
+            body: { content: "run browser task" },
+          }),
+          res: followUp.res,
+          url: new URL(`http://127.0.0.1/missions/${mission.id}/messages`),
+          deps: { ...deps, orchestrator },
+        });
+
+        assert.equal(followUp.getStatus(), 202);
+        const timeline = await runJson<Array<{ kind: string; text: string; runtime?: Record<string, string> }>>(
+          deps,
+          "GET",
+          `/missions/${mission.id}/timeline?limit=50`
+        );
+        const toolEvents = timeline.filter((event) => event.runtime?.toolCallId === "call-browser");
+        assert.deepEqual(
+          toolEvents.map((event) => event.runtime?.toolPhase),
+          ["call", "progress", "result"]
+        );
+        assert.equal(
+          toolEvents[0]?.runtime?.callInput,
+          '{"session_key":"worker:browser:1","message":"snapshot current page"}'
+        );
+        assert.equal(
+          toolEvents[1]?.runtime?.progressDetail,
+          '{"eventType":"browser.snapshot","targetId":"target-1"}'
+        );
+        assert.equal(toolEvents[2]?.runtime?.resultContent, "Page title: Example Domain");
+        assert.ok(
+          timeline.some((event) => event.kind === "thought" && event.text.includes("title Example Domain")),
+          "expected the final assistant answer to remain visible after tool replay"
+        );
       } finally {
         t.cleanup();
       }

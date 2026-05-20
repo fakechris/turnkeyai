@@ -1,6 +1,6 @@
 # TurnkeyAI Spec — Personas, Capabilities, User Stories
 
-> 更新日期：2026-05-15
+> 更新日期：2026-05-20
 > 范围：当前 `main` 真实可用的能力面 + 已经写进 README/MILESTONES 但仍在验收的能力面 + 明确的非目标
 > 与 `docs/VISION.md` / `docs/MILESTONES.md` 的关系：Vision 讲为什么、Milestones 讲什么时候、本文档讲谁、用什么、做完什么算可用
 > 产品入口方向：`docs/design/mission-control-product-design.md` 定义下一阶段用户端产品叙事。TurnkeyAI 的用户入口应收敛为 Mission Control：多 agent 围绕用户任务协同，browser bridge 只是 context/tool surface 之一。
@@ -50,6 +50,8 @@
 - 上下文预算与裁切（ContextBudgeter，compact-before-drop）
 - 多分层记忆（thread summary / journal / scratchpad / session memory / worker evidence）
 - Pending / waiting / decision carry-forward
+- Provider-native tool-use loop（Anthropic-compatible / OpenAI-compatible tools）
+- Tool call / progress / result message-native persistence 与 Mission timeline replay
 
 ### 2.3 Worker runtime
 - `spawn / send / resume / interrupt / cancel`
@@ -140,6 +142,14 @@
 - 行为：continuation packet 携带 pending work / open question / decision-or-constraint 重新进入 prompt
 - 验收：`prompt-console` 能显示打包数量与 carry-forward 项；高压预算下 pending 不被弱信号挤出
 - 状态：✅ 第一版已稳；高压真实任务下的稳定性仍是 Phase 1 收尾重点
+
+#### US-R3 — Role 使用原生 tool-use 协议完成子任务
+
+- 前置：LLM provider 支持 tool schema；daemon 已配置 executable worker handlers
+- 行为：role runtime 把可执行能力注册成 provider-native tools → 模型返回 `tool_call` / `tool_use` → runtime 执行工具 → 写入 assistant tool call、tool progress、role=tool result → 再进入下一轮模型生成
+- 验收：TeamMessageStore 中 tool call / progress / result 是结构化字段，不靠纯文本约定；`/message/cancel-tools` 能取消进行中的工具；Mission Detail timeline 能 replay `tool call → tool progress → tool result → final answer`
+- 失败语义：不可执行 worker 不进入 capability registry；工具失败写成 `isError=true` 的 tool result；side-effectful 工具走 permission query/result/applied 回路
+- 状态：✅ 主线已稳；已有 mission-route 级闭环测试覆盖用户入口到 timeline replay
 
 ### 3.3 Worker runtime
 
