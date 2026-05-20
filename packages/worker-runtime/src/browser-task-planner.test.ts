@@ -40,6 +40,45 @@ test("browser task planner builds structured plan for search and click flows", (
   ]);
 });
 
+test("browser task planner opens a search results page when no URL is supplied", () => {
+  const planner = new DefaultBrowserTaskPlanner();
+  const input = buildTestInvocationInput({
+    handoff: {
+      payload: {
+        instructions: "Search slock multica Rust crates and summarize what you find.",
+      },
+    },
+  });
+
+  const request = planner.buildRequest(input);
+  assert.ok(request);
+  assert.equal(request.actions[0]?.kind, "open");
+  if (request.actions[0]?.kind === "open") {
+    assert.equal(request.actions[0].url, "https://www.google.com/search?q=slock%20multica%20Rust%20crates");
+  }
+  assert.deepEqual(request.actions.map((action) => action.kind), ["open", "snapshot", "console", "screenshot"]);
+});
+
+test("browser task planner accepts a configured search engine template", () => {
+  const planner = new DefaultBrowserTaskPlanner({
+    searchEngineUrlTemplate: "https://duckduckgo.com/?q={query}",
+  });
+  const input = buildTestInvocationInput({
+    handoff: {
+      payload: {
+        instructions: "Research local-first browser automation and summarize what you find.",
+      },
+    },
+  });
+
+  const request = planner.buildRequest(input);
+  assert.ok(request);
+  assert.equal(request.actions[0]?.kind, "open");
+  if (request.actions[0]?.kind === "open") {
+    assert.equal(request.actions[0].url, "https://duckduckgo.com/?q=local-first%20browser%20automation");
+  }
+});
+
 test("browser task planner keeps search and click mutually exclusive", () => {
   const planner = new DefaultBrowserTaskPlanner();
   const input = buildTestInvocationInput({

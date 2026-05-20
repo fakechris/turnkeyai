@@ -35,7 +35,7 @@ test("sessions_spawn marks a selected worker with no executable result as a fail
       return null;
     },
   } as unknown as WorkerRuntime;
-  const executor = createWorkerSessionToolExecutor({ workerRuntime });
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
 
   const result = await executor.execute({
     call: {
@@ -63,6 +63,46 @@ test("sessions_spawn marks a selected worker with no executable result as a fail
   assert.equal(body.status, "failed");
   assert.match(body.result, /no executable result/i);
   assert.equal(result.progress?.at(-1)?.phase, "failed");
+});
+
+test("sessions_spawn rejects worker kinds that were not advertised as executable", async () => {
+  let spawnCalled = false;
+  const workerRuntime = {
+    async spawn() {
+      spawnCalled = true;
+      return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-unavailable",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open a browser page.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Open a browser page.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(spawnCalled, false);
+  assert.equal(result.isError, true);
+  assert.match(result.content, /Worker kind browser is not available/);
+  assert.match(result.content, /explore/);
 });
 
 test("sessions_spawn cancels the active worker when the tool call is cancelled", async () => {
@@ -95,7 +135,7 @@ test("sessions_spawn cancels the active worker when the tool call is cancelled",
     },
   } as unknown as WorkerRuntime;
   const toolCancellationRegistry = new InMemoryToolCancellationRegistry();
-  const executor = createWorkerSessionToolExecutor({ workerRuntime, toolCancellationRegistry });
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"], toolCancellationRegistry });
 
   const executePromise = executor.execute({
     call: {
