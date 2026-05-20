@@ -3,15 +3,17 @@ import type { LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
 
 export const SESSION_TOOL_NAMES = ["sessions_spawn", "sessions_send", "sessions_list", "sessions_history"] as const;
 export const PERMISSION_TOOL_NAMES = ["permission_query", "permission_result", "permission_applied"] as const;
+export const MEMORY_TOOL_NAMES = ["memory_search", "memory_get"] as const;
 export type SessionToolName = (typeof SESSION_TOOL_NAMES)[number];
 export type PermissionToolName = (typeof PERMISSION_TOOL_NAMES)[number];
-export type NativeToolName = SessionToolName | PermissionToolName;
+export type MemoryToolName = (typeof MEMORY_TOOL_NAMES)[number];
+export type NativeToolName = SessionToolName | PermissionToolName | MemoryToolName;
 
 export interface ToolCapabilityRecord {
   name: NativeToolName;
   definition: LLMToolDefinition;
-  executorKind: "worker-session" | "permission";
-  promptGroup: "sessions" | "permissions";
+  executorKind: "worker-session" | "permission" | "memory";
+  promptGroup: "sessions" | "permissions" | "memory";
 }
 
 export interface ToolPromptHarnessInput {
@@ -66,6 +68,7 @@ export class ToolCapabilityRegistry {
 export function createNativeToolCapabilityRegistry(input: {
   availableWorkerKinds?: WorkerKind[];
   permissionsEnabled?: boolean;
+  memoryEnabled?: boolean;
 } = {}): ToolCapabilityRegistry {
   const workerKinds = normalizeWorkerKinds(input.availableWorkerKinds);
   const records: ToolCapabilityRecord[] = [];
@@ -89,10 +92,52 @@ export function createNativeToolCapabilityRegistry(input: {
       }))
     );
   }
+  if (input.memoryEnabled) {
+    records.push(
+      ...buildMemoryToolDefinitions().map((definition) => ({
+        name: definition.name as NativeToolName,
+        definition,
+        executorKind: "memory" as const,
+        promptGroup: "memory" as const,
+      }))
+    );
+  }
   return new ToolCapabilityRegistry({
     workerKinds,
     records,
   });
+}
+
+export function buildMemoryToolDefinitions(): LLMToolDefinition[] {
+  return [
+    {
+      name: "memory_search",
+      description:
+        "Search durable thread memory, session memory, journal notes, and admitted worker evidence for prior decisions, preferences, constraints, open items, or evidence.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          query: { type: "string", description: "Concrete recall query. Include the decision, preference, constraint, or evidence you need." },
+          limit: { type: "number", minimum: 1, maximum: 10, description: "Maximum number of memory hits to return." },
+        },
+        required: ["query"],
+      },
+    },
+    {
+      name: "memory_get",
+      description:
+        "Fetch one durable memory hit by memory_id returned from memory_search. Use this when you need to quote or verify a specific remembered item.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          memory_id: { type: "string", description: "memory_id returned by memory_search." },
+        },
+        required: ["memory_id"],
+      },
+    },
+  ];
 }
 
 export function buildSessionToolDefinitions(workerKinds: WorkerKind[]): LLMToolDefinition[] {
@@ -232,11 +277,25 @@ function renderToolPromptHarness(input: {
     sections.push(renderPermissionSection());
   }
 
+  if (MEMORY_TOOL_NAMES.some((name) => enabled.has(name))) {
+    sections.push(renderMemorySection());
+  }
+
   if (input.availableWorkerKinds.includes("browser")) {
     sections.push(renderBrowserWorkerSection());
   }
 
   return sections.filter(Boolean).join("\n\n");
+}
+
+function renderMemorySection(): string {
+  return [
+    "## Memory Tools",
+    "- Use memory_search when the task depends on prior decisions, user preferences, constraints, unresolved questions, or previously gathered evidence.",
+    "- Do not fabricate remembered facts. If memory_search returns no relevant hit, say what is missing or continue from current context.",
+    "- Use memory_get to inspect a specific memory_id returned by memory_search before relying on precise wording.",
+    "- Treat browser/evidence memory according to its trust/admission metadata; do not promote weak observations into facts without verification.",
+  ].join("\n");
 }
 
 function renderGeneralToolUsageSection(): string {

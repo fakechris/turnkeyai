@@ -52,6 +52,7 @@
 - Pending / waiting / decision carry-forward
 - Provider-native tool-use loop（Anthropic-compatible / OpenAI-compatible tools）
 - Tool call / progress / result message-native persistence 与 Mission timeline replay
+- Native memory tools（`memory_search` / `memory_get`）用于显式回忆 prior decisions / constraints / evidence
 
 ### 2.3 Worker runtime
 - `spawn / send / resume / interrupt / cancel`
@@ -147,7 +148,7 @@
 
 - 前置：LLM provider 支持 tool schema；daemon 已配置 executable worker handlers
 - 行为：role runtime 把可执行能力注册成 provider-native tools → 模型返回 `tool_call` / `tool_use` → runtime 执行工具 → 写入 assistant tool call、tool progress、role=tool result → 再进入下一轮模型生成
-- 验收：TeamMessageStore 中 tool call / progress / result 是结构化字段，不靠纯文本约定；`/message/cancel-tools` 能取消进行中的工具；Mission Detail timeline 能 replay `tool call → tool progress → tool result → final answer`
+- 验收：TeamMessageStore 中 tool call / progress / result 是结构化字段，不靠纯文本约定；`/message/cancel-tools` 能取消进行中的工具；Mission Detail timeline 能 replay `tool call → tool progress → tool result → final answer`；`memory_search` / `memory_get` 能从同一套 durable memory resolver 中取回 prior decisions / preferences / constraints / evidence
 - 失败语义：不可执行 worker 不进入 capability registry；工具失败写成 `isError=true` 的 tool result；side-effectful 工具走 permission query/result/applied 回路
 - 状态：✅ 主线已稳；已有 mission-route 级闭环测试覆盖用户入口到 timeline replay
 

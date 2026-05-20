@@ -253,6 +253,15 @@ test("inspectCapabilities enriches worker readiness with tool capability summari
     "sessions_send",
     "sessions_list",
     "sessions_history",
+    "memory_search",
+    "memory_get",
   ]);
-  assert.equal(report.toolCapabilities?.every((tool) => tool.executorKind === "worker-session"), true);
+  assert.deepEqual(report.toolCapabilities?.map((tool) => tool.executorKind), [
+    "worker-session",
+    "worker-session",
+    "worker-session",
+    "worker-session",
+    "memory",
+    "memory",
+  ]);
 });

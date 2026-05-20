@@ -19,6 +19,7 @@ import {
   createNativeToolCapabilityRegistry,
   type ToolCapabilityRegistry,
 } from "./tool-capability-registry";
+import type { MemoryHit, RoleMemoryResolver } from "./context/role-memory-resolver";
 import type { ToolCancellationRegistry } from "./tool-cancellation-registry";
 import type { ToolPermissionService } from "./tool-permission-service";
 
@@ -160,6 +161,7 @@ export function createWorkerSessionToolExecutor(options: {
   toolCapabilityRegistry?: ToolCapabilityRegistry;
   toolCancellationRegistry?: ToolCancellationRegistry;
   toolPermissionService?: ToolPermissionService;
+  memoryResolver?: Pick<RoleMemoryResolver, "retrieveMemory" | "getMemory">;
 }): RoleToolExecutor {
   const { workerRuntime } = options;
   const toolCapabilityRegistry =
@@ -167,6 +169,7 @@ export function createWorkerSessionToolExecutor(options: {
     createNativeToolCapabilityRegistry({
       ...(options.availableWorkerKinds ? { availableWorkerKinds: options.availableWorkerKinds } : {}),
       permissionsEnabled: Boolean(options.toolPermissionService),
+      memoryEnabled: Boolean(options.memoryResolver),
     });
   const definitions = toolCapabilityRegistry.definitions();
   const executableWorkerKinds = new Set(toolCapabilityRegistry.availableWorkerKinds());
@@ -191,6 +194,10 @@ export function createWorkerSessionToolExecutor(options: {
           return executePermissionResult(input, options.toolPermissionService);
         case "permission_applied":
           return executePermissionApplied(input, options.toolPermissionService);
+        case "memory_search":
+          return executeMemorySearch(input, options.memoryResolver);
+        case "memory_get":
+          return executeMemoryGet(input, options.memoryResolver);
         default:
           return {
             toolCallId: input.call.id,
@@ -200,6 +207,82 @@ export function createWorkerSessionToolExecutor(options: {
           };
       }
     },
+  };
+}
+
+async function executeMemorySearch(
+  input: RoleToolExecutionInput,
+  memoryResolver?: Pick<RoleMemoryResolver, "retrieveMemory" | "getMemory">
+): Promise<RoleToolExecutionResult> {
+  if (!memoryResolver) {
+    return errorResult(input.call, "memory resolver is not configured");
+  }
+  const query = requiredString(input.call.input.query);
+  if (!query) {
+    return errorResult(input.call, "memory_search requires query");
+  }
+  const limit = Math.min(positiveInteger(input.call.input.limit) ?? 6, 10);
+  const hits = await memoryResolver.retrieveMemory({
+    threadId: input.activation.thread.threadId,
+    roleId: input.activation.runState.roleId,
+    queryText: query,
+  });
+  const memories = hits.slice(0, limit).map(serializeMemoryHit);
+  return {
+    toolCallId: input.call.id,
+    toolName: input.call.name,
+    content: JSON.stringify(
+      {
+        query,
+        total_hits: hits.length,
+        showing: memories.length,
+        memories,
+      },
+      null,
+      2
+    ),
+    progress: [
+      {
+        phase: "completed",
+        toolName: input.call.name,
+        summary: `Memory search returned ${memories.length} hit(s).`,
+        detail: { query, total_hits: hits.length, showing: memories.length },
+      },
+    ],
+  };
+}
+
+async function executeMemoryGet(
+  input: RoleToolExecutionInput,
+  memoryResolver?: Pick<RoleMemoryResolver, "retrieveMemory" | "getMemory">
+): Promise<RoleToolExecutionResult> {
+  if (!memoryResolver) {
+    return errorResult(input.call, "memory resolver is not configured");
+  }
+  const memoryId = requiredString(input.call.input.memory_id);
+  if (!memoryId) {
+    return errorResult(input.call, "memory_get requires memory_id");
+  }
+  const hit = await memoryResolver.getMemory({
+    threadId: input.activation.thread.threadId,
+    roleId: input.activation.runState.roleId,
+    memoryId,
+  });
+  if (!hit) {
+    return errorResult(input.call, `memory not found: ${memoryId}`);
+  }
+  return {
+    toolCallId: input.call.id,
+    toolName: input.call.name,
+    content: JSON.stringify({ memory: serializeMemoryHit(hit) }, null, 2),
+    progress: [
+      {
+        phase: "completed",
+        toolName: input.call.name,
+        summary: `Read memory ${memoryId}.`,
+        detail: { memory_id: memoryId, source: hit.source, score: hit.score },
+      },
+    ],
   };
 }
 
@@ -628,6 +711,16 @@ function serializeWorkerHistoryEntry(entry: WorkerSessionHistoryEntry, includePa
     ...(entry.toolName ? { name: entry.toolName } : {}),
     ...(entry.status ? { status: entry.status } : {}),
     ...(includePayload && "payload" in entry ? { payload: entry.payload } : {}),
+  };
+}
+
+function serializeMemoryHit(hit: MemoryHit): Record<string, unknown> {
+  return {
+    memory_id: hit.memoryId,
+    source: hit.source,
+    score: Number(hit.score.toFixed(3)),
+    content: hit.content,
+    ...(hit.rationale ? { rationale: hit.rationale } : {}),
   };
 }
 
