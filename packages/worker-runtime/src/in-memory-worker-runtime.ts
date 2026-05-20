@@ -294,7 +294,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       });
 
       if (!this.shouldCommitCompletion(input.workerRunKey, executionToken)) {
-        return result;
+        return session.state.lastResult ?? null;
       }
 
       const completedAt = this.now();

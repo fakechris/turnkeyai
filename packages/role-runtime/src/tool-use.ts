@@ -22,7 +22,12 @@ import {
 import type { MemoryHit, RoleMemoryResolver } from "./context/role-memory-resolver";
 import type { TaskToolService } from "./task-tool-service";
 import type { ToolCancellationRegistry } from "./tool-cancellation-registry";
-import type { ToolPermissionQueryResult, ToolPermissionService } from "./tool-permission-service";
+import type {
+  ToolPermissionAppliedResult,
+  ToolPermissionDecisionResult,
+  ToolPermissionQueryResult,
+  ToolPermissionService,
+} from "./tool-permission-service";
 
 export interface RoleToolExecutionInput {
   call: LLMToolCall;
@@ -542,11 +547,25 @@ async function maybeGateBrowserSideEffect(input: {
     },
   };
   if (result.approvalId && input.toolPermissionService.waitForDecision) {
-    const decision = await input.toolPermissionService.waitForDecision({
-      threadId: input.input.activation.thread.threadId,
-      approvalId: result.approvalId,
-      timeoutMs: TOOL_PERMISSION_WAIT_MS,
-    });
+    let decision: ToolPermissionDecisionResult;
+    try {
+      decision = await input.toolPermissionService.waitForDecision({
+        threadId: input.input.activation.thread.threadId,
+        approvalId: result.approvalId,
+        timeoutMs: TOOL_PERMISSION_WAIT_MS,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        blocked: permissionBlockedResult(input.input.call, {
+          result,
+          progress: [queryProgress, permissionErrorProgress(input.input.call.name, result.approvalId, message)],
+          status: "permission_error",
+          message,
+          isError: true,
+        }),
+      };
+    }
     const decisionProgress: RoleToolProgressEvent = {
       phase: "progress",
       toolName: input.input.call.name,
@@ -558,10 +577,28 @@ async function maybeGateBrowserSideEffect(input: {
       },
     };
     if (decision.status === "approved") {
-      const applied = await input.toolPermissionService.apply({
-        threadId: input.input.activation.thread.threadId,
-        approvalId: result.approvalId,
-      });
+      let applied: ToolPermissionAppliedResult;
+      try {
+        applied = await input.toolPermissionService.apply({
+          threadId: input.input.activation.thread.threadId,
+          approvalId: result.approvalId,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          blocked: permissionBlockedResult(input.input.call, {
+            result,
+            progress: [
+              queryProgress,
+              decisionProgress,
+              permissionErrorProgress(input.input.call.name, result.approvalId, message),
+            ],
+            status: "permission_error",
+            message,
+            isError: true,
+          }),
+        };
+      }
       if (applied.status === "applied") {
         return {
           progress: [
@@ -611,6 +648,19 @@ async function maybeGateBrowserSideEffect(input: {
       message: result.message,
       isError: true,
     }),
+  };
+}
+
+function permissionErrorProgress(toolName: string, approvalId: string, message: string): RoleToolProgressEvent {
+  return {
+    phase: "progress",
+    toolName,
+    summary: message,
+    detail: {
+      eventType: "permission.error",
+      approval_id: approvalId,
+      error: message,
+    },
   };
 }
 

@@ -349,6 +349,73 @@ test("sessions_spawn waits for approval and resumes the same tool call before br
   assert.match(result.content, /Submitted after same-call approval/);
 });
 
+test("sessions_spawn returns structured permission error when approval wait fails", async () => {
+  const toolPermissionService: ToolPermissionService = {
+    async request(input) {
+      return {
+        status: "pending",
+        approvalId: "ap.thread-1.call-approval-error",
+        action: input.action,
+        requirement: {
+          level: input.requirement.level,
+          scope: input.requirement.scope,
+          cacheKey: input.requirement.cacheKey ?? "missing",
+          rationale: input.requirement.rationale,
+          workerType: input.requirement.workerType ?? "browser",
+        },
+        message: "Approval is pending.",
+      };
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async waitForDecision() {
+      throw new Error("approval store unavailable");
+    },
+    async apply() {
+      throw new Error("not reached");
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      throw new Error("worker must not start before permission is applied");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-approval-error",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Submit the final account update form.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Submit the final account update form.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; blocked_before_side_effect: boolean; message: string };
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "permission_error");
+  assert.equal(body.blocked_before_side_effect, true);
+  assert.match(body.message, /approval store unavailable/);
+  assert.equal(result.progress?.some((event) => event.detail?.eventType === "permission.error"), true);
+});
+
 test("sessions_spawn cancels the active worker when the tool call is cancelled", async () => {
   let resolveSend!: () => void;
   let sendStarted!: () => void;

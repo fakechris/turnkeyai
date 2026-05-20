@@ -164,6 +164,69 @@ test("in-memory worker runtime aborts the active handler on cancel", async () =>
   assert.equal(state?.status, "cancelled");
 });
 
+test("in-memory worker runtime does not return stale resolved results after cancel", async () => {
+  let observedAbortReason: string | null = null;
+  let markHandlerStarted!: () => void;
+  let releaseHandler!: () => void;
+  const handlerStarted = new Promise<void>((resolve) => {
+    markHandlerStarted = resolve;
+  });
+  const handlerRunning = new Promise<void>((resolve) => {
+    releaseHandler = resolve;
+  });
+  const handler: WorkerHandler = {
+    kind: "browser",
+    async canHandle() {
+      return true;
+    },
+    async run(input): Promise<WorkerExecutionResult | null> {
+      input.signal?.addEventListener("abort", () => {
+        observedAbortReason = typeof input.signal?.reason === "string" ? input.signal.reason : "aborted";
+        releaseHandler();
+      });
+      markHandlerStarted();
+      await handlerRunning;
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "stale completion",
+        payload: { stale: true },
+      };
+    },
+  };
+
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+    },
+    now: () => 123,
+  });
+
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  const sendPromise = runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+    toolCallId: "call-cancel-success",
+  });
+
+  await handlerStarted;
+  await runtime.cancel({
+    workerRunKey: spawned.workerRunKey,
+    reason: "operator cancelled browser work",
+  });
+  const result = await sendPromise;
+  const state = await runtime.getState(spawned.workerRunKey);
+
+  assert.equal(result, null);
+  assert.equal(observedAbortReason, "operator cancelled browser work");
+  assert.equal(state?.status, "cancelled");
+});
+
 test("in-memory worker runtime marks partial results as resumable and supports resume/cancel", async () => {
   let callCount = 0;
   const handler: WorkerHandler = {

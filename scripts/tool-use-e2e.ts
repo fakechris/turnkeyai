@@ -48,10 +48,10 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
         throw new Error("missing value for --cdp-timeout-ms");
       }
       const parsed = Number(value);
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new Error("--cdp-timeout-ms must be a positive number");
+      if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+        throw new Error("--cdp-timeout-ms must be a positive integer");
       }
-      options.cdpTimeoutMs = Math.trunc(parsed);
+      options.cdpTimeoutMs = parsed;
       index += 1;
       continue;
     }
