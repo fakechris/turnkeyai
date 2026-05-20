@@ -27,6 +27,26 @@ export interface TeamMessage {
   updatedAt: number;
   source?: MessageSource;
   metadata?: Record<string, unknown>;
+  toolCalls?: TeamMessageToolCall[];
+  toolCallId?: string;
+  toolProgress?: TeamMessageToolProgress[];
+  toolStatus?: "pending" | "completed" | "failed" | "cancelled";
+  timeCost?: number;
+}
+
+export interface TeamMessageToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface TeamMessageToolProgress {
+  toolCallId: string;
+  toolName: string;
+  phase: "started" | "progress" | "completed" | "failed" | "cancelled";
+  summary: string;
+  detail?: Record<string, unknown>;
+  ts: number;
 }
 
 export interface MessageSource {

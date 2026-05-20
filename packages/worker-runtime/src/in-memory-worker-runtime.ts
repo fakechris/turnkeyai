@@ -15,6 +15,7 @@ import type {
   WorkerStartupReconcileResult,
   WorkerRuntime,
   WorkerSessionState,
+  WorkerSessionHistoryEntry,
 } from "@turnkeyai/core-types/team";
 
 interface InMemoryWorkerRuntimeOptions {
@@ -227,17 +228,23 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       packet: input.packet,
     });
     if (!handler) {
+      const now = this.now();
+      const errorMessage = `worker handler unavailable for ${session.state.workerType}`;
       session.state = {
         ...session.state,
         status: "failed",
-        updatedAt: this.now(),
+        updatedAt: now,
         currentTaskId: input.activation.handoff.taskId,
         lastError: {
           code: "WORKER_FAILED",
-          message: `worker handler unavailable for ${session.state.workerType}`,
+          message: errorMessage,
           retryable: false,
         },
       };
+      session.state = appendWorkerHistory(
+        session.state,
+        buildWorkerFailureHistoryEntry(session.state, input.activation.handoff.taskId, errorMessage, now)
+      );
       await this.persistSession(input.workerRunKey);
       return null;
     }
@@ -252,12 +259,16 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       parentSpanId: `role:${input.activation.runState.runKey}`,
     };
 
-    session.state = {
-      ...session.state,
-      status: "running",
-      updatedAt: this.now(),
-      currentTaskId: input.activation.handoff.taskId,
-    };
+    const startedAt = this.now();
+    session.state = appendWorkerHistory(
+      {
+        ...session.state,
+        status: "running",
+        updatedAt: startedAt,
+        currentTaskId: input.activation.handoff.taskId,
+      },
+      buildWorkerUserHistoryEntry(input, startedAt)
+    );
     await this.persistSession(input.workerRunKey);
     await this.recordProgress(input.workerRunKey, session, {
       phase: "started",
@@ -277,10 +288,11 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         return result;
       }
 
+      const completedAt = this.now();
       session.state = {
         ...session.state,
         status: resolveStatus(result),
-        updatedAt: this.now(),
+        updatedAt: completedAt,
         currentTaskId: input.activation.handoff.taskId,
         ...(result ? { lastResult: result } : {}),
         ...(result?.status === "partial"
@@ -288,11 +300,15 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
               continuationDigest: {
                 reason: "follow_up" as const,
                 summary: result.summary,
-                createdAt: this.now(),
+                createdAt: completedAt,
               },
             }
           : {}),
       };
+      session.state = appendWorkerHistory(
+        session.state,
+        buildWorkerResultHistoryEntry(session.state, input.activation.handoff.taskId, result, completedAt)
+      );
       await this.persistSession(input.workerRunKey);
       await this.recordProgress(input.workerRunKey, session, {
         phase: mapWorkerResultPhase(result),
@@ -312,17 +328,28 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         throw error;
       }
 
+      const errorMessage = error instanceof Error ? error.message : "worker execution failed";
+      const failedAt = this.now();
       session.state = {
         ...session.state,
         status: "failed",
-        updatedAt: this.now(),
+        updatedAt: failedAt,
         currentTaskId: input.activation.handoff.taskId,
         lastError: {
           code: "WORKER_FAILED",
-          message: error instanceof Error ? error.message : "worker execution failed",
+          message: errorMessage,
           retryable: true,
         },
       };
+      session.state = appendWorkerHistory(
+        session.state,
+        buildWorkerFailureHistoryEntry(
+          session.state,
+          input.activation.handoff.taskId,
+          errorMessage,
+          failedAt
+        )
+      );
       await this.persistSession(input.workerRunKey);
       await this.recordProgress(input.workerRunKey, session, {
         phase: "failed",
@@ -399,6 +426,10 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         : {}),
       ...(nextContinuationDigest ? { continuationDigest: nextContinuationDigest } : {}),
     };
+    session.state = appendWorkerHistory(
+      session.state,
+      buildWorkerControlHistoryEntry(session.state, "interrupted", input.reason ?? "Worker is waiting for input.", now)
+    );
     await this.persistSession(input.workerRunKey);
     await this.recordProgress(input.workerRunKey, session, {
       phase: input.reason ? "degraded" : "waiting",
@@ -421,10 +452,11 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     }
     session.executionToken += 1;
 
+    const now = this.now();
     session.state = {
       ...session.state,
       status: "cancelled",
-      updatedAt: this.now(),
+      updatedAt: now,
       ...(input.reason
         ? {
             lastError: {
@@ -435,6 +467,10 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
           }
         : {}),
     };
+    session.state = appendWorkerHistory(
+      session.state,
+      buildWorkerControlHistoryEntry(session.state, "cancelled", input.reason ?? "Worker cancelled.", now)
+    );
     await this.persistSession(input.workerRunKey);
     await this.recordProgress(input.workerRunKey, session, {
       phase: "cancelled",
@@ -587,6 +623,100 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     }, this.heartbeatIntervalMs);
     return () => clearInterval(timer);
   }
+}
+
+function appendWorkerHistory(
+  state: WorkerSessionState,
+  entry: WorkerSessionHistoryEntry
+): WorkerSessionState {
+  const history = state.history ?? [];
+  const existingIds = new Set(history.map((item) => item.id));
+  let nextEntry = entry;
+  let suffix = history.length;
+  while (existingIds.has(nextEntry.id)) {
+    nextEntry = {
+      ...entry,
+      id: `${entry.id}:${suffix}`,
+    };
+    suffix += 1;
+  }
+  return {
+    ...state,
+    history: [...history, nextEntry],
+  };
+}
+
+function buildWorkerUserHistoryEntry(input: WorkerMessageInput, createdAt: number): WorkerSessionHistoryEntry {
+  return {
+    id: `worker-history:${input.workerRunKey}:${input.activation.handoff.taskId}:user:${createdAt}`,
+    role: "user",
+    content: input.packet.taskPrompt,
+    createdAt,
+    taskId: input.activation.handoff.taskId,
+  };
+}
+
+function buildWorkerResultHistoryEntry(
+  state: WorkerSessionState,
+  taskId: string,
+  result: WorkerExecutionResult | null,
+  createdAt: number
+): WorkerSessionHistoryEntry {
+  const base = {
+    id: `worker-history:${state.workerRunKey}:${taskId}:tool:${createdAt}`,
+    role: "tool" as const,
+    createdAt,
+    taskId,
+    toolName: state.workerType,
+  };
+  if (!result) {
+    return {
+      ...base,
+      status: "completed",
+      content: `Worker ${state.workerType} completed without a result.`,
+      payload: null,
+    };
+  }
+  return {
+    ...base,
+    status: result.status,
+    content: result.summary,
+    payload: result.payload,
+  };
+}
+
+function buildWorkerFailureHistoryEntry(
+  state: WorkerSessionState,
+  taskId: string,
+  message: string,
+  createdAt: number
+): WorkerSessionHistoryEntry {
+  return {
+    id: `worker-history:${state.workerRunKey}:${taskId}:tool-failed:${createdAt}`,
+    role: "tool",
+    content: message,
+    createdAt,
+    taskId,
+    toolName: state.workerType,
+    status: "failed",
+  };
+}
+
+function buildWorkerControlHistoryEntry(
+  state: WorkerSessionState,
+  status: "cancelled" | "interrupted",
+  content: string,
+  createdAt: number
+): WorkerSessionHistoryEntry {
+  return {
+    id: `worker-history:${state.workerRunKey}:${state.currentTaskId ?? "control"}:${status}:${createdAt}`,
+    role: "system",
+    content,
+    createdAt,
+    ...(state.currentTaskId ? { taskId: state.currentTaskId } : {}),
+    toolName: state.workerType,
+    status,
+  };
 }
 
 function resolveStatus(result: WorkerExecutionResult | null): WorkerSessionState["status"] {

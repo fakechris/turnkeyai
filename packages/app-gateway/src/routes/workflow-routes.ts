@@ -8,6 +8,8 @@ import type {
   Clock,
   IdGenerator,
   SessionTarget,
+  TeamMessage,
+  TeamMessageStore,
   WorkerKind,
 } from "@turnkeyai/core-types/team";
 
@@ -62,6 +64,7 @@ interface ScheduledTaskRuntimeDeps {
 export interface WorkflowRouteDeps {
   coordinationEngine: CoordinationEngineDeps;
   teamEventBus: TeamEventBusDeps;
+  teamMessageStore: TeamMessageStore;
   scheduledTaskRuntime: ScheduledTaskRuntimeDeps;
   idGenerator: IdGenerator;
   clock: Clock;
@@ -69,6 +72,7 @@ export interface WorkflowRouteDeps {
 }
 
 const MAX_MESSAGE_CONTENT_CHARS = 20_000;
+const MAX_CANCEL_REASON_CHARS = 1_000;
 const MAX_SCHEDULED_TITLE_CHARS = 200;
 const MAX_SCHEDULED_INSTRUCTIONS_CHARS = 20_000;
 const MAX_SCHEDULED_REF_COUNT = 32;
@@ -91,6 +95,69 @@ export async function handleWorkflowRoutes(input: {
       return true;
     }
     sendJson(res, 200, await deps.scheduledTaskRuntime.listByThread(threadId));
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/message/cancel-tools") {
+    const idempotencyKey = readIdempotencyKey(req);
+    if (!idempotencyKey.ok) {
+      sendJson(res, 400, { error: idempotencyKey.error });
+      return true;
+    }
+    const bodyResult = await readJsonBodySafe<{
+      messageId?: unknown;
+      threadId?: unknown;
+      toolCallIds?: unknown;
+      reason?: unknown;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const messageId = parseRequiredNonEmptyString(bodyResult.value.messageId as string | undefined);
+    const requestedThreadId = parseRequiredNonEmptyString(bodyResult.value.threadId as string | undefined);
+    const toolCallIds = parseStringArray(bodyResult.value.toolCallIds);
+    const reason = parseRequiredNonEmptyString(bodyResult.value.reason as string | undefined) ?? "tool call cancelled";
+    if (!messageId) {
+      sendJson(res, 400, { error: "messageId is required" });
+      return true;
+    }
+    if (reason.length > MAX_CANCEL_REASON_CHARS) {
+      sendJson(res, 400, { error: `reason must be at most ${MAX_CANCEL_REASON_CHARS} characters` });
+      return true;
+    }
+    if (bodyResult.value.toolCallIds !== undefined && !toolCallIds) {
+      sendJson(res, 400, { error: "toolCallIds must be a non-empty string array" });
+      return true;
+    }
+
+    const executeCancelTools = async () => {
+      const result = await cancelToolCallsOnMessage({
+        teamMessageStore: deps.teamMessageStore,
+        now: deps.clock.now(),
+        messageId,
+        requestedThreadId,
+        toolCallIds: toolCallIds ?? null,
+        reason,
+      });
+      return {
+        statusCode: result.statusCode,
+        body: result.body,
+      };
+    };
+    const result = deps.idempotencyStore
+      ? await deps.idempotencyStore.execute({
+          scope: "workflow:message-cancel-tools",
+          ...(idempotencyKey.key ? { key: idempotencyKey.key } : {}),
+          fingerprint: JSON.stringify({ messageId, requestedThreadId, toolCallIds: toolCallIds ?? null, reason }),
+          execute: executeCancelTools,
+        })
+      : ({
+          kind: "response",
+          ...(await executeCancelTools()),
+          replayed: false,
+        } as const);
+    sendIdempotentResponse(res, result);
     return true;
   }
 
@@ -319,6 +386,139 @@ export async function handleWorkflowRoutes(input: {
   return false;
 }
 
+async function cancelToolCallsOnMessage(input: {
+  teamMessageStore: TeamMessageStore;
+  now: number;
+  messageId: string;
+  requestedThreadId: string | null;
+  toolCallIds: string[] | null;
+  reason: string;
+}): Promise<{ statusCode: number; body: unknown }> {
+  const message = await input.teamMessageStore.get(input.messageId);
+  if (!message) {
+    return { statusCode: 404, body: { error: "message not found" } };
+  }
+  if (input.requestedThreadId && message.threadId !== input.requestedThreadId) {
+    return { statusCode: 404, body: { error: "message not found" } };
+  }
+  if (message.role !== "assistant" || !message.toolCalls?.length) {
+    return { statusCode: 400, body: { error: "message has no assistant tool calls" } };
+  }
+
+  const callById = new Map(message.toolCalls.map((call) => [call.id, call] as const));
+  const requestedIds = [...new Set(input.toolCallIds ?? message.toolCalls.map((call) => call.id))];
+  const unknown = requestedIds.find((id) => !callById.has(id));
+  if (unknown) {
+    return { statusCode: 400, body: { error: `unknown toolCallId: ${unknown}` } };
+  }
+
+  const terminal = new Set(
+    (message.toolProgress ?? [])
+      .filter((event) => event.phase === "completed" || event.phase === "failed" || event.phase === "cancelled")
+      .map((event) => event.toolCallId)
+  );
+  const cancellableIds = requestedIds.filter((id) => !terminal.has(id));
+  if (cancellableIds.length === 0) {
+    return {
+      statusCode: 200,
+      body: {
+        cancelled: false,
+        messageId: message.id,
+        threadId: message.threadId,
+        toolCallIds: requestedIds,
+      },
+    };
+  }
+
+  const cancelProgress = cancellableIds.map((id) => {
+    const call = callById.get(id)!;
+    return {
+      toolCallId: id,
+      toolName: call.name,
+      phase: "cancelled" as const,
+      summary: input.reason,
+      ts: input.now,
+    };
+  });
+  const toolMessages = cancellableIds.map((id, index) => {
+    const call = callById.get(id)!;
+    return {
+      id: `${message.id}:tool-cancelled:${id}`,
+      threadId: message.threadId,
+      role: "tool" as const,
+      name: call.name,
+      content: input.reason,
+      createdAt: input.now + index + 1,
+      updatedAt: input.now + index + 1,
+      toolCallId: id,
+      toolStatus: "cancelled" as const,
+      source: {
+        type: "api" as const,
+        chatType: "group" as const,
+        route: "worker" as const,
+        speakerType: "Tool" as const,
+        speakerName: call.name,
+      },
+      metadata: {
+        cancelled: true,
+        parentMessageId: message.id,
+      },
+    };
+  });
+  await Promise.all(
+    toolMessages.map((toolMessage) =>
+      input.teamMessageStore.appendIfAbsent
+        ? input.teamMessageStore.appendIfAbsent(toolMessage)
+        : input.teamMessageStore.append(toolMessage)
+    )
+  );
+  const updatedMessage: TeamMessage = {
+    ...message,
+    updatedAt: input.now,
+    toolProgress: [...(message.toolProgress ?? []), ...cancelProgress],
+    toolStatus: resolveAssistantToolStatus(message, cancelProgress),
+  };
+  await input.teamMessageStore.append(updatedMessage);
+
+  return {
+    statusCode: 200,
+    body: {
+      cancelled: true,
+      messageId: message.id,
+      threadId: message.threadId,
+      toolCallIds: cancellableIds,
+    },
+  };
+}
+
+function resolveAssistantToolStatus(
+  message: TeamMessage,
+  newProgress: NonNullable<TeamMessage["toolProgress"]>
+): NonNullable<TeamMessage["toolStatus"]> {
+  const latestByToolCall = new Map<string, NonNullable<TeamMessage["toolProgress"]>[number]>();
+  for (const event of [...(message.toolProgress ?? []), ...newProgress]) {
+    latestByToolCall.set(event.toolCallId, event);
+  }
+  const latest = message.toolCalls?.map((call) => latestByToolCall.get(call.id)).filter(Boolean) ?? [];
+  if (latest.length < (message.toolCalls?.length ?? 0)) return "pending";
+  if (latest.some((event) => event?.phase === "started" || event?.phase === "progress")) return "pending";
+  if (latest.some((event) => event?.phase === "failed")) return "failed";
+  if (latest.some((event) => event?.phase === "cancelled")) return "cancelled";
+  if (latest.every((event) => event?.phase === "completed")) return "completed";
+  return "pending";
+}
+
+function parseStringArray(value: unknown): string[] | null {
+  if (value === undefined) {
+    return null;
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  const parsed = value.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean);
+  return parsed.length === value.length ? parsed : null;
+}
+
 function normalizeRefArray(
   value: unknown,
   fieldName: string
@@ -351,4 +551,3 @@ function normalizeRefArray(
   }
   return { ok: true, value: normalized };
 }
-

@@ -49,6 +49,60 @@ test("in-memory worker runtime marks null worker results as done", async () => {
   assert.equal(state?.status, "done");
 });
 
+test("in-memory worker runtime keeps durable per-session message history", async () => {
+  let now = 1000;
+  const handler: WorkerHandler = {
+    kind: "browser",
+    async canHandle() {
+      return true;
+    },
+    async run(): Promise<WorkerExecutionResult | null> {
+      now += 10;
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Captured browser evidence.",
+        payload: { url: "https://example.test" },
+      };
+    },
+  };
+
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+    },
+    now: () => now++,
+  });
+
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  await runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: {
+      ...input.packet,
+      taskPrompt: "Open the target page and summarize it.",
+    },
+  });
+  await runtime.cancel({
+    workerRunKey: spawned.workerRunKey,
+    reason: "operator stopped the session",
+  });
+
+  const state = await runtime.getState(spawned.workerRunKey);
+  assert.equal(state?.history?.length, 3);
+  assert.equal(state?.history?.[0]?.role, "user");
+  assert.equal(state?.history?.[0]?.content, "Open the target page and summarize it.");
+  assert.equal(state?.history?.[1]?.role, "tool");
+  assert.equal(state?.history?.[1]?.content, "Captured browser evidence.");
+  assert.deepEqual(state?.history?.[1]?.payload, { url: "https://example.test" });
+  assert.equal(state?.history?.[2]?.role, "system");
+  assert.equal(state?.history?.[2]?.status, "cancelled");
+});
+
 test("in-memory worker runtime marks partial results as resumable and supports resume/cancel", async () => {
   let callCount = 0;
   const handler: WorkerHandler = {
@@ -96,7 +150,9 @@ test("in-memory worker runtime marks partial results as resumable and supports r
     packet: input.packet,
   });
   assert.equal(resumed?.status, "completed");
-  assert.equal((await runtime.getState(spawned.workerRunKey))?.status, "done");
+  const doneState = await runtime.getState(spawned.workerRunKey);
+  assert.equal(doneState?.status, "done");
+  assert.equal(new Set(doneState?.history?.map((entry) => entry.id)).size, doneState?.history?.length);
 
   const cancelled = await runtime.cancel({
     workerRunKey: spawned.workerRunKey,

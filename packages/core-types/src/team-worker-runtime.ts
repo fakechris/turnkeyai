@@ -38,6 +38,17 @@ export interface WorkerExecutionResult {
   payload: unknown;
 }
 
+export interface WorkerSessionHistoryEntry {
+  id: string;
+  role: "user" | "assistant" | "tool" | "system";
+  content: string;
+  createdAt: number;
+  taskId?: TaskId;
+  toolName?: WorkerKind;
+  status?: WorkerExecutionResult["status"] | "cancelled" | "interrupted";
+  payload?: unknown;
+}
+
 export interface WorkerSessionState {
   workerRunKey: RunKey;
   workerType: WorkerKind;
@@ -45,6 +56,7 @@ export interface WorkerSessionState {
   createdAt: number;
   updatedAt: number;
   currentTaskId?: TaskId;
+  history?: WorkerSessionHistoryEntry[];
   lastResult?: WorkerExecutionResult;
   lastError?: RuntimeError;
   continuationDigest?: {
@@ -120,6 +132,7 @@ export interface WorkerCancelInput {
 export interface RoleRuntimeResult {
   status: "ok" | "failed" | "delegated";
   message?: TeamMessage;
+  messages?: TeamMessage[];
   mentions?: RoleId[];
   spawnedWorkers?: SpawnedWorker[];
   workerBindings?: Array<{ workerType: WorkerKind; workerRunKey: RunKey }>;

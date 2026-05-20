@@ -668,6 +668,7 @@ const server = http.createServer(async (req, res) => {
         deps: {
           coordinationEngine,
           teamEventBus,
+          teamMessageStore,
           scheduledTaskRuntime,
           idGenerator,
           clock,

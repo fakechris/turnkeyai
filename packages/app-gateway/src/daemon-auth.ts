@@ -258,7 +258,13 @@ function isBridgeRoute(pathname: string): boolean {
 }
 
 function isWorkflowMutationRoute(pathname: string): boolean {
-  return pathname === "/threads/bootstrap-demo" || pathname === "/messages" || pathname === "/scheduled-tasks" || pathname === "/scheduled-tasks/trigger-due";
+  return (
+    pathname === "/threads/bootstrap-demo" ||
+    pathname === "/messages" ||
+    pathname === "/message/cancel-tools" ||
+    pathname === "/scheduled-tasks" ||
+    pathname === "/scheduled-tasks/trigger-due"
+  );
 }
 
 function isRecoveryMutationRoute(pathname: string): boolean {

@@ -7,6 +7,8 @@ import type {
 import type {
   RoleActivationInput,
   RuntimeProgressRecorder,
+  WorkerSessionHistoryEntry,
+  WorkerSessionState,
   WorkerKind,
   WorkerRuntime,
 } from "@turnkeyai/core-types/team";
@@ -214,6 +216,9 @@ const SESSION_TOOL_DEFINITIONS: LLMToolDefinition[] = [
       additionalProperties: false,
       properties: {
         kinds: { type: "array", items: { type: "string", enum: ["browser", "explore", "finance", "coder", "harness"] } },
+        agent_id: { type: "string", enum: ["browser", "explore", "finance", "coder", "harness"] },
+        parentSessionKey: { type: "string" },
+        activeMinutes: { type: "number", minimum: 1 },
         limit: { type: "number", minimum: 1 },
       },
     },
@@ -226,6 +231,8 @@ const SESSION_TOOL_DEFINITIONS: LLMToolDefinition[] = [
       additionalProperties: false,
       properties: {
         session_key: { type: "string" },
+        offset: { type: "number", minimum: 0 },
+        limit: { type: "number", minimum: 1 },
         include_tools: { type: "boolean" },
       },
       required: ["session_key"],
@@ -367,10 +374,17 @@ async function executeSessionsList(
   const callerThreadId = input.activation.thread.threadId;
   const records = workerRuntime.listSessions ? await workerRuntime.listSessions() : [];
   const kinds = stringArray(input.call.input.kinds);
+  const agentId = requiredString(input.call.input.agent_id);
+  const parentSessionKey = requiredString(input.call.input.parentSessionKey);
+  const activeMinutes = positiveInteger(input.call.input.activeMinutes);
   const limit = positiveInteger(input.call.input.limit) ?? 20;
+  const activeAfter = activeMinutes ? Date.now() - activeMinutes * 60 * 1000 : null;
   const filtered = records
     .filter((record) => record.context?.threadId === callerThreadId)
+    .filter((record) => !agentId || record.state.workerType === agentId)
     .filter((record) => kinds.length === 0 || kinds.includes(record.state.workerType))
+    .filter((record) => !parentSessionKey || matchesParentSessionKey(record.context?.parentSpanId, parentSessionKey))
+    .filter((record) => activeAfter === null || record.state.updatedAt >= activeAfter)
     .slice(0, limit)
     .map((record) => ({
       session_key: record.workerRunKey,
@@ -379,7 +393,7 @@ async function executeSessionsList(
       created_at: record.state.createdAt,
       last_active_at: record.state.updatedAt,
       current_task_id: record.state.currentTaskId ?? null,
-      message_count: record.state.lastResult ? 1 : 0,
+      message_count: record.state.history?.length ?? (record.state.lastResult ? 1 : 0),
     }));
   return {
     toolCallId: input.call.id,
@@ -412,32 +426,64 @@ async function executeSessionsHistory(
   if (!state) {
     return errorResult(input.call, `session not found: ${sessionKey}`);
   }
+  const offset = nonNegativeInteger(input.call.input.offset) ?? 0;
+  const limit = positiveInteger(input.call.input.limit) ?? 50;
+  const history =
+    state.history && state.history.length > 0
+      ? state.history
+      : [
+          ...(state.lastResult
+            ? [createLegacyWorkerHistoryEntry(sessionKey, state)]
+            : []),
+        ];
+  const messages = history
+    .slice(offset, offset + limit)
+    .map((entry) => serializeWorkerHistoryEntry(entry, input.call.input.include_tools === true));
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
     content: JSON.stringify(
       {
         session_key: sessionKey,
-        total_messages: state.lastResult ? 1 : 0,
-        showing: state.lastResult ? 1 : 0,
-        has_more: false,
-        messages: [
-          ...(state.lastResult
-            ? [
-                {
-                  role: "tool",
-                  name: state.workerType,
-                  status: state.lastResult.status,
-                  content: state.lastResult.summary,
-                  payload: input.call.input.include_tools === true ? state.lastResult.payload : undefined,
-                },
-              ]
-            : []),
-        ],
+        total_messages: history.length,
+        showing: messages.length,
+        offset,
+        limit,
+        has_more: offset + messages.length < history.length,
+        messages,
       },
       null,
       2
     ),
+  };
+}
+
+function createLegacyWorkerHistoryEntry(
+  sessionKey: string,
+  state: WorkerSessionState
+): WorkerSessionHistoryEntry {
+  return {
+    id: `worker-history:${sessionKey}:legacy-result`,
+    role: "tool",
+    toolName: state.workerType,
+    status: state.lastResult!.status,
+    content: state.lastResult!.summary,
+    payload: state.lastResult!.payload,
+    createdAt: state.updatedAt,
+    ...(state.currentTaskId ? { taskId: state.currentTaskId } : {}),
+  };
+}
+
+function serializeWorkerHistoryEntry(entry: WorkerSessionHistoryEntry, includePayload: boolean): Record<string, unknown> {
+  return {
+    id: entry.id,
+    role: entry.role,
+    content: entry.content,
+    created_at: entry.createdAt,
+    ...(entry.taskId ? { task_id: entry.taskId } : {}),
+    ...(entry.toolName ? { name: entry.toolName } : {}),
+    ...(entry.status ? { status: entry.status } : {}),
+    ...(includePayload && "payload" in entry ? { payload: entry.payload } : {}),
   };
 }
 
@@ -469,4 +515,12 @@ function stringArray(value: unknown): string[] {
 
 function positiveInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function matchesParentSessionKey(parentSpanId: string | undefined, parentSessionKey: string): boolean {
+  return parentSpanId === parentSessionKey || parentSpanId === `role:${parentSessionKey}`;
 }
