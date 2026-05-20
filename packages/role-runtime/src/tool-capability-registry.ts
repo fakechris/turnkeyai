@@ -4,16 +4,18 @@ import type { LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
 export const SESSION_TOOL_NAMES = ["sessions_spawn", "sessions_send", "sessions_list", "sessions_history"] as const;
 export const PERMISSION_TOOL_NAMES = ["permission_query", "permission_result", "permission_applied"] as const;
 export const MEMORY_TOOL_NAMES = ["memory_search", "memory_get"] as const;
+export const TASK_TOOL_NAMES = ["tasks_list", "tasks_create", "tasks_update"] as const;
 export type SessionToolName = (typeof SESSION_TOOL_NAMES)[number];
 export type PermissionToolName = (typeof PERMISSION_TOOL_NAMES)[number];
 export type MemoryToolName = (typeof MEMORY_TOOL_NAMES)[number];
-export type NativeToolName = SessionToolName | PermissionToolName | MemoryToolName;
+export type TaskToolName = (typeof TASK_TOOL_NAMES)[number];
+export type NativeToolName = SessionToolName | PermissionToolName | MemoryToolName | TaskToolName;
 
 export interface ToolCapabilityRecord {
   name: NativeToolName;
   definition: LLMToolDefinition;
-  executorKind: "worker-session" | "permission" | "memory";
-  promptGroup: "sessions" | "permissions" | "memory";
+  executorKind: "worker-session" | "permission" | "memory" | "task";
+  promptGroup: "sessions" | "permissions" | "memory" | "tasks";
 }
 
 export interface ToolPromptHarnessInput {
@@ -69,6 +71,7 @@ export function createNativeToolCapabilityRegistry(input: {
   availableWorkerKinds?: WorkerKind[];
   permissionsEnabled?: boolean;
   memoryEnabled?: boolean;
+  tasksEnabled?: boolean;
 } = {}): ToolCapabilityRegistry {
   const workerKinds = normalizeWorkerKinds(input.availableWorkerKinds);
   const records: ToolCapabilityRecord[] = [];
@@ -102,10 +105,78 @@ export function createNativeToolCapabilityRegistry(input: {
       }))
     );
   }
+  if (input.tasksEnabled) {
+    records.push(
+      ...buildTaskToolDefinitions().map((definition) => ({
+        name: definition.name as NativeToolName,
+        definition,
+        executorKind: "task" as const,
+        promptGroup: "tasks" as const,
+      }))
+    );
+  }
   return new ToolCapabilityRegistry({
     workerKinds,
     records,
   });
+}
+
+export function buildTaskToolDefinitions(): LLMToolDefinition[] {
+  const statusSchema = {
+    type: "string",
+    enum: ["draft", "planning", "working", "needs_approval", "blocked", "done", "archived"],
+  };
+  return [
+    {
+      name: "tasks_list",
+      description: "List mission work items so the agent can inspect task state before planning follow-up work.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          mission_id: { type: "string", description: "Optional mission id. Omit inside Mission Control threads." },
+          status: statusSchema,
+          agent_id: { type: "string", description: "Optional assigned agent id filter." },
+          limit: { type: "number", minimum: 1, maximum: 50 },
+        },
+      },
+    },
+    {
+      name: "tasks_create",
+      description: "Create a mission work item for a concrete subtask that should be tracked and verified.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          mission_id: { type: "string", description: "Optional mission id. Omit inside Mission Control threads." },
+          title: { type: "string", description: "Short, concrete work-item title." },
+          agent_id: { type: "string", description: "Agent expected to own the item. Defaults to the current role." },
+          status: statusSchema,
+          context_refs: { type: "array", items: { type: "string" } },
+          output: { type: "string", description: "Optional initial expected output or note." },
+        },
+        required: ["title"],
+      },
+    },
+    {
+      name: "tasks_update",
+      description: "Update mission work-item status, progress, output, or blocker after work or verification.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          mission_id: { type: "string", description: "Optional mission id. Omit inside Mission Control threads." },
+          work_item_id: { type: "string" },
+          status: statusSchema,
+          output: { type: "string" },
+          blocker: { type: "string" },
+          clear_blocker: { type: "boolean" },
+          progress: { type: "number", minimum: 0, maximum: 1 },
+        },
+        required: ["work_item_id"],
+      },
+    },
+  ];
 }
 
 export function buildMemoryToolDefinitions(): LLMToolDefinition[] {
@@ -295,11 +366,26 @@ function renderToolPromptHarness(input: {
     sections.push(renderMemorySection());
   }
 
+  if (TASK_TOOL_NAMES.some((name) => enabled.has(name))) {
+    sections.push(renderTaskSection());
+  }
+
   if (input.availableWorkerKinds.includes("browser")) {
     sections.push(renderBrowserWorkerSection());
   }
 
   return sections.filter(Boolean).join("\n\n");
+}
+
+function renderTaskSection(): string {
+  return [
+    "## Mission Task Management",
+    "- Use tasks_list before changing plan state when the mission may already have work items.",
+    "- Use tasks_create for concrete, trackable subtasks in multi-step work; keep each title specific and assign it to the agent that owns the outcome.",
+    "- Use tasks_update when a work item starts, blocks, completes, or after verification changes the result.",
+    "- Mark a task done only after its requested output has been produced or verified. Record blockers explicitly instead of hiding them in final prose.",
+    "- For 3+ meaningful subtasks, keep mission work items current so the user can inspect progress without reading the whole conversation.",
+  ].join("\n");
 }
 
 function renderMemorySection(): string {

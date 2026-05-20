@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { RoleActivationInput, WorkerRuntime } from "@turnkeyai/core-types/team";
 
+import type { TaskToolService } from "./task-tool-service";
 import { InMemoryToolCancellationRegistry } from "./tool-cancellation-registry";
 import type { ToolPermissionService } from "./tool-permission-service";
 import { createWorkerSessionToolExecutor } from "./tool-use";
@@ -999,6 +1000,64 @@ test("memory_search and memory_get expose durable thread memory to the role", as
   const getBody = JSON.parse(get.content) as { memory: { memory_id: string; content: string } };
   assert.equal(getBody.memory.memory_id, "thread-1:decision:1");
   assert.match(getBody.memory.content, /direct provider APIs/);
+});
+
+test("task tools expose mission work-item list, create, and update operations", async () => {
+  const calls: string[] = [];
+  const taskToolService: TaskToolService = {
+    async list(input) {
+      calls.push(`list:${input.threadId}:${input.status ?? "all"}`);
+      return { mission_id: input.missionId ?? "msn.1", tasks: [] };
+    },
+    async create(input) {
+      calls.push(`create:${input.title}:${input.agentId ?? input.roleId}`);
+      return { mission_id: input.missionId ?? "msn.1", task: { id: "wi.task-1", title: input.title } };
+    },
+    async update(input) {
+      calls.push(`update:${input.workItemId}:${input.status ?? "same"}`);
+      return { mission_id: input.missionId ?? "msn.1", task: { id: input.workItemId, status: input.status } };
+    },
+  };
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    taskToolService,
+  });
+  assert.deepEqual(
+    executor.definitions().filter((definition) => definition.name.startsWith("tasks_")).map((definition) => definition.name),
+    ["tasks_list", "tasks_create", "tasks_update"]
+  );
+
+  const activation = buildActivation();
+  const packet = {
+    roleId: "role-lead",
+    roleName: "Lead",
+    seat: "lead" as const,
+    systemPrompt: "Lead.",
+    taskPrompt: "Plan tracked work.",
+    outputContract: "Return result.",
+    suggestedMentions: [],
+  };
+  const list = await executor.execute({
+    call: { id: "call-tasks-list", name: "tasks_list", input: { status: "working", limit: 10 } },
+    activation,
+    packet,
+  });
+  const create = await executor.execute({
+    call: { id: "call-tasks-create", name: "tasks_create", input: { title: "Verify browser evidence", agent_id: "role-lead" } },
+    activation,
+    packet,
+  });
+  const update = await executor.execute({
+    call: { id: "call-tasks-update", name: "tasks_update", input: { work_item_id: "wi.task-1", status: "done", progress: 1 } },
+    activation,
+    packet,
+  });
+
+  assert.equal(JSON.parse(list.content).mission_id, "msn.1");
+  assert.equal(JSON.parse(create.content).task.id, "wi.task-1");
+  assert.equal(JSON.parse(update.content).task.status, "done");
+  assert.deepEqual(calls, ["list:thread-1:working", "create:Verify browser evidence:role-lead", "update:wi.task-1:done"]);
+  assert.equal(update.progress?.[0]?.phase, "completed");
 });
 
 function buildActivation(): RoleActivationInput {

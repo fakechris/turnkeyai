@@ -109,3 +109,22 @@ test("native tool capability registry includes memory tools only when enabled", 
   assert.match(enabled.renderPromptHarness({ seat: "lead" }), /Memory Tools/);
   assert.match(enabled.renderPromptHarness({ seat: "lead" }), /Do not fabricate remembered facts/);
 });
+
+test("native tool capability registry includes task tools only when enabled", () => {
+  const disabled = createNativeToolCapabilityRegistry({
+    availableWorkerKinds: ["explore"],
+  });
+  assert.equal(disabled.definitions().some((definition) => definition.name === "tasks_list"), false);
+  assert.doesNotMatch(disabled.renderPromptHarness({ seat: "lead" }), /Mission Task Management/);
+
+  const enabled = createNativeToolCapabilityRegistry({
+    availableWorkerKinds: ["explore"],
+    tasksEnabled: true,
+  });
+  assert.deepEqual(
+    enabled.summaries().filter((summary) => summary.promptGroup === "tasks").map((summary) => summary.name),
+    ["tasks_list", "tasks_create", "tasks_update"]
+  );
+  assert.match(enabled.renderPromptHarness({ seat: "lead" }), /Mission Task Management/);
+  assert.match(enabled.renderPromptHarness({ seat: "lead" }), /Mark a task done only after/);
+});
