@@ -157,6 +157,13 @@ export function buildSessionToolDefinitions(workerKinds: WorkerKind[]): LLMToolD
             description: "Sub-agent kind backed by an executable worker handler.",
           },
           label: { type: "string", description: "Short user-visible label." },
+          timeout_seconds: {
+            type: "number",
+            minimum: 0.001,
+            maximum: 900,
+            description:
+              "Optional wall-clock timeout for this sub-agent call. On timeout the session is interrupted and remains available for sessions_send follow-up.",
+          },
         },
         required: ["task", "agent_id"],
       },
@@ -171,6 +178,13 @@ export function buildSessionToolDefinitions(workerKinds: WorkerKind[]): LLMToolD
           session_key: { type: "string", description: "Worker session key returned by sessions_spawn/list." },
           message: { type: "string", description: "Follow-up instruction." },
           label: { type: "string" },
+          timeout_seconds: {
+            type: "number",
+            minimum: 0.001,
+            maximum: 900,
+            description:
+              "Optional wall-clock timeout for this follow-up. On timeout the session is interrupted and remains available for another sessions_send.",
+          },
         },
         required: ["session_key", "message"],
       },
@@ -326,6 +340,7 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
     "## Sub-Agent Sessions",
     "Use sessions_spawn only when delegation materially helps: parallel independent work, context isolation, specialist browser work, or verification.",
     "Each spawned task must be self-contained. Include exact URLs, paths, scope, output format, stop conditions, and constraints the child will not otherwise know.",
+    "Use timeout_seconds for bounded work. If a sub-agent times out, inspect sessions_history and continue with sessions_send only if the remaining work is still valuable.",
     "Prefer multiple focused sub-agents over one broad sub-agent when the subtasks are independent.",
     "After a sub-agent returns, validate coverage before presenting the result. If the result is partial, use sessions_send or a new focused spawn.",
     "Use sessions_history to inspect sessions you spawned or when the user explicitly asks to recall prior sub-agent work. Do not browse unrelated sessions as a fallback.",

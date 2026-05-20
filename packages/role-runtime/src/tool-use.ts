@@ -58,6 +58,8 @@ export interface RoleToolLoopOptions {
 }
 
 export const DEFAULT_ROLE_TOOL_MAX_ROUNDS = 8;
+const MAX_SESSION_TOOL_TIMEOUT_SECONDS = 900;
+const WORKER_TOOL_TIMEOUT = Symbol("worker_tool_timeout");
 
 export function appendAssistantToolCallMessage(
   messages: LLMMessage[],
@@ -445,6 +447,7 @@ async function executeSessionsSpawn(
     preferredWorkerKinds: [agentId],
     continuityMode: "fresh" as const,
   };
+  const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds);
   const spawned = await workerRuntime.spawn({ activation: input.activation, packet });
   if (!spawned) {
     return errorResult(input.call, `No worker handler available for ${agentId}`);
@@ -459,11 +462,25 @@ async function executeSessionsSpawn(
   });
   let result: WorkerExecutionResult | null;
   try {
-    result = await workerRuntime.send({
-      workerRunKey: spawned.workerRunKey,
-      activation: input.activation,
-      packet,
-    });
+    const sendResult = await sendWorkerWithOptionalTimeout(
+      workerRuntime,
+      {
+        workerRunKey: spawned.workerRunKey,
+        activation: input.activation,
+        packet,
+      },
+      timeoutMs,
+      `sessions_spawn timed out after ${formatTimeoutSeconds(timeoutMs)}.`
+    );
+    if (sendResult === WORKER_TOOL_TIMEOUT) {
+      return timedOutResult(input.call, {
+        sessionKey: spawned.workerRunKey,
+        agentId: spawned.workerType,
+        taskId: input.activation.handoff.taskId,
+        timeoutMs,
+      });
+    }
+    result = sendResult;
   } finally {
     registration?.unregister();
   }
@@ -536,6 +553,7 @@ async function executeSessionsSend(
     preferredWorkerKinds: [state.workerType],
     continuityMode: "resume-existing" as const,
   };
+  const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds);
   const registration = toolCancellationRegistry?.register({
     threadId: input.activation.thread.threadId,
     toolCallId: input.call.id,
@@ -546,11 +564,25 @@ async function executeSessionsSend(
   });
   let result: WorkerExecutionResult | null;
   try {
-    result = await workerRuntime.send({
-      workerRunKey: sessionKey,
-      activation: input.activation,
-      packet,
-    });
+    const sendResult = await sendWorkerWithOptionalTimeout(
+      workerRuntime,
+      {
+        workerRunKey: sessionKey,
+        activation: input.activation,
+        packet,
+      },
+      timeoutMs,
+      `sessions_send timed out after ${formatTimeoutSeconds(timeoutMs)}.`
+    );
+    if (sendResult === WORKER_TOOL_TIMEOUT) {
+      return timedOutResult(input.call, {
+        sessionKey,
+        agentId: state.workerType,
+        taskId: input.activation.handoff.taskId,
+        timeoutMs,
+      });
+    }
+    result = sendResult;
   } finally {
     registration?.unregister();
   }
@@ -757,6 +789,86 @@ function cancelledResult(call: LLMToolCall, content: string): RoleToolExecutionR
   };
 }
 
+function timedOutResult(
+  call: LLMToolCall,
+  input: { sessionKey: string; agentId: WorkerKind; taskId: string; timeoutMs: number | null }
+): RoleToolExecutionResult {
+  const timeoutSeconds = input.timeoutMs == null ? null : Number((input.timeoutMs / 1_000).toFixed(3));
+  const message =
+    timeoutSeconds == null
+      ? "Sub-agent session timed out."
+      : `Sub-agent session timed out after ${formatTimeoutSeconds(input.timeoutMs)}.`;
+  return {
+    toolCallId: call.id,
+    toolName: call.name,
+    isError: true,
+    content: JSON.stringify(
+      {
+        task_id: input.taskId,
+        session_key: input.sessionKey,
+        agent_id: input.agentId,
+        status: "timeout",
+        timeout_seconds: timeoutSeconds,
+        resumable: true,
+        result: message,
+      },
+      null,
+      2
+    ),
+    progress: [
+      {
+        phase: "failed",
+        toolName: call.name,
+        summary: message,
+        detail: {
+          session_key: input.sessionKey,
+          agent_id: input.agentId,
+          status: "timeout",
+          ...(timeoutSeconds == null ? {} : { timeout_seconds: timeoutSeconds }),
+        },
+      },
+    ],
+  };
+}
+
+async function sendWorkerWithOptionalTimeout(
+  workerRuntime: WorkerRuntime,
+  input: {
+    workerRunKey: string;
+    activation: RoleActivationInput;
+    packet: RolePromptPacket;
+  },
+  timeoutMs: number | null,
+  timeoutReason: string
+): Promise<WorkerExecutionResult | null | typeof WORKER_TOOL_TIMEOUT> {
+  if (timeoutMs === null) {
+    return workerRuntime.send(input);
+  }
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let timeoutFired = false;
+  const timeoutPromise = new Promise<typeof WORKER_TOOL_TIMEOUT>((resolve) => {
+    timeoutHandle = setTimeout(() => {
+      timeoutFired = true;
+      void workerRuntime
+        .interrupt({ workerRunKey: input.workerRunKey, reason: timeoutReason })
+        .catch((error) => {
+          console.error("worker timeout interrupt failed", {
+            workerRunKey: input.workerRunKey,
+            error,
+          });
+        })
+        .finally(() => resolve(WORKER_TOOL_TIMEOUT));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([workerRuntime.send(input), timeoutPromise]);
+  } finally {
+    if (!timeoutFired && timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
 function requiredString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
@@ -798,6 +910,22 @@ function stringArray(value: unknown): string[] {
 
 function positiveInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function parseToolTimeoutMs(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  const boundedSeconds = Math.min(value, MAX_SESSION_TOOL_TIMEOUT_SECONDS);
+  return Math.max(1, Math.round(boundedSeconds * 1_000));
+}
+
+function formatTimeoutSeconds(timeoutMs: number | null): string {
+  if (timeoutMs === null) {
+    return "the configured timeout";
+  }
+  const seconds = timeoutMs / 1_000;
+  return `${Number(seconds.toFixed(3))}s`;
 }
 
 function nonNegativeInteger(value: unknown): number | null {
