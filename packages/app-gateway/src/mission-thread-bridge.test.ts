@@ -344,6 +344,14 @@ describe("MissionThreadBridge", () => {
         {
           toolCallId: "c-native",
           toolName: "sessions_send",
+          phase: "progress",
+          summary: "Browser worker captured a snapshot.",
+          detail: { eventType: "browser.snapshot", targetId: "target-1" },
+          ts: 4_850,
+        },
+        {
+          toolCallId: "c-native",
+          toolName: "sessions_send",
           phase: "completed",
           summary: "Browser follow-up completed.",
           ts: 4_900,
@@ -365,13 +373,168 @@ describe("MissionThreadBridge", () => {
       ordered.map((event) => ({ kind: event.kind, phase: event.runtime?.toolPhase ?? null })),
       [
         { kind: "tool", phase: "call" },
+        { kind: "tool", phase: "progress" },
         { kind: "tool", phase: "result" },
         { kind: "thought", phase: null },
       ]
     );
     assert.match(ordered[0]!.text, /sessions_send/);
-    assert.match(ordered[1]!.text, /Browser follow-up completed/);
-    assert.equal(ordered[1]!.runtime?.toolCallId, "c-native");
+    assert.match(ordered[1]!.text, /captured a snapshot/);
+    assert.equal(ordered[1]!.runtime?.progressDetail, '{"eventType":"browser.snapshot","targetId":"target-1"}');
+    assert.match(ordered[2]!.text, /Browser follow-up completed/);
+    assert.equal(ordered[2]!.runtime?.toolCallId, "c-native");
+  });
+
+  it("does not expand native progress events with blank summaries", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const message: TeamMessage = {
+      ...baseMessage("a-native-blank-progress", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Done.",
+      toolCalls: [
+        {
+          id: "c-native",
+          name: "sessions_send",
+          arguments: { session_key: "worker:browser:1", message: "continue" },
+        },
+      ],
+      toolProgress: [
+        {
+          toolCallId: "c-native",
+          toolName: "sessions_send",
+          phase: "progress",
+          summary: "   ",
+          detail: { eventType: "browser.snapshot", targetId: "target-1" },
+          ts: 4_850,
+        },
+        {
+          toolCallId: "c-native",
+          toolName: "sessions_send",
+          phase: "completed",
+          summary: "Browser follow-up completed.",
+          ts: 4_900,
+        },
+      ],
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([message]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    assert.equal(activity.events.some((event) => event.runtime?.toolPhase === "progress"), false);
+    assert.equal(activity.events.some((event) => event.runtime?.toolPhase === "call"), true);
+    assert.equal(activity.events.some((event) => event.runtime?.toolPhase === "result"), true);
+  });
+
+  it("marks oversized progress detail as truncated without inline suffix", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const message: TeamMessage = {
+      ...baseMessage("a-native-large-progress", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Done.",
+      toolCalls: [
+        {
+          id: "c-native",
+          name: "sessions_send",
+          arguments: { session_key: "worker:browser:1", message: "continue" },
+        },
+      ],
+      toolProgress: [
+        {
+          toolCallId: "c-native",
+          toolName: "sessions_send",
+          phase: "progress",
+          summary: "Browser worker captured a large snapshot.",
+          detail: { html: "x".repeat(20 * 1024) },
+          ts: 4_850,
+        },
+        {
+          toolCallId: "c-native",
+          toolName: "sessions_send",
+          phase: "completed",
+          summary: "Browser follow-up completed.",
+          ts: 4_900,
+        },
+      ],
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([message]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const progress = activity.events.find((event) => event.runtime?.toolPhase === "progress");
+    assert.ok(progress);
+    assert.equal(progress.runtime?.progressTruncated, "true");
+    assert.ok(progress.runtime?.progressDetail);
+    assert.ok(Buffer.byteLength(progress.runtime.progressDetail, "utf8") <= 16 * 1024);
+    assert.equal(progress.runtime.progressDetail.includes("…[truncated]"), false);
+  });
+
+  it("expands metadata tool progress into replayable timeline events", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const message: TeamMessage = {
+      ...baseMessage("a-progress", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Done.",
+      metadata: {
+        toolUse: {
+          rounds: [
+            {
+              round: 1,
+              calls: [{ id: "c1", name: "permission_query", input: { action: "browser.form.submit" } }],
+              progress: [
+                {
+                  toolCallId: "c1",
+                  toolName: "permission_query",
+                  phase: "progress",
+                  summary: "Permission requested for browser.form.submit.",
+                  detail: { eventType: "permission.query", approval_id: "ap.1" },
+                  ts: 4_900,
+                },
+              ],
+              results: [
+                {
+                  toolCallId: "c1",
+                  toolName: "permission_query",
+                  isError: false,
+                  contentBytes: 15,
+                  content: '{"status":"pending"}',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([message]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const progress = activity.events.find((event) => event.runtime?.toolPhase === "progress");
+    assert.ok(progress);
+    assert.match(progress.text, /Permission requested/);
+    assert.equal(progress.runtime?.toolName, "permission_query");
+    assert.equal(progress.runtime?.progressPhase, "progress");
+    assert.equal(progress.runtime?.progressDetail, '{"eventType":"permission.query","approval_id":"ap.1"}');
   });
 
   it("uses split role=tool result for native tool-use envelopes without duplicating assistant progress", async () => {
