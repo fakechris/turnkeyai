@@ -1,0 +1,90 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import type { ActivityEvent } from "../api/mission-api";
+import { formatDurationMs, groupTimelineForReplay } from "./toolReplay";
+
+test("groupTimelineForReplay collapses tool chain plus final thought into one process item", () => {
+  const events: ActivityEvent[] = [
+    event("user-1", "plan", 1_000, "user", "Start"),
+    tool("call-1", 2_000, "role-lead", "call", "sessions_spawn", "call-browser", "Tool call"),
+    tool("progress-1", 2_500, "role-lead", "progress", "sessions_spawn", "call-browser", "Working"),
+    tool("result-1", 4_250, "role-lead", "result", "sessions_spawn", "call-browser", "Returned"),
+    event("thought-1", "thought", 5_000, "role-lead", "Final answer"),
+    event("approval-1", "approval", 6_000, "operator", "Approved"),
+  ];
+
+  const grouped = groupTimelineForReplay(events);
+
+  assert.equal(grouped.length, 3);
+  assert.equal(grouped[0]?.kind, "event");
+  assert.equal(grouped[1]?.kind, "tool-process");
+  if (grouped[1]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.equal(grouped[1].actor, "role-lead");
+  assert.equal(grouped[1].status, "completed");
+  assert.equal(grouped[1].toolEvents.length, 3);
+  assert.equal(grouped[1].finalThought?.id, "thought-1");
+  assert.equal(formatDurationMs(grouped[1].startMs, grouped[1].endMs), "3.0s");
+  assert.equal(grouped[2]?.kind, "event");
+});
+
+test("groupTimelineForReplay keeps failed tool process visible without a final thought", () => {
+  const grouped = groupTimelineForReplay([
+    tool("call-1", 1_000, "role-lead", "call", "sessions_spawn", "call-browser", "Tool call"),
+    {
+      ...tool("result-1", 1_500, "role-lead", "result", "sessions_spawn", "call-browser", "Tool failed"),
+      emph: "danger",
+    },
+  ]);
+
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0]?.kind, "tool-process");
+  if (grouped[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.equal(grouped[0].status, "failed");
+  assert.equal(grouped[0].finalThought, undefined);
+});
+
+test("formatDurationMs normalizes rounded second rollover into minutes", () => {
+  assert.equal(formatDurationMs(0, 119_900), "2m");
+});
+
+function tool(
+  id: string,
+  tMs: number,
+  actor: string,
+  phase: "call" | "progress" | "result",
+  toolName: string,
+  toolCallId: string,
+  text: string
+): ActivityEvent {
+  return {
+    ...event(id, "tool", tMs, actor, text),
+    runtime: {
+      toolPhase: phase,
+      toolName,
+      toolCallId,
+    },
+  };
+}
+
+function event(
+  id: string,
+  kind: ActivityEvent["kind"],
+  tMs: number,
+  actor: string,
+  text: string
+): ActivityEvent {
+  return {
+    id,
+    missionId: "msn.test",
+    t: "",
+    tMs,
+    kind,
+    actor,
+    text,
+  };
+}
