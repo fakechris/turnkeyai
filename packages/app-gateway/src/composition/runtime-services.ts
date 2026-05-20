@@ -200,6 +200,8 @@ export async function composeDaemonRuntimeServices(
           primary: new LLMRoleResponseGenerator({
             gateway: llmGateway,
             runtimeProgressRecorder,
+            nativeToolMessageStore: teamMessageStore,
+            clock,
             toolLoop: {
               executor: createWorkerSessionToolExecutor({
                 workerRuntime,
