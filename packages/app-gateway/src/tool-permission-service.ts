@@ -64,6 +64,28 @@ export function createMissionToolPermissionService(
         throw new Error("permission_query requires a mission-linked thread or mission_id");
       }
 
+      const existingPending = await findPendingApprovalByCacheKey({
+        approvalStore: options.approvalStore,
+        threadId: input.threadId,
+        cacheKey,
+      });
+      if (existingPending) {
+        return {
+          status: "pending",
+          approvalId: existingPending.id,
+          missionId: existingPending.missionId,
+          action: existingPending.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey,
+            rationale: input.requirement.rationale,
+            workerType,
+          },
+          message: `Permission request ${existingPending.id} is pending operator decision.`,
+        };
+      }
+
       const approvalId = buildApprovalId(input.threadId, input.toolCallId);
       const requirement = {
         level: input.requirement.level,
@@ -283,6 +305,25 @@ function decisionToResult(approval: ApprovalRequest, decision: ApprovalDecision)
 async function findApproval(store: ApprovalRequestStore, approvalId: string): Promise<ApprovalRequest | null> {
   const approvals = await store.list();
   return approvals.find((approval) => approval.id === approvalId) ?? null;
+}
+
+async function findPendingApprovalByCacheKey(input: {
+  approvalStore: ApprovalRequestStore;
+  threadId: string;
+  cacheKey: string;
+}): Promise<ApprovalRequest | null> {
+  const approvals = await input.approvalStore.list();
+  for (const approval of approvals) {
+    const toolPermission = readToolPermissionPayload(approval);
+    if (toolPermission?.threadId !== input.threadId || toolPermission.requirement.cacheKey !== input.cacheKey) {
+      continue;
+    }
+    const decision = await input.approvalStore.getDecision(approval.id);
+    if (!decision) {
+      return approval;
+    }
+  }
+  return null;
 }
 
 function readToolPermissionPayload(approval: ApprovalRequest):

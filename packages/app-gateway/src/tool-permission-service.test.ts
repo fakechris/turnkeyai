@@ -95,3 +95,78 @@ test("mission tool permission service files, resolves, and applies approval deci
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("mission tool permission service reuses pending approvals for the same cache key", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "tk-tool-permission-reuse-"));
+  try {
+    const clock = { now: () => 1_700_000_000_000 };
+    const missionDeps = composeMissionDeps({ dataDir: dir, clock });
+    const permissionCacheStore = new FilePermissionCacheStore({
+      rootDir: path.join(dir, "governance", "permission-cache"),
+    });
+    await missionDeps.missionStore.putRaw({
+      id: "msn.1",
+      shortId: "MSN-0001",
+      title: "Submit form",
+      desc: "",
+      status: "working",
+      mode: "browser",
+      modeLabel: "Browser",
+      owner: "you",
+      ownerLabel: "You",
+      createdAt: new Date(clock.now()).toISOString(),
+      createdAtMs: clock.now(),
+      agents: ["role-lead"],
+      progress: 0,
+      pendingApprovals: 0,
+      blockers: 0,
+      contextSummary: [],
+      threadId: "thread-1",
+    });
+    const service = createMissionToolPermissionService({
+      missionStore: missionDeps.missionStore,
+      approvalStore: missionDeps.approvalStore,
+      activityStore: missionDeps.activityStore,
+      permissionCacheStore,
+      clock,
+      newEventId: () => `ev.${Math.random()}`,
+    });
+
+    const first = await service.request({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      roleName: "Lead",
+      toolCallId: "call-1",
+      action: "browser.form.submit",
+      title: "Submit pricing form",
+      risk: "Submits account data.",
+      requirement: {
+        level: "approval",
+        scope: "mutate",
+        rationale: "Needed to inspect the post-submit result.",
+        cacheKey: "thread-1:browser:mutate:approval:browser.form.submit",
+      },
+    });
+    const second = await service.request({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      roleName: "Lead",
+      toolCallId: "call-2",
+      action: "browser.form.submit",
+      title: "Submit pricing form",
+      risk: "Submits account data.",
+      requirement: {
+        level: "approval",
+        scope: "mutate",
+        rationale: "Needed to inspect the post-submit result.",
+        cacheKey: "thread-1:browser:mutate:approval:browser.form.submit",
+      },
+    });
+
+    assert.equal(first.approvalId, "ap.thread-1.call-1");
+    assert.equal(second.approvalId, first.approvalId);
+    assert.equal((await missionDeps.approvalStore.list()).length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

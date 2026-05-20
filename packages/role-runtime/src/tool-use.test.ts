@@ -4,6 +4,7 @@ import test from "node:test";
 import type { RoleActivationInput, WorkerRuntime } from "@turnkeyai/core-types/team";
 
 import { InMemoryToolCancellationRegistry } from "./tool-cancellation-registry";
+import type { ToolPermissionService } from "./tool-permission-service";
 import { createWorkerSessionToolExecutor } from "./tool-use";
 
 test("sessions tool definitions only advertise registered worker kinds when provided", () => {
@@ -105,6 +106,148 @@ test("sessions_spawn rejects worker kinds that were not advertised as executable
   assert.equal(result.isError, true);
   assert.match(result.content, /Worker kind browser is not available/);
   assert.match(result.content, /explore/);
+});
+
+test("sessions_spawn blocks browser side effects before worker execution until approved", async () => {
+  let spawnCalled = false;
+  let requestedCacheKey = "";
+  const toolPermissionService: ToolPermissionService = {
+    async request(input) {
+      requestedCacheKey = input.requirement.cacheKey ?? "";
+      assert.equal(input.action, "browser.form.submit");
+      assert.equal(input.toolCallId, "call-submit");
+      return {
+        status: "pending",
+        approvalId: "ap.thread-1.call-submit",
+        action: input.action,
+        requirement: {
+          level: input.requirement.level,
+          scope: input.requirement.scope,
+          cacheKey: input.requirement.cacheKey ?? "missing",
+          rationale: input.requirement.rationale,
+          workerType: input.requirement.workerType ?? "browser",
+        },
+        message: "Approval is pending.",
+      };
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      spawnCalled = true;
+      return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-submit",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open the billing page and submit the purchase form.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Open the billing page and submit the purchase form.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; blocked_before_side_effect: boolean; approval_id: string };
+  assert.equal(spawnCalled, false);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "requires_approval");
+  assert.equal(body.blocked_before_side_effect, true);
+  assert.equal(body.approval_id, "ap.thread-1.call-submit");
+  assert.equal(requestedCacheKey, "thread-1:browser:mutate:approval:browser.form.submit");
+  assert.equal(result.progress?.[0]?.detail?.eventType, "permission.query");
+});
+
+test("sessions_spawn proceeds with browser side effects after permission cache grants the action", async () => {
+  let spawnCalled = false;
+  const toolPermissionService: ToolPermissionService = {
+    async request(input) {
+      return {
+        status: "already_granted",
+        action: input.action,
+        requirement: {
+          level: input.requirement.level,
+          scope: input.requirement.scope,
+          cacheKey: input.requirement.cacheKey ?? "missing",
+          rationale: input.requirement.rationale,
+          workerType: input.requirement.workerType ?? "browser",
+        },
+        message: "Already granted.",
+      };
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      spawnCalled = true;
+      return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
+    },
+    async send() {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Submitted after approval.",
+        payload: { submitted: true },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-submit-approved",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Submit the approved form.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Submit the approved form.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(spawnCalled, true);
+  assert.equal(result.isError, undefined);
+  assert.match(result.content, /Submitted after approval/);
 });
 
 test("sessions_spawn cancels the active worker when the tool call is cancelled", async () => {
