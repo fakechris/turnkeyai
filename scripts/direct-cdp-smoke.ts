@@ -22,6 +22,7 @@ import {
 
 interface DirectCdpSmokeCliOptions {
   daemonUrl: string;
+  daemonToken: string | null;
   cdpEndpoint: string;
   startUrl: string;
   chromePath: string | null;
@@ -35,6 +36,8 @@ interface DirectCdpSmokeCliOptions {
   verifyWorkflowLog: boolean;
 }
 
+let daemonAuth: { origin: string; token: string } | null = null;
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main(parseDirectCdpSmokeCliOptions(process.argv.slice(2)));
 }
@@ -42,6 +45,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 function parseDirectCdpSmokeCliOptions(args: string[]): DirectCdpSmokeCliOptions {
   const options: DirectCdpSmokeCliOptions = {
     daemonUrl: process.env.TURNKEYAI_DAEMON_URL ?? "",
+    daemonToken: process.env.TURNKEYAI_DAEMON_TOKEN?.trim() || null,
     cdpEndpoint: process.env.TURNKEYAI_BROWSER_CDP_ENDPOINT ?? "",
     startUrl: "",
     chromePath: null,
@@ -72,6 +76,15 @@ function parseDirectCdpSmokeCliOptions(args: string[]): DirectCdpSmokeCliOptions
         throw new Error("missing value for --cdp-endpoint");
       }
       options.cdpEndpoint = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--daemon-token") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --daemon-token");
+      }
+      options.daemonToken = value;
       index += 1;
       continue;
     }
@@ -168,6 +181,8 @@ async function main(options: DirectCdpSmokeCliOptions): Promise<void> {
     ? options.daemonUrl.trim().replace(/\/+$/, "")
     : `http://127.0.0.1:${options.daemonPort ?? (await resolveFreePort())}`;
   const resolvedDaemonPort = Number(new URL(resolvedDaemonUrl).port || 80);
+  const resolvedDaemonToken = options.daemonToken?.trim() || null;
+  daemonAuth = resolvedDaemonToken ? { origin: new URL(resolvedDaemonUrl).origin, token: resolvedDaemonToken } : null;
   const resolvedCdpPort = options.cdpPort ?? (options.cdpEndpoint.trim() ? null : await resolveFreePort());
   const resolvedCdpEndpoint = options.cdpEndpoint.trim()
     ? options.cdpEndpoint.trim().replace(/\/+$/, "")
@@ -201,6 +216,7 @@ async function main(options: DirectCdpSmokeCliOptions): Promise<void> {
       cwd: process.cwd(),
       env: {
         ...process.env,
+        ...(resolvedDaemonToken ? { TURNKEYAI_DAEMON_TOKEN: resolvedDaemonToken } : {}),
         TURNKEYAI_BROWSER_TRANSPORT: "direct-cdp",
         TURNKEYAI_BROWSER_CDP_ENDPOINT: resolvedCdpEndpoint,
         TURNKEYAI_DAEMON_PORT: String(resolvedDaemonPort),
@@ -1311,7 +1327,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function getJson(url: string): Promise<unknown> {
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    headers: daemonAuthHeaders(url),
+  });
   const text = await response.text();
   const json = text ? JSON.parse(text) : {};
   if (!response.ok) {
@@ -1324,6 +1342,7 @@ async function postJson(url: string, body: unknown): Promise<unknown> {
   const response = await fetch(url, {
     method: "POST",
     headers: {
+      ...daemonAuthHeaders(url),
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
@@ -1334,6 +1353,20 @@ async function postJson(url: string, body: unknown): Promise<unknown> {
     throw new Error((json as { error?: string }).error ?? `${response.status} ${response.statusText}`);
   }
   return json;
+}
+
+function daemonAuthHeaders(url: string): Record<string, string> {
+  if (!daemonAuth) {
+    return {};
+  }
+  try {
+    if (new URL(url).origin !== daemonAuth.origin) {
+      return {};
+    }
+  } catch {
+    return {};
+  }
+  return { authorization: `Bearer ${daemonAuth.token}` };
 }
 
 function sleep(ms: number): Promise<void> {
