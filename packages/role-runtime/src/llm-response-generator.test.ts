@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { RoleActivationInput, TeamMessage } from "@turnkeyai/core-types/team";
-import type { GenerateTextInput } from "@turnkeyai/llm-adapter/index";
+import type { GenerateTextInput, GenerateTextResult } from "@turnkeyai/llm-adapter/index";
 import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
@@ -582,6 +582,76 @@ test("llm role response generator preserves tool history when envelope retry red
   assert.equal(gatewayInputs[2]?.envelope?.toolResultCount, 1);
 });
 
+test("llm role response generator prunes older oversized tool results before later rounds", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const largeA = "A".repeat(20_000);
+  const largeB = "B".repeat(20_000);
+  const largeC = "C".repeat(20_000);
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-a", "sessions_spawn", { agent_id: "browser", task: "First large result" });
+    }
+    if (gatewayInputs.length === 2) {
+      return toolCallResult("toolu-b", "sessions_spawn", { agent_id: "browser", task: "Second large result" });
+    }
+    if (gatewayInputs.length === 3) {
+      return toolCallResult("toolu-c", "sessions_spawn", { agent_id: "browser", task: "Third large result" });
+    }
+    return {
+      text: "Done after pruning.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      const content = input.call.id === "toolu-a" ? largeA : input.call.id === "toolu-b" ? largeB : largeC;
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content,
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 4 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Done after pruning.");
+  assert.equal(gatewayInputs.length, 4);
+  const fourthToolContents = gatewayInputs[3]?.messages
+    .filter((message) => message.role === "tool")
+    .map((message) => readToolContent(message.content));
+  assert.equal(fourthToolContents?.length, 3);
+  assert.match(fourthToolContents?.[0] ?? "", /"tool_result_pruned": true/);
+  assert.match(fourthToolContents?.[0] ?? "", /"reason": "older_than_recent_window"/);
+  assert.doesNotMatch(fourthToolContents?.[0] ?? "", /^A{20000}$/);
+  assert.equal(fourthToolContents?.[1], largeB);
+  assert.equal(fourthToolContents?.[2], largeC);
+  assert.equal(gatewayInputs[3]?.envelope?.toolResultCount, 3);
+  assert.ok((gatewayInputs[3]?.envelope?.toolResultBytes ?? 0) < 45_000);
+});
+
 function buildActivation(
   roleOverrides?: Partial<RoleActivationInput["thread"]["roles"][number]>,
   options?: { omitLegacyModel?: boolean }
@@ -659,6 +729,32 @@ function buildActivation(
       createdAt: 1,
     },
   };
+}
+
+function toolCallResult(id: string, name: string, input: Record<string, unknown>): GenerateTextResult {
+  return {
+    text: "Calling a tool.",
+    toolCalls: [{ id, name, input }],
+    modelId: "claude-test",
+    providerId: "anthropic",
+    protocol: "anthropic-compatible",
+    adapterName: "test",
+    raw: {},
+  };
+}
+
+function readToolContent(content: GenerateTextInput["messages"][number]["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  return content
+    .map((block) => {
+      if (block.type === "tool_result") return block.content;
+      if (block.type === "text") return block.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
 }
 
 function makeOverflowError(): RequestEnvelopeOverflowError {
