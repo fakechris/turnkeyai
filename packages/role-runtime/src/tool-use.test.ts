@@ -251,6 +251,104 @@ test("sessions_spawn proceeds with browser side effects after permission cache g
   assert.match(result.content, /Submitted after approval/);
 });
 
+test("sessions_spawn waits for approval and resumes the same tool call before browser side effects", async () => {
+  const events: string[] = [];
+  let sendToolCallId: string | undefined;
+  const toolPermissionService: ToolPermissionService = {
+    async request(input) {
+      events.push(`query:${input.toolCallId}`);
+      return {
+        status: "pending",
+        approvalId: "ap.thread-1.call-approve",
+        action: input.action,
+        requirement: {
+          level: input.requirement.level,
+          scope: input.requirement.scope,
+          cacheKey: input.requirement.cacheKey ?? "missing",
+          rationale: input.requirement.rationale,
+          workerType: input.requirement.workerType ?? "browser",
+        },
+        message: "Approval is pending.",
+      };
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async waitForDecision(input) {
+      events.push(`result:${input.approvalId}`);
+      return {
+        status: "approved",
+        approvalId: input.approvalId,
+        action: "browser.form.submit",
+        message: "Approved.",
+      };
+    },
+    async apply(input) {
+      events.push(`applied:${input.approvalId}`);
+      return {
+        status: "applied",
+        approvalId: input.approvalId,
+        cacheKey: "thread-1:browser:mutate:approval:browser.form.submit",
+        message: "Applied.",
+      };
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      events.push("spawn");
+      return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
+    },
+    async send(input: { toolCallId?: string }) {
+      sendToolCallId = input.toolCallId;
+      events.push("send");
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Submitted after same-call approval.",
+        payload: { submitted: true },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-approve",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Submit the final account update form.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Submit the final account update form.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.deepEqual(events, [
+    "query:call-approve",
+    "result:ap.thread-1.call-approve",
+    "applied:ap.thread-1.call-approve",
+    "spawn",
+    "send",
+  ]);
+  assert.equal(sendToolCallId, "call-approve");
+  assert.equal(result.isError, undefined);
+  assert.equal(result.progress?.some((event) => event.detail?.eventType === "permission.applied"), true);
+  assert.match(result.content, /Submitted after same-call approval/);
+});
+
 test("sessions_spawn cancels the active worker when the tool call is cancelled", async () => {
   let resolveSend!: () => void;
   let sendStarted!: () => void;
@@ -729,9 +827,11 @@ test("sessions_history reads durable session history with pagination and payload
       content: "Snapshot captured.",
       createdAt: 110,
       taskId: "task-1",
+      toolCallId: "call-browser",
       toolName: "browser" as const,
       status: "completed" as const,
       payload: { title: "Example" },
+      metadata: { parentToolCallId: "call-browser" },
     },
     {
       id: "history-3",
@@ -805,7 +905,7 @@ test("sessions_history reads durable session history with pagination and payload
     total_messages: number;
     showing: number;
     has_more: boolean;
-    messages: Array<{ role: string; content: string; payload?: unknown }>;
+    messages: Array<{ role: string; content: string; tool_call_id?: string; metadata?: unknown; payload?: unknown }>;
   };
   assert.equal(body.total_messages, 3);
   assert.equal(body.showing, 1);
@@ -817,8 +917,10 @@ test("sessions_history reads durable session history with pagination and payload
       content: "Snapshot captured.",
       created_at: 110,
       task_id: "task-1",
+      tool_call_id: "call-browser",
       name: "browser",
       status: "completed",
+      metadata: { parentToolCallId: "call-browser" },
       payload: { title: "Example" },
     },
   ]);

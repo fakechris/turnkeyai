@@ -60,6 +60,7 @@ export interface RoleToolLoopOptions {
 
 export const DEFAULT_ROLE_TOOL_MAX_ROUNDS = 8;
 const MAX_SESSION_TOOL_TIMEOUT_SECONDS = 900;
+const TOOL_PERMISSION_WAIT_MS = 15 * 60 * 1000;
 const WORKER_TOOL_TIMEOUT = Symbol("worker_tool_timeout");
 
 export function appendAssistantToolCallMessage(
@@ -441,12 +442,17 @@ async function executePermissionApplied(
   };
 }
 
+interface BrowserSideEffectGateOutcome {
+  blocked?: RoleToolExecutionResult;
+  progress?: RoleToolProgressEvent[];
+}
+
 async function maybeGateBrowserSideEffect(input: {
   input: RoleToolExecutionInput;
   workerType: WorkerKind;
   instruction: string;
   toolPermissionService: ToolPermissionService | undefined;
-}): Promise<RoleToolExecutionResult | null> {
+}): Promise<BrowserSideEffectGateOutcome | null> {
   if (input.workerType !== "browser") {
     return null;
   }
@@ -455,10 +461,12 @@ async function maybeGateBrowserSideEffect(input: {
     return null;
   }
   if (!input.toolPermissionService) {
-    return errorResult(
-      input.input.call,
-      `Permission approval is required before ${risk.action}, but permission service is not configured.`
-    );
+    return {
+      blocked: errorResult(
+        input.input.call,
+        `Permission approval is required before ${risk.action}, but permission service is not configured.`
+      ),
+    };
   }
   const role = input.input.activation.thread.roles.find(
     (item) => item.roleId === input.input.activation.runState.roleId
@@ -492,49 +500,148 @@ async function maybeGateBrowserSideEffect(input: {
       },
     });
   } catch (error) {
-    return errorResult(
-      input.input.call,
-      `Permission approval is required before ${risk.action}, but approval could not be requested: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
+    return {
+      blocked: errorResult(
+        input.input.call,
+        `Permission approval is required before ${risk.action}, but approval could not be requested: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      ),
+    };
   }
   if (result.status === "already_granted") {
-    return null;
+    return {
+      progress: [
+        {
+          phase: "progress",
+          toolName: input.input.call.name,
+          summary: `Permission already granted for ${risk.action}.`,
+          detail: {
+            eventType: "permission.query",
+            status: result.status,
+            action: risk.action,
+            scope: risk.scope,
+            level: "approval",
+          },
+        },
+      ],
+    };
+  }
+  const queryProgress: RoleToolProgressEvent = {
+    phase: "progress",
+    toolName: input.input.call.name,
+    summary: `Approval required before ${risk.action}.`,
+    detail: {
+      eventType: "permission.query",
+      status: result.status,
+      approval_id: result.approvalId,
+      action: risk.action,
+      scope: risk.scope,
+      level: "approval",
+      blocked_before_side_effect: true,
+    },
+  };
+  if (result.approvalId && input.toolPermissionService.waitForDecision) {
+    const decision = await input.toolPermissionService.waitForDecision({
+      threadId: input.input.activation.thread.threadId,
+      approvalId: result.approvalId,
+      timeoutMs: TOOL_PERMISSION_WAIT_MS,
+    });
+    const decisionProgress: RoleToolProgressEvent = {
+      phase: "progress",
+      toolName: input.input.call.name,
+      summary: decision.message,
+      detail: {
+        eventType: "permission.result",
+        status: decision.status,
+        approval_id: result.approvalId,
+      },
+    };
+    if (decision.status === "approved") {
+      const applied = await input.toolPermissionService.apply({
+        threadId: input.input.activation.thread.threadId,
+        approvalId: result.approvalId,
+      });
+      if (applied.status === "applied") {
+        return {
+          progress: [
+            queryProgress,
+            decisionProgress,
+            {
+              phase: "progress",
+              toolName: input.input.call.name,
+              summary: applied.message,
+              detail: {
+                eventType: "permission.applied",
+                status: applied.status,
+                approval_id: result.approvalId,
+                ...(applied.cacheKey ? { cache_key: applied.cacheKey } : {}),
+              },
+            },
+          ],
+        };
+      }
+      return {
+        blocked: permissionBlockedResult(input.input.call, {
+          result,
+          progress: [queryProgress, decisionProgress],
+          status: applied.status,
+          message: applied.message,
+          isError: true,
+        }),
+      };
+    }
+    if (decision.status === "denied") {
+      return {
+        blocked: permissionBlockedResult(input.input.call, {
+          result,
+          progress: [queryProgress, decisionProgress],
+          status: decision.status,
+          message: decision.message,
+          isError: true,
+        }),
+      };
+    }
   }
   return {
-    toolCallId: input.input.call.id,
-    toolName: input.input.call.name,
-    isError: true,
+    blocked: permissionBlockedResult(input.input.call, {
+      result,
+      progress: [queryProgress],
+      status: "requires_approval",
+      message: result.message,
+      isError: true,
+    }),
+  };
+}
+
+function permissionBlockedResult(
+  call: LLMToolCall,
+  input: {
+    result: ToolPermissionQueryResult;
+    progress: RoleToolProgressEvent[];
+    status: string;
+    message: string;
+    isError: boolean;
+  }
+): RoleToolExecutionResult {
+  return {
+    toolCallId: call.id,
+    toolName: call.name,
+    ...(input.isError ? { isError: true } : {}),
     content: JSON.stringify(
       {
-        status: "requires_approval",
-        approval_id: result.approvalId,
-        action: result.action,
-        requirement: result.requirement,
-        message: result.message,
+        status: input.status,
+        approval_id: input.result.approvalId,
+        action: input.result.action,
+        requirement: input.result.requirement,
+        message: input.message,
         blocked_before_side_effect: true,
       },
       null,
       2
     ),
-    progress: [
-      {
-        phase: "progress",
-        toolName: input.input.call.name,
-        summary: `Approval required before ${risk.action}.`,
-        detail: {
-          eventType: "permission.query",
-          status: result.status,
-          approval_id: result.approvalId,
-          action: risk.action,
-          scope: risk.scope,
-          level: "approval",
-          blocked_before_side_effect: true,
-        },
-      },
-    ],
-    raw: result,
+    progress: input.progress,
+    raw: input.result,
   };
 }
 
@@ -603,9 +710,10 @@ async function executeSessionsSpawn(
     instruction: task,
     toolPermissionService,
   });
-  if (gate) {
-    return gate;
+  if (gate?.blocked) {
+    return gate.blocked;
   }
+  const approvalProgress = gate?.progress ?? [];
   const packet = {
     ...input.packet,
     taskPrompt: task,
@@ -633,6 +741,7 @@ async function executeSessionsSpawn(
         workerRunKey: spawned.workerRunKey,
         activation: input.activation,
         packet,
+        toolCallId: input.call.id,
       },
       timeoutMs,
       `sessions_spawn timed out after ${formatTimeoutSeconds(timeoutMs)}.`
@@ -671,6 +780,7 @@ async function executeSessionsSpawn(
       2
     ),
     progress: [
+      ...approvalProgress,
       {
         phase: "started",
         toolName: input.call.name,
@@ -719,9 +829,10 @@ async function executeSessionsSend(
     instruction: message,
     toolPermissionService,
   });
-  if (gate) {
-    return gate;
+  if (gate?.blocked) {
+    return gate.blocked;
   }
+  const approvalProgress = gate?.progress ?? [];
   const packet = {
     ...input.packet,
     taskPrompt: message,
@@ -745,6 +856,7 @@ async function executeSessionsSend(
         workerRunKey: sessionKey,
         activation: input.activation,
         packet,
+        toolCallId: input.call.id,
       },
       timeoutMs,
       `sessions_send timed out after ${formatTimeoutSeconds(timeoutMs)}.`
@@ -783,6 +895,7 @@ async function executeSessionsSend(
       2
     ),
     progress: [
+      ...approvalProgress,
       {
         phase: !result || result.status === "failed" ? "failed" : "completed",
         toolName: input.call.name,
@@ -1016,8 +1129,10 @@ function serializeWorkerHistoryEntry(entry: WorkerSessionHistoryEntry, includePa
     content: entry.content,
     created_at: entry.createdAt,
     ...(entry.taskId ? { task_id: entry.taskId } : {}),
+    ...(entry.toolCallId ? { tool_call_id: entry.toolCallId } : {}),
     ...(entry.toolName ? { name: entry.toolName } : {}),
     ...(entry.status ? { status: entry.status } : {}),
+    ...(entry.metadata ? { metadata: entry.metadata } : {}),
     ...(includePayload && "payload" in entry ? { payload: entry.payload } : {}),
   };
 }
@@ -1113,6 +1228,7 @@ async function sendWorkerWithOptionalTimeout(
     workerRunKey: string;
     activation: RoleActivationInput;
     packet: RolePromptPacket;
+    toolCallId?: string;
   },
   timeoutMs: number | null,
   timeoutReason: string

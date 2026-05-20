@@ -35,6 +35,7 @@ type WorkerSessionEntry = {
   handler?: WorkerHandler;
   state: WorkerSessionState;
   executionToken: number;
+  activeAbortController?: AbortController;
   context?: WorkerSessionContextRecord;
 };
 
@@ -248,13 +249,15 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       };
       session.state = appendWorkerHistory(
         session.state,
-        buildWorkerFailureHistoryEntry(session.state, input.activation.handoff.taskId, errorMessage, now)
+        buildWorkerFailureHistoryEntry(session.state, input.activation.handoff.taskId, errorMessage, now, input.toolCallId)
       );
       await this.persistSession(input.workerRunKey);
       return null;
     }
     const executionToken = session.executionToken + 1;
     session.executionToken = executionToken;
+    const abortController = new AbortController();
+    session.activeAbortController = abortController;
     const preExecutionState = session.state;
     session.context = {
       threadId: input.activation.thread.threadId,
@@ -287,6 +290,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         activation: input.activation,
         packet: input.packet,
         sessionState: preExecutionState,
+        signal: abortController.signal,
       });
 
       if (!this.shouldCommitCompletion(input.workerRunKey, executionToken)) {
@@ -312,7 +316,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       };
       session.state = appendWorkerHistory(
         session.state,
-        buildWorkerResultHistoryEntry(session.state, input.activation.handoff.taskId, result, completedAt)
+        buildWorkerResultHistoryEntry(session.state, input.activation.handoff.taskId, result, completedAt, input.toolCallId)
       );
       await this.persistSession(input.workerRunKey);
       await this.recordProgress(input.workerRunKey, session, {
@@ -330,7 +334,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       return result;
     } catch (error) {
       if (!this.shouldCommitCompletion(input.workerRunKey, executionToken)) {
-        throw error;
+        return session.state.lastResult ?? null;
       }
 
       const errorMessage = error instanceof Error ? error.message : "worker execution failed";
@@ -352,7 +356,8 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
           session.state,
           input.activation.handoff.taskId,
           errorMessage,
-          failedAt
+          failedAt,
+          input.toolCallId
         )
       );
       await this.persistSession(input.workerRunKey);
@@ -364,6 +369,9 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       });
       throw error;
     } finally {
+      if (session.activeAbortController === abortController) {
+        delete session.activeAbortController;
+      }
       stopHeartbeat();
     }
   }
@@ -400,6 +408,8 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       return session.state;
     }
     session.executionToken += 1;
+    session.activeAbortController?.abort(input.reason ?? "Worker interrupted.");
+    delete session.activeAbortController;
 
     const now = this.now();
     const nextContinuationDigest = input.reason
@@ -456,6 +466,8 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
       return null;
     }
     session.executionToken += 1;
+    session.activeAbortController?.abort(input.reason ?? "Worker cancelled.");
+    delete session.activeAbortController;
 
     const now = this.now();
     session.state = {
@@ -658,6 +670,7 @@ function buildWorkerUserHistoryEntry(input: WorkerMessageInput, createdAt: numbe
     content: input.packet.taskPrompt,
     createdAt,
     taskId: input.activation.handoff.taskId,
+    ...(input.toolCallId ? { toolCallId: input.toolCallId, metadata: { parentToolCallId: input.toolCallId } } : {}),
   };
 }
 
@@ -665,7 +678,8 @@ function buildWorkerResultHistoryEntry(
   state: WorkerSessionState,
   taskId: string,
   result: WorkerExecutionResult | null,
-  createdAt: number
+  createdAt: number,
+  toolCallId?: string
 ): WorkerSessionHistoryEntry {
   const base = {
     id: `worker-history:${state.workerRunKey}:${taskId}:tool:${createdAt}`,
@@ -673,6 +687,7 @@ function buildWorkerResultHistoryEntry(
     createdAt,
     taskId,
     toolName: state.workerType,
+    ...(toolCallId ? { toolCallId, metadata: { parentToolCallId: toolCallId } } : {}),
   };
   if (!result) {
     return {
@@ -694,7 +709,8 @@ function buildWorkerFailureHistoryEntry(
   state: WorkerSessionState,
   taskId: string,
   message: string,
-  createdAt: number
+  createdAt: number,
+  toolCallId?: string
 ): WorkerSessionHistoryEntry {
   return {
     id: `worker-history:${state.workerRunKey}:${taskId}:tool-failed:${createdAt}`,
@@ -702,6 +718,7 @@ function buildWorkerFailureHistoryEntry(
     content: message,
     createdAt,
     taskId,
+    ...(toolCallId ? { toolCallId, metadata: { parentToolCallId: toolCallId } } : {}),
     toolName: state.workerType,
     status: "failed",
   };
@@ -781,6 +798,13 @@ function buildResumePacket(
   packet: WorkerMessageInput["packet"],
   sessionState: WorkerSessionState
 ): WorkerMessageInput["packet"] {
+  const transcriptLines = (sessionState.history ?? [])
+    .slice(-12)
+    .map((entry) => {
+      const status = entry.status ? ` status=${entry.status}` : "";
+      const tool = entry.toolName ? ` tool=${entry.toolName}` : "";
+      return `- ${entry.role}${tool}${status}: ${entry.content}`;
+    });
   const continuationLines = [
     "Continuation context:",
     `Previous worker status: ${sessionState.status}`,
@@ -788,6 +812,8 @@ function buildResumePacket(
     sessionState.lastResult ? `Last result: ${sessionState.lastResult.summary}` : null,
     sessionState.lastError ? `Last interruption: ${sessionState.lastError.message}` : null,
     sessionState.currentTaskId ? `Current task: ${sessionState.currentTaskId}` : null,
+    transcriptLines.length ? "Recent sub-session transcript:" : null,
+    ...transcriptLines,
   ].filter((line): line is string => Boolean(line));
 
   if (continuationLines.length <= 2 && !sessionState.currentTaskId) {

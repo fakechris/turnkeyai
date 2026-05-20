@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { CapabilityInspectionResult } from "@turnkeyai/core-types/team";
+import { createNativeToolCapabilityRegistry } from "@turnkeyai/role-runtime/tool-capability-registry";
 
 import { createInspectionRouteDeps } from "./inspection-deps";
 
@@ -138,6 +139,12 @@ function buildFakes(counters: CallCounters) {
     runtimeQueryService,
     recoveryActionService,
     llmGateway: null,
+    toolCapabilityRegistry: createNativeToolCapabilityRegistry({
+      availableWorkerKinds: ["browser", "explore"],
+      permissionsEnabled: true,
+      memoryEnabled: true,
+      tasksEnabled: true,
+    }),
   } as never;
 
   return { foundations, runtimeServices };
@@ -253,15 +260,27 @@ test("inspectCapabilities enriches worker readiness with tool capability summari
     "sessions_send",
     "sessions_list",
     "sessions_history",
+    "permission_query",
+    "permission_result",
+    "permission_applied",
     "memory_search",
     "memory_get",
+    "tasks_list",
+    "tasks_create",
+    "tasks_update",
   ]);
   assert.deepEqual(report.toolCapabilities?.map((tool) => tool.executorKind), [
     "worker-session",
     "worker-session",
     "worker-session",
     "worker-session",
+    "permission",
+    "permission",
+    "permission",
     "memory",
     "memory",
+    "task",
+    "task",
+    "task",
   ]);
 });

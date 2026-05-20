@@ -36,7 +36,6 @@ import {
   buildReplayConsoleReport,
   buildReplayInspectionReport,
 } from "@turnkeyai/qc-runtime/replay-inspection";
-import { createNativeToolCapabilityRegistry } from "@turnkeyai/role-runtime/tool-capability-registry";
 import type { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import type { RelayControlPlane } from "@turnkeyai/browser-bridge/transport/transport-adapter";
 
@@ -104,13 +103,13 @@ export function createInspectionRouteDeps(
       permissionCacheStore,
       replayRecorder,
       capabilityDiscoveryService,
-      workerHandlers,
       relayGateway,
     },
     runtimeServices: {
       runtimeQueryService,
       recoveryActionService,
       llmGateway,
+      toolCapabilityRegistry,
     },
     modelCatalogPath,
   } = inputs;
@@ -143,13 +142,9 @@ export function createInspectionRouteDeps(
         roleId,
         requestedCapabilities,
       });
-      const registry = createNativeToolCapabilityRegistry({
-        availableWorkerKinds: workerHandlers.map((handler) => handler.kind),
-        memoryEnabled: true,
-      });
       return {
         ...inspection,
-        toolCapabilities: registry.summaries(),
+        toolCapabilities: toolCapabilityRegistry.summaries(),
       };
     },
     listGovernancePermissions: (threadId) => permissionCacheStore.listByThread(threadId),

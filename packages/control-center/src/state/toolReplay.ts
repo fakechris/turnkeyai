@@ -20,27 +20,47 @@ export type ToolProcessItem = {
 
 export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayItem[] {
   const items: TimelineReplayItem[] = [];
-  let index = 0;
-
-  while (index < events.length) {
+  const groups = new Map<string, { actor: string; toolEvents: ActivityEvent[] }>();
+  for (let index = 0; index < events.length; index += 1) {
     const event = events[index]!;
     if (event.kind !== "tool") {
+      continue;
+    }
+    const key = toolProcessKey(event);
+    const group = groups.get(key);
+    if (group) {
+      group.toolEvents.push(event);
+    } else {
+      groups.set(key, { actor: event.actor, toolEvents: [event] });
+    }
+  }
+
+  const emittedGroups = new Set<string>();
+  const consumedThoughtIds = new Set<string>();
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]!;
+    if (consumedThoughtIds.has(event.id)) {
+      continue;
+    }
+    if (event.kind !== "tool") {
       items.push({ kind: "event", event });
-      index += 1;
       continue;
     }
 
-    const toolEvents: ActivityEvent[] = [];
-    const actor = event.actor;
-    while (index < events.length && events[index]?.kind === "tool" && events[index]?.actor === actor) {
-      toolEvents.push(events[index]!);
-      index += 1;
+    const key = toolProcessKey(event);
+    if (emittedGroups.has(key)) {
+      continue;
     }
+    const group = groups.get(key)!;
+    emittedGroups.add(key);
 
-    const next = events[index];
-    const finalThought = next?.kind === "thought" && next.actor === actor ? next : undefined;
+    const toolEvents = [...group.toolEvents].sort((left, right) => left.tMs - right.tMs || left.id.localeCompare(right.id));
+    const lastToolIndex = Math.max(...toolEvents.map((toolEvent) => events.indexOf(toolEvent)));
+    const finalThought = events
+      .slice(lastToolIndex + 1)
+      .find((candidate) => candidate.kind === "thought" && candidate.actor === group.actor);
     if (finalThought) {
-      index += 1;
+      consumedThoughtIds.add(finalThought.id);
     }
 
     const startMs = toolEvents[0]!.tMs;
@@ -48,7 +68,7 @@ export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayI
     items.push({
       kind: "tool-process",
       id: `tool-process:${toolEvents[0]!.id}`,
-      actor,
+      actor: group.actor,
       startMs,
       endMs,
       toolEvents,
@@ -58,6 +78,15 @@ export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayI
   }
 
   return items;
+}
+
+function toolProcessKey(event: ActivityEvent): string {
+  const messageId = event.runtime?.messageId;
+  const round = event.runtime?.round;
+  if (messageId && round) {
+    return `${event.actor}:${messageId}:${round}`;
+  }
+  return `${event.actor}:tool-call:${event.runtime?.toolCallId ?? event.id}`;
 }
 
 export function formatDurationMs(startMs: number, endMs: number): string {
