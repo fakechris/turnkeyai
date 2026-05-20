@@ -123,6 +123,13 @@ metadata. Prompt harness text tells the model to use these tools for prior
 decisions, preferences, constraints, unresolved questions, and evidence, and not
 to fabricate remembered facts when search returns no relevant hit.
 
+When a provider request exceeds the safe request-envelope guard, the LLM role
+generator also runs a pre-compaction memory flush before retrying with the
+reduced prompt. The flush uses a small, JSON-only model prompt to extract
+durable preferences, constraints, decisions, unresolved open items, and
+carry-forward facts from the original prompt packet, then merges them into the
+same `ThreadMemoryStore` used by `memory_search` / `memory_get`.
+
 ## 7. Browser Policy
 
 The main role should not call browser primitives directly by default.
@@ -188,6 +195,7 @@ The implementation now includes:
 - Permission query/result/applied governance events and cache updates.
 - Browser/search/worker capability registry alignment so only executable workers are advertised.
 - Native memory tools plus prompt harness guidance for recall without fabrication.
+- Pre-compaction memory flush before request-envelope reduction writes durable carry-forward notes.
 - Mission-route level regression coverage for `POST /missions/:id/messages` → native tool call/progress/result → `GET /missions/:id/timeline`.
 
 ## 10. Remaining Hardening
@@ -198,6 +206,5 @@ This is not the final product surface. Remaining work is operational hardening:
 - Add more Mission Detail filters for long tool-heavy timelines.
 - Strengthen prompt-injection defenses around browser text evidence before it enters role prompts.
 - Add scale-oriented cursors for long mission timelines and long sub-session histories.
-- Add pre-compaction memory flush so high-pressure prompt reduction can ask the model to persist important open items before dropping context.
 
 The key architectural decision is fixed: TurnkeyAI's core tool-use path is model-native and session-native, not prompt-only and not browser-bridge-only.

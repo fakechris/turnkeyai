@@ -7,6 +7,7 @@ import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
 import { LLMRoleResponseGenerator } from "./llm-response-generator";
+import type { PreCompactionMemoryFlusher } from "./pre-compaction-memory-flusher";
 import type { RolePromptPacket } from "./prompt-policy";
 import type { RoleToolExecutionInput, RoleToolExecutor } from "./tool-use";
 
@@ -125,6 +126,67 @@ test("llm role response generator retries with a smaller request envelope after 
     true
   );
   assert.equal((progressEvents[0]?.metadata?.["envelopeHint"] as { toolResultCount?: number } | undefined)?.toolResultCount, 0);
+});
+
+test("llm role response generator flushes memory once before request-envelope reduction", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const flushCalls: Array<{ taskPrompt: string; modelId?: string }> = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      throw makeOverflowError();
+    }
+    return {
+      text: "Reduced prompt result.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const preCompactionMemoryFlusher: PreCompactionMemoryFlusher = {
+    async flush(input) {
+      flushCalls.push({
+        taskPrompt: input.packet.taskPrompt,
+        ...(input.modelId ? { modelId: input.modelId } : {}),
+      });
+      return {
+        status: "written",
+        preferences: [],
+        constraints: ["Keep direct provider APIs before browser fallback."],
+        longTermNotes: ["Open item: confirm browser fallback only when APIs are blocked."],
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    preCompactionMemoryFlusher,
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Reduced prompt result.");
+  assert.equal(flushCalls.length, 1);
+  assert.equal(flushCalls[0]?.modelId, "claude-test");
+  assert.match(flushCalls[0]?.taskPrompt ?? "", /Recent turns:/);
+  assert.ok(
+    gatewayInputs[1]?.messages.some((message) =>
+      typeof message.content === "string" && message.content.includes("Request envelope reduction:")
+    )
+  );
+  assert.deepEqual(result.metadata?.preCompactionMemoryFlushes, [
+    {
+      status: "written",
+      preferences: [],
+      constraints: ["Keep direct provider APIs before browser fallback."],
+      longTermNotes: ["Open item: confirm browser fallback only when APIs are blocked."],
+    },
+  ]);
 });
 
 test("llm role response generator forwards model chain and model ref routing", async () => {

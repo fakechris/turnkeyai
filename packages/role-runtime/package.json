@@ -11,6 +11,7 @@
     "./llm-response-generator": "./src/llm-response-generator.ts",
     "./model-adapter": "./src/model-adapter.ts",
     "./policy-role-runtime": "./src/policy-role-runtime.ts",
+    "./pre-compaction-memory-flusher": "./src/pre-compaction-memory-flusher.ts",
     "./prompt/prompt-assembler": "./src/prompt/prompt-assembler.ts",
     "./prompt-policy": "./src/prompt-policy.ts",
     "./role-profile": "./src/role-profile.ts",

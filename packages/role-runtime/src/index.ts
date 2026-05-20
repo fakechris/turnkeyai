@@ -6,6 +6,7 @@ export * from "./hybrid-response-generator";
 export * from "./llm-response-generator";
 export * from "./model-adapter";
 export * from "./policy-role-runtime";
+export * from "./pre-compaction-memory-flusher";
 export * from "./prompt/prompt-assembler";
 export * from "./prompt-policy";
 export * from "./role-profile";
