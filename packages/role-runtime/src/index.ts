@@ -11,4 +11,5 @@ export * from "./prompt-policy";
 export * from "./role-profile";
 export * from "./tool-capability-registry";
 export * from "./tool-cancellation-registry";
+export * from "./tool-permission-service";
 export * from "./tool-use";

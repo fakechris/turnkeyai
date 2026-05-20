@@ -82,6 +82,7 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "GET", pathname: "/missions/msn.01", expected: "read" },
     { method: "GET", pathname: "/missions/msn.01/timeline", expected: "read" },
     { method: "GET", pathname: "/approvals", expected: "read" },
+    { method: "POST", pathname: "/approvals/ap.1/decision", expected: "operator" },
     { method: "GET", pathname: "/mission-agents", expected: "read" },
     { method: "POST", pathname: "/missions/bootstrap-demo", expected: "operator" },
     // PR K3.5 — mission lifecycle writes.

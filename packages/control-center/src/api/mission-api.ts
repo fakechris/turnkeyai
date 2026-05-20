@@ -165,6 +165,7 @@ export interface ApprovalDecision {
   decision: "approved" | "denied";
   decidedBy: string;
   decidedAtMs: number;
+  reason?: string;
 }
 
 /** /approvals attaches the decision (or null) per row. */

@@ -134,6 +134,114 @@ test("sessions_spawn cancels the active worker when the tool call is cancelled",
   assert.equal(result.progress?.at(-1)?.phase, "cancelled");
 });
 
+test("permission tools request, observe, and apply operator approval", async () => {
+  const calls: string[] = [];
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    toolPermissionService: {
+      async request(input) {
+        calls.push(`request:${input.action}`);
+        return {
+          status: "pending",
+          approvalId: "ap.thread-1.call-permission",
+          missionId: "msn.1",
+          action: input.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey: "thread-1:browser:mutate:approval",
+            rationale: input.requirement.rationale,
+            workerType: "browser",
+          },
+          message: "Permission request ap.thread-1.call-permission is pending operator decision.",
+        };
+      },
+      async result(input) {
+        calls.push(`result:${input.approvalId}`);
+        return {
+          status: "approved",
+          approvalId: input.approvalId,
+          missionId: "msn.1",
+          action: "browser.form.submit",
+          decidedBy: "operator",
+          decidedAtMs: 1,
+          message: "Permission request ap.thread-1.call-permission was approved.",
+        };
+      },
+      async apply(input) {
+        calls.push(`apply:${input.approvalId}`);
+        return {
+          status: "applied",
+          approvalId: input.approvalId,
+          cacheKey: "thread-1:browser:mutate:approval",
+          message: "Permission request ap.thread-1.call-permission applied.",
+        };
+      },
+    },
+  });
+
+  assert.equal(executor.definitions().some((definition) => definition.name === "permission_query"), true);
+  const activation = buildActivation();
+  const packet = {
+    roleId: "role-lead",
+    roleName: "Lead",
+    seat: "lead" as const,
+    systemPrompt: "Lead.",
+    taskPrompt: "Submit form.",
+    outputContract: "Return result.",
+    suggestedMentions: [],
+  };
+  const query = await executor.execute({
+    call: {
+      id: "call-permission",
+      name: "permission_query",
+      input: {
+        action: "browser.form.submit",
+        title: "Submit pricing form",
+        risk: "Submits account data to the website.",
+        level: "approval",
+        scope: "mutate",
+        rationale: "The task requires checking the submitted pricing flow.",
+      },
+    },
+    activation,
+    packet,
+  });
+  assert.equal(query.isError, undefined);
+  assert.equal(query.progress?.[0]?.detail?.eventType, "permission.query");
+  assert.match(query.content, /"status": "pending"/);
+
+  const result = await executor.execute({
+    call: {
+      id: "call-result",
+      name: "permission_result",
+      input: { approval_id: "ap.thread-1.call-permission" },
+    },
+    activation,
+    packet,
+  });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.progress?.[0]?.detail?.eventType, "permission.result");
+  assert.match(result.content, /"status": "approved"/);
+
+  const applied = await executor.execute({
+    call: {
+      id: "call-applied",
+      name: "permission_applied",
+      input: { approval_id: "ap.thread-1.call-permission" },
+    },
+    activation,
+    packet,
+  });
+  assert.equal(applied.isError, undefined);
+  assert.equal(applied.progress?.[0]?.detail?.eventType, "permission.applied");
+  assert.deepEqual(calls, [
+    "request:browser.form.submit",
+    "result:ap.thread-1.call-permission",
+    "apply:ap.thread-1.call-permission",
+  ]);
+});
+
 test("sessions_list filters by thread, kind, agent_id, parentSessionKey, and activeMinutes", async () => {
   const now = Date.now();
   const workerRuntime = {

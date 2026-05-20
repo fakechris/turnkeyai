@@ -191,6 +191,29 @@ export function useApprovals(fallback: ApprovalRow[]): RemoteData<ApprovalRow[]>
   return useRemote<ApprovalRow[]>("/approvals", fallback);
 }
 
+export function useDecideApproval(): (input: {
+  approvalId: string;
+  decision: "approved" | "denied";
+  decidedBy?: string;
+  reason?: string;
+}) => Promise<ApprovalRow> {
+  const client = useApiClient();
+  return useCallback(
+    async (input) => {
+      const result = await client.post<{ approval: ApprovalRow; decision: ApprovalRow["decision"] }>(
+        `/approvals/${encodeURIComponent(input.approvalId)}/decision`,
+        {
+          decision: input.decision,
+          decidedBy: input.decidedBy ?? "operator",
+          ...(input.reason ? { reason: input.reason } : {}),
+        }
+      );
+      return { ...result.approval, decision: result.decision };
+    },
+    [client]
+  );
+}
+
 export function useArtifacts(missionId: string, fallback: Artifact[]): RemoteData<Artifact[]> {
   return useRemote<Artifact[]>(
     `/missions/${encodeURIComponent(missionId)}/artifacts`,

@@ -305,8 +305,11 @@ export interface ApprovalRequestStore {
   listByMission(missionId: MissionId): Promise<ApprovalRequest[]>;
   put(approval: ApprovalRequest): Promise<void>;
   /** Look up a decision if one has been recorded. K2 only reads;
-   *  decisions are recorded by K4. */
+   *  decisions are recorded by the operator approval route. */
   getDecision(id: ApprovalRequestId): Promise<ApprovalDecision | null>;
+  /** Record an operator decision. Append-once stores should reject or
+   *  overwrite according to route-level policy before this is called. */
+  putDecision(decision: ApprovalDecision): Promise<void>;
   /** Bulk-load every recorded decision in a single pass. Used by the
    *  /approvals route to avoid N+1 reads when joining. */
   listDecisions(): Promise<ApprovalDecision[]>;

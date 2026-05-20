@@ -2,14 +2,16 @@ import type { RoleSlot, WorkerKind } from "@turnkeyai/core-types/team";
 import type { LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
 
 export const SESSION_TOOL_NAMES = ["sessions_spawn", "sessions_send", "sessions_list", "sessions_history"] as const;
+export const PERMISSION_TOOL_NAMES = ["permission_query", "permission_result", "permission_applied"] as const;
 export type SessionToolName = (typeof SESSION_TOOL_NAMES)[number];
-export type NativeToolName = SessionToolName;
+export type PermissionToolName = (typeof PERMISSION_TOOL_NAMES)[number];
+export type NativeToolName = SessionToolName | PermissionToolName;
 
 export interface ToolCapabilityRecord {
   name: NativeToolName;
   definition: LLMToolDefinition;
-  executorKind: "worker-session";
-  promptGroup: "sessions";
+  executorKind: "worker-session" | "permission";
+  promptGroup: "sessions" | "permissions";
 }
 
 export interface ToolPromptHarnessInput {
@@ -63,16 +65,30 @@ export class ToolCapabilityRegistry {
 
 export function createNativeToolCapabilityRegistry(input: {
   availableWorkerKinds?: WorkerKind[];
+  permissionsEnabled?: boolean;
 } = {}): ToolCapabilityRegistry {
   const workerKinds = normalizeWorkerKinds(input.availableWorkerKinds);
-  return new ToolCapabilityRegistry({
-    workerKinds,
-    records: buildSessionToolDefinitions(workerKinds).map((definition) => ({
+  const records: ToolCapabilityRecord[] = [
+    ...buildSessionToolDefinitions(workerKinds).map((definition) => ({
       name: definition.name as NativeToolName,
       definition,
       executorKind: "worker-session" as const,
       promptGroup: "sessions" as const,
     })),
+  ];
+  if (input.permissionsEnabled) {
+    records.push(
+      ...buildPermissionToolDefinitions(workerKinds).map((definition) => ({
+        name: definition.name as NativeToolName,
+        definition,
+        executorKind: "permission" as const,
+        promptGroup: "permissions" as const,
+      }))
+    );
+  }
+  return new ToolCapabilityRegistry({
+    workerKinds,
+    records,
   });
 }
 
@@ -144,6 +160,59 @@ export function buildSessionToolDefinitions(workerKinds: WorkerKind[]): LLMToolD
   ];
 }
 
+export function buildPermissionToolDefinitions(workerKinds: WorkerKind[]): LLMToolDefinition[] {
+  return [
+    {
+      name: "permission_query",
+      description:
+        "Request operator permission before a side-effectful action. Use this before browser form submits, publishing, mutations, credential access, or other irreversible work.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", description: "Capability/action path, for example browser.form.submit." },
+          title: { type: "string", description: "Short user-visible approval title." },
+          risk: { type: "string", description: "Concrete risk or side effect the operator is approving." },
+          level: { type: "string", enum: ["confirm", "approval"], description: "Use approval for writes/publish/credential access." },
+          scope: { type: "string", enum: ["navigate", "mutate", "publish", "credential"], description: "Permission scope." },
+          rationale: { type: "string", description: "Why this permission is necessary for the task." },
+          worker_kind: { type: "string", enum: workerKinds, description: "Worker kind that will use this permission." },
+          mission_id: { type: "string", description: "Optional mission id. Omit inside Mission Control threads." },
+          affects: { type: "array", items: { type: "string" }, description: "Context source ids affected by the action." },
+          payload: { type: "object", additionalProperties: true, description: "Redacted structured action arguments." },
+          cache_key: { type: "string", description: "Optional stable cache key. Omit to derive one from thread/worker/scope/level." },
+        },
+        required: ["action", "title", "risk", "level", "scope", "rationale"],
+      },
+    },
+    {
+      name: "permission_result",
+      description: "Check whether a pending permission request has been approved or denied.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          approval_id: { type: "string" },
+        },
+        required: ["approval_id"],
+      },
+    },
+    {
+      name: "permission_applied",
+      description:
+        "Apply an approved permission to runtime permission cache before continuing the side-effectful action. Do not call this for denied or pending approvals.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          approval_id: { type: "string" },
+        },
+        required: ["approval_id"],
+      },
+    },
+  ];
+}
+
 function renderToolPromptHarness(input: {
   enabledToolNames: NativeToolName[];
   availableWorkerKinds: WorkerKind[];
@@ -154,6 +223,10 @@ function renderToolPromptHarness(input: {
 
   if (SESSION_TOOL_NAMES.some((name) => enabled.has(name))) {
     sections.push(renderDelegationSection(input.availableWorkerKinds, input.seat));
+  }
+
+  if (PERMISSION_TOOL_NAMES.some((name) => enabled.has(name))) {
+    sections.push(renderPermissionSection());
   }
 
   if (input.availableWorkerKinds.includes("browser")) {
@@ -171,6 +244,17 @@ function renderGeneralToolUsageSection(): string {
     "- Run independent tool calls in parallel when their inputs do not depend on each other.",
     "- Do not repeat the same tool call with the same arguments. After 2-3 failed attempts, stop and report the failure and what is needed.",
     "- Every non-trivial task needs a verification step before final delivery.",
+  ].join("\n");
+}
+
+function renderPermissionSection(): string {
+  return [
+    "## Permission Loop",
+    "- Before any side-effectful action, call permission_query with the exact action, scope, risk, and redacted payload. Do not perform the action first.",
+    "- If permission_query returns pending, stop and tell the user the approval is waiting. Do not invent an approval result.",
+    "- After the operator decides, call permission_result with the approval_id. If denied, explain the denied path and choose a safe fallback.",
+    "- If approved, call permission_applied before continuing the approved action so runtime cache and audit state match the operator decision.",
+    "- Use approval for mutations, publishing, credential access, purchases, submits, or browser actions that change account state; use confirm only for lower-risk interactive navigation.",
   ].join("\n");
 }
 

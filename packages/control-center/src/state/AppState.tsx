@@ -46,9 +46,9 @@ export interface AppStateValue {
   pill: ConnectionPill;
   lastStatus: BridgeStatus | null;
   /**
-   * Approval decisions made in the current session, keyed by approvalId.
-   * In K1 these are local-only — there's no daemon endpoint yet.
-   * Persisted at K4 when the approval queue lands.
+   * Optimistic approval decisions made in the current session, keyed by
+   * approvalId. The daemon is authoritative; this only avoids UI flicker
+   * while /approvals refetches after a decision POST.
    */
   decisions: Record<string, "approved" | "denied">;
 }
