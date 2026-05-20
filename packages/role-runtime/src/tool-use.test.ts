@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { RoleActivationInput, WorkerRuntime } from "@turnkeyai/core-types/team";
 
+import { InMemoryToolCancellationRegistry } from "./tool-cancellation-registry";
 import { createWorkerSessionToolExecutor } from "./tool-use";
 
 test("sessions tool definitions only advertise registered worker kinds when provided", () => {
@@ -62,6 +63,75 @@ test("sessions_spawn marks a selected worker with no executable result as a fail
   assert.equal(body.status, "failed");
   assert.match(body.result, /no executable result/i);
   assert.equal(result.progress?.at(-1)?.phase, "failed");
+});
+
+test("sessions_spawn cancels the active worker when the tool call is cancelled", async () => {
+  let resolveSend!: () => void;
+  let sendStarted!: () => void;
+  let cancelledReason: string | null = null;
+  const sendStartedPromise = new Promise<void>((resolve) => {
+    sendStarted = resolve;
+  });
+  const releaseSendPromise = new Promise<void>((resolve) => {
+    resolveSend = resolve;
+  });
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
+    },
+    async send() {
+      sendStarted();
+      await releaseSendPromise;
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Should not be used after cancellation.",
+        payload: null,
+      };
+    },
+    async cancel(input: { reason?: string }) {
+      cancelledReason = input.reason ?? null;
+      return null;
+    },
+  } as unknown as WorkerRuntime;
+  const toolCancellationRegistry = new InMemoryToolCancellationRegistry();
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, toolCancellationRegistry });
+
+  const executePromise = executor.execute({
+    call: {
+      id: "call-cancel",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open a slow browser page.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Open a slow browser page.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  await sendStartedPromise;
+  await toolCancellationRegistry.cancel({
+    threadId: "thread-1",
+    toolCallIds: ["call-cancel"],
+    reason: "operator stopped browser work",
+  });
+  resolveSend();
+
+  const result = await executePromise;
+  assert.equal(cancelledReason, "operator stopped browser work");
+  assert.equal(result.isError, true);
+  assert.equal(result.cancelled, true);
+  assert.equal(result.content, "operator stopped browser work");
+  assert.equal(result.progress?.at(-1)?.phase, "cancelled");
 });
 
 test("sessions_list filters by thread, kind, agent_id, parentSessionKey, and activeMinutes", async () => {

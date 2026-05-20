@@ -40,6 +40,10 @@ import { LLMRoleResponseGenerator } from "@turnkeyai/role-runtime/llm-response-g
 import { PolicyRoleRuntime } from "@turnkeyai/role-runtime/policy-role-runtime";
 import { DefaultRolePromptPolicy } from "@turnkeyai/role-runtime/prompt-policy";
 import { createNativeToolCapabilityRegistry } from "@turnkeyai/role-runtime/tool-capability-registry";
+import {
+  InMemoryToolCancellationRegistry,
+  type ToolCancellationRegistry,
+} from "@turnkeyai/role-runtime/tool-cancellation-registry";
 import { createWorkerSessionToolExecutor } from "@turnkeyai/role-runtime/tool-use";
 import { LocalWorkerRuntime } from "@turnkeyai/worker-runtime/local-worker-runtime";
 
@@ -86,6 +90,7 @@ export interface DaemonRuntimeServices {
   recoveryActionService: ReturnType<typeof createRecoveryActionService>;
   scheduledTaskRuntime: DefaultScheduledTaskRuntime;
   runtimeQueryService: ReturnType<typeof createRuntimeQueryService>;
+  toolCancellationRegistry: ToolCancellationRegistry;
   /**
    * Stop the background reconciliation timer. Idempotent — safe to call
    * multiple times. The timer is `.unref()`ed so it does not keep the
@@ -182,6 +187,7 @@ export async function composeDaemonRuntimeServices(
   const toolCapabilityRegistry = createNativeToolCapabilityRegistry({
     availableWorkerKinds: foundations.workerHandlers.map((handler) => handler.kind),
   });
+  const toolCancellationRegistry = new InMemoryToolCancellationRegistry();
 
   const roleRuntime = new PolicyRoleRuntime({
     idGenerator,
@@ -206,6 +212,7 @@ export async function composeDaemonRuntimeServices(
               executor: createWorkerSessionToolExecutor({
                 workerRuntime,
                 toolCapabilityRegistry,
+                toolCancellationRegistry,
               }),
               runtimeProgressRecorder,
             },
@@ -448,6 +455,7 @@ export async function composeDaemonRuntimeServices(
     recoveryActionService,
     scheduledTaskRuntime,
     runtimeQueryService,
+    toolCancellationRegistry,
     stop,
   };
 }

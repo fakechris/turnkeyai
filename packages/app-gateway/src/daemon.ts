@@ -292,6 +292,7 @@ const {
   recoveryActionService,
   scheduledTaskRuntime,
   runtimeQueryService,
+  toolCancellationRegistry,
 } = runtimeServices;
 
 const browserRouteHelpers = createBrowserRouteHelpers({
@@ -672,6 +673,7 @@ const server = http.createServer(async (req, res) => {
           scheduledTaskRuntime,
           idGenerator,
           clock,
+          toolCancellationRegistry,
           idempotencyStore: routeIdempotencyStore,
         },
       })

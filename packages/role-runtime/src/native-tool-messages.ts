@@ -18,6 +18,7 @@ export interface NativeToolResultTrace {
   contentBytes: number;
   content?: string;
   contentTruncated?: boolean;
+  cancelled?: boolean;
 }
 
 export interface NativeToolProgressTrace {
@@ -73,9 +74,11 @@ export function buildNativeToolMessages(
       toolStatus:
         round.results.length < round.calls.length
           ? "pending"
-          : round.results.some((result) => result.isError)
-            ? "failed"
-            : "completed",
+          : round.results.some((result) => result.cancelled)
+              ? "cancelled"
+              : round.results.some((result) => result.isError)
+                ? "failed"
+                : "completed",
       metadata: {
         activationType: input.handoff.activationType,
         flowId: input.flow.flowId,
@@ -106,7 +109,7 @@ export function buildNativeToolMessages(
           speakerName: result.toolName,
         },
         toolCallId: result.toolCallId,
-        toolStatus: result.isError ? "failed" : "completed",
+        toolStatus: result.cancelled ? "cancelled" : result.isError ? "failed" : "completed",
         metadata: {
           activationType: input.handoff.activationType,
           flowId: input.flow.flowId,
@@ -151,6 +154,7 @@ function parseToolUseTrace(value: unknown): NativeToolTrace | null {
             contentBytes: typeof result.contentBytes === "number" ? result.contentBytes : 0,
             ...(typeof result.content === "string" ? { content: result.content } : {}),
             ...(result.contentTruncated === true ? { contentTruncated: true } : {}),
+            ...(result.cancelled === true ? { cancelled: true } : {}),
           }))
         : [];
       const progress = Array.isArray(round.progress)
@@ -208,8 +212,12 @@ function buildRoundToolProgress(
     progress.push({
       toolCallId: result.toolCallId,
       toolName: result.toolName,
-      phase: result.isError ? "failed" : "completed",
-      summary: result.isError ? `Tool call failed: ${result.toolName}` : `Tool call completed: ${result.toolName}`,
+      phase: result.cancelled ? "cancelled" : result.isError ? "failed" : "completed",
+      summary: result.cancelled
+        ? `Tool call cancelled: ${result.toolName}`
+        : result.isError
+          ? `Tool call failed: ${result.toolName}`
+          : `Tool call completed: ${result.toolName}`,
       detail: {
         contentBytes: result.contentBytes,
         ...(result.contentTruncated ? { contentTruncated: true } : {}),
