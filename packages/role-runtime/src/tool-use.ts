@@ -169,6 +169,7 @@ export function createWorkerSessionToolExecutor(options: {
       permissionsEnabled: Boolean(options.toolPermissionService),
     });
   const definitions = toolCapabilityRegistry.definitions();
+  const executableWorkerKinds = new Set(toolCapabilityRegistry.availableWorkerKinds());
   return {
     definitions() {
       return definitions;
@@ -177,7 +178,7 @@ export function createWorkerSessionToolExecutor(options: {
     async execute(input) {
       switch (input.call.name) {
         case "sessions_spawn":
-          return executeSessionsSpawn(workerRuntime, input, options.toolCancellationRegistry);
+          return executeSessionsSpawn(workerRuntime, input, executableWorkerKinds, options.toolCancellationRegistry);
         case "sessions_send":
           return executeSessionsSend(workerRuntime, input, options.toolCancellationRegistry);
         case "sessions_list":
@@ -343,12 +344,17 @@ async function executePermissionApplied(
 async function executeSessionsSpawn(
   workerRuntime: WorkerRuntime,
   input: RoleToolExecutionInput,
+  executableWorkerKinds: ReadonlySet<WorkerKind>,
   toolCancellationRegistry?: ToolCancellationRegistry
 ): Promise<RoleToolExecutionResult> {
   const task = requiredString(input.call.input.task);
   const agentId = requiredString(input.call.input.agent_id) as WorkerKind | null;
   if (!task || !agentId) {
     return errorResult(input.call, "sessions_spawn requires task and agent_id");
+  }
+  if (!executableWorkerKinds.has(agentId)) {
+    const available = [...executableWorkerKinds].join(", ") || "(none)";
+    return errorResult(input.call, `Worker kind ${agentId} is not available. Available worker kinds: ${available}.`);
   }
   const packet = {
     ...input.packet,

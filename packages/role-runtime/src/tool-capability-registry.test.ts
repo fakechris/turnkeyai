@@ -47,6 +47,32 @@ test("native tool capability registry omits browser harness when browser is unav
   assert.doesNotMatch(harness, /Browser Worker Rules/);
 });
 
+test("native tool capability registry does not advertise session tools without executable workers", () => {
+  const registry = createNativeToolCapabilityRegistry();
+
+  assert.deepEqual(registry.availableWorkerKinds(), []);
+  assert.deepEqual(registry.names(), []);
+
+  const harness = registry.renderPromptHarness({ seat: "lead" });
+  assert.match(harness, /Tool Usage Discipline/);
+  assert.doesNotMatch(harness, /Sub-Agent Sessions/);
+  assert.doesNotMatch(harness, /Executable sub-agent kinds/);
+});
+
+test("permission tool schema remains provider-valid when no workers are executable", () => {
+  const registry = createNativeToolCapabilityRegistry({
+    permissionsEnabled: true,
+  });
+  const query = registry.definitions().find((definition) => definition.name === "permission_query");
+  const schema = query?.inputSchema as {
+    properties?: { worker_kind?: { type?: string; enum?: string[] } };
+  };
+
+  assert.deepEqual(registry.names(), ["permission_query", "permission_result", "permission_applied"]);
+  assert.equal(schema.properties?.worker_kind?.type, "string");
+  assert.equal("enum" in (schema.properties?.worker_kind ?? {}), false);
+});
+
 test("native tool capability registry includes permission tools only when enabled", () => {
   const disabled = createNativeToolCapabilityRegistry({
     availableWorkerKinds: ["browser"],

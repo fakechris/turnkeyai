@@ -16,7 +16,19 @@ interface BrowserTaskIntent {
   wantsScreenshot: boolean;
 }
 
+interface DefaultBrowserTaskPlannerOptions {
+  searchEngineUrlTemplate?: string;
+}
+
+const DEFAULT_SEARCH_ENGINE_URL_TEMPLATE = "https://www.google.com/search?q={query}";
+
 export class DefaultBrowserTaskPlanner {
+  private readonly searchEngineUrlTemplate: string;
+
+  constructor(options: DefaultBrowserTaskPlannerOptions = {}) {
+    this.searchEngineUrlTemplate = options.searchEngineUrlTemplate?.trim() || DEFAULT_SEARCH_ENGINE_URL_TEMPLATE;
+  }
+
   buildRequest(input: WorkerInvocationInput): BrowserTaskRequest | null {
     const sourceText = [
       input.packet.taskPrompt,
@@ -50,7 +62,7 @@ export class DefaultBrowserTaskPlanner {
       taskId: input.activation.handoff.taskId,
       threadId: input.activation.thread.threadId,
       instructions: sourceText,
-      actions: buildActionPlan(intent),
+      actions: buildActionPlan(intent, this.searchEngineUrlTemplate),
       ownerType,
       ownerId,
       profileOwnerType: ownerType,
@@ -87,12 +99,12 @@ function extractBrowserSessionDetails(input: WorkerInvocationInput) {
 
 function deriveIntent(content: string, options: { allowCurrentTargetReuse: boolean }): BrowserTaskIntent | null {
   const url = extractUrl(content);
-  if (!url && !options.allowCurrentTargetReuse) {
+  const searchQuery = extractSearchQuery(content);
+  if (!url && !searchQuery && !options.allowCurrentTargetReuse) {
     return null;
   }
 
   const clickText = extractClickTarget(content);
-  const searchQuery = extractSearchQuery(content);
 
   return {
     ...(url ? { url } : {}),
@@ -106,12 +118,14 @@ function deriveIntent(content: string, options: { allowCurrentTargetReuse: boole
   };
 }
 
-function buildActionPlan(intent: BrowserTaskIntent): BrowserTaskAction[] {
+function buildActionPlan(intent: BrowserTaskIntent, searchEngineUrlTemplate: string): BrowserTaskAction[] {
   const plan: BrowserTaskAction[] = intent.url
     ? [{ kind: "open", url: intent.url }, { kind: "snapshot", note: "after-open" }]
-    : [{ kind: "snapshot", note: "reuse-current-target" }];
+    : intent.searchQuery
+      ? [{ kind: "open", url: buildSearchUrl(intent.searchQuery, searchEngineUrlTemplate) }, { kind: "snapshot", note: "after-search-open" }]
+      : [{ kind: "snapshot", note: "reuse-current-target" }];
 
-  if (intent.searchQuery) {
+  if (intent.url && intent.searchQuery) {
     plan.push({
       kind: "type",
       selectors: [
@@ -171,6 +185,7 @@ function extractSearchQuery(content: string): string | null {
   const strategies = [
     /\bsearch\s+for\s+(.+?)(?:\.|,|\n|$)/i,
     /\bsearch\s+(.+?)(?:\.|,|\n|$)/i,
+    /\bresearch\s+(.+?)(?:\.|,|\n|$)/i,
     /搜索\s*[“"]?(.+?)[”"]?(?:。|，|\n|$)/,
     /查询\s*[“"]?(.+?)[”"]?(?:。|，|\n|$)/,
   ];
@@ -210,4 +225,19 @@ function stripTrailingNoise(value: string): string {
     .replace(/并汇报.*$/, "")
     .replace(/并返回.*$/, "")
     .trim();
+}
+
+function buildSearchUrl(query: string, template: string): string {
+  const encoded = encodeURIComponent(query);
+  if (template.includes("{query}")) {
+    return template.replaceAll("{query}", encoded);
+  }
+
+  try {
+    const url = new URL(template);
+    url.searchParams.set("q", query);
+    return url.toString();
+  } catch {
+    return DEFAULT_SEARCH_ENGINE_URL_TEMPLATE.replace("{query}", encoded);
+  }
 }

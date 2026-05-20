@@ -91,15 +91,19 @@ The first built-in tool set is the `sessions_*` surface:
 | `sessions_list` | List local sub-agent sessions. |
 | `sessions_history` | Read compact session history/state. |
 
-Supported worker kinds:
+Supported worker kinds are runtime-derived, not hard-coded. The daemon must
+only advertise worker kinds that are backed by executable handlers in the
+current process. A lead role must not see `sessions_spawn(agent_id: "...")`
+for a worker that the local `WorkerRegistry` cannot actually spawn.
+
+Current production wiring usually exposes:
 
 - `browser`
 - `explore`
 - `finance`
-- `coder`
-- `harness`
 
-This is deliberately broad because TurnkeyAI already has worker categories beyond browser/research.
+`coder` and `harness` remain valid `WorkerKind` values, but they are not
+included in native tool schemas until an executable handler is installed.
 
 ## 6. Browser Policy
 
@@ -133,6 +137,11 @@ Direct browser tools can still exist later for specialist browser agents:
 - `browser.console`
 
 They should be exposed to the browser sub-agent, not the lead role by default.
+
+When a browser sub-session receives a bounded search/research task without an
+explicit URL, the browser task planner may open a configured search-engine URL
+as the first browser action. The default template is intentionally replaceable
+so deployments can use a region- or organization-approved search provider.
 
 ## 7. Parity Bar
 

@@ -68,14 +68,17 @@ export function createNativeToolCapabilityRegistry(input: {
   permissionsEnabled?: boolean;
 } = {}): ToolCapabilityRegistry {
   const workerKinds = normalizeWorkerKinds(input.availableWorkerKinds);
-  const records: ToolCapabilityRecord[] = [
-    ...buildSessionToolDefinitions(workerKinds).map((definition) => ({
-      name: definition.name as NativeToolName,
-      definition,
-      executorKind: "worker-session" as const,
-      promptGroup: "sessions" as const,
-    })),
-  ];
+  const records: ToolCapabilityRecord[] = [];
+  if (workerKinds.length > 0) {
+    records.push(
+      ...buildSessionToolDefinitions(workerKinds).map((definition) => ({
+        name: definition.name as NativeToolName,
+        definition,
+        executorKind: "worker-session" as const,
+        promptGroup: "sessions" as const,
+      }))
+    );
+  }
   if (input.permissionsEnabled) {
     records.push(
       ...buildPermissionToolDefinitions(workerKinds).map((definition) => ({
@@ -176,7 +179,7 @@ export function buildPermissionToolDefinitions(workerKinds: WorkerKind[]): LLMTo
           level: { type: "string", enum: ["confirm", "approval"], description: "Use approval for writes/publish/credential access." },
           scope: { type: "string", enum: ["navigate", "mutate", "publish", "credential"], description: "Permission scope." },
           rationale: { type: "string", description: "Why this permission is necessary for the task." },
-          worker_kind: { type: "string", enum: workerKinds, description: "Worker kind that will use this permission." },
+          worker_kind: workerKindSchema(workerKinds, "Worker kind that will use this permission."),
           mission_id: { type: "string", description: "Optional mission id. Omit inside Mission Control threads." },
           affects: { type: "array", items: { type: "string" }, description: "Context source ids affected by the action." },
           payload: { type: "object", additionalProperties: true, description: "Redacted structured action arguments." },
@@ -306,7 +309,13 @@ function describeWorkerKind(kind: WorkerKind): string {
 }
 
 function normalizeWorkerKinds(input: WorkerKind[] | undefined): WorkerKind[] {
-  const fallback = ["browser", "explore", "finance", "coder", "harness"] satisfies WorkerKind[];
-  const values = input && input.length > 0 ? input : fallback;
-  return [...new Set(values)];
+  return [...new Set(input ?? [])];
+}
+
+function workerKindSchema(workerKinds: WorkerKind[], description: string): { type: "string"; enum?: WorkerKind[]; description: string } {
+  return {
+    type: "string",
+    ...(workerKinds.length > 0 ? { enum: workerKinds } : {}),
+    description,
+  };
 }

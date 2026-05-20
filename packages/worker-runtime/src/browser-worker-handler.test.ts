@@ -769,9 +769,35 @@ test("browser worker handler uses browser session protocol dispatch modes", asyn
   assert.deepEqual(calls, ["spawn", "send", "resume"]);
 });
 
+test("browser worker handler turns search-only tasks into an executable browser search", async () => {
+  let openedUrl = "";
+  const bridge: BrowserBridge = {
+    ...buildUnusedBrowserBridge(),
+    async spawnSession(request) {
+      const open = request.actions.find((action) => action.kind === "open");
+      openedUrl = open?.kind === "open" ? open.url : "";
+      return buildBrowserResult("session-search");
+    },
+  };
+
+  const handler = new BrowserWorkerHandler({
+    browserBridge: bridge,
+  });
+
+  const result = await handler.run(
+    buildWorkerInvocationInput({
+      instructions: "Search slock multica Rust crates and summarize what you find.",
+    })
+  );
+
+  assert.equal(result?.status, "completed");
+  assert.equal(openedUrl, "https://www.google.com/search?q=slock%20multica%20Rust%20crates");
+});
+
 function buildWorkerInvocationInput(overrides?: {
   packet?: Partial<WorkerInvocationInput["packet"]>;
   sessionState?: WorkerInvocationInput["sessionState"];
+  instructions?: string;
 }): WorkerInvocationInput {
   return {
     activation: {
@@ -824,7 +850,7 @@ function buildWorkerInvocationInput(overrides?: {
           threadId: "thread-1",
           relayBrief: "",
           recentMessages: [],
-          instructions: "Open https://example.com",
+          instructions: overrides?.instructions ?? "Open https://example.com",
           dispatchPolicy: {
             allowParallel: false,
             allowReenter: true,
