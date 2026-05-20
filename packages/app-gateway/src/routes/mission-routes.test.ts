@@ -235,6 +235,49 @@ describe("mission-routes", () => {
     }
   });
 
+  it("POST /approvals/:id/decision records operator decision and timeline event", async () => {
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      await handleMissionRoutes({
+        req: createRequest({ method: "POST", url: "/missions/bootstrap-demo" }),
+        res: createResponse().res,
+        url: new URL("http://127.0.0.1/missions/bootstrap-demo"),
+        deps,
+      });
+      const { res, getStatus, getJson } = createResponse();
+      await handleMissionRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/approvals/ap.notion-form/decision",
+          body: { decision: "approved", decidedBy: "operator" },
+        }),
+        res,
+        url: new URL("http://127.0.0.1/approvals/ap.notion-form/decision"),
+        deps,
+      });
+      assert.equal(getStatus(), 200);
+      assert.equal(getJson().decision.decision, "approved");
+      const approvals = await runJson<Array<{ id: string; decision: { decision: string } | null }>>(
+        deps,
+        "GET",
+        "/approvals"
+      );
+      assert.equal(approvals.find((a) => a.id === "ap.notion-form")?.decision?.decision, "approved");
+      const timeline = await runJson<Array<{ approvalId?: string; tags?: string[] }>>(
+        deps,
+        "GET",
+        "/missions/msn.01/timeline?limit=50"
+      );
+      assert.ok(
+        timeline.some((event) => event.approvalId === "ap.notion-form" && event.tags?.includes("permission.result")),
+        "expected decision to be visible on mission timeline"
+      );
+    } finally {
+      t.cleanup();
+    }
+  });
+
   it("GET /mission-context-sources merges live browser sessions with registry entries", async () => {
     // PR K3: the daemon stitches live browser sessions (from the bridge)
     // in front of the registry-backed ContextSource list so the Mission

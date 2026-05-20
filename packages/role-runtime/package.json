@@ -16,6 +16,7 @@
     "./role-profile": "./src/role-profile.ts",
     "./tool-capability-registry": "./src/tool-capability-registry.ts",
     "./tool-cancellation-registry": "./src/tool-cancellation-registry.ts",
+    "./tool-permission-service": "./src/tool-permission-service.ts",
     "./tool-use": "./src/tool-use.ts"
   }
 }

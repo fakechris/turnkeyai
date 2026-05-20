@@ -1,12 +1,9 @@
-// Approvals queue — pending + decided tabs. K4 will persist decisions
-// through a daemon endpoint; for now the dashboard records them in
-// local session state (state.decisions) and the daemon-side approvals
-// are read-only.
+// Approvals queue — pending + decided tabs backed by daemon decisions.
 
 import { useState } from "react";
 
 import type { ApprovalRow } from "../api/mission-api";
-import { useAgents, useApprovals, useContextSources } from "../api/useMissionData";
+import { useAgents, useApprovals, useContextSources, useDecideApproval } from "../api/useMissionData";
 import { CtxIcon, Icon } from "../components/Icon";
 import { AgentAvatar } from "../components/atoms";
 import { useAppState } from "../state/AppState";
@@ -17,6 +14,8 @@ export function ApprovalsPage() {
   const approvalsRemote = useApprovals([]);
   const agentsRemote = useAgents([]);
   const contextRemote = useContextSources([]);
+  const submitDecision = useDecideApproval();
+  const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null);
   const approvals = approvalsRemote.value;
   const agents = agentsRemote.value;
   const contextSources = contextRemote.value;
@@ -81,6 +80,16 @@ export function ApprovalsPage() {
             ? ap.decision.decision
             : undefined;
         const effective = localDecision ?? daemonDecision;
+        const decide = async (decision: "approved" | "denied") => {
+          setBusyApprovalId(ap.id);
+          try {
+            await submitDecision({ approvalId: ap.id, decision });
+            decideApproval(ap.id, decision);
+            approvalsRemote.refetch();
+          } finally {
+            setBusyApprovalId(null);
+          }
+        };
         return (
           <ApprovalRowView
             key={ap.id}
@@ -88,8 +97,9 @@ export function ApprovalsPage() {
             decision={effective}
             agents={agents}
             contextSources={contextSources}
-            onApprove={() => decideApproval(ap.id, "approved")}
-            onDeny={() => decideApproval(ap.id, "denied")}
+            busy={busyApprovalId === ap.id}
+            onApprove={() => void decide("approved")}
+            onDeny={() => void decide("denied")}
             onOpenMission={() => openMission(ap.missionId)}
           />
         );
@@ -106,6 +116,7 @@ function ApprovalRowView({
   onApprove,
   onDeny,
   onOpenMission,
+  busy,
 }: {
   approval: ApprovalRow;
   decision: "approved" | "denied" | undefined;
@@ -114,6 +125,7 @@ function ApprovalRowView({
   onApprove: () => void;
   onDeny: () => void;
   onOpenMission: () => void;
+  busy: boolean;
 }) {
   const agent = agents.find((a) => a.id === approval.agent);
   return (
@@ -162,10 +174,10 @@ function ApprovalRowView({
       <div className="deciders">
         {!decision ? (
           <>
-            <button type="button" className="btn success" onClick={onApprove}>
+            <button type="button" className="btn success" onClick={onApprove} disabled={busy}>
               <Icon name="check" size={12} /> Approve
             </button>
-            <button type="button" className="btn danger" onClick={onDeny}>
+            <button type="button" className="btn danger" onClick={onDeny} disabled={busy}>
               <Icon name="x" size={12} /> Deny
             </button>
             <button type="button" className="btn ghost">View details ↗</button>

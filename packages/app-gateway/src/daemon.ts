@@ -73,6 +73,7 @@ import { runBrowserTransportSoakViaCli } from "./composition/transport-soak-cli"
 import { createBridgeMissionActivityRecorder } from "./bridge-mission-activity-recorder";
 import { createBrowserContextSourceProvider } from "./browser-context-source-provider";
 import { createMissionThreadBridge } from "./mission-thread-bridge";
+import { createMissionToolPermissionService } from "./tool-permission-service";
 
 import {
   parsePositiveInteger,
@@ -274,6 +275,37 @@ async function buildBridgeStatusSnapshot(): Promise<BridgeStatusInfo> {
   });
 }
 
+// PR K2 — Mission Control stores (mission/work-item/activity/approval/
+// artifact + agent + context-source registries). Composed before the
+// role runtime so native permission tools can file approval requests
+// into the same operator queue the dashboard renders.
+//
+// gemini K3.5: missionShortIdSeq must NOT restart at 0 across daemon
+// process lifetimes — every new daemon would mint MSN-0001 and
+// collide with existing on-disk records. Hydrate the seed counter
+// from the largest existing MSN-#### we find in the missions
+// directory before installing the id generator. (missionIdSeq is
+// fine: it's already prefixed with Date.now() in base-36.)
+let missionIdSeq = 0;
+let missionShortIdSeq = await hydrateMissionShortIdSeed(DATA_DIR);
+const missionDeps = composeMissionDeps({
+  dataDir: DATA_DIR,
+  clock,
+  idGenerator: {
+    missionId: () => `msn.${Date.now().toString(36)}.${++missionIdSeq}`,
+    shortId: () => `MSN-${(++missionShortIdSeq).toString().padStart(4, "0")}`,
+  },
+});
+
+const toolPermissionService = createMissionToolPermissionService({
+  missionStore: missionDeps.missionStore,
+  approvalStore: missionDeps.approvalStore,
+  activityStore: missionDeps.activityStore,
+  permissionCacheStore,
+  clock,
+  newEventId: () => idGenerator.messageId(),
+});
+
 const runtimeServices = await composeDaemonRuntimeServices({
   foundations,
   dataDir: DATA_DIR,
@@ -284,6 +316,7 @@ const runtimeServices = await composeDaemonRuntimeServices({
   recoveryRunActionMutex,
   recoveryRunStaleAfterMs: RECOVERY_RUN_STALE_AFTER_MS,
   runtimeReconciliationIntervalMs: RUNTIME_RECONCILIATION_INTERVAL_MS,
+  toolPermissionService,
 });
 const {
   workerRuntime,
@@ -317,28 +350,6 @@ const recoveryDeps = createRecoveryRouteDeps({
   foundations,
   runtimeServices,
   idempotencyStore: routeIdempotencyStore,
-});
-
-// PR K2 — Mission Control stores (mission/work-item/activity/approval/
-// artifact + agent + context-source registries). Composed separately
-// from foundations.ts because the mission model is a self-contained
-// addition with no cyclic deps on the rest of the daemon.
-//
-// gemini K3.5: missionShortIdSeq must NOT restart at 0 across daemon
-// process lifetimes — every new daemon would mint MSN-0001 and
-// collide with existing on-disk records. Hydrate the seed counter
-// from the largest existing MSN-#### we find in the missions
-// directory before installing the id generator. (missionIdSeq is
-// fine: it's already prefixed with Date.now() in base-36.)
-let missionIdSeq = 0;
-let missionShortIdSeq = await hydrateMissionShortIdSeed(DATA_DIR);
-const missionDeps = composeMissionDeps({
-  dataDir: DATA_DIR,
-  clock,
-  idGenerator: {
-    missionId: () => `msn.${Date.now().toString(36)}.${++missionIdSeq}`,
-    shortId: () => `MSN-${(++missionShortIdSeq).toString().padStart(4, "0")}`,
-  },
 });
 
 // PR K3 — bridge ↔ mission wiring. The recorder writes ActivityEvents

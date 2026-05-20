@@ -14,9 +14,9 @@
 // All routes are `read` scoped (see daemon-auth.ts) except
 // /missions/bootstrap-demo which is `operator` — it writes data.
 //
-// K3+K4 will add the actual creation/mutation routes
-// (POST /missions, POST /missions/:id/work-items, etc.). K2 is read-only
-// except for the bootstrap helper so the dashboard has content to render.
+// Mission creation, mission follow-up messages, and approval decisions
+// are mutation routes; the remaining mission surfaces are read-mostly
+// so the dashboard can render without owning the coordination runtime.
 
 import type http from "node:http";
 
@@ -44,6 +44,7 @@ import {
 } from "../idempotency-store";
 import { buildDemoFixtures } from "../mission-demo-fixtures";
 import type { MissionThreadBridge } from "../mission-thread-bridge";
+import { recordApprovalDecision } from "../tool-permission-service";
 
 /**
  * Optional bundle that turns the read-mostly Mission Control routes
@@ -189,6 +190,52 @@ export async function handleMissionRoutes(input: {
     }));
     sendJson(res, 200, withDecisions);
     return true;
+  }
+
+  const approvalDecisionMatch = pathname.match(/^\/approvals\/([^/]+)\/decision$/);
+  if (method === "POST" && approvalDecisionMatch) {
+    let approvalId: string;
+    try {
+      approvalId = decodeURIComponent(approvalDecisionMatch[1]!);
+    } catch {
+      sendJson(res, 400, { error: "invalid approval id encoding" });
+      return true;
+    }
+    const bodyResult = await readJsonBodySafe<{
+      decision?: unknown;
+      decidedBy?: unknown;
+      reason?: unknown;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const decision = readApprovalDecision(bodyResult.value.decision);
+    if (!decision) {
+      sendJson(res, 400, { error: "decision must be approved or denied" });
+      return true;
+    }
+    const decidedBy = readNonEmptyString(bodyResult.value.decidedBy) ?? "operator";
+    const reason = readNonEmptyString(bodyResult.value.reason);
+    try {
+      const result = await recordApprovalDecision({
+        approvalStore: deps.approvalStore,
+        activityStore: deps.activityStore,
+        clock: deps.clock,
+        newEventId: () => `ev.${approvalId}.${deps.clock.now()}`,
+        approvalId,
+        decision,
+        decidedBy,
+        ...(reason ? { reason } : {}),
+      });
+      sendJson(res, 200, result);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message === "approval not found" ? 404 : message === "approval already decided" ? 409 : 500;
+      sendJson(res, status, { error: message });
+      return true;
+    }
   }
 
   if (method === "POST" && pathname === "/missions") {
@@ -480,6 +527,10 @@ function readNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function readApprovalDecision(value: unknown): "approved" | "denied" | null {
+  return value === "approved" || value === "denied" ? value : null;
 }
 
 function readMissionMode(

@@ -20,6 +20,7 @@ import {
   type ToolCapabilityRegistry,
 } from "./tool-capability-registry";
 import type { ToolCancellationRegistry } from "./tool-cancellation-registry";
+import type { ToolPermissionService } from "./tool-permission-service";
 
 export interface RoleToolExecutionInput {
   call: LLMToolCall;
@@ -158,12 +159,14 @@ export function createWorkerSessionToolExecutor(options: {
   availableWorkerKinds?: WorkerKind[];
   toolCapabilityRegistry?: ToolCapabilityRegistry;
   toolCancellationRegistry?: ToolCancellationRegistry;
+  toolPermissionService?: ToolPermissionService;
 }): RoleToolExecutor {
   const { workerRuntime } = options;
   const toolCapabilityRegistry =
     options.toolCapabilityRegistry ??
     createNativeToolCapabilityRegistry({
       ...(options.availableWorkerKinds ? { availableWorkerKinds: options.availableWorkerKinds } : {}),
+      permissionsEnabled: Boolean(options.toolPermissionService),
     });
   const definitions = toolCapabilityRegistry.definitions();
   return {
@@ -181,6 +184,12 @@ export function createWorkerSessionToolExecutor(options: {
           return executeSessionsList(workerRuntime, input);
         case "sessions_history":
           return executeSessionsHistory(workerRuntime, input);
+        case "permission_query":
+          return executePermissionQuery(input, options.toolPermissionService);
+        case "permission_result":
+          return executePermissionResult(input, options.toolPermissionService);
+        case "permission_applied":
+          return executePermissionApplied(input, options.toolPermissionService);
         default:
           return {
             toolCallId: input.call.id,
@@ -190,6 +199,144 @@ export function createWorkerSessionToolExecutor(options: {
           };
       }
     },
+  };
+}
+
+async function executePermissionQuery(
+  input: RoleToolExecutionInput,
+  toolPermissionService?: ToolPermissionService
+): Promise<RoleToolExecutionResult> {
+  if (!toolPermissionService) {
+    return errorResult(input.call, "permission service is not configured");
+  }
+  const action = requiredString(input.call.input.action);
+  const title = requiredString(input.call.input.title);
+  const risk = requiredString(input.call.input.risk);
+  const level = parsePermissionLevel(input.call.input.level);
+  const scope = parsePermissionScope(input.call.input.scope);
+  const rationale = requiredString(input.call.input.rationale);
+  if (!action || !title || !risk || !level || !scope || !rationale) {
+    return errorResult(input.call, "permission_query requires action, title, risk, level, scope, and rationale");
+  }
+  const role = input.activation.thread.roles.find((item) => item.roleId === input.activation.runState.roleId);
+  const cacheKey = requiredString(input.call.input.cache_key);
+  const workerType = parseWorkerKind(input.call.input.worker_kind);
+  const missionId = requiredString(input.call.input.mission_id);
+  const affects = readStringArray(input.call.input.affects);
+  const result = await toolPermissionService.request({
+    threadId: input.activation.thread.threadId,
+    roleId: input.activation.runState.roleId,
+    roleName: role?.name ?? input.activation.runState.roleId,
+    toolCallId: input.call.id,
+    action,
+    title,
+    risk,
+    requirement: {
+      level,
+      scope,
+      rationale,
+      ...(cacheKey ? { cacheKey } : {}),
+      ...(workerType ? { workerType } : {}),
+    },
+    ...(missionId ? { missionId } : {}),
+    ...(affects.length ? { affects } : {}),
+    ...(isRecord(input.call.input.payload) ? { payload: input.call.input.payload } : {}),
+  });
+  return {
+    toolCallId: input.call.id,
+    toolName: input.call.name,
+    content: JSON.stringify(result, null, 2),
+    progress: [
+      {
+        phase: "progress",
+        toolName: input.call.name,
+        summary:
+          result.status === "already_granted"
+            ? `Permission already granted for ${action}.`
+            : `Permission requested for ${action}.`,
+        detail: {
+          eventType: "permission.query",
+          status: result.status,
+          ...(result.approvalId ? { approval_id: result.approvalId } : {}),
+          scope,
+          level,
+        },
+      },
+    ],
+    raw: result,
+  };
+}
+
+async function executePermissionResult(
+  input: RoleToolExecutionInput,
+  toolPermissionService?: ToolPermissionService
+): Promise<RoleToolExecutionResult> {
+  if (!toolPermissionService) {
+    return errorResult(input.call, "permission service is not configured");
+  }
+  const approvalId = requiredString(input.call.input.approval_id);
+  if (!approvalId) {
+    return errorResult(input.call, "permission_result requires approval_id");
+  }
+  const result = await toolPermissionService.result({
+    threadId: input.activation.thread.threadId,
+    approvalId,
+  });
+  return {
+    toolCallId: input.call.id,
+    toolName: input.call.name,
+    ...(result.status === "denied" ? { isError: true } : {}),
+    content: JSON.stringify(result, null, 2),
+    progress: [
+      {
+        phase: "progress",
+        toolName: input.call.name,
+        summary: result.message,
+        detail: {
+          eventType: "permission.result",
+          status: result.status,
+          approval_id: approvalId,
+        },
+      },
+    ],
+    raw: result,
+  };
+}
+
+async function executePermissionApplied(
+  input: RoleToolExecutionInput,
+  toolPermissionService?: ToolPermissionService
+): Promise<RoleToolExecutionResult> {
+  if (!toolPermissionService) {
+    return errorResult(input.call, "permission service is not configured");
+  }
+  const approvalId = requiredString(input.call.input.approval_id);
+  if (!approvalId) {
+    return errorResult(input.call, "permission_applied requires approval_id");
+  }
+  const result = await toolPermissionService.apply({
+    threadId: input.activation.thread.threadId,
+    approvalId,
+  });
+  return {
+    toolCallId: input.call.id,
+    toolName: input.call.name,
+    ...(result.status !== "applied" ? { isError: true } : {}),
+    content: JSON.stringify(result, null, 2),
+    progress: [
+      {
+        phase: result.status === "applied" ? "completed" : "failed",
+        toolName: input.call.name,
+        summary: result.message,
+        detail: {
+          eventType: "permission.applied",
+          status: result.status,
+          approval_id: approvalId,
+          ...(result.cacheKey ? { cache_key: result.cacheKey } : {}),
+        },
+      },
+    ],
+    raw: result,
   };
 }
 
@@ -513,6 +660,35 @@ function cancelledResult(call: LLMToolCall, content: string): RoleToolExecutionR
 
 function requiredString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function parsePermissionLevel(value: unknown): "confirm" | "approval" | null {
+  return value === "confirm" || value === "approval" ? value : null;
+}
+
+function parsePermissionScope(value: unknown): "navigate" | "mutate" | "publish" | "credential" | null {
+  switch (value) {
+    case "navigate":
+    case "mutate":
+    case "publish":
+    case "credential":
+      return value;
+    default:
+      return null;
+  }
+}
+
+function parseWorkerKind(value: unknown): WorkerKind | null {
+  return typeof value === "string" && value.trim().length > 0 ? (value.trim() as WorkerKind) : null;
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function stringArray(value: unknown): string[] {

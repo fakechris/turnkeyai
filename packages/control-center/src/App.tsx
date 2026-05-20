@@ -46,9 +46,8 @@ export function App() {
   const contextSources = useContextSources([]).value;
   const counts: SidebarCounts = {
     missions: missions.filter((m) => m.status !== "archived").length,
-    // Approvals: subtract any locally-decided ones from the count so
-    // the sidebar moves the moment the user clicks Approve/Deny on the
-    // queue (the daemon-backed decision endpoint is K4).
+    // Approvals: subtract optimistic local decisions while the daemon
+    // decision POST refetches, so the sidebar moves immediately.
     approvals: approvals.filter(
       (a) => !a.decision && !state.decisions[a.id]
     ).length,
