@@ -22,6 +22,7 @@ import { formatTimeOfDay } from "../util/format-time";
 import { Icon } from "../components/Icon";
 import { StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
+import { formatDurationMs, groupTimelineForReplay, type ToolProcessItem } from "../state/toolReplay";
 
 export function MissionDetailPage({ missionId }: { missionId: string }) {
   const { setRoute } = useAppState();
@@ -148,7 +149,13 @@ function LiveMissionView({ mission }: { mission: Mission }) {
                 : "Loading activity…"}
             </div>
           ) : (
-            timeline.value.map((event) => <LiveTimelineRow key={event.id} event={event} />)
+            groupTimelineForReplay(timeline.value).map((item) =>
+              item.kind === "event" ? (
+                <LiveTimelineRow key={item.event.id} event={item.event} />
+              ) : (
+                <ToolProcessRow key={item.id} process={item} />
+              )
+            )
           )}
           <div style={{ height: 24 }} />
         </div>
@@ -202,6 +209,60 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             {error}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function ToolProcessRow({ process }: { process: ToolProcessItem }) {
+  const toolNames = [...new Set(process.toolEvents.map((event) => event.runtime?.toolName).filter(Boolean))];
+  const statusLabel =
+    process.status === "failed" ? "failed" : process.status === "running" ? "running" : "completed";
+  const resultCount = process.toolEvents.filter((event) => event.runtime?.toolPhase === "result").length;
+  const progressCount = process.toolEvents.filter((event) => event.runtime?.toolPhase === "progress").length;
+  const duration = formatDurationMs(process.startMs, process.endMs);
+  const emph = process.status === "failed" ? "danger" : process.status === "completed" ? "success" : undefined;
+
+  return (
+    <div className="tl-event tool-process" data-kind="tool">
+      <div className="tl-time mono">{formatTimeOfDay(process.startMs)}</div>
+      <div className="tl-gutter">
+        <div className="tl-marker" />
+      </div>
+      <div className="tl-body tool-process-body" data-emph={emph}>
+        <div className="tl-actor">
+          {process.actor}
+          <span className="role-mini">
+            thought process · {statusLabel} · {duration}
+          </span>
+        </div>
+        <div className="tool-process-summary">
+          <span>{toolNames.length ? toolNames.join(", ") : "tool chain"}</span>
+          <span>{process.toolEvents.length} step{process.toolEvents.length === 1 ? "" : "s"}</span>
+          <span>{resultCount} result{resultCount === 1 ? "" : "s"}</span>
+          {progressCount > 0 && <span>{progressCount} progress</span>}
+        </div>
+        {process.finalThought && (
+          <div className="tl-msg tool-process-final" style={{ whiteSpace: "pre-wrap" }}>
+            {process.finalThought.text}
+          </div>
+        )}
+        <details className="tool-process-details">
+          <summary>Show tool calls, progress, and results</summary>
+          <div className="tool-process-steps">
+            {process.toolEvents.map((event) => (
+              <div key={event.id} className="tool-process-step" data-phase={event.runtime?.toolPhase}>
+                <div className="step-head">
+                  <span className="mono">{event.runtime?.toolPhase ?? "tool"}</span>
+                  <span>{event.runtime?.toolName ?? "tool"}</span>
+                  <span className="mono faint">{event.t ?? formatTimeOfDay(event.tMs)}</span>
+                </div>
+                <div className="step-text">{event.text}</div>
+                <ToolEventInspector event={event} />
+              </div>
+            ))}
+          </div>
+        </details>
       </div>
     </div>
   );
