@@ -20,9 +20,16 @@ export type ToolProcessItem = {
 
 export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayItem[] {
   const items: TimelineReplayItem[] = [];
-  const groups = new Map<string, { actor: string; toolEvents: ActivityEvent[] }>();
+  const groups = new Map<string, { actor: string; toolEvents: ActivityEvent[]; lastIndex: number }>();
+  const thoughtIndexesByActor = new Map<string, Array<{ index: number; event: ActivityEvent }>>();
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index]!;
+    if (event.kind === "thought") {
+      const thoughts = thoughtIndexesByActor.get(event.actor) ?? [];
+      thoughts.push({ index, event });
+      thoughtIndexesByActor.set(event.actor, thoughts);
+      continue;
+    }
     if (event.kind !== "tool") {
       continue;
     }
@@ -30,8 +37,9 @@ export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayI
     const group = groups.get(key);
     if (group) {
       group.toolEvents.push(event);
+      group.lastIndex = index;
     } else {
-      groups.set(key, { actor: event.actor, toolEvents: [event] });
+      groups.set(key, { actor: event.actor, toolEvents: [event], lastIndex: index });
     }
   }
 
@@ -54,11 +62,14 @@ export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayI
     const group = groups.get(key)!;
     emittedGroups.add(key);
 
-    const toolEvents = [...group.toolEvents].sort((left, right) => left.tMs - right.tMs || left.id.localeCompare(right.id));
-    const lastToolIndex = Math.max(...toolEvents.map((toolEvent) => events.indexOf(toolEvent)));
-    const finalThought = events
-      .slice(lastToolIndex + 1)
-      .find((candidate) => candidate.kind === "thought" && candidate.actor === group.actor);
+    const toolEvents = [...group.toolEvents].sort(
+      (left, right) => left.tMs - right.tMs || left.id.localeCompare(right.id)
+    );
+    const finalThought = findNextUnconsumedThought(
+      thoughtIndexesByActor.get(group.actor),
+      group.lastIndex,
+      consumedThoughtIds
+    );
     if (finalThought) {
       consumedThoughtIds.add(finalThought.id);
     }
@@ -87,6 +98,33 @@ function toolProcessKey(event: ActivityEvent): string {
     return `${event.actor}:${messageId}:${round}`;
   }
   return `${event.actor}:tool-call:${event.runtime?.toolCallId ?? event.id}`;
+}
+
+function findNextUnconsumedThought(
+  thoughts: Array<{ index: number; event: ActivityEvent }> | undefined,
+  afterIndex: number,
+  consumedThoughtIds: Set<string>
+): ActivityEvent | undefined {
+  if (!thoughts?.length) {
+    return undefined;
+  }
+  let low = 0;
+  let high = thoughts.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (thoughts[middle]!.index <= afterIndex) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  for (let index = low; index < thoughts.length; index += 1) {
+    const thought = thoughts[index]!.event;
+    if (!consumedThoughtIds.has(thought.id)) {
+      return thought;
+    }
+  }
+  return undefined;
 }
 
 export function formatDurationMs(startMs: number, endMs: number): string {

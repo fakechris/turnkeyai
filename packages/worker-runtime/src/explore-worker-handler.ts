@@ -470,16 +470,18 @@ async function raceAbort<T>(work: Promise<T>, signal: AbortSignal | undefined, f
     return work;
   }
   throwIfAborted(signal);
-  return Promise.race([
-    work,
-    new Promise<T>((_resolve, reject) => {
-      signal.addEventListener(
-        "abort",
-        () => reject(new Error(abortReason(signal, fallbackReason))),
-        { once: true }
-      );
-    }),
-  ]);
+  let onAbort: (() => void) | undefined;
+  const abortPromise = new Promise<T>((_resolve, reject) => {
+    onAbort = () => reject(new Error(abortReason(signal, fallbackReason)));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, abortPromise]);
+  } finally {
+    if (onAbort) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
 }
 
 function abortReason(signal: AbortSignal, fallback: string): string {
