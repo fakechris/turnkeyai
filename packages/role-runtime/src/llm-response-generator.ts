@@ -27,12 +27,17 @@ import {
   type RoleToolExecutionResult,
   type RoleToolLoopOptions,
 } from "./tool-use";
+import type {
+  PreCompactionMemoryFlusher,
+  PreCompactionMemoryFlushResult,
+} from "./pre-compaction-memory-flusher";
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
   private readonly toolLoop: RoleToolLoopOptions | undefined;
   private readonly nativeToolMessageStore: Pick<TeamMessageStore, "append"> | undefined;
+  private readonly preCompactionMemoryFlusher: PreCompactionMemoryFlusher | undefined;
   private readonly clock: Clock;
 
   constructor(options: {
@@ -40,12 +45,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     runtimeProgressRecorder?: RuntimeProgressRecorder;
     toolLoop?: RoleToolLoopOptions;
     nativeToolMessageStore?: Pick<TeamMessageStore, "append">;
+    preCompactionMemoryFlusher?: PreCompactionMemoryFlusher;
     clock?: Clock;
   }) {
     this.gateway = options.gateway;
     this.runtimeProgressRecorder = options.runtimeProgressRecorder;
     this.toolLoop = options.toolLoop;
     this.nativeToolMessageStore = options.nativeToolMessageStore;
+    this.preCompactionMemoryFlusher = options.preCompactionMemoryFlusher;
     this.clock = options.clock ?? { now: () => Date.now() };
   }
 
@@ -69,6 +76,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           omittedSections: string[];
         } & ReductionEnvelopeSnapshot)
       | undefined;
+    const memoryFlushes: PreCompactionMemoryFlushResult[] = [];
 
     await this.recordAssemblyBoundarySafely(input.activation, input.packet, selection);
 
@@ -105,6 +113,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (generated.reduction) {
         reduction = generated.reduction;
         reductionSnapshot = generated.reductionSnapshot;
+      }
+      if (generated.memoryFlush) {
+        memoryFlushes.push(generated.memoryFlush);
       }
 
       const toolCalls = result.toolCalls ?? [];
@@ -165,6 +176,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         stopReason: result.stopReason,
         ...(reduction ? { requestEnvelopeReduction: reduction } : {}),
         ...(result.requestEnvelope ? { requestEnvelope: result.requestEnvelope } : {}),
+        ...(memoryFlushes.length ? { preCompactionMemoryFlushes: memoryFlushes } : {}),
         ...(toolTrace.length
           ? {
               toolUse: {
@@ -195,6 +207,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       level: RequestEnvelopeReductionLevel;
       omittedSections: string[];
     } & ReductionEnvelopeSnapshot;
+    memoryFlush?: PreCompactionMemoryFlushResult;
   }> {
     const attempts: RequestEnvelopeReductionLevel[] = ["compact", "minimal", "reference-only"];
     try {
@@ -207,6 +220,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
 
       let overflowError: RequestEnvelopeOverflowError = error;
+      const memoryFlush = await this.flushPreCompactionMemorySafely({
+        activation: input.activation,
+        packet: input.packet,
+        selection: input.selection,
+        overflowError,
+      });
       for (const level of attempts) {
         const reduced = reducePromptPacketForRequestEnvelope(input.packet, { level });
         try {
@@ -243,7 +262,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             artifactIds: reduced.artifactIds,
             ...(reduced.envelopeHint ? { envelopeHint: reduced.envelopeHint } : {}),
           };
-          return { result, reduction, reductionSnapshot };
+          return { result, reduction, reductionSnapshot, ...(memoryFlush ? { memoryFlush } : {}) };
         } catch (retryError) {
           if (!(retryError instanceof RequestEnvelopeOverflowError)) {
             throw retryError;
@@ -253,6 +272,38 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
 
       throw overflowError;
+    }
+  }
+
+  private async flushPreCompactionMemorySafely(input: {
+    activation: RoleActivationInput;
+    packet: RolePromptPacket;
+    selection: {
+      modelId?: string;
+      modelChainId?: string;
+    };
+    overflowError: RequestEnvelopeOverflowError;
+  }): Promise<PreCompactionMemoryFlushResult | undefined> {
+    if (!this.preCompactionMemoryFlusher) {
+      return undefined;
+    }
+    try {
+      return await this.preCompactionMemoryFlusher.flush({
+        activation: input.activation,
+        packet: input.packet,
+        ...(input.selection.modelId ? { modelId: input.selection.modelId } : {}),
+        ...(input.selection.modelChainId ? { modelChainId: input.selection.modelChainId } : {}),
+        reason: "request_envelope_overflow",
+        diagnostics: input.overflowError.details.diagnostics,
+      });
+    } catch (error) {
+      console.error("pre-compaction memory flush failed", {
+        threadId: input.activation.thread.threadId,
+        flowId: input.activation.flow.flowId,
+        taskId: input.activation.handoff.taskId,
+        error,
+      });
+      return undefined;
     }
   }
 

@@ -38,6 +38,7 @@ import { HeuristicModelAdapter } from "@turnkeyai/role-runtime/model-adapter";
 import { HybridRoleResponseGenerator } from "@turnkeyai/role-runtime/hybrid-response-generator";
 import { LLMRoleResponseGenerator } from "@turnkeyai/role-runtime/llm-response-generator";
 import { PolicyRoleRuntime } from "@turnkeyai/role-runtime/policy-role-runtime";
+import { DefaultPreCompactionMemoryFlusher } from "@turnkeyai/role-runtime/pre-compaction-memory-flusher";
 import { DefaultRolePromptPolicy } from "@turnkeyai/role-runtime/prompt-policy";
 import { createNativeToolCapabilityRegistry } from "@turnkeyai/role-runtime/tool-capability-registry";
 import {
@@ -128,6 +129,7 @@ export async function composeDaemonRuntimeServices(
     runtimeChainEventStore,
     runtimeChainStatusStore,
     runtimeProgressStore,
+    threadMemoryStore,
     permissionCacheStore,
     recoveryRunStore,
     recoveryRunEventStore,
@@ -211,6 +213,11 @@ export async function composeDaemonRuntimeServices(
             gateway: llmGateway,
             runtimeProgressRecorder,
             nativeToolMessageStore: teamMessageStore,
+            preCompactionMemoryFlusher: new DefaultPreCompactionMemoryFlusher({
+              gateway: llmGateway,
+              threadMemoryStore,
+              now: () => clock.now(),
+            }),
             clock,
             toolLoop: {
               executor: createWorkerSessionToolExecutor({
