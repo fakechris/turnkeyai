@@ -21,7 +21,7 @@ import {
 } from "./tool-capability-registry";
 import type { MemoryHit, RoleMemoryResolver } from "./context/role-memory-resolver";
 import type { ToolCancellationRegistry } from "./tool-cancellation-registry";
-import type { ToolPermissionService } from "./tool-permission-service";
+import type { ToolPermissionQueryResult, ToolPermissionService } from "./tool-permission-service";
 
 export interface RoleToolExecutionInput {
   call: LLMToolCall;
@@ -183,9 +183,15 @@ export function createWorkerSessionToolExecutor(options: {
     async execute(input) {
       switch (input.call.name) {
         case "sessions_spawn":
-          return executeSessionsSpawn(workerRuntime, input, executableWorkerKinds, options.toolCancellationRegistry);
+          return executeSessionsSpawn(
+            workerRuntime,
+            input,
+            executableWorkerKinds,
+            options.toolCancellationRegistry,
+            options.toolPermissionService
+          );
         case "sessions_send":
-          return executeSessionsSend(workerRuntime, input, options.toolCancellationRegistry);
+          return executeSessionsSend(workerRuntime, input, options.toolCancellationRegistry, options.toolPermissionService);
         case "sessions_list":
           return executeSessionsList(workerRuntime, input);
         case "sessions_history":
@@ -426,11 +432,152 @@ async function executePermissionApplied(
   };
 }
 
+async function maybeGateBrowserSideEffect(input: {
+  input: RoleToolExecutionInput;
+  workerType: WorkerKind;
+  instruction: string;
+  toolPermissionService: ToolPermissionService | undefined;
+}): Promise<RoleToolExecutionResult | null> {
+  if (input.workerType !== "browser") {
+    return null;
+  }
+  const risk = classifyBrowserSideEffect(input.instruction);
+  if (!risk) {
+    return null;
+  }
+  if (!input.toolPermissionService) {
+    return errorResult(
+      input.input.call,
+      `Permission approval is required before ${risk.action}, but permission service is not configured.`
+    );
+  }
+  const role = input.input.activation.thread.roles.find(
+    (item) => item.roleId === input.input.activation.runState.roleId
+  );
+  const missionId = requiredString(input.input.call.input.mission_id);
+  let result: ToolPermissionQueryResult;
+  try {
+    result = await input.toolPermissionService.request({
+      threadId: input.input.activation.thread.threadId,
+      roleId: input.input.activation.runState.roleId,
+      roleName: role?.name ?? input.input.activation.runState.roleId,
+      toolCallId: input.input.call.id,
+      action: risk.action,
+      title: risk.title,
+      risk: risk.risk,
+      requirement: {
+        level: "approval",
+        scope: risk.scope,
+        rationale: "Browser worker instruction appears to perform a side effect that must be approved before execution.",
+        workerType: "browser",
+        cacheKey: browserSideEffectCacheKey(
+          input.input.activation.thread.threadId,
+          risk.action,
+          risk.scope
+        ),
+      },
+      ...(missionId ? { missionId } : {}),
+      payload: {
+        tool_name: input.input.call.name,
+        instruction: truncateForPermissionPayload(input.instruction),
+      },
+    });
+  } catch (error) {
+    return errorResult(
+      input.input.call,
+      `Permission approval is required before ${risk.action}, but approval could not be requested: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+  if (result.status === "already_granted") {
+    return null;
+  }
+  return {
+    toolCallId: input.input.call.id,
+    toolName: input.input.call.name,
+    isError: true,
+    content: JSON.stringify(
+      {
+        status: "requires_approval",
+        approval_id: result.approvalId,
+        action: result.action,
+        requirement: result.requirement,
+        message: result.message,
+        blocked_before_side_effect: true,
+      },
+      null,
+      2
+    ),
+    progress: [
+      {
+        phase: "progress",
+        toolName: input.input.call.name,
+        summary: `Approval required before ${risk.action}.`,
+        detail: {
+          eventType: "permission.query",
+          status: result.status,
+          approval_id: result.approvalId,
+          action: risk.action,
+          scope: risk.scope,
+          level: "approval",
+          blocked_before_side_effect: true,
+        },
+      },
+    ],
+    raw: result,
+  };
+}
+
+function classifyBrowserSideEffect(
+  instruction: string
+): { action: string; scope: "mutate" | "publish" | "credential"; title: string; risk: string } | null {
+  const normalized = instruction.toLowerCase();
+  if (/\b(password|2fa|mfa|otp|credential|api key|secret|token)\b/.test(normalized)) {
+    return {
+      action: "browser.credential.access",
+      scope: "credential",
+      title: "Use browser credentials",
+      risk: "May expose or use account credentials or authentication secrets.",
+    };
+  }
+  if (/\b(publish|post publicly|go live|deploy|release)\b/.test(normalized)) {
+    return {
+      action: "browser.publish",
+      scope: "publish",
+      title: "Publish from browser",
+      risk: "May publish externally visible content or make a public change.",
+    };
+  }
+  if (
+    /\b(submit|send|save|create|update|delete|remove|archive|checkout|purchase|buy|order|book|reserve|invite|approve|accept|reject|cancel)\b/.test(
+      normalized
+    )
+  ) {
+    return {
+      action: /\bsubmit\b/.test(normalized) ? "browser.form.submit" : "browser.mutate",
+      scope: "mutate",
+      title: "Approve browser mutation",
+      risk: "May change account state, submit data, or trigger an external action.",
+    };
+  }
+  return null;
+}
+
+function browserSideEffectCacheKey(threadId: string, action: string, scope: string): string {
+  return `${threadId}:browser:${scope}:approval:${action}`;
+}
+
+function truncateForPermissionPayload(value: string): string {
+  return value.length > 2000 ? `${value.slice(0, 1997)}...` : value;
+}
+
 async function executeSessionsSpawn(
   workerRuntime: WorkerRuntime,
   input: RoleToolExecutionInput,
   executableWorkerKinds: ReadonlySet<WorkerKind>,
-  toolCancellationRegistry?: ToolCancellationRegistry
+  toolCancellationRegistry?: ToolCancellationRegistry,
+  toolPermissionService?: ToolPermissionService
 ): Promise<RoleToolExecutionResult> {
   const task = requiredString(input.call.input.task);
   const agentId = requiredString(input.call.input.agent_id) as WorkerKind | null;
@@ -440,6 +587,15 @@ async function executeSessionsSpawn(
   if (!executableWorkerKinds.has(agentId)) {
     const available = [...executableWorkerKinds].join(", ") || "(none)";
     return errorResult(input.call, `Worker kind ${agentId} is not available. Available worker kinds: ${available}.`);
+  }
+  const gate = await maybeGateBrowserSideEffect({
+    input,
+    workerType: agentId,
+    instruction: task,
+    toolPermissionService,
+  });
+  if (gate) {
+    return gate;
   }
   const packet = {
     ...input.packet,
@@ -526,7 +682,8 @@ async function executeSessionsSpawn(
 async function executeSessionsSend(
   workerRuntime: WorkerRuntime,
   input: RoleToolExecutionInput,
-  toolCancellationRegistry?: ToolCancellationRegistry
+  toolCancellationRegistry?: ToolCancellationRegistry,
+  toolPermissionService?: ToolPermissionService
 ): Promise<RoleToolExecutionResult> {
   const sessionKey = requiredString(input.call.input.session_key);
   const message = requiredString(input.call.input.message);
@@ -546,6 +703,15 @@ async function executeSessionsSend(
   const state = await workerRuntime.getState(sessionKey);
   if (!state) {
     return errorResult(input.call, `session not found: ${sessionKey}`);
+  }
+  const gate = await maybeGateBrowserSideEffect({
+    input,
+    workerType: state.workerType,
+    instruction: message,
+    toolPermissionService,
+  });
+  if (gate) {
+    return gate;
   }
   const packet = {
     ...input.packet,
