@@ -16,12 +16,14 @@ test("sessions tool definitions only advertise registered worker kinds when prov
   const list = executor.definitions().find((definition) => definition.name === "sessions_list");
 
   const spawnSchema = spawn?.inputSchema as {
-    properties?: { agent_id?: { enum?: string[] } };
+    properties?: { agent_id?: { enum?: string[] }; timeout_seconds?: { minimum?: number; maximum?: number } };
   };
   const listSchema = list?.inputSchema as {
     properties?: { agent_id?: { enum?: string[] }; kinds?: { items?: { enum?: string[] } } };
   };
   assert.deepEqual(spawnSchema.properties?.agent_id?.enum, ["browser", "explore", "finance"]);
+  assert.equal(spawnSchema.properties?.timeout_seconds?.minimum, 0.001);
+  assert.equal(spawnSchema.properties?.timeout_seconds?.maximum, 900);
   assert.deepEqual(listSchema.properties?.agent_id?.enum, ["browser", "explore", "finance"]);
   assert.deepEqual(listSchema.properties?.kinds?.items?.enum, ["browser", "explore", "finance"]);
 });
@@ -172,6 +174,149 @@ test("sessions_spawn cancels the active worker when the tool call is cancelled",
   assert.equal(result.cancelled, true);
   assert.equal(result.content, "operator stopped browser work");
   assert.equal(result.progress?.at(-1)?.phase, "cancelled");
+});
+
+test("sessions_spawn interrupts the worker and returns a resumable timeout result", async () => {
+  let sendStarted!: () => void;
+  let interruptedReason: string | null = null;
+  const sendStartedPromise = new Promise<void>((resolve) => {
+    sendStarted = resolve;
+  });
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
+    },
+    async send() {
+      sendStarted();
+      await new Promise(() => undefined);
+      return null;
+    },
+    async interrupt(input: { reason?: string }) {
+      interruptedReason = input.reason ?? null;
+      return {
+        workerRunKey: "worker:browser:task-1",
+        workerType: "browser",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+
+  const executePromise = executor.execute({
+    call: {
+      id: "call-timeout",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open a slow browser page.",
+        timeout_seconds: 0.001,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Open a slow browser page.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  await sendStartedPromise;
+  const result = await executePromise;
+  const body = JSON.parse(result.content) as {
+    session_key: string;
+    status: string;
+    resumable: boolean;
+    timeout_seconds: number;
+  };
+  assert.match(interruptedReason ?? "", /sessions_spawn timed out/);
+  assert.equal(result.isError, true);
+  assert.equal(body.session_key, "worker:browser:task-1");
+  assert.equal(body.status, "timeout");
+  assert.equal(body.resumable, true);
+  assert.equal(body.timeout_seconds, 0.001);
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
+  assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
+});
+
+test("sessions_send interrupts a follow-up worker call on timeout", async () => {
+  let interruptedReason: string | null = null;
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:existing",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:existing",
+            workerType: "browser",
+            status: "resumable",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:existing",
+        workerType: "browser",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async send() {
+      await new Promise(() => undefined);
+      return null;
+    },
+    async interrupt(input: { reason?: string }) {
+      interruptedReason = input.reason ?? null;
+      return null;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-send-timeout",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:browser:existing",
+        message: "Continue the slow browser task.",
+        timeout_seconds: 0.001,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { session_key: string; status: string; resumable: boolean };
+  assert.match(interruptedReason ?? "", /sessions_send timed out/);
+  assert.equal(result.isError, true);
+  assert.equal(body.session_key, "worker:browser:existing");
+  assert.equal(body.status, "timeout");
+  assert.equal(body.resumable, true);
 });
 
 test("permission tools request, observe, and apply operator approval", async () => {
