@@ -21,6 +21,25 @@ test("file worker session store reads and lists persisted sessions", async () =>
         createdAt: 10,
         updatedAt: 30,
         currentTaskId: "task-1",
+        history: [
+          {
+            id: "history-1",
+            role: "user",
+            content: "Open example.com.",
+            createdAt: 21,
+            taskId: "task-1",
+          },
+          {
+            id: "history-2",
+            role: "tool",
+            content: "Captured Example Domain.",
+            createdAt: 29,
+            taskId: "task-1",
+            toolName: "browser",
+            status: "completed",
+            payload: { title: "Example Domain" },
+          },
+        ],
         continuationDigest: {
           reason: "supervisor_retry",
           summary: "Resume from the latest safe checkpoint.",
@@ -51,6 +70,8 @@ test("file worker session store reads and lists persisted sessions", async () =>
     const record = await store.get("worker:browser:task:task-1");
     assert.ok(record);
     assert.equal(record?.state.status, "resumable");
+    assert.equal(record?.state.history?.length, 2);
+    assert.deepEqual(record?.state.history?.[1]?.payload, { title: "Example Domain" });
 
     const records = await store.list();
     assert.equal(records.length, 2);

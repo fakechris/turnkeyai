@@ -681,6 +681,15 @@ test("in-memory worker runtime persists sessions and rehydrates running work as 
       createdAt: 1000,
       updatedAt: 1005,
       currentTaskId: "task-1",
+      history: [
+        {
+          id: "history-before-restart",
+          role: "user",
+          content: "Open the page before restart.",
+          createdAt: 1004,
+          taskId: "task-1",
+        },
+      ],
     },
     context: {
       threadId: "thread-1",
@@ -708,6 +717,10 @@ test("in-memory worker runtime persists sessions and rehydrates running work as 
   assert.equal(rehydrated?.status, "resumable");
   assert.equal(rehydrated?.continuationDigest?.reason, "supervisor_retry");
   assert.match(rehydrated?.continuationDigest?.summary ?? "", /runtime restarted/i);
+  assert.equal(rehydrated?.history?.[0]?.id, "history-before-restart");
+  assert.equal(rehydrated?.history?.at(-1)?.role, "system");
+  assert.equal(rehydrated?.history?.at(-1)?.status, "interrupted");
+  assert.match(rehydrated?.history?.at(-1)?.content ?? "", /runtime restarted/i);
 
   const resumed = await restartedRuntime.resume({
     workerRunKey: spawned.workerRunKey,
@@ -715,7 +728,11 @@ test("in-memory worker runtime persists sessions and rehydrates running work as 
     packet: input.packet,
   });
   assert.equal(resumed?.status, "completed");
-  assert.equal((await restartedRuntime.getState(spawned.workerRunKey))?.status, "done");
+  const stateAfterResume = await restartedRuntime.getState(spawned.workerRunKey);
+  assert.equal(stateAfterResume?.status, "done");
+  assert.equal(stateAfterResume?.history?.some((entry) => entry.status === "interrupted"), true);
+  assert.equal(stateAfterResume?.history?.at(-1)?.role, "tool");
+  assert.equal(stateAfterResume?.history?.at(-1)?.content, "Done 1.");
 });
 
 test("in-memory worker runtime exposes startup reconcile summary after hydration", async () => {
