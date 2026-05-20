@@ -101,6 +101,11 @@ export interface TransportPreference {
 
 export interface CapabilityInspectionResult {
   availableWorkers: WorkerKind[];
+  toolCapabilities?: Array<{
+    name: string;
+    executorKind: string;
+    promptGroup: string;
+  }>;
   connectorStates: ConnectorCapabilityState[];
   apiStates: ApiCapabilityState[];
   skillStates: SkillCapabilityState[];

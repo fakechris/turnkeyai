@@ -26,6 +26,7 @@ import { DefaultRoleMemoryResolver } from "./context/role-memory-resolver";
 import { DefaultPromptAssembler } from "./prompt/prompt-assembler";
 import { DefaultRolePromptPolicy } from "./prompt-policy";
 import { DefaultRoleProfileRegistry } from "./role-profile";
+import { createNativeToolCapabilityRegistry } from "./tool-capability-registry";
 import { DefaultCapabilityDiscoveryService } from "@turnkeyai/worker-runtime/capability-discovery-service";
 
 test("default role prompt policy assembles context from thread and worker stores", async () => {
@@ -228,6 +229,40 @@ test("default role prompt policy can retrieve thread memory when the query match
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("default role prompt policy injects tool harness from the tool capability registry", async () => {
+  const policy = new DefaultRolePromptPolicy({
+    roleProfileRegistry: new DefaultRoleProfileRegistry(),
+    capabilityDiscoveryService: new DefaultCapabilityDiscoveryService({
+      availableWorkers: ["browser", "explore"],
+    }),
+    toolCapabilityRegistry: createNativeToolCapabilityRegistry({
+      availableWorkerKinds: ["browser", "explore"],
+    }),
+  });
+
+  const activation = buildFinanceActivationInput();
+  activation.runState.roleId = "role-lead";
+  activation.thread.leadRoleId = "role-lead";
+  activation.thread.roles = [
+    { roleId: "role-lead", name: "Lead", seat: "lead", runtime: "local" },
+    { roleId: "role-browser", name: "Browser Specialist", seat: "member", runtime: "local", capabilities: ["browser"] },
+  ];
+
+  const packet = await policy.buildPacket(activation);
+
+  assert.match(packet.systemPrompt, /Tool Usage Discipline/);
+  assert.match(packet.systemPrompt, /Sub-Agent Sessions/);
+  assert.match(packet.systemPrompt, /Use sessions_spawn only when delegation materially helps/);
+  assert.match(packet.systemPrompt, /Browser Worker Rules/);
+  assert.match(packet.systemPrompt, /Browser results must return evidence/);
+  assert.match(packet.taskPrompt, /Capability readiness:/);
+  assert.deepEqual(
+    packet.capabilityInspection?.toolCapabilities?.map((tool) => tool.name),
+    undefined,
+    "capability inspection from worker-runtime remains separate; route enrichment owns tool summaries"
+  );
 });
 
 test("default role prompt policy keeps a deterministic section order when session memory is included", async () => {

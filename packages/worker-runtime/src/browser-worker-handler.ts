@@ -47,6 +47,10 @@ export class BrowserWorkerHandler implements WorkerHandler {
   }
 
   async canHandle(input: WorkerInvocationInput): Promise<boolean> {
+    if (input.packet.preferredWorkerKinds?.includes("browser")) {
+      return true;
+    }
+
     const role = input.activation.thread.roles.find((item) => item.roleId === input.activation.runState.roleId);
     if (!role) {
       return false;

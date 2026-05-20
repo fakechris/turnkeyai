@@ -31,6 +31,7 @@ import { DefaultRoleMemoryResolver, type RoleMemoryResolver } from "./context/ro
 import { DefaultPromptAssembler, type OmittedPromptSegment, type PromptAssembler } from "./prompt/prompt-assembler";
 import { getRoleModelHint, getRoleModelSelection } from "./role-model-selection";
 import type { RoleProfileRegistry } from "./role-profile";
+import type { ToolCapabilityRegistry } from "./tool-capability-registry";
 
 export interface RolePromptPacket extends RolePromptPacketLike {
   seat: RoleSlot["seat"];
@@ -78,6 +79,7 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
   private readonly reservedOutputTokens: number;
   private readonly capabilityDiscoveryService: CapabilityDiscoveryService | undefined;
   private readonly modelSelectionDescriber: ModelSelectionDescriber | undefined;
+  private readonly toolCapabilityRegistry: ToolCapabilityRegistry | undefined;
   private readonly systemPromptCache = new Map<string, string>();
 
   constructor(options: {
@@ -88,6 +90,7 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
     reservedOutputTokens?: number;
     capabilityDiscoveryService?: CapabilityDiscoveryService;
     modelSelectionDescriber?: ModelSelectionDescriber;
+    toolCapabilityRegistry?: ToolCapabilityRegistry;
   }) {
     this.roleProfileRegistry = options.roleProfileRegistry;
     this.contextBudgeter = options.contextBudgeter ?? new DefaultContextBudgeter();
@@ -107,6 +110,7 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
     this.reservedOutputTokens = options.reservedOutputTokens ?? 1_200;
     this.capabilityDiscoveryService = options.capabilityDiscoveryService;
     this.modelSelectionDescriber = options.modelSelectionDescriber;
+    this.toolCapabilityRegistry = options.toolCapabilityRegistry;
   }
 
   async buildPacket(input: RoleActivationInput): Promise<RolePromptPacket> {
@@ -200,7 +204,15 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
       roleId: currentRole.roleId,
       roleName: currentRole.name,
       seat: currentRole.seat,
-      systemPrompt: [this.buildCachedSystemPrompt(currentRole, profile.styleHints, input.thread.roles), "", assembly.systemPrompt].join("\n"),
+      systemPrompt: [
+        this.buildCachedSystemPrompt(currentRole, profile.styleHints, input.thread.roles),
+        "",
+        this.buildToolHarnessSection(currentRole),
+        "",
+        assembly.systemPrompt,
+      ]
+        .filter((section) => section !== "")
+        .join("\n"),
       taskPrompt: [
         assembly.userPrompt,
         continuationSection,
@@ -292,6 +304,14 @@ export class DefaultRolePromptPolicy implements RolePromptPolicy {
       this.systemPromptCache.delete(oldestKey);
     }
     return built;
+  }
+
+  private buildToolHarnessSection(role: RoleSlot): string {
+    return (
+      this.toolCapabilityRegistry?.renderPromptHarness({
+        seat: role.seat,
+      }) ?? ""
+    );
   }
 }
 

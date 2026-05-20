@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import type { CapabilityInspectionResult } from "@turnkeyai/core-types/team";
 
 import { createInspectionRouteDeps } from "./inspection-deps";
 
@@ -118,7 +119,18 @@ function buildFakes(counters: CallCounters) {
     threadSessionMemoryStore: { async get() { return null; } },
     permissionCacheStore,
     replayRecorder: { async list() { return []; }, async get() { return null; } },
-    capabilityDiscoveryService: { inspect: () => ({}) },
+    capabilityDiscoveryService: {
+      inspect: () => ({
+        availableWorkers: ["browser", "explore"],
+        connectorStates: [],
+        apiStates: [],
+        skillStates: [],
+        transportPreferences: [],
+        unavailableCapabilities: [],
+        generatedAt: 1,
+      }),
+    },
+    workerHandlers: [{ kind: "browser" }, { kind: "explore" }],
     relayGateway: null,
   } as never;
 
@@ -215,4 +227,32 @@ test("buildOperatorAttention loads the same snapshot (incl. runtimeSummary, whic
   assert.equal(counters.loadRecoveryRuntime, 1);
   assert.equal(counters.listByThreadProgress, 1);
   assert.equal(counters.loadRuntimeSummary, 1);
+});
+
+test("inspectCapabilities enriches worker readiness with tool capability summaries", async () => {
+  const counters: CallCounters = {
+    listByThreadFlow: 0,
+    listByThreadPermissions: 0,
+    listRecentEvents: 0,
+    loadRecoveryRuntime: 0,
+    listByThreadProgress: 0,
+    loadRuntimeSummary: 0,
+  };
+  const { foundations, runtimeServices } = buildFakes(counters);
+  const deps = createInspectionRouteDeps({
+    foundations,
+    runtimeServices,
+    modelCatalogPath: null,
+  });
+
+  const report = await deps.inspectCapabilities("thread-1", "role-lead", ["browser"]) as CapabilityInspectionResult;
+
+  assert.deepEqual(report.availableWorkers, ["browser", "explore"]);
+  assert.deepEqual(report.toolCapabilities?.map((tool) => tool.name), [
+    "sessions_spawn",
+    "sessions_send",
+    "sessions_list",
+    "sessions_history",
+  ]);
+  assert.equal(report.toolCapabilities?.every((tool) => tool.executorKind === "worker-session"), true);
 });

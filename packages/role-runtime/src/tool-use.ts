@@ -14,6 +14,10 @@ import type {
 } from "@turnkeyai/core-types/team";
 
 import type { RolePromptPacket } from "./prompt-policy";
+import {
+  createNativeToolCapabilityRegistry,
+  type ToolCapabilityRegistry,
+} from "./tool-capability-registry";
 
 export interface RoleToolExecutionInput {
   call: LLMToolCall;
@@ -141,11 +145,19 @@ export async function recordRoleToolProgress(input: {
 
 export function createWorkerSessionToolExecutor(options: {
   workerRuntime: WorkerRuntime;
+  availableWorkerKinds?: WorkerKind[];
+  toolCapabilityRegistry?: ToolCapabilityRegistry;
 }): RoleToolExecutor {
   const { workerRuntime } = options;
+  const toolCapabilityRegistry =
+    options.toolCapabilityRegistry ??
+    createNativeToolCapabilityRegistry({
+      ...(options.availableWorkerKinds ? { availableWorkerKinds: options.availableWorkerKinds } : {}),
+    });
+  const definitions = toolCapabilityRegistry.definitions();
   return {
     definitions() {
-      return SESSION_TOOL_DEFINITIONS;
+      return definitions;
     },
 
     async execute(input) {
@@ -169,76 +181,6 @@ export function createWorkerSessionToolExecutor(options: {
     },
   };
 }
-
-const SESSION_TOOL_DEFINITIONS: LLMToolDefinition[] = [
-  {
-    name: "sessions_spawn",
-    description:
-      "Spawn a specialist sub-agent session for an isolated task. Use browser for authenticated or interactive web work; use explore for research; use finance for market data.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      // codex K3.5: `timeout_seconds` removed from the schema until
-      // workerRuntime.send actually honors a timeout. Advertising it
-      // would let the LLM ask for a behavior the runtime silently
-      // ignores. Re-add when the executor accepts a deadline.
-      properties: {
-        task: { type: "string", description: "The exact task for the sub-agent." },
-        agent_id: {
-          type: "string",
-          enum: ["browser", "explore", "finance", "coder", "harness"],
-          description: "Sub-agent kind.",
-        },
-        label: { type: "string", description: "Short user-visible label." },
-      },
-      required: ["task", "agent_id"],
-    },
-  },
-  {
-    name: "sessions_send",
-    description: "Send a follow-up message to an existing sub-agent session.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        session_key: { type: "string", description: "Worker session key returned by sessions_spawn/list." },
-        message: { type: "string", description: "Follow-up instruction." },
-        label: { type: "string" },
-      },
-      required: ["session_key", "message"],
-    },
-  },
-  {
-    name: "sessions_list",
-    description: "List local sub-agent sessions available for follow-up or inspection.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        kinds: { type: "array", items: { type: "string", enum: ["browser", "explore", "finance", "coder", "harness"] } },
-        agent_id: { type: "string", enum: ["browser", "explore", "finance", "coder", "harness"] },
-        parentSessionKey: { type: "string" },
-        activeMinutes: { type: "number", minimum: 1 },
-        limit: { type: "number", minimum: 1 },
-      },
-    },
-  },
-  {
-    name: "sessions_history",
-    description: "Read a compact history summary for an existing sub-agent session.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        session_key: { type: "string" },
-        offset: { type: "number", minimum: 0 },
-        limit: { type: "number", minimum: 1 },
-        include_tools: { type: "boolean" },
-      },
-      required: ["session_key"],
-    },
-  },
-];
 
 async function executeSessionsSpawn(
   workerRuntime: WorkerRuntime,
@@ -264,17 +206,19 @@ async function executeSessionsSpawn(
     activation: input.activation,
     packet,
   });
+  const missingResultMessage = `${agentId} sub-agent returned no executable result. The requested task did not match the worker's implemented capability.`;
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
+    ...(result ? {} : { isError: true }),
     content: JSON.stringify(
       {
         task_id: input.activation.handoff.taskId,
         session_key: spawned.workerRunKey,
         agent_id: spawned.workerType,
-        status: result?.status ?? "completed",
+        status: result?.status ?? "failed",
         tool_chain: result ? [result.workerType] : [],
-        result: result?.summary ?? "Sub-agent spawned but returned no result.",
+        result: result?.summary ?? missingResultMessage,
         payload: result?.payload ?? null,
       },
       null,
@@ -288,10 +232,10 @@ async function executeSessionsSpawn(
         detail: { session_key: spawned.workerRunKey, agent_id: spawned.workerType },
       },
       {
-        phase: result?.status === "failed" ? "failed" : "completed",
+        phase: !result || result.status === "failed" ? "failed" : "completed",
         toolName: input.call.name,
-        summary: result?.summary ?? `${agentId} sub-agent completed without a result.`,
-        detail: { session_key: spawned.workerRunKey, status: result?.status ?? "completed" },
+        summary: result?.summary ?? missingResultMessage,
+        detail: { session_key: spawned.workerRunKey, status: result?.status ?? "failed" },
       },
     ],
     raw: result,
@@ -332,17 +276,19 @@ async function executeSessionsSend(
     activation: input.activation,
     packet,
   });
+  const missingResultMessage = `${state.workerType} sub-agent returned no executable result for the follow-up.`;
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
+    ...(result ? {} : { isError: true }),
     content: JSON.stringify(
       {
         task_id: input.activation.handoff.taskId,
         session_key: sessionKey,
         agent_id: state.workerType,
-        status: result?.status ?? "completed",
+        status: result?.status ?? "failed",
         tool_chain: result ? [result.workerType] : [],
-        result: result?.summary ?? "Follow-up completed without a result.",
+        result: result?.summary ?? missingResultMessage,
         payload: result?.payload ?? null,
       },
       null,
@@ -350,10 +296,10 @@ async function executeSessionsSend(
     ),
     progress: [
       {
-        phase: result?.status === "failed" ? "failed" : "completed",
+        phase: !result || result.status === "failed" ? "failed" : "completed",
         toolName: input.call.name,
-        summary: result?.summary ?? `Sent follow-up to ${sessionKey}.`,
-        detail: { session_key: sessionKey, status: result?.status ?? "completed" },
+        summary: result?.summary ?? missingResultMessage,
+        detail: { session_key: sessionKey, status: result?.status ?? "failed" },
       },
     ],
     raw: result,
