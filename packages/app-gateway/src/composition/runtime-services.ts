@@ -39,6 +39,7 @@ import { HybridRoleResponseGenerator } from "@turnkeyai/role-runtime/hybrid-resp
 import { LLMRoleResponseGenerator } from "@turnkeyai/role-runtime/llm-response-generator";
 import { PolicyRoleRuntime } from "@turnkeyai/role-runtime/policy-role-runtime";
 import { DefaultRolePromptPolicy } from "@turnkeyai/role-runtime/prompt-policy";
+import { createNativeToolCapabilityRegistry } from "@turnkeyai/role-runtime/tool-capability-registry";
 import { createWorkerSessionToolExecutor } from "@turnkeyai/role-runtime/tool-use";
 import { LocalWorkerRuntime } from "@turnkeyai/worker-runtime/local-worker-runtime";
 
@@ -178,6 +179,9 @@ export async function composeDaemonRuntimeServices(
         clients: [new OpenAICompatibleClient(), new AnthropicCompatibleClient()],
       })
     : null;
+  const toolCapabilityRegistry = createNativeToolCapabilityRegistry({
+    availableWorkerKinds: foundations.workerHandlers.map((handler) => handler.kind),
+  });
 
   const roleRuntime = new PolicyRoleRuntime({
     idGenerator,
@@ -188,6 +192,7 @@ export async function composeDaemonRuntimeServices(
       roleMemoryResolver,
       promptAssembler,
       capabilityDiscoveryService,
+      toolCapabilityRegistry,
       ...(modelRegistry ? { modelSelectionDescriber: modelRegistry } : {}),
     }),
     responseGenerator: llmGateway
@@ -196,7 +201,10 @@ export async function composeDaemonRuntimeServices(
             gateway: llmGateway,
             runtimeProgressRecorder,
             toolLoop: {
-              executor: createWorkerSessionToolExecutor({ workerRuntime }),
+              executor: createWorkerSessionToolExecutor({
+                workerRuntime,
+                toolCapabilityRegistry,
+              }),
               runtimeProgressRecorder,
             },
           }),

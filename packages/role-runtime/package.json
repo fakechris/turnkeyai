@@ -14,6 +14,7 @@
     "./prompt/prompt-assembler": "./src/prompt/prompt-assembler.ts",
     "./prompt-policy": "./src/prompt-policy.ts",
     "./role-profile": "./src/role-profile.ts",
+    "./tool-capability-registry": "./src/tool-capability-registry.ts",
     "./tool-use": "./src/tool-use.ts"
   }
 }

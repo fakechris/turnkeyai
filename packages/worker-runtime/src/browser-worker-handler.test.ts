@@ -9,6 +9,21 @@ import { FileReplayRecorder } from "@turnkeyai/qc-runtime/file-replay-recorder";
 
 import { BrowserWorkerHandler } from "./browser-worker-handler";
 
+test("browser worker handler accepts explicit browser sub-session requests from a lead role", async () => {
+  const handler = new BrowserWorkerHandler({
+    browserBridge: buildUnusedBrowserBridge(),
+  });
+  const input = buildWorkerInvocationInput({
+    packet: { preferredWorkerKinds: ["browser"] },
+  });
+  input.activation.runState.roleId = "role-lead";
+  input.activation.thread.roles = [
+    { roleId: "role-lead", name: "Lead", seat: "lead", runtime: "local" },
+  ];
+
+  assert.equal(await handler.canHandle(input), true);
+});
+
 test("browser worker handler records replay and quality metadata on bridge failure", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "browser-worker-handler-"));
   const replayRecorder = new FileReplayRecorder({
@@ -829,6 +844,48 @@ function buildWorkerInvocationInput(overrides?: {
       ...(overrides?.packet ?? {}),
     },
     ...(overrides?.sessionState ? { sessionState: overrides.sessionState } : {}),
+  };
+}
+
+function buildUnusedBrowserBridge(): BrowserBridge {
+  return {
+    async inspectPublicPage() {
+      throw new Error("not used");
+    },
+    async spawnSession() {
+      throw new Error("not used");
+    },
+    async sendSession() {
+      throw new Error("not used");
+    },
+    async resumeSession() {
+      throw new Error("not used");
+    },
+    async getSessionHistory() {
+      return [];
+    },
+    async runTask() {
+      throw new Error("not used");
+    },
+    async listSessions() {
+      return [];
+    },
+    async listTargets() {
+      return [];
+    },
+    async evictIdleSessions() {
+      return [];
+    },
+    async openTarget() {
+      throw new Error("not used");
+    },
+    async activateTarget() {
+      throw new Error("not used");
+    },
+    async closeTarget() {
+      throw new Error("not used");
+    },
+    async closeSession() {},
   };
 }
 

@@ -36,6 +36,7 @@ import {
   buildReplayConsoleReport,
   buildReplayInspectionReport,
 } from "@turnkeyai/qc-runtime/replay-inspection";
+import { createNativeToolCapabilityRegistry } from "@turnkeyai/role-runtime/tool-capability-registry";
 import type { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import type { RelayControlPlane } from "@turnkeyai/browser-bridge/transport/transport-adapter";
 
@@ -103,6 +104,7 @@ export function createInspectionRouteDeps(
       permissionCacheStore,
       replayRecorder,
       capabilityDiscoveryService,
+      workerHandlers,
       relayGateway,
     },
     runtimeServices: {
@@ -135,12 +137,20 @@ export function createInspectionRouteDeps(
     listRoleRuns: (threadId) => roleRunStore.listByThread(threadId),
     getSessionMemory: (threadId) => threadSessionMemoryStore.get(threadId),
     listModels: () => buildModelsReport(llmGateway, modelCatalogPath),
-    inspectCapabilities: (threadId, roleId, requestedCapabilities) =>
-      capabilityDiscoveryService.inspect({
+    inspectCapabilities: async (threadId, roleId, requestedCapabilities) => {
+      const inspection = await capabilityDiscoveryService.inspect({
         threadId,
         roleId,
         requestedCapabilities,
-      }),
+      });
+      const registry = createNativeToolCapabilityRegistry({
+        availableWorkerKinds: workerHandlers.map((handler) => handler.kind),
+      });
+      return {
+        ...inspection,
+        toolCapabilities: registry.summaries(),
+      };
+    },
     listGovernancePermissions: (threadId) => permissionCacheStore.listByThread(threadId),
     buildGovernanceSummary: async (threadId, limit) => {
       const [permissionRecords, events] = await Promise.all([

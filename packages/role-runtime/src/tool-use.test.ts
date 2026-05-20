@@ -5,6 +5,65 @@ import type { RoleActivationInput, WorkerRuntime } from "@turnkeyai/core-types/t
 
 import { createWorkerSessionToolExecutor } from "./tool-use";
 
+test("sessions tool definitions only advertise registered worker kinds when provided", () => {
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    availableWorkerKinds: ["browser", "explore", "finance"],
+  });
+
+  const spawn = executor.definitions().find((definition) => definition.name === "sessions_spawn");
+  const list = executor.definitions().find((definition) => definition.name === "sessions_list");
+
+  const spawnSchema = spawn?.inputSchema as {
+    properties?: { agent_id?: { enum?: string[] } };
+  };
+  const listSchema = list?.inputSchema as {
+    properties?: { agent_id?: { enum?: string[] }; kinds?: { items?: { enum?: string[] } } };
+  };
+  assert.deepEqual(spawnSchema.properties?.agent_id?.enum, ["browser", "explore", "finance"]);
+  assert.deepEqual(listSchema.properties?.agent_id?.enum, ["browser", "explore", "finance"]);
+  assert.deepEqual(listSchema.properties?.kinds?.items?.enum, ["browser", "explore", "finance"]);
+});
+
+test("sessions_spawn marks a selected worker with no executable result as a failed tool call", async () => {
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "explore", workerRunKey: "worker:explore:task-1" };
+    },
+    async send() {
+      return null;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-no-result",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Research an unsupported target.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Research an unsupported target.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; result: string };
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "failed");
+  assert.match(body.result, /no executable result/i);
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
+});
+
 test("sessions_list filters by thread, kind, agent_id, parentSessionKey, and activeMinutes", async () => {
   const now = Date.now();
   const workerRuntime = {
