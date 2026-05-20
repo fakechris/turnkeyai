@@ -310,7 +310,7 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
     // in practice 8 rounds × 2 events ≪ a single second, so the math
     // works out to sub-second offsets.
     const totalSubEvents = toolUse.rounds.reduce(
-      (sum, round) => sum + round.calls.length + round.results.length,
+      (sum, round) => sum + round.calls.length + round.progress.length + round.results.length,
       0
     );
     let stepIndex = 0;
@@ -322,6 +322,18 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
             tMs: tMsForStep(message.createdAt, stepIndex, totalSubEvents),
             call,
             roundNumber: round.round,
+          })
+        );
+        stepIndex += 1;
+      }
+      for (const progress of round.progress) {
+        events.push(
+          buildToolProgressEvent({
+            ...input,
+            tMs: tMsForStep(message.createdAt, stepIndex, totalSubEvents),
+            progress,
+            roundNumber: round.round,
+            progressOrdinal: stepIndex,
           })
         );
         stepIndex += 1;
@@ -382,6 +394,14 @@ interface ToolUseTrace {
       content?: string;
       contentTruncated?: boolean;
     }>;
+    progress: Array<{
+      toolCallId: string;
+      toolName: string;
+      phase: "started" | "progress" | "completed" | "failed" | "cancelled";
+      summary: string;
+      detail?: Record<string, unknown>;
+      ts: number;
+    }>;
   }>;
 }
 
@@ -410,10 +430,21 @@ function extractToolUseTrace(metadata: unknown): ToolUseTrace | null {
             ...(result.contentTruncated === true ? { contentTruncated: true } : {}),
           }))
         : [];
+      const progress = Array.isArray(round.progress)
+        ? round.progress.filter(isRecord).map((event) => ({
+            toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : "",
+            toolName: typeof event.toolName === "string" ? event.toolName : "",
+            phase: parseToolProgressPhase(event.phase),
+            summary: typeof event.summary === "string" ? event.summary : "",
+            ...(isRecord(event.detail) ? { detail: event.detail } : {}),
+            ts: typeof event.ts === "number" ? event.ts : 0,
+          }))
+        : [];
       return {
         round: typeof round.round === "number" ? round.round : 0,
         calls,
         results,
+        progress: progress.filter((event) => event.toolCallId && event.toolName && event.summary),
       };
     })
     .filter((round): round is NonNullable<typeof round> => round !== null);
@@ -443,15 +474,43 @@ function extractNativeToolUseTrace(
             ...(progress.summary ? { content: progress.summary } : {}),
             ...(progress.detail?.contentTruncated === true ? { contentTruncated: true } : {}),
           }));
+  const progress = (message.toolProgress ?? [])
+    .filter(isUserVisibleToolProgress)
+    .map((event) => ({
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      phase: event.phase,
+      summary: event.summary,
+      ...(event.detail ? { detail: event.detail } : {}),
+      ts: event.ts,
+    }));
   return {
     rounds: [
       {
         round: readNumber(message.metadata, "toolRound") ?? 1,
         calls,
         results,
+        progress,
       },
     ],
   };
+}
+
+function parseToolProgressPhase(value: unknown): ToolUseTrace["rounds"][number]["progress"][number]["phase"] {
+  switch (value) {
+    case "started":
+    case "progress":
+    case "completed":
+    case "failed":
+    case "cancelled":
+      return value;
+    default:
+      return "progress";
+  }
+}
+
+function isUserVisibleToolProgress(event: NonNullable<TeamMessage["toolProgress"]>[number]): boolean {
+  return event.phase === "progress" && typeof event.summary === "string" && event.summary.trim().length > 0;
 }
 
 function isNativeSplitToolEnvelope(message: TeamMessage): boolean {
@@ -560,6 +619,59 @@ interface BuildToolResultEventInput {
   };
   roundNumber: number;
   callName: string;
+}
+
+interface BuildToolProgressEventInput {
+  missionId: string;
+  message: TeamMessage;
+  newEventId: () => string;
+  tMs: number;
+  progress: {
+    toolCallId: string;
+    toolName: string;
+    phase: "started" | "progress" | "completed" | "failed" | "cancelled";
+    summary: string;
+    detail?: Record<string, unknown>;
+    ts: number;
+  };
+  roundNumber: number;
+  progressOrdinal: number;
+}
+
+function buildToolProgressEvent(input: BuildToolProgressEventInput): ActivityEvent {
+  const actor = resolveActor(input.message);
+  const sourceId = `${input.message.id}:tool-progress:${input.progress.toolCallId}:${input.progressOrdinal}`;
+  const runtime: Record<string, string> = {
+    threadId: input.message.threadId,
+    messageId: input.message.id,
+    activitySourceId: sourceId,
+    toolName: input.progress.toolName,
+    toolCallId: input.progress.toolCallId,
+    toolPhase: "progress",
+    progressPhase: input.progress.phase,
+    round: String(input.roundNumber),
+  };
+  if (input.progress.detail) {
+    const detail = capUtf8String(safeStringify(input.progress.detail), CALL_INPUT_CAP_BYTES);
+    runtime.progressDetail = detail.value;
+    if (detail.truncated) {
+      runtime.progressTruncated = "true";
+    }
+  }
+  const event: ActivityEvent = {
+    id: input.newEventId(),
+    missionId: input.missionId,
+    tMs: input.tMs,
+    kind: "tool",
+    actor,
+    text: `Tool ${input.progress.toolName} progress: ${sliceForDisplay(input.progress.summary, ACTIVITY_EVENT_TEXT_CAP)}`,
+    tags: ["thread", "tool-progress", input.progress.toolName, input.progress.phase],
+    runtime,
+  };
+  if (input.progress.phase === "failed" || input.progress.phase === "cancelled") {
+    event.emph = "danger";
+  }
+  return event;
 }
 
 function buildToolResultEvent(input: BuildToolResultEventInput): ActivityEvent {
@@ -693,6 +805,14 @@ function capJsonString(value: string, maxBytes: number): string {
   // defensively and falls through to a raw text view when JSON
   // parsing fails — that's preferable to truncating silently.
   return `${buffer.subarray(0, end).toString("utf8")}${CAP_SUFFIX}`;
+}
+
+function capUtf8String(value: string, maxBytes: number): { value: string; truncated: boolean } {
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.length <= maxBytes) return { value, truncated: false };
+  let end = Math.max(0, maxBytes);
+  while (end > 0 && ((buffer[end] ?? 0) & 0xc0) === 0x80) end -= 1;
+  return { value: buffer.subarray(0, end).toString("utf8"), truncated: true };
 }
 
 function formatBytes(bytes: number): string {

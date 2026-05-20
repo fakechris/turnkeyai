@@ -217,6 +217,8 @@ function LiveTimelineRow({ event }: { event: ActivityEvent }) {
   const kindLabel =
     isToolEvent && toolPhase === "call"
       ? `tool → ${toolName ?? "?"}`
+      : isToolEvent && toolPhase === "progress"
+        ? `tool · ${toolName ?? "?"}`
       : isToolEvent && toolPhase === "result"
         ? `tool ← ${toolName ?? "?"}`
         : event.kind;
@@ -230,6 +232,7 @@ function LiveTimelineRow({ event }: { event: ActivityEvent }) {
   const expandable =
     isToolEvent &&
     ((toolPhase === "call" && event.runtime?.callInput) ||
+      (toolPhase === "progress" && event.runtime?.progressDetail) ||
       (toolPhase === "result" && event.runtime?.resultContent));
 
   return (
@@ -271,12 +274,16 @@ function LiveTimelineRow({ event }: { event: ActivityEvent }) {
 function ToolEventInspector({ event }: { event: ActivityEvent }) {
   const toolPhase = event.runtime?.toolPhase;
   const callInput = event.runtime?.callInput;
+  const progressDetail = event.runtime?.progressDetail;
   const resultContent = event.runtime?.resultContent;
-  const truncated = event.runtime?.resultTruncated === "true";
+  const resultTruncated = event.runtime?.resultTruncated === "true";
+  const progressTruncated = event.runtime?.progressTruncated === "true";
 
   const body =
     toolPhase === "call" && callInput
       ? prettyJson(callInput)
+      : toolPhase === "progress" && progressDetail
+        ? prettyJson(progressDetail)
       : toolPhase === "result" && resultContent
         ? resultContent
         : null;
@@ -284,7 +291,11 @@ function ToolEventInspector({ event }: { event: ActivityEvent }) {
   const label =
     toolPhase === "call"
       ? "Show full arguments"
-      : truncated
+      : toolPhase === "progress"
+        ? progressTruncated
+          ? "Show progress detail (truncated at 16 kB)"
+          : "Show progress detail"
+      : resultTruncated
         ? "Show captured result (truncated at 8 kB)"
         : "Show full result";
 
