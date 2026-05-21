@@ -406,11 +406,13 @@ export async function handleMissionRoutes(input: {
       scope: `missions:${mission.id}:messages`,
       fingerprint: { missionId: mission.id, content },
       execute: async () => {
-        await orchestrator.postUserMessage({
+        startMissionFollowUpInBackground({
+          deps,
+          orchestrator,
+          mission,
           threadId: linkedThreadId,
           content,
         });
-        await orchestrator.threadBridge.tickMission(mission.id);
         return {
           statusCode: 202,
           body: { accepted: true, missionId: mission.id },
@@ -553,6 +555,60 @@ function startMissionInBackground(input: {
         });
       } catch (recordError) {
         console.error("mission background start failure recording failed", {
+          missionId: input.mission.id,
+          error: recordError,
+        });
+      }
+    }
+  })();
+}
+
+function startMissionFollowUpInBackground(input: {
+  deps: MissionRouteDeps;
+  orchestrator: MissionOrchestratorDeps;
+  mission: Mission;
+  threadId: string;
+  content: string;
+}): void {
+  void (async () => {
+    try {
+      await input.orchestrator.postUserMessage({
+        threadId: input.threadId,
+        content: input.content,
+      });
+      await input.orchestrator.threadBridge.tickMission(input.mission.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("mission background follow-up failed", {
+        missionId: input.mission.id,
+        threadId: input.threadId,
+        error,
+      });
+      const now = input.deps.clock.now();
+      try {
+        const latestMission = (await input.deps.missionStore.get(input.mission.id)) ?? input.mission;
+        await input.deps.missionStore.putRaw({
+          ...latestMission,
+          status: "blocked",
+          blockers: Math.max(latestMission.blockers, 1),
+        });
+        await input.deps.activityStore.append({
+          id: `mission-follow-up-failed:${input.mission.id}:${now}`,
+          missionId: input.mission.id,
+          tMs: now,
+          kind: "recovery",
+          actor: "system",
+          text: "mission.follow_up_failed",
+          emph: "danger",
+          tags: ["mission_follow_up_failed"],
+          runtime: {
+            eventType: "mission.follow_up_failed",
+            threadId: input.threadId,
+            errorMessage: message,
+          },
+        });
+      } catch (recordError) {
+        console.error("mission background follow-up failure recording failed", {
           missionId: input.mission.id,
           error: recordError,
         });

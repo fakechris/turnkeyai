@@ -60,13 +60,21 @@ export interface RoleToolExecutor {
 export interface RoleToolLoopOptions {
   executor: RoleToolExecutor;
   maxRounds?: number;
+  maxWallClockMs?: number;
+  maxParallelToolCalls?: number;
   runtimeProgressRecorder?: RuntimeProgressRecorder;
 }
 
-export const DEFAULT_ROLE_TOOL_MAX_ROUNDS = 8;
-const MAX_SESSION_TOOL_TIMEOUT_SECONDS = 900;
+export const DEFAULT_ROLE_TOOL_MAX_ROUNDS = 128;
+const MAX_SESSION_TOOL_TIMEOUT_SECONDS = 1800;
 const TOOL_PERMISSION_WAIT_MS = 15 * 60 * 1000;
+const DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS = 60_000;
 const WORKER_TOOL_TIMEOUT = Symbol("worker_tool_timeout");
+
+export interface WorkerSessionConcurrencyLimits {
+  maxPerParentConcurrent?: number;
+  maxGlobalActive?: number;
+}
 
 export function appendAssistantToolCallMessage(
   messages: LLMMessage[],
@@ -167,6 +175,9 @@ export async function recordRoleToolProgress(input: {
 export function createWorkerSessionToolExecutor(options: {
   workerRuntime: WorkerRuntime;
   availableWorkerKinds?: WorkerKind[];
+  maxSessionToolTimeoutMs?: number;
+  hardTimeoutGraceMs?: number;
+  sessionConcurrency?: WorkerSessionConcurrencyLimits;
   toolCapabilityRegistry?: ToolCapabilityRegistry;
   toolCancellationRegistry?: ToolCancellationRegistry;
   toolPermissionService?: ToolPermissionService;
@@ -178,6 +189,9 @@ export function createWorkerSessionToolExecutor(options: {
     options.toolCapabilityRegistry ??
     createNativeToolCapabilityRegistry({
       ...(options.availableWorkerKinds ? { availableWorkerKinds: options.availableWorkerKinds } : {}),
+      ...(options.maxSessionToolTimeoutMs
+        ? { maxSessionToolTimeoutSeconds: options.maxSessionToolTimeoutMs / 1_000 }
+        : {}),
       permissionsEnabled: Boolean(options.toolPermissionService),
       memoryEnabled: Boolean(options.memoryResolver),
       tasksEnabled: Boolean(options.taskToolService),
@@ -197,10 +211,20 @@ export function createWorkerSessionToolExecutor(options: {
             input,
             executableWorkerKinds,
             options.toolCancellationRegistry,
-            options.toolPermissionService
+            options.toolPermissionService,
+            options.maxSessionToolTimeoutMs,
+            options.hardTimeoutGraceMs,
+            options.sessionConcurrency
           );
         case "sessions_send":
-          return executeSessionsSend(workerRuntime, input, options.toolCancellationRegistry, options.toolPermissionService);
+          return executeSessionsSend(
+            workerRuntime,
+            input,
+            options.toolCancellationRegistry,
+            options.toolPermissionService,
+            options.maxSessionToolTimeoutMs,
+            options.hardTimeoutGraceMs
+          );
         case "sessions_list":
           return executeSessionsList(workerRuntime, input);
         case "sessions_history":
@@ -794,7 +818,10 @@ async function executeSessionsSpawn(
   input: RoleToolExecutionInput,
   executableWorkerKinds: ReadonlySet<WorkerKind>,
   toolCancellationRegistry?: ToolCancellationRegistry,
-  toolPermissionService?: ToolPermissionService
+  toolPermissionService?: ToolPermissionService,
+  maxSessionToolTimeoutMs?: number,
+  hardTimeoutGraceMs?: number,
+  sessionConcurrency?: WorkerSessionConcurrencyLimits
 ): Promise<RoleToolExecutionResult> {
   const task = requiredString(input.call.input.task);
   const agentId = requiredString(input.call.input.agent_id) as WorkerKind | null;
@@ -804,6 +831,10 @@ async function executeSessionsSpawn(
   if (!executableWorkerKinds.has(agentId)) {
     const available = [...executableWorkerKinds].join(", ") || "(none)";
     return errorResult(input.call, `Worker kind ${agentId} is not available. Available worker kinds: ${available}.`);
+  }
+  const concurrencyError = await maybeRejectSessionConcurrency(workerRuntime, input, sessionConcurrency);
+  if (concurrencyError) {
+    return concurrencyError;
   }
   const gate = await maybeGateBrowserSideEffect({
     input,
@@ -822,7 +853,7 @@ async function executeSessionsSpawn(
     continuityMode: "fresh" as const,
   };
   const workerActivation = scopeWorkerActivationToToolCall(input.activation, input.call.id);
-  const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds);
+  const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds, maxSessionToolTimeoutMs);
   const spawned = await workerRuntime.spawn({ activation: workerActivation, packet });
   if (!spawned) {
     return errorResult(input.call, `No worker handler available for ${agentId}`);
@@ -846,14 +877,17 @@ async function executeSessionsSpawn(
         toolCallId: input.call.id,
       },
       timeoutMs,
-      `sessions_spawn timed out after ${formatTimeoutSeconds(timeoutMs)}.`
+      `sessions_spawn timed out after ${formatTimeoutSeconds(timeoutMs)}.`,
+      hardTimeoutGraceMs
     );
     if (sendResult === WORKER_TOOL_TIMEOUT) {
+      const timeoutState = await getWorkerStateSafely(workerRuntime, spawned.workerRunKey);
       return timedOutResult(input.call, {
         sessionKey: spawned.workerRunKey,
         agentId: spawned.workerType,
         taskId: input.activation.handoff.taskId,
         timeoutMs,
+        evidenceSummary: summarizeWorkerEvidence(timeoutState),
       });
     }
     result = sendResult;
@@ -914,7 +948,9 @@ async function executeSessionsSend(
   workerRuntime: WorkerRuntime,
   input: RoleToolExecutionInput,
   toolCancellationRegistry?: ToolCancellationRegistry,
-  toolPermissionService?: ToolPermissionService
+  toolPermissionService?: ToolPermissionService,
+  maxSessionToolTimeoutMs?: number,
+  hardTimeoutGraceMs?: number
 ): Promise<RoleToolExecutionResult> {
   const sessionKey = requiredString(input.call.input.session_key);
   const message = requiredString(input.call.input.message);
@@ -951,7 +987,7 @@ async function executeSessionsSend(
     preferredWorkerKinds: [state.workerType],
     continuityMode: "resume-existing" as const,
   };
-  const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds);
+  const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds, maxSessionToolTimeoutMs);
   const registration = toolCancellationRegistry?.register({
     threadId: input.activation.thread.threadId,
     toolCallId: input.call.id,
@@ -971,14 +1007,17 @@ async function executeSessionsSend(
         toolCallId: input.call.id,
       },
       timeoutMs,
-      `sessions_send timed out after ${formatTimeoutSeconds(timeoutMs)}.`
+      `sessions_send timed out after ${formatTimeoutSeconds(timeoutMs)}.`,
+      hardTimeoutGraceMs
     );
     if (sendResult === WORKER_TOOL_TIMEOUT) {
+      const timeoutState = await getWorkerStateSafely(workerRuntime, sessionKey);
       return timedOutResult(input.call, {
         sessionKey,
         agentId: state.workerType,
         taskId: input.activation.handoff.taskId,
         timeoutMs,
+        evidenceSummary: summarizeWorkerEvidence(timeoutState),
       });
     }
     result = sendResult;
@@ -1292,15 +1331,123 @@ function cancelledResult(call: LLMToolCall, content: string): RoleToolExecutionR
   };
 }
 
+async function maybeRejectSessionConcurrency(
+  workerRuntime: WorkerRuntime,
+  input: RoleToolExecutionInput,
+  limits: WorkerSessionConcurrencyLimits | undefined
+): Promise<RoleToolExecutionResult | null> {
+  if (!workerRuntime.listSessions || !limits) {
+    return null;
+  }
+  const maxPerParent =
+    typeof limits.maxPerParentConcurrent === "number" &&
+    Number.isFinite(limits.maxPerParentConcurrent) &&
+    limits.maxPerParentConcurrent > 0
+      ? Math.floor(limits.maxPerParentConcurrent)
+      : null;
+  const maxGlobal =
+    typeof limits.maxGlobalActive === "number" &&
+    Number.isFinite(limits.maxGlobalActive) &&
+    limits.maxGlobalActive > 0
+      ? Math.floor(limits.maxGlobalActive)
+      : null;
+  if (maxPerParent === null && maxGlobal === null) {
+    return null;
+  }
+  const records = await workerRuntime.listSessions();
+  const activeRecords = records.filter((record) => isActiveWorkerSession(record.state.status));
+  const globalActive = activeRecords.length;
+  if (maxGlobal !== null && globalActive >= maxGlobal) {
+    return sessionConcurrencyLimitResult(input.call, {
+      scope: "global",
+      active: globalActive,
+      limit: maxGlobal,
+    });
+  }
+  if (maxPerParent === null) {
+    return null;
+  }
+  const parentSpanId = `role:${input.activation.runState.runKey}`;
+  const parentActive = activeRecords.filter(
+    (record) =>
+      record.context?.threadId === input.activation.thread.threadId &&
+      record.context?.parentSpanId === parentSpanId
+  ).length;
+  if (parentActive >= maxPerParent) {
+    return sessionConcurrencyLimitResult(input.call, {
+      scope: "parent",
+      active: parentActive,
+      limit: maxPerParent,
+      parentSpanId,
+    });
+  }
+  return null;
+}
+
+function isActiveWorkerSession(status: WorkerSessionState["status"]): boolean {
+  return status === "running" || status === "waiting_input" || status === "waiting_external";
+}
+
+function sessionConcurrencyLimitResult(
+  call: LLMToolCall,
+  input: { scope: "parent" | "global"; active: number; limit: number; parentSpanId?: string }
+): RoleToolExecutionResult {
+  const message =
+    input.scope === "global"
+      ? `sub_agent_concurrency_limit: global active sub-agent limit reached (${input.active}/${input.limit}). Reuse existing sessions or wait for active work to finish.`
+      : `sub_agent_concurrency_limit: parent active sub-agent limit reached (${input.active}/${input.limit}). Keep spawned work independent, reuse sessions_history/sessions_send, or wait for active work to finish.`;
+  return {
+    toolCallId: call.id,
+    toolName: call.name,
+    isError: true,
+    content: JSON.stringify(
+      {
+        status: "sub_agent_concurrency_limit",
+        scope: input.scope,
+        active_sessions: input.active,
+        limit: input.limit,
+        ...(input.parentSpanId ? { parent_span_id: input.parentSpanId } : {}),
+        result: message,
+      },
+      null,
+      2
+    ),
+    progress: [
+      {
+        phase: "failed",
+        toolName: call.name,
+        summary: message,
+        detail: {
+          status: "sub_agent_concurrency_limit",
+          scope: input.scope,
+          active_sessions: input.active,
+          limit: input.limit,
+        },
+      },
+    ],
+  };
+}
+
 function timedOutResult(
   call: LLMToolCall,
-  input: { sessionKey: string; agentId: WorkerKind; taskId: string; timeoutMs: number | null }
+  input: {
+    sessionKey: string;
+    agentId: WorkerKind;
+    taskId: string;
+    timeoutMs: number | null;
+    evidenceSummary?: string | null;
+  }
 ): RoleToolExecutionResult {
   const timeoutSeconds = input.timeoutMs == null ? null : Number((input.timeoutMs / 1_000).toFixed(3));
   const message =
     timeoutSeconds == null
       ? "Sub-agent session timed out."
       : `Sub-agent session timed out after ${formatTimeoutSeconds(input.timeoutMs)}.`;
+  const evidenceSummary = sanitizeEvidenceSummary(input.evidenceSummary);
+  const result =
+    `${message} The session is resumable: use sessions_history to inspect evidence already gathered, ` +
+    "then use sessions_send only if follow-up work is still valuable. Do not treat the timeout itself as evidence." +
+    (evidenceSummary ? ` Current evidence summary: ${evidenceSummary}` : "");
   return {
     toolCallId: call.id,
     toolName: call.name,
@@ -1313,7 +1460,8 @@ function timedOutResult(
         status: "timeout",
         timeout_seconds: timeoutSeconds,
         resumable: true,
-        result: message,
+        ...(evidenceSummary ? { evidence_summary: evidenceSummary } : {}),
+        result,
       },
       null,
       2
@@ -1334,6 +1482,35 @@ function timedOutResult(
   };
 }
 
+function summarizeWorkerEvidence(state: WorkerSessionState | null): string | null {
+  if (!state) {
+    return null;
+  }
+  return (
+    state.continuationDigest?.summary ??
+    state.lastResult?.summary ??
+    state.lastError?.message ??
+    state.history?.at(-1)?.content ??
+    null
+  );
+}
+
+async function getWorkerStateSafely(workerRuntime: WorkerRuntime, workerRunKey: string): Promise<WorkerSessionState | null> {
+  try {
+    return await workerRuntime.getState(workerRunKey);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeEvidenceSummary(value: string | null | undefined): string | null {
+  if (!value || !value.trim()) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 1600 ? `${trimmed.slice(0, 1597)}...` : trimmed;
+}
+
 async function sendWorkerWithOptionalTimeout(
   workerRuntime: WorkerRuntime,
   input: {
@@ -1343,32 +1520,46 @@ async function sendWorkerWithOptionalTimeout(
     toolCallId?: string;
   },
   timeoutMs: number | null,
-  timeoutReason: string
+  timeoutReason: string,
+  hardTimeoutGraceMs = DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS
 ): Promise<WorkerExecutionResult | null | typeof WORKER_TOOL_TIMEOUT> {
   if (timeoutMs === null) {
     return workerRuntime.send(input);
   }
-  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  let timeoutFired = false;
+  const graceMs =
+    typeof hardTimeoutGraceMs === "number" && Number.isFinite(hardTimeoutGraceMs) && hardTimeoutGraceMs >= 0
+      ? Math.floor(hardTimeoutGraceMs)
+      : DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS;
+  let softTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let hardTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let hardTimeoutFired = false;
+  const sendPromise = workerRuntime.send(input);
   const timeoutPromise = new Promise<typeof WORKER_TOOL_TIMEOUT>((resolve) => {
-    timeoutHandle = setTimeout(() => {
-      timeoutFired = true;
-      void workerRuntime
-        .interrupt({ workerRunKey: input.workerRunKey, reason: timeoutReason })
-        .catch((error) => {
-          console.error("worker timeout interrupt failed", {
-            workerRunKey: input.workerRunKey,
-            error,
-          });
-        })
-        .finally(() => resolve(WORKER_TOOL_TIMEOUT));
+    softTimeoutHandle = setTimeout(() => {
+      hardTimeoutHandle = setTimeout(() => {
+        hardTimeoutFired = true;
+        void workerRuntime
+          .interrupt({ workerRunKey: input.workerRunKey, reason: timeoutReason })
+          .catch((error) => {
+            console.error("worker timeout interrupt failed", {
+              workerRunKey: input.workerRunKey,
+              error,
+            });
+          })
+          .finally(() => resolve(WORKER_TOOL_TIMEOUT));
+      }, graceMs);
     }, timeoutMs);
   });
   try {
-    return await Promise.race([workerRuntime.send(input), timeoutPromise]);
+    return await Promise.race([sendPromise, timeoutPromise]);
   } finally {
-    if (!timeoutFired && timeoutHandle) {
-      clearTimeout(timeoutHandle);
+    if (!hardTimeoutFired) {
+      if (softTimeoutHandle) {
+        clearTimeout(softTimeoutHandle);
+      }
+      if (hardTimeoutHandle) {
+        clearTimeout(hardTimeoutHandle);
+      }
     }
   }
 }
@@ -1439,11 +1630,15 @@ function positiveInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
-function parseToolTimeoutMs(value: unknown): number | null {
+function parseToolTimeoutMs(value: unknown, maxTimeoutMs?: number): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return null;
   }
-  const boundedSeconds = Math.min(value, MAX_SESSION_TOOL_TIMEOUT_SECONDS);
+  const configuredMaxSeconds =
+    typeof maxTimeoutMs === "number" && Number.isFinite(maxTimeoutMs) && maxTimeoutMs > 0
+      ? maxTimeoutMs / 1_000
+      : MAX_SESSION_TOOL_TIMEOUT_SECONDS;
+  const boundedSeconds = Math.min(value, configuredMaxSeconds, MAX_SESSION_TOOL_TIMEOUT_SECONDS);
   return Math.max(1, Math.round(boundedSeconds * 1_000));
 }
 

@@ -381,6 +381,7 @@ const browserContextSourceProvider = createBrowserContextSourceProvider({
 // tool replies onto the mission timeline via the thread bridge.
 const missionThreadBridge = createMissionThreadBridge({
   missionStore: missionDeps.missionStore,
+  roleRunStore,
   teamMessageStore,
   activityStore: missionDeps.activityStore,
   newEventId: () => idGenerator.messageId(),

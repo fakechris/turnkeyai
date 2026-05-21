@@ -35,6 +35,8 @@ import type {
 } from "@turnkeyai/core-types/mission";
 import type {
   Clock,
+  RoleRunState,
+  RoleRunStore,
   TeamMessage,
   TeamMessageStore,
 } from "@turnkeyai/core-types/team";
@@ -44,7 +46,8 @@ export interface MissionThreadBridgeOptions {
   // missions by direct id in tickMission and iterate via list() in
   // tickAll). Left out of the Pick to avoid pulling it implicitly
   // into mocks for no benefit.
-  missionStore: Pick<MissionStore, "get" | "list">;
+  missionStore: MissionThreadBridgeMissionStore;
+  roleRunStore?: Pick<RoleRunStore, "listByThread">;
   teamMessageStore: Pick<TeamMessageStore, "list">;
   activityStore: Pick<ActivityEventStore, "append" | "listByMission">;
   newEventId: () => string;
@@ -54,6 +57,10 @@ export interface MissionThreadBridgeOptions {
   perThreadLimit?: number;
   logger?: { warn(message: string, context?: Record<string, unknown>): void };
 }
+
+type MissionThreadBridgeMissionStore = Pick<MissionStore, "get" | "list"> & {
+  putRaw(mission: Mission): Promise<void>;
+};
 
 export interface MissionThreadBridge {
   /**
@@ -155,23 +162,113 @@ export function createMissionThreadBridge(
         if (sourceId) mirroredSourceIds.add(sourceId);
       }
     }
-    if (toAppend.length === 0) return 0;
-    const results = await Promise.allSettled(
-      toAppend.map((event) => options.activityStore.append(event))
-    );
     let appended = 0;
-    for (const [index, result] of results.entries()) {
-      if (result.status === "fulfilled") {
-        appended += 1;
-      } else {
-        logger.warn("activity append failed", {
-          missionId: mission.id,
-          eventId: toAppend[index]?.id,
-          error: errorMessage(result.reason),
-        });
+    if (toAppend.length > 0) {
+      const results = await Promise.allSettled(
+        toAppend.map((event) => options.activityStore.append(event))
+      );
+      for (const [index, result] of results.entries()) {
+        if (result.status === "fulfilled") {
+          appended += 1;
+        } else {
+          logger.warn("activity append failed", {
+            missionId: mission.id,
+            eventId: toAppend[index]?.id,
+            error: errorMessage(result.reason),
+          });
+        }
       }
     }
+    await reconcileMissionLifecycle(mission, threadId, messages);
     return appended;
+  }
+
+  async function reconcileMissionLifecycle(
+    mission: Mission,
+    threadId: string,
+    messages: TeamMessage[]
+  ): Promise<void> {
+    if (!isCompletableMission(mission)) return;
+    if (hasFinalLeadAssistantMessage(mission, messages)) {
+      await updateMissionLifecycle(mission, {
+        status: "done",
+        progress: 1,
+      });
+      return;
+    }
+    const stalled = findStalledLeadToolTurn(mission, messages);
+    if (!stalled) return;
+    const activeRoleRun = await hasActiveRoleRun(threadId);
+    if (activeRoleRun) return;
+    await updateMissionLifecycle(mission, {
+      status: "blocked",
+      blockers: Math.max(mission.blockers, 1),
+    });
+    await appendMissionStalledEvent(mission.id, threadId, stalled);
+  }
+
+  async function updateMissionLifecycle(
+    mission: Mission,
+    patch: Partial<Pick<Mission, "status" | "progress" | "blockers">>
+  ): Promise<void> {
+    try {
+      const latest = (await options.missionStore.get(mission.id)) ?? mission;
+      if (!isCompletableMission(latest)) return;
+      await options.missionStore.putRaw({
+        ...latest,
+        ...patch,
+      });
+    } catch (error) {
+      logger.warn("mission lifecycle update failed", {
+        missionId: mission.id,
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  async function hasActiveRoleRun(threadId: string): Promise<boolean> {
+    if (!options.roleRunStore) return true;
+    try {
+      const runs = await options.roleRunStore.listByThread(threadId);
+      return runs.some(isActiveRoleRun);
+    } catch (error) {
+      logger.warn("role run list failed for mission lifecycle reconciliation", {
+        threadId,
+        error: errorMessage(error),
+      });
+      return true;
+    }
+  }
+
+  async function appendMissionStalledEvent(
+    missionId: string,
+    threadId: string,
+    stalled: StalledLeadToolTurn
+  ): Promise<void> {
+    try {
+      await options.activityStore.append({
+        id: `mission-stalled:${missionId}:${stalled.message.id}:${options.clock.now()}`,
+        missionId,
+        tMs: options.clock.now(),
+        kind: "recovery",
+        actor: "system",
+        text: "mission.stalled_no_final_answer",
+        emph: "danger",
+        tags: ["mission_stalled", stalled.status],
+        runtime: {
+          eventType: "mission.stalled_no_final_answer",
+          threadId,
+          messageId: stalled.message.id,
+          toolStatus: stalled.status,
+        },
+      });
+    } catch (error) {
+      logger.warn("mission stalled event append failed", {
+        missionId,
+        messageId: stalled.message.id,
+        error: errorMessage(error),
+      });
+    }
   }
 
   async function tickMission(missionId: string): Promise<number> {
@@ -235,6 +332,74 @@ export function createMissionThreadBridge(
   }
 
   return { tickAll, tickMission, start };
+}
+
+function isCompletableMission(mission: Mission): boolean {
+  return (
+    (mission.status === "working" || mission.status === "planning") &&
+    mission.pendingApprovals === 0 &&
+    mission.blockers === 0
+  );
+}
+
+function hasFinalLeadAssistantMessage(
+  mission: Mission,
+  messages: TeamMessage[]
+): boolean {
+  return messages.some((message) => {
+    if (message.role !== "assistant") return false;
+    const content = message.content.trim();
+    if (content.length === 0) return false;
+    if (!isLeadAssistantMessage(mission, message)) return false;
+    if (message.toolStatus === "pending") return false;
+    // The prompt contract uses @{role-id} as an explicit handoff. A
+    // lead turn that delegates is not a final answer and must not close
+    // the mission card while downstream work is still expected.
+    if (/@\{[^}]+\}/.test(content)) return false;
+    return true;
+  });
+}
+
+function isLeadAssistantMessage(mission: Mission, message: TeamMessage): boolean {
+  if (message.source?.route === "lead-role") return true;
+  const primaryAgent = mission.agents[0];
+  if (primaryAgent && message.roleId === primaryAgent) return true;
+  if (message.roleId === "role-lead") return true;
+  return message.name.toLowerCase() === "lead";
+}
+
+interface StalledLeadToolTurn {
+  message: TeamMessage;
+  status: "pending" | "failed" | "cancelled";
+}
+
+function findStalledLeadToolTurn(
+  mission: Mission,
+  messages: TeamMessage[]
+): StalledLeadToolTurn | null {
+  const leadMessages = messages
+    .filter((message) => message.role === "assistant" && isLeadAssistantMessage(mission, message))
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const latest = leadMessages.at(-1);
+  if (!latest) return null;
+  if (
+    latest.toolStatus !== "pending" &&
+    latest.toolStatus !== "failed" &&
+    latest.toolStatus !== "cancelled"
+  ) {
+    return null;
+  }
+  if (!latest.toolCalls || latest.toolCalls.length === 0) return null;
+  return { message: latest, status: latest.toolStatus };
+}
+
+function isActiveRoleRun(run: RoleRunState): boolean {
+  return (
+    run.status === "queued" ||
+    run.status === "running" ||
+    run.status === "waiting_worker" ||
+    run.status === "resuming"
+  );
 }
 
 interface ExpandMessageInput {

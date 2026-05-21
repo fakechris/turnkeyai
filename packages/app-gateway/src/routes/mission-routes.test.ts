@@ -438,6 +438,14 @@ describe("mission-routes", () => {
       throw new Error(`mission ${missionId} did not reach status ${status}; latest=${latest?.status ?? "missing"}`);
     }
 
+    async function waitUntil(label: string, predicate: () => boolean | Promise<boolean>): Promise<void> {
+      for (let i = 0; i < 25; i += 1) {
+        if (await predicate()) return;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error(`timed out waiting for ${label}`);
+    }
+
     it("creates a mission quickly and starts the initial message in the background", async () => {
       const t = tmpDir();
       try {
@@ -497,7 +505,7 @@ describe("mission-routes", () => {
         assert.ok(posts[0]!.content.includes("5 款笔记"));
         assert.deepEqual(ticks, []);
         releasePost();
-        await flushMicrotasks();
+        await waitUntil("initial mission tick", () => ticks.length === 1);
         assert.deepEqual(ticks, [mission.id]);
       } finally {
         t.cleanup();
@@ -646,11 +654,91 @@ describe("mission-routes", () => {
         });
         assert.equal(getStatus(), 202);
         assert.deepEqual(getJson(), { accepted: true, missionId: created.id });
+        await waitUntil("follow-up bridge tick", () => ticks.length === 2);
         // Second post: the follow-up content lands on the linked thread.
         assert.equal(posts.length, 2);
         assert.equal(posts[1]!.threadId, created.threadId);
         assert.equal(posts[1]!.content, "继续看 macOS 平台支持");
         // Bridge ticked twice — once after create, once after follow-up.
+        assert.deepEqual(ticks, [created.id, created.id]);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("POST /missions/:id/messages accepts follow-up before the agent turn finishes", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        let releasePost: (() => void) | undefined;
+        const posts: Array<{ threadId: string; content: string }> = [];
+        const ticks: string[] = [];
+        const orchestrator = {
+          async spawnThread() {
+            return {
+              threadId: "thread-slow-follow-up",
+              leadRoleId: "role-lead",
+              roleIds: ["role-lead"],
+            };
+          },
+          async postUserMessage(input: { threadId: string; content: string }) {
+            if (input.content === "slow follow-up") {
+              await new Promise<void>((resolve) => {
+                releasePost = resolve;
+              });
+            }
+            posts.push(input);
+          },
+          threadBridge: {
+            async tickAll() {
+              return [];
+            },
+            async tickMission(missionId: string) {
+              ticks.push(missionId);
+              return 0;
+            },
+            start() {
+              return () => undefined;
+            },
+          },
+        };
+
+        const createdResp = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "slow mission" },
+          }),
+          res: createdResp.res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        const created = createdResp.getJson() as { id: string };
+        await flushMicrotasks();
+
+        const followUpResp = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: `/missions/${created.id}/messages`,
+            body: { content: "slow follow-up" },
+          }),
+          res: followUpResp.res,
+          url: new URL(`http://127.0.0.1/missions/${created.id}/messages`),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(followUpResp.getStatus(), 202);
+        assert.deepEqual(followUpResp.getJson(), { accepted: true, missionId: created.id });
+        assert.equal(posts.length, 1, "slow follow-up must still be running after 202 accepted");
+        assert.deepEqual(ticks, [created.id]);
+
+        const release = releasePost;
+        assert.ok(release, "expected the slow follow-up to be waiting");
+        release();
+        await waitUntil("slow follow-up bridge tick", () => ticks.length === 2);
+        assert.equal(posts.length, 2);
+        assert.equal(posts[1]!.content, "slow follow-up");
         assert.deepEqual(ticks, [created.id, created.id]);
       } finally {
         t.cleanup();
@@ -775,6 +863,10 @@ describe("mission-routes", () => {
         });
 
         assert.equal(followUp.getStatus(), 202);
+        await waitUntil("tool replay events", async () => {
+          const timeline = await deps.activityStore.listByMission(mission.id, { limit: 50 });
+          return timeline.some((event) => event.runtime?.toolCallId === "call-browser");
+        });
         const timeline = await runJson<Array<{ kind: string; text: string; runtime?: Record<string, string> }>>(
           deps,
           "GET",
@@ -860,6 +952,7 @@ describe("mission-routes", () => {
           deps: { ...deps, orchestrator, idempotencyStore },
         });
         assert.equal(first.getStatus(), 202);
+        await waitUntil("first follow-up post", () => posts.length === postsBefore + 1);
         assert.equal(posts.length, postsBefore + 1);
         // Retry — same key + same body → no extra post, replay.
         const replay = createResponse();

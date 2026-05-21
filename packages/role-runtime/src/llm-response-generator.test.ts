@@ -853,6 +853,151 @@ test("llm role response generator synthesizes instead of falling back when tool 
   );
 });
 
+test("llm role response generator synthesizes from evidence when tool wall-clock budget is reached", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let executedTools = 0;
+  let now = 0;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length <= 2) {
+      return toolCallResult(`toolu-${gatewayInputs.length}`, "sessions_spawn", {
+        agent_id: "explore",
+        task: `Fetch source ${gatewayInputs.length}`,
+      });
+    }
+    return {
+      text: "Final answer after wall-clock budget.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedTools += 1;
+      now = 200;
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({ status: "completed", result: input.call.input.task }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128, maxWallClockMs: 100 },
+    clock: { now: () => now },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Final answer after wall-clock budget.");
+  assert.equal(executedTools, 1);
+  assert.equal(gatewayInputs.length, 3);
+  assert.equal(gatewayInputs[2]?.toolChoice, "none");
+  assert.equal(gatewayInputs[2]?.tools, undefined);
+  assert.ok(
+    gatewayInputs[2]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes("Tool-use wall-clock budget reached")
+    )
+  );
+});
+
+test("llm role response generator caps parallel tool execution fan-out", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const releaseById = new Map<string, () => void>();
+  let activeTools = 0;
+  let maxActiveTools = 0;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => {
+    gatewayInputs.push({ messages: [], modelId: "unused" } as unknown as GenerateTextInput);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "I will fan out.",
+        toolCalls: ["a", "b", "c"].map((id) => ({
+          id: `toolu-${id}`,
+          name: "sessions_spawn",
+          input: { agent_id: "explore", task: `Fetch ${id}` },
+        })),
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "Done with capped fan-out.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      activeTools += 1;
+      maxActiveTools = Math.max(maxActiveTools, activeTools);
+      await new Promise<void>((resolve) => {
+        releaseById.set(input.call.id, resolve);
+        if (releaseById.size === 2) {
+          for (const release of releaseById.values()) release();
+          releaseById.clear();
+        }
+      });
+      activeTools -= 1;
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({ status: "completed", result: input.call.input.task }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 4, maxParallelToolCalls: 2 },
+  });
+
+  const resultPromise = generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+  await waitUntil(() => releaseById.size === 1 && activeTools === 1);
+  for (const release of releaseById.values()) release();
+  releaseById.clear();
+  const result = await resultPromise;
+
+  assert.equal(result.content, "Done with capped fan-out.");
+  assert.equal(maxActiveTools, 2);
+});
+
 function buildActivation(
   roleOverrides?: Partial<RoleActivationInput["thread"]["roles"][number]>,
   options?: { omitLegacyModel?: boolean }
@@ -956,6 +1101,14 @@ function readToolContent(content: GenerateTextInput["messages"][number]["content
     })
     .filter(Boolean)
     .join("\n");
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 25; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("condition was not met");
 }
 
 function makeOverflowError(): RequestEnvelopeOverflowError {

@@ -25,9 +25,29 @@ test("sessions tool definitions only advertise registered worker kinds when prov
   };
   assert.deepEqual(spawnSchema.properties?.agent_id?.enum, ["browser", "explore", "finance"]);
   assert.equal(spawnSchema.properties?.timeout_seconds?.minimum, 0.001);
-  assert.equal(spawnSchema.properties?.timeout_seconds?.maximum, 900);
+  assert.equal(spawnSchema.properties?.timeout_seconds?.maximum, 1800);
   assert.deepEqual(listSchema.properties?.agent_id?.enum, ["browser", "explore", "finance"]);
   assert.deepEqual(listSchema.properties?.kinds?.items?.enum, ["browser", "explore", "finance"]);
+});
+
+test("sessions tool definitions expose configured production timeout cap", () => {
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime: {} as WorkerRuntime,
+    availableWorkerKinds: ["browser", "explore"],
+    maxSessionToolTimeoutMs: 45_000,
+  });
+
+  const spawn = executor.definitions().find((definition) => definition.name === "sessions_spawn");
+  const send = executor.definitions().find((definition) => definition.name === "sessions_send");
+  const spawnSchema = spawn?.inputSchema as {
+    properties?: { timeout_seconds?: { maximum?: number } };
+  };
+  const sendSchema = send?.inputSchema as {
+    properties?: { timeout_seconds?: { maximum?: number } };
+  };
+
+  assert.equal(spawnSchema.properties?.timeout_seconds?.maximum, 45);
+  assert.equal(sendSchema.properties?.timeout_seconds?.maximum, 45);
 });
 
 test("sessions_spawn marks a selected worker with no executable result as a failed tool call", async () => {
@@ -107,6 +127,142 @@ test("sessions_spawn rejects worker kinds that were not advertised as executable
   assert.equal(result.isError, true);
   assert.match(result.content, /Worker kind browser is not available/);
   assert.match(result.content, /explore/);
+});
+
+test("sessions_spawn enforces per-parent active sub-agent concurrency before spawning", async () => {
+  let spawnCalled = false;
+  const activation = buildActivation();
+  const workerRuntime = {
+    async listSessions() {
+      return Array.from({ length: 5 }, (_, index) => ({
+        workerRunKey: `worker:browser:active-${index}`,
+        executionToken: 1,
+        context: {
+          threadId: "thread-1",
+          flowId: "flow-1",
+          taskId: `task-active-${index}`,
+          roleId: "role-lead",
+          parentSpanId: `role:${activation.runState.runKey}`,
+        },
+        state: {
+          workerRunKey: `worker:browser:active-${index}`,
+          workerType: "browser",
+          status: "running",
+          createdAt: index,
+          updatedAt: index,
+        },
+      }));
+    },
+    async spawn() {
+      spawnCalled = true;
+      return { workerType: "browser", workerRunKey: "worker:browser:extra" };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    sessionConcurrency: { maxPerParentConcurrent: 5, maxGlobalActive: 12 },
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-parent-limit",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open another browser page.",
+      },
+    },
+    activation,
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Open another browser page.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as {
+    status: string;
+    scope: string;
+    active_sessions: number;
+    limit: number;
+    result: string;
+  };
+  assert.equal(spawnCalled, false);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "sub_agent_concurrency_limit");
+  assert.equal(body.scope, "parent");
+  assert.equal(body.active_sessions, 5);
+  assert.equal(body.limit, 5);
+  assert.match(body.result, /sub_agent_concurrency_limit/);
+});
+
+test("sessions_spawn enforces global active sub-agent concurrency before spawning", async () => {
+  let spawnCalled = false;
+  const workerRuntime = {
+    async listSessions() {
+      return Array.from({ length: 12 }, (_, index) => ({
+        workerRunKey: `worker:explore:active-${index}`,
+        executionToken: 1,
+        context: {
+          threadId: `thread-${index}`,
+          flowId: `flow-${index}`,
+          taskId: `task-active-${index}`,
+          roleId: "role-lead",
+          parentSpanId: `role:other-${index}`,
+        },
+        state: {
+          workerRunKey: `worker:explore:active-${index}`,
+          workerType: "explore",
+          status: index % 2 === 0 ? "running" : "waiting_external",
+          createdAt: index,
+          updatedAt: index,
+        },
+      }));
+    },
+    async spawn() {
+      spawnCalled = true;
+      return { workerType: "explore", workerRunKey: "worker:explore:extra" };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    sessionConcurrency: { maxPerParentConcurrent: 5, maxGlobalActive: 12 },
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-global-limit",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Research another source.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Research another source.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; scope: string; active_sessions: number; limit: number };
+  assert.equal(spawnCalled, false);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "sub_agent_concurrency_limit");
+  assert.equal(body.scope, "global");
+  assert.equal(body.active_sessions, 12);
+  assert.equal(body.limit, 12);
 });
 
 test("sessions_spawn blocks browser side effects before worker execution until approved", async () => {
@@ -638,10 +794,33 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
         status: "resumable",
         createdAt: 1,
         updatedAt: 2,
+        continuationDigest: {
+          reason: "timeout_summary",
+          summary: "Collected the pricing page title and first two form labels before timeout.",
+          createdAt: 2,
+        },
+      };
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:task-1",
+        workerType: "browser",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+        continuationDigest: {
+          reason: "timeout_summary",
+          summary: "Collected the pricing page title and first two form labels before timeout.",
+          createdAt: 2,
+        },
       };
     },
   } as unknown as WorkerRuntime;
-  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    hardTimeoutGraceMs: 1,
+  });
 
   const executePromise = executor.execute({
     call: {
@@ -672,6 +851,7 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
     status: string;
     resumable: boolean;
     timeout_seconds: number;
+    evidence_summary: string;
   };
   assert.match(interruptedReason ?? "", /sessions_spawn timed out/);
   assert.equal(result.isError, true);
@@ -679,8 +859,64 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
   assert.equal(body.status, "timeout");
   assert.equal(body.resumable, true);
   assert.equal(body.timeout_seconds, 0.001);
+  assert.match(body.evidence_summary, /pricing page title/);
   assert.equal(result.progress?.at(-1)?.phase, "failed");
   assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
+});
+
+test("sessions_spawn waits through the soft timeout grace for the active worker result", async () => {
+  let interruptCalled = false;
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "explore", workerRunKey: "worker:explore:slow-success" };
+    },
+    async send() {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Finished during soft-timeout grace.",
+        payload: { sources: 2 },
+      };
+    },
+    async interrupt() {
+      interruptCalled = true;
+      return null;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    hardTimeoutGraceMs: 50,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-soft-timeout",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Research a slow source.",
+        timeout_seconds: 0.001,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Research a slow source.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; result: string };
+  assert.equal(interruptCalled, false);
+  assert.equal(result.isError, undefined);
+  assert.equal(body.status, "completed");
+  assert.equal(body.result, "Finished during soft-timeout grace.");
 });
 
 test("sessions_send interrupts a follow-up worker call on timeout", async () => {
@@ -726,7 +962,11 @@ test("sessions_send interrupts a follow-up worker call on timeout", async () => 
       return null;
     },
   } as unknown as WorkerRuntime;
-  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    hardTimeoutGraceMs: 1,
+  });
 
   const result = await executor.execute({
     call: {
