@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 
+import type { Mission } from "@turnkeyai/core-types/mission";
 import type { TeamMessage } from "@turnkeyai/core-types/team";
 
 import { composeMissionDeps } from "../composition/mission-deps";
@@ -419,11 +420,59 @@ describe("mission-routes", () => {
       return { orchestrator, posts, ticks };
     }
 
-    it("creates a mission, spawns a thread, posts the initial message, and ticks the bridge", async () => {
+    async function flushMicrotasks(): Promise<void> {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    async function waitForMissionStatus(
+      deps: ReturnType<typeof composeMissionDeps>,
+      missionId: string,
+      status: Mission["status"]
+    ): Promise<Mission> {
+      for (let i = 0; i < 25; i += 1) {
+        const mission = await deps.missionStore.get(missionId);
+        if (mission?.status === status) return mission;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const latest = await deps.missionStore.get(missionId);
+      throw new Error(`mission ${missionId} did not reach status ${status}; latest=${latest?.status ?? "missing"}`);
+    }
+
+    it("creates a mission quickly and starts the initial message in the background", async () => {
       const t = tmpDir();
       try {
         const deps = composeMissionDeps({ dataDir: t.dir, clock });
-        const { orchestrator, posts, ticks } = buildOrchestrator();
+        const posts: Array<{ threadId: string; content: string }> = [];
+        const ticks: string[] = [];
+        let releasePost!: () => void;
+        const postGate = new Promise<void>((resolve) => {
+          releasePost = resolve;
+        });
+        const orchestrator = {
+          async spawnThread() {
+            return {
+              threadId: "thread-1",
+              leadRoleId: "role-lead",
+              roleIds: ["role-lead", "role-analyst"],
+            };
+          },
+          async postUserMessage(input: { threadId: string; content: string }) {
+            posts.push(input);
+            await postGate;
+          },
+          threadBridge: {
+            async tickAll() {
+              return [];
+            },
+            async tickMission(missionId: string) {
+              ticks.push(missionId);
+              return 0;
+            },
+            start() {
+              return () => undefined;
+            },
+          },
+        };
         const { res, getStatus, getJson } = createResponse();
         await handleMissionRoutes({
           req: createRequest({
@@ -442,13 +491,78 @@ describe("mission-routes", () => {
         // Status promoted from "draft" → "working" because the
         // coordination thread is live the moment the route returns.
         assert.equal(mission.status, "working");
-        // Initial message: title + desc.
+        // The route returned before the initial post finished.
         assert.equal(posts.length, 1);
         assert.ok(posts[0]!.content.includes("研究竞品"));
         assert.ok(posts[0]!.content.includes("5 款笔记"));
-        // Bridge ticked synchronously so the user's prompt is on the
-        // timeline by the time the response returns.
+        assert.deepEqual(ticks, []);
+        releasePost();
+        await flushMicrotasks();
         assert.deepEqual(ticks, [mission.id]);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("records background startup failure without overwriting newer mission state", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        let releasePost!: () => void;
+        const postGate = new Promise<void>((resolve) => {
+          releasePost = resolve;
+        });
+        const orchestrator = {
+          async spawnThread() {
+            return {
+              threadId: "thread-1",
+              leadRoleId: "role-lead",
+              roleIds: ["role-lead", "role-analyst"],
+            };
+          },
+          async postUserMessage() {
+            await postGate;
+            throw new Error("LLM unavailable");
+          },
+          threadBridge: {
+            async tickAll() {
+              return [];
+            },
+            async tickMission() {
+              return 0;
+            },
+            start() {
+              return () => undefined;
+            },
+          },
+        };
+        const { res, getJson } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "startup failure" },
+          }),
+          res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        const created = getJson() as Mission;
+        await deps.missionStore.putRaw({
+          ...created,
+          title: "operator renamed while startup was pending",
+          blockers: 4,
+        });
+
+        releasePost();
+
+        const updated = await waitForMissionStatus(deps, created.id, "blocked");
+        assert.equal(updated.title, "operator renamed while startup was pending");
+        assert.equal(updated.blockers, 4);
+        const timeline = await deps.activityStore.listByMission(created.id, { limit: 10 });
+        const failureEvent = timeline.find((event) => event.runtime?.eventType === "mission.start_failed");
+        assert.equal(failureEvent?.text, "mission.start_failed");
+        assert.equal(failureEvent?.runtime?.errorMessage, "LLM unavailable");
       } finally {
         t.cleanup();
       }
@@ -517,6 +631,7 @@ describe("mission-routes", () => {
           deps: { ...deps, orchestrator },
         });
         const created = createResp.getJson() as { id: string; threadId: string };
+        await flushMicrotasks();
         // Follow-up.
         const { res, getStatus, getJson } = createResponse();
         await handleMissionRoutes({

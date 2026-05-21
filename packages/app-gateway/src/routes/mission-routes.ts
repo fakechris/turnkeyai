@@ -335,21 +335,15 @@ export async function handleMissionRoutes(input: {
       };
       await deps.missionStore.putRaw(linked);
 
-      // Post the initial "goal" message as a user turn so the
-      // coordination engine kicks off (lead role wakes up, plans). The
-      // user sees this immediately on the timeline because we tick the
-      // bridge synchronously below.
-      const initialContent = desc.length > 0 ? `${title}\n\n${desc}` : title;
-      await deps.orchestrator.postUserMessage({
-        threadId: thread.threadId,
-        content: initialContent,
-      });
-      // Mirror right away so the user's prompt shows up in the timeline
-      // on the very next GET — the interval tick is also running, but
-      // explicit mirror cuts demo latency from ~2s to ~0.
-      await deps.orchestrator.threadBridge.tickMission(linked.id);
       createdOk = true;
       sendJson(res, 201, linked);
+      startMissionInBackground({
+        deps,
+        orchestrator: deps.orchestrator,
+        mission: linked,
+        threadId: thread.threadId,
+        content: desc.length > 0 ? `${title}\n\n${desc}` : title,
+      });
       return true;
     } finally {
       if (!createdOk) {
@@ -508,6 +502,63 @@ export async function handleMissionRoutes(input: {
   }
 
   return false;
+}
+
+function startMissionInBackground(input: {
+  deps: MissionRouteDeps;
+  orchestrator: MissionOrchestratorDeps;
+  mission: Mission;
+  threadId: string;
+  content: string;
+}): void {
+  void (async () => {
+    try {
+      // Keep mission creation fast. The first user turn wakes the
+      // coordination engine, which may call a real LLM or tool and must
+      // not hold the "Create mission" request open.
+      await input.orchestrator.postUserMessage({
+        threadId: input.threadId,
+        content: input.content,
+      });
+      await input.orchestrator.threadBridge.tickMission(input.mission.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("mission background start failed", {
+        missionId: input.mission.id,
+        threadId: input.threadId,
+        error,
+      });
+      const now = input.deps.clock.now();
+      try {
+        const latestMission = (await input.deps.missionStore.get(input.mission.id)) ?? input.mission;
+        await input.deps.missionStore.putRaw({
+          ...latestMission,
+          status: "blocked",
+          blockers: Math.max(latestMission.blockers, 1),
+        });
+        await input.deps.activityStore.append({
+          id: `mission-start-failed:${input.mission.id}:${now}`,
+          missionId: input.mission.id,
+          tMs: now,
+          kind: "recovery",
+          actor: "system",
+          text: "mission.start_failed",
+          emph: "danger",
+          tags: ["mission_start_failed"],
+          runtime: {
+            eventType: "mission.start_failed",
+            threadId: input.threadId,
+            errorMessage: message,
+          },
+        });
+      } catch (recordError) {
+        console.error("mission background start failure recording failed", {
+          missionId: input.mission.id,
+          error: recordError,
+        });
+      }
+    }
+  })();
 }
 
 const VALID_MODES = new Set([
