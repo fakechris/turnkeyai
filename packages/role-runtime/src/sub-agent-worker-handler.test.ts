@@ -85,6 +85,53 @@ test("LLMSubAgentWorkerHandler keeps browser work on a browser-specific private 
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /same browser operation at most three times/i);
 });
 
+test("LLMSubAgentWorkerHandler carries inner session state across multiple private tool calls", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const innerInputs: WorkerInvocationInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const toolResultCount = input.messages.filter((message) => message.role === "tool").length;
+    if (toolResultCount === 0) {
+      return toolCallResult("tool-1", "browser_run", { instruction: "Open https://example.test." });
+    }
+    if (toolResultCount === 1) {
+      return toolCallResult("tool-2", "browser_run", { instruction: "Snapshot the current page." });
+    }
+    return textResult("Browser multi-step work completed.");
+  };
+  const innerHandler = buildInnerHandler({
+    kind: "browser",
+    async run(input) {
+      innerInputs.push(input);
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: `browser step ${innerInputs.length}`,
+        payload: {
+          sessionId: "browser-session-1",
+          targetId: "target-1",
+          resumeMode: innerInputs.length === 1 ? "cold" : "hot",
+        },
+      };
+    },
+  });
+  const handler = new LLMSubAgentWorkerHandler({ kind: "browser", innerHandler, gateway });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(innerInputs.length, 2);
+  assert.equal(innerInputs[0]?.sessionState, undefined);
+  assert.equal(innerInputs[1]?.packet.continuityMode, "resume-existing");
+  assert.equal(innerInputs[1]?.sessionState?.status, "resumable");
+  assert.deepEqual(innerInputs[1]?.sessionState?.lastResult?.payload, {
+    sessionId: "browser-session-1",
+    targetId: "target-1",
+    resumeMode: "cold",
+  });
+});
+
 test("LLMSubAgentWorkerHandler canHandle only claims its preferred worker kind", async () => {
   const handler = new LLMSubAgentWorkerHandler({
     kind: "explore",

@@ -6,6 +6,7 @@ import type {
   WorkerHandler,
   WorkerInvocationInput,
   WorkerKind,
+  WorkerSessionState,
 } from "@turnkeyai/core-types/team";
 import type { LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
@@ -121,6 +122,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
   private readonly kind: WorkerKind;
   private readonly innerHandler: WorkerHandler;
   private readonly parentInput: WorkerInvocationInput;
+  private innerSessionState: WorkerSessionState | undefined;
 
   constructor(options: { kind: WorkerKind; innerHandler: WorkerHandler; parentInput: WorkerInvocationInput }) {
     this.kind = options.kind;
@@ -166,13 +168,16 @@ class SubAgentToolExecutor implements RoleToolExecutor {
       };
     }
 
+    const sessionState = this.innerSessionState ?? this.parentInput.sessionState;
     const result = await this.innerHandler.run({
       ...this.parentInput,
       packet: {
         ...this.parentInput.packet,
         taskPrompt: instruction,
         preferredWorkerKinds: [this.kind],
+        ...(this.innerSessionState ? { continuityMode: "resume-existing" as const } : {}),
       },
+      ...(sessionState ? { sessionState } : {}),
     });
     if (!result) {
       return {
@@ -183,6 +188,12 @@ class SubAgentToolExecutor implements RoleToolExecutor {
         raw: { status: "missing_result" },
       };
     }
+    this.innerSessionState = buildInnerSessionState({
+      parentInput: this.parentInput,
+      kind: this.kind,
+      previous: this.innerSessionState,
+      result,
+    });
     const content = JSON.stringify(
       {
         status: result.status,
@@ -215,6 +226,46 @@ class SubAgentToolExecutor implements RoleToolExecutor {
   private toolName(): string {
     return `${this.kind}_run`;
   }
+}
+
+function buildInnerSessionState(input: {
+  parentInput: WorkerInvocationInput;
+  kind: WorkerKind;
+  previous: WorkerSessionState | undefined;
+  result: WorkerExecutionResult;
+}): WorkerSessionState {
+  const now = Date.now();
+  const workerRunKey =
+    input.previous?.workerRunKey ??
+    input.parentInput.sessionState?.workerRunKey ??
+    `sub-agent:${input.kind}:${input.parentInput.activation.handoff.taskId}`;
+  return {
+    workerRunKey,
+    workerType: input.kind,
+    status: input.result.status === "failed" ? "failed" : "resumable",
+    createdAt: input.previous?.createdAt ?? input.parentInput.sessionState?.createdAt ?? now,
+    updatedAt: now,
+    currentTaskId: input.parentInput.activation.handoff.taskId,
+    lastResult: input.result,
+    continuationDigest: {
+      reason: input.result.status === "failed" ? "supervisor_retry" : "follow_up",
+      summary: input.result.summary,
+      createdAt: now,
+    },
+    history: [
+      ...(input.previous?.history ?? input.parentInput.sessionState?.history ?? []),
+      {
+        id: `sub-agent-inner:${input.kind}:${input.parentInput.activation.handoff.taskId}:${now}`,
+        role: "tool",
+        content: input.result.summary,
+        createdAt: now,
+        taskId: input.parentInput.activation.handoff.taskId,
+        toolName: input.kind,
+        status: input.result.status,
+        payload: input.result.payload,
+      },
+    ],
+  };
 }
 
 function buildSubAgentPromptPacket(input: {
