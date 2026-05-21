@@ -42,6 +42,60 @@ test("explore worker fetches the OpenAI pricing page through direct HTTP", async
   assert.equal(payload.transportAudit.trustLevel, "promotable");
 });
 
+test("explore worker turns natural-language research tasks into a search URL", async () => {
+  let fetchedUrl = "";
+  const handler = new ExploreWorkerHandler({
+    fetchFn: async (input) => {
+      fetchedUrl = String(input);
+      return new Response(
+        `
+          <html>
+            <head><title>Search results</title></head>
+            <body>
+              slock npm package github result
+            </body>
+          </html>
+        `,
+        {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }
+      );
+    },
+  });
+
+  const input = buildExploreInvocationInput();
+  const result = await handler.run({
+    ...input,
+    activation: {
+      ...input.activation,
+      handoff: {
+        ...input.activation.handoff,
+        payload: normalizeRelayPayload({
+          threadId: "thread-1",
+          relayBrief: "Research slock package metadata.",
+          recentMessages: [],
+          instructions: "Research slock package metadata.",
+        }),
+      },
+    },
+    packet: {
+      ...input.packet,
+      taskPrompt: [
+        "Research slock - what it is, core capabilities, user scale, community feedback, code quality, and update frequency.",
+        "Search queries to try:",
+        '- "slock npm package github"',
+        '- "slock distributed lock library"',
+        "Report findings with URLs and specific metrics.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.match(fetchedUrl, /^https:\/\/www\.google\.com\/search\?/);
+  assert.match(decodeURIComponent(fetchedUrl), /slock npm package github/);
+});
+
 test("explore worker falls back to browser when direct fetch is blocked", async () => {
   const handler = new ExploreWorkerHandler({
     fetchFn: async () =>

@@ -338,7 +338,39 @@ function resolveExploreTarget(input: WorkerInvocationInput): { url: string; labe
     };
   }
 
+  const searchQuery = extractExploreSearchQuery(sourceText);
+  if (searchQuery) {
+    return {
+      url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
+      label: `search:${searchQuery}`,
+    };
+  }
+
   return null;
+}
+
+function extractExploreSearchQuery(sourceText: string): string | null {
+  const quotedSearch = sourceText.match(/search queries? to try:\s*(?:[-*]\s*)?["“]([^"”]+)["”]/i)?.[1]?.trim();
+  if (quotedSearch) return stripSearchNoise(quotedSearch);
+
+  const explicitSearch = sourceText.match(/\bsearch:\s*(https?:\/\/\S+|[^.\n]+)/i)?.[1]?.trim();
+  if (explicitSearch) return stripSearchNoise(explicitSearch);
+
+  const searchFor = sourceText.match(/\bsearch(?:\s+for)?\s+["“]?([^"”.\n]+)["”]?/i)?.[1]?.trim();
+  if (searchFor) return stripSearchNoise(searchFor);
+
+  const research = sourceText.match(/\bresearch\s+([^.\n]+?)(?:\s+-|\s+what\b|\s+and\b|$)/i)?.[1]?.trim();
+  if (research) return stripSearchNoise(research);
+
+  return null;
+}
+
+function stripSearchNoise(value: string): string {
+  return value
+    .replace(/^https?:\/\//i, "")
+    .replace(/["'`,;。，“”‘’]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function resolvePreferredTransportOrder(input: WorkerInvocationInput): TransportKind[] {

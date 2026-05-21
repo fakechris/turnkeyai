@@ -707,7 +707,14 @@ function classifyBrowserSideEffect(
       risk: "May expose or use account credentials or authentication secrets.",
     };
   }
-  if (/\b(publish|post publicly|go live|deploy|release)\b/.test(normalized)) {
+  if (
+    /\b(post publicly|go live)\b/.test(normalized) ||
+    hasBrowserActionVerb(
+      normalized,
+      ["publish", "deploy", "release"],
+      ["date", "time", "version", "history", "status", "notes", "metadata", "frequency", "schedule", "cadence", "information", "info", "details", "count", "counts"]
+    )
+  ) {
     return {
       action: "browser.publish",
       scope: "publish",
@@ -716,8 +723,30 @@ function classifyBrowserSideEffect(
     };
   }
   if (
-    /\b(submit|send|save|create|update|delete|remove|archive|checkout|purchase|buy|order|book|reserve|invite|approve|accept|reject|cancel)\b/.test(
-      normalized
+    hasBrowserActionVerb(
+      normalized,
+      [
+        "submit",
+        "send",
+        "save",
+        "create",
+        "update",
+        "delete",
+        "remove",
+        "archive",
+        "checkout",
+        "purchase",
+        "buy",
+        "order",
+        "book",
+        "reserve",
+        "invite",
+        "approve",
+        "accept",
+        "reject",
+        "cancel",
+      ],
+      ["date", "time", "version", "history", "status", "frequency", "metadata", "count", "counts", "stats", "statistics"]
     )
   ) {
     return {
@@ -728,6 +757,28 @@ function classifyBrowserSideEffect(
     };
   }
   return null;
+}
+
+function hasBrowserActionVerb(input: string, verbs: string[], readOnlyFollowers: string[]): boolean {
+  for (const verb of verbs) {
+    const escaped = verb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = input.match(new RegExp(`\\b${escaped}\\b(?:\\s+([a-z][a-z_-]*))?`, "i"));
+    if (!match) continue;
+    if (isNegatedBrowserActionVerb(input, match.index ?? 0)) {
+      continue;
+    }
+    const next = match[1]?.toLowerCase();
+    if (next && readOnlyFollowers.includes(next)) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+function isNegatedBrowserActionVerb(input: string, index: number): boolean {
+  const prefix = input.slice(Math.max(0, index - 32), index).toLowerCase();
+  return /(?:do\s+not|don't|not|never|without|no)\s+$/.test(prefix);
 }
 
 function browserSideEffectCacheKey(threadId: string, action: string, scope: string): string {
@@ -770,8 +821,9 @@ async function executeSessionsSpawn(
     preferredWorkerKinds: [agentId],
     continuityMode: "fresh" as const,
   };
+  const workerActivation = scopeWorkerActivationToToolCall(input.activation, input.call.id);
   const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds);
-  const spawned = await workerRuntime.spawn({ activation: input.activation, packet });
+  const spawned = await workerRuntime.spawn({ activation: workerActivation, packet });
   if (!spawned) {
     return errorResult(input.call, `No worker handler available for ${agentId}`);
   }
@@ -789,7 +841,7 @@ async function executeSessionsSpawn(
       workerRuntime,
       {
         workerRunKey: spawned.workerRunKey,
-        activation: input.activation,
+        activation: workerActivation,
         packet,
         toolCallId: input.call.id,
       },
@@ -845,6 +897,16 @@ async function executeSessionsSpawn(
       },
     ],
     raw: result,
+  };
+}
+
+function scopeWorkerActivationToToolCall(activation: RoleActivationInput, toolCallId: string): RoleActivationInput {
+  return {
+    ...activation,
+    handoff: {
+      ...activation.handoff,
+      taskId: `${activation.handoff.taskId}:${toolCallId}`,
+    },
   };
 }
 

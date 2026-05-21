@@ -5,7 +5,7 @@ import type {
   RuntimeProgressRecorder,
   TeamMessageStore,
 } from "@turnkeyai/core-types/team";
-import type { GenerateTextInput, GenerateTextResult, LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
+import type { GenerateTextInput, GenerateTextResult, LLMContentBlock, LLMMessage, LLMToolCall } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 
@@ -96,7 +96,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const toolTrace: NativeToolRoundTrace[] = [];
     let messages: LLMMessage[] = initialGatewayInput.messages;
     for (let round = 0; ; round++) {
-      const gatewayMessages = pruneToolResultMessagesForGateway(messages);
+      const gatewayMessages = prepareToolHistoryForGateway(messages);
       const generated = await this.generateWithEnvelopeRetry({
         activation: input.activation,
         packet: input.packet,
@@ -125,7 +125,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
       const maxRounds = this.toolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
       if (round >= maxRounds) {
-        throw new Error(`tool-use loop exceeded max rounds (${maxRounds})`);
+        const generated = await this.generateFinalAfterToolRoundLimit({
+          activation: input.activation,
+          packet: input.packet,
+          selection,
+          baseGatewayInput: initialGatewayInput,
+          messages,
+          maxRounds,
+        });
+        result = generated.result;
+        if (generated.reduction) {
+          reduction = generated.reduction;
+          reductionSnapshot = generated.reductionSnapshot;
+        }
+        if (generated.memoryFlush) {
+          memoryFlushes.push(generated.memoryFlush);
+        }
+        break;
       }
 
       const roundTrace: NativeToolRoundTrace = {
@@ -306,6 +322,56 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       });
       return undefined;
     }
+  }
+
+  private async generateFinalAfterToolRoundLimit(input: {
+    activation: RoleActivationInput;
+    packet: RolePromptPacket;
+    selection: {
+      modelId?: string;
+      modelChainId?: string;
+    };
+    baseGatewayInput: GenerateTextInput;
+    messages: LLMMessage[];
+    maxRounds: number;
+  }): Promise<{
+    result: GenerateTextResult;
+    reduction?: {
+      level: RequestEnvelopeReductionLevel;
+      omittedSections: string[];
+    };
+    reductionSnapshot?: {
+      level: RequestEnvelopeReductionLevel;
+      omittedSections: string[];
+    } & ReductionEnvelopeSnapshot;
+    memoryFlush?: PreCompactionMemoryFlushResult;
+  }> {
+    const finalMessages = prepareToolHistoryForGateway([
+      ...input.messages,
+      {
+        role: "user",
+        content: [
+          `Tool-use round limit reached (${input.maxRounds}).`,
+          "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+          "State uncertainties and missing verification explicitly instead of trying another lookup.",
+        ].join("\n"),
+      },
+    ]);
+    return this.generateWithEnvelopeRetry({
+      activation: input.activation,
+      packet: input.packet,
+      selection: input.selection,
+      gatewayInput: {
+        ...withoutToolUse(input.baseGatewayInput),
+        messages: finalMessages,
+        envelope: {
+          ...(input.baseGatewayInput.envelope ?? {}),
+          toolCount: 0,
+          toolSchemaBytes: 0,
+          ...deriveToolResultEnvelope(finalMessages),
+        },
+      },
+    });
   }
 
   private async executeToolCalls(input: {
@@ -605,7 +671,9 @@ interface ReductionEnvelopeSnapshot {
 // MBs. The full content still flows through the LLM tool loop in
 // memory; this cap only governs what lands on disk.
 const ROLE_TOOL_RESULT_TRACE_CAP_BYTES = 8 * 1024;
+const ROLE_TOOL_HISTORY_MAX_MESSAGES = 16;
 const TOOL_RESULT_RECENT_FULL_COUNT = 2;
+const TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES = 32 * 1024;
 const TOOL_RESULT_SOFT_PRUNE_MAX_BYTES = 16 * 1024;
 const TOOL_RESULT_HARD_PRUNE_MAX_BYTES = 64 * 1024;
 
@@ -718,6 +786,14 @@ function buildGatewayInput(input: {
   };
 }
 
+function withoutToolUse(input: GenerateTextInput): GenerateTextInput {
+  const { tools: _tools, toolChoice: _toolChoice, ...rest } = input;
+  return {
+    ...rest,
+    toolChoice: "none",
+  };
+}
+
 function extractMentions(content: string): RoleId[] {
   return [...content.matchAll(/@\{(?<roleId>[^}]+)\}/g)]
     .map((match) => match.groups?.roleId)
@@ -732,13 +808,17 @@ function deriveToolResultEnvelope(messages: LLMMessage[]): { toolResultCount: nu
   };
 }
 
+function prepareToolHistoryForGateway(messages: LLMMessage[]): LLMMessage[] {
+  return compactOlderToolHistoryForGateway(pruneToolResultMessagesForGateway(messages));
+}
+
 function pruneToolResultMessagesForGateway(messages: LLMMessage[]): LLMMessage[] {
   const toolMessageIndexes = messages
     .map((message, index) => (message.role === "tool" ? index : -1))
     .filter((index) => index >= 0);
   const recentFullIndexes = new Set(toolMessageIndexes.slice(-TOOL_RESULT_RECENT_FULL_COUNT));
 
-  return messages.map((message, index) => {
+  const prunedMessages = messages.map((message, index) => {
     if (message.role !== "tool") {
       return message;
     }
@@ -763,6 +843,164 @@ function pruneToolResultMessagesForGateway(messages: LLMMessage[]): LLMMessage[]
     );
     return replaceToolResultContent(message, prunedContent);
   });
+
+  return pruneToolResultsToTotalBudget(prunedMessages, recentFullIndexes);
+}
+
+function compactOlderToolHistoryForGateway(messages: LLMMessage[]): LLMMessage[] {
+  if (messages.length <= ROLE_TOOL_HISTORY_MAX_MESSAGES) {
+    return messages;
+  }
+  const toolMessageIndexes = messages
+    .map((message, index) => (message.role === "tool" ? index : -1))
+    .filter((index) => index >= 0);
+  if (toolMessageIndexes.length <= TOOL_RESULT_RECENT_FULL_COUNT) {
+    return messages;
+  }
+
+  for (let keepToolCount = TOOL_RESULT_RECENT_FULL_COUNT; keepToolCount >= 1; keepToolCount -= 1) {
+    const firstKeptToolIndex = toolMessageIndexes.slice(-keepToolCount)[0];
+    if (firstKeptToolIndex === undefined) continue;
+    const keepStart = findToolCallAssistantIndex(messages, firstKeptToolIndex);
+    if (keepStart <= 2) continue;
+    const compactedHistory = messages.slice(2, keepStart);
+    const summary = buildCompactedToolHistoryMessage(compactedHistory);
+    const compacted: LLMMessage[] = [
+      ...messages.slice(0, 2),
+      summary,
+      ...messages.slice(keepStart),
+    ];
+    if (compacted.length <= ROLE_TOOL_HISTORY_MAX_MESSAGES) {
+      return compacted;
+    }
+  }
+
+  return messages;
+}
+
+function findToolCallAssistantIndex(messages: LLMMessage[], toolMessageIndex: number): number {
+  const toolMessage = messages[toolMessageIndex];
+  const toolCallId = toolMessage?.role === "tool" ? toolMessage.toolCallId : undefined;
+  for (let index = toolMessageIndex - 1; index >= 2; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+    const toolUseIds = extractAssistantToolUseIds(message);
+    if (!toolCallId || toolUseIds.includes(toolCallId)) {
+      return index;
+    }
+  }
+  return toolMessageIndex;
+}
+
+function extractAssistantToolUseIds(message: LLMMessage): string[] {
+  if (!Array.isArray(message.content)) return [];
+  return message.content
+    .map((block) => (block.type === "tool_use" ? block.id : ""))
+    .filter((id) => id.length > 0);
+}
+
+function buildCompactedToolHistoryMessage(messages: LLMMessage[]): LLMMessage {
+  const lines = ["Earlier tool history compacted to fit the request envelope:"];
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      const calls = Array.isArray(message.content)
+        ? message.content.filter((block): block is Extract<LLMContentBlock, { type: "tool_use" }> => block.type === "tool_use")
+        : [];
+      for (const call of calls) {
+        lines.push(`- called ${call.name} (${call.id}): ${summarizeToolArgs(call.input)}`);
+      }
+      continue;
+    }
+    if (message.role === "tool") {
+      const content = readToolResultContentText(message.content);
+      lines.push(`- result ${message.name ?? "tool"} (${message.toolCallId ?? "unknown"}): ${summarizeToolResultContent(content)}`);
+    }
+  }
+  return {
+    role: "user",
+    content: sliceUtf8(lines.join("\n"), 6 * 1024),
+  };
+}
+
+function summarizeToolArgs(input: Record<string, unknown>): string {
+  const json = JSON.stringify(input);
+  if (!json) return "{}";
+  return json.length > 300 ? `${json.slice(0, 300)}...` : json;
+}
+
+function pruneToolResultsToTotalBudget(
+  messages: LLMMessage[],
+  recentFullIndexes: Set<number>
+): LLMMessage[] {
+  let totalBytes = deriveToolResultEnvelope(messages).toolResultBytes;
+  if (totalBytes <= TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES) {
+    return messages;
+  }
+
+  let nextMessages = messages;
+  const olderToolIndexes = messages
+    .map((message, index) => (message.role === "tool" && !recentFullIndexes.has(index) ? index : -1))
+    .filter((index) => index >= 0);
+
+  for (const index of olderToolIndexes) {
+    const message = nextMessages[index];
+    if (!message || message.role !== "tool") continue;
+    const content = readToolResultContentText(message.content);
+    if (isPrunedToolResultContent(content)) continue;
+
+    const prunedContent = JSON.stringify(
+      {
+        tool_result_pruned: true,
+        tool_call_id: message.toolCallId ?? null,
+        tool_name: message.name ?? null,
+        original_bytes: Buffer.byteLength(content, "utf8"),
+        reason: "aggregate_tool_result_budget",
+        retained_summary: summarizeToolResultContent(content),
+      },
+      null,
+      2
+    );
+    nextMessages = nextMessages.map((candidate, candidateIndex) =>
+      candidateIndex === index ? replaceToolResultContent(message, prunedContent) : candidate
+    );
+    totalBytes = deriveToolResultEnvelope(nextMessages).toolResultBytes;
+    if (totalBytes <= TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES) {
+      return nextMessages;
+    }
+  }
+
+  // Pathological case: the recent window alone can exceed the aggregate
+  // cap. Keep the newest result intact when possible, but compact the
+  // rest so final synthesis still gets a valid request envelope.
+  const recentExceptNewest = [...recentFullIndexes].slice(0, -1);
+  for (const index of recentExceptNewest) {
+    const message = nextMessages[index];
+    if (!message || message.role !== "tool") continue;
+    const content = readToolResultContentText(message.content);
+    if (isPrunedToolResultContent(content)) continue;
+
+    const prunedContent = JSON.stringify(
+      {
+        tool_result_pruned: true,
+        tool_call_id: message.toolCallId ?? null,
+        tool_name: message.name ?? null,
+        original_bytes: Buffer.byteLength(content, "utf8"),
+        reason: "aggregate_tool_result_budget_recent_window",
+        retained_summary: summarizeToolResultContent(content),
+      },
+      null,
+      2
+    );
+    nextMessages = nextMessages.map((candidate, candidateIndex) =>
+      candidateIndex === index ? replaceToolResultContent(message, prunedContent) : candidate
+    );
+    totalBytes = deriveToolResultEnvelope(nextMessages).toolResultBytes;
+    if (totalBytes <= TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES) {
+      return nextMessages;
+    }
+  }
+
+  return nextMessages;
 }
 
 function readToolResultContentText(content: LLMMessage["content"]): string {
@@ -802,6 +1040,10 @@ function summarizeToolResultContent(content: string): string {
     return "(empty tool result)";
   }
   return normalized.length > 512 ? `${normalized.slice(0, 512)}...` : normalized;
+}
+
+function isPrunedToolResultContent(content: string): boolean {
+  return content.includes('"tool_result_pruned": true');
 }
 
 function replaceInitialPromptMessages(messages: LLMMessage[], reducedPromptMessages: LLMMessage[]): LLMMessage[] {
