@@ -15,6 +15,7 @@
     "./prompt/prompt-assembler": "./src/prompt/prompt-assembler.ts",
     "./prompt-policy": "./src/prompt-policy.ts",
     "./role-profile": "./src/role-profile.ts",
+    "./sub-agent-worker-handler": "./src/sub-agent-worker-handler.ts",
     "./task-tool-service": "./src/task-tool-service.ts",
     "./tool-capability-registry": "./src/tool-capability-registry.ts",
     "./tool-cancellation-registry": "./src/tool-cancellation-registry.ts",
