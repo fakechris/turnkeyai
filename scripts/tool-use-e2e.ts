@@ -8,6 +8,10 @@ import assert from "node:assert/strict";
 import type {
   RoleActivationInput,
   TeamMessage,
+  WorkerExecutionResult,
+  WorkerHandler,
+  WorkerInvocationInput,
+  WorkerKind,
   WorkerRuntime,
 } from "@turnkeyai/core-types/team";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
@@ -25,6 +29,7 @@ import { LLMRoleResponseGenerator } from "@turnkeyai/role-runtime/llm-response-g
 import { createNativeToolCapabilityRegistry } from "@turnkeyai/role-runtime/tool-capability-registry";
 import type { ToolPermissionService } from "@turnkeyai/role-runtime/tool-permission-service";
 import { createWorkerSessionToolExecutor } from "@turnkeyai/role-runtime/tool-use";
+import { LLMSubAgentWorkerHandler } from "@turnkeyai/role-runtime/sub-agent-worker-handler";
 
 interface ToolUseE2eOptions {
   withBrowser: boolean;
@@ -67,10 +72,88 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
   console.log(`native-messages: ${mock.nativeMessageCount}`);
   console.log(`permission-events: ${mock.permissionEvents.join(",")}`);
 
+  const subAgent = await runMockSubAgentToolUseE2e();
+  console.log("tool-use sub-agent mock e2e passed");
+  console.log(`sub-agent-kind: ${subAgent.kind}`);
+  console.log(`sub-agent-llm-rounds: ${subAgent.llmRounds}`);
+  console.log(`sub-agent-private-tool: ${subAgent.privateToolName}`);
+
   if (options.withBrowser) {
     await runCommand("npm", ["run", "cdp:smoke", "--", "--timeout-ms", String(options.cdpTimeoutMs)]);
     console.log("tool-use browser e2e passed");
   }
+}
+
+async function runMockSubAgentToolUseE2e(): Promise<{
+  kind: WorkerKind;
+  llmRounds: number;
+  privateToolName: string;
+}> {
+  process.env.TOOL_USE_E2E_KEY = process.env.TOOL_USE_E2E_KEY || "mock-tool-use-e2e-key";
+  const llmInputs: GenerateTextInput[] = [];
+  const innerTaskPrompts: string[] = [];
+  const gateway = new LLMGateway({
+    registry: new ModelRegistry(new SingleModelCatalogSource()),
+    clients: [
+      new ScriptedSubAgentClient({
+        privateToolName: "explore_run",
+        inputs: llmInputs,
+      }),
+    ],
+  });
+  const innerHandler: WorkerHandler = {
+    kind: "explore",
+    canHandle(input) {
+      return input.packet.preferredWorkerKinds?.includes("explore") === true;
+    },
+    async run(input: WorkerInvocationInput): Promise<WorkerExecutionResult> {
+      innerTaskPrompts.push(input.packet.taskPrompt);
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Fetched and extracted the requested source.",
+        payload: {
+          source: "https://example.test/source",
+          facts: ["source fact"],
+        },
+      };
+    },
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler,
+    gateway,
+  });
+
+  const result = await handler.run({
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      systemPrompt: "Parent prompt",
+      taskPrompt: "Investigate the source and summarize the verified fact.",
+      outputContract: "Return a concise final answer.",
+      suggestedMentions: [],
+      preferredWorkerKinds: ["explore"],
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.equal(result?.summary, "The sub-agent verified the requested source fact.");
+  assert.deepEqual(innerTaskPrompts, ["Fetch the source and extract the fact."]);
+  const toolNames = llmInputs[0]?.tools?.map((tool) => tool.name) ?? [];
+  assert.deepEqual(toolNames, ["explore_run"]);
+  assert.equal(toolNames.includes("sessions_spawn"), false);
+  assert.equal(
+    ((result?.payload as { metadata?: { toolUse?: { toolCallCount?: number } } }).metadata?.toolUse?.toolCallCount),
+    1
+  );
+
+  return {
+    kind: "explore",
+    llmRounds: llmInputs.length,
+    privateToolName: "explore_run",
+  };
 }
 
 async function runMockNativeToolUseE2e(): Promise<{
@@ -288,6 +371,48 @@ class ScriptedToolCallClient implements ProtocolClient {
       providerId: model.providerId,
       protocol: model.protocol,
       adapterName: "tool-use-e2e-mock",
+      raw: { round: 2 },
+    };
+  }
+}
+
+class ScriptedSubAgentClient implements ProtocolClient {
+  constructor(private readonly input: { privateToolName: string; inputs: GenerateTextInput[] }) {}
+
+  supports(protocol: ModelProtocol): boolean {
+    return protocol === "openai-compatible";
+  }
+
+  async generate(model: ResolvedModelConfig, input: GenerateTextInput): Promise<GenerateTextResult> {
+    this.input.inputs.push(input);
+    const sawToolResult = input.messages.some(
+      (message) => message.role === "tool" && message.toolCallId === "call-sub-agent-private-tool"
+    );
+    if (!sawToolResult) {
+      return {
+        text: "",
+        toolCalls: [
+          {
+            id: "call-sub-agent-private-tool",
+            name: this.input.privateToolName,
+            input: {
+              instruction: "Fetch the source and extract the fact.",
+            },
+          },
+        ],
+        modelId: input.modelId ?? model.id,
+        providerId: model.providerId,
+        protocol: model.protocol,
+        adapterName: "tool-use-sub-agent-e2e-mock",
+        raw: { round: 1 },
+      };
+    }
+    return {
+      text: "The sub-agent verified the requested source fact.",
+      modelId: input.modelId ?? model.id,
+      providerId: model.providerId,
+      protocol: model.protocol,
+      adapterName: "tool-use-sub-agent-e2e-mock",
       raw: { round: 2 },
     };
   }

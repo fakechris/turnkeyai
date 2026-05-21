@@ -18,6 +18,7 @@ import type {
   Clock,
   IdGenerator,
   RuntimeSummaryReport,
+  WorkerKind,
   WorkerRuntime,
 } from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
@@ -40,6 +41,7 @@ import { LLMRoleResponseGenerator } from "@turnkeyai/role-runtime/llm-response-g
 import { PolicyRoleRuntime } from "@turnkeyai/role-runtime/policy-role-runtime";
 import { DefaultPreCompactionMemoryFlusher } from "@turnkeyai/role-runtime/pre-compaction-memory-flusher";
 import { DefaultRolePromptPolicy } from "@turnkeyai/role-runtime/prompt-policy";
+import { LLMSubAgentWorkerHandler } from "@turnkeyai/role-runtime/sub-agent-worker-handler";
 import {
   createNativeToolCapabilityRegistry,
   type ToolCapabilityRegistry,
@@ -201,8 +203,16 @@ export async function composeDaemonRuntimeServices(
         clients: [new OpenAICompatibleClient(), new AnthropicCompatibleClient()],
       })
     : null;
+  if (llmGateway) {
+    installLLMSubAgentWorkerHandlers({
+      foundations,
+      llmGateway,
+      runtimeProgressRecorder,
+      clock,
+    });
+  }
   const toolCapabilityRegistry = createNativeToolCapabilityRegistry({
-    availableWorkerKinds: foundations.workerHandlers.map((handler) => handler.kind),
+    availableWorkerKinds: uniqueWorkerKinds(foundations.workerHandlers.map((handler) => handler.kind)),
     maxSessionToolTimeoutSeconds: DEFAULT_AGENT_TOOL_TIMEOUT_MS / 1_000,
     permissionsEnabled: Boolean(inputs.toolPermissionService),
     memoryEnabled: true,
@@ -496,4 +506,38 @@ export async function composeDaemonRuntimeServices(
     toolCapabilityRegistry,
     stop,
   };
+}
+
+function installLLMSubAgentWorkerHandlers(input: {
+  foundations: DaemonFoundations;
+  llmGateway: LLMGateway;
+  runtimeProgressRecorder: DaemonFoundations["runtimeProgressRecorder"];
+  clock: Clock;
+}): void {
+  for (const kind of ["browser", "explore"] as const) {
+    if (
+      input.foundations.workerHandlers.some(
+        (handler) => handler instanceof LLMSubAgentWorkerHandler && handler.kind === kind
+      )
+    ) {
+      continue;
+    }
+    const innerHandler = input.foundations.workerHandlers.find((handler) => handler.kind === kind);
+    if (!innerHandler) {
+      continue;
+    }
+    input.foundations.workerHandlers.unshift(
+      new LLMSubAgentWorkerHandler({
+        kind,
+        innerHandler,
+        gateway: input.llmGateway,
+        runtimeProgressRecorder: input.runtimeProgressRecorder,
+        clock: input.clock,
+      })
+    );
+  }
+}
+
+function uniqueWorkerKinds(kinds: WorkerKind[]): WorkerKind[] {
+  return [...new Set(kinds)];
 }

@@ -25,6 +25,7 @@ import type {
   IdGenerator,
   RelayBriefBuilder,
   SummaryBuilder,
+  WorkerHandler,
 } from "@turnkeyai/core-types/team";
 import {
   createBrowserBridge,
@@ -178,7 +179,7 @@ export interface DaemonFoundations {
 
   // Replay + worker registry (without runtime)
   replayRecorder: FileReplayRecorder;
-  workerHandlers: Array<BrowserWorkerHandler | ExploreWorkerHandler | FinanceWorkerHandler>;
+  workerHandlers: WorkerHandler[];
   capabilityDiscoveryService: DefaultCapabilityDiscoveryService;
   workerRegistry: DefaultWorkerRegistry;
 }
@@ -427,7 +428,7 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
   const replayRecorder = new FileReplayRecorder({
     rootDir: path.join(dataDir, "replays"),
   });
-  const workerHandlers = [
+  const workerHandlers: WorkerHandler[] = [
     new BrowserWorkerHandler({
       browserBridge,
       stepVerifier: new BrowserStepVerifier(),
@@ -441,7 +442,7 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
     new FinanceWorkerHandler(),
   ];
   const capabilityDiscoveryService = new DefaultCapabilityDiscoveryService({
-    availableWorkers: () => workerHandlers.map((handler) => handler.kind),
+    availableWorkers: () => [...new Set(workerHandlers.map((handler) => handler.kind))],
     skills: [
       { skillId: "browser", installed: true, capability: "browser" },
       { skillId: "explore", installed: true, capability: "explore" },
