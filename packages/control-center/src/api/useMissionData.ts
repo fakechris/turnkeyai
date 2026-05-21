@@ -111,7 +111,11 @@ export function useMissions(fallback: Mission[]): RemoteData<Mission[]> {
   return useRemote<Mission[]>("/missions", fallback);
 }
 
-export function useMission(missionId: string | null, fallback: Mission | null): RemoteData<Mission | null> {
+export function useMission(
+  missionId: string | null,
+  fallback: Mission | null,
+  options: { pollIntervalMs?: number } = {}
+): RemoteData<Mission | null> {
   // When missionId is null we don't fetch; just return the fallback as
   // an isLive=false RemoteData so the page can rely on `value` always
   // being defined-or-null in a known way.
@@ -139,25 +143,41 @@ export function useMission(missionId: string | null, fallback: Mission | null): 
     setValue(fallback);
     setIsLive(false);
     setError(null);
-    void client
-      .get<Mission>(path)
-      .then((data) => {
-        if (cancelled) return;
-        setValue(data);
-        setIsLive(true);
-        setError(null);
-      })
-      .catch((err: Error) => {
-        if (cancelled) return;
-        if (err.message !== "unauthorized") setError(err.message);
-      });
+    let pollTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let sawUnauthorized = false;
+    const issueFetch = () => {
+      void client
+        .get<Mission>(path)
+        .then((data) => {
+          if (cancelled) return;
+          setValue(data);
+          setIsLive(true);
+          setError(null);
+        })
+        .catch((err: Error) => {
+          if (cancelled) return;
+          if (err.message === "unauthorized") {
+            sawUnauthorized = true;
+            return;
+          }
+          setError(err.message);
+        })
+        .finally(() => {
+          if (cancelled || sawUnauthorized) return;
+          if (options.pollIntervalMs && options.pollIntervalMs > 0) {
+            pollTimeoutHandle = setTimeout(issueFetch, options.pollIntervalMs);
+          }
+        });
+    };
+    issueFetch();
     return () => {
       cancelled = true;
+      if (pollTimeoutHandle) clearTimeout(pollTimeoutHandle);
     };
     // fallback is intentionally not a dep — caller passes a stable
     // mock; we don't want to refetch on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, path, epoch]);
+  }, [client, path, epoch, options.pollIntervalMs]);
 
   return { value, isLive, error, refetch: () => setEpoch((n) => n + 1) };
 }

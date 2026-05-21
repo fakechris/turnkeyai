@@ -64,6 +64,13 @@ import { reconcileWorkerBindingsOnStartup } from "../worker-binding-startup-reco
 
 import type { DaemonFoundations } from "./foundations";
 
+const DEFAULT_AGENT_TOOL_MAX_ROUNDS = 128;
+const DEFAULT_AGENT_TOOL_TIMEOUT_MS = 18 * 60 * 1_000;
+const DEFAULT_AGENT_TOOL_WALL_CLOCK_MS = 30 * 60 * 1_000;
+const DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS = 5;
+const DEFAULT_AGENT_TOOL_MAX_PARENT_SESSIONS = 5;
+const DEFAULT_AGENT_TOOL_MAX_GLOBAL_SESSIONS = 12;
+
 export interface DaemonRuntimeLimits {
   memberMaxIterations: number;
   flowMaxHops: number;
@@ -196,6 +203,7 @@ export async function composeDaemonRuntimeServices(
     : null;
   const toolCapabilityRegistry = createNativeToolCapabilityRegistry({
     availableWorkerKinds: foundations.workerHandlers.map((handler) => handler.kind),
+    maxSessionToolTimeoutSeconds: DEFAULT_AGENT_TOOL_TIMEOUT_MS / 1_000,
     permissionsEnabled: Boolean(inputs.toolPermissionService),
     memoryEnabled: true,
     tasksEnabled: Boolean(inputs.taskToolService),
@@ -229,12 +237,20 @@ export async function composeDaemonRuntimeServices(
             toolLoop: {
               executor: createWorkerSessionToolExecutor({
                 workerRuntime,
+                maxSessionToolTimeoutMs: DEFAULT_AGENT_TOOL_TIMEOUT_MS,
+                sessionConcurrency: {
+                  maxPerParentConcurrent: DEFAULT_AGENT_TOOL_MAX_PARENT_SESSIONS,
+                  maxGlobalActive: DEFAULT_AGENT_TOOL_MAX_GLOBAL_SESSIONS,
+                },
                 toolCapabilityRegistry,
                 toolCancellationRegistry,
                 memoryResolver: roleMemoryResolver,
                 ...(inputs.toolPermissionService ? { toolPermissionService: inputs.toolPermissionService } : {}),
                 ...(inputs.taskToolService ? { taskToolService: inputs.taskToolService } : {}),
               }),
+              maxRounds: DEFAULT_AGENT_TOOL_MAX_ROUNDS,
+              maxWallClockMs: DEFAULT_AGENT_TOOL_WALL_CLOCK_MS,
+              maxParallelToolCalls: DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS,
               runtimeProgressRecorder,
             },
           }),

@@ -14,12 +14,14 @@ import { useCallback, useState } from "react";
 
 import type { ActivityEvent, Mission } from "../api/mission-api";
 import {
+  useMission,
   useMissions,
   useSendMissionMessage,
   useTimeline,
 } from "../api/useMissionData";
 import { formatTimeOfDay } from "../util/format-time";
 import { Icon } from "../components/Icon";
+import { Markdown } from "../components/Markdown";
 import { StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
 import { formatDurationMs, groupTimelineForReplay, type ToolProcessItem } from "../state/toolReplay";
@@ -27,9 +29,11 @@ import { formatDurationMs, groupTimelineForReplay, type ToolProcessItem } from "
 export function MissionDetailPage({ missionId }: { missionId: string }) {
   const { setRoute } = useAppState();
   const missions = useMissions([]);
-  const mission = missions.value.find((m) => m.id === missionId);
+  const listMission = missions.value.find((m) => m.id === missionId) ?? null;
+  const missionDetail = useMission(missionId, listMission, { pollIntervalMs: 2000 });
+  const mission = missionDetail.value ?? listMission;
 
-  if (!missions.isLive && missions.value.length === 0) {
+  if (!mission && !missions.isLive && !missionDetail.isLive) {
     return (
       <div className="page" style={{ padding: 28 }}>
         <p className="muted">Loading mission…</p>
@@ -107,28 +111,31 @@ function LiveMissionView({ mission }: { mission: Mission }) {
   const [pending, setPending] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [acceptedNotice, setAcceptedNotice] = useState<string | null>(null);
+  const [thinkingExpanded, setThinkingExpanded] = useState(false);
+  const finalAnswer = latestFinalAnswer(timeline.value);
 
   const onSend = useCallback(async () => {
     const content = pending.trim();
     if (!content || submitting) return;
     setSubmitting(true);
     setError(null);
+    setAcceptedNotice(null);
     try {
       await send({ missionId: mission.id, content });
       setPending("");
+      setAcceptedNotice("Follow-up accepted. The team is working; updates will appear in the timeline.");
+      timeline.refetch();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }
-  }, [pending, submitting, send, mission.id]);
+  }, [pending, submitting, send, mission.id, timeline]);
 
   return (
-    <div className="mission-shell" style={{ gridTemplateColumns: "1fr" }}>
-      <div
-        className="mission-pane center"
-        style={{ display: "flex", flexDirection: "column", minHeight: 0 }}
-      >
+    <div className="mission-shell mission-shell-single">
+      <div className="mission-pane center mission-detail-pane">
         <div className="timeline-head">
           <span className="lbl label">Activity timeline</span>
           <span className="mono faint" style={{ fontSize: 10.5, marginRight: 8 }}>
@@ -141,23 +148,53 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             </span>
           )}
         </div>
-        <div className="timeline" style={{ flex: 1, overflowY: "auto" }}>
-          {timeline.value.length === 0 ? (
-            <div className="muted" style={{ padding: 28, textAlign: "center", fontSize: 11.5 }}>
-              {timeline.isLive
-                ? "No activity yet. Agents will reply here as they work — the timeline refreshes every 2 seconds."
-                : "Loading activity…"}
+        <div className="mission-detail-scroll">
+          <section className="card thinking-card">
+            <div className="thinking-card-head">
+              <div>
+                <div className="label" style={{ fontSize: 11 }}>Thinking record</div>
+                <div className="muted" style={{ fontSize: 11.5 }}>
+                  Tool calls, progress, and source-gathering steps
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn ghost"
+                aria-expanded={thinkingExpanded}
+                aria-controls="thinking-record-timeline"
+                onClick={() => setThinkingExpanded((value) => !value)}
+              >
+                {thinkingExpanded ? "Collapse" : "Expand"}
+              </button>
             </div>
-          ) : (
-            groupTimelineForReplay(timeline.value).map((item) =>
-              item.kind === "event" ? (
-                <LiveTimelineRow key={item.event.id} event={item.event} />
-              ) : (
-                <ToolProcessRow key={item.id} process={item} />
-              )
-            )
+            {thinkingExpanded && (
+              <div id="thinking-record-timeline" className="timeline">
+                {timeline.value.length === 0 ? (
+                  <div className="muted" style={{ padding: 28, textAlign: "center", fontSize: 11.5 }}>
+                    {timeline.isLive
+                      ? "No activity yet. Agents will reply here as they work — the timeline refreshes every 2 seconds."
+                      : "Loading activity…"}
+                  </div>
+                ) : (
+                  groupTimelineForReplay(timeline.value).map((item) =>
+                    item.kind === "event" ? (
+                      <LiveTimelineRow key={item.event.id} event={item.event} />
+                    ) : (
+                      <ToolProcessRow key={item.id} process={item} />
+                    )
+                  )
+                )}
+              </div>
+            )}
+          </section>
+          {finalAnswer && (
+            <section className="card final-answer-card">
+              <div className="label" style={{ fontSize: 11, marginBottom: 8 }}>
+                Final answer
+              </div>
+              <Markdown text={finalAnswer.text} />
+            </section>
           )}
-          <div style={{ height: 24 }} />
         </div>
         <div
           className="row"
@@ -172,7 +209,10 @@ function LiveMissionView({ mission }: { mission: Mission }) {
           <textarea
             aria-label="Follow-up message to mission team"
             value={pending}
-            onChange={(e) => setPending(e.target.value)}
+            onChange={(e) => {
+              setPending(e.target.value);
+              if (acceptedNotice) setAcceptedNotice(null);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
@@ -209,9 +249,28 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             {error}
           </div>
         )}
+        {acceptedNotice && !error && (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{ padding: "6px 12px", color: "var(--muted)", fontSize: 11.5 }}
+          >
+            {acceptedNotice}
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+function latestFinalAnswer(events: ActivityEvent[]): ActivityEvent | null {
+  const candidates = events.filter(
+    (event) =>
+      event.kind === "thought" &&
+      event.text.trim().length > 0 &&
+      (event.runtime?.route === "lead-role" || event.actor === "role-lead")
+  );
+  return candidates.at(-1) ?? null;
 }
 
 function ToolProcessRow({ process }: { process: ToolProcessItem }) {
@@ -243,8 +302,8 @@ function ToolProcessRow({ process }: { process: ToolProcessItem }) {
           {progressCount > 0 && <span>{progressCount} progress</span>}
         </div>
         {process.finalThought && (
-          <div className="tl-msg tool-process-final" style={{ whiteSpace: "pre-wrap" }}>
-            {process.finalThought.text}
+          <div className="tl-msg tool-process-final">
+            <Markdown text={process.finalThought.text} />
           </div>
         )}
         <details className="tool-process-details">

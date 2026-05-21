@@ -95,6 +95,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
     const toolTrace: NativeToolRoundTrace[] = [];
     let messages: LLMMessage[] = initialGatewayInput.messages;
+    const toolLoopStartedAtMs = this.clock.now();
     for (let round = 0; ; round++) {
       const gatewayMessages = prepareToolHistoryForGateway(messages);
       const generated = await this.generateWithEnvelopeRetry({
@@ -124,6 +125,37 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         break;
       }
       const maxRounds = this.toolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+      const maxWallClockMs = this.toolLoop.maxWallClockMs;
+      if (
+        toolTrace.length > 0 &&
+        typeof maxWallClockMs === "number" &&
+        Number.isFinite(maxWallClockMs) &&
+        maxWallClockMs > 0 &&
+        this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
+      ) {
+        const generated = await this.generateFinalAfterToolRoundLimit({
+          activation: input.activation,
+          packet: input.packet,
+          selection,
+          baseGatewayInput: initialGatewayInput,
+          messages,
+          maxRounds,
+          reasonLines: [
+            `Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`,
+            "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+            "State uncertainties and missing verification explicitly instead of trying another lookup.",
+          ],
+        });
+        result = generated.result;
+        if (generated.reduction) {
+          reduction = generated.reduction;
+          reductionSnapshot = generated.reductionSnapshot;
+        }
+        if (generated.memoryFlush) {
+          memoryFlushes.push(generated.memoryFlush);
+        }
+        break;
+      }
       if (round >= maxRounds) {
         const generated = await this.generateFinalAfterToolRoundLimit({
           activation: input.activation,
@@ -132,6 +164,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           baseGatewayInput: initialGatewayInput,
           messages,
           maxRounds,
+          reasonLines: [
+            `Tool-use round limit reached (${maxRounds}).`,
+            "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+            "State uncertainties and missing verification explicitly instead of trying another lookup.",
+          ],
         });
         result = generated.result;
         if (generated.reduction) {
@@ -334,6 +371,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     baseGatewayInput: GenerateTextInput;
     messages: LLMMessage[];
     maxRounds: number;
+    reasonLines?: string[];
   }): Promise<{
     result: GenerateTextResult;
     reduction?: {
@@ -350,11 +388,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       ...input.messages,
       {
         role: "user",
-        content: [
+        content: (input.reasonLines ?? [
           `Tool-use round limit reached (${input.maxRounds}).`,
           "Do not call more tools. Produce the best final answer from the evidence already gathered.",
           "State uncertainties and missing verification explicitly instead of trying another lookup.",
-        ].join("\n"),
+        ]).join("\n"),
       },
     ]);
     return this.generateWithEnvelopeRetry({
@@ -382,51 +420,63 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     onResult?: (result: RoleToolExecutionResult) => Promise<void>;
   }): Promise<RoleToolExecutionResult[]> {
     if (!this.toolLoop) return [];
-    return Promise.all(
-      input.toolCalls.map(async (call) => {
-        await this.emitToolProgressSafely(input.activation, call, {
-          phase: "started",
-          toolName: call.name,
-          summary: `Tool call started: ${call.name}`,
-        }, input.onProgress);
-        try {
-          const result = await this.toolLoop!.executor.execute({
-            call,
-            activation: input.activation,
-            packet: input.packet,
-          });
-          for (const progress of result.progress ?? []) {
-            await this.emitToolProgressSafely(input.activation, call, progress, input.onProgress);
+    const maxParallelToolCalls =
+      typeof this.toolLoop.maxParallelToolCalls === "number" &&
+      Number.isFinite(this.toolLoop.maxParallelToolCalls) &&
+      this.toolLoop.maxParallelToolCalls > 0
+        ? Math.floor(this.toolLoop.maxParallelToolCalls)
+        : input.toolCalls.length;
+    const results: RoleToolExecutionResult[] = [];
+    for (let index = 0; index < input.toolCalls.length; index += maxParallelToolCalls) {
+      const chunk = input.toolCalls.slice(index, index + maxParallelToolCalls);
+      const chunkResults = await Promise.all(
+        chunk.map(async (call) => {
+          await this.emitToolProgressSafely(input.activation, call, {
+            phase: "started",
+            toolName: call.name,
+            summary: `Tool call started: ${call.name}`,
+          }, input.onProgress);
+          try {
+            const result = await this.toolLoop!.executor.execute({
+              call,
+              activation: input.activation,
+              packet: input.packet,
+            });
+            for (const progress of result.progress ?? []) {
+              await this.emitToolProgressSafely(input.activation, call, progress, input.onProgress);
+            }
+            await this.emitToolProgressSafely(input.activation, call, {
+              phase: result.cancelled ? "cancelled" : result.isError ? "failed" : "completed",
+              toolName: call.name,
+              summary: result.cancelled
+                ? `Tool call cancelled: ${call.name}`
+                : result.isError
+                  ? `Tool call failed: ${call.name}`
+                  : `Tool call completed: ${call.name}`,
+            }, input.onProgress);
+            await input.onResult?.(result);
+            return result;
+          } catch (error) {
+            const content = error instanceof Error ? error.message : String(error);
+            await this.emitToolProgressSafely(input.activation, call, {
+              phase: "failed",
+              toolName: call.name,
+              summary: `Tool call failed: ${call.name}: ${content}`,
+            }, input.onProgress);
+            const result = {
+              toolCallId: call.id,
+              toolName: call.name,
+              content,
+              isError: true,
+            };
+            await input.onResult?.(result);
+            return result;
           }
-          await this.emitToolProgressSafely(input.activation, call, {
-            phase: result.cancelled ? "cancelled" : result.isError ? "failed" : "completed",
-            toolName: call.name,
-            summary: result.cancelled
-              ? `Tool call cancelled: ${call.name}`
-              : result.isError
-                ? `Tool call failed: ${call.name}`
-                : `Tool call completed: ${call.name}`,
-          }, input.onProgress);
-          await input.onResult?.(result);
-          return result;
-        } catch (error) {
-          const content = error instanceof Error ? error.message : String(error);
-          await this.emitToolProgressSafely(input.activation, call, {
-            phase: "failed",
-            toolName: call.name,
-            summary: `Tool call failed: ${call.name}: ${content}`,
-          }, input.onProgress);
-          const result = {
-            toolCallId: call.id,
-            toolName: call.name,
-            content,
-            isError: true,
-          };
-          await input.onResult?.(result);
-          return result;
-        }
-      })
-    );
+        })
+      );
+      results.push(...chunkResults);
+    }
+    return results;
   }
 
   private async emitToolProgressSafely(
@@ -1044,6 +1094,19 @@ function summarizeToolResultContent(content: string): string {
 
 function isPrunedToolResultContent(content: string): boolean {
   return content.includes('"tool_result_pruned": true');
+}
+
+function formatDurationMs(ms: number): string {
+  const seconds = ms / 1_000;
+  if (seconds < 60) {
+    return `${Number(seconds.toFixed(3))}s`;
+  }
+  const minutes = seconds / 60;
+  if (minutes < 60) {
+    return `${Number(minutes.toFixed(2))}m`;
+  }
+  const hours = minutes / 60;
+  return `${Number(hours.toFixed(2))}h`;
 }
 
 function replaceInitialPromptMessages(messages: LLMMessage[], reducedPromptMessages: LLMMessage[]): LLMMessage[] {

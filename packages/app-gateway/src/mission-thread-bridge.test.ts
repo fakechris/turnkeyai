@@ -5,7 +5,7 @@ import type {
   ActivityEvent,
   Mission,
 } from "@turnkeyai/core-types/mission";
-import type { TeamMessage } from "@turnkeyai/core-types/team";
+import type { RoleRunState, TeamMessage } from "@turnkeyai/core-types/team";
 
 import { createMissionThreadBridge } from "./mission-thread-bridge";
 
@@ -30,6 +30,14 @@ function memMissionStore(missions: Mission[]) {
     async get(id: string): Promise<Mission | null> {
       return missions.find((m) => m.id === id) ?? null;
     },
+    async putRaw(mission: Mission): Promise<void> {
+      const index = missions.findIndex((m) => m.id === mission.id);
+      if (index >= 0) {
+        missions[index] = mission;
+      } else {
+        missions.push(mission);
+      }
+    },
   };
 }
 
@@ -39,6 +47,14 @@ function memTeamMessageStore(messages: TeamMessage[]) {
       const out = messages.filter((m) => m.threadId === threadId);
       out.sort((a, b) => a.createdAt - b.createdAt);
       return typeof limit === "number" ? out.slice(0, limit) : out;
+    },
+  };
+}
+
+function memRoleRunStore(runs: RoleRunState[]) {
+  return {
+    async listByThread(threadId: string): Promise<RoleRunState[]> {
+      return runs.filter((run) => run.threadId === threadId);
     },
   };
 }
@@ -128,6 +144,208 @@ describe("MissionThreadBridge", () => {
     assert.equal(await bridge.tickMission("msn.1"), 2);
     assert.equal(await bridge.tickMission("msn.1"), 0, "second tick must dedupe by messageId");
     assert.equal(activity.events.length, 2);
+  });
+
+  it("marks a working mission done after the lead final answer is mirrored", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      progress: 0.4,
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Final report is ready.",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    assert.equal(await bridge.tickMission("msn.1"), 2);
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "done");
+    assert.equal(updated?.progress, 1);
+  });
+
+  it("does not complete missions that still have approvals or blockers", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      pendingApprovals: 1,
+    };
+    const missionStore = memMissionStore([mission]);
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Final report is ready after approval.",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: memActivityStore(),
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "working");
+    assert.equal(updated?.pendingApprovals, 1);
+  });
+
+  it("does not complete a lead handoff turn that mentions another role", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"] };
+    const missionStore = memMissionStore([mission]);
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Please investigate pricing next. @{role-analyst}",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: memActivityStore(),
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "working");
+  });
+
+  it("marks a mission blocked when the latest lead tool turn is unresolved and no role run is active", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"] };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+          toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+          toolStatus: "pending",
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.blockers, 1);
+    const stalled = activity.events.find((event) => event.runtime?.eventType === "mission.stalled_no_final_answer");
+    assert.equal(stalled?.kind, "recovery");
+    assert.equal(stalled?.runtime?.toolStatus, "pending");
+  });
+
+  it("does not block an unresolved tool turn while a role run is still active", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"] };
+    const missionStore = memMissionStore([mission]);
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "waiting_worker",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+          toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+          toolStatus: "pending",
+        },
+      ]),
+      activityStore: memActivityStore(),
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "working");
   });
 
   it("appends only new messages on incremental tick", async () => {

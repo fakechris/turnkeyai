@@ -72,12 +72,17 @@ export function createNativeToolCapabilityRegistry(input: {
   permissionsEnabled?: boolean;
   memoryEnabled?: boolean;
   tasksEnabled?: boolean;
+  maxSessionToolTimeoutSeconds?: number;
 } = {}): ToolCapabilityRegistry {
   const workerKinds = normalizeWorkerKinds(input.availableWorkerKinds);
   const records: ToolCapabilityRecord[] = [];
   if (workerKinds.length > 0) {
     records.push(
-      ...buildSessionToolDefinitions(workerKinds).map((definition) => ({
+      ...buildSessionToolDefinitions(workerKinds, {
+        ...(input.maxSessionToolTimeoutSeconds
+          ? { maxTimeoutSeconds: input.maxSessionToolTimeoutSeconds }
+          : {}),
+      }).map((definition) => ({
         name: definition.name as NativeToolName,
         definition,
         executorKind: "worker-session" as const,
@@ -211,7 +216,16 @@ export function buildMemoryToolDefinitions(): LLMToolDefinition[] {
   ];
 }
 
-export function buildSessionToolDefinitions(workerKinds: WorkerKind[]): LLMToolDefinition[] {
+export function buildSessionToolDefinitions(
+  workerKinds: WorkerKind[],
+  options: { maxTimeoutSeconds?: number } = {}
+): LLMToolDefinition[] {
+  const maxTimeoutSeconds =
+    typeof options.maxTimeoutSeconds === "number" &&
+    Number.isFinite(options.maxTimeoutSeconds) &&
+    options.maxTimeoutSeconds > 0
+      ? options.maxTimeoutSeconds
+      : 1800;
   return [
     {
       name: "sessions_spawn",
@@ -231,7 +245,7 @@ export function buildSessionToolDefinitions(workerKinds: WorkerKind[]): LLMToolD
           timeout_seconds: {
             type: "number",
             minimum: 0.001,
-            maximum: 900,
+            maximum: maxTimeoutSeconds,
             description:
               "Optional wall-clock timeout for this sub-agent call. On timeout the session is interrupted and remains available for sessions_send follow-up.",
           },
@@ -252,7 +266,7 @@ export function buildSessionToolDefinitions(workerKinds: WorkerKind[]): LLMToolD
           timeout_seconds: {
             type: "number",
             minimum: 0.001,
-            maximum: 900,
+            maximum: maxTimeoutSeconds,
             description:
               "Optional wall-clock timeout for this follow-up. On timeout the session is interrupted and remains available for another sessions_send.",
           },
@@ -405,6 +419,7 @@ function renderGeneralToolUsageSection(): string {
     "- Use specialized tools before generic shell-style workarounds.",
     "- Run independent tool calls in parallel when their inputs do not depend on each other.",
     "- Do not repeat the same tool call with the same arguments. After 2-3 failed attempts, stop and report the failure and what is needed.",
+    "- If you approach the execution limit, stop calling tools and synthesize only from tool results already present in the conversation.",
     "- Every non-trivial task needs a verification step before final delivery.",
   ].join("\n");
 }
@@ -426,9 +441,11 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
     "## Sub-Agent Sessions",
     "Use sessions_spawn only when delegation materially helps: parallel independent work, context isolation, specialist browser work, or verification.",
     "Each spawned task must be self-contained. Include exact URLs, paths, scope, output format, stop conditions, and constraints the child will not otherwise know.",
-    "Use timeout_seconds for bounded work. If a sub-agent times out, inspect sessions_history and continue with sessions_send only if the remaining work is still valuable.",
-    "Prefer multiple focused sub-agents over one broad sub-agent when the subtasks are independent.",
-    "After a sub-agent returns, validate coverage before presenting the result. If the result is partial, use sessions_send or a new focused spawn.",
+    "Keep each spawned task to a manageable size, roughly 10-15 tool calls. If the work is larger, split it into smaller independent sessions.",
+    "Prefer multiple focused sub-agents over one broad sub-agent when the subtasks are independent; do not exceed five parallel sub-agents for one user request.",
+    "Use timeout_seconds for bounded work. Suggested caps: browser 1080s for authenticated/interactive web work; explore/finance 480s for focused research or data lookup.",
+    "If a sub-agent times out, inspect sessions_history and continue with sessions_send only if the remaining work is still valuable. Do not treat a timeout as final evidence.",
+    "After a sub-agent returns, validate coverage before presenting the result. If the result is partial, use sessions_send or a new focused spawn; otherwise synthesize directly.",
     "Use sessions_history to inspect sessions you spawned or when the user explicitly asks to recall prior sub-agent work. Do not browse unrelated sessions as a fallback.",
     seat === "lead"
       ? "As lead, own the final synthesis. Sub-agents provide evidence; you decide whether the user's request is complete."
