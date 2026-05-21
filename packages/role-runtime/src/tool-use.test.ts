@@ -251,6 +251,136 @@ test("sessions_spawn proceeds with browser side effects after permission cache g
   assert.match(result.content, /Submitted after approval/);
 });
 
+test("sessions_spawn does not require publish approval for read-only package publish metadata", async () => {
+  let spawnCalled = false;
+  let permissionRequested = false;
+  let spawnedTaskId = "";
+  const toolPermissionService: ToolPermissionService = {
+    async request() {
+      permissionRequested = true;
+      throw new Error("read-only metadata lookup must not request approval");
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn(input: { activation: RoleActivationInput }) {
+      spawnCalled = true;
+      spawnedTaskId = input.activation.handoff.taskId;
+      return { workerType: "browser", workerRunKey: "worker:browser:task-readonly" };
+    },
+    async send() {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Fetched package metadata.",
+        payload: { readOnly: true },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-readonly-publish-date",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Research the multica npm package. Find weekly downloads, version, last publish date, and release cadence. Report metrics only.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Research package publish metadata.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(spawnCalled, true);
+  assert.equal(spawnedTaskId, "task-1:call-readonly-publish-date");
+  assert.equal(permissionRequested, false);
+  assert.equal(result.isError, undefined);
+  assert.match(result.content, /Fetched package metadata/);
+});
+
+test("sessions_spawn does not require publish approval for read-only release information", async () => {
+  let spawnCalled = false;
+  let permissionRequested = false;
+  let spawnedTaskId = "";
+  const toolPermissionService: ToolPermissionService = {
+    async request() {
+      permissionRequested = true;
+      throw new Error("read-only release lookup must not request approval");
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn(input: { activation: RoleActivationInput }) {
+      spawnCalled = true;
+      spawnedTaskId = input.activation.handoff.taskId;
+      return { workerType: "browser", workerRunKey: "worker:browser:task-readonly-release" };
+    },
+    async send() {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Fetched release metadata.",
+        payload: { readOnly: true },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-readonly-release-info",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open GitHub repository pages and collect release information, last release version, release count, and release history. Do not publish or change anything.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Research repository release metadata.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(spawnCalled, true);
+  assert.equal(spawnedTaskId, "task-1:call-readonly-release-info");
+  assert.equal(permissionRequested, false);
+  assert.equal(result.isError, undefined);
+  assert.match(result.content, /Fetched release metadata/);
+});
+
 test("sessions_spawn waits for approval and resumes the same tool call before browser side effects", async () => {
   const events: string[] = [];
   let sendToolCallId: string | undefined;

@@ -646,10 +646,211 @@ test("llm role response generator prunes older oversized tool results before lat
   assert.match(fourthToolContents?.[0] ?? "", /"tool_result_pruned": true/);
   assert.match(fourthToolContents?.[0] ?? "", /"reason": "older_than_recent_window"/);
   assert.doesNotMatch(fourthToolContents?.[0] ?? "", /^A{20000}$/);
-  assert.equal(fourthToolContents?.[1], largeB);
+  assert.match(fourthToolContents?.[1] ?? "", /"reason": "aggregate_tool_result_budget_recent_window"/);
   assert.equal(fourthToolContents?.[2], largeC);
   assert.equal(gatewayInputs[3]?.envelope?.toolResultCount, 3);
-  assert.ok((gatewayInputs[3]?.envelope?.toolResultBytes ?? 0) < 45_000);
+  assert.ok((gatewayInputs[3]?.envelope?.toolResultBytes ?? 0) <= 32 * 1024);
+});
+
+test("llm role response generator prunes aggregate tool result budget before final synthesis", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const largeA = "A".repeat(8_000);
+  const largeB = "B".repeat(8_000);
+  const largeC = "C".repeat(8_000);
+  const largeD = "D".repeat(8_000);
+  const largeE = "E".repeat(8_000);
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-a", "sessions_spawn", { agent_id: "explore", task: "A" });
+    }
+    if (gatewayInputs.length === 2) {
+      return toolCallResult("toolu-b", "sessions_spawn", { agent_id: "explore", task: "B" });
+    }
+    if (gatewayInputs.length === 3) {
+      return toolCallResult("toolu-c", "sessions_spawn", { agent_id: "explore", task: "C" });
+    }
+    if (gatewayInputs.length === 4) {
+      return toolCallResult("toolu-d", "sessions_spawn", { agent_id: "explore", task: "D" });
+    }
+    if (gatewayInputs.length === 5) {
+      return toolCallResult("toolu-e", "sessions_spawn", { agent_id: "explore", task: "E" });
+    }
+    return {
+      text: "Final synthesis after aggregate pruning.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      const byId: Record<string, string> = {
+        "toolu-a": largeA,
+        "toolu-b": largeB,
+        "toolu-c": largeC,
+        "toolu-d": largeD,
+        "toolu-e": largeE,
+      };
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: byId[input.call.id] ?? "",
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 6 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Final synthesis after aggregate pruning.");
+  assert.equal(gatewayInputs.length, 6);
+  assert.ok((gatewayInputs[5]?.envelope?.toolResultBytes ?? 0) <= 32 * 1024);
+  const finalToolContents = gatewayInputs[5]?.messages
+    .filter((message) => message.role === "tool")
+    .map((message) => readToolContent(message.content));
+  assert.match(finalToolContents?.[0] ?? "", /"reason": "aggregate_tool_result_budget"/);
+  assert.equal(finalToolContents?.at(-2), largeD);
+  assert.equal(finalToolContents?.at(-1), largeE);
+});
+
+test("llm role response generator compacts older tool history before message-count overflow", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length <= 8) {
+      return toolCallResult(`toolu-${gatewayInputs.length}`, "sessions_spawn", {
+        agent_id: "explore",
+        task: `Fetch source ${gatewayInputs.length}`,
+      });
+    }
+    return {
+      text: "Final synthesis after message compaction.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({ status: "completed", source: input.call.input.task }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 9 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Final synthesis after message compaction.");
+  assert.equal(gatewayInputs.length, 9);
+  assert.ok(gatewayInputs[8]!.messages.length <= 16);
+  assert.equal(gatewayInputs[8]!.messages[2]?.role, "user");
+  assert.match(readToolContent(gatewayInputs[8]!.messages[2]!.content), /Earlier tool history compacted/);
+  assert.equal(gatewayInputs[8]!.messages.at(-1)?.role, "tool");
+  assert.equal(gatewayInputs[8]!.messages.at(-1)?.toolCallId, "toolu-8");
+});
+
+test("llm role response generator synthesizes instead of falling back when tool round limit is reached", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let executedTools = 0;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length <= 3) {
+      return toolCallResult(`toolu-${gatewayInputs.length}`, "sessions_spawn", {
+        agent_id: "explore",
+        task: `Fetch more evidence ${gatewayInputs.length}`,
+      });
+    }
+    return {
+      text: "Final answer after bounded tool use.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedTools += 1;
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({ status: "completed", result: input.call.input.task }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 2 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Final answer after bounded tool use.");
+  assert.equal(executedTools, 2);
+  assert.equal(gatewayInputs.length, 4);
+  assert.equal(gatewayInputs[3]?.toolChoice, "none");
+  assert.equal(gatewayInputs[3]?.tools, undefined);
+  assert.ok(
+    gatewayInputs[3]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes("Tool-use round limit reached (2)")
+    )
+  );
 });
 
 function buildActivation(
