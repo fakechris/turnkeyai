@@ -201,6 +201,100 @@ test("sessions_spawn enforces per-parent active sub-agent concurrency before spa
   assert.match(body.result, /sub_agent_concurrency_limit/);
 });
 
+test("sessions_spawn checks concurrency atomically with spawn under parallel tool execution", async () => {
+  const activation = buildActivation();
+  const records: Array<{
+    workerRunKey: string;
+    executionToken: number;
+    context: {
+      threadId: string;
+      flowId: string;
+      taskId: string;
+      roleId: string;
+      parentSpanId: string;
+    };
+    state: {
+      workerRunKey: string;
+      workerType: "browser";
+      status: "idle";
+      createdAt: number;
+      updatedAt: number;
+    };
+  }> = [];
+  let spawnCount = 0;
+  const workerRuntime = {
+    async listSessions() {
+      return [...records];
+    },
+    async spawn() {
+      spawnCount += 1;
+      const workerRunKey = `worker:browser:atomic-${spawnCount}`;
+      records.push({
+        workerRunKey,
+        executionToken: 0,
+        context: {
+          threadId: "thread-1",
+          flowId: "flow-1",
+          taskId: `task-atomic-${spawnCount}`,
+          roleId: "role-lead",
+          parentSpanId: `role:${activation.runState.runKey}`,
+        },
+        state: {
+          workerRunKey,
+          workerType: "browser",
+          status: "idle",
+          createdAt: spawnCount,
+          updatedAt: spawnCount,
+        },
+      });
+      return { workerType: "browser", workerRunKey };
+    },
+    async send(input: { workerRunKey: string }) {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: `Completed ${input.workerRunKey}.`,
+        payload: null,
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    sessionConcurrency: { maxPerParentConcurrent: 1, maxGlobalActive: 12 },
+  });
+  const packet = {
+    roleId: "role-lead",
+    roleName: "Lead",
+    seat: "lead" as const,
+    systemPrompt: "Lead.",
+    taskPrompt: "Open two pages.",
+    outputContract: "Return result.",
+    suggestedMentions: [],
+  };
+
+  const results = await Promise.all([
+    executor.execute({
+      call: { id: "call-atomic-1", name: "sessions_spawn", input: { agent_id: "browser", task: "Open page A." } },
+      activation,
+      packet,
+    }),
+    executor.execute({
+      call: { id: "call-atomic-2", name: "sessions_spawn", input: { agent_id: "browser", task: "Open page B." } },
+      activation,
+      packet,
+    }),
+  ]);
+
+  assert.equal(spawnCount, 1);
+  assert.equal(results.filter((result) => result.isError).length, 1);
+  assert.equal(results.filter((result) => !result.isError).length, 1);
+  assert.equal(
+    results.some((result) => result.content.includes('"status": "sub_agent_concurrency_limit"')),
+    true
+  );
+});
+
 test("sessions_spawn enforces global active sub-agent concurrency before spawning", async () => {
   let spawnCalled = false;
   const workerRuntime = {

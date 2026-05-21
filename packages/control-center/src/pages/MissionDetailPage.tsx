@@ -160,13 +160,15 @@ function LiveMissionView({ mission }: { mission: Mission }) {
               <button
                 type="button"
                 className="btn ghost"
+                aria-expanded={thinkingExpanded}
+                aria-controls="thinking-record-timeline"
                 onClick={() => setThinkingExpanded((value) => !value)}
               >
                 {thinkingExpanded ? "Collapse" : "Expand"}
               </button>
             </div>
             {thinkingExpanded && (
-              <div className="timeline">
+              <div id="thinking-record-timeline" className="timeline">
                 {timeline.value.length === 0 ? (
                   <div className="muted" style={{ padding: 28, textAlign: "center", fontSize: 11.5 }}>
                     {timeline.isLive
@@ -248,7 +250,11 @@ function LiveMissionView({ mission }: { mission: Mission }) {
           </div>
         )}
         {acceptedNotice && !error && (
-          <div style={{ padding: "6px 12px", color: "var(--muted)", fontSize: 11.5 }}>
+          <div
+            role="status"
+            aria-live="polite"
+            style={{ padding: "6px 12px", color: "var(--muted)", fontSize: 11.5 }}
+          >
             {acceptedNotice}
           </div>
         )}

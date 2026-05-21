@@ -76,6 +76,24 @@ export interface WorkerSessionConcurrencyLimits {
   maxGlobalActive?: number;
 }
 
+class AsyncSerialGate {
+  private tail: Promise<void> = Promise.resolve();
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const previous = this.tail;
+    this.tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+}
+
 export function appendAssistantToolCallMessage(
   messages: LLMMessage[],
   input: { text: string; contentBlocks?: LLMContentBlock[]; toolCalls: LLMToolCall[] }
@@ -198,6 +216,7 @@ export function createWorkerSessionToolExecutor(options: {
     });
   const definitions = toolCapabilityRegistry.definitions();
   const executableWorkerKinds = new Set(toolCapabilityRegistry.availableWorkerKinds());
+  const sessionSpawnGate = new AsyncSerialGate();
   return {
     definitions() {
       return definitions;
@@ -214,7 +233,8 @@ export function createWorkerSessionToolExecutor(options: {
             options.toolPermissionService,
             options.maxSessionToolTimeoutMs,
             options.hardTimeoutGraceMs,
-            options.sessionConcurrency
+            options.sessionConcurrency,
+            sessionSpawnGate
           );
         case "sessions_send":
           return executeSessionsSend(
@@ -821,7 +841,8 @@ async function executeSessionsSpawn(
   toolPermissionService?: ToolPermissionService,
   maxSessionToolTimeoutMs?: number,
   hardTimeoutGraceMs?: number,
-  sessionConcurrency?: WorkerSessionConcurrencyLimits
+  sessionConcurrency?: WorkerSessionConcurrencyLimits,
+  sessionSpawnGate?: AsyncSerialGate
 ): Promise<RoleToolExecutionResult> {
   const task = requiredString(input.call.input.task);
   const agentId = requiredString(input.call.input.agent_id) as WorkerKind | null;
@@ -831,10 +852,6 @@ async function executeSessionsSpawn(
   if (!executableWorkerKinds.has(agentId)) {
     const available = [...executableWorkerKinds].join(", ") || "(none)";
     return errorResult(input.call, `Worker kind ${agentId} is not available. Available worker kinds: ${available}.`);
-  }
-  const concurrencyError = await maybeRejectSessionConcurrency(workerRuntime, input, sessionConcurrency);
-  if (concurrencyError) {
-    return concurrencyError;
   }
   const gate = await maybeGateBrowserSideEffect({
     input,
@@ -854,7 +871,20 @@ async function executeSessionsSpawn(
   };
   const workerActivation = scopeWorkerActivationToToolCall(input.activation, input.call.id);
   const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds, maxSessionToolTimeoutMs);
-  const spawned = await workerRuntime.spawn({ activation: workerActivation, packet });
+  const spawnAttempt = await (sessionSpawnGate ?? new AsyncSerialGate()).run(async () => {
+    const concurrencyError = await maybeRejectSessionConcurrency(workerRuntime, input, sessionConcurrency);
+    if (concurrencyError) {
+      return { concurrencyError, spawned: null };
+    }
+    return {
+      concurrencyError: null,
+      spawned: await workerRuntime.spawn({ activation: workerActivation, packet }),
+    };
+  });
+  if (spawnAttempt.concurrencyError) {
+    return spawnAttempt.concurrencyError;
+  }
+  const spawned = spawnAttempt.spawned;
   if (!spawned) {
     return errorResult(input.call, `No worker handler available for ${agentId}`);
   }
@@ -1385,7 +1415,7 @@ async function maybeRejectSessionConcurrency(
 }
 
 function isActiveWorkerSession(status: WorkerSessionState["status"]): boolean {
-  return status === "running" || status === "waiting_input" || status === "waiting_external";
+  return status === "idle" || status === "running" || status === "waiting_input" || status === "waiting_external";
 }
 
 function sessionConcurrencyLimitResult(
@@ -1508,7 +1538,15 @@ function sanitizeEvidenceSummary(value: string | null | undefined): string | nul
     return null;
   }
   const trimmed = value.trim();
-  return trimmed.length > 1600 ? `${trimmed.slice(0, 1597)}...` : trimmed;
+  const buffer = Buffer.from(trimmed, "utf8");
+  if (buffer.length <= 1600) {
+    return trimmed;
+  }
+  let end = 1600;
+  while (end > 0 && ((buffer[end] ?? 0) & 0xc0) === 0x80) {
+    end -= 1;
+  }
+  return buffer.subarray(0, end).toString("utf8");
 }
 
 async function sendWorkerWithOptionalTimeout(

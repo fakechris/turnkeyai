@@ -144,6 +144,7 @@ export function useMission(
     setIsLive(false);
     setError(null);
     let pollTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let sawUnauthorized = false;
     const issueFetch = () => {
       void client
         .get<Mission>(path)
@@ -155,10 +156,14 @@ export function useMission(
         })
         .catch((err: Error) => {
           if (cancelled) return;
-          if (err.message !== "unauthorized") setError(err.message);
+          if (err.message === "unauthorized") {
+            sawUnauthorized = true;
+            return;
+          }
+          setError(err.message);
         })
         .finally(() => {
-          if (cancelled) return;
+          if (cancelled || sawUnauthorized) return;
           if (options.pollIntervalMs && options.pollIntervalMs > 0) {
             pollTimeoutHandle = setTimeout(issueFetch, options.pollIntervalMs);
           }

@@ -89,10 +89,12 @@ function parseBlocks(text: string): Block[] {
       continue;
     }
 
-    if (line.trim().startsWith("```")) {
+    const openingFence = /^(`{3,})/.exec(line.trim());
+    if (openingFence) {
+      const fenceLength = openingFence[1]!.length;
       const codeLines: string[] = [];
       i += 1;
-      while (i < lines.length && !(lines[i] ?? "").trim().startsWith("```")) {
+      while (i < lines.length && !isClosingFence(lines[i] ?? "", fenceLength)) {
         codeLines.push(lines[i] ?? "");
         i += 1;
       }
@@ -172,7 +174,7 @@ function parseBlocks(text: string): Block[] {
 function startsBlock(lines: string[], index: number): boolean {
   const line = lines[index] ?? "";
   return (
-    line.trim().startsWith("```") ||
+    /^`{3,}/.test(line.trim()) ||
     /^(#{1,3})\s+/.test(line.trim()) ||
     /^\s*>\s?/.test(line) ||
     /^\s*[-*]\s+/.test(line) ||
@@ -192,41 +194,98 @@ function splitTableRow(line: string): string[] {
     .trim()
     .replace(/^\|/, "")
     .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.trim().replace(/\\\|/g, "|"));
 }
 
 function renderInline(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\(https?:\/\/[^)\s]+\))/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
+  let index = 0;
+  let plainStart = 0;
+  const flushPlain = (end: number) => {
+    if (end > plainStart) {
+      nodes.push(text.slice(plainStart, end));
     }
-    const token = match[0];
-    const key = `${match.index}-${token}`;
-    if (token.startsWith("`")) {
-      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
-    } else if (token.startsWith("**")) {
-      nodes.push(<strong key={key}>{renderInline(token.slice(2, -2))}</strong>);
-    } else {
-      const link = /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/.exec(token);
-      if (link) {
-        nodes.push(
-          <a key={key} href={link[2]} target="_blank" rel="noreferrer">
-            {link[1]}
-          </a>
-        );
-      } else {
-        nodes.push(token);
+  };
+  while (index < text.length) {
+    if (text.startsWith("**", index)) {
+      const close = text.indexOf("**", index + 2);
+      if (close > index + 2) {
+        flushPlain(index);
+        nodes.push(<strong key={`${index}-strong`}>{renderInline(text.slice(index + 2, close))}</strong>);
+        index = close + 2;
+        plainStart = index;
+        continue;
       }
     }
-    lastIndex = pattern.lastIndex;
+    if (text[index] === "`") {
+      const close = text.indexOf("`", index + 1);
+      if (close > index + 1) {
+        flushPlain(index);
+        nodes.push(<code key={`${index}-code`}>{text.slice(index + 1, close)}</code>);
+        index = close + 1;
+        plainStart = index;
+        continue;
+      }
+    }
+    const link = parseInlineLink(text, index);
+    if (link) {
+      flushPlain(index);
+      nodes.push(
+        <a key={`${index}-link`} href={link.href} target="_blank" rel="noreferrer">
+          {link.label}
+        </a>
+      );
+      index = link.end;
+      plainStart = index;
+      continue;
+    }
+    index += 1;
   }
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
+  flushPlain(text.length);
   return nodes;
+}
+
+function isClosingFence(line: string, openingFenceLength: number): boolean {
+  const trimmed = line.trim();
+  return /^`+$/.test(trimmed) && trimmed.length >= openingFenceLength;
+}
+
+function parseInlineLink(text: string, index: number): { label: string; href: string; end: number } | null {
+  if (text[index] !== "[") {
+    return null;
+  }
+  const labelEnd = text.indexOf("](", index + 1);
+  if (labelEnd <= index + 1) {
+    return null;
+  }
+  const hrefStart = labelEnd + 2;
+  let depth = 0;
+  for (let i = hrefStart; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === "\\") {
+      i += 1;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")") {
+      if (depth > 0) {
+        depth -= 1;
+        continue;
+      }
+      const href = text.slice(hrefStart, i);
+      if (!/^https?:\/\//.test(href)) {
+        return null;
+      }
+      return {
+        label: text.slice(index + 1, labelEnd),
+        href,
+        end: i + 1,
+      };
+    }
+  }
+  return null;
 }
