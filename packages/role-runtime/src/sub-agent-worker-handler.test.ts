@@ -46,8 +46,9 @@ test("LLMSubAgentWorkerHandler runs a private worker tool before returning a fin
   assert.equal(result?.status, "completed");
   assert.equal(result?.summary, "Verified answer from the source.");
   assert.deepEqual(innerTaskPrompts, ["Fetch the primary source and extract the answer."]);
-  assert.deepEqual(gatewayInputs[0]?.tools?.map((tool) => tool.name), ["explore_run"]);
-  assert.ok(!JSON.stringify(gatewayInputs[0]?.tools ?? []).includes("sessions_spawn"));
+  const toolNames = gatewayInputs[0]?.tools?.map((tool) => tool.name) ?? [];
+  assert.deepEqual(toolNames, ["explore_run"]);
+  assert.ok(!toolNames.includes("sessions_spawn"));
   assert.equal(
     ((result?.payload as { metadata?: { toolUse?: { toolCallCount?: number } } }).metadata?.toolUse?.toolCallCount),
     1
@@ -117,6 +118,74 @@ test("LLMSubAgentWorkerHandler returns a partial result when aborted before work
 
   assert.equal(result?.status, "partial");
   assert.equal(gatewayCalled, false);
+});
+
+test("LLMSubAgentWorkerHandler stops before private tools when aborted after an LLM response", async () => {
+  const controller = new AbortController();
+  let releaseGateway!: () => void;
+  let gatewayCalled = false;
+  let innerCalled = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => {
+    gatewayCalled = true;
+    await new Promise<void>((resolve) => {
+      releaseGateway = resolve;
+    });
+    return toolCallResult("tool-1", "explore_run", { instruction: "Fetch the source." });
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler: buildInnerHandler({
+      kind: "explore",
+      async run() {
+        innerCalled = true;
+        return {
+          workerType: "explore",
+          status: "completed",
+          summary: "should not run",
+          payload: {},
+        };
+      },
+    }),
+    gateway,
+  });
+
+  const pending = handler.run({
+    ...buildInvocationInput("explore"),
+    signal: controller.signal,
+  });
+  await waitUntil(() => gatewayCalled);
+  controller.abort();
+  releaseGateway();
+  const result = await pending;
+
+  assert.equal(result?.status, "partial");
+  assert.equal(innerCalled, false);
+});
+
+test("LLMSubAgentWorkerHandler returns a tool error for malformed private tool input", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "explore_run", null as unknown as Record<string, unknown>);
+    }
+    return textResult("Recovered after malformed tool input.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler: buildInnerHandler({ kind: "explore" }),
+    gateway,
+  });
+
+  const result = await handler.run(buildInvocationInput("explore"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(result?.summary, "Recovered after malformed tool input.");
+  const toolMessage = gatewayInputs[1]?.messages.find((message) => message.role === "tool");
+  assert.match(readToolContent(toolMessage?.content ?? ""), /Missing required string field: instruction/);
 });
 
 function buildInnerHandler(input: {
@@ -246,4 +315,26 @@ function textResult(text: string): GenerateTextResult {
     adapterName: "test",
     raw: {},
   };
+}
+
+function readToolContent(content: GenerateTextInput["messages"][number]["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  return content
+    .map((block) => {
+      if (block.type === "tool_result") return block.content;
+      if (block.type === "text") return block.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let index = 0; index < 25; index += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("condition was not met");
 }

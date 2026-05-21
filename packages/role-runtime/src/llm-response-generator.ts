@@ -56,12 +56,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     this.clock = options.clock ?? { now: () => Date.now() };
   }
 
-  async generate(input: { activation: RoleActivationInput; packet: RolePromptPacket }): Promise<GeneratedRoleReply> {
+  async generate(input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal }): Promise<GeneratedRoleReply> {
     const role = input.activation.thread.roles.find((item) => item.roleId === input.activation.runState.roleId);
     const selection = role ? getRoleModelSelection(role) : {};
     if (!selection.modelId && !selection.modelChainId) {
       throw new Error(`no model configured for role ${input.activation.runState.roleId}`);
     }
+    throwIfAborted(input.signal);
 
     let result: GenerateTextResult;
     let reduction:
@@ -97,6 +98,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     let messages: LLMMessage[] = initialGatewayInput.messages;
     const toolLoopStartedAtMs = this.clock.now();
     for (let round = 0; ; round++) {
+      throwIfAborted(input.signal);
       const gatewayMessages = prepareToolHistoryForGateway(messages);
       const generated = await this.generateWithEnvelopeRetry({
         activation: input.activation,
@@ -111,6 +113,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           },
         },
       });
+      throwIfAborted(input.signal);
       result = generated.result;
       if (generated.reduction) {
         reduction = generated.reduction;
@@ -133,6 +136,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         maxWallClockMs > 0 &&
         this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
       ) {
+        throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
           activation: input.activation,
           packet: input.packet,
@@ -146,6 +150,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             "State uncertainties and missing verification explicitly instead of trying another lookup.",
           ],
         });
+        throwIfAborted(input.signal);
         result = generated.result;
         if (generated.reduction) {
           reduction = generated.reduction;
@@ -157,6 +162,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         break;
       }
       if (round >= maxRounds) {
+        throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
           activation: input.activation,
           packet: input.packet,
@@ -170,6 +176,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             "State uncertainties and missing verification explicitly instead of trying another lookup.",
           ],
         });
+        throwIfAborted(input.signal);
         result = generated.result;
         if (generated.reduction) {
           reduction = generated.reduction;
@@ -196,6 +203,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         activation: input.activation,
         packet: input.packet,
         toolCalls,
+        ...(input.signal ? { signal: input.signal } : {}),
         onProgress: async (call, progress) => {
           roundTrace.progress?.push(toNativeToolProgressTrace(call, progress, this.clock.now()));
           await this.persistNativeToolTraceSafely(input.activation, toolTrace);
@@ -205,6 +213,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           await this.persistNativeToolTraceSafely(input.activation, toolTrace);
         },
       });
+      throwIfAborted(input.signal);
       messages = appendAssistantToolCallMessage(messages, {
         text: result.text,
         toolCalls,
@@ -416,6 +425,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     activation: RoleActivationInput;
     packet: RolePromptPacket;
     toolCalls: LLMToolCall[];
+    signal?: AbortSignal;
     onProgress?: (call: LLMToolCall, progress: Parameters<typeof recordRoleToolProgress>[0]["progress"]) => Promise<void>;
     onResult?: (result: RoleToolExecutionResult) => Promise<void>;
   }): Promise<RoleToolExecutionResult[]> {
@@ -428,20 +438,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         : input.toolCalls.length;
     const results: RoleToolExecutionResult[] = [];
     for (let index = 0; index < input.toolCalls.length; index += maxParallelToolCalls) {
+      throwIfAborted(input.signal);
       const chunk = input.toolCalls.slice(index, index + maxParallelToolCalls);
       const chunkResults = await Promise.all(
         chunk.map(async (call) => {
+          throwIfAborted(input.signal);
           await this.emitToolProgressSafely(input.activation, call, {
             phase: "started",
             toolName: call.name,
             summary: `Tool call started: ${call.name}`,
           }, input.onProgress);
           try {
+            throwIfAborted(input.signal);
             const result = await this.toolLoop!.executor.execute({
               call,
               activation: input.activation,
               packet: input.packet,
             });
+            throwIfAborted(input.signal);
             for (const progress of result.progress ?? []) {
               await this.emitToolProgressSafely(input.activation, call, progress, input.onProgress);
             }
@@ -457,6 +471,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             await input.onResult?.(result);
             return result;
           } catch (error) {
+            if (isAbortError(error)) {
+              throw error;
+            }
             const content = error instanceof Error ? error.message : String(error);
             await this.emitToolProgressSafely(input.activation, call, {
               phase: "failed",
@@ -848,6 +865,19 @@ function extractMentions(content: string): RoleId[] {
   return [...content.matchAll(/@\{(?<roleId>[^}]+)\}/g)]
     .map((match) => match.groups?.roleId)
     .filter((value): value is RoleId => Boolean(value));
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  const error = new Error("operation aborted");
+  error.name = "AbortError";
+  throw error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function deriveToolResultEnvelope(messages: LLMMessage[]): { toolResultCount: number; toolResultBytes: number } {

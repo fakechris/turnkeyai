@@ -141,8 +141,9 @@ async function runMockSubAgentToolUseE2e(): Promise<{
   assert.equal(result?.status, "completed");
   assert.equal(result?.summary, "The sub-agent verified the requested source fact.");
   assert.deepEqual(innerTaskPrompts, ["Fetch the source and extract the fact."]);
-  assert.deepEqual(llmInputs[0]?.tools?.map((tool) => tool.name), ["explore_run"]);
-  assert.equal(JSON.stringify(llmInputs[0]?.tools ?? []).includes("sessions_spawn"), false);
+  const toolNames = llmInputs[0]?.tools?.map((tool) => tool.name) ?? [];
+  assert.deepEqual(toolNames, ["explore_run"]);
+  assert.equal(toolNames.includes("sessions_spawn"), false);
   assert.equal(
     ((result?.payload as { metadata?: { toolUse?: { toolCallCount?: number } } }).metadata?.toolUse?.toolCallCount),
     1

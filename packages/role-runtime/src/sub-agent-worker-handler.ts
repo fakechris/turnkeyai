@@ -78,18 +78,16 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
     });
 
     try {
-      const reply = await raceAbort(
-        generator.generate({
+      const reply = await generator.generate({
+        activation: input.activation,
+        packet: buildSubAgentPromptPacket({
+          kind: this.kind,
           activation: input.activation,
-          packet: buildSubAgentPromptPacket({
-            kind: this.kind,
-            activation: input.activation,
-            input,
-            maxRounds: this.maxRounds,
-          }),
+          input,
+          maxRounds: this.maxRounds,
         }),
-        input.signal
-      );
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
       return {
         workerType: this.kind,
         status: "completed",
@@ -151,7 +149,13 @@ class SubAgentToolExecutor implements RoleToolExecutor {
   }
 
   async execute(input: RoleToolExecutionInput): Promise<RoleToolExecutionResult> {
-    const instruction = typeof input.call.input["instruction"] === "string" ? input.call.input["instruction"].trim() : "";
+    const rawInput = input.call.input as unknown;
+    const instruction =
+      rawInput &&
+      typeof rawInput === "object" &&
+      typeof (rawInput as Record<string, unknown>)["instruction"] === "string"
+        ? ((rawInput as Record<string, unknown>)["instruction"] as string).trim()
+        : "";
     if (!instruction) {
       return {
         toolCallId: input.call.id,
@@ -301,27 +305,6 @@ function summarizeReply(content: string): string {
   const normalized = content.replace(/\s+/g, " ").trim();
   if (!normalized) return "Sub-agent completed.";
   return normalized.length > 240 ? `${normalized.slice(0, 237)}...` : normalized;
-}
-
-async function raceAbort<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (!signal) return operation;
-  if (signal.aborted) {
-    throw new Error("sub-agent aborted");
-  }
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new Error("sub-agent aborted"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    operation.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      }
-    );
-  });
 }
 
 function abortedResult(kind: WorkerKind): WorkerExecutionResult {
