@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type {
+  BrowserBridge,
+  BrowserSession,
+  BrowserSessionHistoryEntry,
+  BrowserTarget,
+  BrowserTaskResult,
   RoleActivationInput,
   WorkerExecutionResult,
   WorkerHandler,
@@ -83,6 +88,257 @@ test("LLMSubAgentWorkerHandler keeps browser work on a browser-specific private 
   assert.equal(result?.status, "completed");
   assert.equal(gatewayInputs[0]?.tools?.[0]?.name, "browser_run");
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /same browser operation at most three times/i);
+});
+
+test("LLMSubAgentWorkerHandler exposes structured browser private tools when a browser bridge is wired", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const bridgeCalls: Array<{ mode: "spawn" | "send"; input: { actions?: Array<{ kind: string }>; browserSessionId?: string } }> = [];
+  let innerCalled = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const toolResultCount = input.messages.filter((message) => message.role === "tool").length;
+    if (toolResultCount === 0) {
+      return toolCallResult("tool-1", "browser_open", {
+        url: "https://example.test",
+        screenshot: true,
+      });
+    }
+    if (toolResultCount === 1) {
+      return toolCallResult("tool-2", "browser_snapshot", { note: "confirm-page" });
+    }
+    return textResult("Browser evidence captured.");
+  };
+  const browserBridge = buildBrowserBridge({
+    async spawnSession(input) {
+      bridgeCalls.push({ mode: "spawn", input });
+      return browserResult({
+        title: "Example",
+        finalUrl: "https://example.test/",
+        traceKinds: input.actions.map((action) => action.kind),
+      });
+    },
+    async sendSession(input) {
+      bridgeCalls.push({ mode: "send", input });
+      return browserResult({
+        title: "Example",
+        finalUrl: "https://example.test/",
+        traceKinds: input.actions.map((action) => action.kind),
+      });
+    },
+  });
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({
+      kind: "browser",
+      async run() {
+        innerCalled = true;
+        return null;
+      },
+    }),
+    gateway,
+    browserBridge,
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(innerCalled, false);
+  const toolNames = gatewayInputs[0]?.tools?.map((tool) => tool.name) ?? [];
+  assert.deepEqual(toolNames, [
+    "browser_open",
+    "browser_snapshot",
+    "browser_act",
+    "browser_scroll",
+    "browser_console",
+    "browser_screenshot",
+  ]);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /browser_open/);
+  assert.equal(bridgeCalls.length, 2);
+  assert.equal(bridgeCalls[0]?.mode, "spawn");
+  assert.deepEqual(bridgeCalls[0]?.input.actions?.map((action) => action.kind), ["open", "snapshot", "screenshot"]);
+  assert.equal(bridgeCalls[1]?.mode, "send");
+  assert.equal(bridgeCalls[1]?.input.browserSessionId, "browser-session-1");
+  assert.deepEqual(bridgeCalls[1]?.input.actions?.map((action) => action.kind), ["snapshot"]);
+});
+
+test("LLMSubAgentWorkerHandler reports failed private browser action traces as tool errors", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_screenshot", { fullPage: true });
+    }
+    return textResult("Reported browser failure.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        return browserResult({ traceKinds: ["screenshot"], traceStatuses: ["failed"] });
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.summary, "Reported browser failure.");
+  const toolMessage = gatewayInputs[1]?.messages.find((message) => message.role === "tool");
+  const toolContent = readToolContent(toolMessage?.content ?? "");
+  assert.match(toolContent, /"status": "failed"/);
+  const metadata = (result?.payload as { metadata?: { toolUse?: { rounds?: Array<{ results: Array<{ isError: boolean }> }> } } })
+    .metadata;
+  assert.equal(metadata?.toolUse?.rounds?.[0]?.results?.[0]?.isError, true);
+});
+
+test("LLMSubAgentWorkerHandler refuses private browser submit actions before bridge execution", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let bridgeCalled = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_act", {
+        action: "click",
+        text: "Submit order",
+      });
+    }
+    return textResult("Reported that approval is required.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        bridgeCalled = true;
+        return browserResult({});
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalled, false);
+  assert.match(readToolContent(gatewayInputs[1]?.messages.find((message) => message.role === "tool")?.content ?? ""), /refused likely side-effectful click/i);
+});
+
+test("LLMSubAgentWorkerHandler reuses parent browser session on the first private browser tool call", async () => {
+  const bridgeCalls: Array<{ mode: "spawn" | "send"; browserSessionId?: string }> = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_snapshot", { note: "resume-parent" });
+    }
+    return textResult("Resumed existing browser session.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        bridgeCalls.push({ mode: "spawn" });
+        return browserResult({});
+      },
+      async sendSession(input) {
+        bridgeCalls.push({ mode: "send", browserSessionId: input.browserSessionId });
+        return browserResult({});
+      },
+    }),
+  });
+
+  const result = await handler.run({
+    ...buildInvocationInput("browser"),
+    sessionState: {
+      workerRunKey: "worker:browser:existing",
+      workerType: "browser",
+      status: "resumable",
+      createdAt: 1,
+      updatedAt: 2,
+      lastResult: {
+        workerType: "browser",
+        status: "completed",
+        summary: "Existing browser session.",
+        payload: { sessionId: "browser-session-existing", targetId: "target-existing" },
+      },
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.deepEqual(bridgeCalls, [{ mode: "send", browserSessionId: "browser-session-existing" }]);
+});
+
+test("LLMSubAgentWorkerHandler returns a tool error for malformed private browser input", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let bridgeCalled = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_open", null as unknown as Record<string, unknown>);
+    }
+    return textResult("Recovered after malformed browser tool input.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        bridgeCalled = true;
+        return browserResult({});
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalled, false);
+  assert.match(readToolContent(gatewayInputs[1]?.messages.find((message) => message.role === "tool")?.content ?? ""), /requires an object input/);
+});
+
+test("LLMSubAgentWorkerHandler requires visible text before private refId clicks", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let bridgeCalled = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_act", {
+        action: "click",
+        refId: "ref-submit",
+      });
+    }
+    return textResult("Asked for approval-safe target context.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        bridgeCalled = true;
+        return browserResult({});
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalled, false);
+  assert.match(readToolContent(gatewayInputs[1]?.messages.find((message) => message.role === "tool")?.content ?? ""), /requires visible text/i);
 });
 
 test("LLMSubAgentWorkerHandler carries inner session state across multiple private tool calls", async () => {
@@ -252,6 +508,83 @@ function buildInnerHandler(input: {
         summary: `${input.kind} completed.`,
         payload: {},
       })),
+  };
+}
+
+function buildBrowserBridge(overrides: Partial<BrowserBridge>): BrowserBridge {
+  const base: BrowserBridge = {
+    async inspectPublicPage() {
+      throw new Error("not implemented");
+    },
+    async runTask(input) {
+      return base.spawnSession(input);
+    },
+    async spawnSession() {
+      return browserResult({});
+    },
+    async sendSession() {
+      return browserResult({});
+    },
+    async resumeSession() {
+      return browserResult({});
+    },
+    async getSessionHistory(): Promise<BrowserSessionHistoryEntry[]> {
+      return [];
+    },
+    async listSessions(): Promise<BrowserSession[]> {
+      return [];
+    },
+    async listTargets(): Promise<BrowserTarget[]> {
+      return [];
+    },
+    async openTarget() {
+      throw new Error("not implemented");
+    },
+    async activateTarget() {
+      throw new Error("not implemented");
+    },
+    async closeTarget() {
+      throw new Error("not implemented");
+    },
+    async evictIdleSessions(): Promise<BrowserSession[]> {
+      return [];
+    },
+    async closeSession() {},
+    ...overrides,
+  };
+  return base;
+}
+
+function browserResult(input: {
+  title?: string;
+  finalUrl?: string;
+  traceKinds?: string[];
+  traceStatuses?: Array<"ok" | "failed">;
+}): BrowserTaskResult {
+  return {
+    sessionId: "browser-session-1",
+    targetId: "target-1",
+    transportMode: "direct-cdp",
+    transportLabel: "direct-cdp",
+    resumeMode: "hot",
+    page: {
+      requestedUrl: input.finalUrl ?? "https://example.test/",
+      finalUrl: input.finalUrl ?? "https://example.test/",
+      title: input.title ?? "Example",
+      textExcerpt: "Example page text.",
+      statusCode: 200,
+      interactives: [{ refId: "ref-1", tagName: "A", role: "link", label: "More" }],
+    },
+    screenshotPaths: [],
+    artifactIds: [],
+    trace: (input.traceKinds ?? ["snapshot"]).map((kind, index) => ({
+      stepId: `step-${index}`,
+      kind: kind as BrowserTaskResult["trace"][number]["kind"],
+      startedAt: index,
+      completedAt: index + 1,
+      status: input.traceStatuses?.[index] ?? "ok",
+      input: {},
+    })),
   };
 }
 

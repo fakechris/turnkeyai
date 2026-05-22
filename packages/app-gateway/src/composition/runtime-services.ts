@@ -531,6 +531,7 @@ function installLLMSubAgentWorkerHandlers(input: {
         kind,
         innerHandler,
         gateway: input.llmGateway,
+        ...(kind === "browser" ? { browserBridge: input.foundations.browserBridge } : {}),
         runtimeProgressRecorder: input.runtimeProgressRecorder,
         clock: input.clock,
       })

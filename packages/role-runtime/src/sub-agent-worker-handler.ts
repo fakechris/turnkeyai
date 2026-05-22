@@ -1,4 +1,7 @@
 import type {
+  BrowserBridge,
+  BrowserTaskAction,
+  BrowserTaskResult,
   Clock,
   RoleActivationInput,
   RuntimeProgressRecorder,
@@ -8,6 +11,7 @@ import type {
   WorkerKind,
   WorkerSessionState,
 } from "@turnkeyai/core-types/team";
+import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
 import type { LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
@@ -23,6 +27,7 @@ export interface LLMSubAgentWorkerHandlerOptions {
   kind: WorkerKind;
   innerHandler: WorkerHandler;
   gateway: LLMGateway;
+  browserBridge?: BrowserBridge;
   runtimeProgressRecorder?: RuntimeProgressRecorder;
   clock?: Clock;
   maxRounds?: number;
@@ -33,6 +38,7 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
   readonly kind: WorkerKind;
   private readonly innerHandler: WorkerHandler;
   private readonly gateway: LLMGateway;
+  private readonly browserBridge: BrowserBridge | undefined;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
   private readonly clock: Clock;
   private readonly maxRounds: number;
@@ -42,6 +48,7 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
     this.kind = options.kind;
     this.innerHandler = options.innerHandler;
     this.gateway = options.gateway;
+    this.browserBridge = options.browserBridge;
     this.runtimeProgressRecorder = options.runtimeProgressRecorder;
     this.clock = options.clock ?? { now: () => Date.now() };
     this.maxRounds = options.maxRounds ?? DEFAULT_SUB_AGENT_MAX_ROUNDS;
@@ -70,6 +77,7 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
           kind: this.kind,
           innerHandler: this.innerHandler,
           parentInput: input,
+          ...(this.browserBridge ? { browserBridge: this.browserBridge } : {}),
         }),
         maxRounds: this.maxRounds,
         maxWallClockMs: this.maxWallClockMs,
@@ -122,15 +130,25 @@ class SubAgentToolExecutor implements RoleToolExecutor {
   private readonly kind: WorkerKind;
   private readonly innerHandler: WorkerHandler;
   private readonly parentInput: WorkerInvocationInput;
+  private readonly browserBridge: BrowserBridge | undefined;
   private innerSessionState: WorkerSessionState | undefined;
 
-  constructor(options: { kind: WorkerKind; innerHandler: WorkerHandler; parentInput: WorkerInvocationInput }) {
+  constructor(options: {
+    kind: WorkerKind;
+    innerHandler: WorkerHandler;
+    parentInput: WorkerInvocationInput;
+    browserBridge?: BrowserBridge;
+  }) {
     this.kind = options.kind;
     this.innerHandler = options.innerHandler;
     this.parentInput = options.parentInput;
+    this.browserBridge = options.browserBridge;
   }
 
   definitions(): LLMToolDefinition[] {
+    if (this.kind === "browser" && this.browserBridge) {
+      return buildBrowserPrivateToolDefinitions();
+    }
     return [
       {
         name: this.toolName(),
@@ -151,6 +169,10 @@ class SubAgentToolExecutor implements RoleToolExecutor {
   }
 
   async execute(input: RoleToolExecutionInput): Promise<RoleToolExecutionResult> {
+    if (this.kind === "browser" && this.browserBridge) {
+      return this.executeBrowserTool(input, this.browserBridge);
+    }
+
     const rawInput = input.call.input as unknown;
     const instruction =
       rawInput &&
@@ -226,6 +248,357 @@ class SubAgentToolExecutor implements RoleToolExecutor {
   private toolName(): string {
     return `${this.kind}_run`;
   }
+
+  private async executeBrowserTool(
+    input: RoleToolExecutionInput,
+    browserBridge: BrowserBridge
+  ): Promise<RoleToolExecutionResult> {
+    const actionPlan = buildBrowserPrivateActionPlan(input);
+    if ("error" in actionPlan) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: actionPlan.error,
+        isError: true,
+        raw: { error: actionPlan.error },
+      };
+    }
+
+    const previousPayload =
+      this.innerSessionState?.lastResult?.payload ??
+      this.parentInput.sessionState?.lastResult?.payload;
+    const previous = decodeBrowserSessionPayload(previousPayload);
+    const request = {
+      taskId: `${this.parentInput.activation.handoff.taskId}:${input.call.id}`,
+      threadId: this.parentInput.activation.thread.threadId,
+      instructions: actionPlan.instructions,
+      actions: actionPlan.actions,
+      ownerType: "thread" as const,
+      ownerId: this.parentInput.activation.thread.threadId,
+      profileOwnerType: "thread" as const,
+      profileOwnerId: this.parentInput.activation.thread.threadId,
+      ...(this.innerSessionState?.workerRunKey ? { leaseHolderRunKey: this.innerSessionState.workerRunKey } : {}),
+      ...(previous?.sessionId ? { browserSessionId: previous.sessionId } : {}),
+      ...(previous?.targetId ? { targetId: previous.targetId } : {}),
+    };
+
+    const result = previous?.sessionId
+      ? await browserBridge.sendSession({ ...request, browserSessionId: previous.sessionId })
+      : await browserBridge.spawnSession(request);
+    const workerResult = browserToolWorkerResult(result);
+    this.innerSessionState = buildInnerSessionState({
+      parentInput: this.parentInput,
+      kind: this.kind,
+      previous: this.innerSessionState,
+      result: workerResult,
+    });
+
+    return {
+      toolCallId: input.call.id,
+      toolName: input.call.name,
+      content: JSON.stringify(
+        {
+          status: workerResult.status,
+          summary: workerResult.summary,
+          payload: workerResult.payload,
+        },
+        null,
+        2
+      ),
+      ...(workerResult.status === "failed" ? { isError: true } : {}),
+      raw: workerResult,
+      progress: [
+        {
+          phase:
+            workerResult.status === "failed"
+              ? "failed"
+              : workerResult.status === "partial"
+                ? "progress"
+                : "completed",
+          toolName: input.call.name,
+          summary: workerResult.summary,
+          detail: {
+            sessionId: result.sessionId,
+            ...(result.targetId ? { targetId: result.targetId } : {}),
+            actionKinds: actionPlan.actions.map((action) => action.kind),
+          },
+        },
+      ],
+    };
+  }
+}
+
+function buildBrowserPrivateToolDefinitions(): LLMToolDefinition[] {
+  return [
+    {
+      name: "browser_open",
+      description: "Open a URL in the browser sub-agent session, then capture a DOM snapshot.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          url: { type: "string", description: "Absolute http(s) URL to open." },
+          note: { type: "string", description: "Optional short note for the resulting snapshot." },
+          screenshot: { type: "boolean", description: "Also capture a screenshot after the page opens." },
+        },
+        required: ["url"],
+      },
+    },
+    {
+      name: "browser_snapshot",
+      description: "Capture the current page state and interactive element refs.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          note: { type: "string", description: "Optional short snapshot note." },
+        },
+      },
+    },
+    {
+      name: "browser_act",
+      description: "Perform one targeted browser interaction, then snapshot the result.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["click", "type", "key", "hover"] },
+          refId: { type: "string", description: "Preferred element ref from a prior snapshot." },
+          text: { type: "string", description: "Visible target text for click/hover, text to type, or key name." },
+          selector: { type: "string", description: "CSS selector fallback when no refId is available." },
+        },
+        required: ["action"],
+      },
+    },
+    {
+      name: "browser_scroll",
+      description: "Scroll the current page and capture a follow-up snapshot.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          direction: { type: "string", enum: ["up", "down"] },
+          amount: { type: "number", minimum: 1, maximum: 5000 },
+          note: { type: "string" },
+        },
+        required: ["direction"],
+      },
+    },
+    {
+      name: "browser_console",
+      description: "Run a bounded page console probe for metadata or interactive summary.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          probe: { type: "string", enum: ["page-metadata", "interactive-summary"] },
+        },
+        required: ["probe"],
+      },
+    },
+    {
+      name: "browser_screenshot",
+      description: "Capture a screenshot artifact for the current browser target.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          label: { type: "string", description: "Optional short artifact label." },
+        },
+      },
+    },
+  ];
+}
+
+function buildBrowserPrivateActionPlan(input: RoleToolExecutionInput):
+  | { instructions: string; actions: BrowserTaskAction[] }
+  | { error: string } {
+  const rawInput = input.call.input as unknown;
+  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) {
+    return { error: `${input.call.name} requires an object input.` };
+  }
+  const raw = rawInput as Record<string, unknown>;
+  switch (input.call.name) {
+    case "browser_open": {
+      const url = requiredString(raw.url);
+      if (!url || !isHttpUrl(url)) {
+        return { error: "browser_open requires an absolute http(s) url." };
+      }
+      const actions: BrowserTaskAction[] = [
+        { kind: "open", url },
+        { kind: "snapshot", note: requiredString(raw.note) ?? "after-open" },
+      ];
+      if (raw.screenshot === true) {
+        actions.push({ kind: "screenshot", label: "after-open" });
+      }
+      return { instructions: `Open ${url} and observe the page.`, actions };
+    }
+    case "browser_snapshot":
+      return {
+        instructions: "Capture the current browser page state.",
+        actions: [{ kind: "snapshot", note: requiredString(raw.note) ?? "current-page" }],
+      };
+    case "browser_scroll": {
+      const direction = raw.direction === "up" || raw.direction === "down" ? raw.direction : null;
+      if (!direction) return { error: "browser_scroll requires direction up or down." };
+      const amount = typeof raw.amount === "number" && Number.isFinite(raw.amount)
+        ? Math.min(Math.max(Math.floor(raw.amount), 1), 5000)
+        : 900;
+      return {
+        instructions: `Scroll ${direction} and observe the next page state.`,
+        actions: [
+          { kind: "scroll", direction, amount },
+          { kind: "snapshot", note: requiredString(raw.note) ?? `after-scroll-${direction}` },
+        ],
+      };
+    }
+    case "browser_console": {
+      const probe = raw.probe === "interactive-summary" ? "interactive-summary" : raw.probe === "page-metadata" ? "page-metadata" : null;
+      if (!probe) return { error: "browser_console requires probe page-metadata or interactive-summary." };
+      return {
+        instructions: `Run browser console probe ${probe}.`,
+        actions: [{ kind: "console", probe }],
+      };
+    }
+    case "browser_screenshot":
+      return {
+        instructions: "Capture a screenshot of the current browser target.",
+        actions: [{ kind: "screenshot", label: requiredString(raw.label) ?? "browser-sub-agent" }],
+      };
+    case "browser_act":
+      return buildBrowserActPlan(raw);
+    default:
+      return { error: `Unknown browser sub-agent tool: ${input.call.name}` };
+  }
+}
+
+function buildBrowserActPlan(raw: Record<string, unknown>):
+  | { instructions: string; actions: BrowserTaskAction[] }
+  | { error: string } {
+  const action = requiredString(raw.action);
+  const target = buildBrowserActionTarget(raw);
+  if (raw.submit === true) {
+    return { error: "browser_act does not submit forms. Ask the parent agent to request approval for side-effectful browser work." };
+  }
+  if (action === "click") {
+    if (!target) return { error: "browser_act click requires refId, text, or selector." };
+    const visibleText = requiredString(raw.text);
+    if ("refId" in target && !visibleText) {
+      return {
+        error: "browser_act click with refId requires visible text so side effects can be screened.",
+      };
+    }
+    const sideEffect = classifyBrowserPrivateSideEffectTarget(target, visibleText);
+    if (sideEffect) {
+      return {
+        error: `browser_act refused likely side-effectful click target "${sideEffect}". Ask the parent agent to request approval first.`,
+      };
+    }
+    return {
+      instructions: "Click the requested browser element and observe the result.",
+      actions: [{ kind: "click", ...target }, { kind: "snapshot", note: "after-click" }],
+    };
+  }
+  if (action === "hover") {
+    if (!target) return { error: "browser_act hover requires refId, text, or selector." };
+    return {
+      instructions: "Hover the requested browser element and observe the result.",
+      actions: [{ kind: "hover", ...target }, { kind: "snapshot", note: "after-hover" }],
+    };
+  }
+  if (action === "type") {
+    const text = requiredString(raw.text);
+    if (!text || !target) return { error: "browser_act type requires text plus refId or selector." };
+    if ("text" in target) return { error: "browser_act type cannot target visible text; use refId or selector." };
+    return {
+      instructions: "Type into the requested browser element and observe the result.",
+      actions: [
+        { kind: "type", ...target, text },
+        { kind: "snapshot", note: "after-type" },
+      ],
+    };
+  }
+  if (action === "key") {
+    const key = requiredString(raw.text);
+    if (!key) return { error: "browser_act key requires text containing the key name." };
+    return {
+      instructions: `Press browser key ${key}.`,
+      actions: [{ kind: "key", key }, { kind: "snapshot", note: "after-key" }],
+    };
+  }
+  return { error: "browser_act action must be click, type, key, or hover." };
+}
+
+function buildBrowserActionTarget(raw: Record<string, unknown>):
+  | { refId: string }
+  | { text: string }
+  | { selectors: string[] }
+  | null {
+  const refId = requiredString(raw.refId);
+  if (refId) return { refId };
+  const selector = requiredString(raw.selector);
+  if (selector) return { selectors: [selector] };
+  const text = requiredString(raw.text);
+  if (text) return { text };
+  return null;
+}
+
+function classifyBrowserPrivateSideEffectTarget(
+  target: { refId: string } | { text: string } | { selectors: string[] },
+  fallbackText: string | null = null
+): string | null {
+  const text =
+    ("text" in target ? target.text : "selectors" in target ? target.selectors.join(" ") : "") ||
+    fallbackText ||
+    "";
+  if (!text) return null;
+  return /\b(submit|send|save|publish|delete|remove|checkout|purchase|buy|order|book|reserve|approve|accept|reject|cancel)\b/i.test(text)
+    ? text
+    : null;
+}
+
+function browserToolWorkerResult(result: BrowserTaskResult): WorkerExecutionResult {
+  const failedCount = result.trace.filter((step) => step.status === "failed").length;
+  const status =
+    result.trace.length > 0 && failedCount === result.trace.length
+      ? "failed"
+      : failedCount > 0
+        ? "partial"
+        : "completed";
+  return {
+    workerType: "browser",
+    status,
+    summary: summarizeBrowserToolResult(result),
+    payload: {
+      sessionId: result.sessionId,
+      ...(result.targetId ? { targetId: result.targetId } : {}),
+      ...(result.resumeMode ? { resumeMode: result.resumeMode } : {}),
+      transportMode: result.transportMode,
+      transportLabel: result.transportLabel,
+      page: {
+        finalUrl: result.page.finalUrl,
+        title: result.page.title,
+        textExcerpt: result.page.textExcerpt,
+        interactives: result.page.interactives.slice(0, 25),
+      },
+      screenshotPaths: result.screenshotPaths,
+      artifactIds: result.artifactIds,
+      trace: result.trace.map((step) => ({
+        kind: step.kind,
+        status: step.status,
+        ...(step.errorMessage ? { errorMessage: step.errorMessage } : {}),
+      })),
+    },
+  };
+}
+
+function summarizeBrowserToolResult(result: BrowserTaskResult): string {
+  const failed = result.trace.filter((step) => step.status === "failed");
+  const title = result.page.title || result.page.finalUrl || "browser page";
+  if (failed.length > 0) {
+    return `Browser observed ${title}; ${failed.length} action(s) failed.`;
+  }
+  return `Browser observed ${title}.`;
 }
 
 function buildInnerSessionState(input: {
@@ -305,9 +678,12 @@ function buildSubAgentSystemPrompt(kind: WorkerKind, maxRounds: number): string 
   if (kind === "browser") {
     return [
       ...common,
-      "You control browser work through the private browser_run tool.",
-      "Use browser_run for navigation, observation, screenshots, clicks, form input, or page state checks.",
+      "You control browser work through private browser tools: browser_open, browser_snapshot, browser_act, browser_scroll, browser_console, and browser_screenshot.",
+      "Use browser_open for absolute URLs, browser_snapshot before choosing element refs, browser_act for one targeted click/type/key/hover, browser_scroll for long pages, browser_console for bounded page probes, and browser_screenshot for visible evidence artifacts.",
+      "Do not submit forms, purchase, publish, delete, approve, or change account state from the browser sub-agent private tools; report that the parent must request approval first.",
       "Retry the same browser operation at most three times, changing strategy only when the observed failure justifies it.",
+      "Prefer element refIds from snapshots over selectors or visible text when interacting with a page.",
+      "Capture screenshots when the parent needs visual evidence or when page state is hard to summarize from text.",
       "Prefer stable page facts and direct observations over guesses.",
     ].join("\n");
   }
@@ -356,6 +732,19 @@ function summarizeReply(content: string): string {
   const normalized = content.replace(/\s+/g, " ").trim();
   if (!normalized) return "Sub-agent completed.";
   return normalized.length > 240 ? `${normalized.slice(0, 237)}...` : normalized;
+}
+
+function requiredString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function abortedResult(kind: WorkerKind): WorkerExecutionResult {
