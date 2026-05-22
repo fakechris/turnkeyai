@@ -202,6 +202,43 @@ export interface WorkerSessionRecord {
   };
 }
 
+// ── Role Runs ────────────────────────────────────────────────────────
+
+export type RoleRunStatus =
+  | "idle"
+  | "queued"
+  | "running"
+  | "waiting_worker"
+  | "resuming"
+  | "done"
+  | "failed";
+
+export interface RoleRunState {
+  runKey: string;
+  threadId: string;
+  roleId: string;
+  mode: "group";
+  status: RoleRunStatus;
+  iterationCount: number;
+  maxIterations: number;
+  inbox: Array<{
+    taskId: string;
+    flowId: string;
+    sourceMessageId: string;
+    sourceRoleId?: string;
+    targetRoleId: string;
+    activationType: string;
+    threadId: string;
+    payload?: unknown;
+    createdAt: number;
+  }>;
+  lastDequeuedTaskId?: string;
+  lastActiveAt: number;
+  lastUserTouchAt?: number;
+  workerSessions?: Record<string, string>;
+  version?: number;
+}
+
 export interface ApprovalRequest {
   id: string;
   severity: ApprovalSeverity;

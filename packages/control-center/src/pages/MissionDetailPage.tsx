@@ -12,11 +12,13 @@
 
 import { useCallback, useMemo, useState } from "react";
 
-import type { ActivityEvent, Mission, WorkerSessionRecord } from "../api/mission-api";
+import type { ActivityEvent, Mission, RoleRunState, WorkerSessionRecord } from "../api/mission-api";
 import {
+  useCancelRoleRun,
   useCancelWorkerSession,
   useMission,
   useMissions,
+  useRoleRuns,
   useSendMissionMessage,
   useTimeline,
   useWorkerSessions,
@@ -111,10 +113,13 @@ function LiveMissionView({ mission }: { mission: Mission }) {
   const { setRoute } = useAppState();
   const timeline = useTimeline(mission.id, []);
   const workerSessions = useWorkerSessions(mission.threadId, []);
+  const roleRuns = useRoleRuns(mission.threadId, []);
   const send = useSendMissionMessage();
+  const cancelRoleRun = useCancelRoleRun();
   const cancelWorkerSession = useCancelWorkerSession();
   const [pending, setPending] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [roleRunActionKey, setRoleRunActionKey] = useState<string | null>(null);
   const [sessionActionKey, setSessionActionKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [acceptedNotice, setAcceptedNotice] = useState<string | null>(null);
@@ -171,6 +176,29 @@ function LiveMissionView({ mission }: { mission: Mission }) {
     [mission.id, send, sessionActionKey, timeline, workerSessions]
   );
 
+  const onCancelRoleRun = useCallback(
+    async (run: RoleRunState) => {
+      if (roleRunActionKey) return;
+      setRoleRunActionKey(run.runKey);
+      setError(null);
+      setAcceptedNotice(null);
+      try {
+        await cancelRoleRun({
+          runKey: run.runKey,
+          reason: "operator cancelled active role run from Mission replay",
+        });
+        setAcceptedNotice("Active role run cancellation requested.");
+        roleRuns.refetch();
+        timeline.refetch();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setRoleRunActionKey(null);
+      }
+    },
+    [cancelRoleRun, roleRunActionKey, roleRuns, timeline]
+  );
+
   const onCancelSession = useCallback(
     async (session: WorkerSessionRecord) => {
       if (sessionActionKey) return;
@@ -224,6 +252,13 @@ function LiveMissionView({ mission }: { mission: Mission }) {
           </div>
         )}
         <div className="mission-detail-scroll">
+          <ActiveRoleRunsCard
+            runs={roleRuns.value}
+            isLive={roleRuns.isLive}
+            error={roleRuns.error}
+            actionKey={roleRunActionKey}
+            onCancel={onCancelRoleRun}
+          />
           <SubAgentSessionsCard
             sessions={workerSessions.value}
             isLive={workerSessions.isLive}
@@ -357,6 +392,107 @@ function LiveMissionView({ mission }: { mission: Mission }) {
       </div>
     </div>
   );
+}
+
+function ActiveRoleRunsCard({
+  runs,
+  isLive,
+  error,
+  actionKey,
+  onCancel,
+}: {
+  runs: RoleRunState[];
+  isLive: boolean;
+  error: string | null;
+  actionKey: string | null;
+  onCancel: (run: RoleRunState) => void;
+}) {
+  const visibleRuns = runs.filter((run) => !["done", "failed", "idle"].includes(run.status));
+  const cancellableCount = visibleRuns.filter(isCancellableRoleRun).length;
+  return (
+    <section className="card subagent-session-card role-run-card">
+      <div className="subagent-session-head">
+        <div>
+          <div className="label" style={{ fontSize: 11 }}>Active role runs</div>
+          <div className="muted" style={{ fontSize: 11.5 }}>
+            Lead and member runs currently coordinating this mission
+          </div>
+        </div>
+        <div className="thinking-card-meta">
+          <span>{visibleRuns.length} active</span>
+          <span>{cancellableCount} cancellable</span>
+        </div>
+      </div>
+      {error && (
+        <div className="subagent-session-error" role="alert">
+          {error}
+        </div>
+      )}
+      {visibleRuns.length === 0 ? (
+        <div className="subagent-session-empty">
+          {isLive ? "No active role runs for this mission." : "Loading active role runs…"}
+        </div>
+      ) : (
+        <div className="subagent-session-list">
+          {visibleRuns.map((run) => (
+            <RoleRunRow
+              key={run.runKey}
+              run={run}
+              busy={actionKey === run.runKey}
+              blocked={actionKey !== null && actionKey !== run.runKey}
+              onCancel={() => onCancel(run)}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function RoleRunRow({
+  run,
+  busy,
+  blocked,
+  onCancel,
+}: {
+  run: RoleRunState;
+  busy: boolean;
+  blocked: boolean;
+  onCancel: () => void;
+}) {
+  const cancellable = isCancellableRoleRun(run);
+  const workerCount = Object.keys(run.workerSessions ?? {}).length;
+  const queuedCount = run.inbox?.length ?? 0;
+  return (
+    <div className="role-run-row">
+      <div className="role-run-main">
+        <span className="mono">{run.roleId}</span>
+        <span>{run.status.replace("_", " ")}</span>
+        <span className="faint mono">{run.runKey}</span>
+      </div>
+      <div className="role-run-meta">
+        <span className="mono">
+          {run.iterationCount}/{run.maxIterations}
+        </span>
+        {workerCount > 0 && <span>{workerCount} worker{workerCount === 1 ? "" : "s"}</span>}
+        {queuedCount > 0 && <span>{queuedCount} queued</span>}
+        <span>updated {formatTimeOfDay(run.lastActiveAt)}</span>
+      </div>
+      <button
+        type="button"
+        className="btn ghost"
+        disabled={!cancellable || busy || blocked}
+        onClick={onCancel}
+        title={cancellable ? "Cancel this active role run" : "Only currently running role generations can be cancelled"}
+      >
+        {busy ? "Cancelling…" : "Cancel run"}
+      </button>
+    </div>
+  );
+}
+
+function isCancellableRoleRun(run: RoleRunState): boolean {
+  return run.status === "running";
 }
 
 function SubAgentSessionsCard({
