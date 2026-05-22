@@ -54,6 +54,7 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "GET", pathname: "/runtime-worker-sessions", expected: "read" },
     { method: "GET", pathname: "/scheduled-tasks", expected: "read" },
     { method: "POST", pathname: "/messages", expected: "operator" },
+    { method: "POST", pathname: "/worker-sessions/worker%3Abrowser%3A1/cancel", expected: "operator" },
     { method: "POST", pathname: "/scheduled-tasks", expected: "operator" },
     { method: "POST", pathname: "/scheduled-tasks/trigger-due", expected: "operator" },
     { method: "POST", pathname: "/browser-sessions/spawn", expected: "operator" },

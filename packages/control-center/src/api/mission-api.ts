@@ -61,6 +61,7 @@ export interface Mission {
   pendingApprovals: number;
   blockers: number;
   contextSummary: string[];
+  threadId?: string;
 }
 
 export interface WorkItem {
@@ -141,6 +142,64 @@ export interface ActivityEvent {
   emph?: "warn" | "danger" | "success";
   runtime?: Record<string, string>;
   approvalId?: string;
+}
+
+// ── Worker Sessions ───────────────────────────────────────────────────
+
+export type WorkerSessionStatus =
+  | "idle"
+  | "running"
+  | "waiting_input"
+  | "waiting_external"
+  | "resumable"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export interface WorkerSessionHistoryEntry {
+  id: string;
+  role: "user" | "assistant" | "tool" | "system";
+  content: string;
+  createdAt: number;
+  taskId?: string;
+  toolCallId?: string;
+  toolName?: string;
+  status?: "completed" | "partial" | "failed" | "cancelled" | "interrupted";
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkerSessionState {
+  workerRunKey: string;
+  workerType: string;
+  status: WorkerSessionStatus;
+  createdAt: number;
+  updatedAt: number;
+  currentTaskId?: string;
+  history?: WorkerSessionHistoryEntry[];
+  lastResult?: {
+    workerType: string;
+    status: "completed" | "partial" | "failed";
+    summary: string;
+    payload?: unknown;
+  };
+  continuationDigest?: {
+    reason: "follow_up" | "timeout_summary" | "user_resume" | "supervisor_retry";
+    summary: string;
+    createdAt: number;
+  };
+}
+
+export interface WorkerSessionRecord {
+  workerRunKey: string;
+  state: WorkerSessionState;
+  executionToken: number;
+  context?: {
+    threadId: string;
+    flowId: string;
+    taskId: string;
+    roleId: string;
+    parentSpanId: string;
+  };
 }
 
 export interface ApprovalRequest {

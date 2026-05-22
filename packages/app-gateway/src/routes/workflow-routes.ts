@@ -11,6 +11,7 @@ import type {
   TeamMessage,
   TeamMessageStore,
   WorkerKind,
+  WorkerRuntime,
 } from "@turnkeyai/core-types/team";
 import type { ToolCancellationRegistry } from "@turnkeyai/role-runtime/tool-cancellation-registry";
 
@@ -69,6 +70,7 @@ export interface WorkflowRouteDeps {
   scheduledTaskRuntime: ScheduledTaskRuntimeDeps;
   idGenerator: IdGenerator;
   clock: Clock;
+  workerRuntime?: Pick<WorkerRuntime, "cancel">;
   toolCancellationRegistry?: ToolCancellationRegistry;
   idempotencyStore?: RouteIdempotencyStore;
 }
@@ -158,6 +160,71 @@ export async function handleWorkflowRoutes(input: {
       : ({
           kind: "response",
           ...(await executeCancelTools()),
+          replayed: false,
+        } as const);
+    sendIdempotentResponse(res, result);
+    return true;
+  }
+
+  const workerSessionCancelMatch = url.pathname.match(/^\/worker-sessions\/([^/]+)\/cancel$/);
+  if (req.method === "POST" && workerSessionCancelMatch) {
+    const idempotencyKey = readIdempotencyKey(req);
+    if (!idempotencyKey.ok) {
+      sendJson(res, 400, { error: idempotencyKey.error });
+      return true;
+    }
+    const rawWorkerRunKey = workerSessionCancelMatch[1] ?? "";
+    let workerRunKey: string;
+    try {
+      workerRunKey = decodeURIComponent(rawWorkerRunKey);
+    } catch {
+      sendJson(res, 400, { error: "workerRunKey is invalid" });
+      return true;
+    }
+    workerRunKey = parseRequiredNonEmptyString(workerRunKey) ?? "";
+    if (!workerRunKey) {
+      sendJson(res, 400, { error: "workerRunKey is required" });
+      return true;
+    }
+    const bodyResult = await readOptionalJsonBodySafe<{ reason?: unknown }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const reason = parseRequiredNonEmptyString(bodyResult.value?.reason as string | undefined) ?? "worker session cancelled";
+    if (reason.length > MAX_CANCEL_REASON_CHARS) {
+      sendJson(res, 400, { error: `reason must be at most ${MAX_CANCEL_REASON_CHARS} characters` });
+      return true;
+    }
+    if (!deps.workerRuntime) {
+      sendJson(res, 501, { error: "worker runtime cancellation is unavailable" });
+      return true;
+    }
+    const workerRuntime = deps.workerRuntime;
+
+    const executeCancelWorkerSession = async () => {
+      const state = await workerRuntime.cancel({ workerRunKey, reason });
+      if (!state) {
+        return {
+          statusCode: 404,
+          body: { error: "worker session not found", workerRunKey },
+        };
+      }
+      return {
+        statusCode: 200,
+        body: { cancelled: true, workerRunKey, state },
+      };
+    };
+    const result = deps.idempotencyStore
+      ? await deps.idempotencyStore.execute({
+          scope: "workflow:worker-session-cancel",
+          ...(idempotencyKey.key ? { key: idempotencyKey.key } : {}),
+          fingerprint: JSON.stringify({ workerRunKey, reason }),
+          execute: executeCancelWorkerSession,
+        })
+      : ({
+          kind: "response",
+          ...(await executeCancelWorkerSession()),
           replayed: false,
         } as const);
     sendIdempotentResponse(res, result);

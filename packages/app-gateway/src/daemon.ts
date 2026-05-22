@@ -694,6 +694,7 @@ const server = http.createServer(async (req, res) => {
           scheduledTaskRuntime,
           idGenerator,
           clock,
+          workerRuntime,
           toolCancellationRegistry,
           idempotencyStore: routeIdempotencyStore,
         },

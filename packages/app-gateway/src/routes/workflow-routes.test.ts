@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
 
-import type { TeamMessage } from "@turnkeyai/core-types/team";
+import type { TeamMessage, WorkerSessionState } from "@turnkeyai/core-types/team";
 
 import { createRouteIdempotencyStore } from "../idempotency-store";
 import { handleWorkflowRoutes, type WorkflowRouteDeps } from "./workflow-routes";
@@ -245,6 +245,115 @@ test("workflow routes cancel assistant tool calls and append cancelled tool resu
   assert.equal(toolResult?.toolCallId, "call-1");
   assert.equal(toolResult?.toolStatus, "cancelled");
   assert.equal(toolResult?.content, "operator cancelled browser work");
+});
+
+test("workflow routes cancel worker sessions directly", async () => {
+  let cancelInput: { workerRunKey: string; reason?: string } | null = null;
+  const cancelledState: WorkerSessionState = {
+    workerRunKey: "worker:browser:1",
+    workerType: "browser",
+    status: "cancelled",
+    createdAt: 100,
+    updatedAt: 200,
+  };
+  const response = createResponse();
+
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/worker-sessions/worker%3Abrowser%3A1/cancel",
+      body: { reason: "operator cancelled sub-agent session" },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/worker-sessions/worker%3Abrowser%3A1/cancel"),
+    deps: createDeps({
+      workerRuntime: {
+        async cancel(input) {
+          cancelInput = input;
+          return cancelledState;
+        },
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.deepEqual(cancelInput, {
+    workerRunKey: "worker:browser:1",
+    reason: "operator cancelled sub-agent session",
+  });
+  assert.deepEqual(response.json, {
+    cancelled: true,
+    workerRunKey: "worker:browser:1",
+    state: cancelledState,
+  });
+});
+
+test("workflow routes return 404 when worker session cancellation cannot find the session", async () => {
+  const response = createResponse();
+
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/worker-sessions/missing/cancel",
+      body: { reason: "operator cancelled sub-agent session" },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/worker-sessions/missing/cancel"),
+    deps: createDeps({
+      workerRuntime: {
+        async cancel() {
+          return null;
+        },
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 404);
+  assert.deepEqual(response.json, {
+    error: "worker session not found",
+    workerRunKey: "missing",
+  });
+});
+
+test("workflow routes replay idempotent worker session cancellation without cancelling twice", async () => {
+  let cancelCalls = 0;
+  const cancelledState: WorkerSessionState = {
+    workerRunKey: "worker:browser:1",
+    workerType: "browser",
+    status: "cancelled",
+    createdAt: 100,
+    updatedAt: 200,
+  };
+  const deps = createDeps({
+    workerRuntime: {
+      async cancel() {
+        cancelCalls += 1;
+        return cancelledState;
+      },
+    },
+  });
+
+  for (const response of [createResponse(), createResponse()]) {
+    await handleWorkflowRoutes({
+      req: createRequest({
+        method: "POST",
+        url: "/worker-sessions/worker%3Abrowser%3A1/cancel",
+        headers: { "idempotency-key": "cancel-worker-session-1" },
+        body: { reason: "operator cancelled sub-agent session" },
+      }),
+      res: response.res,
+      url: new URL("http://127.0.0.1/worker-sessions/worker%3Abrowser%3A1/cancel"),
+      deps,
+    });
+    assert.equal(response.res.statusCode, 200);
+    assert.deepEqual(response.json, {
+      cancelled: true,
+      workerRunKey: "worker:browser:1",
+      state: cancelledState,
+    });
+  }
+
+  assert.equal(cancelCalls, 1);
 });
 
 test("workflow routes trim message body before publishing", async () => {

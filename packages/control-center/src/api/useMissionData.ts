@@ -23,6 +23,7 @@ import type {
   BootstrapDemoResult,
   ContextSource,
   Mission,
+  WorkerSessionRecord,
   WorkItem,
 } from "./mission-api";
 
@@ -204,6 +205,84 @@ export function useTimeline(
     `/missions/${encodeURIComponent(missionId)}/timeline?limit=${limit}`,
     fallback,
     { dependsOn: [missionId, limit], pollIntervalMs }
+  );
+}
+
+export function useWorkerSessions(
+  threadId: string | null | undefined,
+  fallback: WorkerSessionRecord[],
+  options: { limit?: number; pollIntervalMs?: number } = {}
+): RemoteData<WorkerSessionRecord[]> {
+  const limit = options.limit ?? 25;
+  const client = useApiClient();
+  const [value, setValue] = useState<WorkerSessionRecord[]>(fallback);
+  const [isLive, setIsLive] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [epoch, setEpoch] = useState(0);
+
+  useEffect(() => {
+    const normalizedThreadId = threadId?.trim();
+    if (!normalizedThreadId) {
+      setValue(fallback);
+      setIsLive(false);
+      setError(null);
+      return;
+    }
+    let cancelled = false;
+    let pollTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const pathname =
+      `/runtime-worker-sessions?threadId=${encodeURIComponent(normalizedThreadId)}` +
+      `&limit=${encodeURIComponent(String(limit))}`;
+    const issueFetch = () => {
+      void client
+        .get<WorkerSessionRecord[]>(pathname)
+        .then((data) => {
+          if (cancelled) return;
+          setValue(data);
+          setIsLive(true);
+          setError(null);
+        })
+        .catch((err: Error) => {
+          if (cancelled) return;
+          if (err.message !== "unauthorized") setError(err.message);
+        })
+        .finally(() => {
+          if (cancelled) return;
+          const pollIntervalMs = options.pollIntervalMs ?? 2000;
+          if (pollIntervalMs > 0) {
+            pollTimeoutHandle = setTimeout(issueFetch, pollIntervalMs);
+          }
+        });
+    };
+    issueFetch();
+    return () => {
+      cancelled = true;
+      if (pollTimeoutHandle) clearTimeout(pollTimeoutHandle);
+    };
+    // fallback is intentionally not a dep; it is a static caller fallback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, threadId, limit, epoch, options.pollIntervalMs]);
+
+  return { value, isLive, error, refetch: () => setEpoch((n) => n + 1) };
+}
+
+export function useCancelWorkerSession(): (input: {
+  workerRunKey: string;
+  reason?: string;
+}) => Promise<WorkerSessionRecord["state"]> {
+  const client = useApiClient();
+  return useCallback(
+    async (input) => {
+      const result = await client.post<{
+        cancelled: true;
+        workerRunKey: string;
+        state: WorkerSessionRecord["state"];
+      }>(`/worker-sessions/${encodeURIComponent(input.workerRunKey)}/cancel`, {
+        reason: input.reason ?? "operator cancelled sub-agent session",
+      });
+      return result.state;
+    },
+    [client]
   );
 }
 
