@@ -1,6 +1,6 @@
 # Tool Runtime Completion Plan
 
-> Status: active implementation plan
+> Status: completion checkpoints implemented; keep this file as the release-gate checklist
 > Updated: 2026-05-22
 
 This plan closes the remaining gap between TurnkeyAI's native tool-use runtime and a production-grade user task runtime. The end state is not "tools exist"; it is that a user can ask a mission-level question, the lead can delegate to specialist sub-agents, browser work can execute safely through a controlled tool surface, the UI can replay the work in order, and release gates can prove the whole chain works.
@@ -16,9 +16,13 @@ Already complete on `main`:
 - Permission query/result/applied loop integrated with Mission approvals and activity events.
 - Mission timeline expansion for tool calls, progress, tool results, and final answers.
 - LLM sub-agent wrapper for browser and explore workers.
-- Tool-use E2E mock path plus optional direct-CDP browser smoke path.
+- Browser sub-agent private tool surface for browser-backed work.
+- Durable sub-session history for `sessions_history` and `sessions_send`.
+- Tool-use E2E mock path, real LLM path, and real LLM + browser path.
+- Role-run cancellation from Mission UI through provider `AbortSignal`.
 
-Remaining work is about production usefulness, continuity, and user comprehension.
+The remaining work is ongoing product validation on longer real tasks, not a
+known missing runtime primitive in this checkpoint set.
 
 ## Completion Requirements
 
@@ -51,6 +55,9 @@ Acceptance:
 - A browser sub-agent can open a URL, snapshot, scroll, run a console probe, take a screenshot, and summarize the observed evidence in one private tool loop.
 - Repeated browser private tool calls reuse the prior session/target unless the bridge reports a closed or missing session.
 
+Status: implemented. Covered by browser sub-agent unit coverage and the real
+LLM + browser E2E gate.
+
 ### 2. Durable Sub-Session Transcript
 
 `sessions_history` must become a durable child transcript, not only a compact worker lifecycle summary.
@@ -66,6 +73,9 @@ Acceptance:
 
 - After daemon restart, `sessions_history(include_tools=true)` returns the child assistant/tool turns.
 - A follow-up through `sessions_send` sees the prior child transcript, not only the compact last result.
+
+Status: implemented for worker session history and sub-agent child transcript
+continuation. Covered by worker runtime and sub-agent tests.
 
 ### 3. Real LLM + Browser E2E Acceptance
 
@@ -85,6 +95,12 @@ Acceptance:
 - A real LLM prompt can complete a browser-backed research task without manual UI probing.
 - Failure output points to the broken layer: provider, tool schema, worker routing, browser transport, permission, replay, or final synthesis.
 
+Status: implemented. Latest local acceptance on 2026-05-22:
+
+- `npm run tooluse:e2e`
+- `npm run tooluse:e2e -- --real-llm --model-catalog models.local.json`
+- `npm run tooluse:e2e -- --real-llm --with-browser --model-catalog models.local.json --cdp-timeout-ms 45000`
+
 ### 4. Browser Profile And Session Stability
 
 Browser runtime failures must not be amplified into LLM retry loops.
@@ -100,6 +116,9 @@ Acceptance:
 
 - Starting two browser-backed missions does not produce uncontrolled profile lock loops.
 - A profile conflict returns a clear recoverable/unrecoverable status and suggested operator action.
+
+Status: implemented for managed local sessions. Covered by Chrome session
+manager tests and direct-CDP smoke.
 
 ### 5. Product Replay, Approval, And Session UX
 
@@ -118,6 +137,10 @@ Acceptance:
 - A completed browser-backed mission reads as: task -> tool process -> evidence -> final answer.
 - A failed/cancelled/approval-denied flow is understandable without reading raw JSON.
 
+Status: implemented as the current Mission Detail baseline: collapsed work
+trace above final answer, markdown final answer rendering, sub-agent
+inspect/continue/cancel controls, active role-run cancel, and approval routing.
+
 ## Checkpoint Order
 
 1. Browser sub-agent tool surface and prompt/runtime contract.
@@ -126,4 +149,6 @@ Acceptance:
 4. Browser profile/session stability hardening.
 5. Mission replay/approval/session UX completion.
 
-Each checkpoint should go through: focused implementation, tests, commit, PR, bot review, fixes, merge, then local deploy/acceptance before the next checkpoint.
+Each checkpoint went through focused implementation, tests, commit, PR, review
+inspection, fixes where needed, merge, and local acceptance. Keep using the
+same flow for future product-validation hardening.
