@@ -170,6 +170,37 @@ test("openai-compatible client sends tools and parses tool_calls", async () => {
   }
 });
 
+test("compatible clients pass AbortSignal through to provider fetch", async () => {
+  const signals: Array<AbortSignal | null> = [];
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    signals.push(init?.signal ?? null);
+    return response({
+      content: [{ type: "text", text: "ok" }],
+      choices: [{ message: { content: "ok" } }],
+      usage: { input_tokens: 1, output_tokens: 1, prompt_tokens: 1, completion_tokens: 1 },
+    });
+  }) as typeof fetch;
+
+  try {
+    const anthropicController = new AbortController();
+    await new AnthropicCompatibleClient().generate(model("anthropic-compatible"), {
+      signal: anthropicController.signal,
+      messages: [{ role: "user", content: "hello" }],
+    });
+    const openaiController = new AbortController();
+    await new OpenAICompatibleClient().generate(model("openai-compatible"), {
+      signal: openaiController.signal,
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    assert.equal(signals[0], anthropicController.signal);
+    assert.equal(signals[1], openaiController.signal);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 function model(protocol: "openai-compatible" | "anthropic-compatible"): ResolvedModelConfig {
   return {
     id: "model-1",

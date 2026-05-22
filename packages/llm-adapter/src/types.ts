@@ -159,6 +159,7 @@ export interface RequestEnvelopeDiagnostics {
 export interface GenerateTextInput {
   modelId?: string;
   modelChainId?: string;
+  signal?: AbortSignal;
   messages: LLMMessage[];
   tools?: LLMToolDefinition[];
   toolChoice?: LLMToolChoice;

@@ -86,6 +86,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       packet: input.packet,
       ...(selection.modelId ? { modelId: selection.modelId } : {}),
       ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
       ...(this.toolLoop
         ? {
             tools: this.toolLoop.executor.definitions(),
@@ -303,6 +304,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             envelopeHint: reduced.envelopeHint,
             tools: input.gatewayInput.tools,
             toolChoice: input.gatewayInput.toolChoice,
+            ...(input.gatewayInput.signal ? { signal: input.gatewayInput.signal } : {}),
           });
           const reducedMessages = replaceInitialPromptMessages(input.gatewayInput.messages, reducedGatewayInput.messages);
           const result = await this.gateway.generate({
@@ -794,6 +796,7 @@ function buildGatewayInput(input: {
   packet: RolePromptPacket;
   modelId?: string;
   modelChainId?: string;
+  signal?: AbortSignal;
   overrideSystemPrompt?: string;
   overrideTaskPrompt?: string;
   artifactIds?: string[];
@@ -813,6 +816,7 @@ function buildGatewayInput(input: {
   return {
     ...(input.modelId ? { modelId: input.modelId } : {}),
     ...(input.modelChainId ? { modelChainId: input.modelChainId } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
     ...(input.tools?.length ? { tools: input.tools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
     messages: [
