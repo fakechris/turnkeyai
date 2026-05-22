@@ -90,6 +90,7 @@ export interface RolePromptPacketLike {
 
 export interface RoleLoopRunner {
   ensureRunning(runKey: RunKey): Promise<void>;
+  cancel?(runKey: RunKey, reason?: string): Promise<boolean>;
 }
 
 export interface RuntimeLimits {

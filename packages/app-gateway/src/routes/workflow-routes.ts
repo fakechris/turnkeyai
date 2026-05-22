@@ -7,6 +7,7 @@ import {
 import type {
   Clock,
   IdGenerator,
+  RoleLoopRunner,
   SessionTarget,
   TeamMessage,
   TeamMessageStore,
@@ -70,6 +71,7 @@ export interface WorkflowRouteDeps {
   scheduledTaskRuntime: ScheduledTaskRuntimeDeps;
   idGenerator: IdGenerator;
   clock: Clock;
+  roleLoopRunner?: Pick<RoleLoopRunner, "cancel">;
   workerRuntime?: Pick<WorkerRuntime, "cancel">;
   toolCancellationRegistry?: ToolCancellationRegistry;
   idempotencyStore?: RouteIdempotencyStore;
@@ -225,6 +227,71 @@ export async function handleWorkflowRoutes(input: {
       : ({
           kind: "response",
           ...(await executeCancelWorkerSession()),
+          replayed: false,
+        } as const);
+    sendIdempotentResponse(res, result);
+    return true;
+  }
+
+  const roleRunCancelMatch = url.pathname.match(/^\/role-runs\/([^/]+)\/cancel$/);
+  if (req.method === "POST" && roleRunCancelMatch) {
+    const idempotencyKey = readIdempotencyKey(req);
+    if (!idempotencyKey.ok) {
+      sendJson(res, 400, { error: idempotencyKey.error });
+      return true;
+    }
+    const rawRunKey = roleRunCancelMatch[1] ?? "";
+    let runKey: string;
+    try {
+      runKey = decodeURIComponent(rawRunKey);
+    } catch {
+      sendJson(res, 400, { error: "runKey is invalid" });
+      return true;
+    }
+    runKey = parseRequiredNonEmptyString(runKey) ?? "";
+    if (!runKey) {
+      sendJson(res, 400, { error: "runKey is required" });
+      return true;
+    }
+    const bodyResult = await readOptionalJsonBodySafe<{ reason?: unknown }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const reason = parseRequiredNonEmptyString(bodyResult.value?.reason as string | undefined) ?? "role run cancelled";
+    if (reason.length > MAX_CANCEL_REASON_CHARS) {
+      sendJson(res, 400, { error: `reason must be at most ${MAX_CANCEL_REASON_CHARS} characters` });
+      return true;
+    }
+    if (!deps.roleLoopRunner?.cancel) {
+      sendJson(res, 501, { error: "role run cancellation is unavailable" });
+      return true;
+    }
+    const roleLoopRunner = deps.roleLoopRunner;
+
+    const executeCancelRoleRun = async () => {
+      const cancelled = await roleLoopRunner.cancel!(runKey, reason);
+      if (!cancelled) {
+        return {
+          statusCode: 404,
+          body: { error: "active role run not found", runKey },
+        };
+      }
+      return {
+        statusCode: 200,
+        body: { cancelled: true, runKey },
+      };
+    };
+    const result = deps.idempotencyStore
+      ? await deps.idempotencyStore.execute({
+          scope: "workflow:role-run-cancel",
+          ...(idempotencyKey.key ? { key: idempotencyKey.key } : {}),
+          fingerprint: JSON.stringify({ runKey, reason }),
+          execute: executeCancelRoleRun,
+        })
+      : ({
+          kind: "response",
+          ...(await executeCancelRoleRun()),
           replayed: false,
         } as const);
     sendIdempotentResponse(res, result);

@@ -12,10 +12,13 @@ export class HybridRoleResponseGenerator implements RoleResponseGenerator {
     this.fallback = options.fallback;
   }
 
-  async generate(input: { activation: RoleActivationInput; packet: RolePromptPacket }): Promise<GeneratedRoleReply> {
+  async generate(input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal }): Promise<GeneratedRoleReply> {
     try {
       return await this.primary.generate(input);
     } catch (error) {
+      if (input.signal?.aborted) {
+        throw error;
+      }
       const fallback = await this.fallback.generate(input);
       const record = error && typeof error === "object" ? (error as Record<string, unknown>) : null;
       return {

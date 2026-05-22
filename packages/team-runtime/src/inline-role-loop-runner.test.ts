@@ -8,6 +8,7 @@ import type {
   RoleRunCoordinator,
   RoleRunState,
   RoleRunStore,
+  RuntimeError,
   TeamMessageStore,
   TeamThread,
   TeamThreadStore,
@@ -712,4 +713,192 @@ test("inline role loop runner ignores heartbeat recorder failures", async () => 
 
   await runner.ensureRunning(runKey);
   assert.equal(runState.status, "idle");
+});
+
+test("inline role loop runner aborts active role runtime on cancel", async () => {
+  const runKey = "role:role-operator:thread:thread-cancel";
+  const handoff: HandoffEnvelope = {
+    taskId: "task-cancel",
+    flowId: "flow-cancel",
+    sourceMessageId: "msg-cancel",
+    targetRoleId: "role-operator",
+    activationType: "mention",
+    threadId: "thread-cancel",
+    payload: normalizeRelayPayload({
+      threadId: "thread-cancel",
+      relayBrief: "Run until cancelled.",
+      recentMessages: [],
+      dispatchPolicy: {
+        allowParallel: false,
+        allowReenter: true,
+        sourceFlowMode: "serial",
+      },
+    }),
+    createdAt: 1,
+  };
+  const runState: RoleRunState = {
+    runKey,
+    threadId: "thread-cancel",
+    roleId: "role-operator",
+    mode: "group",
+    status: "queued",
+    iterationCount: 0,
+    maxIterations: 6,
+    inbox: [handoff],
+    lastActiveAt: 1,
+  };
+  let capturedSignal: AbortSignal | undefined;
+  let started!: () => void;
+  const startedPromise = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const observed: { failure: RuntimeError | null } = { failure: null };
+
+  const runner = new InlineRoleLoopRunner({
+    roleRunStore: {
+      async get(key) {
+        return key === runKey ? runState : null;
+      },
+      async put(next) {
+        Object.assign(runState, next);
+      },
+      async delete() {},
+      async listByThread() {
+        return [runState];
+      },
+    },
+    flowLedgerStore: {
+      async get() {
+        return {
+          flowId: "flow-cancel",
+          threadId: "thread-cancel",
+          rootMessageId: "msg-root",
+          mode: "serial",
+          status: "running",
+          currentStageIndex: 0,
+          activeRoleIds: ["role-operator"],
+          completedRoleIds: [],
+          failedRoleIds: [],
+          hopCount: 0,
+          maxHops: 5,
+          edges: [],
+          createdAt: 1,
+          updatedAt: 1,
+        };
+      },
+      async put() {},
+      async listByThread() {
+        return [];
+      },
+    },
+    teamThreadStore: {
+      async get() {
+        return {
+          threadId: "thread-cancel",
+          teamId: "team-1",
+          teamName: "Demo",
+          leadRoleId: "role-lead",
+          roles: [
+            { roleId: "role-lead", name: "Lead", seat: "lead", runtime: "local" },
+            { roleId: "role-operator", name: "Operator", seat: "member", runtime: "local" },
+          ],
+          participantLinks: [],
+          metadataVersion: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        };
+      },
+      async list() {
+        return [];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore: {
+      async append() {},
+      async list() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    } as TeamMessageStore,
+    roleRunCoordinator: {
+      async getOrCreate() {
+        return runState;
+      },
+      async enqueue() {
+        return runState;
+      },
+      async dequeue() {
+        return runState.inbox.shift() ?? null;
+      },
+      async ack(_, taskId) {
+        runState.lastDequeuedTaskId = taskId;
+      },
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus(_, status) {
+        runState.status = status;
+      },
+      async incrementIteration() {
+        runState.iterationCount += 1;
+        return runState.iterationCount;
+      },
+      async fail(_, error) {
+        runState.status = "failed";
+        observed.failure = error;
+      },
+      async finish() {
+        runState.status = "done";
+      },
+    },
+    roleRuntime: {
+      async runActivation(_, options) {
+        capturedSignal = options?.signal;
+        started();
+        await new Promise<void>((resolve) => {
+          options?.signal?.addEventListener("abort", () => {
+            resolve();
+          });
+        });
+        return {
+          status: "ok",
+          message: {
+            id: "msg-too-late",
+            threadId: "thread-cancel",
+            role: "assistant",
+            roleId: "role-operator",
+            name: "Operator",
+            content: "This reply should not be published after cancellation.",
+            createdAt: 2,
+            updatedAt: 2,
+          },
+        };
+      },
+    },
+    onHandoffAck: async () => {},
+    onRoleReply: async () => {
+      throw new Error("not used");
+    },
+    onRoleFailure: async (input) => {
+      observed.failure = input.error;
+    },
+  });
+
+  const running = runner.ensureRunning(runKey);
+  await startedPromise;
+  assert.equal(capturedSignal?.aborted, false);
+
+  assert.equal(await runner.cancel(runKey, "operator stopped the mission"), true);
+  await running;
+
+  assert.equal(capturedSignal?.aborted, true);
+  assert.equal(runState.status, "failed");
+  assert.equal(observed.failure?.message, "operator stopped the mission");
 });

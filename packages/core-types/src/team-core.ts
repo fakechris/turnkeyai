@@ -496,6 +496,7 @@ export type RuntimeErrorCode =
   | "WORKER_TIMEOUT"
   | "WORKER_FAILED"
   | "HANDOFF_LOOP"
+  | "ROLE_RUN_CANCELLED"
   | "RUN_ITERATION_LIMIT"
   | "FLOW_HOP_LIMIT"
   | "INVALID_MENTION"

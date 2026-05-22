@@ -140,6 +140,8 @@ function classifyByCode(
     case "FLOW_HOP_LIMIT":
     case "HANDOFF_LOOP":
       return buildFailure("merge_failure", layer, true, message, "retry");
+    case "ROLE_RUN_CANCELLED":
+      return buildFailure("terminal", layer, false, message, "abort");
     case "ROLE_MISSING":
       return buildFailure("terminal", layer, false, message, "abort");
     case "INVALID_MENTION":
