@@ -162,6 +162,39 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   assert.deepEqual(bridgeCalls[1]?.input.actions?.map((action) => action.kind), ["snapshot"]);
 });
 
+test("LLMSubAgentWorkerHandler reports failed private browser action traces as tool errors", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_screenshot", { fullPage: true });
+    }
+    return textResult("Reported browser failure.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        return browserResult({ traceKinds: ["screenshot"], traceStatuses: ["failed"] });
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.summary, "Reported browser failure.");
+  const toolMessage = gatewayInputs[1]?.messages.find((message) => message.role === "tool");
+  const toolContent = readToolContent(toolMessage?.content ?? "");
+  assert.match(toolContent, /"status": "failed"/);
+  const metadata = (result?.payload as { metadata?: { toolUse?: { rounds?: Array<{ results: Array<{ isError: boolean }> }> } } })
+    .metadata;
+  assert.equal(metadata?.toolUse?.rounds?.[0]?.results?.[0]?.isError, true);
+});
+
 test("LLMSubAgentWorkerHandler refuses private browser submit actions before bridge execution", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   let bridgeCalled = false;
@@ -522,7 +555,12 @@ function buildBrowserBridge(overrides: Partial<BrowserBridge>): BrowserBridge {
   return base;
 }
 
-function browserResult(input: { title?: string; finalUrl?: string; traceKinds?: string[] }): BrowserTaskResult {
+function browserResult(input: {
+  title?: string;
+  finalUrl?: string;
+  traceKinds?: string[];
+  traceStatuses?: Array<"ok" | "failed">;
+}): BrowserTaskResult {
   return {
     sessionId: "browser-session-1",
     targetId: "target-1",
@@ -544,7 +582,7 @@ function browserResult(input: { title?: string; finalUrl?: string; traceKinds?: 
       kind: kind as BrowserTaskResult["trace"][number]["kind"],
       startedAt: index,
       completedAt: index + 1,
-      status: "ok",
+      status: input.traceStatuses?.[index] ?? "ok",
       input: {},
     })),
   };

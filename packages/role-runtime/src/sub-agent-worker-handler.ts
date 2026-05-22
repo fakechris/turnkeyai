@@ -305,10 +305,16 @@ class SubAgentToolExecutor implements RoleToolExecutor {
         null,
         2
       ),
+      ...(workerResult.status === "failed" ? { isError: true } : {}),
       raw: workerResult,
       progress: [
         {
-          phase: "completed",
+          phase:
+            workerResult.status === "failed"
+              ? "failed"
+              : workerResult.status === "partial"
+                ? "progress"
+                : "completed",
           toolName: input.call.name,
           summary: workerResult.summary,
           detail: {
@@ -552,9 +558,16 @@ function classifyBrowserPrivateSideEffectTarget(
 }
 
 function browserToolWorkerResult(result: BrowserTaskResult): WorkerExecutionResult {
+  const failedCount = result.trace.filter((step) => step.status === "failed").length;
+  const status =
+    result.trace.length > 0 && failedCount === result.trace.length
+      ? "failed"
+      : failedCount > 0
+        ? "partial"
+        : "completed";
   return {
     workerType: "browser",
-    status: "completed",
+    status,
     summary: summarizeBrowserToolResult(result),
     payload: {
       sessionId: result.sessionId,
