@@ -268,6 +268,7 @@ function isWorkflowMutationRoute(pathname: string): boolean {
     pathname === "/threads/bootstrap-demo" ||
     pathname === "/messages" ||
     pathname === "/message/cancel-tools" ||
+    /^\/role-runs\/[^/]+\/cancel$/.test(pathname) ||
     /^\/worker-sessions\/[^/]+\/cancel$/.test(pathname) ||
     pathname === "/scheduled-tasks" ||
     pathname === "/scheduled-tasks/trigger-due"

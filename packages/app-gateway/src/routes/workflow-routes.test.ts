@@ -356,6 +356,66 @@ test("workflow routes replay idempotent worker session cancellation without canc
   assert.equal(cancelCalls, 1);
 });
 
+test("workflow routes cancel active role runs directly", async () => {
+  let cancelInput: { runKey: string; reason?: string } | null = null;
+  const response = createResponse();
+
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/role-runs/role%3Alead%3Athread%3A1/cancel",
+      body: { reason: "operator stopped the mission" },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/role-runs/role%3Alead%3Athread%3A1/cancel"),
+    deps: createDeps({
+      roleLoopRunner: {
+        async cancel(runKey, reason) {
+          cancelInput = { runKey, ...(reason ? { reason } : {}) };
+          return true;
+        },
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.deepEqual(cancelInput, {
+    runKey: "role:lead:thread:1",
+    reason: "operator stopped the mission",
+  });
+  assert.deepEqual(response.json, {
+    cancelled: true,
+    runKey: "role:lead:thread:1",
+  });
+});
+
+test("workflow routes return 404 when role run cancellation cannot find an active run", async () => {
+  const response = createResponse();
+
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/role-runs/missing/cancel",
+      body: { reason: "operator stopped the mission" },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/role-runs/missing/cancel"),
+    deps: createDeps({
+      roleLoopRunner: {
+        async cancel() {
+          return false;
+        },
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 404);
+  assert.deepEqual(response.json, {
+    error: "active role run not found",
+    runKey: "missing",
+  });
+});
+
 test("workflow routes trim message body before publishing", async () => {
   let postedBody: { threadId: string; content: string } | undefined;
   let publishedEvent: unknown;

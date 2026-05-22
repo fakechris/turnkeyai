@@ -56,6 +56,8 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
   private readonly heartbeatIntervalMs: number;
   private readonly activeRuns = new Set<RunKey>();
+  private readonly activeRunControllers = new Map<RunKey, AbortController>();
+  private readonly activeRunContexts = new Map<RunKey, { runState: RoleRunState; flowId: string; taskId: string }>();
 
   constructor(options: InlineRoleLoopRunnerOptions) {
     this.roleRunStore = options.roleRunStore;
@@ -136,24 +138,44 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
         });
 
         const stopHeartbeat = this.startRoleHeartbeat(refreshedRun, flow.flowId, handoff.taskId);
+        const controller = new AbortController();
+        this.activeRunControllers.set(runKey, controller);
+        this.activeRunContexts.set(runKey, {
+          runState: refreshedRun,
+          flowId: flow.flowId,
+          taskId: handoff.taskId,
+        });
         const result = await this.roleRuntime
           .runActivation({
             runState: refreshedRun,
             thread,
             flow,
             handoff,
+          }, {
+            signal: controller.signal,
           })
           .finally(() => {
             stopHeartbeat();
+            if (this.activeRunControllers.get(runKey) === controller) {
+              this.activeRunControllers.delete(runKey);
+            }
+            this.activeRunContexts.delete(runKey);
           });
+        const roleResult =
+          controller.signal.aborted && result.status !== "failed"
+            ? {
+                status: "failed" as const,
+                error: buildRoleRunCancelledError(controller.signal),
+              }
+            : result;
 
-        if (result.workerBindings?.length) {
-          for (const binding of result.workerBindings) {
+        if (roleResult.workerBindings?.length) {
+          for (const binding of roleResult.workerBindings) {
             await this.roleRunCoordinator.bindWorkerSession(runKey, binding.workerType, binding.workerRunKey);
           }
         }
 
-        if (result.status === "ok" && result.message) {
+        if (roleResult.status === "ok" && roleResult.message) {
           await this.recordRoleProgress({
             runState: refreshedRun,
             flowId: flow.flowId,
@@ -167,13 +189,13 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
             thread,
             runState: refreshedRun,
             handoff,
-            message: result.message,
-            ...(result.messages?.length ? { messages: result.messages } : {}),
+            message: roleResult.message,
+            ...(roleResult.messages?.length ? { messages: roleResult.messages } : {}),
           });
           continue;
         }
 
-        if (result.status === "delegated") {
+        if (roleResult.status === "delegated") {
           await this.roleRunCoordinator.setStatus(runKey, "waiting_worker");
           await this.recordRoleProgress({
             runState: refreshedRun,
@@ -187,6 +209,12 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
           return;
         }
 
+        const error = roleResult.error ?? {
+          code: "WORKER_FAILED" as const,
+          message: "unknown role failure",
+          retryable: false,
+        };
+        await this.roleRunCoordinator.fail(runKey, error);
         await this.recordRoleProgress({
           runState: refreshedRun,
           flowId: flow.flowId,
@@ -194,24 +222,32 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
           phase: "failed",
           summary: `Role ${refreshedRun.roleId} failed task ${handoff.taskId}`,
           continuityState: "terminal",
-          ...(result.error?.message ? { statusReason: result.error.message } : {}),
+          statusReason: error.message,
         });
         await this.onRoleFailure({
           flow,
           thread,
           runState: refreshedRun,
           handoff,
-          error: result.error ?? {
-            code: "WORKER_FAILED",
-            message: "unknown role failure",
-            retryable: false,
-          },
+          error,
         });
         return;
       }
     } finally {
+      this.activeRunControllers.delete(runKey);
+      this.activeRunContexts.delete(runKey);
       this.activeRuns.delete(runKey);
     }
+  }
+
+  async cancel(runKey: RunKey, reason = "role run cancelled"): Promise<boolean> {
+    const controller = this.activeRunControllers.get(runKey);
+    if (!controller) {
+      return false;
+    }
+    controller.abort(new Error(reason));
+    await this.recordCancellationProgress(runKey, reason);
+    return true;
   }
 
   private async recordRoleProgress(input: {
@@ -256,6 +292,25 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
     });
   }
 
+  private async recordCancellationProgress(runKey: RunKey, reason: string): Promise<void> {
+    if (!this.runtimeProgressRecorder) {
+      return;
+    }
+    const context = this.activeRunContexts.get(runKey);
+    if (!context) {
+      return;
+    }
+    await this.recordRoleProgress({
+      runState: context.runState,
+      flowId: context.flowId,
+      taskId: context.taskId,
+      phase: "failed",
+      summary: reason,
+      continuityState: "terminal",
+      statusReason: reason,
+    });
+  }
+
   private startRoleHeartbeat(runState: RoleRunState, flowId: string, taskId: string): () => void {
     if (!this.runtimeProgressRecorder || this.heartbeatIntervalMs <= 0) {
       return () => {};
@@ -280,4 +335,19 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
     }, this.heartbeatIntervalMs);
     return () => clearInterval(timer);
   }
+}
+
+function buildRoleRunCancelledError(signal: AbortSignal): RuntimeError {
+  const reason = signal.reason;
+  const message =
+    reason instanceof Error
+      ? reason.message
+      : typeof reason === "string" && reason.trim().length > 0
+        ? reason
+        : "role run cancelled";
+  return {
+    code: "ROLE_RUN_CANCELLED",
+    message,
+    retryable: false,
+  };
 }

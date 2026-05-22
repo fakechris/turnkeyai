@@ -1480,6 +1480,55 @@ test("policy role runtime blocks denied worker results from entering prompt cont
   }
 });
 
+test("policy role runtime maps aborted generation to role-run cancellation", async () => {
+  const activation = buildOperatorActivationInput();
+  const controller = new AbortController();
+  let started!: () => void;
+  const startedPromise = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const promptPolicy: RolePromptPolicy = {
+    async buildPacket(): Promise<RolePromptPacket> {
+      return {
+        roleId: "role-operator",
+        roleName: "Operator",
+        seat: "member",
+        systemPrompt: "Operate carefully.",
+        taskPrompt: "Wait for cancellation.",
+        outputContract: "Return only after generation completes.",
+        suggestedMentions: [],
+      };
+    },
+  };
+  const responseGenerator: RoleResponseGenerator = {
+    async generate(input): Promise<GeneratedRoleReply> {
+      started();
+      await new Promise<void>((resolve) => {
+        input.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      const error = new Error("provider request aborted");
+      error.name = "AbortError";
+      throw error;
+    },
+  };
+  const runtime = new PolicyRoleRuntime({
+    idGenerator: { messageId: () => "msg-cancelled" },
+    clock: { now: () => 10 },
+    promptPolicy,
+    responseGenerator,
+  });
+
+  const running = runtime.runActivation(activation, { signal: controller.signal });
+  await startedPromise;
+  controller.abort(new Error("operator stopped the mission"));
+  const result = await running;
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error?.code, "ROLE_RUN_CANCELLED");
+  assert.equal(result.error?.message, "operator stopped the mission");
+  assert.equal(result.error?.retryable, false);
+});
+
 function buildOperatorActivationInput(): RoleActivationInput {
   return {
     runState: {

@@ -335,6 +335,7 @@ const {
   scheduledTaskRuntime,
   runtimeQueryService,
   toolCancellationRegistry,
+  roleLoopRunner,
 } = runtimeServices;
 
 const browserRouteHelpers = createBrowserRouteHelpers({
@@ -694,6 +695,7 @@ const server = http.createServer(async (req, res) => {
           scheduledTaskRuntime,
           idGenerator,
           clock,
+          roleLoopRunner,
           workerRuntime,
           toolCancellationRegistry,
           idempotencyStore: routeIdempotencyStore,

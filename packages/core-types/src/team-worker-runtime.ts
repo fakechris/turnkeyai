@@ -145,7 +145,7 @@ export interface RoleRuntimeResult {
 }
 
 export interface RoleRuntime {
-  runActivation(input: RoleActivationInput): Promise<RoleRuntimeResult>;
+  runActivation(input: RoleActivationInput, options?: { signal?: AbortSignal }): Promise<RoleRuntimeResult>;
 }
 
 export interface WorkerRuntime {

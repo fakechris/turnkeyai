@@ -84,7 +84,7 @@ export class PolicyRoleRuntime implements RoleRuntime {
     this.replayRecorder = options.replayRecorder;
   }
 
-  async runActivation(input: RoleActivationInput): Promise<RoleRuntimeResult> {
+  async runActivation(input: RoleActivationInput, options: { signal?: AbortSignal } = {}): Promise<RoleRuntimeResult> {
     const role = input.thread.roles.find((item) => item.roleId === input.runState.roleId);
     if (!role) {
       return {
@@ -206,6 +206,7 @@ export class PolicyRoleRuntime implements RoleRuntime {
       const reply = await this.responseGenerator.generate({
         activation: input,
         packet,
+        ...(options.signal ? { signal: options.signal } : {}),
       });
 
       const generationMetadata = {
@@ -283,6 +284,14 @@ export class PolicyRoleRuntime implements RoleRuntime {
         ...(workerBindings.length > 0 ? { workerBindings } : {}),
       };
     } catch (error) {
+      if (options.signal?.aborted) {
+        const runtimeError = buildRoleRunCancelledError(options.signal);
+        await this.runBestEffort(() => this.recordRoleFailureReplay(input, runtimeError), "record role failure replay");
+        return {
+          status: "failed",
+          error: runtimeError,
+        };
+      }
       const runtimeError = normalizeRuntimeError(
         error,
         this.error("WORKER_FAILED", "role runtime generation failed", true)
@@ -895,6 +904,21 @@ function normalizeRuntimeError(error: unknown, fallback: RuntimeError): RuntimeE
   }
 
   return fallback;
+}
+
+function buildRoleRunCancelledError(signal: AbortSignal): RuntimeError {
+  const reason = signal.reason;
+  const message =
+    reason instanceof Error
+      ? reason.message
+      : typeof reason === "string" && reason.trim().length > 0
+        ? reason
+        : "role run cancelled";
+  return {
+    code: "ROLE_RUN_CANCELLED",
+    message,
+    retryable: false,
+  };
 }
 
 interface WorkerGovernanceBundle {

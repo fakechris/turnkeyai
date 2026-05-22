@@ -11,7 +11,7 @@ export interface GeneratedRoleReply {
 }
 
 export interface RoleResponseGenerator {
-  generate(input: { activation: RoleActivationInput; packet: RolePromptPacket }): Promise<GeneratedRoleReply>;
+  generate(input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal }): Promise<GeneratedRoleReply>;
 }
 
 export class DeterministicRoleResponseGenerator implements RoleResponseGenerator {
