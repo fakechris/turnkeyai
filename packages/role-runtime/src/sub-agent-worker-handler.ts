@@ -5,6 +5,7 @@ import type {
   Clock,
   RoleActivationInput,
   RuntimeProgressRecorder,
+  WorkerSessionHistoryEntry,
   WorkerExecutionResult,
   WorkerHandler,
   WorkerInvocationInput,
@@ -16,6 +17,7 @@ import type { LLMToolDefinition } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 
 import { LLMRoleResponseGenerator } from "./llm-response-generator";
+import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
 import type { RoleToolExecutionInput, RoleToolExecutionResult, RoleToolExecutor } from "./tool-use";
 
@@ -107,6 +109,13 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
           content: reply.content,
           metadata: reply.metadata ?? {},
         },
+        sessionHistoryEntries: buildSubAgentTranscriptEntries({
+          kind: this.kind,
+          taskId: input.activation.handoff.taskId,
+          metadata: reply.metadata ?? {},
+          finalContent: reply.content,
+          baseTimestamp: this.clock.now(),
+        }),
       };
     } catch (error) {
       if (input.signal?.aborted) {
@@ -639,6 +648,90 @@ function buildInnerSessionState(input: {
       },
     ],
   };
+}
+
+function buildSubAgentTranscriptEntries(input: {
+  kind: WorkerKind;
+  taskId: string;
+  metadata: Record<string, unknown>;
+  finalContent: string;
+  baseTimestamp: number;
+}): WorkerSessionHistoryEntry[] {
+  const rounds = readNativeToolRounds(input.metadata);
+  const entries: WorkerSessionHistoryEntry[] = [];
+  let ordinal = 0;
+  for (const round of rounds) {
+    for (const call of round.calls) {
+      entries.push({
+        id: `sub-agent-transcript:${input.kind}:${input.taskId}:${round.round}:assistant-tool-call:${call.id}`,
+        role: "assistant",
+        content: `Requested ${call.name}.`,
+        createdAt: input.baseTimestamp + ordinal++,
+        taskId: input.taskId,
+        toolCallId: call.id,
+        toolName: call.name,
+        metadata: {
+          kind: "assistant_tool_call",
+          round: round.round,
+          input: call.input,
+        },
+      });
+    }
+    for (const progress of round.progress ?? []) {
+      entries.push({
+        id: `sub-agent-transcript:${input.kind}:${input.taskId}:${round.round}:progress:${progress.toolCallId}:${progress.ts}`,
+        role: "system",
+        content: progress.summary,
+        createdAt: progress.ts || input.baseTimestamp + ordinal,
+        taskId: input.taskId,
+        toolCallId: progress.toolCallId,
+        toolName: progress.toolName,
+        metadata: {
+          kind: "tool_progress",
+          phase: progress.phase,
+          ...(progress.detail ? { detail: progress.detail } : {}),
+        },
+      });
+      ordinal += 1;
+    }
+    for (const result of round.results) {
+      entries.push({
+        id: `sub-agent-transcript:${input.kind}:${input.taskId}:${round.round}:tool-result:${result.toolCallId}`,
+        role: "tool",
+        content: result.content ?? `${result.toolName} result omitted (${result.contentBytes} bytes).`,
+        createdAt: input.baseTimestamp + ordinal++,
+        taskId: input.taskId,
+        toolCallId: result.toolCallId,
+        toolName: result.toolName,
+        status: result.isError ? "failed" : "completed",
+        metadata: {
+          kind: "tool_result",
+          contentBytes: result.contentBytes,
+          ...(result.contentTruncated ? { contentTruncated: true } : {}),
+          ...(result.cancelled ? { cancelled: true } : {}),
+        },
+      });
+    }
+  }
+  entries.push({
+    id: `sub-agent-transcript:${input.kind}:${input.taskId}:assistant-final:${input.baseTimestamp}`,
+    role: "assistant",
+    content: input.finalContent,
+    createdAt: input.baseTimestamp + ordinal,
+    taskId: input.taskId,
+    status: "completed",
+    metadata: {
+      kind: "assistant_final",
+    },
+  });
+  return entries;
+}
+
+function readNativeToolRounds(metadata: Record<string, unknown>): NativeToolRoundTrace[] {
+  const toolUse = metadata.toolUse;
+  if (!toolUse || typeof toolUse !== "object") return [];
+  const rounds = (toolUse as { rounds?: unknown }).rounds;
+  return Array.isArray(rounds) ? (rounds as NativeToolRoundTrace[]) : [];
 }
 
 function buildSubAgentPromptPacket(input: {

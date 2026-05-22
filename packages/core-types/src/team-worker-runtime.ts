@@ -37,6 +37,7 @@ export interface WorkerExecutionResult {
   status: "completed" | "partial" | "failed";
   summary: string;
   payload: unknown;
+  sessionHistoryEntries?: WorkerSessionHistoryEntry[];
 }
 
 export interface WorkerSessionHistoryEntry {
@@ -46,7 +47,7 @@ export interface WorkerSessionHistoryEntry {
   createdAt: number;
   taskId?: TaskId;
   toolCallId?: string;
-  toolName?: WorkerKind;
+  toolName?: string;
   status?: WorkerExecutionResult["status"] | "cancelled" | "interrupted";
   payload?: unknown;
   metadata?: Record<string, unknown>;
