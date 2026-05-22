@@ -23,6 +23,7 @@ import type {
   BootstrapDemoResult,
   ContextSource,
   Mission,
+  RoleRunState,
   WorkerSessionRecord,
   WorkItem,
 } from "./mission-api";
@@ -281,6 +282,76 @@ export function useCancelWorkerSession(): (input: {
         reason: input.reason ?? "operator cancelled sub-agent session",
       });
       return result.state;
+    },
+    [client]
+  );
+}
+
+export function useRoleRuns(
+  threadId: string | null | undefined,
+  fallback: RoleRunState[],
+  options: { pollIntervalMs?: number } = {}
+): RemoteData<RoleRunState[]> {
+  const client = useApiClient();
+  const [value, setValue] = useState<RoleRunState[]>(fallback);
+  const [isLive, setIsLive] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [epoch, setEpoch] = useState(0);
+
+  useEffect(() => {
+    const normalizedThreadId = threadId?.trim();
+    if (!normalizedThreadId) {
+      setValue(fallback);
+      setIsLive(false);
+      setError(null);
+      return;
+    }
+    let cancelled = false;
+    let pollTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const pathname = `/runs?threadId=${encodeURIComponent(normalizedThreadId)}`;
+    const issueFetch = () => {
+      void client
+        .get<RoleRunState[]>(pathname)
+        .then((data) => {
+          if (cancelled) return;
+          setValue(data);
+          setIsLive(true);
+          setError(null);
+        })
+        .catch((err: Error) => {
+          if (cancelled) return;
+          if (err.message !== "unauthorized") setError(err.message);
+        })
+        .finally(() => {
+          if (cancelled) return;
+          const pollIntervalMs = options.pollIntervalMs ?? 2000;
+          if (pollIntervalMs > 0) {
+            pollTimeoutHandle = setTimeout(issueFetch, pollIntervalMs);
+          }
+        });
+    };
+    issueFetch();
+    return () => {
+      cancelled = true;
+      if (pollTimeoutHandle) clearTimeout(pollTimeoutHandle);
+    };
+    // fallback is intentionally not a dep; it is a static caller fallback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, threadId, epoch, options.pollIntervalMs]);
+
+  return { value, isLive, error, refetch: () => setEpoch((n) => n + 1) };
+}
+
+export function useCancelRoleRun(): (input: {
+  runKey: string;
+  reason?: string;
+}) => Promise<void> {
+  const client = useApiClient();
+  return useCallback(
+    async (input) => {
+      await client.post(`/role-runs/${encodeURIComponent(input.runKey)}/cancel`, {
+        reason: input.reason ?? "operator cancelled role run from Mission replay",
+      });
     },
     [client]
   );
