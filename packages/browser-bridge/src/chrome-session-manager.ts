@@ -90,6 +90,12 @@ interface LocalDownloadArtifact {
 const pageNetworkBlockHandlers = new WeakMap<Page, (route: Route) => void>();
 const pageNetworkMockHandlers = new WeakMap<Page, Set<(route: Route) => Promise<void>>>();
 
+interface LivePersistentContextRecord {
+  context: Promise<BrowserContext>;
+  sessionIds: Set<string>;
+  fallbackDir?: string;
+}
+
 interface LocalCdpCookie {
   name?: string;
   value?: string;
@@ -126,6 +132,8 @@ export class ChromeSessionManager {
   private readonly createEphemeralContext: () => Promise<BrowserContext>;
   private browserPromise: Promise<Browser> | null = null;
   private readonly liveContexts = new Map<string, Promise<BrowserContext>>();
+  private readonly livePersistentContexts = new Map<string, LivePersistentContextRecord>();
+  private readonly sessionPersistentDirs = new Map<string, string>();
   private readonly livePageHandles = new WeakMap<Page, string>();
   private pageHandleCounter = 0;
 
@@ -674,7 +682,23 @@ export class ChromeSessionManager {
   }
 
   async closeSession(browserSessionId: string, reason = "session closed"): Promise<void> {
-    const liveContext = this.liveContexts.get(browserSessionId);
+    const persistentDir = this.sessionPersistentDirs.get(browserSessionId);
+    const liveProfileContext = persistentDir ? this.livePersistentContexts.get(persistentDir) : undefined;
+    if (persistentDir && liveProfileContext) {
+      liveProfileContext.sessionIds.delete(browserSessionId);
+      this.liveContexts.delete(browserSessionId);
+      this.sessionPersistentDirs.delete(browserSessionId);
+      if (liveProfileContext.sessionIds.size === 0) {
+        const resolved = await liveProfileContext.context.catch(() => null);
+        if (resolved) {
+          await safeClose(resolved);
+        } else {
+          this.forgetPersistentContext(persistentDir, liveProfileContext);
+        }
+      }
+    }
+
+    const liveContext = persistentDir ? undefined : this.liveContexts.get(browserSessionId);
     this.liveContexts.delete(browserSessionId);
     if (liveContext) {
       const resolved = await liveContext.catch(() => null);
@@ -831,7 +855,9 @@ export class ChromeSessionManager {
     lease: { session: { browserSessionId: string }; profile: { persistentDir: string } } | undefined
   ): Promise<{ context: BrowserContext; keepAlive: boolean; liveReuse: boolean }> {
     if (lease?.profile.persistentDir) {
-      const existingLiveContext = this.liveContexts.has(lease.session.browserSessionId);
+      const existingLiveContext =
+        this.liveContexts.has(lease.session.browserSessionId) ||
+        this.livePersistentContexts.has(lease.profile.persistentDir);
       return {
         context: await this.getOrCreatePersistentContext(lease.session.browserSessionId, lease.profile.persistentDir),
         keepAlive: true,
@@ -852,19 +878,78 @@ export class ChromeSessionManager {
       return existing;
     }
 
-    const created = this.launchPersistentContext(persistentDir)
-      .then((context) => {
+    const existingProfile = this.livePersistentContexts.get(persistentDir);
+    if (existingProfile) {
+      existingProfile.sessionIds.add(browserSessionId);
+      this.liveContexts.set(browserSessionId, existingProfile.context);
+      this.sessionPersistentDirs.set(browserSessionId, persistentDir);
+      return existingProfile.context;
+    }
+
+    const record = {
+      sessionIds: new Set([browserSessionId]),
+    } as LivePersistentContextRecord;
+    const created = this.launchPersistentContextWithFallback(browserSessionId, persistentDir)
+      .then(({ context, fallbackDir }) => {
+        if (fallbackDir) {
+          record.fallbackDir = fallbackDir;
+        }
         context.on("close", () => {
-          this.liveContexts.delete(browserSessionId);
+          this.forgetPersistentContext(persistentDir, record);
         });
         return context;
       })
       .catch((error) => {
-        this.liveContexts.delete(browserSessionId);
+        this.forgetPersistentContext(persistentDir, record);
         throw error;
       });
+    record.context = created;
+    this.livePersistentContexts.set(persistentDir, record);
     this.liveContexts.set(browserSessionId, created);
+    this.sessionPersistentDirs.set(browserSessionId, persistentDir);
     return created;
+  }
+
+  private async launchPersistentContextWithFallback(
+    browserSessionId: string,
+    persistentDir: string
+  ): Promise<{ context: BrowserContext; fallbackDir?: string }> {
+    try {
+      return { context: await this.launchPersistentContext(persistentDir) };
+    } catch (error) {
+      if (!isBrowserProfileLockError(error)) {
+        throw error;
+      }
+      const fallbackDir = path.join(
+        path.dirname(persistentDir),
+        "_runtime-fallback",
+        encodeURIComponent(browserSessionId),
+        String(Date.now())
+      );
+      await mkdir(fallbackDir, { recursive: true });
+      try {
+        return { context: await this.launchPersistentContext(fallbackDir), fallbackDir };
+      } catch (fallbackError) {
+        await rm(fallbackDir, { recursive: true, force: true }).catch(() => undefined);
+        throw fallbackError;
+      }
+    }
+  }
+
+  private forgetPersistentContext(persistentDir: string, record: LivePersistentContextRecord): void {
+    const current = this.livePersistentContexts.get(persistentDir);
+    if (current !== record) {
+      return;
+    }
+
+    this.livePersistentContexts.delete(persistentDir);
+    for (const sessionId of record.sessionIds) {
+      this.liveContexts.delete(sessionId);
+      this.sessionPersistentDirs.delete(sessionId);
+    }
+    if (record.fallbackDir) {
+      rm(record.fallbackDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   private async resolvePageForTask(input: {
@@ -3103,6 +3188,11 @@ function summarizeBrowserFailureSummary(error: unknown): FailureSummary {
     message: error instanceof Error ? error.message : "browser execution failed",
     recommendedAction: "retry",
   };
+}
+
+function isBrowserProfileLockError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /ProcessSingleton|profile is already in use|profile.*locked|user data directory.*already/i.test(message);
 }
 
 async function safeClose(target: BrowserContext | Browser | Page): Promise<void> {

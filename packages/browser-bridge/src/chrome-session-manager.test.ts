@@ -78,6 +78,128 @@ test("chrome session manager reuses and closes live persistent contexts by brows
   assert.equal(launchCount, 2);
 });
 
+test("chrome session manager reuses one live persistent context per profile dir across sessions", async () => {
+  let closeHandler: (() => void) | undefined;
+  let closeCount = 0;
+  let launchCount = 0;
+  const closedSessions: Array<{ browserSessionId: string; reason: string }> = [];
+
+  const fakeContext = {
+    on(event: string, handler: () => void) {
+      if (event === "close") {
+        closeHandler = handler;
+      }
+      return this;
+    },
+    async close() {
+      closeCount += 1;
+      closeHandler?.();
+    },
+  } as unknown as BrowserContext;
+
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    browserSessionManager: {
+      async closeSession(browserSessionId: string, reason: string) {
+        closedSessions.push({ browserSessionId, reason });
+      },
+    } as never,
+    launchPersistentContext: async () => {
+      launchCount += 1;
+      return fakeContext;
+    },
+    createEphemeralContext: async () => fakeContext,
+  });
+
+  const internal = manager as unknown as {
+    createContext(lease: {
+      session: { browserSessionId: string };
+      profile: { persistentDir: string };
+    }): Promise<{ context: BrowserContext; keepAlive: boolean; liveReuse: boolean }>;
+  };
+
+  const first = await internal.createContext({
+    session: { browserSessionId: "browser-session-a" },
+    profile: { persistentDir: "/tmp/shared-profile" },
+  });
+  const second = await internal.createContext({
+    session: { browserSessionId: "browser-session-b" },
+    profile: { persistentDir: "/tmp/shared-profile" },
+  });
+
+  assert.equal(first.liveReuse, false);
+  assert.equal(second.liveReuse, true);
+  assert.equal(first.context, second.context);
+  assert.equal(launchCount, 1);
+
+  await manager.closeSession("browser-session-a", "first done");
+  assert.equal(closeCount, 0);
+  assert.deepEqual(closedSessions, [{ browserSessionId: "browser-session-a", reason: "first done" }]);
+
+  await manager.closeSession("browser-session-b", "second done");
+  assert.equal(closeCount, 1);
+  assert.deepEqual(closedSessions, [
+    { browserSessionId: "browser-session-a", reason: "first done" },
+    { browserSessionId: "browser-session-b", reason: "second done" },
+  ]);
+});
+
+test("chrome session manager falls back to an isolated runtime profile when Chrome reports profile lock", async () => {
+  let closeHandler: (() => void) | undefined;
+  let closeCount = 0;
+  const launchedDirs: string[] = [];
+  const primaryProfileDir = "/tmp/locked-profile/chrome-profile";
+
+  const fakeContext = {
+    on(event: string, handler: () => void) {
+      if (event === "close") {
+        closeHandler = handler;
+      }
+      return this;
+    },
+    async close() {
+      closeCount += 1;
+      closeHandler?.();
+    },
+  } as unknown as BrowserContext;
+
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    browserSessionManager: {
+      async closeSession() {
+        return undefined;
+      },
+    } as never,
+    launchPersistentContext: async (persistentDir) => {
+      launchedDirs.push(persistentDir);
+      if (persistentDir === primaryProfileDir) {
+        throw new Error("ProcessSingleton: profile is already in use");
+      }
+      return fakeContext;
+    },
+    createEphemeralContext: async () => fakeContext,
+  });
+
+  const internal = manager as unknown as {
+    createContext(lease: {
+      session: { browserSessionId: string };
+      profile: { persistentDir: string };
+    }): Promise<{ context: BrowserContext; keepAlive: boolean; liveReuse: boolean }>;
+  };
+
+  const contextHandle = await internal.createContext({
+    session: { browserSessionId: "browser-session-locked" },
+    profile: { persistentDir: primaryProfileDir },
+  });
+
+  assert.equal(contextHandle.context, fakeContext);
+  assert.equal(launchedDirs[0], primaryProfileDir);
+  assert.match(launchedDirs[1] ?? "", /_runtime-fallback\/browser-session-locked\//);
+
+  await manager.closeSession("browser-session-locked", "fallback done");
+  assert.equal(closeCount, 1);
+});
+
 test("chrome session manager reports hot resume when matching the active target in a live context", async () => {
   const matchingPage = {
     url() {
