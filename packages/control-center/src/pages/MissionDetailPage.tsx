@@ -10,7 +10,7 @@
 // records — they render an explanatory placeholder rather than the
 // K1 fake three-pane that hardcoded MSN-1042-specific content.
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import type { ActivityEvent, Mission } from "../api/mission-api";
 import {
@@ -106,13 +106,20 @@ function UnlinkedMissionView({ mission }: { mission: Mission }) {
 }
 
 function LiveMissionView({ mission }: { mission: Mission }) {
+  const { setRoute } = useAppState();
   const timeline = useTimeline(mission.id, []);
   const send = useSendMissionMessage();
   const [pending, setPending] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [acceptedNotice, setAcceptedNotice] = useState<string | null>(null);
-  const [thinkingExpanded, setThinkingExpanded] = useState(false);
+  const [thinkingExpanded, setThinkingExpanded] = useState(true);
+  const replayItems = useMemo(() => groupTimelineForReplay(timeline.value), [timeline.value]);
+  const toolProcessCount = replayItems.filter((item) => item.kind === "tool-process").length;
+  const toolStepCount = replayItems.reduce(
+    (count, item) => count + (item.kind === "tool-process" ? item.toolEvents.length : 0),
+    0
+  );
   const finalAnswer = latestFinalAnswer(timeline.value);
 
   const onSend = useCallback(async () => {
@@ -137,7 +144,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
     <div className="mission-shell mission-shell-single">
       <div className="mission-pane center mission-detail-pane">
         <div className="timeline-head">
-          <span className="lbl label">Activity timeline</span>
+          <span className="lbl label">Mission replay</span>
           <span className="mono faint" style={{ fontSize: 10.5, marginRight: 8 }}>
             {timeline.value.length} event{timeline.value.length === 1 ? "" : "s"}
           </span>
@@ -148,14 +155,32 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             </span>
           )}
         </div>
+        {mission.pendingApprovals > 0 && (
+          <div className="mission-approval-callout">
+            <div>
+              <div className="label" style={{ fontSize: 11 }}>Approval required</div>
+              <div className="muted" style={{ fontSize: 11.5 }}>
+                {mission.pendingApprovals} pending decision
+                {mission.pendingApprovals === 1 ? "" : "s"} are blocking at least one action.
+              </div>
+            </div>
+            <button type="button" className="btn primary" onClick={() => setRoute("approvals")}>
+              <Icon name="approvals" size={13} /> Review approvals
+            </button>
+          </div>
+        )}
         <div className="mission-detail-scroll">
           <section className="card thinking-card">
             <div className="thinking-card-head">
               <div>
-                <div className="label" style={{ fontSize: 11 }}>Thinking record</div>
+                <div className="label" style={{ fontSize: 11 }}>Work trace</div>
                 <div className="muted" style={{ fontSize: 11.5 }}>
-                  Tool calls, progress, and source-gathering steps
+                  Tool calls, progress, approvals, and source-gathering steps before the answer
                 </div>
+              </div>
+              <div className="thinking-card-meta">
+                <span>{toolProcessCount} process{toolProcessCount === 1 ? "" : "es"}</span>
+                <span>{toolStepCount} tool step{toolStepCount === 1 ? "" : "s"}</span>
               </div>
               <button
                 type="button"
@@ -164,9 +189,18 @@ function LiveMissionView({ mission }: { mission: Mission }) {
                 aria-controls="thinking-record-timeline"
                 onClick={() => setThinkingExpanded((value) => !value)}
               >
-                {thinkingExpanded ? "Collapse" : "Expand"}
+                {thinkingExpanded ? "Collapse trace" : "Show trace"}
               </button>
             </div>
+            {!thinkingExpanded && (
+              <div className="thinking-card-preview">
+                {timeline.value.length === 0
+                  ? timeline.isLive
+                    ? "Waiting for the first agent event."
+                    : "Loading activity."
+                  : `${timeline.value.length} replay event${timeline.value.length === 1 ? "" : "s"} captured. Final answer remains below.`}
+              </div>
+            )}
             {thinkingExpanded && (
               <div id="thinking-record-timeline" className="timeline">
                 {timeline.value.length === 0 ? (
@@ -176,7 +210,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
                       : "Loading activity…"}
                   </div>
                 ) : (
-                  groupTimelineForReplay(timeline.value).map((item) =>
+                  replayItems.map((item) =>
                     item.kind === "event" ? (
                       <LiveTimelineRow key={item.event.id} event={item.event} />
                     ) : (
@@ -302,9 +336,7 @@ function ToolProcessRow({ process }: { process: ToolProcessItem }) {
           {progressCount > 0 && <span>{progressCount} progress</span>}
         </div>
         {process.finalThought && (
-          <div className="tl-msg tool-process-final">
-            <Markdown text={process.finalThought.text} />
-          </div>
+          <div className="tool-process-answer-link">Final answer appears below this trace.</div>
         )}
         <details className="tool-process-details">
           <summary>Show tool calls, progress, and results</summary>
