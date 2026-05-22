@@ -106,6 +106,164 @@ test("in-memory worker runtime keeps durable per-session message history", async
   assert.equal(state?.history?.[2]?.status, "cancelled");
 });
 
+test("in-memory worker runtime appends child transcript entries from worker results", async () => {
+  let now = 2000;
+  const handler: WorkerHandler = {
+    kind: "browser",
+    async canHandle() {
+      return true;
+    },
+    async run(): Promise<WorkerExecutionResult | null> {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Browser sub-agent finished.",
+        payload: { final: true },
+        sessionHistoryEntries: [
+          {
+            id: "child-assistant-tool-call",
+            role: "assistant",
+            content: "Requested browser_snapshot.",
+            createdAt: 2010,
+            taskId: "task-1",
+            toolCallId: "call-snapshot",
+            toolName: "browser_snapshot",
+            metadata: { kind: "assistant_tool_call" },
+          },
+          {
+            id: "child-tool-result",
+            role: "tool",
+            content: "Snapshot captured.",
+            createdAt: 2011,
+            taskId: "task-1",
+            toolCallId: "call-snapshot",
+            toolName: "browser_snapshot",
+            status: "completed",
+          },
+          {
+            id: "child-assistant-final",
+            role: "assistant",
+            content: "The page evidence is ready.",
+            createdAt: 2012,
+            taskId: "task-1",
+            status: "completed",
+            metadata: { kind: "assistant_final" },
+          },
+        ],
+      };
+    },
+  };
+
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+    },
+    now: () => now++,
+  });
+
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  await runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+    toolCallId: "call-browser",
+  });
+
+  const state = await runtime.getState(spawned.workerRunKey);
+  assert.deepEqual(state?.history?.map((entry) => entry.id), [
+    "worker-history:worker:browser:task:task-1:task-1:user:2001",
+    "child-assistant-tool-call",
+    "child-tool-result",
+    "child-assistant-final",
+    "worker-history:worker:browser:task:task-1:task-1:tool:2002",
+  ]);
+  assert.equal(state?.history?.[1]?.role, "assistant");
+  assert.equal(state?.history?.[1]?.toolName, "browser_snapshot");
+  assert.equal(state?.history?.[2]?.role, "tool");
+  assert.equal(state?.history?.[3]?.metadata?.kind, "assistant_final");
+});
+
+test("in-memory worker runtime includes durable child transcript when resuming a session", async () => {
+  let callCount = 0;
+  const prompts: string[] = [];
+  const handler: WorkerHandler = {
+    kind: "browser",
+    async canHandle() {
+      return true;
+    },
+    async run(input): Promise<WorkerExecutionResult | null> {
+      callCount += 1;
+      prompts.push(input.packet.taskPrompt);
+      if (callCount === 1) {
+        return {
+          workerType: "browser",
+          status: "partial",
+          summary: "Need another browser step.",
+          payload: { step: 1 },
+          sessionHistoryEntries: [
+            {
+              id: "resume-child-assistant-tool-call",
+              role: "assistant",
+              content: "Requested browser_snapshot.",
+              createdAt: 3010,
+              taskId: "task-1",
+              toolCallId: "call-snapshot",
+              toolName: "browser_snapshot",
+            },
+            {
+              id: "resume-child-tool-result",
+              role: "tool",
+              content: "Snapshot found the pricing table.",
+              createdAt: 3011,
+              taskId: "task-1",
+              toolCallId: "call-snapshot",
+              toolName: "browser_snapshot",
+              status: "completed",
+            },
+          ],
+        };
+      }
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Finished from prior evidence.",
+        payload: { step: 2 },
+      };
+    },
+  };
+
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+    },
+    now: () => 3000 + callCount,
+  });
+
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  await runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+  });
+  await runtime.resume({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: input.packet,
+  });
+
+  assert.match(prompts[1] ?? "", /Recent sub-session transcript:/);
+  assert.match(prompts[1] ?? "", /assistant tool=browser_snapshot: Requested browser_snapshot\./);
+  assert.match(prompts[1] ?? "", /tool tool=browser_snapshot status=completed: Snapshot found the pricing table\./);
+});
+
 test("in-memory worker runtime aborts the active handler on cancel", async () => {
   let observedAbortReason: string | null = null;
   let markHandlerStarted!: () => void;

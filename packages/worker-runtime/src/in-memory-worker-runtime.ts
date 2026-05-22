@@ -314,6 +314,9 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
             }
           : {}),
       };
+      for (const entry of result?.sessionHistoryEntries ?? []) {
+        session.state = appendWorkerHistory(session.state, entry);
+      }
       session.state = appendWorkerHistory(
         session.state,
         buildWorkerResultHistoryEntry(session.state, input.activation.handoff.taskId, result, completedAt, input.toolCallId)

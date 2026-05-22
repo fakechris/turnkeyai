@@ -160,6 +160,16 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   assert.equal(bridgeCalls[1]?.mode, "send");
   assert.equal(bridgeCalls[1]?.input.browserSessionId, "browser-session-1");
   assert.deepEqual(bridgeCalls[1]?.input.actions?.map((action) => action.kind), ["snapshot"]);
+  const transcript = result?.sessionHistoryEntries ?? [];
+  assert.deepEqual(transcript.filter((entry) => entry.role !== "system").map((entry) => [entry.role, entry.toolName ?? null]), [
+    ["assistant", "browser_open"],
+    ["tool", "browser_open"],
+    ["assistant", "browser_snapshot"],
+    ["tool", "browser_snapshot"],
+    ["assistant", null],
+  ]);
+  assert.equal(transcript.filter((entry) => entry.metadata?.kind === "tool_progress").length, 6);
+  assert.equal(transcript.at(-1)?.content, "Browser evidence captured.");
 });
 
 test("LLMSubAgentWorkerHandler reports failed private browser action traces as tool errors", async () => {
