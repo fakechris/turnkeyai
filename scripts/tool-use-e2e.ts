@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { createServer, type Server } from "node:http";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,9 +14,14 @@ import type {
   WorkerHandler,
   WorkerInvocationInput,
   WorkerKind,
+  WorkerRegistry,
   WorkerRuntime,
 } from "@turnkeyai/core-types/team";
+import { createBrowserBridge } from "@turnkeyai/browser-bridge/browser-bridge-factory";
+import { AnthropicCompatibleClient } from "@turnkeyai/llm-adapter/anthropic-compatible-client";
+import { FileModelCatalogSource } from "@turnkeyai/llm-adapter/file-model-catalog";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
+import { OpenAICompatibleClient } from "@turnkeyai/llm-adapter/openai-compatible-client";
 import { ModelRegistry } from "@turnkeyai/llm-adapter/registry";
 import type {
   GenerateTextInput,
@@ -30,21 +37,58 @@ import { createNativeToolCapabilityRegistry } from "@turnkeyai/role-runtime/tool
 import type { ToolPermissionService } from "@turnkeyai/role-runtime/tool-permission-service";
 import { createWorkerSessionToolExecutor } from "@turnkeyai/role-runtime/tool-use";
 import { LLMSubAgentWorkerHandler } from "@turnkeyai/role-runtime/sub-agent-worker-handler";
+import { InMemoryWorkerRuntime } from "@turnkeyai/worker-runtime/in-memory-worker-runtime";
 
 interface ToolUseE2eOptions {
   withBrowser: boolean;
   cdpTimeoutMs: number;
+  realLlm: boolean;
+  modelCatalogPath?: string;
+  modelId?: string;
+  modelChainId?: string;
 }
 
 function parseOptions(args: string[]): ToolUseE2eOptions {
   const options: ToolUseE2eOptions = {
     withBrowser: false,
     cdpTimeoutMs: 45_000,
+    realLlm: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--with-browser") {
       options.withBrowser = true;
+      continue;
+    }
+    if (arg === "--real-llm") {
+      options.realLlm = true;
+      continue;
+    }
+    if (arg === "--model-catalog") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --model-catalog");
+      }
+      options.modelCatalogPath = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--model-id") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --model-id");
+      }
+      options.modelId = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--model-chain-id") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --model-chain-id");
+      }
+      options.modelChainId = value;
+      index += 1;
       continue;
     }
     if (arg === "--cdp-timeout-ms") {
@@ -78,10 +122,235 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
   console.log(`sub-agent-llm-rounds: ${subAgent.llmRounds}`);
   console.log(`sub-agent-private-tool: ${subAgent.privateToolName}`);
 
+  if (options.realLlm) {
+    const real = await runRealLlmToolUseE2e(options);
+    console.log("tool-use real llm e2e passed");
+    console.log(`real-mode: ${real.mode}`);
+    console.log(`real-model-catalog: ${real.modelCatalogPath}`);
+    console.log(`real-tool-call: ${real.toolCallName}`);
+    console.log(`real-final: ${real.finalMarker}`);
+    if (real.childTranscriptMessages !== undefined) {
+      console.log(`real-child-transcript-messages: ${real.childTranscriptMessages}`);
+    }
+  }
+
   if (options.withBrowser) {
     await runCommand("npm", ["run", "cdp:smoke", "--", "--timeout-ms", String(options.cdpTimeoutMs)]);
     console.log("tool-use browser e2e passed");
   }
+}
+
+async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
+  mode: "llm-only" | "llm-browser";
+  modelCatalogPath: string;
+  toolCallName: string;
+  finalMarker: string;
+  childTranscriptMessages?: number;
+}> {
+  const modelCatalogPath = resolveModelCatalogPath(options.modelCatalogPath);
+  const modelSelection = resolveRealModelSelection(modelCatalogPath, options);
+  const gateway = new LLMGateway({
+    registry: new ModelRegistry(new FileModelCatalogSource(modelCatalogPath)),
+    clients: [new OpenAICompatibleClient(), new AnthropicCompatibleClient()],
+  });
+  const toolCapabilityRegistry = createNativeToolCapabilityRegistry({
+    availableWorkerKinds: options.withBrowser ? ["browser"] : ["explore"],
+    permissionsEnabled: false,
+    memoryEnabled: false,
+    tasksEnabled: false,
+  });
+  const nativeMessages: TeamMessage[] = [];
+  const fixture = options.withBrowser ? await startBrowserFixture() : null;
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-tooluse-real-e2e-"));
+  let closeWorkerRuntime: (() => Promise<void>) | null = null;
+  try {
+    const workerRuntimeBundle = options.withBrowser
+      ? buildRealBrowserWorkerRuntime({ gateway, fixtureUrl: fixture!.url, tempDir })
+      : { workerRuntime: buildRealExploreWorkerRuntime(), close: async () => {} };
+    const workerRuntime = workerRuntimeBundle.workerRuntime;
+    closeWorkerRuntime = workerRuntimeBundle.close;
+    const generator = new LLMRoleResponseGenerator({
+      gateway,
+      nativeToolMessageStore: {
+        async append(message) {
+          nativeMessages.push(message);
+        },
+      },
+      toolLoop: {
+        executor: createWorkerSessionToolExecutor({
+          workerRuntime,
+          toolCapabilityRegistry,
+          maxSessionToolTimeoutMs: options.withBrowser ? 180_000 : 60_000,
+        }),
+        maxRounds: options.withBrowser ? 6 : 4,
+        maxParallelToolCalls: 1,
+        maxWallClockMs: options.withBrowser ? 240_000 : 90_000,
+      },
+      clock: { now: () => Date.now() },
+    });
+    const activation = buildActivation({
+      ...(modelSelection.modelId ? { modelId: modelSelection.modelId } : {}),
+      ...(modelSelection.modelChainId ? { modelChainId: modelSelection.modelChainId } : {}),
+    });
+    const mode = options.withBrowser ? "llm-browser" : "llm-only";
+    const targetMarker = options.withBrowser ? "TURNKEYAI_BROWSER_E2E_OK" : "TURNKEYAI_LLM_E2E_OK";
+    const reply = await generator.generate({
+      activation,
+      packet: {
+        roleId: "role-lead",
+        roleName: "Lead",
+        seat: "lead",
+        systemPrompt: [
+          toolCapabilityRegistry.renderPromptHarness({ seat: "lead" }),
+          "You are running a release-gate E2E. Use the available session tool instead of answering from memory.",
+          options.withBrowser
+            ? "You must call sessions_spawn with agent_id=browser exactly once, then base your final answer on browser-observed evidence."
+            : "You must call sessions_spawn with agent_id=explore exactly once, then base your final answer on the tool result.",
+        ].join("\n\n"),
+        taskPrompt: options.withBrowser
+          ? `Open ${fixture!.url}, read the fixture marker and page title with the browser sub-agent, then answer with ${targetMarker}.`
+          : `Ask the explore sub-agent for the release marker, then answer with ${targetMarker}.`,
+        outputContract: `Final answer must include ${targetMarker} and must mention the session tool evidence.`,
+        suggestedMentions: [],
+      },
+    });
+    const assistantToolMessage = nativeMessages.find((message) => message.role === "assistant" && message.toolCalls?.length);
+    const firstToolCallName = assistantToolMessage?.toolCalls?.[0]?.name ?? "(none)";
+    assert.equal(firstToolCallName, "sessions_spawn");
+    assert.match(reply.content, new RegExp(targetMarker));
+    const childTranscriptMessages = options.withBrowser
+      ? (await firstWorkerHistoryLength(workerRuntime))
+      : undefined;
+    if (options.withBrowser) {
+      assert.ok((childTranscriptMessages ?? 0) >= 4, "browser sub-agent should persist child transcript entries");
+    }
+    return {
+      mode,
+      modelCatalogPath,
+      toolCallName: firstToolCallName,
+      finalMarker: targetMarker,
+      ...(childTranscriptMessages !== undefined ? { childTranscriptMessages } : {}),
+    };
+  } finally {
+    await closeWorkerRuntime?.();
+    await fixture?.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+function buildRealExploreWorkerRuntime(): WorkerRuntime {
+  const handler: WorkerHandler = {
+    kind: "explore",
+    canHandle(input) {
+      return input.packet.preferredWorkerKinds?.includes("explore") === true;
+    },
+    async run(): Promise<WorkerExecutionResult> {
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Explore sub-agent returned the release marker TURNKEYAI_LLM_E2E_OK.",
+        payload: {
+          marker: "TURNKEYAI_LLM_E2E_OK",
+          source: "deterministic e2e worker",
+        },
+      };
+    },
+  };
+  const registry: WorkerRegistry = {
+    async selectHandler(input) {
+      return input.packet.preferredWorkerKinds?.includes("explore") ? handler : null;
+    },
+    async getHandler(kind) {
+      return kind === "explore" ? handler : null;
+    },
+  };
+  return new InMemoryWorkerRuntime({ workerRegistry: registry });
+}
+
+function buildRealBrowserWorkerRuntime(input: {
+  gateway: LLMGateway;
+  fixtureUrl: string;
+  tempDir: string;
+}): { workerRuntime: WorkerRuntime; close: () => Promise<void> } {
+  const browserBridge = createBrowserBridge({
+    transportMode: "local",
+    artifactRootDir: path.join(input.tempDir, "browser-artifacts"),
+    stateRootDir: path.join(input.tempDir, "browser-state"),
+    headless: true,
+  });
+  const innerHandler: WorkerHandler = {
+    kind: "browser",
+    canHandle(workerInput) {
+      return workerInput.packet.preferredWorkerKinds?.includes("browser") === true;
+    },
+    async run(): Promise<WorkerExecutionResult> {
+      return {
+        workerType: "browser",
+        status: "failed",
+        summary: "Browser private tool surface was not used.",
+        payload: { fixtureUrl: input.fixtureUrl },
+      };
+    },
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler,
+    gateway: input.gateway,
+    browserBridge,
+    maxRounds: 6,
+    maxWallClockMs: 180_000,
+  });
+  const registry: WorkerRegistry = {
+    async selectHandler(workerInput) {
+      return workerInput.packet.preferredWorkerKinds?.includes("browser") ? handler : null;
+    },
+    async getHandler(kind) {
+      return kind === "browser" ? handler : null;
+    },
+  };
+  return {
+    workerRuntime: new InMemoryWorkerRuntime({ workerRegistry: registry }),
+    close: async () => {
+      const sessions = await browserBridge.listSessions().catch(() => []);
+      await Promise.all(
+        sessions.map((session) => browserBridge.closeSession(session.browserSessionId, "real llm e2e complete").catch(() => {}))
+      );
+    },
+  };
+}
+
+async function firstWorkerHistoryLength(workerRuntime: WorkerRuntime): Promise<number> {
+  const sessions = workerRuntime.listSessions ? await workerRuntime.listSessions() : [];
+  return sessions[0]?.state.history?.length ?? 0;
+}
+
+async function startBrowserFixture(): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = createServer((req, res) => {
+    if (req.url === "/favicon.ico") {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(`<!doctype html>
+      <html>
+        <head><title>TurnkeyAI Tool Use Browser E2E</title></head>
+        <body>
+          <main>
+            <h1>TURNKEYAI_BROWSER_E2E_OK</h1>
+            <p id="evidence">Browser fixture says: private browser tools observed this page.</p>
+          </main>
+        </body>
+      </html>`);
+  });
+  await listen(server, "127.0.0.1");
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("failed to bind real browser e2e fixture server");
+  }
+  return {
+    url: `http://127.0.0.1:${address.port}/`,
+    close: () => closeServer(server),
+  };
 }
 
 async function runMockSubAgentToolUseE2e(): Promise<{
@@ -418,7 +687,7 @@ class ScriptedSubAgentClient implements ProtocolClient {
   }
 }
 
-function buildActivation(): RoleActivationInput {
+function buildActivation(input: { modelId?: string; modelChainId?: string; useCatalogDefault?: boolean } = {}): RoleActivationInput {
   return {
     thread: {
       threadId: "thread-tool-e2e",
@@ -431,7 +700,8 @@ function buildActivation(): RoleActivationInput {
           name: "Lead",
           seat: "lead",
           runtime: "local",
-          modelRef: "tool-e2e-model",
+          ...(input.modelId ? { modelRef: input.modelId } : input.useCatalogDefault ? {} : { modelRef: "tool-e2e-model" }),
+          ...(input.modelChainId ? { modelChain: input.modelChainId } : {}),
         },
       ],
       participantLinks: [],
@@ -483,6 +753,67 @@ function buildActivation(): RoleActivationInput {
       createdAt: 1,
     },
   };
+}
+
+function resolveModelCatalogPath(explicitPath?: string): string {
+  const candidates = [
+    explicitPath,
+    process.env.TURNKEYAI_MODEL_CATALOG,
+    path.resolve(process.cwd(), "models.local.json"),
+    path.resolve(process.cwd(), "models.json"),
+  ].filter((item): item is string => Boolean(item?.trim()));
+
+  for (const candidate of candidates) {
+    try {
+      readFileSync(candidate, "utf8");
+      return candidate;
+    } catch {}
+  }
+  throw new Error(
+    "real LLM E2E requires --model-catalog, TURNKEYAI_MODEL_CATALOG, models.local.json, or models.json"
+  );
+}
+
+function resolveRealModelSelection(
+  modelCatalogPath: string,
+  options: ToolUseE2eOptions
+): { modelId?: string; modelChainId?: string } {
+  if (options.modelId || options.modelChainId) {
+    return {
+      ...(options.modelId ? { modelId: options.modelId } : {}),
+      ...(options.modelChainId ? { modelChainId: options.modelChainId } : {}),
+    };
+  }
+  const catalog = JSON.parse(readFileSync(modelCatalogPath, "utf8")) as {
+    defaultModelId?: unknown;
+    defaultModelChainId?: unknown;
+  };
+  if (typeof catalog.defaultModelChainId === "string" && catalog.defaultModelChainId.trim()) {
+    return { modelChainId: catalog.defaultModelChainId.trim() };
+  }
+  if (typeof catalog.defaultModelId === "string" && catalog.defaultModelId.trim()) {
+    return { modelId: catalog.defaultModelId.trim() };
+  }
+  throw new Error("real LLM E2E requires --model-id, --model-chain-id, defaultModelChainId, or defaultModelId");
+}
+
+async function listen(server: Server, host: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.listen(0, host, resolve);
+    server.on("error", reject);
+  });
+}
+
+async function closeServer(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
 }
 
 async function runCommand(command: string, args: string[]): Promise<void> {
