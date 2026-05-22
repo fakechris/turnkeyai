@@ -40,6 +40,9 @@ Runtime requirements:
 - Tools compile to explicit `BrowserTaskAction[]`.
 - The browser sub-agent reuses its live browser session across private tool calls.
 - Browser results return session id, target id, transport, page summary, screenshot/artifact ids, and trace status.
+- Browser result artifacts must include storage lifecycle metadata: backend/ref type, retention duration, per-artifact size limit, total session artifact budget, cleanup-on-session-close policy, and orphan reconciliation behavior.
+- Browser tool failures must return structured error states with `error_code`, `retryable`, `message`, and diagnostics such as url, session id, target id, attempt count, transport/CDP status, trace status, and response/status code when available.
+- Default failure mapping: network timeout and transient CDP disconnect are retryable; invalid URL, permission denial, closed owner mismatch, and repeated page crash are non-retryable unless recovery explicitly reattaches or recreates the target.
 - Browser prompt names capabilities, retry limits, artifact expectations, and failure reporting rules.
 - The lead still sees only session-level delegation by default; browser primitives are private to the browser sub-agent.
 

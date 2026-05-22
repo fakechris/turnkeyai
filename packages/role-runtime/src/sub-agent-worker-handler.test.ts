@@ -196,6 +196,118 @@ test("LLMSubAgentWorkerHandler refuses private browser submit actions before bri
   assert.match(readToolContent(gatewayInputs[1]?.messages.find((message) => message.role === "tool")?.content ?? ""), /refused likely side-effectful click/i);
 });
 
+test("LLMSubAgentWorkerHandler reuses parent browser session on the first private browser tool call", async () => {
+  const bridgeCalls: Array<{ mode: "spawn" | "send"; browserSessionId?: string }> = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_snapshot", { note: "resume-parent" });
+    }
+    return textResult("Resumed existing browser session.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        bridgeCalls.push({ mode: "spawn" });
+        return browserResult({});
+      },
+      async sendSession(input) {
+        bridgeCalls.push({ mode: "send", browserSessionId: input.browserSessionId });
+        return browserResult({});
+      },
+    }),
+  });
+
+  const result = await handler.run({
+    ...buildInvocationInput("browser"),
+    sessionState: {
+      workerRunKey: "worker:browser:existing",
+      workerType: "browser",
+      status: "resumable",
+      createdAt: 1,
+      updatedAt: 2,
+      lastResult: {
+        workerType: "browser",
+        status: "completed",
+        summary: "Existing browser session.",
+        payload: { sessionId: "browser-session-existing", targetId: "target-existing" },
+      },
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.deepEqual(bridgeCalls, [{ mode: "send", browserSessionId: "browser-session-existing" }]);
+});
+
+test("LLMSubAgentWorkerHandler returns a tool error for malformed private browser input", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let bridgeCalled = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_open", null as unknown as Record<string, unknown>);
+    }
+    return textResult("Recovered after malformed browser tool input.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        bridgeCalled = true;
+        return browserResult({});
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalled, false);
+  assert.match(readToolContent(gatewayInputs[1]?.messages.find((message) => message.role === "tool")?.content ?? ""), /requires an object input/);
+});
+
+test("LLMSubAgentWorkerHandler requires visible text before private refId clicks", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let bridgeCalled = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_act", {
+        action: "click",
+        refId: "ref-submit",
+      });
+    }
+    return textResult("Asked for approval-safe target context.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        bridgeCalled = true;
+        return browserResult({});
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalled, false);
+  assert.match(readToolContent(gatewayInputs[1]?.messages.find((message) => message.role === "tool")?.content ?? ""), /requires visible text/i);
+});
+
 test("LLMSubAgentWorkerHandler carries inner session state across multiple private tool calls", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const innerInputs: WorkerInvocationInput[] = [];

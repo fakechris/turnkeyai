@@ -264,7 +264,10 @@ class SubAgentToolExecutor implements RoleToolExecutor {
       };
     }
 
-    const previous = decodeBrowserSessionPayload(this.innerSessionState?.lastResult?.payload);
+    const previousPayload =
+      this.innerSessionState?.lastResult?.payload ??
+      this.parentInput.sessionState?.lastResult?.payload;
+    const previous = decodeBrowserSessionPayload(previousPayload);
     const request = {
       taskId: `${this.parentInput.activation.handoff.taskId}:${input.call.id}`,
       threadId: this.parentInput.activation.thread.threadId,
@@ -404,7 +407,11 @@ function buildBrowserPrivateToolDefinitions(): LLMToolDefinition[] {
 function buildBrowserPrivateActionPlan(input: RoleToolExecutionInput):
   | { instructions: string; actions: BrowserTaskAction[] }
   | { error: string } {
-  const raw = input.call.input as Record<string, unknown>;
+  const rawInput = input.call.input as unknown;
+  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) {
+    return { error: `${input.call.name} requires an object input.` };
+  }
+  const raw = rawInput as Record<string, unknown>;
   switch (input.call.name) {
     case "browser_open": {
       const url = requiredString(raw.url);
@@ -469,7 +476,13 @@ function buildBrowserActPlan(raw: Record<string, unknown>):
   }
   if (action === "click") {
     if (!target) return { error: "browser_act click requires refId, text, or selector." };
-    const sideEffect = classifyBrowserPrivateSideEffectTarget(target);
+    const visibleText = requiredString(raw.text);
+    if ("refId" in target && !visibleText) {
+      return {
+        error: "browser_act click with refId requires visible text so side effects can be screened.",
+      };
+    }
+    const sideEffect = classifyBrowserPrivateSideEffectTarget(target, visibleText);
     if (sideEffect) {
       return {
         error: `browser_act refused likely side-effectful click target "${sideEffect}". Ask the parent agent to request approval first.`,
@@ -524,8 +537,14 @@ function buildBrowserActionTarget(raw: Record<string, unknown>):
   return null;
 }
 
-function classifyBrowserPrivateSideEffectTarget(target: { refId: string } | { text: string } | { selectors: string[] }): string | null {
-  const text = "text" in target ? target.text : "selectors" in target ? target.selectors.join(" ") : "";
+function classifyBrowserPrivateSideEffectTarget(
+  target: { refId: string } | { text: string } | { selectors: string[] },
+  fallbackText: string | null = null
+): string | null {
+  const text =
+    ("text" in target ? target.text : "selectors" in target ? target.selectors.join(" ") : "") ||
+    fallbackText ||
+    "";
   if (!text) return null;
   return /\b(submit|send|save|publish|delete|remove|checkout|purchase|buy|order|book|reserve|approve|accept|reject|cancel)\b/i.test(text)
     ? text
