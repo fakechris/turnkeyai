@@ -12,12 +12,14 @@
 
 import { useCallback, useMemo, useState } from "react";
 
-import type { ActivityEvent, Mission } from "../api/mission-api";
+import type { ActivityEvent, Mission, WorkerSessionRecord } from "../api/mission-api";
 import {
+  useCancelWorkerSession,
   useMission,
   useMissions,
   useSendMissionMessage,
   useTimeline,
+  useWorkerSessions,
 } from "../api/useMissionData";
 import { formatTimeOfDay } from "../util/format-time";
 import { Icon } from "../components/Icon";
@@ -108,12 +110,15 @@ function UnlinkedMissionView({ mission }: { mission: Mission }) {
 function LiveMissionView({ mission }: { mission: Mission }) {
   const { setRoute } = useAppState();
   const timeline = useTimeline(mission.id, []);
+  const workerSessions = useWorkerSessions(mission.threadId, []);
   const send = useSendMissionMessage();
+  const cancelWorkerSession = useCancelWorkerSession();
   const [pending, setPending] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [sessionActionKey, setSessionActionKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [acceptedNotice, setAcceptedNotice] = useState<string | null>(null);
-  const [thinkingExpanded, setThinkingExpanded] = useState(true);
+  const [thinkingExpanded, setThinkingExpanded] = useState(false);
   const replayItems = useMemo(() => groupTimelineForReplay(timeline.value), [timeline.value]);
   const toolProcessCount = replayItems.filter((item) => item.kind === "tool-process").length;
   const toolStepCount = replayItems.reduce(
@@ -139,6 +144,55 @@ function LiveMissionView({ mission }: { mission: Mission }) {
       setSubmitting(false);
     }
   }, [pending, submitting, send, mission.id, timeline]);
+
+  const onContinueSession = useCallback(
+    async (session: WorkerSessionRecord) => {
+      if (sessionActionKey) return;
+      setSessionActionKey(session.workerRunKey);
+      setError(null);
+      setAcceptedNotice(null);
+      try {
+        await send({
+          missionId: mission.id,
+          content: [
+            `Continue sub-agent session ${session.workerRunKey}.`,
+            "Inspect its session history first, continue only the still-open work, and summarize the result for this mission.",
+          ].join(" "),
+        });
+        setAcceptedNotice("Session follow-up accepted. The lead will continue from the stored sub-agent history.");
+        timeline.refetch();
+        workerSessions.refetch();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setSessionActionKey(null);
+      }
+    },
+    [mission.id, send, sessionActionKey, timeline, workerSessions]
+  );
+
+  const onCancelSession = useCallback(
+    async (session: WorkerSessionRecord) => {
+      if (sessionActionKey) return;
+      setSessionActionKey(session.workerRunKey);
+      setError(null);
+      setAcceptedNotice(null);
+      try {
+        await cancelWorkerSession({
+          workerRunKey: session.workerRunKey,
+          reason: "operator cancelled sub-agent session from Mission replay",
+        });
+        setAcceptedNotice("Sub-agent session cancelled.");
+        workerSessions.refetch();
+        timeline.refetch();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setSessionActionKey(null);
+      }
+    },
+    [cancelWorkerSession, sessionActionKey, timeline, workerSessions]
+  );
 
   return (
     <div className="mission-shell mission-shell-single">
@@ -170,6 +224,14 @@ function LiveMissionView({ mission }: { mission: Mission }) {
           </div>
         )}
         <div className="mission-detail-scroll">
+          <SubAgentSessionsCard
+            sessions={workerSessions.value}
+            isLive={workerSessions.isLive}
+            error={workerSessions.error}
+            actionKey={sessionActionKey}
+            onContinue={onContinueSession}
+            onCancel={onCancelSession}
+          />
           <section className="card thinking-card">
             <div className="thinking-card-head">
               <div>
@@ -295,6 +357,127 @@ function LiveMissionView({ mission }: { mission: Mission }) {
       </div>
     </div>
   );
+}
+
+function SubAgentSessionsCard({
+  sessions,
+  isLive,
+  error,
+  actionKey,
+  onContinue,
+  onCancel,
+}: {
+  sessions: WorkerSessionRecord[];
+  isLive: boolean;
+  error: string | null;
+  actionKey: string | null;
+  onContinue: (session: WorkerSessionRecord) => void;
+  onCancel: (session: WorkerSessionRecord) => void;
+}) {
+  const activeCount = sessions.filter((session) => !isTerminalSession(session)).length;
+  return (
+    <section className="card subagent-session-card">
+      <div className="subagent-session-head">
+        <div>
+          <div className="label" style={{ fontSize: 11 }}>Sub-agent sessions</div>
+          <div className="muted" style={{ fontSize: 11.5 }}>
+            Durable child work with history, continuation, and cancellation controls
+          </div>
+        </div>
+        <div className="thinking-card-meta">
+          <span>{sessions.length} session{sessions.length === 1 ? "" : "s"}</span>
+          <span>{activeCount} active</span>
+        </div>
+      </div>
+      {error && (
+        <div className="subagent-session-error" role="alert">
+          {error}
+        </div>
+      )}
+      {sessions.length === 0 ? (
+        <div className="subagent-session-empty">
+          {isLive ? "No sub-agent sessions have been created for this mission yet." : "Loading sub-agent sessions…"}
+        </div>
+      ) : (
+        <div className="subagent-session-list">
+          {sessions.map((session) => (
+            <SubAgentSessionRow
+              key={session.workerRunKey}
+              session={session}
+              busy={actionKey === session.workerRunKey}
+              blocked={actionKey !== null && actionKey !== session.workerRunKey}
+              onContinue={() => onContinue(session)}
+              onCancel={() => onCancel(session)}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SubAgentSessionRow({
+  session,
+  busy,
+  blocked,
+  onContinue,
+  onCancel,
+}: {
+  session: WorkerSessionRecord;
+  busy: boolean;
+  blocked: boolean;
+  onContinue: () => void;
+  onCancel: () => void;
+}) {
+  const history = session.state.history ?? [];
+  const latestHistory = history.slice(-4).reverse();
+  const terminal = isTerminalSession(session);
+  const summary = session.state.lastResult?.summary ?? session.state.continuationDigest?.summary ?? "No result summary yet.";
+  return (
+    <details className="subagent-session-row">
+      <summary>
+        <span className="subagent-session-main">
+          <span className="mono">{session.state.workerType}</span>
+          <span>{session.state.status.replace("_", " ")}</span>
+          <span className="faint mono">{session.workerRunKey}</span>
+        </span>
+        <span className="subagent-session-time">
+          updated {formatTimeOfDay(session.state.updatedAt)}
+        </span>
+      </summary>
+      <div className="subagent-session-body">
+        <div className="subagent-session-summary">{summary}</div>
+        <div className="subagent-session-actions">
+          <button type="button" className="btn" disabled={busy || blocked} onClick={onContinue}>
+            <Icon name="send" size={13} /> {busy ? "Sending…" : "Continue"}
+          </button>
+          <button type="button" className="btn ghost" disabled={busy || blocked || terminal} onClick={onCancel}>
+            {busy ? "Cancelling…" : "Cancel"}
+          </button>
+        </div>
+        <div className="subagent-session-history">
+          {latestHistory.length === 0 ? (
+            <div className="muted" style={{ fontSize: 11.5 }}>No child transcript entries yet.</div>
+          ) : (
+            latestHistory.map((entry) => (
+              <div key={entry.id} className="subagent-session-history-entry" data-role={entry.role}>
+                <div className="subagent-session-history-head">
+                  <span>{entry.role}</span>
+                  {entry.toolName && <span className="mono">{entry.toolName}</span>}
+                  <span className="mono faint">{formatTimeOfDay(entry.createdAt)}</span>
+                </div>
+                <div>{entry.content}</div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function isTerminalSession(session: WorkerSessionRecord): boolean {
+  return ["done", "failed", "cancelled"].includes(session.state.status);
 }
 
 function latestFinalAnswer(events: ActivityEvent[]): ActivityEvent | null {
