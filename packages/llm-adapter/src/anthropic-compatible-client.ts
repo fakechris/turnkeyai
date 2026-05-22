@@ -38,6 +38,7 @@ export class AnthropicCompatibleClient implements ProtocolClient {
     // .../v1/messages.
     const response = await fetch(buildURL(model.baseURL, "messages", model.query), {
       method: "POST",
+      ...(input.signal ? { signal: input.signal } : {}),
       headers: {
         "content-type": "application/json",
         "x-api-key": model.apiKey,

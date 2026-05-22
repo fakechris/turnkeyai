@@ -24,6 +24,7 @@ export class OpenAICompatibleClient implements ProtocolClient {
     // .../v1/chat/completions.
     const response = await fetch(buildURL(model.baseURL, "chat/completions", model.query), {
       method: "POST",
+      ...(input.signal ? { signal: input.signal } : {}),
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${model.apiKey}`,

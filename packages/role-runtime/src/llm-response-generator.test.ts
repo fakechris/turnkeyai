@@ -189,6 +189,32 @@ test("llm role response generator flushes memory once before request-envelope re
   ]);
 });
 
+test("llm role response generator passes AbortSignal to gateway requests", async () => {
+  const inputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput): Promise<GenerateTextResult> => {
+    inputs.push(input);
+    return {
+      text: "ok",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const controller = new AbortController();
+  const generator = new LLMRoleResponseGenerator({ gateway });
+
+  await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+    signal: controller.signal,
+  });
+
+  assert.equal(inputs[0]?.signal, controller.signal);
+});
+
 test("llm role response generator forwards model chain and model ref routing", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
