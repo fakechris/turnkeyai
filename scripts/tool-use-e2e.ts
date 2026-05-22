@@ -756,8 +756,19 @@ function buildActivation(input: { modelId?: string; modelChainId?: string; useCa
 }
 
 function resolveModelCatalogPath(explicitPath?: string): string {
+  if (explicitPath?.trim()) {
+    const candidate = explicitPath.trim();
+    try {
+      readFileSync(candidate, "utf8");
+      return candidate;
+    } catch (error) {
+      throw new Error(
+        `real LLM E2E model catalog is not readable: ${candidate} (${error instanceof Error ? error.message : String(error)})`
+      );
+    }
+  }
+
   const candidates = [
-    explicitPath,
     process.env.TURNKEYAI_MODEL_CATALOG,
     path.resolve(process.cwd(), "models.local.json"),
     path.resolve(process.cwd(), "models.json"),
@@ -784,23 +795,30 @@ function resolveRealModelSelection(
       ...(options.modelChainId ? { modelChainId: options.modelChainId } : {}),
     };
   }
-  const catalog = JSON.parse(readFileSync(modelCatalogPath, "utf8")) as {
+  const catalog = JSON.parse(readFileSync(modelCatalogPath, "utf8")) as unknown;
+  if (!catalog || typeof catalog !== "object" || Array.isArray(catalog)) {
+    throw new Error(`model catalog must be a JSON object: ${modelCatalogPath}`);
+  }
+  const modelCatalog = catalog as {
     defaultModelId?: unknown;
     defaultModelChainId?: unknown;
   };
-  if (typeof catalog.defaultModelChainId === "string" && catalog.defaultModelChainId.trim()) {
-    return { modelChainId: catalog.defaultModelChainId.trim() };
+  if (typeof modelCatalog.defaultModelChainId === "string" && modelCatalog.defaultModelChainId.trim()) {
+    return { modelChainId: modelCatalog.defaultModelChainId.trim() };
   }
-  if (typeof catalog.defaultModelId === "string" && catalog.defaultModelId.trim()) {
-    return { modelId: catalog.defaultModelId.trim() };
+  if (typeof modelCatalog.defaultModelId === "string" && modelCatalog.defaultModelId.trim()) {
+    return { modelId: modelCatalog.defaultModelId.trim() };
   }
   throw new Error("real LLM E2E requires --model-id, --model-chain-id, defaultModelChainId, or defaultModelId");
 }
 
 async function listen(server: Server, host: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    server.listen(0, host, resolve);
-    server.on("error", reject);
+    server.once("error", reject);
+    server.listen(0, host, () => {
+      server.off("error", reject);
+      resolve();
+    });
   });
 }
 
