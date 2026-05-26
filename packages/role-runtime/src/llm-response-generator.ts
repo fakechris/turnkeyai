@@ -1044,9 +1044,8 @@ function pruneToolResultsToTotalBudget(
       null,
       2
     );
-    nextMessages = nextMessages.map((candidate, candidateIndex) =>
-      candidateIndex === index ? replaceToolResultContent(message, prunedContent) : candidate
-    );
+    nextMessages = [...nextMessages];
+    nextMessages[index] = replaceToolResultContent(message, prunedContent);
     totalBytes = deriveToolResultEnvelope(nextMessages).toolResultBytes;
     if (totalBytes <= TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES) {
       return nextMessages;
@@ -1070,6 +1069,33 @@ function pruneToolResultsToTotalBudget(
         tool_name: message.name ?? null,
         original_bytes: Buffer.byteLength(content, "utf8"),
         reason: "aggregate_tool_result_budget_recent_window",
+        retained_summary: summarizeToolResultContent(content),
+      },
+      null,
+      2
+    );
+    nextMessages = nextMessages.map((candidate, candidateIndex) =>
+      candidateIndex === index ? replaceToolResultContent(message, prunedContent) : candidate
+    );
+    totalBytes = deriveToolResultEnvelope(nextMessages).toolResultBytes;
+    if (totalBytes <= TOOL_RESULT_TOTAL_PRUNE_MAX_BYTES) {
+      return nextMessages;
+    }
+  }
+
+  for (const index of [...recentFullIndexes].reverse()) {
+    const message = nextMessages[index];
+    if (!message || message.role !== "tool") continue;
+    const content = readToolResultContentText(message.content);
+    if (isPrunedToolResultContent(content)) continue;
+
+    const prunedContent = JSON.stringify(
+      {
+        tool_result_pruned: true,
+        tool_call_id: message.toolCallId ?? null,
+        tool_name: message.name ?? null,
+        original_bytes: Buffer.byteLength(content, "utf8"),
+        reason: "single_tool_result_exceeds_aggregate_budget",
         retained_summary: summarizeToolResultContent(content),
       },
       null,

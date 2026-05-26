@@ -46,6 +46,7 @@ test("anthropic-compatible client sends tools and parses tool_use blocks", async
       },
     ]);
     assert.deepEqual((requests[0] as { tool_choice?: unknown }).tool_choice, { type: "auto" });
+    assert.equal((requests[0] as { max_tokens?: unknown }).max_tokens, 4096);
     assert.equal(result.text, "I will inspect the page.");
     assert.deepEqual(result.toolCalls, [
       {

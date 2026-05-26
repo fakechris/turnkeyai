@@ -16,6 +16,7 @@ test("sessions tool definitions only advertise registered worker kinds when prov
 
   const spawn = executor.definitions().find((definition) => definition.name === "sessions_spawn");
   const list = executor.definitions().find((definition) => definition.name === "sessions_list");
+  const history = executor.definitions().find((definition) => definition.name === "sessions_history");
 
   const spawnSchema = spawn?.inputSchema as {
     properties?: { agent_id?: { enum?: string[] }; timeout_seconds?: { minimum?: number; maximum?: number } };
@@ -23,11 +24,15 @@ test("sessions tool definitions only advertise registered worker kinds when prov
   const listSchema = list?.inputSchema as {
     properties?: { agent_id?: { enum?: string[] }; kinds?: { items?: { enum?: string[] } } };
   };
+  const historySchema = history?.inputSchema as {
+    properties?: { tail?: { type?: string } };
+  };
   assert.deepEqual(spawnSchema.properties?.agent_id?.enum, ["browser", "explore", "finance"]);
   assert.equal(spawnSchema.properties?.timeout_seconds?.minimum, 0.001);
   assert.equal(spawnSchema.properties?.timeout_seconds?.maximum, 1800);
   assert.deepEqual(listSchema.properties?.agent_id?.enum, ["browser", "explore", "finance"]);
   assert.deepEqual(listSchema.properties?.kinds?.items?.enum, ["browser", "explore", "finance"]);
+  assert.equal(historySchema.properties?.tail?.type, "boolean");
 });
 
 test("sessions tool definitions expose configured production timeout cap", () => {
@@ -87,6 +92,52 @@ test("sessions_spawn marks a selected worker with no executable result as a fail
   assert.equal(body.status, "failed");
   assert.match(body.result, /no executable result/i);
   assert.equal(result.progress?.at(-1)?.phase, "failed");
+});
+
+test("sessions_spawn exposes sub-agent final content at top level", async () => {
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "explore", workerRunKey: "worker:explore:task-1" };
+    },
+    async send() {
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Evidence gathered.",
+        payload: {
+          mode: "llm_sub_agent",
+          workerType: "explore",
+          content: "Full evidence ledger with source URLs.",
+        },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-result",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Research target.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Research target.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { final_content?: string; payload?: { content?: string } };
+  assert.equal(body.final_content, "Full evidence ledger with source URLs.");
+  assert.equal(body.payload?.content, "Full evidence ledger with source URLs.");
 });
 
 test("sessions_spawn rejects worker kinds that were not advertised as executable", async () => {
@@ -1092,6 +1143,254 @@ test("sessions_send interrupts a follow-up worker call on timeout", async () => 
   assert.equal(body.resumable, true);
 });
 
+test("sessions_send reuses a completed session for summary-only follow-ups", async () => {
+  let sendCalled = false;
+  const lastResult = {
+    workerType: "explore" as const,
+    status: "completed" as const,
+    summary: "Research completed.",
+    payload: {
+      mode: "llm_sub_agent",
+      workerType: "explore",
+      content: "Full cached final report.",
+    },
+  };
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:done",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:done",
+            workerType: "explore",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:done",
+        workerType: "explore",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+        lastResult,
+      };
+    },
+    async send() {
+      sendCalled = true;
+      return null;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-cached-summary",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:done",
+        message: "Please return your complete final research report as plain text.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Synthesize.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { cached: boolean; final_content?: string };
+  assert.equal(sendCalled, false);
+  assert.equal(body.cached, true);
+  assert.equal(body.final_content, "Full cached final report.");
+  assert.equal(result.progress?.at(-1)?.detail?.cached, true);
+});
+
+test("sessions_send does not reuse a completed session for mixed action follow-ups", async () => {
+  let sendCalled = false;
+  const lastResult = {
+    workerType: "explore" as const,
+    status: "completed" as const,
+    summary: "Explore inspection completed.",
+    payload: {
+      mode: "llm_sub_agent",
+      workerType: "explore",
+      content: "Cached explore result.",
+    },
+  };
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:done",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:done",
+            workerType: "explore",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:done",
+        workerType: "explore",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+        lastResult,
+      };
+    },
+    async send() {
+      sendCalled = true;
+      return {
+        workerType: "explore" as const,
+        status: "completed" as const,
+        summary: "Follow-up action executed.",
+        payload: { action: "create" },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-mixed-action",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:done",
+        message: "Please summarize the current findings and create a new search plan.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { cached?: boolean; result: string };
+  assert.equal(sendCalled, true);
+  assert.equal(body.cached, undefined);
+  assert.equal(body.result, "Follow-up action executed.");
+});
+
+test("sessions_send cached result preserves failed worker status", async () => {
+  let sendCalled = false;
+  const lastResult = {
+    workerType: "explore" as const,
+    status: "failed" as const,
+    summary: "Search provider unavailable.",
+    payload: {
+      mode: "llm_sub_agent",
+      workerType: "explore",
+      content: "No final report; search provider unavailable.",
+    },
+  };
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:done-failed",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:done-failed",
+            workerType: "explore",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:done-failed",
+        workerType: "explore",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+        lastResult,
+      };
+    },
+    async send() {
+      sendCalled = true;
+      return null;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-cached-failed",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:done-failed",
+        message: "Please provide the final result summary.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Synthesize.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { cached: boolean; status: string };
+  assert.equal(sendCalled, false);
+  assert.equal(result.isError, true);
+  assert.equal(result.progress?.at(-1)?.phase, "failed");
+  assert.equal(body.cached, true);
+  assert.equal(body.status, "failed");
+});
+
 test("permission tools request, observe, and apply operator approval", async () => {
   const calls: string[] = [];
   const executor = createWorkerSessionToolExecutor({
@@ -1455,6 +1754,103 @@ test("sessions_history reads durable session history with pagination and payload
       payload: { title: "Example" },
     },
   ]);
+});
+
+test("sessions_history can read the latest entries with tail=true", async () => {
+  const history = [
+    {
+      id: "history-1",
+      role: "user" as const,
+      content: "First.",
+      createdAt: 100,
+      taskId: "task-1",
+    },
+    {
+      id: "history-2",
+      role: "assistant" as const,
+      content: "Middle.",
+      createdAt: 110,
+      taskId: "task-1",
+    },
+    {
+      id: "history-3",
+      role: "assistant" as const,
+      content: "Final evidence ledger.",
+      createdAt: 120,
+      taskId: "task-1",
+      status: "completed" as const,
+    },
+  ];
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:tail",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:tail",
+            workerType: "explore",
+            status: "done",
+            createdAt: 90,
+            updatedAt: 120,
+            history,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:tail",
+        workerType: "explore",
+        status: "done",
+        createdAt: 90,
+        updatedAt: 120,
+        history,
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-tail",
+      name: "sessions_history",
+      input: {
+        session_key: "worker:explore:tail",
+        limit: 1,
+        tail: true,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Read tail history.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as {
+    offset: number;
+    tail: boolean;
+    has_more: boolean;
+    messages: Array<{ id: string; content: string }>;
+  };
+  assert.equal(body.tail, true);
+  assert.equal(body.offset, 2);
+  assert.equal(body.has_more, false);
+  assert.deepEqual(body.messages.map((message) => message.id), ["history-3"]);
+  assert.equal(body.messages[0]?.content, "Final evidence ledger.");
 });
 
 test("sessions_history falls back to legacy lastResult when durable history is absent", async () => {

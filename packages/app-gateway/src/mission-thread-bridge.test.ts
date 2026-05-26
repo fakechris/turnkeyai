@@ -184,6 +184,164 @@ describe("MissionThreadBridge", () => {
     assert.equal(updated?.progress, 1);
   });
 
+  it("blocks a mission when the lead final answer was truncated by max_tokens", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      progress: 0.8,
+    };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        baseMessage("m1", "user", 100),
+        {
+          ...baseMessage("m2", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Final report starts, but the provider stopped before the report completed",
+          metadata: { stopReason: "max_tokens" },
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    assert.equal(await bridge.tickMission("msn.1"), 2);
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.progress, 0.8);
+    assert.equal(updated?.blockers, 1);
+    const incomplete = activity.events.find(
+      (event) => event.runtime?.eventType === "mission.incomplete_final_answer"
+    );
+    assert.equal(incomplete?.kind, "recovery");
+    assert.equal(incomplete?.runtime?.reason, "max_tokens");
+    assert.equal(incomplete?.runtime?.stopReason, "max_tokens");
+  });
+
+  it("does not block a truncated lead final answer while a role run is still active", async () => {
+    counter = 0;
+    const mission: Mission = {
+      ...baseMission,
+      agents: ["role-lead"],
+      progress: 0.8,
+    };
+    const missionStore = memMissionStore([mission]);
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "running",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Partial report",
+          metadata: { stopReason: "length" },
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: memActivityStore(),
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "working");
+    assert.equal(updated?.blockers, 0);
+  });
+
+  it("blocks a mission when the lead final answer looks structurally truncated", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"] };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "## Pricing\n\n| Platform | Pricing |\n|---|---|\n| Multica",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "blocked");
+    const incomplete = activity.events.find(
+      (event) => event.runtime?.eventType === "mission.incomplete_final_answer"
+    );
+    assert.equal(incomplete?.runtime?.reason, "truncated_markdown");
+  });
+
   it("does not complete missions that still have approvals or blockers", async () => {
     counter = 0;
     const mission: Mission = {

@@ -189,6 +189,17 @@ export function createMissionThreadBridge(
     messages: TeamMessage[]
   ): Promise<void> {
     if (!isCompletableMission(mission)) return;
+    const incompleteFinal = findIncompleteLeadFinalAnswer(mission, messages);
+    if (incompleteFinal) {
+      const activeRoleRun = await hasActiveRoleRun(threadId);
+      if (activeRoleRun) return;
+      await updateMissionLifecycle(mission, {
+        status: "blocked",
+        blockers: Math.max(mission.blockers, 1),
+      });
+      await appendMissionIncompleteFinalEvent(mission.id, threadId, incompleteFinal);
+      return;
+    }
     if (hasFinalLeadAssistantMessage(mission, messages)) {
       await updateMissionLifecycle(mission, {
         status: "done",
@@ -271,6 +282,42 @@ export function createMissionThreadBridge(
     }
   }
 
+  async function appendMissionIncompleteFinalEvent(
+    missionId: string,
+    threadId: string,
+    incomplete: IncompleteLeadFinalAnswer
+  ): Promise<void> {
+    try {
+      const runtime: Record<string, string> = {
+        eventType: "mission.incomplete_final_answer",
+        threadId,
+        messageId: incomplete.message.id,
+        reason: incomplete.reason,
+      };
+      const stopReason = readStringMetadata(incomplete.message.metadata, "stopReason");
+      if (stopReason) {
+        runtime.stopReason = stopReason;
+      }
+      await options.activityStore.append({
+        id: `mission-incomplete-final:${missionId}:${incomplete.message.id}:${options.clock.now()}`,
+        missionId,
+        tMs: options.clock.now(),
+        kind: "recovery",
+        actor: "system",
+        text: "mission.incomplete_final_answer",
+        emph: "danger",
+        tags: ["mission_incomplete_final", incomplete.reason],
+        runtime,
+      });
+    } catch (error) {
+      logger.warn("mission incomplete final event append failed", {
+        missionId,
+        messageId: incomplete.message.id,
+        error: errorMessage(error),
+      });
+    }
+  }
+
   async function tickMission(missionId: string): Promise<number> {
     const mission = await safeFindMission(missionId);
     if (!mission || !mission.threadId) return 0;
@@ -346,18 +393,8 @@ function hasFinalLeadAssistantMessage(
   mission: Mission,
   messages: TeamMessage[]
 ): boolean {
-  return messages.some((message) => {
-    if (message.role !== "assistant") return false;
-    const content = message.content.trim();
-    if (content.length === 0) return false;
-    if (!isLeadAssistantMessage(mission, message)) return false;
-    if (message.toolStatus === "pending") return false;
-    // The prompt contract uses @{role-id} as an explicit handoff. A
-    // lead turn that delegates is not a final answer and must not close
-    // the mission card while downstream work is still expected.
-    if (/@\{[^}]+\}/.test(content)) return false;
-    return true;
-  });
+  const latest = findLatestLeadAnswerCandidate(mission, messages);
+  return Boolean(latest && !isIncompleteLeadFinalAnswer(latest));
 }
 
 function isLeadAssistantMessage(mission: Mission, message: TeamMessage): boolean {
@@ -366,6 +403,73 @@ function isLeadAssistantMessage(mission: Mission, message: TeamMessage): boolean
   if (primaryAgent && message.roleId === primaryAgent) return true;
   if (message.roleId === "role-lead") return true;
   return message.name.toLowerCase() === "lead";
+}
+
+interface IncompleteLeadFinalAnswer {
+  message: TeamMessage;
+  reason: "max_tokens" | "truncated_markdown";
+}
+
+function findIncompleteLeadFinalAnswer(
+  mission: Mission,
+  messages: TeamMessage[]
+): IncompleteLeadFinalAnswer | null {
+  const latest = findLatestLeadAnswerCandidate(mission, messages);
+  return latest ? isIncompleteLeadFinalAnswer(latest) : null;
+}
+
+function findLatestLeadAnswerCandidate(
+  mission: Mission,
+  messages: TeamMessage[]
+): TeamMessage | null {
+  const candidates = messages
+    .filter((message) => {
+      if (message.role !== "assistant") return false;
+      const content = message.content.trim();
+      if (content.length === 0) return false;
+      if (!isLeadAssistantMessage(mission, message)) return false;
+      if (message.toolStatus === "pending") return false;
+      // The prompt contract uses @{role-id} as an explicit handoff. A
+      // lead turn that delegates is not a final answer and must not close
+      // the mission card while downstream work is still expected.
+      if (/@\{[^}]+\}/.test(content)) return false;
+      return true;
+    })
+    .sort((a, b) => a.createdAt - b.createdAt);
+  return candidates.at(-1) ?? null;
+}
+
+function isIncompleteLeadFinalAnswer(message: TeamMessage): IncompleteLeadFinalAnswer | null {
+  const stopReason = readStringMetadata(message.metadata, "stopReason");
+  if (isMaxTokensStopReason(stopReason)) {
+    return { message, reason: "max_tokens" };
+  }
+  if (looksLikeTruncatedMarkdown(message.content)) {
+    return { message, reason: "truncated_markdown" };
+  }
+  return null;
+}
+
+function readStringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function isMaxTokensStopReason(stopReason: string | undefined): boolean {
+  if (!stopReason) return false;
+  return /^(max_tokens|length|finish_reason_length)$/i.test(stopReason);
+}
+
+function looksLikeTruncatedMarkdown(content: string): boolean {
+  const trimmed = content.trimEnd();
+  if (!trimmed) return false;
+  const fenceCount = (trimmed.match(/```/g) ?? []).length;
+  if (fenceCount % 2 === 1) return true;
+  const lastLfIndex = trimmed.lastIndexOf("\n");
+  const lastNonEmpty = trimmed.slice(Math.max(0, lastLfIndex + 1));
+  const pipeCount = (lastNonEmpty.match(/\|/g) ?? []).length;
+  if (lastNonEmpty.trimStart().startsWith("|") && pipeCount < 2) return true;
+  return /(\*\*|__|\[)$/.test(lastNonEmpty.trim());
 }
 
 interface StalledLeadToolTurn {

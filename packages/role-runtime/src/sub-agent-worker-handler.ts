@@ -751,6 +751,8 @@ function buildSubAgentPromptPacket(input: {
     outputContract: [
       "Return a concise evidence-based result for the parent agent.",
       "Include what you verified, what remains uncertain, and any exact IDs/URLs/data needed for follow-up.",
+      "For research/comparison work, include an evidence ledger with source URL/name, source type, verified facts, and limitations.",
+      "Use 'not verified' for requested metrics you could not verify. Do not infer user scale, community feedback, code quality, update frequency, or open-source status from marketing copy alone.",
       "Do not mention internal tool names unless they are directly useful to the operator.",
     ].join("\n"),
     suggestedMentions: [],
@@ -767,6 +769,7 @@ function buildSubAgentSystemPrompt(kind: WorkerKind, maxRounds: number): string 
     "Do not spawn other sessions or delegate recursively.",
     "If a partial result is the best available answer, say exactly what was verified and what is still missing.",
     "On repeated failure, summarize the best evidence already gathered instead of looping.",
+    "Your final answer must be complete. If space is tight, return a shorter complete evidence ledger instead of a cut-off report.",
   ];
   if (kind === "browser") {
     return [
@@ -786,6 +789,9 @@ function buildSubAgentSystemPrompt(kind: WorkerKind, maxRounds: number): string 
       "You investigate public or provided web/context sources through the private explore_run tool.",
       "Use explore_run for focused retrieval and extraction. Avoid broad repeated searches with no new angle.",
       "Prefer primary sources and cite the exact source facts in your final summary when available.",
+      "For product comparisons, verify each requested dimension separately: official positioning, pricing, user scale, community feedback, code/repo availability, and update frequency.",
+      "Do not label something open-source or closed-source unless you verified it from an official source or repository. Otherwise write not verified.",
+      "Do not use lack of search results as evidence that a company has no users, no community, or poor quality. Mark those dimensions not verified.",
     ].join("\n");
   }
   return [...common, `Use the private ${kind}_run tool for focused work only when needed.`].join("\n");
