@@ -11,6 +11,8 @@ import type {
 } from "./types";
 import { buildProviderRequestEnvelopeOverflowError, isProviderSizeLikeFailure } from "./request-envelope-guard";
 
+const DEFAULT_ANTHROPIC_COMPATIBLE_MAX_OUTPUT_TOKENS = 4096;
+
 export class AnthropicCompatibleClient implements ProtocolClient {
   supports(protocol: ModelProtocol): boolean {
     return protocol === "anthropic-compatible";
@@ -50,7 +52,10 @@ export class AnthropicCompatibleClient implements ProtocolClient {
         system: systemMessages.join("\n\n"),
         messages: chatMessages,
         temperature: input.temperature ?? model.temperature,
-        max_tokens: input.maxOutputTokens ?? model.maxOutputTokens ?? 1024,
+        max_tokens:
+          input.maxOutputTokens ??
+          model.maxOutputTokens ??
+          DEFAULT_ANTHROPIC_COMPATIBLE_MAX_OUTPUT_TOKENS,
         ...(tools?.length ? { tools } : {}),
         ...(input.toolChoice ? { tool_choice: toAnthropicToolChoice(input.toolChoice) } : {}),
       }),

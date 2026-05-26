@@ -940,6 +940,7 @@ async function executeSessionsSpawn(
         status: result?.status ?? "failed",
         tool_chain: result ? [result.workerType] : [],
         result: result?.summary ?? missingResultMessage,
+        final_content: extractWorkerFinalContent(result),
         payload: result?.payload ?? null,
       },
       null,
@@ -962,6 +963,14 @@ async function executeSessionsSpawn(
     ],
     raw: result,
   };
+}
+
+function extractWorkerFinalContent(result: WorkerExecutionResult | null): string | null {
+  if (!result || !result.payload || typeof result.payload !== "object" || Array.isArray(result.payload)) {
+    return null;
+  }
+  const content = (result.payload as Record<string, unknown>).content;
+  return typeof content === "string" && content.trim().length > 0 ? content : null;
 }
 
 function scopeWorkerActivationToToolCall(activation: RoleActivationInput, toolCallId: string): RoleActivationInput {
@@ -1000,6 +1009,13 @@ async function executeSessionsSend(
   const state = await workerRuntime.getState(sessionKey);
   if (!state) {
     return errorResult(input.call, `session not found: ${sessionKey}`);
+  }
+  if (state.status === "done" && state.lastResult && isCachedSummaryRequest(message)) {
+    return cachedCompletedSessionResult(input.call, {
+      taskId: input.activation.handoff.taskId,
+      sessionKey,
+      result: state.lastResult,
+    });
   }
   const gate = await maybeGateBrowserSideEffect({
     input,
@@ -1070,6 +1086,7 @@ async function executeSessionsSend(
         status: result?.status ?? "failed",
         tool_chain: result ? [result.workerType] : [],
         result: result?.summary ?? missingResultMessage,
+        final_content: extractWorkerFinalContent(result),
         payload: result?.payload ?? null,
       },
       null,
@@ -1086,6 +1103,70 @@ async function executeSessionsSend(
     ],
     raw: result,
   };
+}
+
+function cachedCompletedSessionResult(
+  call: LLMToolCall,
+  input: {
+    taskId: string;
+    sessionKey: string;
+    result: WorkerExecutionResult;
+  }
+): RoleToolExecutionResult {
+  const phase = mapCachedWorkerResultPhase(input.result.status);
+  return {
+    toolCallId: call.id,
+    toolName: call.name,
+    ...(input.result.status === "failed" ? { isError: true } : {}),
+    content: JSON.stringify(
+      {
+        task_id: input.taskId,
+        session_key: input.sessionKey,
+        agent_id: input.result.workerType,
+        status: input.result.status,
+        cached: true,
+        tool_chain: [input.result.workerType],
+        result: input.result.summary,
+        final_content: extractWorkerFinalContent(input.result),
+        payload: input.result.payload ?? null,
+      },
+      null,
+      2
+    ),
+    progress: [
+      {
+        phase,
+        toolName: call.name,
+        summary: `Reused cached ${input.result.workerType} sub-agent result with status ${input.result.status}.`,
+        detail: {
+          session_key: input.sessionKey,
+          status: input.result.status,
+          cached: true,
+        },
+      },
+    ],
+    raw: input.result,
+  };
+}
+
+function isCachedSummaryRequest(message: string): boolean {
+  const normalized = message.toLowerCase();
+  const isSummaryOnlyAsk =
+    /\b(return|provide|give|summari[sz]e|recap|produce)\b/.test(normalized) &&
+    /\b(final|complete|summary|report|result|plain text|findings|evidence|overview)\b/.test(normalized);
+  const includesFreshWork =
+    /\b(new|another|additional|recheck|re-run|rerun|visit|open|fetch|search|click|navigate|update|create|submit|delete|purchase|send)\b/.test(
+      normalized
+    );
+  return isSummaryOnlyAsk && !includesFreshWork;
+}
+
+function mapCachedWorkerResultPhase(
+  status: WorkerExecutionResult["status"]
+): "completed" | "progress" | "failed" {
+  return (
+    status === "failed" ? "failed" : status === "partial" ? "progress" : "completed"
+  );
 }
 
 async function executeSessionsList(
@@ -1154,7 +1235,6 @@ async function executeSessionsHistory(
   if (!state) {
     return errorResult(input.call, `session not found: ${sessionKey}`);
   }
-  const offset = nonNegativeInteger(input.call.input.offset) ?? 0;
   const limit = positiveInteger(input.call.input.limit) ?? 50;
   const history =
     state.history && state.history.length > 0
@@ -1164,6 +1244,11 @@ async function executeSessionsHistory(
             ? [createLegacyWorkerHistoryEntry(sessionKey, state)]
             : []),
         ];
+  const tail = input.call.input.tail === true;
+  const requestedOffset = nonNegativeInteger(input.call.input.offset);
+  const offset = tail
+    ? Math.max(history.length - limit, 0)
+    : requestedOffset ?? 0;
   const messages = history
     .slice(offset, offset + limit)
     .map((entry) => serializeWorkerHistoryEntry(entry, input.call.input.include_tools === true));
@@ -1177,6 +1262,7 @@ async function executeSessionsHistory(
         showing: messages.length,
         offset,
         limit,
+        tail,
         has_more: offset + messages.length < history.length,
         messages,
       },

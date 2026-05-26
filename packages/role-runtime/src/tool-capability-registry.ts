@@ -300,6 +300,10 @@ export function buildSessionToolDefinitions(
           offset: { type: "number", minimum: 0 },
           limit: { type: "number", minimum: 1 },
           include_tools: { type: "boolean" },
+          tail: {
+            type: "boolean",
+            description: "Return the latest entries. Use this for completed sessions when the final answer is near the end.",
+          },
         },
         required: ["session_key"],
       },
@@ -421,6 +425,9 @@ function renderGeneralToolUsageSection(): string {
     "- Do not repeat the same tool call with the same arguments. After 2-3 failed attempts, stop and report the failure and what is needed.",
     "- If you approach the execution limit, stop calling tools and synthesize only from tool results already present in the conversation.",
     "- Every non-trivial task needs a verification step before final delivery.",
+    "- For research or comparison tasks, maintain an evidence ledger: source URL/name, source type, exact fact verified, and remaining uncertainty.",
+    "- Do not turn homepage or marketing copy into unsupported claims about user scale, community feedback, code quality, or update frequency. If a metric is not verified from credible sources, write not verified.",
+    "- A final answer must be structurally complete. If the answer would be cut off, produce a shorter complete answer with a source ledger and explicitly mark missing details.",
   ].join("\n");
 }
 
@@ -445,7 +452,10 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
     "Prefer multiple focused sub-agents over one broad sub-agent when the subtasks are independent; do not exceed five parallel sub-agents for one user request.",
     "Use timeout_seconds for bounded work. Suggested caps: browser 1080s for authenticated/interactive web work; explore/finance 480s for focused research or data lookup.",
     "If a sub-agent times out, inspect sessions_history and continue with sessions_send only if the remaining work is still valuable. Do not treat a timeout as final evidence.",
-    "After a sub-agent returns, validate coverage before presenting the result. If the result is partial, use sessions_send or a new focused spawn; otherwise synthesize directly.",
+    "After a sub-agent returns, first read the sessions_spawn/sessions_send result and final_content. Do not page through session history when that result already contains the evidence you need.",
+    "If history is needed, prefer one sessions_history call with tail=true and a small limit. Avoid repeated pagination unless the user explicitly asks for the transcript.",
+    "Validate coverage before presenting the result. If the result is partial, use sessions_send or a new focused spawn; otherwise synthesize directly.",
+    "When synthesizing sub-agent research, preserve the evidence quality labels. Do not promote a sub-agent's partial or unverified observation into a confirmed final claim.",
     "Use sessions_history to inspect sessions you spawned or when the user explicitly asks to recall prior sub-agent work. Do not browse unrelated sessions as a fallback.",
     seat === "lead"
       ? "As lead, own the final synthesis. Sub-agents provide evidence; you decide whether the user's request is complete."

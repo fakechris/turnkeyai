@@ -758,6 +758,66 @@ test("llm role response generator prunes aggregate tool result budget before fin
   assert.equal(finalToolContents?.at(-1), largeE);
 });
 
+test("llm role response generator prunes a newest tool result that alone exceeds the aggregate budget", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const hugeNewest = "Z".repeat(50_000);
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-huge", "sessions_history", {
+        session_key: "worker:explore:huge",
+        limit: 50,
+      });
+    }
+    return {
+      text: "Final synthesis after huge newest pruning.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_history",
+          description: "Read session history",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: hugeNewest,
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 2 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Final synthesis after huge newest pruning.");
+  assert.equal(gatewayInputs.length, 2);
+  assert.ok((gatewayInputs[1]?.envelope?.toolResultBytes ?? 0) <= 32 * 1024);
+  const finalToolContents = gatewayInputs[1]?.messages
+    .filter((message) => message.role === "tool")
+    .map((message) => readToolContent(message.content));
+  assert.match(finalToolContents?.[0] ?? "", /"tool_result_pruned": true/);
+  assert.match(finalToolContents?.[0] ?? "", /"reason": "single_tool_result_exceeds_aggregate_budget"/);
+  assert.doesNotMatch(finalToolContents?.[0] ?? "", /^Z{50000}$/);
+});
+
 test("llm role response generator compacts older tool history before message-count overflow", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
