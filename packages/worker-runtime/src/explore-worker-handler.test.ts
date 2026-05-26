@@ -53,8 +53,8 @@ test("explore worker turns natural-language research tasks into a search URL", a
             <head><title>slock npm package github at DuckDuckGo</title></head>
             <body>
               <div class="result">
-                <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fexample%2Fslock&amp;rut=abc">GitHub - example/slock</a>
-                <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fexample%2Fslock&amp;rut=abc">Distributed lock package for Node.js</a>
+                <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fexample%2Fslock&amp;rut=abc">GitHub - example/slock &amp; docs</a>
+                <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fexample%2Fslock&amp;rut=abc">Distributed lock package for Node.js &amp; TypeScript</a>
               </div>
             </body>
           </html>
@@ -103,6 +103,8 @@ test("explore worker turns natural-language research tasks into a search URL", a
     transportAudit: { finalTransport: string; trustLevel: string };
   };
   assert.equal(payload.searchResults[0]?.url, "https://github.com/example/slock");
+  assert.equal(payload.searchResults[0]?.title, "GitHub - example/slock & docs");
+  assert.equal(payload.searchResults[0]?.snippet, "Distributed lock package for Node.js & TypeScript");
   assert.match(payload.findings[0] ?? "", /Distributed lock package/);
   assert.equal(payload.transportAudit.finalTransport, "business_tool");
   assert.equal(payload.transportAudit.trustLevel, "observational");
@@ -175,20 +177,35 @@ test("explore worker fails blocked search pages instead of promoting them as evi
   });
 
   const input = buildExploreInvocationInput();
+  const taskPrompt = "Research Multica product software";
   const result = await handler.run({
     ...input,
+    activation: {
+      ...input.activation,
+      handoff: {
+        ...input.activation.handoff,
+        payload: normalizeRelayPayload({
+          threadId: "thread-1",
+          relayBrief: taskPrompt,
+          recentMessages: [],
+          instructions: taskPrompt,
+        }),
+      },
+    },
     packet: {
       ...input.packet,
-      taskPrompt: "Research Multica product software.",
+      taskPrompt,
     },
   });
 
   assert.equal(result?.status, "failed");
   const payload = result?.payload as {
-    apiAttempt: { errorMessage: string };
-    transportAudit: { trustLevel: string; fallbackReason: string };
+    apiAttempt: { errorMessage: string; transport: string };
+    transportAudit: { finalTransport: string; trustLevel: string; fallbackReason: string };
   };
   assert.match(payload.apiAttempt.errorMessage, /blocked content/i);
+  assert.equal(payload.apiAttempt.transport, "business_tool");
+  assert.equal(payload.transportAudit.finalTransport, "business_tool");
   assert.equal(payload.transportAudit.trustLevel, "observational");
 });
 
@@ -306,6 +323,28 @@ test("explore worker rejects private hosts before fetching", async () => {
     packet: {
       ...buildExploreInvocationInput().packet,
       taskPrompt: "Inspect http://127.0.0.1/pricing",
+    },
+  });
+
+  assert.equal(called, false);
+  assert.equal(result?.status, "failed");
+  assert.match(result?.summary ?? "", /blocked explore URL host/i);
+});
+
+test("explore worker rejects bracketed IPv6 loopback hosts before fetching", async () => {
+  let called = false;
+  const handler = new ExploreWorkerHandler({
+    fetchFn: async () => {
+      called = true;
+      return new Response("ok", { status: 200 });
+    },
+  });
+
+  const result = await handler.run({
+    ...buildExploreInvocationInput(),
+    packet: {
+      ...buildExploreInvocationInput().packet,
+      taskPrompt: "Inspect http://[::1]/pricing",
     },
   });
 

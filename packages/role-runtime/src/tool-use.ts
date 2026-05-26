@@ -1154,11 +1154,13 @@ function cachedCompletedSessionResult(
 
 function isCachedSummaryRequest(message: string): boolean {
   const normalized = message.toLowerCase();
-  const isSummaryOnlyAsk =
-    (/\b(return|provide|give|summari[sz]e|recap|produce|extract)\b/.test(normalized) &&
-      /\b(final|complete|summary|report|result|plain text|findings|evidence|overview|conclusion|key points)\b/.test(normalized)) ||
+  const englishSummaryOnlyAsk =
+    /\b(return|provide|give|summari[sz]e|recap|produce|extract)\b/.test(normalized) &&
+    /\b(final|complete|summary|report|result|plain text|findings|evidence|overview|conclusion|key points)\b/.test(normalized);
+  const chineseSummaryOnlyAsk =
     /(提取|总结|汇总|概括|返回|给出|提供|整理|复述)/.test(message) &&
-      /(最终|完整|总结|摘要|报告|结果|结论|证据|要点|核心)/.test(message);
+    /(最终|完整|总结|摘要|报告|结果|结论|证据|要点|核心)/.test(message);
+  const isSummaryOnlyAsk = englishSummaryOnlyAsk || chineseSummaryOnlyAsk;
   const includesFreshWork =
     /\b(new|another|additional|recheck|re-run|rerun|visit|open|fetch|search|click|navigate|update|create|submit|delete|purchase|send)\b/.test(
       normalized
@@ -1617,7 +1619,6 @@ function summarizeWorkerEvidence(state: WorkerSessionState | null): string | nul
   return (
     state.continuationDigest?.summary ??
     state.lastResult?.summary ??
-    state.lastError?.message ??
     state.history?.at(-1)?.content ??
     null
   );

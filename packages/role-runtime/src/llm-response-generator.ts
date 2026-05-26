@@ -222,36 +222,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       });
       messages = appendToolResultMessages(messages, toolResults);
 
-      const timeoutSignal = findSubAgentToolTimeout(toolResults);
-      if (timeoutSignal) {
-        throwIfAborted(input.signal);
-        const generated = await this.generateFinalAfterToolRoundLimit({
-          activation: input.activation,
-          packet: input.packet,
-          selection,
-          baseGatewayInput: initialGatewayInput,
-          messages,
-          maxRounds,
-          reasonLines: [
-            `${timeoutSignal.toolName} timed out${timeoutSignal.timeoutSeconds == null ? "" : ` after ${timeoutSignal.timeoutSeconds}s`}.`,
-            "Do not call more tools or spawn fallback sessions for this timeout.",
-            timeoutSignal.evidenceAvailable
-              ? "Produce the best final answer from the evidence already gathered and state any remaining uncertainty."
-              : "No usable evidence was gathered before the timeout. Say that verification did not complete, summarize what was attempted, and tell the user they can ask to continue.",
-          ],
-        });
-        throwIfAborted(input.signal);
-        result = generated.result;
-        if (generated.reduction) {
-          reduction = generated.reduction;
-          reductionSnapshot = generated.reductionSnapshot;
-        }
-        if (generated.memoryFlush) {
-          memoryFlushes.push(generated.memoryFlush);
-        }
-        break;
-      }
-
       const completedSubAgent = findCompletedSubAgentFinal(toolResults);
       if (completedSubAgent) {
         throwIfAborted(input.signal);
@@ -272,6 +242,36 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             ...completedSubAgent.finalContents.map(
               (content, index) => `Source ${index + 1} final_content:\n${sliceUtf8(content, 8 * 1024)}`
             ),
+          ],
+        });
+        throwIfAborted(input.signal);
+        result = generated.result;
+        if (generated.reduction) {
+          reduction = generated.reduction;
+          reductionSnapshot = generated.reductionSnapshot;
+        }
+        if (generated.memoryFlush) {
+          memoryFlushes.push(generated.memoryFlush);
+        }
+        break;
+      }
+
+      const timeoutSignal = findSubAgentToolTimeout(toolResults);
+      if (timeoutSignal) {
+        throwIfAborted(input.signal);
+        const generated = await this.generateFinalAfterToolRoundLimit({
+          activation: input.activation,
+          packet: input.packet,
+          selection,
+          baseGatewayInput: initialGatewayInput,
+          messages,
+          maxRounds,
+          reasonLines: [
+            `${timeoutSignal.toolName} timed out${timeoutSignal.timeoutSeconds == null ? "" : ` after ${timeoutSignal.timeoutSeconds}s`}.`,
+            "Do not call more tools or spawn fallback sessions for this timeout.",
+            timeoutSignal.evidenceAvailable
+              ? "Produce the best final answer from the evidence already gathered and state any remaining uncertainty."
+              : "No usable evidence was gathered before the timeout. Say that verification did not complete, summarize what was attempted, and tell the user they can ask to continue.",
           ],
         });
         throwIfAborted(input.signal);
@@ -938,7 +938,7 @@ function findCompletedSubAgentFinal(results: RoleToolExecutionResult[]): { toolN
       continue;
     }
     const finalContent = parsed["final_content"];
-    if (typeof finalContent !== "string" || finalContent.trim().length < 80) {
+    if (typeof finalContent !== "string" || !finalContent.trim()) {
       continue;
     }
     const payload = parsed["payload"];

@@ -1237,6 +1237,89 @@ test("sessions_send interrupts a follow-up worker call on timeout", async () => 
   assert.equal(body.resumable, true);
 });
 
+test("sessions_send timeout does not treat worker errors as usable evidence", async () => {
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:error-only",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:error-only",
+            workerType: "explore",
+            status: "resumable",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:error-only",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+        lastError: {
+          message: "network failed before collecting sources",
+          at: 2,
+        },
+      };
+    },
+    async send() {
+      await new Promise(() => undefined);
+      return null;
+    },
+    async interrupt() {
+      return null;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    hardTimeoutGraceMs: 1,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-send-timeout-error-only",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:error-only",
+        message: "Continue the slow research task.",
+        timeout_seconds: 0.001,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as {
+    status: string;
+    evidence_available: boolean;
+    evidence_summary?: string;
+  };
+  assert.equal(body.status, "timeout");
+  assert.equal(body.evidence_available, false);
+  assert.equal(body.evidence_summary, undefined);
+});
+
 test("sessions_send reuses a completed session for summary-only follow-ups", async () => {
   let sendCalled = false;
   const lastResult = {

@@ -26,6 +26,7 @@ const DEFAULT_EXPLORE_SUB_AGENT_MAX_ROUNDS = 8;
 const DEFAULT_GENERAL_SUB_AGENT_MAX_ROUNDS = 10;
 const DEFAULT_BROWSER_WALL_CLOCK_MS = 18 * 60 * 1000;
 const DEFAULT_EXPLORE_WALL_CLOCK_MS = 90 * 1000;
+const DEFAULT_GENERAL_WALL_CLOCK_MS = 3 * 60 * 1000;
 
 export interface LLMSubAgentWorkerHandlerOptions {
   kind: WorkerKind;
@@ -63,7 +64,12 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
           ? DEFAULT_EXPLORE_SUB_AGENT_MAX_ROUNDS
           : DEFAULT_GENERAL_SUB_AGENT_MAX_ROUNDS);
     this.maxWallClockMs =
-      options.maxWallClockMs ?? (options.kind === "browser" ? DEFAULT_BROWSER_WALL_CLOCK_MS : DEFAULT_EXPLORE_WALL_CLOCK_MS);
+      options.maxWallClockMs ??
+      (options.kind === "browser"
+        ? DEFAULT_BROWSER_WALL_CLOCK_MS
+        : options.kind === "explore"
+          ? DEFAULT_EXPLORE_WALL_CLOCK_MS
+          : DEFAULT_GENERAL_WALL_CLOCK_MS);
   }
 
   async canHandle(input: WorkerInvocationInput): Promise<boolean> {

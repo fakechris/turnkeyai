@@ -186,8 +186,8 @@ export class ExploreWorkerHandler implements WorkerHandler {
             trace: [],
             transportAudit: buildTransportAudit({
               preferredOrder,
-              attemptedTransports: ["official_api"],
-              finalTransport: "official_api",
+              attemptedTransports: [apiAttempt.transport],
+              finalTransport: apiAttempt.transport,
               fallbackReason: "browser fallback blocked by capability inspection",
               trustLevel: "observational",
             }),
@@ -242,8 +242,8 @@ export class ExploreWorkerHandler implements WorkerHandler {
             trace: [],
             transportAudit: buildTransportAudit({
               preferredOrder,
-              attemptedTransports: ["official_api"],
-              finalTransport: "official_api",
+              attemptedTransports: [apiAttempt.transport],
+              finalTransport: apiAttempt.transport,
               fallbackReason,
               trustLevel: "observational",
             }),
@@ -289,8 +289,8 @@ export class ExploreWorkerHandler implements WorkerHandler {
           ],
           transportAudit: buildTransportAudit({
             preferredOrder,
-            attemptedTransports: ["official_api"],
-            finalTransport: "official_api",
+            attemptedTransports: [apiAttempt.transport],
+            finalTransport: apiAttempt.transport,
             trustLevel: "promotable",
           }),
           apiAttempt: {
@@ -320,7 +320,7 @@ export class ExploreWorkerHandler implements WorkerHandler {
             trace: [],
             transportAudit: buildTransportAudit({
               preferredOrder,
-              attemptedTransports: ["official_api"],
+              attemptedTransports: [apiAttempt.transport],
               fallbackReason: "browser fallback blocked by capability inspection",
               trustLevel: "observational",
             }),
@@ -340,7 +340,7 @@ export class ExploreWorkerHandler implements WorkerHandler {
           trace: [],
           transportAudit: buildTransportAudit({
             preferredOrder,
-            attemptedTransports: ["official_api"],
+            attemptedTransports: [apiAttempt.transport],
             fallbackReason: error instanceof Error ? error.message : "fetch failed",
             trustLevel: "observational",
           }),
@@ -384,7 +384,7 @@ export class ExploreWorkerHandler implements WorkerHandler {
         findings: extractPriceLines(browserPage.textExcerpt),
         transportAudit: buildTransportAudit({
           preferredOrder,
-          attemptedTransports: ["official_api", "browser"],
+          attemptedTransports: [apiAttempt.transport, "browser"],
           finalTransport: "browser",
           fallbackReason:
             typeof failureContext.errorMessage === "string"
@@ -586,12 +586,12 @@ function extractDuckDuckGoResults(html: string): Array<{ title: string; url: str
     if (!decodedUrl) {
       continue;
     }
-    const title = stripHtml(titleMatch[2] ?? "");
+    const title = decodeHtmlEntities(stripHtml(titleMatch[2] ?? ""));
     if (!title) {
       continue;
     }
     const snippetMatch = block.match(/<a[^>]+class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
-    const snippet = snippetMatch ? stripHtml(snippetMatch[1] ?? "") : "";
+    const snippet = snippetMatch ? decodeHtmlEntities(stripHtml(snippetMatch[1] ?? "")) : "";
     results.push({
       title,
       url: decodedUrl,
@@ -698,7 +698,7 @@ function validatePublicHttpUrl(inputUrl: string): string {
     throw new Error(`unsupported explore URL protocol: ${parsed.protocol}`);
   }
 
-  const hostname = parsed.hostname.toLowerCase();
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (
     hostname === "localhost" ||
     hostname.endsWith(".local") ||
