@@ -21,9 +21,11 @@ import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
 import type { RoleToolExecutionInput, RoleToolExecutionResult, RoleToolExecutor } from "./tool-use";
 
-const DEFAULT_SUB_AGENT_MAX_ROUNDS = 15;
+const DEFAULT_BROWSER_SUB_AGENT_MAX_ROUNDS = 15;
+const DEFAULT_EXPLORE_SUB_AGENT_MAX_ROUNDS = 8;
+const DEFAULT_GENERAL_SUB_AGENT_MAX_ROUNDS = 10;
 const DEFAULT_BROWSER_WALL_CLOCK_MS = 18 * 60 * 1000;
-const DEFAULT_EXPLORE_WALL_CLOCK_MS = 3 * 60 * 1000;
+const DEFAULT_EXPLORE_WALL_CLOCK_MS = 90 * 1000;
 
 export interface LLMSubAgentWorkerHandlerOptions {
   kind: WorkerKind;
@@ -53,7 +55,13 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
     this.browserBridge = options.browserBridge;
     this.runtimeProgressRecorder = options.runtimeProgressRecorder;
     this.clock = options.clock ?? { now: () => Date.now() };
-    this.maxRounds = options.maxRounds ?? DEFAULT_SUB_AGENT_MAX_ROUNDS;
+    this.maxRounds =
+      options.maxRounds ??
+      (options.kind === "browser"
+        ? DEFAULT_BROWSER_SUB_AGENT_MAX_ROUNDS
+        : options.kind === "explore"
+          ? DEFAULT_EXPLORE_SUB_AGENT_MAX_ROUNDS
+          : DEFAULT_GENERAL_SUB_AGENT_MAX_ROUNDS);
     this.maxWallClockMs =
       options.maxWallClockMs ?? (options.kind === "browser" ? DEFAULT_BROWSER_WALL_CLOCK_MS : DEFAULT_EXPLORE_WALL_CLOCK_MS);
   }
@@ -789,7 +797,11 @@ function buildSubAgentSystemPrompt(kind: WorkerKind, maxRounds: number): string 
       "You investigate public or provided web/context sources through the private explore_run tool.",
       "Use explore_run for focused retrieval and extraction. Avoid broad repeated searches with no new angle.",
       "Prefer primary sources and cite the exact source facts in your final summary when available.",
-      "For product comparisons, verify each requested dimension separately: official positioning, pricing, user scale, community feedback, code/repo availability, and update frequency.",
+      "Preserve exact product/entity names from the delegated task. Do not append guessed categories such as smart lock, blockchain, SaaS, or library unless the task explicitly includes that category.",
+      "When a name is ambiguous, search the exact name and official domain first, then report ambiguity instead of choosing a guessed interpretation.",
+      "For product comparisons, verify only the dimensions the parent explicitly requested; common dimensions include official positioning, pricing, user scale, community feedback, code/repo availability, and update frequency.",
+      "For most comparison tasks, 2-4 high-quality official or primary sources are enough to answer; after that, mark missing dimensions as not verified instead of continuing to search.",
+      "Stop once the requested answer has enough primary-source evidence. Do not keep searching for nice-to-have metrics that were not requested.",
       "Do not label something open-source or closed-source unless you verified it from an official source or repository. Otherwise write not verified.",
       "Do not use lack of search results as evidence that a company has no users, no community, or poor quality. Mark those dimensions not verified.",
     ].join("\n");

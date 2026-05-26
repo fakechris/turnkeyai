@@ -221,6 +221,70 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         ...(result.contentBlocks ? { contentBlocks: result.contentBlocks } : {}),
       });
       messages = appendToolResultMessages(messages, toolResults);
+
+      const timeoutSignal = findSubAgentToolTimeout(toolResults);
+      if (timeoutSignal) {
+        throwIfAborted(input.signal);
+        const generated = await this.generateFinalAfterToolRoundLimit({
+          activation: input.activation,
+          packet: input.packet,
+          selection,
+          baseGatewayInput: initialGatewayInput,
+          messages,
+          maxRounds,
+          reasonLines: [
+            `${timeoutSignal.toolName} timed out${timeoutSignal.timeoutSeconds == null ? "" : ` after ${timeoutSignal.timeoutSeconds}s`}.`,
+            "Do not call more tools or spawn fallback sessions for this timeout.",
+            timeoutSignal.evidenceAvailable
+              ? "Produce the best final answer from the evidence already gathered and state any remaining uncertainty."
+              : "No usable evidence was gathered before the timeout. Say that verification did not complete, summarize what was attempted, and tell the user they can ask to continue.",
+          ],
+        });
+        throwIfAborted(input.signal);
+        result = generated.result;
+        if (generated.reduction) {
+          reduction = generated.reduction;
+          reductionSnapshot = generated.reductionSnapshot;
+        }
+        if (generated.memoryFlush) {
+          memoryFlushes.push(generated.memoryFlush);
+        }
+        break;
+      }
+
+      const completedSubAgent = findCompletedSubAgentFinal(toolResults);
+      if (completedSubAgent) {
+        throwIfAborted(input.signal);
+        const generated = await this.generateFinalAfterToolRoundLimit({
+          activation: input.activation,
+          packet: input.packet,
+          selection,
+          baseGatewayInput: initialGatewayInput,
+          messages,
+          maxRounds,
+          reasonLines: [
+            `${completedSubAgent.toolName} returned a completed sub-agent final_content result.`,
+            "Do not call sessions_history or sessions_list just to restate this completed result.",
+            "Use the completed sub-agent final_content below as the source of truth. Do not override it with memory, assumptions, or general product knowledge.",
+            "Do not add capabilities, target users, pricing, open-source claims, or product positioning unless they are stated in this source content.",
+            "If a requested dimension is missing or uncertain in the source content, write not verified.",
+            "Preserve uncertainty labels and source URLs from the source content.",
+            ...completedSubAgent.finalContents.map(
+              (content, index) => `Source ${index + 1} final_content:\n${sliceUtf8(content, 8 * 1024)}`
+            ),
+          ],
+        });
+        throwIfAborted(input.signal);
+        result = generated.result;
+        if (generated.reduction) {
+          reduction = generated.reduction;
+          reductionSnapshot = generated.reductionSnapshot;
+        }
+        if (generated.memoryFlush) {
+          memoryFlushes.push(generated.memoryFlush);
+        }
+        break;
+      }
     }
 
     if (reductionSnapshot) {
@@ -406,7 +470,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         ]).join("\n"),
       },
     ]);
-    return this.generateWithEnvelopeRetry({
+    const generated = await this.generateWithEnvelopeRetry({
       activation: input.activation,
       packet: input.packet,
       selection: input.selection,
@@ -421,6 +485,51 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         },
       },
     });
+    if (!containsTextualToolCallAttempt(generated.result)) {
+      return generated;
+    }
+    const repairedMessages = prepareToolHistoryForGateway([
+      ...finalMessages,
+      {
+        role: "assistant",
+        content: generated.result.text,
+      },
+      {
+        role: "user",
+        content: [
+          "The previous response attempted to emit a tool call even though tools are disabled for final synthesis.",
+          "Do not write XML, JSON, or pseudo tool-call markup.",
+          "Produce only the final user-facing answer from the evidence already present in the conversation.",
+        ].join("\n"),
+      },
+    ]);
+    const repaired = await this.generateWithEnvelopeRetry({
+      activation: input.activation,
+      packet: input.packet,
+      selection: input.selection,
+      gatewayInput: {
+        ...withoutToolUse(input.baseGatewayInput),
+        messages: repairedMessages,
+        envelope: {
+          ...(input.baseGatewayInput.envelope ?? {}),
+          toolCount: 0,
+          toolSchemaBytes: 0,
+          ...deriveToolResultEnvelope(repairedMessages),
+        },
+      },
+    });
+    return {
+      result: repaired.result,
+      ...(repaired.reduction ?? generated.reduction
+        ? { reduction: (repaired.reduction ?? generated.reduction)! }
+        : {}),
+      ...(repaired.reductionSnapshot ?? generated.reductionSnapshot
+        ? { reductionSnapshot: (repaired.reductionSnapshot ?? generated.reductionSnapshot)! }
+        : {}),
+      ...(repaired.memoryFlush ?? generated.memoryFlush
+        ? { memoryFlush: (repaired.memoryFlush ?? generated.memoryFlush)! }
+        : {}),
+    };
   }
 
   private async executeToolCalls(input: {
@@ -789,6 +898,81 @@ function toNativeToolProgressTrace(
     ...(progress.detail ? { detail: progress.detail } : {}),
     ts,
   };
+}
+
+function findSubAgentToolTimeout(results: RoleToolExecutionResult[]):
+  | {
+      toolName: string;
+      timeoutSeconds?: number | null;
+      evidenceAvailable: boolean;
+    }
+  | null {
+  for (const result of results) {
+    if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+      continue;
+    }
+    const parsed = parseToolResultObject(result.content);
+    if (!parsed || parsed["status"] !== "timeout") {
+      continue;
+    }
+    const timeoutSeconds = parsed["timeout_seconds"];
+    const evidenceAvailable = parsed["evidence_available"] === true || typeof parsed["evidence_summary"] === "string";
+    return {
+      toolName: result.toolName,
+      timeoutSeconds: typeof timeoutSeconds === "number" ? timeoutSeconds : null,
+      evidenceAvailable,
+    };
+  }
+  return null;
+}
+
+function findCompletedSubAgentFinal(results: RoleToolExecutionResult[]): { toolName: string; finalContents: string[] } | null {
+  const finalContents: string[] = [];
+  let toolName: string | null = null;
+  for (const result of results) {
+    if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+      continue;
+    }
+    const parsed = parseToolResultObject(result.content);
+    if (!parsed || parsed["status"] !== "completed") {
+      continue;
+    }
+    const finalContent = parsed["final_content"];
+    if (typeof finalContent !== "string" || finalContent.trim().length < 80) {
+      continue;
+    }
+    const payload = parsed["payload"];
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      continue;
+    }
+    if ((payload as Record<string, unknown>)["mode"] !== "llm_sub_agent") {
+      continue;
+    }
+    toolName = toolName ?? result.toolName;
+    finalContents.push(finalContent.trim());
+  }
+  return toolName && finalContents.length > 0 ? { toolName, finalContents } : null;
+}
+
+function containsTextualToolCallAttempt(result: GenerateTextResult): boolean {
+  if ((result.toolCalls?.length ?? 0) > 0) {
+    return true;
+  }
+  return /<\s*(?:minimax:)?tool_call\b|<\s*invoke\b|<\/\s*(?:minimax:)?tool_call\s*>|\btool_calls?\s*[:=]/i.test(
+    result.text
+  );
+}
+
+function parseToolResultObject(content: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function buildGatewayInput(input: {

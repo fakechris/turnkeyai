@@ -50,9 +50,12 @@ test("explore worker turns natural-language research tasks into a search URL", a
       return new Response(
         `
           <html>
-            <head><title>Search results</title></head>
+            <head><title>slock npm package github at DuckDuckGo</title></head>
             <body>
-              slock npm package github result
+              <div class="result">
+                <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fexample%2Fslock&amp;rut=abc">GitHub - example/slock</a>
+                <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fexample%2Fslock&amp;rut=abc">Distributed lock package for Node.js</a>
+              </div>
             </body>
           </html>
         `,
@@ -92,8 +95,101 @@ test("explore worker turns natural-language research tasks into a search URL", a
   });
 
   assert.equal(result?.status, "completed");
-  assert.match(fetchedUrl, /^https:\/\/www\.google\.com\/search\?/);
+  assert.match(fetchedUrl, /^https:\/\/duckduckgo\.com\/html\/\?/);
   assert.match(decodeURIComponent(fetchedUrl), /slock npm package github/);
+  const payload = result?.payload as {
+    findings: string[];
+    searchResults: Array<{ title: string; url: string; snippet: string }>;
+    transportAudit: { finalTransport: string; trustLevel: string };
+  };
+  assert.equal(payload.searchResults[0]?.url, "https://github.com/example/slock");
+  assert.match(payload.findings[0] ?? "", /Distributed lock package/);
+  assert.equal(payload.transportAudit.finalTransport, "business_tool");
+  assert.equal(payload.transportAudit.trustLevel, "observational");
+});
+
+test("explore worker prefers quoted task entity over generic search instructions", async () => {
+  let fetchedUrl = "";
+  const handler = new ExploreWorkerHandler({
+    fetchFn: async (input) => {
+      fetchedUrl = String(input);
+      return new Response(
+        `
+          <html>
+            <head><title>Slock at DuckDuckGo</title></head>
+            <body>
+              <div class="result">
+                <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fslock.ai%2F&amp;rut=abc">Slock - Where humans and AI agents build together</a>
+              </div>
+            </body>
+          </html>
+        `,
+        { status: 200, headers: { "content-type": "text/html" } }
+      );
+    },
+  });
+
+  const input = buildExploreInvocationInput();
+  const taskPrompt =
+    'Find information about "Slock" - what product/company it is. Search for official documentation, company websites, product pages, or credible reviews.';
+  const result = await handler.run({
+    ...input,
+    activation: {
+      ...input.activation,
+      handoff: {
+        ...input.activation.handoff,
+        payload: normalizeRelayPayload({
+          threadId: "thread-1",
+          relayBrief: taskPrompt,
+          recentMessages: [],
+          instructions: taskPrompt,
+        }),
+      },
+    },
+    packet: {
+      ...input.packet,
+      taskPrompt,
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.match(decodeURIComponent(fetchedUrl), /q=Slock(?:&|$)/);
+  assert.doesNotMatch(decodeURIComponent(fetchedUrl), /official documentation/);
+});
+
+test("explore worker fails blocked search pages instead of promoting them as evidence", async () => {
+  const handler = new ExploreWorkerHandler({
+    fetchFn: async () =>
+      new Response(
+        `
+          <html>
+            <head><title>Google Search</title></head>
+            <body>Please click here if you are not redirected within a few seconds.</body>
+          </html>
+        `,
+        {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }
+      ),
+  });
+
+  const input = buildExploreInvocationInput();
+  const result = await handler.run({
+    ...input,
+    packet: {
+      ...input.packet,
+      taskPrompt: "Research Multica product software.",
+    },
+  });
+
+  assert.equal(result?.status, "failed");
+  const payload = result?.payload as {
+    apiAttempt: { errorMessage: string };
+    transportAudit: { trustLevel: string; fallbackReason: string };
+  };
+  assert.match(payload.apiAttempt.errorMessage, /blocked content/i);
+  assert.equal(payload.transportAudit.trustLevel, "observational");
 });
 
 test("explore worker falls back to browser when direct fetch is blocked", async () => {
@@ -144,7 +240,7 @@ test("explore worker returns failed when direct fetch is blocked and no browser 
   const result = await handler.run(buildExploreInvocationInput());
 
   assert.equal(result?.status, "failed");
-  assert.match(result?.summary ?? "", /HTTP 403/);
+  assert.match(result?.summary ?? "", /blocked content/i);
 });
 
 test("explore worker does not use browser fallback when browser is not allowed", async () => {

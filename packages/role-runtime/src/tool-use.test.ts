@@ -996,6 +996,7 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
     status: string;
     resumable: boolean;
     timeout_seconds: number;
+    evidence_available: boolean;
     evidence_summary: string;
   };
   assert.match(interruptedReason ?? "", /sessions_spawn timed out/);
@@ -1004,9 +1005,11 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
   assert.equal(body.status, "timeout");
   assert.equal(body.resumable, true);
   assert.equal(body.timeout_seconds, 0.001);
+  assert.equal(body.evidence_available, true);
   assert.match(body.evidence_summary, /pricing page title/);
   assert.equal(result.progress?.at(-1)?.phase, "failed");
   assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
+  assert.equal(result.progress?.at(-1)?.detail?.evidence_available, true);
 });
 
 test("sessions_spawn applies a default timeout when timeout_seconds is absent", async () => {
@@ -1088,6 +1091,7 @@ test("sessions_spawn applies a default timeout when timeout_seconds is absent", 
     session_key: string;
     status: string;
     timeout_seconds: number;
+    evidence_available: boolean;
     evidence_summary: string;
   };
   assert.match(interruptedReason ?? "", /sessions_spawn timed out/);
@@ -1095,6 +1099,7 @@ test("sessions_spawn applies a default timeout when timeout_seconds is absent", 
   assert.equal(body.session_key, "worker:explore:default-timeout");
   assert.equal(body.status, "timeout");
   assert.equal(body.timeout_seconds, 0.001);
+  assert.equal(body.evidence_available, true);
   assert.match(body.evidence_summary, /source snippets/);
 });
 
@@ -1311,6 +1316,86 @@ test("sessions_send reuses a completed session for summary-only follow-ups", asy
   assert.equal(body.cached, true);
   assert.equal(body.final_content, "Full cached final report.");
   assert.equal(result.progress?.at(-1)?.detail?.cached, true);
+});
+
+test("sessions_send reuses a completed session for Chinese evidence extraction follow-ups", async () => {
+  let sendCalled = false;
+  const lastResult = {
+    workerType: "explore" as const,
+    status: "completed" as const,
+    summary: "Research completed.",
+    payload: {
+      mode: "llm_sub_agent",
+      workerType: "explore",
+      content: "已缓存的完整证据报告。",
+    },
+  };
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:done-cn",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:done-cn",
+            workerType: "explore",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:done-cn",
+        workerType: "explore",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+        lastResult,
+      };
+    },
+    async send() {
+      sendCalled = true;
+      return null;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-cached-summary-cn",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:done-cn",
+        message: "请提取你的最终研究结论中的核心证据和要点，每个点给出具体证据来源。",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Synthesize.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { cached: boolean; final_content?: string };
+  assert.equal(sendCalled, false);
+  assert.equal(body.cached, true);
+  assert.equal(body.final_content, "已缓存的完整证据报告。");
 });
 
 test("sessions_send does not reuse a completed session for mixed action follow-ups", async () => {

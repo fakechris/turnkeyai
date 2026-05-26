@@ -1155,12 +1155,14 @@ function cachedCompletedSessionResult(
 function isCachedSummaryRequest(message: string): boolean {
   const normalized = message.toLowerCase();
   const isSummaryOnlyAsk =
-    /\b(return|provide|give|summari[sz]e|recap|produce)\b/.test(normalized) &&
-    /\b(final|complete|summary|report|result|plain text|findings|evidence|overview)\b/.test(normalized);
+    (/\b(return|provide|give|summari[sz]e|recap|produce|extract)\b/.test(normalized) &&
+      /\b(final|complete|summary|report|result|plain text|findings|evidence|overview|conclusion|key points)\b/.test(normalized)) ||
+    /(提取|总结|汇总|概括|返回|给出|提供|整理|复述)/.test(message) &&
+      /(最终|完整|总结|摘要|报告|结果|结论|证据|要点|核心)/.test(message);
   const includesFreshWork =
     /\b(new|another|additional|recheck|re-run|rerun|visit|open|fetch|search|click|navigate|update|create|submit|delete|purchase|send)\b/.test(
       normalized
-    );
+    ) || /(重新|再次|新的|继续查|访问|打开|抓取|搜索|点击|导航|更新|创建|提交|删除|购买|发送)/.test(message);
   return isSummaryOnlyAsk && !includesFreshWork;
 }
 
@@ -1563,9 +1565,14 @@ function timedOutResult(
       ? "Sub-agent session timed out."
       : `Sub-agent session timed out after ${formatTimeoutSeconds(input.timeoutMs)}.`;
   const evidenceSummary = sanitizeEvidenceSummary(input.evidenceSummary);
+  const evidenceAvailable = evidenceSummary != null;
   const result =
-    `${message} The session is resumable: use sessions_history to inspect evidence already gathered, ` +
-    "then use sessions_send only if follow-up work is still valuable. Do not treat the timeout itself as evidence." +
+    `${message} ${
+      evidenceAvailable
+        ? "The session is resumable, but do not call another tool just to recover from this timeout; synthesize from the evidence summary unless the user asks to continue."
+        : "No usable evidence was gathered before timeout; do not spawn fallback tools for this timeout. Produce a bounded final answer that says verification did not complete, or wait for the user to continue."
+    } ` +
+    "Do not treat the timeout itself as evidence." +
     (evidenceSummary ? ` Current evidence summary: ${evidenceSummary}` : "");
   return {
     toolCallId: call.id,
@@ -1579,6 +1586,7 @@ function timedOutResult(
         status: "timeout",
         timeout_seconds: timeoutSeconds,
         resumable: true,
+        evidence_available: evidenceAvailable,
         ...(evidenceSummary ? { evidence_summary: evidenceSummary } : {}),
         result,
       },
@@ -1594,6 +1602,7 @@ function timedOutResult(
           session_key: input.sessionKey,
           agent_id: input.agentId,
           status: "timeout",
+          evidence_available: evidenceAvailable,
           ...(timeoutSeconds == null ? {} : { timeout_seconds: timeoutSeconds }),
         },
       },
