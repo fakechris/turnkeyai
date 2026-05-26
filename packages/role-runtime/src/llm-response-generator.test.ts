@@ -1006,6 +1006,404 @@ test("llm role response generator synthesizes from evidence when tool wall-clock
   );
 });
 
+test("llm role response generator synthesizes immediately after sub-agent timeout", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let executedTools = 0;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-timeout", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Fetch evidence from a slow source.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.equal(input.tools, undefined);
+    return {
+      text: "Verification did not complete within the tool budget.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedTools += 1;
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        isError: true,
+        content: JSON.stringify({
+          status: "timeout",
+          timeout_seconds: 120,
+          resumable: true,
+          evidence_available: false,
+          result: "No usable evidence was gathered before timeout.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Verification did not complete within the tool budget.");
+  assert.equal(executedTools, 1);
+  assert.equal(gatewayInputs.length, 2);
+  assert.ok(
+    gatewayInputs[1]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes("No usable evidence was gathered before the timeout")
+    )
+  );
+});
+
+test("llm role response generator synthesizes immediately after completed sub-agent final content", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let executedTools = 0;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-done", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Research the comparison and return evidence.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.equal(input.tools, undefined);
+    return {
+      text: "Final synthesized answer from sub-agent evidence.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+        {
+          name: "sessions_history",
+          description: "Read a sub-agent session",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedTools += 1;
+      assert.equal(input.call.name, "sessions_spawn");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          task_id: "task-1",
+          session_key: "worker:explore:task-1:toolu-done",
+          agent_id: "explore",
+          status: "completed",
+          result: "Sub-agent completed with evidence.",
+          final_content:
+            "Evidence ledger: primary source A verifies the core positioning; primary source B verifies the repository. Missing metrics are marked not verified.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content:
+              "Evidence ledger: primary source A verifies the core positioning; primary source B verifies the repository. Missing metrics are marked not verified.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Final synthesized answer from sub-agent evidence.");
+  assert.equal(executedTools, 1);
+  assert.equal(gatewayInputs.length, 2);
+  assert.ok(
+    gatewayInputs[1]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes("Do not call sessions_history or sessions_list")
+    )
+  );
+  assert.ok(
+    gatewayInputs[1]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes("Source 1 final_content")
+    )
+  );
+});
+
+test("llm role response generator accepts short completed sub-agent final content", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-done-short", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Return a concise verified answer.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: "Short final was accepted.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          status: "completed",
+          final_content: "Verified: yes.",
+          payload: { mode: "llm_sub_agent", workerType: "explore", content: "Verified: yes." },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Short final was accepted.");
+  assert.equal(gatewayInputs.length, 2);
+  assert.ok(
+    gatewayInputs[1]?.messages.some(
+      (message) => message.role === "user" && readToolContent(message.content).includes("Verified: yes.")
+    )
+  );
+});
+
+test("llm role response generator prefers completed sub-agent finals over sibling timeouts", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "Calling parallel sub-agents.",
+        toolCalls: [
+          { id: "toolu-done", name: "sessions_spawn", input: { agent_id: "explore", task: "Return evidence." } },
+          { id: "toolu-timeout", name: "sessions_spawn", input: { agent_id: "browser", task: "Slow browser work." } },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: "Final from completed evidence.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      if (input.call.id === "toolu-timeout") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          isError: true,
+          content: JSON.stringify({
+            status: "timeout",
+            timeout_seconds: 120,
+            evidence_available: false,
+            result: "No usable evidence was gathered.",
+          }),
+        };
+      }
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          status: "completed",
+          final_content: "Completed source-backed answer.",
+          payload: { mode: "llm_sub_agent", workerType: "explore", content: "Completed source-backed answer." },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Final from completed evidence.");
+  assert.ok(
+    gatewayInputs[1]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes("completed sub-agent final_content result")
+    )
+  );
+  assert.ok(
+    !gatewayInputs[1]?.messages.some(
+      (message) => message.role === "user" && readToolContent(message.content).includes("No usable evidence was gathered before the timeout")
+    )
+  );
+});
+
+test("llm role response generator repairs textual tool-call markup during final synthesis", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-done", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Research evidence.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.equal(input.tools, undefined);
+    if (gatewayInputs.length === 2) {
+      return {
+        text: '<minimax:tool_call><invoke name="sessions_history"></invoke></minimax:tool_call>',
+        modelId: "minimax-test",
+        providerId: "minimax",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "Final answer without pseudo tool calls.",
+      modelId: "minimax-test",
+      providerId: "minimax",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          task_id: "task-1",
+          session_key: "worker:explore:task-1:toolu-done",
+          agent_id: "explore",
+          status: "completed",
+          result: "Sub-agent completed with evidence.",
+          final_content:
+            "Evidence ledger: source A verifies the product positioning; source B verifies the repository. Missing metrics are marked not verified.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content:
+              "Evidence ledger: source A verifies the product positioning; source B verifies the repository. Missing metrics are marked not verified.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Final answer without pseudo tool calls.");
+  assert.equal(gatewayInputs.length, 3);
+  assert.ok(
+    gatewayInputs[2]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes("pseudo tool-call markup")
+    )
+  );
+});
+
 test("llm role response generator caps parallel tool execution fan-out", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const releaseById = new Map<string, () => void>();

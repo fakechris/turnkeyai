@@ -67,6 +67,9 @@ export interface RoleToolLoopOptions {
 
 export const DEFAULT_ROLE_TOOL_MAX_ROUNDS = 128;
 const MAX_SESSION_TOOL_TIMEOUT_SECONDS = 1800;
+const DEFAULT_BROWSER_SESSION_TOOL_TIMEOUT_MS = 18 * 60 * 1_000;
+const DEFAULT_EXPLORE_SESSION_TOOL_TIMEOUT_MS = 3 * 60 * 1_000;
+const DEFAULT_GENERAL_SESSION_TOOL_TIMEOUT_MS = 3 * 60 * 1_000;
 const TOOL_PERMISSION_WAIT_MS = 15 * 60 * 1000;
 const DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS = 60_000;
 const WORKER_TOOL_TIMEOUT = Symbol("worker_tool_timeout");
@@ -870,7 +873,7 @@ async function executeSessionsSpawn(
     continuityMode: "fresh" as const,
   };
   const workerActivation = scopeWorkerActivationToToolCall(input.activation, input.call.id);
-  const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds, maxSessionToolTimeoutMs);
+  const timeoutMs = resolveToolTimeoutMs(input.call.input.timeout_seconds, agentId, maxSessionToolTimeoutMs);
   const spawnAttempt = await (sessionSpawnGate ?? new AsyncSerialGate()).run(async () => {
     const concurrencyError = await maybeRejectSessionConcurrency(workerRuntime, input, sessionConcurrency);
     if (concurrencyError) {
@@ -1033,7 +1036,7 @@ async function executeSessionsSend(
     preferredWorkerKinds: [state.workerType],
     continuityMode: "resume-existing" as const,
   };
-  const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds, maxSessionToolTimeoutMs);
+  const timeoutMs = resolveToolTimeoutMs(input.call.input.timeout_seconds, state.workerType, maxSessionToolTimeoutMs);
   const registration = toolCancellationRegistry?.register({
     threadId: input.activation.thread.threadId,
     toolCallId: input.call.id,
@@ -1151,13 +1154,17 @@ function cachedCompletedSessionResult(
 
 function isCachedSummaryRequest(message: string): boolean {
   const normalized = message.toLowerCase();
-  const isSummaryOnlyAsk =
-    /\b(return|provide|give|summari[sz]e|recap|produce)\b/.test(normalized) &&
-    /\b(final|complete|summary|report|result|plain text|findings|evidence|overview)\b/.test(normalized);
+  const englishSummaryOnlyAsk =
+    /\b(return|provide|give|summari[sz]e|recap|produce|extract)\b/.test(normalized) &&
+    /\b(final|complete|summary|report|result|plain text|findings|evidence|overview|conclusion|key points)\b/.test(normalized);
+  const chineseSummaryOnlyAsk =
+    /(提取|总结|汇总|概括|返回|给出|提供|整理|复述)/.test(message) &&
+    /(最终|完整|总结|摘要|报告|结果|结论|证据|要点|核心)/.test(message);
+  const isSummaryOnlyAsk = englishSummaryOnlyAsk || chineseSummaryOnlyAsk;
   const includesFreshWork =
     /\b(new|another|additional|recheck|re-run|rerun|visit|open|fetch|search|click|navigate|update|create|submit|delete|purchase|send)\b/.test(
       normalized
-    );
+    ) || /(重新|再次|新的|继续查|访问|打开|抓取|搜索|点击|导航|更新|创建|提交|删除|购买|发送)/.test(message);
   return isSummaryOnlyAsk && !includesFreshWork;
 }
 
@@ -1560,9 +1567,14 @@ function timedOutResult(
       ? "Sub-agent session timed out."
       : `Sub-agent session timed out after ${formatTimeoutSeconds(input.timeoutMs)}.`;
   const evidenceSummary = sanitizeEvidenceSummary(input.evidenceSummary);
+  const evidenceAvailable = evidenceSummary != null;
   const result =
-    `${message} The session is resumable: use sessions_history to inspect evidence already gathered, ` +
-    "then use sessions_send only if follow-up work is still valuable. Do not treat the timeout itself as evidence." +
+    `${message} ${
+      evidenceAvailable
+        ? "The session is resumable, but do not call another tool just to recover from this timeout; synthesize from the evidence summary unless the user asks to continue."
+        : "No usable evidence was gathered before timeout; do not spawn fallback tools for this timeout. Produce a bounded final answer that says verification did not complete, or wait for the user to continue."
+    } ` +
+    "Do not treat the timeout itself as evidence." +
     (evidenceSummary ? ` Current evidence summary: ${evidenceSummary}` : "");
   return {
     toolCallId: call.id,
@@ -1576,6 +1588,7 @@ function timedOutResult(
         status: "timeout",
         timeout_seconds: timeoutSeconds,
         resumable: true,
+        evidence_available: evidenceAvailable,
         ...(evidenceSummary ? { evidence_summary: evidenceSummary } : {}),
         result,
       },
@@ -1591,6 +1604,7 @@ function timedOutResult(
           session_key: input.sessionKey,
           agent_id: input.agentId,
           status: "timeout",
+          evidence_available: evidenceAvailable,
           ...(timeoutSeconds == null ? {} : { timeout_seconds: timeoutSeconds }),
         },
       },
@@ -1605,7 +1619,6 @@ function summarizeWorkerEvidence(state: WorkerSessionState | null): string | nul
   return (
     state.continuationDigest?.summary ??
     state.lastResult?.summary ??
-    state.lastError?.message ??
     state.history?.at(-1)?.content ??
     null
   );
@@ -1764,6 +1777,28 @@ function parseToolTimeoutMs(value: unknown, maxTimeoutMs?: number): number | nul
       : MAX_SESSION_TOOL_TIMEOUT_SECONDS;
   const boundedSeconds = Math.min(value, configuredMaxSeconds, MAX_SESSION_TOOL_TIMEOUT_SECONDS);
   return Math.max(1, Math.round(boundedSeconds * 1_000));
+}
+
+function resolveToolTimeoutMs(value: unknown, workerKind: WorkerKind, maxTimeoutMs?: number): number {
+  return parseToolTimeoutMs(value, maxTimeoutMs) ?? boundDefaultToolTimeoutMs(defaultToolTimeoutMs(workerKind), maxTimeoutMs);
+}
+
+function defaultToolTimeoutMs(workerKind: WorkerKind): number {
+  if (workerKind === "browser") {
+    return DEFAULT_BROWSER_SESSION_TOOL_TIMEOUT_MS;
+  }
+  if (workerKind === "explore" || workerKind === "finance") {
+    return DEFAULT_EXPLORE_SESSION_TOOL_TIMEOUT_MS;
+  }
+  return DEFAULT_GENERAL_SESSION_TOOL_TIMEOUT_MS;
+}
+
+function boundDefaultToolTimeoutMs(defaultTimeoutMs: number, maxTimeoutMs?: number): number {
+  const configuredMaxMs =
+    typeof maxTimeoutMs === "number" && Number.isFinite(maxTimeoutMs) && maxTimeoutMs > 0
+      ? maxTimeoutMs
+      : MAX_SESSION_TOOL_TIMEOUT_SECONDS * 1_000;
+  return Math.max(1, Math.min(defaultTimeoutMs, configuredMaxMs, MAX_SESSION_TOOL_TIMEOUT_SECONDS * 1_000));
 }
 
 function formatTimeoutSeconds(timeoutMs: number | null): string {

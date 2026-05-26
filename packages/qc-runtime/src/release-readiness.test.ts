@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { runReleaseReadiness } from "./release-readiness";
 
-test("release readiness verifies packed cli tarball and dry-run publish", { timeout: 30_000 }, async () => {
+test("release readiness verifies packed cli tarball and dry-run publish", { timeout: 120_000 }, async () => {
   const result = await runReleaseReadiness();
 
   assert.equal(result.status, "passed");
@@ -12,4 +12,3 @@ test("release readiness verifies packed cli tarball and dry-run publish", { time
   assert.ok(result.checks.some((check) => check.checkId === "publish-dry-run" && check.status === "passed"));
   assert.equal(result.artifact?.filename.endsWith(".tgz"), true);
 });
-

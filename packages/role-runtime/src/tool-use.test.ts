@@ -996,6 +996,7 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
     status: string;
     resumable: boolean;
     timeout_seconds: number;
+    evidence_available: boolean;
     evidence_summary: string;
   };
   assert.match(interruptedReason ?? "", /sessions_spawn timed out/);
@@ -1004,9 +1005,102 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
   assert.equal(body.status, "timeout");
   assert.equal(body.resumable, true);
   assert.equal(body.timeout_seconds, 0.001);
+  assert.equal(body.evidence_available, true);
   assert.match(body.evidence_summary, /pricing page title/);
   assert.equal(result.progress?.at(-1)?.phase, "failed");
   assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
+  assert.equal(result.progress?.at(-1)?.detail?.evidence_available, true);
+});
+
+test("sessions_spawn applies a default timeout when timeout_seconds is absent", async () => {
+  let sendStarted!: () => void;
+  let interruptedReason: string | null = null;
+  const sendStartedPromise = new Promise<void>((resolve) => {
+    sendStarted = resolve;
+  });
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "explore", workerRunKey: "worker:explore:default-timeout" };
+    },
+    async send() {
+      sendStarted();
+      await new Promise(() => undefined);
+      return null;
+    },
+    async interrupt(input: { reason?: string }) {
+      interruptedReason = input.reason ?? null;
+      return {
+        workerRunKey: "worker:explore:default-timeout",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+        continuationDigest: {
+          reason: "timeout_summary",
+          summary: "Collected two source snippets before timeout.",
+          createdAt: 2,
+        },
+      };
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:default-timeout",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+        continuationDigest: {
+          reason: "timeout_summary",
+          summary: "Collected two source snippets before timeout.",
+          createdAt: 2,
+        },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    maxSessionToolTimeoutMs: 1,
+    hardTimeoutGraceMs: 1,
+  });
+
+  const executePromise = executor.execute({
+    call: {
+      id: "call-default-timeout",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Research a slow source without an explicit timeout.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Research a slow source.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  await sendStartedPromise;
+  const result = await executePromise;
+  const body = JSON.parse(result.content) as {
+    session_key: string;
+    status: string;
+    timeout_seconds: number;
+    evidence_available: boolean;
+    evidence_summary: string;
+  };
+  assert.match(interruptedReason ?? "", /sessions_spawn timed out/);
+  assert.equal(result.isError, true);
+  assert.equal(body.session_key, "worker:explore:default-timeout");
+  assert.equal(body.status, "timeout");
+  assert.equal(body.timeout_seconds, 0.001);
+  assert.equal(body.evidence_available, true);
+  assert.match(body.evidence_summary, /source snippets/);
 });
 
 test("sessions_spawn waits through the soft timeout grace for the active worker result", async () => {
@@ -1143,6 +1237,89 @@ test("sessions_send interrupts a follow-up worker call on timeout", async () => 
   assert.equal(body.resumable, true);
 });
 
+test("sessions_send timeout does not treat worker errors as usable evidence", async () => {
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:error-only",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:error-only",
+            workerType: "explore",
+            status: "resumable",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:error-only",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+        lastError: {
+          message: "network failed before collecting sources",
+          at: 2,
+        },
+      };
+    },
+    async send() {
+      await new Promise(() => undefined);
+      return null;
+    },
+    async interrupt() {
+      return null;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    hardTimeoutGraceMs: 1,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-send-timeout-error-only",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:error-only",
+        message: "Continue the slow research task.",
+        timeout_seconds: 0.001,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as {
+    status: string;
+    evidence_available: boolean;
+    evidence_summary?: string;
+  };
+  assert.equal(body.status, "timeout");
+  assert.equal(body.evidence_available, false);
+  assert.equal(body.evidence_summary, undefined);
+});
+
 test("sessions_send reuses a completed session for summary-only follow-ups", async () => {
   let sendCalled = false;
   const lastResult = {
@@ -1222,6 +1399,86 @@ test("sessions_send reuses a completed session for summary-only follow-ups", asy
   assert.equal(body.cached, true);
   assert.equal(body.final_content, "Full cached final report.");
   assert.equal(result.progress?.at(-1)?.detail?.cached, true);
+});
+
+test("sessions_send reuses a completed session for Chinese evidence extraction follow-ups", async () => {
+  let sendCalled = false;
+  const lastResult = {
+    workerType: "explore" as const,
+    status: "completed" as const,
+    summary: "Research completed.",
+    payload: {
+      mode: "llm_sub_agent",
+      workerType: "explore",
+      content: "已缓存的完整证据报告。",
+    },
+  };
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:done-cn",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:done-cn",
+            workerType: "explore",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:done-cn",
+        workerType: "explore",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+        lastResult,
+      };
+    },
+    async send() {
+      sendCalled = true;
+      return null;
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-cached-summary-cn",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:done-cn",
+        message: "请提取你的最终研究结论中的核心证据和要点，每个点给出具体证据来源。",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Synthesize.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { cached: boolean; final_content?: string };
+  assert.equal(sendCalled, false);
+  assert.equal(body.cached, true);
+  assert.equal(body.final_content, "已缓存的完整证据报告。");
 });
 
 test("sessions_send does not reuse a completed session for mixed action follow-ups", async () => {

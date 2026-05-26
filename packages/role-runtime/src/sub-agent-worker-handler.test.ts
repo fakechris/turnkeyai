@@ -54,6 +54,12 @@ test("LLMSubAgentWorkerHandler runs a private worker tool before returning a fin
   const toolNames = gatewayInputs[0]?.tools?.map((tool) => tool.name) ?? [];
   assert.deepEqual(toolNames, ["explore_run"]);
   assert.ok(!toolNames.includes("sessions_spawn"));
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /up to about 8 focused tool calls/i);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /verify only the dimensions the parent explicitly requested/i);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /2-4 high-quality official or primary sources/i);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /Preserve exact product\/entity names/i);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /Do not append guessed categories/i);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /Stop once the requested answer has enough primary-source evidence/i);
   assert.equal(
     ((result?.payload as { metadata?: { toolUse?: { toolCallCount?: number } } }).metadata?.toolUse?.toolCallCount),
     1
@@ -88,6 +94,45 @@ test("LLMSubAgentWorkerHandler keeps browser work on a browser-specific private 
   assert.equal(result?.status, "completed");
   assert.equal(gatewayInputs[0]?.tools?.[0]?.name, "browser_run");
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /same browser operation at most three times/i);
+});
+
+test("LLMSubAgentWorkerHandler bounds default explore wall-clock before more private tools", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let now = 1;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length <= 2) {
+      return toolCallResult(`tool-${gatewayInputs.length}`, "explore_run", {
+        instruction: "Fetch another source.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    return textResult("Final from bounded evidence.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler: buildInnerHandler({
+      kind: "explore",
+      async run() {
+        now = 90_500;
+        return {
+          workerType: "explore",
+          status: "completed",
+          summary: "Fetched enough evidence.",
+          payload: { facts: ["fact-a"] },
+        };
+      },
+    }),
+    gateway,
+    clock: { now: () => now },
+  });
+
+  const result = await handler.run(buildInvocationInput("explore"));
+
+  assert.equal(result?.summary, "Final from bounded evidence.");
+  assert.equal(gatewayInputs.length, 3);
+  assert.match(readToolContent(gatewayInputs[2]!.messages.at(-1)!.content), /wall-clock budget reached/i);
 });
 
 test("LLMSubAgentWorkerHandler exposes structured browser private tools when a browser bridge is wired", async () => {

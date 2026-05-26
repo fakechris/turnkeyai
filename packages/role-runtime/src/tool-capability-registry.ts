@@ -448,6 +448,8 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
     "## Sub-Agent Sessions",
     "Use sessions_spawn only when delegation materially helps: parallel independent work, context isolation, specialist browser work, or verification.",
     "Each spawned task must be self-contained. Include exact URLs, paths, scope, output format, stop conditions, and constraints the child will not otherwise know.",
+    "Preserve exact user-provided entity names in delegated research. Do not append guessed categories or domains such as smart lock, blockchain, SaaS, or library unless the user supplied that category.",
+    "For ambiguous product names without URLs, ask sub-agents to first search the exact name and official website/domain, then mark ambiguity explicitly instead of steering the search toward a guessed meaning.",
     "Keep each spawned task to a manageable size, roughly 10-15 tool calls. If the work is larger, split it into smaller independent sessions.",
     "Prefer multiple focused sub-agents over one broad sub-agent when the subtasks are independent; do not exceed five parallel sub-agents for one user request.",
     "Use timeout_seconds for bounded work. Suggested caps: browser 1080s for authenticated/interactive web work; explore/finance 480s for focused research or data lookup.",

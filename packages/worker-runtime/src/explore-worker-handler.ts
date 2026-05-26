@@ -52,8 +52,8 @@ export class ExploreWorkerHandler implements WorkerHandler {
     const preferredOrder = resolvePreferredTransportOrder(input);
     const apiAttempt = {
       apiName: target.label,
-      operation: "fetch_public_pricing_page",
-      transport: "official_api" as const,
+      operation: target.kind === "search" ? "web_search_results" : "fetch_public_page",
+      transport: (target.kind === "search" ? "business_tool" : "official_api") as TransportKind,
       credentialState: "present" as const,
     };
     let safeUrl: string;
@@ -86,6 +86,80 @@ export class ExploreWorkerHandler implements WorkerHandler {
       throwIfAborted(input.signal);
       const html = await response.text();
       const page = toPageResult(target.url, finalUrl, response.status, html);
+      if (target.kind === "search" && response.ok && !looksBlocked(page)) {
+        const searchResults = extractDuckDuckGoResults(html);
+        if (searchResults.length === 0) {
+          return {
+            workerType: this.kind,
+            status: "failed",
+            summary: `Explore worker search returned no usable results for ${target.query}.`,
+            payload: {
+              page,
+              searchResults: [],
+              findings: [],
+              trace: [],
+              transportAudit: buildTransportAudit({
+                preferredOrder,
+                attemptedTransports: ["business_tool"],
+                finalTransport: "business_tool",
+                fallbackReason: "search provider returned no parseable results",
+                trustLevel: "observational",
+              }),
+              apiAttempt: {
+                ...apiAttempt,
+                statusCode: response.status,
+                responseBody: {
+                  title: page.title,
+                  excerpt: page.textExcerpt,
+                },
+                errorMessage: "search provider returned no parseable results",
+              },
+            },
+          };
+        }
+        const findings = searchResults.map((item) => `${item.title} — ${item.url}${item.snippet ? ` — ${item.snippet}` : ""}`);
+        return {
+          workerType: this.kind,
+          status: "completed",
+          summary: [
+            `Explore worker searched ${target.query}.`,
+            ...findings.slice(0, 5).map((item, index) => `${index + 1}. ${item}`),
+          ].join("\n"),
+          payload: {
+            page,
+            searchResults,
+            findings,
+            trace: [
+              {
+                stepId: `${input.activation.handoff.taskId}:explore-search`,
+                kind: "open",
+                startedAt: Date.now(),
+                completedAt: Date.now(),
+                status: "ok",
+                input: { query: target.query, url: target.url },
+                output: {
+                  finalUrl: page.finalUrl,
+                  resultCount: searchResults.length,
+                },
+              },
+            ],
+            transportAudit: buildTransportAudit({
+              preferredOrder,
+              attemptedTransports: ["business_tool"],
+              finalTransport: "business_tool",
+              trustLevel: "observational",
+            }),
+            apiAttempt: {
+              ...apiAttempt,
+              statusCode: response.status,
+              responseBody: {
+                title: page.title,
+                excerpt: findings.slice(0, 5).join("\n"),
+              },
+            },
+          },
+        };
+      }
       const browserFallbackAllowed = canUseBrowserFallback(input);
       const fallbackReason = response.ok
         ? "direct fetch returned blocked content"
@@ -112,8 +186,8 @@ export class ExploreWorkerHandler implements WorkerHandler {
             trace: [],
             transportAudit: buildTransportAudit({
               preferredOrder,
-              attemptedTransports: ["official_api"],
-              finalTransport: "official_api",
+              attemptedTransports: [apiAttempt.transport],
+              finalTransport: apiAttempt.transport,
               fallbackReason: "browser fallback blocked by capability inspection",
               trustLevel: "observational",
             }),
@@ -130,6 +204,34 @@ export class ExploreWorkerHandler implements WorkerHandler {
         };
       }
 
+      if (looksBlocked(page)) {
+        return {
+          workerType: this.kind,
+          status: "failed",
+          summary: `Explore worker could not fetch ${target.label}: direct fetch returned blocked content`,
+          payload: {
+            page,
+            trace: [],
+            transportAudit: buildTransportAudit({
+              preferredOrder,
+              attemptedTransports: [apiAttempt.transport],
+              finalTransport: apiAttempt.transport,
+              fallbackReason: "direct fetch returned blocked content",
+              trustLevel: "observational",
+            }),
+            apiAttempt: {
+              ...apiAttempt,
+              statusCode: response.status,
+              responseBody: {
+                title: page.title,
+                excerpt: page.textExcerpt,
+              },
+              errorMessage: "direct fetch returned blocked content",
+            },
+          },
+        };
+      }
+
       if (!response.ok) {
         return {
           workerType: this.kind,
@@ -140,8 +242,8 @@ export class ExploreWorkerHandler implements WorkerHandler {
             trace: [],
             transportAudit: buildTransportAudit({
               preferredOrder,
-              attemptedTransports: ["official_api"],
-              finalTransport: "official_api",
+              attemptedTransports: [apiAttempt.transport],
+              finalTransport: apiAttempt.transport,
               fallbackReason,
               trustLevel: "observational",
             }),
@@ -187,8 +289,8 @@ export class ExploreWorkerHandler implements WorkerHandler {
           ],
           transportAudit: buildTransportAudit({
             preferredOrder,
-            attemptedTransports: ["official_api"],
-            finalTransport: "official_api",
+            attemptedTransports: [apiAttempt.transport],
+            finalTransport: apiAttempt.transport,
             trustLevel: "promotable",
           }),
           apiAttempt: {
@@ -218,7 +320,7 @@ export class ExploreWorkerHandler implements WorkerHandler {
             trace: [],
             transportAudit: buildTransportAudit({
               preferredOrder,
-              attemptedTransports: ["official_api"],
+              attemptedTransports: [apiAttempt.transport],
               fallbackReason: "browser fallback blocked by capability inspection",
               trustLevel: "observational",
             }),
@@ -238,7 +340,7 @@ export class ExploreWorkerHandler implements WorkerHandler {
           trace: [],
           transportAudit: buildTransportAudit({
             preferredOrder,
-            attemptedTransports: ["official_api"],
+            attemptedTransports: [apiAttempt.transport],
             fallbackReason: error instanceof Error ? error.message : "fetch failed",
             trustLevel: "observational",
           }),
@@ -257,7 +359,7 @@ export class ExploreWorkerHandler implements WorkerHandler {
     apiAttempt: {
       apiName: string;
       operation: string;
-      transport: "official_api";
+      transport: TransportKind;
       credentialState: "present";
     },
     failureContext: Record<string, unknown>,
@@ -282,7 +384,7 @@ export class ExploreWorkerHandler implements WorkerHandler {
         findings: extractPriceLines(browserPage.textExcerpt),
         transportAudit: buildTransportAudit({
           preferredOrder,
-          attemptedTransports: ["official_api", "browser"],
+          attemptedTransports: [apiAttempt.transport, "browser"],
           finalTransport: "browser",
           fallbackReason:
             typeof failureContext.errorMessage === "string"
@@ -313,7 +415,11 @@ export class ExploreWorkerHandler implements WorkerHandler {
   }
 }
 
-function resolveExploreTarget(input: WorkerInvocationInput): { url: string; label: string } | null {
+type ExploreTarget =
+  | { kind: "page"; url: string; label: string }
+  | { kind: "search"; url: string; label: string; query: string };
+
+function resolveExploreTarget(input: WorkerInvocationInput): ExploreTarget | null {
   const sourceText = [
     input.packet.taskPrompt,
     getInstructions(input.activation.handoff.payload),
@@ -326,6 +432,7 @@ function resolveExploreTarget(input: WorkerInvocationInput): { url: string; labe
   const explicitUrl = sourceText.match(/https?:\/\/[^\s)]+/i)?.[0]?.replace(/["'`,;。，“”‘’]+$/g, "");
   if (explicitUrl) {
     return {
+      kind: "page",
       url: explicitUrl,
       label: explicitUrl,
     };
@@ -333,6 +440,7 @@ function resolveExploreTarget(input: WorkerInvocationInput): { url: string; labe
 
   if (/openai/i.test(sourceText) && /pricing|price|api/i.test(sourceText)) {
     return {
+      kind: "page",
       url: "https://openai.com/api/pricing/",
       label: "openai-pricing",
     };
@@ -341,8 +449,10 @@ function resolveExploreTarget(input: WorkerInvocationInput): { url: string; labe
   const searchQuery = extractExploreSearchQuery(sourceText);
   if (searchQuery) {
     return {
-      url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
+      kind: "search",
+      url: `https://duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`,
       label: `search:${searchQuery}`,
+      query: searchQuery,
     };
   }
 
@@ -355,6 +465,11 @@ function extractExploreSearchQuery(sourceText: string): string | null {
 
   const explicitSearch = sourceText.match(/\bsearch:\s*(https?:\/\/\S+|[^.\n]+)/i)?.[1]?.trim();
   if (explicitSearch) return stripSearchNoise(explicitSearch);
+
+  const quotedEntity = Array.from(sourceText.matchAll(/["“]([^"”]{2,120})["”]/g))
+    .map((match) => stripSearchNoise(match[1] ?? ""))
+    .find((value) => value && !/^https?:\/\//i.test(value) && !/^(not verified|completed|failed)$/i.test(value));
+  if (quotedEntity) return quotedEntity;
 
   const searchFor = sourceText.match(/\bsearch(?:\s+for)?\s+["“]?([^"”.\n]+)["”]?/i)?.[1]?.trim();
   if (searchFor) return stripSearchNoise(searchFor);
@@ -451,7 +566,64 @@ function extractPriceLines(text: string): string[] {
 }
 
 function looksBlocked(page: BrowserPageResult): boolean {
-  return page.statusCode >= 400 || /enable javascript|cookies to continue|captcha|access denied/i.test(page.textExcerpt);
+  return (
+    page.statusCode >= 400 ||
+    /enable javascript|cookies to continue|captcha|access denied|please click here if you are not redirected|trouble accessing google search/i.test(
+      page.textExcerpt
+    )
+  );
+}
+
+function extractDuckDuckGoResults(html: string): Array<{ title: string; url: string; snippet?: string }> {
+  const results: Array<{ title: string; url: string; snippet?: string }> = [];
+  const blocks = html.split(/<div[^>]+class=["'][^"']*result[^"']*["'][^>]*>/i).slice(1);
+  for (const block of blocks) {
+    const titleMatch = block.match(/<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
+    if (!titleMatch) {
+      continue;
+    }
+    const decodedUrl = decodeDuckDuckGoResultUrl(decodeHtmlEntities(titleMatch[1] ?? ""));
+    if (!decodedUrl) {
+      continue;
+    }
+    const title = decodeHtmlEntities(stripHtml(titleMatch[2] ?? ""));
+    if (!title) {
+      continue;
+    }
+    const snippetMatch = block.match(/<a[^>]+class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
+    const snippet = snippetMatch ? decodeHtmlEntities(stripHtml(snippetMatch[1] ?? "")) : "";
+    results.push({
+      title,
+      url: decodedUrl,
+      ...(snippet ? { snippet } : {}),
+    });
+    if (results.length >= 8) {
+      break;
+    }
+  }
+  return results;
+}
+
+function decodeDuckDuckGoResultUrl(href: string): string | null {
+  const absolute = href.startsWith("//") ? `https:${href}` : href;
+  try {
+    const parsed = new URL(absolute);
+    const uddg = parsed.searchParams.get("uddg");
+    const candidate = uddg ?? absolute;
+    return validatePublicHttpUrl(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function decodeHtmlEntities(input: string): string {
+  return input
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
 }
 
 async function fetchWithValidation(
@@ -526,7 +698,7 @@ function validatePublicHttpUrl(inputUrl: string): string {
     throw new Error(`unsupported explore URL protocol: ${parsed.protocol}`);
   }
 
-  const hostname = parsed.hostname.toLowerCase();
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (
     hostname === "localhost" ||
     hostname.endsWith(".local") ||
