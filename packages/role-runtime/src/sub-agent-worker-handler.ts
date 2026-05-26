@@ -23,7 +23,7 @@ import type { RoleToolExecutionInput, RoleToolExecutionResult, RoleToolExecutor 
 
 const DEFAULT_SUB_AGENT_MAX_ROUNDS = 15;
 const DEFAULT_BROWSER_WALL_CLOCK_MS = 18 * 60 * 1000;
-const DEFAULT_EXPLORE_WALL_CLOCK_MS = 8 * 60 * 1000;
+const DEFAULT_EXPLORE_WALL_CLOCK_MS = 3 * 60 * 1000;
 
 export interface LLMSubAgentWorkerHandlerOptions {
   kind: WorkerKind;

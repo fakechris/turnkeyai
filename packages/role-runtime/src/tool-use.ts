@@ -67,6 +67,9 @@ export interface RoleToolLoopOptions {
 
 export const DEFAULT_ROLE_TOOL_MAX_ROUNDS = 128;
 const MAX_SESSION_TOOL_TIMEOUT_SECONDS = 1800;
+const DEFAULT_BROWSER_SESSION_TOOL_TIMEOUT_MS = 18 * 60 * 1_000;
+const DEFAULT_EXPLORE_SESSION_TOOL_TIMEOUT_MS = 3 * 60 * 1_000;
+const DEFAULT_GENERAL_SESSION_TOOL_TIMEOUT_MS = 3 * 60 * 1_000;
 const TOOL_PERMISSION_WAIT_MS = 15 * 60 * 1000;
 const DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS = 60_000;
 const WORKER_TOOL_TIMEOUT = Symbol("worker_tool_timeout");
@@ -870,7 +873,7 @@ async function executeSessionsSpawn(
     continuityMode: "fresh" as const,
   };
   const workerActivation = scopeWorkerActivationToToolCall(input.activation, input.call.id);
-  const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds, maxSessionToolTimeoutMs);
+  const timeoutMs = resolveToolTimeoutMs(input.call.input.timeout_seconds, agentId, maxSessionToolTimeoutMs);
   const spawnAttempt = await (sessionSpawnGate ?? new AsyncSerialGate()).run(async () => {
     const concurrencyError = await maybeRejectSessionConcurrency(workerRuntime, input, sessionConcurrency);
     if (concurrencyError) {
@@ -1033,7 +1036,7 @@ async function executeSessionsSend(
     preferredWorkerKinds: [state.workerType],
     continuityMode: "resume-existing" as const,
   };
-  const timeoutMs = parseToolTimeoutMs(input.call.input.timeout_seconds, maxSessionToolTimeoutMs);
+  const timeoutMs = resolveToolTimeoutMs(input.call.input.timeout_seconds, state.workerType, maxSessionToolTimeoutMs);
   const registration = toolCancellationRegistry?.register({
     threadId: input.activation.thread.threadId,
     toolCallId: input.call.id,
@@ -1764,6 +1767,28 @@ function parseToolTimeoutMs(value: unknown, maxTimeoutMs?: number): number | nul
       : MAX_SESSION_TOOL_TIMEOUT_SECONDS;
   const boundedSeconds = Math.min(value, configuredMaxSeconds, MAX_SESSION_TOOL_TIMEOUT_SECONDS);
   return Math.max(1, Math.round(boundedSeconds * 1_000));
+}
+
+function resolveToolTimeoutMs(value: unknown, workerKind: WorkerKind, maxTimeoutMs?: number): number {
+  return parseToolTimeoutMs(value, maxTimeoutMs) ?? boundDefaultToolTimeoutMs(defaultToolTimeoutMs(workerKind), maxTimeoutMs);
+}
+
+function defaultToolTimeoutMs(workerKind: WorkerKind): number {
+  if (workerKind === "browser") {
+    return DEFAULT_BROWSER_SESSION_TOOL_TIMEOUT_MS;
+  }
+  if (workerKind === "explore" || workerKind === "finance") {
+    return DEFAULT_EXPLORE_SESSION_TOOL_TIMEOUT_MS;
+  }
+  return DEFAULT_GENERAL_SESSION_TOOL_TIMEOUT_MS;
+}
+
+function boundDefaultToolTimeoutMs(defaultTimeoutMs: number, maxTimeoutMs?: number): number {
+  const configuredMaxMs =
+    typeof maxTimeoutMs === "number" && Number.isFinite(maxTimeoutMs) && maxTimeoutMs > 0
+      ? maxTimeoutMs
+      : MAX_SESSION_TOOL_TIMEOUT_SECONDS * 1_000;
+  return Math.max(1, Math.min(defaultTimeoutMs, configuredMaxMs, MAX_SESSION_TOOL_TIMEOUT_SECONDS * 1_000));
 }
 
 function formatTimeoutSeconds(timeoutMs: number | null): string {

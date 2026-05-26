@@ -1009,6 +1009,95 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
   assert.equal(result.progress?.at(-1)?.detail?.status, "timeout");
 });
 
+test("sessions_spawn applies a default timeout when timeout_seconds is absent", async () => {
+  let sendStarted!: () => void;
+  let interruptedReason: string | null = null;
+  const sendStartedPromise = new Promise<void>((resolve) => {
+    sendStarted = resolve;
+  });
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "explore", workerRunKey: "worker:explore:default-timeout" };
+    },
+    async send() {
+      sendStarted();
+      await new Promise(() => undefined);
+      return null;
+    },
+    async interrupt(input: { reason?: string }) {
+      interruptedReason = input.reason ?? null;
+      return {
+        workerRunKey: "worker:explore:default-timeout",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+        continuationDigest: {
+          reason: "timeout_summary",
+          summary: "Collected two source snippets before timeout.",
+          createdAt: 2,
+        },
+      };
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:default-timeout",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+        continuationDigest: {
+          reason: "timeout_summary",
+          summary: "Collected two source snippets before timeout.",
+          createdAt: 2,
+        },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    maxSessionToolTimeoutMs: 1,
+    hardTimeoutGraceMs: 1,
+  });
+
+  const executePromise = executor.execute({
+    call: {
+      id: "call-default-timeout",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Research a slow source without an explicit timeout.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Research a slow source.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  await sendStartedPromise;
+  const result = await executePromise;
+  const body = JSON.parse(result.content) as {
+    session_key: string;
+    status: string;
+    timeout_seconds: number;
+    evidence_summary: string;
+  };
+  assert.match(interruptedReason ?? "", /sessions_spawn timed out/);
+  assert.equal(result.isError, true);
+  assert.equal(body.session_key, "worker:explore:default-timeout");
+  assert.equal(body.status, "timeout");
+  assert.equal(body.timeout_seconds, 0.001);
+  assert.match(body.evidence_summary, /source snippets/);
+});
+
 test("sessions_spawn waits through the soft timeout grace for the active worker result", async () => {
   let interruptCalled = false;
   const workerRuntime = {
