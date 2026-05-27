@@ -31,6 +31,7 @@ import type {
   PreCompactionMemoryFlusher,
   PreCompactionMemoryFlushResult,
 } from "./pre-compaction-memory-flusher";
+import { parseSessionToolResult } from "./session-tool-result-protocol";
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
@@ -911,12 +912,12 @@ function findSubAgentToolTimeout(results: RoleToolExecutionResult[]):
     if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
       continue;
     }
-    const parsed = parseToolResultObject(result.content);
-    if (!parsed || parsed["status"] !== "timeout") {
+    const parsed = parseSessionToolResult(result.content);
+    if (!parsed || parsed.status !== "timeout") {
       continue;
     }
-    const timeoutSeconds = parsed["timeout_seconds"];
-    const evidenceAvailable = parsed["evidence_available"] === true || typeof parsed["evidence_summary"] === "string";
+    const timeoutSeconds = parsed.timeout_seconds;
+    const evidenceAvailable = parsed.evidence_available === true || typeof parsed.evidence_summary === "string";
     return {
       toolName: result.toolName,
       timeoutSeconds: typeof timeoutSeconds === "number" ? timeoutSeconds : null,
@@ -933,15 +934,15 @@ function findCompletedSubAgentFinal(results: RoleToolExecutionResult[]): { toolN
     if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
       continue;
     }
-    const parsed = parseToolResultObject(result.content);
-    if (!parsed || parsed["status"] !== "completed") {
+    const parsed = parseSessionToolResult(result.content);
+    if (!parsed || parsed.status !== "completed") {
       continue;
     }
-    const finalContent = parsed["final_content"];
+    const finalContent = parsed.final_content;
     if (typeof finalContent !== "string" || !finalContent.trim()) {
       continue;
     }
-    const payload = parsed["payload"];
+    const payload = parsed.payload;
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       continue;
     }
@@ -961,18 +962,6 @@ function containsTextualToolCallAttempt(result: GenerateTextResult): boolean {
   return /<\s*(?:minimax:)?tool_call\b|<\s*invoke\b|<\/\s*(?:minimax:)?tool_call\s*>|\btool_calls?\s*[:=]/i.test(
     result.text
   );
-}
-
-function parseToolResultObject(content: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(content) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
 }
 
 function buildGatewayInput(input: {
