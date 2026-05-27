@@ -1958,6 +1958,12 @@ test("sessions_history reads durable session history with pagination and payload
             createdAt: 90,
             updatedAt: 120,
             history,
+            lastResult: {
+              workerType: "browser",
+              status: "completed",
+              summary: "Stale summary that must not replace durable transcript.",
+              payload: { title: "Stale" },
+            },
           },
         },
       ];
@@ -1970,6 +1976,12 @@ test("sessions_history reads durable session history with pagination and payload
         createdAt: 90,
         updatedAt: 120,
         history,
+        lastResult: {
+          workerType: "browser",
+          status: "completed",
+          summary: "Stale summary that must not replace durable transcript.",
+          payload: { title: "Stale" },
+        },
       };
     },
   } as unknown as WorkerRuntime;

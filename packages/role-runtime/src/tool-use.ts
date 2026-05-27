@@ -8,7 +8,6 @@ import type {
   RoleActivationInput,
   RuntimeProgressRecorder,
   WorkerExecutionResult,
-  WorkerSessionHistoryEntry,
   WorkerSessionState,
   WorkerKind,
   WorkerRuntime,
@@ -35,6 +34,12 @@ import {
   serializeSessionToolResult,
   sanitizeEvidenceSummary,
 } from "./session-tool-result-protocol";
+import {
+  countWorkerSessionTranscriptMessages,
+  readWorkerSessionTranscript,
+  serializeWorkerHistoryEntry,
+  summarizeWorkerSessionEvidence,
+} from "./worker-session-transcript";
 
 export interface RoleToolExecutionInput {
   call: LLMToolCall;
@@ -1200,7 +1205,7 @@ async function executeSessionsList(
       created_at: record.state.createdAt,
       last_active_at: record.state.updatedAt,
       current_task_id: record.state.currentTaskId ?? null,
-      message_count: record.state.history?.length ?? (record.state.lastResult ? 1 : 0),
+      message_count: countWorkerSessionTranscriptMessages(record.workerRunKey, record.state),
     }));
   return {
     toolCallId: input.call.id,
@@ -1234,14 +1239,7 @@ async function executeSessionsHistory(
     return errorResult(input.call, `session not found: ${sessionKey}`);
   }
   const limit = positiveInteger(input.call.input.limit) ?? 50;
-  const history =
-    state.history && state.history.length > 0
-      ? state.history
-      : [
-          ...(state.lastResult
-            ? [createLegacyWorkerHistoryEntry(sessionKey, state)]
-            : []),
-        ];
+  const history = readWorkerSessionTranscript(sessionKey, state);
   const tail = input.call.input.tail === true;
   const requestedOffset = nonNegativeInteger(input.call.input.offset);
   const offset = tail
@@ -1368,37 +1366,6 @@ function taskToolResult(call: LLMToolCall, result: unknown, summary: string): Ro
       },
     ],
     raw: result,
-  };
-}
-
-function createLegacyWorkerHistoryEntry(
-  sessionKey: string,
-  state: WorkerSessionState
-): WorkerSessionHistoryEntry {
-  return {
-    id: `worker-history:${sessionKey}:legacy-result`,
-    role: "tool",
-    toolName: state.workerType,
-    status: state.lastResult!.status,
-    content: state.lastResult!.summary,
-    payload: state.lastResult!.payload,
-    createdAt: state.updatedAt,
-    ...(state.currentTaskId ? { taskId: state.currentTaskId } : {}),
-  };
-}
-
-function serializeWorkerHistoryEntry(entry: WorkerSessionHistoryEntry, includePayload: boolean): Record<string, unknown> {
-  return {
-    id: entry.id,
-    role: entry.role,
-    content: entry.content,
-    created_at: entry.createdAt,
-    ...(entry.taskId ? { task_id: entry.taskId } : {}),
-    ...(entry.toolCallId ? { tool_call_id: entry.toolCallId } : {}),
-    ...(entry.toolName ? { name: entry.toolName } : {}),
-    ...(entry.status ? { status: entry.status } : {}),
-    ...(entry.metadata ? { metadata: entry.metadata } : {}),
-    ...(includePayload && "payload" in entry ? { payload: entry.payload } : {}),
   };
 }
 
@@ -1613,15 +1580,7 @@ function timedOutResult(
 }
 
 function summarizeWorkerEvidence(state: WorkerSessionState | null): string | null {
-  if (!state) {
-    return null;
-  }
-  return (
-    state.continuationDigest?.summary ??
-    state.lastResult?.summary ??
-    state.history?.at(-1)?.content ??
-    null
-  );
+  return summarizeWorkerSessionEvidence(state);
 }
 
 async function getWorkerStateSafely(workerRuntime: WorkerRuntime, workerRunKey: string): Promise<WorkerSessionState | null> {
