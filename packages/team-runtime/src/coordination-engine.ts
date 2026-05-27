@@ -1498,20 +1498,23 @@ export class CoordinationEngine {
 
   private async ensureMessagePersisted(message: TeamMessage): Promise<void> {
     const store = this.deps.teamMessageStore;
+    const existing = await store.get(message.id);
+    if (existing) {
+      if (existing.threadId !== message.threadId) {
+        throw new Error(`message thread mismatch for ${message.id}`);
+      }
+      if (shouldRefreshExistingNativeToolMessage(existing, message)) {
+        await store.append(message);
+      }
+      return;
+    }
+
     if (typeof store.appendIfAbsent === "function") {
       const result = await store.appendIfAbsent(message);
       if (result.threadIdConflict) {
         throw new Error(
           `message thread mismatch for ${message.id}: existing=${result.threadIdConflict.existing} requested=${result.threadIdConflict.requested}`
         );
-      }
-      return;
-    }
-
-    const existing = await store.get(message.id);
-    if (existing) {
-      if (existing.threadId !== message.threadId) {
-        throw new Error(`message thread mismatch for ${message.id}`);
       }
       return;
     }
@@ -2024,6 +2027,31 @@ function hashShardSummary(value: string): string {
   return hash.toString(16);
 }
 
+function shouldRefreshExistingNativeToolMessage(existing: TeamMessage, incoming: TeamMessage): boolean {
+  if (!isNativeToolUseMessage(existing) || !isNativeToolUseMessage(incoming)) {
+    return false;
+  }
+  if (incoming.updatedAt < existing.updatedAt) {
+    return false;
+  }
+  if (incoming.toolStatus && incoming.toolStatus !== existing.toolStatus) {
+    return true;
+  }
+  if ((incoming.toolProgress?.length ?? 0) > (existing.toolProgress?.length ?? 0)) {
+    return true;
+  }
+  if ((incoming.toolCalls?.length ?? 0) > (existing.toolCalls?.length ?? 0)) {
+    return true;
+  }
+  if (incoming.role === "tool" && incoming.content !== existing.content) {
+    return true;
+  }
+  return false;
+}
+
+function isNativeToolUseMessage(message: TeamMessage): boolean {
+  return message.metadata?.nativeToolUse === true;
+}
 
 function buildScheduledContent(task: ScheduledTaskRecord): string {
   return [
