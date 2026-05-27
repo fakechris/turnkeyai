@@ -20,6 +20,7 @@ import { LLMSubAgentWorkerHandler } from "./sub-agent-worker-handler";
 test("LLMSubAgentWorkerHandler runs a private worker tool before returning a final result", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const innerTaskPrompts: string[] = [];
+  const innerInputs: WorkerInvocationInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     gatewayInputs.push(input);
@@ -31,6 +32,7 @@ test("LLMSubAgentWorkerHandler runs a private worker tool before returning a fin
   const innerHandler = buildInnerHandler({
     kind: "explore",
     async run(input) {
+      innerInputs.push(input);
       innerTaskPrompts.push(input.packet.taskPrompt);
       return {
         workerType: "explore",
@@ -51,6 +53,7 @@ test("LLMSubAgentWorkerHandler runs a private worker tool before returning a fin
   assert.equal(result?.status, "completed");
   assert.equal(result?.summary, "Verified answer from the source.");
   assert.deepEqual(innerTaskPrompts, ["Fetch the primary source and extract the answer."]);
+  assert.equal(innerInputs[0]?.packet.toolUseMode, "disabled");
   const toolNames = gatewayInputs[0]?.tools?.map((tool) => tool.name) ?? [];
   assert.deepEqual(toolNames, ["explore_run"]);
   assert.ok(!toolNames.includes("sessions_spawn"));
@@ -94,6 +97,54 @@ test("LLMSubAgentWorkerHandler keeps browser work on a browser-specific private 
   assert.equal(result?.status, "completed");
   assert.equal(gatewayInputs[0]?.tools?.[0]?.name, "browser_run");
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /same browser operation at most three times/i);
+});
+
+test("LLMSubAgentWorkerHandler blocks recursive session tools at executor level", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let innerCalled = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "sessions_spawn", {
+        workerType: "browser",
+        instruction: "Open another nested browser session.",
+      });
+    }
+    return textResult("Returned evidence to parent instead of nesting.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler: buildInnerHandler({
+      kind: "explore",
+      async run() {
+        innerCalled = true;
+        return {
+          workerType: "explore",
+          status: "completed",
+          summary: "should not run",
+          payload: {},
+        };
+      },
+    }),
+    gateway,
+  });
+
+  const result = await handler.run(buildInvocationInput("explore"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(result?.summary, "Returned evidence to parent instead of nesting.");
+  assert.equal(innerCalled, false);
+  const advertisedToolNames = gatewayInputs[0]?.tools?.map((tool) => tool.name) ?? [];
+  assert.deepEqual(advertisedToolNames, ["explore_run"]);
+  const toolMessage = gatewayInputs[1]?.messages.find((message) => message.role === "tool");
+  const toolContent = readToolContent(toolMessage?.content ?? "");
+  assert.match(toolContent, /recursive_session_tool_blocked/);
+  assert.match(toolContent, /Sub-agents cannot call session coordination tool sessions_spawn/);
+  const metadata = (result?.payload as { metadata?: { toolUse?: { rounds?: Array<{ results: Array<{ isError: boolean }> }> } } })
+    .metadata;
+  assert.equal(metadata?.toolUse?.rounds?.[0]?.results?.[0]?.isError, true);
 });
 
 test("LLMSubAgentWorkerHandler bounds default explore wall-clock before more private tools", async () => {
@@ -434,7 +485,9 @@ test("LLMSubAgentWorkerHandler carries inner session state across multiple priva
   assert.equal(result?.status, "completed");
   assert.equal(innerInputs.length, 2);
   assert.equal(innerInputs[0]?.sessionState, undefined);
+  assert.equal(innerInputs[0]?.packet.toolUseMode, "disabled");
   assert.equal(innerInputs[1]?.packet.continuityMode, "resume-existing");
+  assert.equal(innerInputs[1]?.packet.toolUseMode, "disabled");
   assert.equal(innerInputs[1]?.sessionState?.status, "resumable");
   assert.deepEqual(innerInputs[1]?.sessionState?.lastResult?.payload, {
     sessionId: "browser-session-1",

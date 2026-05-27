@@ -19,6 +19,7 @@ import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import { LLMRoleResponseGenerator } from "./llm-response-generator";
 import type { NativeToolRoundTrace } from "./native-tool-messages";
 import type { RolePromptPacket } from "./prompt-policy";
+import { SESSION_TOOL_NAMES } from "./tool-capability-registry";
 import type { RoleToolExecutionInput, RoleToolExecutionResult, RoleToolExecutor } from "./tool-use";
 
 const DEFAULT_BROWSER_SUB_AGENT_MAX_ROUNDS = 15;
@@ -27,6 +28,7 @@ const DEFAULT_GENERAL_SUB_AGENT_MAX_ROUNDS = 10;
 const DEFAULT_BROWSER_WALL_CLOCK_MS = 18 * 60 * 1000;
 const DEFAULT_EXPLORE_WALL_CLOCK_MS = 90 * 1000;
 const DEFAULT_GENERAL_WALL_CLOCK_MS = 3 * 60 * 1000;
+const SESSION_TOOL_NAME_SET = new Set<string>(SESSION_TOOL_NAMES);
 
 export interface LLMSubAgentWorkerHandlerOptions {
   kind: WorkerKind;
@@ -192,6 +194,19 @@ class SubAgentToolExecutor implements RoleToolExecutor {
   }
 
   async execute(input: RoleToolExecutionInput): Promise<RoleToolExecutionResult> {
+    if (SESSION_TOOL_NAME_SET.has(input.call.name)) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: `recursive_session_tool_blocked: Sub-agents cannot call session coordination tool ${input.call.name}. Return the current evidence to the parent agent instead.`,
+        isError: true,
+        raw: {
+          error: "recursive_session_tool_blocked",
+          toolName: input.call.name,
+        },
+      };
+    }
+
     if (this.kind === "browser" && this.browserBridge) {
       return this.executeBrowserTool(input, this.browserBridge);
     }
@@ -220,6 +235,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
         ...this.parentInput.packet,
         taskPrompt: instruction,
         preferredWorkerKinds: [this.kind],
+        toolUseMode: "disabled",
         ...(this.innerSessionState ? { continuityMode: "resume-existing" as const } : {}),
       },
       ...(sessionState ? { sessionState } : {}),
