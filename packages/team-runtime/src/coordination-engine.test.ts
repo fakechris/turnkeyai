@@ -4547,6 +4547,233 @@ test("coordination engine: concurrent user posts on same thread persist both mes
   assert.equal(enqueued.length, 2, "each flow should enqueue exactly one handoff to lead");
 });
 
+test("coordination engine refreshes existing native tool messages when final role outcome completes them", async () => {
+  const thread: TeamThread = {
+    threadId: "thread-native-tools",
+    teamId: "team-native-tools",
+    teamName: "Native Tools",
+    leadRoleId: "lead",
+    roles: [{ roleId: "lead", name: "Lead", seat: "lead", runtime: "local" }],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const handoff: HandoffEnvelope = {
+    taskId: "task-native-tools",
+    flowId: "flow-native-tools",
+    sourceMessageId: "msg-user",
+    targetRoleId: "lead",
+    activationType: "cascade",
+    threadId: thread.threadId,
+    payload: normalizeRelayPayload({
+      threadId: thread.threadId,
+      relayBrief: "Use a tool.",
+      recentMessages: [],
+      dispatchPolicy: {
+        allowParallel: false,
+        allowReenter: true,
+        sourceFlowMode: "serial",
+      },
+    }),
+    createdAt: 1,
+  };
+  let flow: FlowLedger = {
+    flowId: handoff.flowId,
+    threadId: thread.threadId,
+    rootMessageId: "msg-user",
+    mode: "serial",
+    status: "waiting_role",
+    currentStageIndex: 0,
+    activeRoleIds: ["lead"],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    nextExpectedRoleId: "lead",
+    hopCount: 1,
+    maxHops: 5,
+    edges: [
+      {
+        edgeId: `${handoff.taskId}:edge`,
+        flowId: handoff.flowId,
+        toRoleId: "lead",
+        sourceMessageId: handoff.sourceMessageId,
+        state: "delivered",
+        createdAt: 1,
+      },
+    ],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const pendingToolMessage: TeamMessage = {
+    id: `${handoff.taskId}:tool-round:1:assistant`,
+    threadId: thread.threadId,
+    role: "assistant",
+    roleId: "lead",
+    name: "Lead",
+    content: "",
+    createdAt: 10,
+    updatedAt: 10,
+    toolCalls: [{ id: "toolu-1", name: "sessions_spawn", arguments: { agent_id: "explore", task: "Fetch evidence." } }],
+    toolStatus: "pending",
+    toolProgress: [
+      {
+        toolCallId: "toolu-1",
+        toolName: "sessions_spawn",
+        phase: "started",
+        summary: "Tool call started: sessions_spawn",
+        ts: 10,
+      },
+    ],
+    metadata: {
+      nativeToolUse: true,
+      flowId: handoff.flowId,
+      toolRound: 1,
+    },
+  };
+  const completedToolMessage: TeamMessage = {
+    ...pendingToolMessage,
+    updatedAt: 20,
+    toolStatus: "completed",
+    toolProgress: [
+      ...(pendingToolMessage.toolProgress ?? []),
+      {
+        toolCallId: "toolu-1",
+        toolName: "sessions_spawn",
+        phase: "completed",
+        summary: "Tool call completed: sessions_spawn",
+        ts: 20,
+      },
+    ],
+  };
+  const toolResultMessage: TeamMessage = {
+    id: `${handoff.taskId}:tool-round:1:result:toolu-1`,
+    threadId: thread.threadId,
+    role: "tool",
+    roleId: "lead",
+    name: "sessions_spawn",
+    content: "Verified evidence.",
+    createdAt: 21,
+    updatedAt: 21,
+    toolCallId: "toolu-1",
+    toolStatus: "completed",
+    metadata: {
+      nativeToolUse: true,
+      flowId: handoff.flowId,
+      toolRound: 1,
+    },
+  };
+  const finalMessage: TeamMessage = {
+    id: "msg-final",
+    threadId: thread.threadId,
+    role: "assistant",
+    roleId: "lead",
+    name: "Lead",
+    content: "Final answer.",
+    createdAt: 22,
+    updatedAt: 22,
+  };
+
+  const messages = new Map<string, TeamMessage>([[pendingToolMessage.id, pendingToolMessage]]);
+  const appendedIds: string[] = [];
+  const teamMessageStore: TeamMessageStore = {
+    async append(message) {
+      appendedIds.push(message.id);
+      messages.set(message.id, message);
+    },
+    async appendIfAbsent(message) {
+      const existing = messages.get(message.id);
+      if (existing) {
+        return { written: false, existing };
+      }
+      messages.set(message.id, message);
+      return { written: true };
+    },
+    async get(messageId) {
+      return messages.get(messageId) ?? null;
+    },
+    async list(threadId) {
+      return [...messages.values()].filter((message) => message.threadId === threadId);
+    },
+  };
+  const engine = buildEngine({
+    teamThreadStore: {
+      async get() {
+        return thread;
+      },
+      async list() {
+        return [thread];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore,
+    flowLedgerStore: {
+      async get(flowId) {
+        return flowId === flow.flowId ? flow : null;
+      },
+      async put(next) {
+        flow = next;
+      },
+      async listByThread(threadId) {
+        return threadId === flow.threadId ? [flow] : [];
+      },
+    },
+    roleRunCoordinator: {
+      async getOrCreate(): Promise<RoleRunState> {
+        throw new Error("not used");
+      },
+      async enqueue(): Promise<RoleRunState> {
+        throw new Error("not used");
+      },
+      async dequeue() {
+        return null;
+      },
+      async ack() {},
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus() {},
+      async incrementIteration() {
+        return 0;
+      },
+      async fail() {},
+      async finish() {},
+    },
+    roleLoopRunner: {
+      async ensureRunning() {},
+    },
+  });
+
+  await engine.handleRoleReply({
+    flow,
+    thread,
+    runState: {
+      runKey: "role:lead:thread-native-tools",
+      threadId: thread.threadId,
+      roleId: "lead",
+      mode: "group",
+      status: "running",
+      iterationCount: 1,
+      maxIterations: 128,
+      inbox: [],
+      lastActiveAt: 1,
+    },
+    handoff,
+    message: finalMessage,
+    messages: [completedToolMessage, toolResultMessage, finalMessage],
+  });
+
+  assert.deepEqual(appendedIds, [completedToolMessage.id]);
+  assert.equal(messages.get(completedToolMessage.id)?.toolStatus, "completed");
+  assert.equal(messages.get(completedToolMessage.id)?.toolProgress?.at(-1)?.phase, "completed");
+  assert.equal(messages.get(toolResultMessage.id)?.role, "tool");
+  assert.equal(messages.get(finalMessage.id)?.content, "Final answer.");
+});
+
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 500, intervalMs = 10): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
