@@ -4,6 +4,7 @@ import test from "node:test";
 import type { RoleActivationInput, WorkerRuntime } from "@turnkeyai/core-types/team";
 
 import type { TaskToolService } from "./task-tool-service";
+import type { RolePromptPacket } from "./prompt-policy";
 import { InMemoryToolCancellationRegistry } from "./tool-cancellation-registry";
 import type { ToolPermissionService } from "./tool-permission-service";
 import { createWorkerSessionToolExecutor } from "./tool-use";
@@ -1166,6 +1167,97 @@ test("sessions_spawn waits through the soft timeout grace for the active worker 
   assert.equal(result.isError, undefined);
   assert.equal(body.status, "completed");
   assert.equal(body.result, "Finished during soft-timeout grace.");
+});
+
+test("sessions_spawn runs one no-tools timeout summary continuation for LLM sub-agent sessions", async () => {
+  let sendCount = 0;
+  const summaryPackets: RolePromptPacket[] = [];
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "explore", workerRunKey: "worker:explore:timeout-summary" };
+    },
+    async send(input: { packet: RolePromptPacket }) {
+      sendCount += 1;
+      if (sendCount === 1) {
+        await new Promise(() => undefined);
+        return null;
+      }
+      summaryPackets.push(input.packet);
+      return {
+        workerType: "explore",
+        status: "partial",
+        summary: "Evidence-only summary after timeout.",
+        payload: {
+          mode: "llm_sub_agent",
+          workerType: "explore",
+          content: "Verified source A before timeout; source B not verified.",
+        },
+      };
+    },
+    async interrupt() {
+      return {
+        workerRunKey: "worker:explore:timeout-summary",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:timeout-summary",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+        history: [
+          {
+            id: "history-final",
+            role: "assistant",
+            content: "Partial transcript from an LLM sub-agent.",
+            createdAt: 2,
+            metadata: { kind: "assistant_final" },
+          },
+        ],
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    hardTimeoutGraceMs: 1,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-timeout-summary",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Research a slow source.",
+        timeout_seconds: 0.001,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Research a slow source.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; result: string; final_content: string | null };
+  assert.equal(sendCount, 2);
+  assert.equal(summaryPackets[0]?.toolUseMode, "disabled");
+  assert.match(summaryPackets[0]?.taskPrompt ?? "", /Do not call tools/);
+  assert.equal(result.isError, undefined);
+  assert.equal(body.status, "partial");
+  assert.equal(body.result, "Evidence-only summary after timeout.");
+  assert.equal(body.final_content, "Verified source A before timeout; source B not verified.");
 });
 
 test("sessions_send interrupts a follow-up worker call on timeout", async () => {

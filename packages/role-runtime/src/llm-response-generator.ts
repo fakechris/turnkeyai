@@ -60,6 +60,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   async generate(input: { activation: RoleActivationInput; packet: RolePromptPacket; signal?: AbortSignal }): Promise<GeneratedRoleReply> {
     const role = input.activation.thread.roles.find((item) => item.roleId === input.activation.runState.roleId);
     const selection = role ? getRoleModelSelection(role) : {};
+    const activeToolLoop = input.packet.toolUseMode === "disabled" ? undefined : this.toolLoop;
     if (!selection.modelId && !selection.modelChainId) {
       throw new Error(`no model configured for role ${input.activation.runState.roleId}`);
     }
@@ -88,9 +89,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       ...(selection.modelId ? { modelId: selection.modelId } : {}),
       ...(selection.modelChainId ? { modelChainId: selection.modelChainId } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
-      ...(this.toolLoop
+      ...(activeToolLoop
         ? {
-            tools: this.toolLoop.executor.definitions(),
+            tools: activeToolLoop.executor.definitions(),
             toolChoice: "auto" as const,
           }
         : {}),
@@ -126,11 +127,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
 
       const toolCalls = result.toolCalls ?? [];
-      if (!this.toolLoop || toolCalls.length === 0) {
+      if (!activeToolLoop || toolCalls.length === 0) {
         break;
       }
-      const maxRounds = this.toolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
-      const maxWallClockMs = this.toolLoop.maxWallClockMs;
+      const maxRounds = activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+      const maxWallClockMs = activeToolLoop.maxWallClockMs;
       if (
         toolTrace.length > 0 &&
         typeof maxWallClockMs === "number" &&
@@ -541,12 +542,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     onProgress?: (call: LLMToolCall, progress: Parameters<typeof recordRoleToolProgress>[0]["progress"]) => Promise<void>;
     onResult?: (result: RoleToolExecutionResult) => Promise<void>;
   }): Promise<RoleToolExecutionResult[]> {
-    if (!this.toolLoop) return [];
+    const activeToolLoop = input.packet.toolUseMode === "disabled" ? undefined : this.toolLoop;
+    if (!activeToolLoop) return [];
     const maxParallelToolCalls =
-      typeof this.toolLoop.maxParallelToolCalls === "number" &&
-      Number.isFinite(this.toolLoop.maxParallelToolCalls) &&
-      this.toolLoop.maxParallelToolCalls > 0
-        ? Math.floor(this.toolLoop.maxParallelToolCalls)
+      typeof activeToolLoop.maxParallelToolCalls === "number" &&
+      Number.isFinite(activeToolLoop.maxParallelToolCalls) &&
+      activeToolLoop.maxParallelToolCalls > 0
+        ? Math.floor(activeToolLoop.maxParallelToolCalls)
         : input.toolCalls.length;
     const results: RoleToolExecutionResult[] = [];
     for (let index = 0; index < input.toolCalls.length; index += maxParallelToolCalls) {
@@ -562,7 +564,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           }, input.onProgress);
           try {
             throwIfAborted(input.signal);
-            const result = await this.toolLoop!.executor.execute({
+            const result = await activeToolLoop.executor.execute({
               call,
               activation: input.activation,
               packet: input.packet,

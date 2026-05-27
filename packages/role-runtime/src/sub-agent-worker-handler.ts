@@ -771,6 +771,7 @@ function buildSubAgentPromptPacket(input: {
     ].join("\n"),
     suggestedMentions: [],
     preferredWorkerKinds: [input.kind],
+    ...(inherited.toolUseMode ? { toolUseMode: inherited.toolUseMode } : {}),
     ...(inherited.continuityMode ? { continuityMode: inherited.continuityMode } : {}),
   };
 }

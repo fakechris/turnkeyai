@@ -424,6 +424,68 @@ test("llm role response generator runs native tool-use loop and feeds tool resul
   assert.ok(progressEvents.some((event) => event.summary.includes("sessions_spawn completed")));
 });
 
+test("llm role response generator disables native tools when packet requests no tool use", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let executeCalled = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    return {
+      text: "I should summarize existing evidence only.",
+      toolCalls: [
+        {
+          id: "toolu-ignored",
+          name: "sessions_spawn",
+          input: { agent_id: "explore", task: "Search again" },
+        },
+      ],
+      stopReason: "tool_use",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object" },
+        },
+      ];
+    },
+    async execute() {
+      executeCalled = true;
+      return {
+        toolCallId: "toolu-ignored",
+        toolName: "sessions_spawn",
+        content: "should not run",
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 4 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      toolUseMode: "disabled",
+    },
+  });
+
+  assert.equal(result.content, "I should summarize existing evidence only.");
+  assert.equal(gatewayInputs.length, 1);
+  assert.equal(gatewayInputs[0]?.tools, undefined);
+  assert.equal(gatewayInputs[0]?.toolChoice, undefined);
+  assert.equal(executeCalled, false);
+});
+
 test("llm role response generator persists native tool progress while the tool is running", async () => {
   const storedMessages = new Map<string, TeamMessage>();
   const appendedMessages: TeamMessage[] = [];

@@ -84,6 +84,7 @@ const DEFAULT_EXPLORE_SESSION_TOOL_TIMEOUT_MS = 3 * 60 * 1_000;
 const DEFAULT_GENERAL_SESSION_TOOL_TIMEOUT_MS = 3 * 60 * 1_000;
 const TOOL_PERMISSION_WAIT_MS = 15 * 60 * 1000;
 const DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS = 60_000;
+const DEFAULT_WORKER_TIMEOUT_SUMMARY_GRACE_MS = 60_000;
 const WORKER_TOOL_TIMEOUT = Symbol("worker_tool_timeout");
 
 export interface WorkerSessionConcurrencyLimits {
@@ -1614,19 +1615,21 @@ async function sendWorkerWithOptionalTimeout(
   let hardTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let hardTimeoutFired = false;
   const sendPromise = workerRuntime.send(input);
-  const timeoutPromise = new Promise<typeof WORKER_TOOL_TIMEOUT>((resolve) => {
+  const timeoutPromise = new Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT>((resolve) => {
     softTimeoutHandle = setTimeout(() => {
       hardTimeoutHandle = setTimeout(() => {
         hardTimeoutFired = true;
         void workerRuntime
           .interrupt({ workerRunKey: input.workerRunKey, reason: timeoutReason })
+          .then(() => runWorkerTimeoutSummaryPass(workerRuntime, input, timeoutReason, graceMs))
           .catch((error) => {
             console.error("worker timeout interrupt failed", {
               workerRunKey: input.workerRunKey,
               error,
             });
+            return null;
           })
-          .finally(() => resolve(WORKER_TOOL_TIMEOUT));
+          .then((summaryResult) => resolve(summaryResult ?? WORKER_TOOL_TIMEOUT));
       }, graceMs);
     }, timeoutMs);
   });
@@ -1642,6 +1645,92 @@ async function sendWorkerWithOptionalTimeout(
       }
     }
   }
+}
+
+async function runWorkerTimeoutSummaryPass(
+  workerRuntime: WorkerRuntime,
+  input: {
+    workerRunKey: string;
+    activation: RoleActivationInput;
+    packet: RolePromptPacket;
+    toolCallId?: string;
+  },
+  timeoutReason: string,
+  summaryGraceMs: number
+): Promise<WorkerExecutionResult | null> {
+  const state = await getWorkerStateSafely(workerRuntime, input.workerRunKey);
+  if (!isLlmSubAgentSession(state)) {
+    return null;
+  }
+  const timeoutSummaryPromise = workerRuntime.send({
+    ...input,
+    packet: buildTimeoutSummaryPacket(input.packet, timeoutReason),
+  });
+  return raceTimeoutSummary(timeoutSummaryPromise, summaryGraceMs);
+}
+
+async function raceTimeoutSummary(
+  summaryPromise: Promise<WorkerExecutionResult | null>,
+  summaryGraceMs: number
+): Promise<WorkerExecutionResult | null> {
+  const graceMs =
+    typeof summaryGraceMs === "number" && Number.isFinite(summaryGraceMs) && summaryGraceMs > 0
+      ? Math.floor(summaryGraceMs)
+      : DEFAULT_WORKER_TIMEOUT_SUMMARY_GRACE_MS;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<null>((resolve) => {
+    timeoutHandle = setTimeout(() => resolve(null), graceMs);
+  });
+  try {
+    return await Promise.race([summaryPromise, timeout]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
+function buildTimeoutSummaryPacket(packet: RolePromptPacket, timeoutReason: string): RolePromptPacket {
+  return {
+    ...packet,
+    taskPrompt: [
+      "The previous sub-agent run reached its timeout boundary.",
+      `Timeout reason: ${timeoutReason}`,
+      "",
+      "Produce an evidence-only timeout summary from this session's existing transcript/state.",
+      "Do not call tools. Do not browse, search, click, fetch, mutate, or spawn sessions.",
+      "If no verified evidence is present, say that no usable evidence was gathered.",
+      "Return only verified facts, remaining uncertainty, and the best continuation point.",
+    ].join("\n"),
+    outputContract: [
+      "Return a concise timeout summary for the parent agent.",
+      "Use only evidence already present in the child session.",
+      "Mark missing or unverified claims as not verified.",
+    ].join("\n"),
+    continuityMode: "resume-existing",
+    toolUseMode: "disabled",
+  };
+}
+
+function isLlmSubAgentSession(state: WorkerSessionState | null): boolean {
+  if (!state) {
+    return false;
+  }
+  if (isLlmSubAgentPayload(state.lastResult?.payload)) {
+    return true;
+  }
+  return (state.history ?? []).some(
+    (entry) =>
+      entry.metadata?.kind === "assistant_tool_call" ||
+      entry.metadata?.kind === "tool_progress" ||
+      entry.metadata?.kind === "tool_result" ||
+      entry.metadata?.kind === "assistant_final" ||
+      isLlmSubAgentPayload(entry.payload)
+  );
+}
+
+function isLlmSubAgentPayload(value: unknown): boolean {
+  return isRecord(value) && value.mode === "llm_sub_agent";
 }
 
 function requiredString(value: unknown): string | null {
