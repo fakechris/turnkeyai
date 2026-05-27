@@ -28,6 +28,13 @@ import type {
   ToolPermissionQueryResult,
   ToolPermissionService,
 } from "./tool-permission-service";
+import {
+  buildSessionToolCancelledResult,
+  buildSessionToolResult,
+  buildSessionToolTimeoutResult,
+  serializeSessionToolResult,
+  sanitizeEvidenceSummary,
+} from "./session-tool-result-protocol";
 
 export interface RoleToolExecutionInput {
   call: LLMToolCall;
@@ -928,27 +935,26 @@ async function executeSessionsSpawn(
     registration?.unregister();
   }
   if (registration?.isCancelled()) {
-    return cancelledResult(input.call, registration.cancellationReason() ?? "Tool call cancelled.");
+    return cancelledSessionToolResult(input.call, {
+      taskId: input.activation.handoff.taskId,
+      sessionKey: spawned.workerRunKey,
+      agentId: spawned.workerType,
+      reason: registration.cancellationReason() ?? "Tool call cancelled.",
+    });
   }
   const missingResultMessage = `${agentId} sub-agent returned no executable result. The requested task did not match the worker's implemented capability.`;
+  const sessionToolResult = buildSessionToolResult({
+    taskId: input.activation.handoff.taskId,
+    sessionKey: spawned.workerRunKey,
+    agentId: spawned.workerType,
+    result,
+    missingResultMessage,
+  });
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
     ...(result ? {} : { isError: true }),
-    content: JSON.stringify(
-      {
-        task_id: input.activation.handoff.taskId,
-        session_key: spawned.workerRunKey,
-        agent_id: spawned.workerType,
-        status: result?.status ?? "failed",
-        tool_chain: result ? [result.workerType] : [],
-        result: result?.summary ?? missingResultMessage,
-        final_content: extractWorkerFinalContent(result),
-        payload: result?.payload ?? null,
-      },
-      null,
-      2
-    ),
+    content: serializeSessionToolResult(sessionToolResult),
     progress: [
       ...approvalProgress,
       {
@@ -966,14 +972,6 @@ async function executeSessionsSpawn(
     ],
     raw: result,
   };
-}
-
-function extractWorkerFinalContent(result: WorkerExecutionResult | null): string | null {
-  if (!result || !result.payload || typeof result.payload !== "object" || Array.isArray(result.payload)) {
-    return null;
-  }
-  const content = (result.payload as Record<string, unknown>).content;
-  return typeof content === "string" && content.trim().length > 0 ? content : null;
 }
 
 function scopeWorkerActivationToToolCall(activation: RoleActivationInput, toolCallId: string): RoleActivationInput {
@@ -1074,27 +1072,26 @@ async function executeSessionsSend(
     registration?.unregister();
   }
   if (registration?.isCancelled()) {
-    return cancelledResult(input.call, registration.cancellationReason() ?? "Tool call cancelled.");
+    return cancelledSessionToolResult(input.call, {
+      taskId: input.activation.handoff.taskId,
+      sessionKey,
+      agentId: state.workerType,
+      reason: registration.cancellationReason() ?? "Tool call cancelled.",
+    });
   }
   const missingResultMessage = `${state.workerType} sub-agent returned no executable result for the follow-up.`;
+  const sessionToolResult = buildSessionToolResult({
+    taskId: input.activation.handoff.taskId,
+    sessionKey,
+    agentId: state.workerType,
+    result,
+    missingResultMessage,
+  });
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
     ...(result ? {} : { isError: true }),
-    content: JSON.stringify(
-      {
-        task_id: input.activation.handoff.taskId,
-        session_key: sessionKey,
-        agent_id: state.workerType,
-        status: result?.status ?? "failed",
-        tool_chain: result ? [result.workerType] : [],
-        result: result?.summary ?? missingResultMessage,
-        final_content: extractWorkerFinalContent(result),
-        payload: result?.payload ?? null,
-      },
-      null,
-      2
-    ),
+    content: serializeSessionToolResult(sessionToolResult),
     progress: [
       ...approvalProgress,
       {
@@ -1117,25 +1114,19 @@ function cachedCompletedSessionResult(
   }
 ): RoleToolExecutionResult {
   const phase = mapCachedWorkerResultPhase(input.result.status);
+  const sessionToolResult = buildSessionToolResult({
+    taskId: input.taskId,
+    sessionKey: input.sessionKey,
+    agentId: input.result.workerType,
+    result: input.result,
+    missingResultMessage: input.result.summary,
+    cached: true,
+  });
   return {
     toolCallId: call.id,
     toolName: call.name,
     ...(input.result.status === "failed" ? { isError: true } : {}),
-    content: JSON.stringify(
-      {
-        task_id: input.taskId,
-        session_key: input.sessionKey,
-        agent_id: input.result.workerType,
-        status: input.result.status,
-        cached: true,
-        tool_chain: [input.result.workerType],
-        result: input.result.summary,
-        final_content: extractWorkerFinalContent(input.result),
-        payload: input.result.payload ?? null,
-      },
-      null,
-      2
-    ),
+    content: serializeSessionToolResult(sessionToolResult),
     progress: [
       {
         phase,
@@ -1437,18 +1428,32 @@ function errorResult(call: LLMToolCall, content: string): RoleToolExecutionResul
   };
 }
 
-function cancelledResult(call: LLMToolCall, content: string): RoleToolExecutionResult {
+function cancelledSessionToolResult(
+  call: LLMToolCall,
+  input: { taskId: string; sessionKey: string; agentId: WorkerKind; reason: string }
+): RoleToolExecutionResult {
+  const sessionToolResult = buildSessionToolCancelledResult({
+    taskId: input.taskId,
+    sessionKey: input.sessionKey,
+    agentId: input.agentId,
+    result: input.reason,
+  });
   return {
     toolCallId: call.id,
     toolName: call.name,
-    content,
+    content: serializeSessionToolResult(sessionToolResult),
     isError: true,
     cancelled: true,
     progress: [
       {
         phase: "cancelled",
         toolName: call.name,
-        summary: content,
+        summary: input.reason,
+        detail: {
+          session_key: input.sessionKey,
+          agent_id: input.agentId,
+          status: "cancelled",
+        },
       },
     ],
   };
@@ -1580,20 +1585,15 @@ function timedOutResult(
     toolCallId: call.id,
     toolName: call.name,
     isError: true,
-    content: JSON.stringify(
-      {
-        task_id: input.taskId,
-        session_key: input.sessionKey,
-        agent_id: input.agentId,
-        status: "timeout",
-        timeout_seconds: timeoutSeconds,
-        resumable: true,
-        evidence_available: evidenceAvailable,
-        ...(evidenceSummary ? { evidence_summary: evidenceSummary } : {}),
+    content: serializeSessionToolResult(
+      buildSessionToolTimeoutResult({
+        taskId: input.taskId,
+        sessionKey: input.sessionKey,
+        agentId: input.agentId,
         result,
-      },
-      null,
-      2
+        timeoutSeconds,
+        evidenceSummary,
+      })
     ),
     progress: [
       {
@@ -1630,22 +1630,6 @@ async function getWorkerStateSafely(workerRuntime: WorkerRuntime, workerRunKey: 
   } catch {
     return null;
   }
-}
-
-function sanitizeEvidenceSummary(value: string | null | undefined): string | null {
-  if (!value || !value.trim()) {
-    return null;
-  }
-  const trimmed = value.trim();
-  const buffer = Buffer.from(trimmed, "utf8");
-  if (buffer.length <= 1600) {
-    return trimmed;
-  }
-  let end = 1600;
-  while (end > 0 && ((buffer[end] ?? 0) & 0xc0) === 0x80) {
-    end -= 1;
-  }
-  return buffer.subarray(0, end).toString("utf8");
 }
 
 async function sendWorkerWithOptionalTimeout(

@@ -135,7 +135,8 @@ test("sessions_spawn exposes sub-agent final content at top level", async () => 
     },
   });
 
-  const body = JSON.parse(result.content) as { final_content?: string; payload?: { content?: string } };
+  const body = JSON.parse(result.content) as { protocol?: string; final_content?: string; payload?: { content?: string } };
+  assert.equal(body.protocol, "turnkeyai.session_tool_result.v1");
   assert.equal(body.final_content, "Full evidence ledger with source URLs.");
   assert.equal(body.payload?.content, "Full evidence ledger with source URLs.");
 });
@@ -912,7 +913,16 @@ test("sessions_spawn cancels the active worker when the tool call is cancelled",
   assert.equal(cancelledReason, "operator stopped browser work");
   assert.equal(result.isError, true);
   assert.equal(result.cancelled, true);
-  assert.equal(result.content, "operator stopped browser work");
+  const body = JSON.parse(result.content) as {
+    protocol?: string;
+    session_key?: string;
+    status?: string;
+    result?: string;
+  };
+  assert.equal(body.protocol, "turnkeyai.session_tool_result.v1");
+  assert.equal(body.session_key, "worker:browser:task-1");
+  assert.equal(body.status, "cancelled");
+  assert.equal(body.result, "operator stopped browser work");
   assert.equal(result.progress?.at(-1)?.phase, "cancelled");
 });
 

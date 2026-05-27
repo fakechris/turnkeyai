@@ -1,0 +1,206 @@
+import type { WorkerExecutionResult, WorkerKind } from "@turnkeyai/core-types/team";
+
+export const SESSION_TOOL_RESULT_PROTOCOL = "turnkeyai.session_tool_result.v1" as const;
+
+export type SessionToolResultStatus = "completed" | "partial" | "failed" | "timeout" | "cancelled";
+
+export interface SessionToolResultV1 {
+  protocol: typeof SESSION_TOOL_RESULT_PROTOCOL;
+  task_id: string;
+  session_key: string;
+  agent_id: WorkerKind;
+  status: SessionToolResultStatus;
+  cached?: boolean;
+  resumable?: boolean;
+  timeout_seconds?: number | null;
+  evidence_available?: boolean;
+  evidence_summary?: string;
+  tool_chain: WorkerKind[];
+  result: string;
+  final_content: string | null;
+  payload: unknown;
+}
+
+export function buildSessionToolResult(input: {
+  taskId: string;
+  sessionKey: string;
+  agentId: WorkerKind;
+  result: WorkerExecutionResult | null;
+  missingResultMessage: string;
+  cached?: boolean;
+}): SessionToolResultV1 {
+  return {
+    protocol: SESSION_TOOL_RESULT_PROTOCOL,
+    task_id: input.taskId,
+    session_key: input.sessionKey,
+    agent_id: input.result?.workerType ?? input.agentId,
+    status: input.result?.status ?? "failed",
+    ...(input.cached ? { cached: true } : {}),
+    tool_chain: input.result ? [input.result.workerType] : [],
+    result: input.result?.summary ?? input.missingResultMessage,
+    final_content: extractWorkerFinalContent(input.result),
+    payload: input.result?.payload ?? null,
+  };
+}
+
+export function buildSessionToolTimeoutResult(input: {
+  taskId: string;
+  sessionKey: string;
+  agentId: WorkerKind;
+  result: string;
+  timeoutSeconds: number | null;
+  evidenceSummary?: string | null;
+}): SessionToolResultV1 {
+  const evidenceSummary = sanitizeEvidenceSummary(input.evidenceSummary);
+  return {
+    protocol: SESSION_TOOL_RESULT_PROTOCOL,
+    task_id: input.taskId,
+    session_key: input.sessionKey,
+    agent_id: input.agentId,
+    status: "timeout",
+    timeout_seconds: input.timeoutSeconds,
+    resumable: true,
+    evidence_available: evidenceSummary != null,
+    ...(evidenceSummary ? { evidence_summary: evidenceSummary } : {}),
+    tool_chain: [],
+    result: input.result,
+    final_content: null,
+    payload: null,
+  };
+}
+
+export function buildSessionToolCancelledResult(input: {
+  taskId: string;
+  sessionKey: string;
+  agentId: WorkerKind;
+  result: string;
+}): SessionToolResultV1 {
+  return {
+    protocol: SESSION_TOOL_RESULT_PROTOCOL,
+    task_id: input.taskId,
+    session_key: input.sessionKey,
+    agent_id: input.agentId,
+    status: "cancelled",
+    resumable: true,
+    tool_chain: [],
+    result: input.result,
+    final_content: null,
+    payload: null,
+  };
+}
+
+export function serializeSessionToolResult(result: SessionToolResultV1): string {
+  return JSON.stringify(result, null, 2);
+}
+
+export function parseSessionToolResult(content: string): SessionToolResultV1 | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) {
+    return null;
+  }
+  if (parsed.protocol === SESSION_TOOL_RESULT_PROTOCOL) {
+    return normalizeSessionToolResult(parsed);
+  }
+  if ("protocol" in parsed) {
+    return null;
+  }
+  return normalizeLegacySessionToolResult(parsed);
+}
+
+export function extractWorkerFinalContent(result: WorkerExecutionResult | null): string | null {
+  if (!result || !result.payload || typeof result.payload !== "object" || Array.isArray(result.payload)) {
+    return null;
+  }
+  const content = (result.payload as Record<string, unknown>).content;
+  return typeof content === "string" && content.trim().length > 0 ? content : null;
+}
+
+export function sanitizeEvidenceSummary(value: string | null | undefined): string | null {
+  if (!value || !value.trim()) {
+    return null;
+  }
+  const trimmed = value.trim();
+  const buffer = Buffer.from(trimmed, "utf8");
+  if (buffer.length <= 1600) {
+    return trimmed;
+  }
+  let end = 1600;
+  while (end > 0 && ((buffer[end] ?? 0) & 0xc0) === 0x80) {
+    end -= 1;
+  }
+  return buffer.subarray(0, Math.max(0, end)).toString("utf8");
+}
+
+function normalizeSessionToolResult(value: Record<string, unknown>): SessionToolResultV1 | null {
+  const taskId = readString(value.task_id);
+  const sessionKey = readString(value.session_key);
+  const agentId = readString(value.agent_id) as WorkerKind | null;
+  const status = readStatus(value.status);
+  const result = readString(value.result);
+  if (!taskId || !sessionKey || !agentId || !status || !result) {
+    return null;
+  }
+  const toolChain = Array.isArray(value.tool_chain)
+    ? value.tool_chain.filter((item): item is WorkerKind => typeof item === "string")
+    : [];
+  const timeoutSeconds = typeof value.timeout_seconds === "number" ? value.timeout_seconds : null;
+  const finalContent = typeof value.final_content === "string" && value.final_content.trim() ? value.final_content : null;
+  const evidenceSummary = sanitizeEvidenceSummary(readString(value.evidence_summary));
+  return {
+    protocol: SESSION_TOOL_RESULT_PROTOCOL,
+    task_id: taskId,
+    session_key: sessionKey,
+    agent_id: agentId,
+    status,
+    ...(value.cached === true ? { cached: true } : {}),
+    ...(value.resumable === true ? { resumable: true } : {}),
+    ...(status === "timeout" ? { timeout_seconds: timeoutSeconds } : {}),
+    ...(typeof value.evidence_available === "boolean" ? { evidence_available: value.evidence_available } : {}),
+    ...(evidenceSummary ? { evidence_summary: evidenceSummary } : {}),
+    tool_chain: toolChain,
+    result,
+    final_content: finalContent,
+    payload: "payload" in value ? value.payload : null,
+  };
+}
+
+function normalizeLegacySessionToolResult(value: Record<string, unknown>): SessionToolResultV1 | null {
+  const taskId = readString(value.task_id);
+  const sessionKey = readString(value.session_key);
+  const agentId = readString(value.agent_id) as WorkerKind | null;
+  const status = readStatus(value.status);
+  const result = readString(value.result);
+  if (!taskId || !sessionKey || !agentId || !status || !result) {
+    return null;
+  }
+  return normalizeSessionToolResult({
+    ...value,
+    protocol: SESSION_TOOL_RESULT_PROTOCOL,
+  });
+}
+
+function readStatus(value: unknown): SessionToolResultStatus | null {
+  switch (value) {
+    case "completed":
+    case "partial":
+    case "failed":
+    case "timeout":
+    case "cancelled":
+      return value;
+    default:
+      return null;
+  }
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
