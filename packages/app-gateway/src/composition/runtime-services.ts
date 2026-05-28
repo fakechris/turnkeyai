@@ -70,6 +70,7 @@ const DEFAULT_AGENT_TOOL_MAX_ROUNDS = 128;
 const DEFAULT_AGENT_TOOL_TIMEOUT_MS = 18 * 60 * 1_000;
 const DEFAULT_AGENT_TOOL_WALL_CLOCK_MS = 30 * 60 * 1_000;
 const DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS = 5;
+const DEFAULT_AGENT_TOOL_MAX_CALLS_PER_ROUND = 5;
 const DEFAULT_AGENT_TOOL_MAX_PARENT_SESSIONS = 5;
 const DEFAULT_AGENT_TOOL_MAX_GLOBAL_SESSIONS = 12;
 
@@ -261,6 +262,7 @@ export async function composeDaemonRuntimeServices(
               maxRounds: DEFAULT_AGENT_TOOL_MAX_ROUNDS,
               maxWallClockMs: DEFAULT_AGENT_TOOL_WALL_CLOCK_MS,
               maxParallelToolCalls: DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS,
+              maxToolCallsPerRound: DEFAULT_AGENT_TOOL_MAX_CALLS_PER_ROUND,
               runtimeProgressRecorder,
             },
           }),
