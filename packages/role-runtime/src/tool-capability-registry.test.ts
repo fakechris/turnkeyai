@@ -34,6 +34,8 @@ test("native tool capability registry drives schemas and prompt harness from the
   assert.match(harness, /explore: focused read-only research/);
   assert.match(harness, /Preserve exact user-provided entity names/);
   assert.match(harness, /Do not append guessed categories/);
+  assert.match(harness, /emit at most five session tool calls total/);
+  assert.match(harness, /exactly two focused calls/);
   assert.doesNotMatch(harness, /coder:/);
 });
 

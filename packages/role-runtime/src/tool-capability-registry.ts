@@ -452,6 +452,7 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
     "For ambiguous product names without URLs, ask sub-agents to first search the exact name and official website/domain, then mark ambiguity explicitly instead of steering the search toward a guessed meaning.",
     "Keep each spawned task to a manageable size, roughly 10-15 tool calls. If the work is larger, split it into smaller independent sessions.",
     "Prefer multiple focused sub-agents over one broad sub-agent when the subtasks are independent; do not exceed five parallel sub-agents for one user request.",
+    "In one assistant turn, emit at most five session tool calls total. For two independent subtasks, emit exactly two focused calls, then wait for results before any follow-up wave.",
     "Use timeout_seconds for bounded work. Suggested caps: browser 1080s for authenticated/interactive web work; explore/finance 480s for focused research or data lookup.",
     "If a sub-agent times out, inspect sessions_history and continue with sessions_send only if the remaining work is still valuable. Do not treat a timeout as final evidence.",
     "After a sub-agent returns, first read the sessions_spawn/sessions_send result and final_content. Do not page through session history when that result already contains the evidence you need.",
