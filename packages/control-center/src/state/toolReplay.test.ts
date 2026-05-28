@@ -73,6 +73,37 @@ test("groupTimelineForReplay keeps one tool process when approval events interle
   assert.equal(grouped[0].finalThought?.id, "thought-1");
 });
 
+test("groupTimelineForReplay scopes process events to the correct round before final thought", () => {
+  const events: ActivityEvent[] = [
+    toolWithMessage("r1-call", 1_000, "role-lead", "call", "sessions_spawn", "call-browser", "r1 call", "msg-1", "1"),
+    {
+      ...event("r1-approval", "approval", 1_100, "operator", "approve r1"),
+      approvalId: "ap.r1",
+    },
+    toolWithMessage("r1-result", 1_300, "role-lead", "result", "sessions_spawn", "call-browser", "r1 result", "msg-1", "1"),
+    toolWithMessage("r2-call", 1_500, "role-lead", "call", "web_search", "call-web", "r2 call", "msg-1", "2"),
+    {
+      ...event("r2-approval", "approval", 1_600, "operator", "approve r2"),
+      approvalId: "ap.r2",
+    },
+    toolWithMessage("r2-result", 1_900, "role-lead", "result", "web_search", "call-web", "r2 result", "msg-1", "2"),
+    event("thought-1", "thought", 2_200, "role-lead", "Final answer"),
+  ];
+
+  const grouped = groupTimelineForReplay(events).filter(
+    (item): item is Extract<ReturnType<typeof groupTimelineForReplay>[number], { kind: "tool-process" }> =>
+      item.kind === "tool-process"
+  );
+
+  assert.equal(grouped.length, 2);
+  assert.deepEqual(grouped[0]?.toolEvents.map((item) => item.id), ["r1-call", "r1-result"]);
+  assert.deepEqual(grouped[0]?.processEvents.map((item) => item.id), ["r1-approval"]);
+  assert.equal(grouped[0]?.finalThought, undefined);
+  assert.deepEqual(grouped[1]?.toolEvents.map((item) => item.id), ["r2-call", "r2-result"]);
+  assert.deepEqual(grouped[1]?.processEvents.map((item) => item.id), ["r2-approval"]);
+  assert.equal(grouped[1]?.finalThought?.id, "thought-1");
+});
+
 test("groupTimelineForReplay keeps recovery events inside the process they interrupt", () => {
   const events: ActivityEvent[] = [
     toolWithMessage("call-1", 1_000, "role-lead", "call", "sessions_spawn", "call-browser", "Tool call", "msg-1", "1"),

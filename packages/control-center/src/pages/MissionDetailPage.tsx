@@ -633,8 +633,12 @@ function ToolProcessRow({ process }: { process: ToolProcessItem }) {
   const resultCount = process.toolEvents.filter((event) => event.runtime?.toolPhase === "result").length;
   const progressCount = process.toolEvents.filter((event) => event.runtime?.toolPhase === "progress").length;
   const processEventCount = process.processEvents.length;
-  const processSteps = [...process.toolEvents, ...process.processEvents].sort(
-    (left, right) => left.tMs - right.tMs || left.id.localeCompare(right.id)
+  const processSteps = useMemo(
+    () =>
+      [...process.toolEvents, ...process.processEvents].sort(
+        (left, right) => left.tMs - right.tMs || left.id.localeCompare(right.id)
+      ),
+    [process.processEvents, process.toolEvents]
   );
   const duration = formatDurationMs(process.startMs, process.endMs);
   const emph = process.status === "failed" ? "danger" : process.status === "completed" ? "success" : undefined;

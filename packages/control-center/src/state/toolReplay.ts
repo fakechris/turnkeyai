@@ -19,12 +19,21 @@ export type ToolProcessItem = {
   status: "running" | "completed" | "failed";
 };
 
+type ToolProcessGroup = {
+  actor: string;
+  toolEvents: ActivityEvent[];
+  firstIndex: number;
+  lastIndex: number;
+};
+
 export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayItem[] {
   const items: TimelineReplayItem[] = [];
-  const groups = new Map<string, { actor: string; toolEvents: ActivityEvent[]; firstIndex: number; lastIndex: number }>();
+  const groups = new Map<string, ToolProcessGroup>();
   const thoughtIndexesByActor = new Map<string, Array<{ index: number; event: ActivityEvent }>>();
+  const eventIndexById = new Map<string, number>();
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index]!;
+    eventIndexById.set(event.id, index);
     if (event.kind === "thought") {
       const thoughts = thoughtIndexesByActor.get(event.actor) ?? [];
       thoughts.push({ index, event });
@@ -42,6 +51,25 @@ export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayI
     } else {
       groups.set(key, { actor: event.actor, toolEvents: [event], firstIndex: index, lastIndex: index });
     }
+  }
+  const groupEntries = [...groups.entries()]
+    .map(([key, group]) => ({ key, group }))
+    .sort((left, right) => left.group.firstIndex - right.group.firstIndex || left.key.localeCompare(right.key));
+  const nextGroupStartByKey = new Map<string, number>();
+  const nextSameActorGroupStartByKey = new Map<string, number>();
+  const nextSeenByActor = new Map<string, number>();
+  let nextGroupStart: number | undefined;
+  for (let index = groupEntries.length - 1; index >= 0; index -= 1) {
+    const entry = groupEntries[index]!;
+    if (nextGroupStart !== undefined) {
+      nextGroupStartByKey.set(entry.key, nextGroupStart);
+    }
+    const nextSameActorGroupStart = nextSeenByActor.get(entry.group.actor);
+    if (nextSameActorGroupStart !== undefined) {
+      nextSameActorGroupStartByKey.set(entry.key, nextSameActorGroupStart);
+    }
+    nextSeenByActor.set(entry.group.actor, entry.group.firstIndex);
+    nextGroupStart = entry.group.firstIndex;
   }
 
   const emittedGroups = new Set<string>();
@@ -67,19 +95,30 @@ export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayI
     const toolEvents = [...group.toolEvents].sort(
       (left, right) => left.tMs - right.tMs || left.id.localeCompare(right.id)
     );
-    const finalThought = findNextUnconsumedThought(
+    const nextThought = findNextUnconsumedThought(
       thoughtIndexesByActor.get(group.actor),
       group.lastIndex,
       consumedThoughtIds
     );
+    const nextSameActorGroupStart = nextSameActorGroupStartByKey.get(key);
+    const finalThought =
+      nextThought && (nextSameActorGroupStart === undefined || nextThought.index < nextSameActorGroupStart)
+        ? nextThought.event
+        : undefined;
     if (finalThought) {
       consumedThoughtIds.add(finalThought.id);
     }
-    const finalThoughtIndex = finalThought ? events.findIndex((item) => item.id === finalThought.id) : -1;
+    const finalThoughtIndex = finalThought ? eventIndexById.get(finalThought.id) : undefined;
+    const nextGroupStartIndex = nextGroupStartByKey.get(key);
+    const contextBoundary = Math.min(
+      nextGroupStartIndex === undefined ? Number.POSITIVE_INFINITY : nextGroupStartIndex - 1,
+      nextThought === undefined ? Number.POSITIVE_INFINITY : nextThought.index - 1,
+      finalThoughtIndex === undefined ? Number.POSITIVE_INFINITY : finalThoughtIndex - 1
+    );
     const processEvents = collectProcessContextEvents({
       events,
       group,
-      untilIndex: finalThoughtIndex >= 0 ? finalThoughtIndex : group.lastIndex,
+      untilIndex: Number.isFinite(contextBoundary) ? contextBoundary : group.lastIndex,
       consumedProcessEventIds,
     });
     for (const processEvent of processEvents) {
@@ -88,7 +127,7 @@ export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayI
 
     const startMs = toolEvents[0]!.tMs;
     const lastProcessEventMs = processEvents.at(-1)?.tMs;
-    const endMs = finalThought?.tMs ?? lastProcessEventMs ?? toolEvents[toolEvents.length - 1]!.tMs;
+    const endMs = Math.max(toolEvents[toolEvents.length - 1]!.tMs, lastProcessEventMs ?? 0, finalThought?.tMs ?? 0);
     items.push({
       kind: "tool-process",
       id: `tool-process:${toolEvents[0]!.id}`,
@@ -107,11 +146,11 @@ export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayI
 
 function collectProcessContextEvents(input: {
   events: ActivityEvent[];
-  group: { firstIndex: number; lastIndex: number };
+  group: ToolProcessGroup;
   untilIndex: number;
   consumedProcessEventIds: Set<string>;
 }): ActivityEvent[] {
-  const endIndex = Math.max(input.group.lastIndex, input.untilIndex);
+  const endIndex = Math.max(input.group.firstIndex, input.untilIndex);
   const processEvents: ActivityEvent[] = [];
   for (let index = input.group.firstIndex + 1; index <= endIndex; index += 1) {
     const event = input.events[index];
@@ -145,7 +184,7 @@ function findNextUnconsumedThought(
   thoughts: Array<{ index: number; event: ActivityEvent }> | undefined,
   afterIndex: number,
   consumedThoughtIds: Set<string>
-): ActivityEvent | undefined {
+): { index: number; event: ActivityEvent } | undefined {
   if (!thoughts?.length) {
     return undefined;
   }
@@ -160,8 +199,8 @@ function findNextUnconsumedThought(
     }
   }
   for (let index = low; index < thoughts.length; index += 1) {
-    const thought = thoughts[index]!.event;
-    if (!consumedThoughtIds.has(thought.id)) {
+    const thought = thoughts[index]!;
+    if (!consumedThoughtIds.has(thought.event.id)) {
       return thought;
     }
   }
