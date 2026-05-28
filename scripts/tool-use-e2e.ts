@@ -43,6 +43,7 @@ interface ToolUseE2eOptions {
   withBrowser: boolean;
   cdpTimeoutMs: number;
   realLlm: boolean;
+  scenario: "basic" | "complex";
   modelCatalogPath?: string;
   modelId?: string;
   modelChainId?: string;
@@ -53,6 +54,7 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
     withBrowser: false,
     cdpTimeoutMs: 45_000,
     realLlm: false,
+    scenario: "basic",
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -62,6 +64,15 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
     }
     if (arg === "--real-llm") {
       options.realLlm = true;
+      continue;
+    }
+    if (arg === "--scenario") {
+      const value = args[index + 1];
+      if (value !== "basic" && value !== "complex") {
+        throw new Error("--scenario must be basic or complex");
+      }
+      options.scenario = value;
+      index += 1;
       continue;
     }
     if (arg === "--model-catalog") {
@@ -126,9 +137,13 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
     const real = await runRealLlmToolUseE2e(options);
     console.log("tool-use real llm e2e passed");
     console.log(`real-mode: ${real.mode}`);
+    console.log(`real-scenario: ${real.scenario}`);
     console.log(`real-model-catalog: ${real.modelCatalogPath}`);
-    console.log(`real-tool-call: ${real.toolCallName}`);
+    console.log(`real-tool-calls: ${real.toolCallNames.join(",")}`);
     console.log(`real-final: ${real.finalMarker}`);
+    if (real.spawnedSessionCount !== undefined) {
+      console.log(`real-spawned-sessions: ${real.spawnedSessionCount}`);
+    }
     if (real.childTranscriptMessages !== undefined) {
       console.log(`real-child-transcript-messages: ${real.childTranscriptMessages}`);
     }
@@ -142,11 +157,16 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
 
 async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
   mode: "llm-only" | "llm-browser";
+  scenario: "basic" | "complex";
   modelCatalogPath: string;
-  toolCallName: string;
+  toolCallNames: string[];
   finalMarker: string;
+  spawnedSessionCount?: number;
   childTranscriptMessages?: number;
 }> {
+  if (options.scenario === "complex" && !options.withBrowser) {
+    throw new Error("--scenario complex requires --with-browser");
+  }
   const modelCatalogPath = resolveModelCatalogPath(options.modelCatalogPath);
   const modelSelection = resolveRealModelSelection(modelCatalogPath, options);
   const gateway = new LLMGateway({
@@ -154,17 +174,27 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
     clients: [new OpenAICompatibleClient(), new AnthropicCompatibleClient()],
   });
   const toolCapabilityRegistry = createNativeToolCapabilityRegistry({
-    availableWorkerKinds: options.withBrowser ? ["browser"] : ["explore"],
+    availableWorkerKinds: options.scenario === "complex" ? ["explore", "browser"] : options.withBrowser ? ["browser"] : ["explore"],
     permissionsEnabled: false,
     memoryEnabled: false,
     tasksEnabled: false,
   });
   const nativeMessages: TeamMessage[] = [];
-  const fixture = options.withBrowser ? await startBrowserFixture() : null;
+  const fixture = options.withBrowser
+    ? await startBrowserFixture({
+        marker: options.scenario === "complex" ? "TURNKEYAI_COMPLEX_BROWSER_OK" : "TURNKEYAI_BROWSER_E2E_OK",
+        evidence:
+          options.scenario === "complex"
+            ? "Browser fixture says: complex browser evidence was observed by private browser tools."
+            : "Browser fixture says: private browser tools observed this page.",
+      })
+    : null;
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-tooluse-real-e2e-"));
   let closeWorkerRuntime: (() => Promise<void>) | null = null;
   try {
-    const workerRuntimeBundle = options.withBrowser
+    const workerRuntimeBundle = options.scenario === "complex"
+      ? buildRealComplexWorkerRuntime({ gateway, fixtureUrl: fixture!.url, tempDir })
+      : options.withBrowser
       ? buildRealBrowserWorkerRuntime({ gateway, fixtureUrl: fixture!.url, tempDir })
       : { workerRuntime: buildRealExploreWorkerRuntime(), close: async () => {} };
     const workerRuntime = workerRuntimeBundle.workerRuntime;
@@ -182,9 +212,10 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
           toolCapabilityRegistry,
           maxSessionToolTimeoutMs: options.withBrowser ? 180_000 : 60_000,
         }),
-        maxRounds: options.withBrowser ? 6 : 4,
-        maxParallelToolCalls: 1,
-        maxWallClockMs: options.withBrowser ? 240_000 : 90_000,
+        maxRounds: options.scenario === "complex" ? 8 : options.withBrowser ? 6 : 4,
+        maxParallelToolCalls: options.scenario === "complex" ? 2 : 1,
+        maxToolCallsPerRound: options.scenario === "complex" ? 4 : 2,
+        maxWallClockMs: options.scenario === "complex" ? 300_000 : options.withBrowser ? 240_000 : 90_000,
       },
       clock: { now: () => Date.now() },
     });
@@ -193,7 +224,12 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       ...(modelSelection.modelChainId ? { modelChainId: modelSelection.modelChainId } : {}),
     });
     const mode = options.withBrowser ? "llm-browser" : "llm-only";
-    const targetMarker = options.withBrowser ? "TURNKEYAI_BROWSER_E2E_OK" : "TURNKEYAI_LLM_E2E_OK";
+    const targetMarker =
+      options.scenario === "complex"
+        ? "TURNKEYAI_COMPLEX_E2E_OK"
+        : options.withBrowser
+          ? "TURNKEYAI_BROWSER_E2E_OK"
+          : "TURNKEYAI_LLM_E2E_OK";
     const reply = await generator.generate({
       activation,
       packet: {
@@ -203,20 +239,58 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
         systemPrompt: [
           toolCapabilityRegistry.renderPromptHarness({ seat: "lead" }),
           "You are running a release-gate E2E. Use the available session tool instead of answering from memory.",
-          options.withBrowser
+          options.scenario === "complex"
+            ? [
+                "You must gather two independent evidence sources before final answer:",
+                "1. Call sessions_spawn with agent_id=explore to verify TURNKEYAI_COMPLEX_EXPLORE_OK.",
+                "2. Call sessions_spawn with agent_id=browser to open the fixture page and verify TURNKEYAI_COMPLEX_BROWSER_OK.",
+                "The two tasks are independent; use both session results and do not finalize from one source only.",
+              ].join("\n")
+            : options.withBrowser
             ? "You must call sessions_spawn with agent_id=browser exactly once, then base your final answer on browser-observed evidence."
             : "You must call sessions_spawn with agent_id=explore exactly once, then base your final answer on the tool result.",
         ].join("\n\n"),
-        taskPrompt: options.withBrowser
+        taskPrompt: options.scenario === "complex"
+          ? [
+              "Run the production-grade multi-agent tool-use E2E.",
+              "Explore task: retrieve the release marker TURNKEYAI_COMPLEX_EXPLORE_OK and its deterministic source label.",
+              `Browser task: open ${fixture!.url}, read the page title, marker TURNKEYAI_COMPLEX_BROWSER_OK, and evidence text.`,
+              `Final answer must include ${targetMarker}, TURNKEYAI_COMPLEX_EXPLORE_OK, and TURNKEYAI_COMPLEX_BROWSER_OK.`,
+            ].join("\n")
+          : options.withBrowser
           ? `Open ${fixture!.url}, read the fixture marker and page title with the browser sub-agent, then answer with ${targetMarker}.`
           : `Ask the explore sub-agent for the release marker, then answer with ${targetMarker}.`,
-        outputContract: `Final answer must include ${targetMarker} and must mention the session tool evidence.`,
+        outputContract:
+          options.scenario === "complex"
+            ? [
+                `Final answer must include ${targetMarker}.`,
+                "Use Markdown with a heading `Evidence` and at least three bullets: explore evidence, browser evidence, residual risk.",
+                "Do not include the success marker unless both sub-agent results were used.",
+              ].join("\n")
+            : `Final answer must include ${targetMarker} and must mention the session tool evidence.`,
         suggestedMentions: [],
       },
     });
-    const assistantToolMessage = nativeMessages.find((message) => message.role === "assistant" && message.toolCalls?.length);
-    const firstToolCallName = assistantToolMessage?.toolCalls?.[0]?.name ?? "(none)";
-    assert.equal(firstToolCallName, "sessions_spawn");
+    const toolCalls = nativeMessages.flatMap((message) =>
+      message.role === "assistant" && message.toolCalls?.length ? message.toolCalls : []
+    );
+    const toolCallNames = toolCalls.map((call) => call.name);
+    assert.ok(toolCallNames.includes("sessions_spawn"), "real LLM must call sessions_spawn");
+    if (options.scenario === "complex") {
+      const spawnedAgents = toolCalls
+        .filter((call) => call.name === "sessions_spawn")
+        .map((call) => (call.arguments as Record<string, unknown> | undefined)?.agent_id);
+      assert.ok(spawnedAgents.includes("explore"), "complex real LLM E2E must spawn explore");
+      assert.ok(spawnedAgents.includes("browser"), "complex real LLM E2E must spawn browser");
+      const sessions = workerRuntime.listSessions ? await workerRuntime.listSessions() : [];
+      const sessionKinds = sessions.map((session) => session.state.workerType);
+      assert.ok(sessions.length <= 4, `complex real LLM E2E spawned too many sub-agent sessions: ${sessions.length}`);
+      assert.ok(sessionKinds.includes("explore"), "complex real LLM E2E must execute explore");
+      assert.ok(sessionKinds.includes("browser"), "complex real LLM E2E must execute browser");
+      assert.match(reply.content, /TURNKEYAI_COMPLEX_EXPLORE_OK/);
+      assert.match(reply.content, /TURNKEYAI_COMPLEX_BROWSER_OK/);
+      assert.match(reply.content, /Evidence/i);
+    }
     assert.match(reply.content, new RegExp(targetMarker));
     const childTranscriptMessages = options.withBrowser
       ? (await firstWorkerHistoryLength(workerRuntime))
@@ -226,9 +300,13 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
     }
     return {
       mode,
+      scenario: options.scenario,
       modelCatalogPath,
-      toolCallName: firstToolCallName,
+      toolCallNames,
       finalMarker: targetMarker,
+      ...(options.scenario === "complex" && workerRuntime.listSessions
+        ? { spawnedSessionCount: (await workerRuntime.listSessions()).length }
+        : {}),
       ...(childTranscriptMessages !== undefined ? { childTranscriptMessages } : {}),
     };
   } finally {
@@ -248,10 +326,13 @@ function buildRealExploreWorkerRuntime(): WorkerRuntime {
       return {
         workerType: "explore",
         status: "completed",
-        summary: "Explore sub-agent returned the release marker TURNKEYAI_LLM_E2E_OK.",
+        summary: "Explore sub-agent returned the release markers TURNKEYAI_LLM_E2E_OK and TURNKEYAI_COMPLEX_EXPLORE_OK.",
         payload: {
           marker: "TURNKEYAI_LLM_E2E_OK",
+          complex_marker: "TURNKEYAI_COMPLEX_EXPLORE_OK",
           source: "deterministic e2e worker",
+          content:
+            "Explore evidence: deterministic e2e worker verified TURNKEYAI_COMPLEX_EXPLORE_OK from the release-gate source.",
         },
       };
     },
@@ -265,6 +346,90 @@ function buildRealExploreWorkerRuntime(): WorkerRuntime {
     },
   };
   return new InMemoryWorkerRuntime({ workerRegistry: registry });
+}
+
+function buildRealComplexWorkerRuntime(input: {
+  gateway: LLMGateway;
+  fixtureUrl: string;
+  tempDir: string;
+}): { workerRuntime: WorkerRuntime; close: () => Promise<void> } {
+  const browserBridge = createBrowserBridge({
+    transportMode: "local",
+    artifactRootDir: path.join(input.tempDir, "browser-artifacts"),
+    stateRootDir: path.join(input.tempDir, "browser-state"),
+    headless: true,
+  });
+  const exploreHandler: WorkerHandler = {
+    kind: "explore",
+    canHandle(workerInput) {
+      return workerInput.packet.preferredWorkerKinds?.includes("explore") === true;
+    },
+    async run(): Promise<WorkerExecutionResult> {
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Explore evidence verified TURNKEYAI_COMPLEX_EXPLORE_OK from deterministic e2e worker.",
+        payload: {
+          mode: "deterministic_e2e_explore",
+          marker: "TURNKEYAI_COMPLEX_EXPLORE_OK",
+          source: "deterministic e2e worker",
+          content:
+            "Explore evidence: deterministic e2e worker verified TURNKEYAI_COMPLEX_EXPLORE_OK from the release-gate source.",
+        },
+      };
+    },
+  };
+  const innerBrowserHandler: WorkerHandler = {
+    kind: "browser",
+    canHandle(workerInput) {
+      return workerInput.packet.preferredWorkerKinds?.includes("browser") === true;
+    },
+    async run(): Promise<WorkerExecutionResult> {
+      return {
+        workerType: "browser",
+        status: "failed",
+        summary: "Browser private tool surface was not used.",
+        payload: { fixtureUrl: input.fixtureUrl },
+      };
+    },
+  };
+  const browserHandler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: innerBrowserHandler,
+    gateway: input.gateway,
+    browserBridge,
+    maxRounds: 6,
+    maxWallClockMs: 180_000,
+  });
+  const registry: WorkerRegistry = {
+    async selectHandler(workerInput) {
+      if (workerInput.packet.preferredWorkerKinds?.includes("explore")) {
+        return exploreHandler;
+      }
+      if (workerInput.packet.preferredWorkerKinds?.includes("browser")) {
+        return browserHandler;
+      }
+      return null;
+    },
+    async getHandler(kind) {
+      if (kind === "explore") {
+        return exploreHandler;
+      }
+      if (kind === "browser") {
+        return browserHandler;
+      }
+      return null;
+    },
+  };
+  return {
+    workerRuntime: new InMemoryWorkerRuntime({ workerRegistry: registry }),
+    close: async () => {
+      const sessions = await browserBridge.listSessions().catch(() => []);
+      await Promise.all(
+        sessions.map((session) => browserBridge.closeSession(session.browserSessionId, "real llm e2e complete").catch(() => {}))
+      );
+    },
+  };
 }
 
 function buildRealBrowserWorkerRuntime(input: {
@@ -324,7 +489,9 @@ async function firstWorkerHistoryLength(workerRuntime: WorkerRuntime): Promise<n
   return sessions[0]?.state.history?.length ?? 0;
 }
 
-async function startBrowserFixture(): Promise<{ url: string; close: () => Promise<void> }> {
+async function startBrowserFixture(input?: { marker?: string; evidence?: string }): Promise<{ url: string; close: () => Promise<void> }> {
+  const marker = input?.marker ?? "TURNKEYAI_BROWSER_E2E_OK";
+  const evidence = input?.evidence ?? "Browser fixture says: private browser tools observed this page.";
   const server = createServer((req, res) => {
     if (req.url === "/favicon.ico") {
       res.writeHead(404).end();
@@ -336,8 +503,8 @@ async function startBrowserFixture(): Promise<{ url: string; close: () => Promis
         <head><title>TurnkeyAI Tool Use Browser E2E</title></head>
         <body>
           <main>
-            <h1>TURNKEYAI_BROWSER_E2E_OK</h1>
-            <p id="evidence">Browser fixture says: private browser tools observed this page.</p>
+            <h1>${escapeHtml(marker)}</h1>
+            <p id="evidence">${escapeHtml(evidence)}</p>
           </main>
         </body>
       </html>`);
@@ -351,6 +518,14 @@ async function startBrowserFixture(): Promise<{ url: string; close: () => Promis
     url: `http://127.0.0.1:${address.port}/`,
     close: () => closeServer(server),
   };
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 async function runMockSubAgentToolUseE2e(): Promise<{

@@ -74,6 +74,7 @@ export interface RoleToolLoopOptions {
   maxRounds?: number;
   maxWallClockMs?: number;
   maxParallelToolCalls?: number;
+  maxToolCallsPerRound?: number;
   runtimeProgressRecorder?: RuntimeProgressRecorder;
 }
 

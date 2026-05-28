@@ -550,10 +550,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       activeToolLoop.maxParallelToolCalls > 0
         ? Math.floor(activeToolLoop.maxParallelToolCalls)
         : input.toolCalls.length;
+    const maxToolCallsPerRound =
+      typeof activeToolLoop.maxToolCallsPerRound === "number" &&
+      Number.isFinite(activeToolLoop.maxToolCallsPerRound) &&
+      activeToolLoop.maxToolCallsPerRound > 0
+        ? Math.floor(activeToolLoop.maxToolCallsPerRound)
+        : input.toolCalls.length;
     const results: RoleToolExecutionResult[] = [];
-    for (let index = 0; index < input.toolCalls.length; index += maxParallelToolCalls) {
+    const executableCalls = input.toolCalls.slice(0, maxToolCallsPerRound);
+    const rejectedCalls = input.toolCalls.slice(maxToolCallsPerRound);
+    for (let index = 0; index < executableCalls.length; index += maxParallelToolCalls) {
       throwIfAborted(input.signal);
-      const chunk = input.toolCalls.slice(index, index + maxParallelToolCalls);
+      const chunk = executableCalls.slice(index, index + maxParallelToolCalls);
       const chunkResults = await Promise.all(
         chunk.map(async (call) => {
           throwIfAborted(input.signal);
@@ -606,6 +614,31 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         })
       );
       results.push(...chunkResults);
+    }
+    for (const call of rejectedCalls) {
+      throwIfAborted(input.signal);
+      const result: RoleToolExecutionResult = {
+        toolCallId: call.id,
+        toolName: call.name,
+        content: `tool_call_limit_exceeded: skipped ${call.name}; at most ${maxToolCallsPerRound} tool calls may be executed in one assistant turn.`,
+        isError: true,
+        progress: [
+          {
+            phase: "failed",
+            toolName: call.name,
+            summary: `Skipped ${call.name}: per-turn tool call limit exceeded.`,
+            detail: {
+              max_tool_calls_per_round: maxToolCallsPerRound,
+              requested_tool_calls: input.toolCalls.length,
+            },
+          },
+        ],
+      };
+      for (const progress of result.progress ?? []) {
+        await this.emitToolProgressSafely(input.activation, call, progress, input.onProgress);
+      }
+      await input.onResult?.(result);
+      results.push(result);
     }
     return results;
   }
