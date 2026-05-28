@@ -14,13 +14,14 @@ export type ToolProcessItem = {
   startMs: number;
   endMs: number;
   toolEvents: ActivityEvent[];
+  processEvents: ActivityEvent[];
   finalThought?: ActivityEvent;
   status: "running" | "completed" | "failed";
 };
 
 export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayItem[] {
   const items: TimelineReplayItem[] = [];
-  const groups = new Map<string, { actor: string; toolEvents: ActivityEvent[]; lastIndex: number }>();
+  const groups = new Map<string, { actor: string; toolEvents: ActivityEvent[]; firstIndex: number; lastIndex: number }>();
   const thoughtIndexesByActor = new Map<string, Array<{ index: number; event: ActivityEvent }>>();
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index]!;
@@ -39,15 +40,16 @@ export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayI
       group.toolEvents.push(event);
       group.lastIndex = index;
     } else {
-      groups.set(key, { actor: event.actor, toolEvents: [event], lastIndex: index });
+      groups.set(key, { actor: event.actor, toolEvents: [event], firstIndex: index, lastIndex: index });
     }
   }
 
   const emittedGroups = new Set<string>();
   const consumedThoughtIds = new Set<string>();
+  const consumedProcessEventIds = new Set<string>();
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index]!;
-    if (consumedThoughtIds.has(event.id)) {
+    if (consumedThoughtIds.has(event.id) || consumedProcessEventIds.has(event.id)) {
       continue;
     }
     if (event.kind !== "tool") {
@@ -73,9 +75,20 @@ export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayI
     if (finalThought) {
       consumedThoughtIds.add(finalThought.id);
     }
+    const finalThoughtIndex = finalThought ? events.findIndex((item) => item.id === finalThought.id) : -1;
+    const processEvents = collectProcessContextEvents({
+      events,
+      group,
+      untilIndex: finalThoughtIndex >= 0 ? finalThoughtIndex : group.lastIndex,
+      consumedProcessEventIds,
+    });
+    for (const processEvent of processEvents) {
+      consumedProcessEventIds.add(processEvent.id);
+    }
 
     const startMs = toolEvents[0]!.tMs;
-    const endMs = finalThought?.tMs ?? toolEvents[toolEvents.length - 1]!.tMs;
+    const lastProcessEventMs = processEvents.at(-1)?.tMs;
+    const endMs = finalThought?.tMs ?? lastProcessEventMs ?? toolEvents[toolEvents.length - 1]!.tMs;
     items.push({
       kind: "tool-process",
       id: `tool-process:${toolEvents[0]!.id}`,
@@ -83,12 +96,40 @@ export function groupTimelineForReplay(events: ActivityEvent[]): TimelineReplayI
       startMs,
       endMs,
       toolEvents,
+      processEvents,
       ...(finalThought ? { finalThought } : {}),
-      status: deriveToolProcessStatus(toolEvents, finalThought),
+      status: deriveToolProcessStatus(toolEvents, processEvents, finalThought),
     });
   }
 
   return items;
+}
+
+function collectProcessContextEvents(input: {
+  events: ActivityEvent[];
+  group: { firstIndex: number; lastIndex: number };
+  untilIndex: number;
+  consumedProcessEventIds: Set<string>;
+}): ActivityEvent[] {
+  const endIndex = Math.max(input.group.lastIndex, input.untilIndex);
+  const processEvents: ActivityEvent[] = [];
+  for (let index = input.group.firstIndex + 1; index <= endIndex; index += 1) {
+    const event = input.events[index];
+    if (!event || input.consumedProcessEventIds.has(event.id)) {
+      continue;
+    }
+    if (event.kind === "tool" || event.kind === "thought") {
+      continue;
+    }
+    if (isToolProcessContextEvent(event)) {
+      processEvents.push(event);
+    }
+  }
+  return processEvents.sort((left, right) => left.tMs - right.tMs || left.id.localeCompare(right.id));
+}
+
+function isToolProcessContextEvent(event: ActivityEvent): boolean {
+  return event.kind === "approval" || event.kind === "recovery" || event.kind === "artifact";
 }
 
 function toolProcessKey(event: ActivityEvent): string {
@@ -147,9 +188,10 @@ export function formatDurationMs(startMs: number, endMs: number): string {
 
 function deriveToolProcessStatus(
   toolEvents: ActivityEvent[],
+  processEvents: ActivityEvent[],
   finalThought: ActivityEvent | undefined
 ): "running" | "completed" | "failed" {
-  if (toolEvents.some((event) => event.emph === "danger")) {
+  if (toolEvents.some((event) => event.emph === "danger") || processEvents.some((event) => event.emph === "danger")) {
     return "failed";
   }
   if (finalThought || toolEvents.some((event) => event.runtime?.toolPhase === "result")) {

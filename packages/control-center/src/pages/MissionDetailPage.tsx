@@ -632,6 +632,10 @@ function ToolProcessRow({ process }: { process: ToolProcessItem }) {
     process.status === "failed" ? "failed" : process.status === "running" ? "running" : "completed";
   const resultCount = process.toolEvents.filter((event) => event.runtime?.toolPhase === "result").length;
   const progressCount = process.toolEvents.filter((event) => event.runtime?.toolPhase === "progress").length;
+  const processEventCount = process.processEvents.length;
+  const processSteps = [...process.toolEvents, ...process.processEvents].sort(
+    (left, right) => left.tMs - right.tMs || left.id.localeCompare(right.id)
+  );
   const duration = formatDurationMs(process.startMs, process.endMs);
   const emph = process.status === "failed" ? "danger" : process.status === "completed" ? "success" : undefined;
 
@@ -653,6 +657,7 @@ function ToolProcessRow({ process }: { process: ToolProcessItem }) {
           <span>{process.toolEvents.length} step{process.toolEvents.length === 1 ? "" : "s"}</span>
           <span>{resultCount} result{resultCount === 1 ? "" : "s"}</span>
           {progressCount > 0 && <span>{progressCount} progress</span>}
+          {processEventCount > 0 && <span>{processEventCount} runtime event{processEventCount === 1 ? "" : "s"}</span>}
         </div>
         {process.finalThought && (
           <div className="tool-process-answer-link">Final answer appears below this trace.</div>
@@ -660,11 +665,11 @@ function ToolProcessRow({ process }: { process: ToolProcessItem }) {
         <details className="tool-process-details">
           <summary>Show tool calls, progress, and results</summary>
           <div className="tool-process-steps">
-            {process.toolEvents.map((event) => (
-              <div key={event.id} className="tool-process-step" data-phase={event.runtime?.toolPhase}>
+            {processSteps.map((event) => (
+              <div key={event.id} className="tool-process-step" data-phase={event.runtime?.toolPhase ?? event.kind}>
                 <div className="step-head">
-                  <span className="mono">{event.runtime?.toolPhase ?? "tool"}</span>
-                  <span>{event.runtime?.toolName ?? "tool"}</span>
+                  <span className="mono">{event.runtime?.toolPhase ?? event.kind}</span>
+                  <span>{event.runtime?.toolName ?? event.target ?? event.kind}</span>
                   <span className="mono faint">{event.t ?? formatTimeOfDay(event.tMs)}</span>
                 </div>
                 <div className="step-text">{event.text}</div>
