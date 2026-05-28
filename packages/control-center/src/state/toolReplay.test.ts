@@ -25,6 +25,7 @@ test("groupTimelineForReplay collapses tool chain plus final thought into one pr
   assert.equal(grouped[1].actor, "role-lead");
   assert.equal(grouped[1].status, "completed");
   assert.equal(grouped[1].toolEvents.length, 3);
+  assert.deepEqual(grouped[1].processEvents, []);
   assert.equal(grouped[1].finalThought?.id, "thought-1");
   assert.equal(formatDurationMs(grouped[1].startMs, grouped[1].endMs), "3.0s");
   assert.equal(grouped[2]?.kind, "event");
@@ -51,7 +52,10 @@ test("groupTimelineForReplay keeps failed tool process visible without a final t
 test("groupTimelineForReplay keeps one tool process when approval events interleave", () => {
   const events: ActivityEvent[] = [
     toolWithMessage("call-1", 1_000, "role-lead", "call", "sessions_spawn", "call-browser", "Tool call", "msg-1", "1"),
-    event("approval-1", "approval", 1_200, "operator", "Approved"),
+    {
+      ...event("approval-1", "approval", 1_200, "operator", "Approved"),
+      approvalId: "ap.1",
+    },
     toolWithMessage("progress-1", 1_500, "role-lead", "progress", "sessions_spawn", "call-browser", "Applied", "msg-1", "1"),
     toolWithMessage("result-1", 2_000, "role-lead", "result", "sessions_spawn", "call-browser", "Returned", "msg-1", "1"),
     event("thought-1", "thought", 2_500, "role-lead", "Final answer"),
@@ -59,14 +63,84 @@ test("groupTimelineForReplay keeps one tool process when approval events interle
 
   const grouped = groupTimelineForReplay(events);
 
-  assert.equal(grouped.length, 2);
+  assert.equal(grouped.length, 1);
   assert.equal(grouped[0]?.kind, "tool-process");
-  assert.equal(grouped[1]?.kind, "event");
   if (grouped[0]?.kind !== "tool-process") {
     throw new Error("expected tool-process");
   }
   assert.deepEqual(grouped[0].toolEvents.map((item) => item.id), ["call-1", "progress-1", "result-1"]);
+  assert.deepEqual(grouped[0].processEvents.map((item) => item.id), ["approval-1"]);
   assert.equal(grouped[0].finalThought?.id, "thought-1");
+});
+
+test("groupTimelineForReplay scopes process events to the correct round before final thought", () => {
+  const events: ActivityEvent[] = [
+    toolWithMessage("r1-call", 1_000, "role-lead", "call", "sessions_spawn", "call-browser", "r1 call", "msg-1", "1"),
+    {
+      ...event("r1-approval", "approval", 1_100, "operator", "approve r1"),
+      approvalId: "ap.r1",
+    },
+    toolWithMessage("r1-result", 1_300, "role-lead", "result", "sessions_spawn", "call-browser", "r1 result", "msg-1", "1"),
+    toolWithMessage("r2-call", 1_500, "role-lead", "call", "web_search", "call-web", "r2 call", "msg-1", "2"),
+    {
+      ...event("r2-approval", "approval", 1_600, "operator", "approve r2"),
+      approvalId: "ap.r2",
+    },
+    toolWithMessage("r2-result", 1_900, "role-lead", "result", "web_search", "call-web", "r2 result", "msg-1", "2"),
+    event("thought-1", "thought", 2_200, "role-lead", "Final answer"),
+  ];
+
+  const grouped = groupTimelineForReplay(events).filter(
+    (item): item is Extract<ReturnType<typeof groupTimelineForReplay>[number], { kind: "tool-process" }> =>
+      item.kind === "tool-process"
+  );
+
+  assert.equal(grouped.length, 2);
+  assert.deepEqual(grouped[0]?.toolEvents.map((item) => item.id), ["r1-call", "r1-result"]);
+  assert.deepEqual(grouped[0]?.processEvents.map((item) => item.id), ["r1-approval"]);
+  assert.equal(grouped[0]?.finalThought, undefined);
+  assert.deepEqual(grouped[1]?.toolEvents.map((item) => item.id), ["r2-call", "r2-result"]);
+  assert.deepEqual(grouped[1]?.processEvents.map((item) => item.id), ["r2-approval"]);
+  assert.equal(grouped[1]?.finalThought?.id, "thought-1");
+});
+
+test("groupTimelineForReplay keeps recovery events inside the process they interrupt", () => {
+  const events: ActivityEvent[] = [
+    toolWithMessage("call-1", 1_000, "role-lead", "call", "sessions_spawn", "call-browser", "Tool call", "msg-1", "1"),
+    {
+      ...event("recovery-1", "recovery", 1_200, "runtime", "Sub-agent timeout surfaced."),
+      emph: "danger" as const,
+    },
+    toolWithMessage("result-1", 2_000, "role-lead", "result", "sessions_spawn", "call-browser", "Timeout result", "msg-1", "1"),
+  ];
+
+  const grouped = groupTimelineForReplay(events);
+
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0]?.kind, "tool-process");
+  if (grouped[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.deepEqual(grouped[0].processEvents.map((item) => item.id), ["recovery-1"]);
+  assert.equal(grouped[0].status, "failed");
+});
+
+test("groupTimelineForReplay treats recovery events as failed even without explicit danger emphasis", () => {
+  const events: ActivityEvent[] = [
+    toolWithMessage("call-1", 1_000, "role-lead", "call", "sessions_spawn", "call-browser", "Tool call", "msg-1", "1"),
+    event("recovery-1", "recovery", 1_200, "runtime", "Sub-agent timeout surfaced."),
+    toolWithMessage("result-1", 2_000, "role-lead", "result", "sessions_spawn", "call-browser", "Timeout result", "msg-1", "1"),
+  ];
+
+  const grouped = groupTimelineForReplay(events);
+
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0]?.kind, "tool-process");
+  if (grouped[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.deepEqual(grouped[0].processEvents.map((item) => item.id), ["recovery-1"]);
+  assert.equal(grouped[0].status, "failed");
 });
 
 test("formatDurationMs normalizes rounded second rollover into minutes", () => {
