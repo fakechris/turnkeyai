@@ -60,11 +60,12 @@ liveChromeTest(
         browserSessionId,
         targetId: iframeTarget.targetId,
       });
-      const shadowState = await runtimeEvaluate(expertLane, {
+      const shadowState = await waitForRuntimeRecord(expertLane, {
         browserSessionId,
         expertSessionId: iframeSession.expertSessionId,
         expression: `(() => {
-          const button = document.querySelector("#shadow-host").shadowRoot.querySelector("#shadow-button");
+          const button = document.querySelector("#shadow-host")?.shadowRoot?.querySelector("#shadow-button");
+          if (!button) return undefined;
           const rect = button.getBoundingClientRect();
           return {
             origin: location.origin,
@@ -75,7 +76,6 @@ liveChromeTest(
           };
         })()`,
       });
-      assertRecord(shadowState);
       assert.deepEqual(
         {
           origin: shadowState.origin,
@@ -95,15 +95,15 @@ liveChromeTest(
         x: Number(shadowState.x),
         y: Number(shadowState.y),
       });
-      const clickedState = await runtimeEvaluate(expertLane, {
+      const clickedState = await waitForRuntimeRecord(expertLane, {
         browserSessionId,
         expertSessionId: iframeSession.expertSessionId,
         expression: `(() => {
-          const button = document.querySelector("#shadow-host").shadowRoot.querySelector("#shadow-button");
+          const button = document.querySelector("#shadow-host")?.shadowRoot?.querySelector("#shadow-button");
+          if (!button || window.__rawCdpClicks !== 1) return undefined;
           return { clicks: window.__rawCdpClicks, text: button.textContent };
         })()`,
       });
-      assertRecord(clickedState);
       assert.deepEqual(clickedState, {
         clicks: 1,
         text: "Clicked 1",
@@ -125,12 +125,15 @@ liveChromeTest(
         browserSessionId,
         targetId: popupTarget.targetId,
       });
-      const popupState = await runtimeEvaluate(expertLane, {
+      const popupState = await waitForRuntimeRecord(expertLane, {
         browserSessionId,
         expertSessionId: popupSession.expertSessionId,
-        expression: `({ title: document.title, marker: document.querySelector("#popup-marker").textContent })`,
+        expression: `(() => {
+          const marker = document.querySelector("#popup-marker");
+          if (!marker) return undefined;
+          return { title: document.title, marker: marker.textContent };
+        })()`,
       });
-      assertRecord(popupState);
       assert.deepEqual(popupState, {
         title: "Raw CDP Popup",
         marker: "popup-ready",
@@ -292,6 +295,27 @@ async function runtimeEvaluate(
     },
   });
   return (response.result as { result?: { value?: unknown } }).result?.value;
+}
+
+async function waitForRuntimeRecord(
+  expertLane: BrowserRawCdpExpertLane,
+  input: {
+    browserSessionId: string;
+    expertSessionId: string;
+    expression: string;
+  }
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 10_000;
+  let lastValue: unknown;
+  while (Date.now() < deadline) {
+    lastValue = await runtimeEvaluate(expertLane, input);
+    if (lastValue && typeof lastValue === "object") {
+      return lastValue as Record<string, unknown>;
+    }
+    await sleep(100);
+  }
+  assertRecord(lastValue);
+  return lastValue;
 }
 
 async function dispatchMouse(
