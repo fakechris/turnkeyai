@@ -1570,6 +1570,79 @@ test("llm role response generator caps parallel tool execution fan-out", async (
   assert.equal(maxActiveTools, 2);
 });
 
+test("llm role response generator skips per-turn tool calls above the execution cap", async () => {
+  const executedCallIds: string[] = [];
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let calls = 0;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    calls += 1;
+    if (calls === 1) {
+      return {
+        text: "I will over-call tools.",
+        toolCalls: ["a", "b", "c"].map((id) => ({
+          id: `toolu-${id}`,
+          name: "sessions_spawn",
+          input: { agent_id: "explore", task: `Fetch ${id}` },
+        })),
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "Done after capped execution.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCallIds.push(input.call.id);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({ status: "completed", result: input.call.input.task }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 4, maxParallelToolCalls: 2, maxToolCallsPerRound: 2 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Done after capped execution.");
+  assert.deepEqual(executedCallIds, ["toolu-a", "toolu-b"]);
+  const secondRoundToolResults = gatewayInputs[1]?.messages
+    .filter((message) => message.role === "tool")
+    .map((message) => ({ toolCallId: message.toolCallId, content: readToolContent(message.content) }));
+  assert.deepEqual(
+    secondRoundToolResults?.map((message) => message.toolCallId),
+    ["toolu-a", "toolu-b", "toolu-c"]
+  );
+  assert.match(secondRoundToolResults?.[2]?.content ?? "", /tool_call_limit_exceeded/);
+});
+
 function buildActivation(
   roleOverrides?: Partial<RoleActivationInput["thread"]["roles"][number]>,
   options?: { omitLegacyModel?: boolean }
