@@ -125,6 +125,24 @@ test("groupTimelineForReplay keeps recovery events inside the process they inter
   assert.equal(grouped[0].status, "failed");
 });
 
+test("groupTimelineForReplay treats recovery events as failed even without explicit danger emphasis", () => {
+  const events: ActivityEvent[] = [
+    toolWithMessage("call-1", 1_000, "role-lead", "call", "sessions_spawn", "call-browser", "Tool call", "msg-1", "1"),
+    event("recovery-1", "recovery", 1_200, "runtime", "Sub-agent timeout surfaced."),
+    toolWithMessage("result-1", 2_000, "role-lead", "result", "sessions_spawn", "call-browser", "Timeout result", "msg-1", "1"),
+  ];
+
+  const grouped = groupTimelineForReplay(events);
+
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0]?.kind, "tool-process");
+  if (grouped[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.deepEqual(grouped[0].processEvents.map((item) => item.id), ["recovery-1"]);
+  assert.equal(grouped[0].status, "failed");
+});
+
 test("formatDurationMs normalizes rounded second rollover into minutes", () => {
   assert.equal(formatDurationMs(0, 119_900), "2m");
 });

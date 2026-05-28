@@ -230,11 +230,15 @@ function deriveToolProcessStatus(
   processEvents: ActivityEvent[],
   finalThought: ActivityEvent | undefined
 ): "running" | "completed" | "failed" {
-  if (toolEvents.some((event) => event.emph === "danger") || processEvents.some((event) => event.emph === "danger")) {
+  if (toolEvents.some(isFailureEvent) || processEvents.some(isFailureEvent)) {
     return "failed";
   }
   if (finalThought || toolEvents.some((event) => event.runtime?.toolPhase === "result")) {
     return "completed";
   }
   return "running";
+}
+
+function isFailureEvent(event: ActivityEvent): boolean {
+  return event.emph === "danger" || event.kind === "recovery";
 }
