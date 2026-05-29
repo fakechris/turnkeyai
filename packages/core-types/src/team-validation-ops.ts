@@ -3,13 +3,15 @@ export type ValidationOpsRunType =
   | "validation-profile"
   | "soak-series"
   | "transport-soak"
-  | "phase1-baseline";
+  | "phase1-baseline"
+  | "real-llm-acceptance";
 export type ValidationOpsIssueKind =
   | "validation-item"
   | "release-check"
   | "soak-suite"
   | "transport-target"
-  | "baseline-run";
+  | "baseline-run"
+  | "real-llm-gate";
 export type ValidationOpsIssueSeverity = "warning" | "critical";
 export type ValidationOpsFailureBucket =
   | "browser"
@@ -19,6 +21,7 @@ export type ValidationOpsFailureBucket =
   | "governance"
   | "runtime"
   | "operator"
+  | "llm"
   | "release"
   | "soak"
   | "transport"
@@ -30,7 +33,8 @@ export type ValidationOpsRecommendedAction =
   | "rerun-profile"
   | "rerun-soak"
   | "rerun-transport-soak"
-  | "rerun-baseline";
+  | "rerun-baseline"
+  | "rerun-real-acceptance";
 export type ValidationOpsClosedLoopStatus =
   | "completed"
   | "actionable"
@@ -132,6 +136,7 @@ export interface ValidationOpsRunRecord {
 
 export type ValidationOpsReadinessGateId =
   | "phase1-e2e-profile"
+  | "real-llm-acceptance"
   | "release-readiness"
   | "transport-soak"
   | "soak-series";

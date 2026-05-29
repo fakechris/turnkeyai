@@ -218,7 +218,7 @@
 #### US-Q3 — Validation harness 给出 north-star closed-loop rate
 
 - 前置：CI 或值班需要一个客观数字
-- 行为：`phase1-readiness` 跑完 phase1-e2e profile + transport soak + release-readiness + acceptance/realworld/soak series → 写入 `validation-ops` readiness gates
+- 行为：`phase1-readiness` 跑完 phase1-e2e profile + transport soak + release-readiness + acceptance/realworld/soak series → 写入 `validation-ops` readiness gates；`npm run acceptance:real` 另写入真实 LLM acceptance gate
 - 验收：closed-loop rate = (completed + actionable) / total；silent_failure / ambiguous_failure 必须为 0
 - 状态：✅ 已落；当前 Phase 1 退出的客观闸口就靠它
 

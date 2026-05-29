@@ -411,7 +411,11 @@ try {
       "release acceptance should show the latest gate title"
     );
     assert(
-      await page.locator(".card", { hasText: "phase1-readiness 3 3" }).isVisible(),
+      await page.locator(".card", { hasText: "Real LLM acceptance" }).isVisible(),
+      "release acceptance should show the real LLM gate"
+    );
+    assert(
+      await page.locator(".card", { hasText: "validation-ops" }).isVisible(),
       "release acceptance should show the next validation command"
     );
 
@@ -1242,15 +1246,16 @@ function runtimeSummaryFixture() {
 function validationOpsFixture() {
   const completedAt = 1_779_984_003_000;
   return {
-    totalRuns: 4,
+    totalRuns: 5,
     failedRuns: 0,
-    passedRuns: 4,
+    passedRuns: 5,
     attentionCount: 0,
     runTypeCounts: {
       "validation-profile": 1,
       "release-readiness": 1,
       "transport-soak": 1,
       "soak-series": 1,
+      "real-llm-acceptance": 1,
     },
     bucketCounts: {},
     severityCounts: {},
@@ -1276,15 +1281,25 @@ function validationOpsFixture() {
         durationMs: 29_000,
         issueCount: 0,
       },
+      {
+        runId: "real-llm-acceptance-run-ui",
+        runType: "real-llm-acceptance",
+        title: "Real LLM acceptance",
+        status: "passed",
+        startedAt: completedAt - 90_000,
+        completedAt: completedAt - 2_000,
+        durationMs: 88_000,
+        issueCount: 0,
+      },
     ],
     activeIssues: [],
     readiness: {
       status: "passed",
       summary: "Phase 1 exit gates have passing recorded validation runs.",
-      passedGates: 4,
+      passedGates: 5,
       failedGates: 0,
       missingGates: 0,
-      nextCommand: "phase1-readiness 3 3",
+      nextCommand: "validation-ops",
       gates: [
         {
           gateId: "phase1-e2e-profile",
@@ -1296,6 +1311,15 @@ function validationOpsFixture() {
           recordedAt: completedAt,
         },
         {
+          gateId: "real-llm-acceptance",
+          title: "Real LLM acceptance",
+          status: "passed",
+          summary: "Real LLM acceptance passed with 0 issue(s).",
+          commandHint: "npm run acceptance:real -- --model-catalog models.local.json",
+          latestRunId: "real-llm-acceptance-run-ui",
+          recordedAt: completedAt - 2_000,
+        },
+        {
           gateId: "release-readiness",
           title: "Release readiness",
           status: "passed",
@@ -1303,6 +1327,24 @@ function validationOpsFixture() {
           commandHint: "release-verify",
           latestRunId: "release-readiness-run-ui",
           recordedAt: completedAt - 1_000,
+        },
+        {
+          gateId: "transport-soak",
+          title: "Browser transport soak",
+          status: "passed",
+          summary: "Browser transport soak passed with 0 issue(s).",
+          commandHint: "transport-soak 3 relay direct-cdp",
+          latestRunId: "transport-soak-run-ui",
+          recordedAt: completedAt - 3_000,
+        },
+        {
+          gateId: "soak-series",
+          title: "Acceptance/realworld/soak series",
+          status: "passed",
+          summary: "Validation soak series passed with 0 issue(s).",
+          commandHint: "soak-series 3 acceptance realworld soak",
+          latestRunId: "soak-series-run-ui",
+          recordedAt: completedAt - 4_000,
         },
       ],
     },
@@ -1316,8 +1358,8 @@ function validationOpsFixture() {
       closedLoopCases: 8,
       closedLoopRate: 1,
       rerunCommand: "validation-ops",
-      measuredRuns: 4,
-      statusCounts: { completed: 4 },
+      measuredRuns: 5,
+      statusCounts: { completed: 5 },
       nextCommand: "validation-ops",
       latestRunId: "validation-profile-run-ui",
     },

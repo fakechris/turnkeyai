@@ -7,6 +7,7 @@ import type {
   Phase1ReadinessRunStage,
   ValidationOpsRunRecord,
   ValidationOpsRunStore,
+  ValidationOpsRunType,
 } from "@turnkeyai/core-types/team";
 import type {
   BrowserTransportSoakOptions,
@@ -63,9 +64,7 @@ import { runIdempotently, type RouteIdempotencyStore } from "../idempotency-stor
 
 export interface ValidationRouteDeps {
   validationOpsRunStore: ValidationOpsRunStore;
-  createValidationOpsRunId: (
-    kind: "release-readiness" | "validation-profile" | "soak-series" | "transport-soak" | "phase1-baseline"
-  ) => string;
+  createValidationOpsRunId: (kind: ValidationOpsRunType) => string;
   writeValidationArtifact: (kind: string, runId: string, payload: unknown) => Promise<string>;
   runBrowserTransportSoakViaCli: (options?: BrowserTransportSoakOptions) => Promise<BrowserTransportSoakResult>;
   runReleaseReadiness?: (options?: ReleaseReadinessOptions) => Promise<ReleaseReadinessResult>;

@@ -5,6 +5,7 @@ import {
   buildValidationOpsRecordFromPhase1Baseline,
   buildValidationOpsRecordFromTransportSoak,
   buildValidationOpsRecordFromReleaseReadiness,
+  buildValidationOpsRecordFromRealLlmAcceptance,
   buildValidationOpsRecordFromSoakSeries,
   buildValidationOpsRecordFromValidationProfile,
   buildValidationOpsReport,
@@ -180,8 +181,9 @@ test("validation ops inspection derives operator-facing records and report count
   assert.deepEqual(report.latestRuns.find((run) => run.runType === "validation-profile")?.targets, ["relay", "direct-cdp"]);
   assert.equal(report.readiness.status, "failed");
   assert.equal(report.readiness.failedGates, 3);
-  assert.equal(report.readiness.missingGates, 1);
+  assert.equal(report.readiness.missingGates, 2);
   assert.equal(report.readiness.gates.find((gate) => gate.gateId === "phase1-e2e-profile")?.status, "missing");
+  assert.equal(report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance")?.status, "missing");
   assert.equal(report.readiness.gates.find((gate) => gate.gateId === "transport-soak")?.latestRunId, "transport-1");
   assert.equal(report.readiness.nextCommand, "release-verify");
   assert.equal(report.baseline.status, "missing");
@@ -285,13 +287,52 @@ test("validation ops inspection marks phase1 readiness passed when all exit gate
     },
   });
 
-  const report = buildValidationOpsReport([releaseRecord, profileRecord, soakRecord, transportRecord], 10);
+  const realLlmRecord = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-pass",
+    startedAt: 150,
+    completedAt: 190,
+    status: "passed",
+    tooluseScenarios: ["basic", "approval", "followup"],
+    missionScenarios: ["basic", "comparison", "browser-dynamic"],
+    browserTooluseEnabled: true,
+  });
+
+  const report = buildValidationOpsReport([releaseRecord, profileRecord, soakRecord, transportRecord, realLlmRecord], 10);
 
   assert.equal(report.readiness.status, "passed");
-  assert.equal(report.readiness.passedGates, 4);
+  assert.equal(report.readiness.passedGates, 5);
   assert.equal(report.readiness.failedGates, 0);
   assert.equal(report.readiness.missingGates, 0);
   assert.equal(report.readiness.nextCommand, "validation-ops");
+  assert.equal(report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance")?.latestRunId, "real-llm-pass");
+  assert.equal(report.closedLoop.measuredRuns, 1);
+  assert.equal(report.closedLoop.totalCases, 6);
+});
+
+test("validation ops inspection records failed real LLM acceptance as actionable", () => {
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-fail",
+    startedAt: 10,
+    completedAt: 30,
+    status: "failed",
+    tooluseScenarios: ["basic"],
+    missionScenarios: ["comparison"],
+    browserTooluseEnabled: false,
+    error: "mission comparison failed with exit code 1",
+  });
+
+  const report = buildValidationOpsReport([record], 10);
+
+  assert.equal(record.runType, "real-llm-acceptance");
+  assert.equal(record.issueCount, 1);
+  assert.equal(record.issues[0]?.kind, "real-llm-gate");
+  assert.equal(record.issues[0]?.bucket, "llm");
+  assert.equal(record.issues[0]?.severity, "critical");
+  assert.equal(record.issues[0]?.recommendedAction, "rerun-real-acceptance");
+  assert.equal(report.readiness.status, "failed");
+  assert.equal(report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance")?.status, "failed");
+  assert.equal(report.closedLoop.closedLoopStatus, "actionable");
+  assert.equal(report.closedLoop.totalCases, 2);
 });
 
 test("validation ops inspection surfaces fresh and stale baseline status", () => {

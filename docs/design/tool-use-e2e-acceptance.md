@@ -68,8 +68,10 @@ npm run acceptance:real -- --model-catalog models.local.json
 
 This is the preferred pre-release command. It runs the provider-native
 tool-use matrix with browser/direct-CDP coverage, then runs the mission route
-matrix through the user-facing mission creation path. Use the narrower commands
-below only while investigating a specific failure.
+matrix through the user-facing mission creation path. On completion it records
+a `real-llm-acceptance` validation-ops run under the daemon data directory, so
+Runtime → Release acceptance can show whether the latest real LLM gate passed.
+Use the narrower commands below only while investigating a specific failure.
 
 Run the default non-browser matrix:
 
@@ -108,6 +110,11 @@ The combined release gate accepts the same timeout knobs:
 ```bash
 npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 240000 --cdp-timeout-ms 45000
 ```
+
+By default the run is written to `<dataDir>/validation-ops-runs`, where
+`dataDir` is resolved from `--data-dir`, `TURNKEYAI_DATA_DIR`, config
+`dataDir`, or `~/.turnkeyai/data`. Use `--no-record-validation-ops` for an
+isolated experiment that should not affect the operator release gate.
 
 For environments without Chrome/CDP, the combined gate can skip only the
 provider-native browser/direct-CDP leg while still running the mission route
