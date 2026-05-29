@@ -15,7 +15,7 @@ interface MissionToolUseE2eOptions {
   matrixScenarios?: MissionE2eScenario[];
 }
 
-type MissionE2eScenario = "basic" | "comparison";
+type MissionE2eScenario = "basic" | "comparison" | "followup";
 
 interface Mission {
   id: string;
@@ -64,6 +64,8 @@ const FIXTURE_MARKER = "TURNKEYAI_MISSION_FIXTURE_OK";
 const COMPARISON_FINAL_MARKER = "TURNKEYAI_MISSION_COMPARISON_OK";
 const ALPHA_MARKER = "TURNKEYAI_VENDOR_ALPHA_OK";
 const BETA_MARKER = "TURNKEYAI_VENDOR_BETA_OK";
+const FOLLOWUP_PHASE_MARKER = "TURNKEYAI_MISSION_FOLLOWUP_PHASE_ONE";
+const FOLLOWUP_FINAL_MARKER = "TURNKEYAI_MISSION_FOLLOWUP_OK";
 
 interface FixtureServer {
   server: Server;
@@ -79,10 +81,23 @@ interface ScenarioSpec {
   finalMarker: string;
   evidenceMarkers: string[];
   answerTerms: string[];
+  answerPatterns?: Array<{ label: string; pattern: RegExp }>;
+  expectedSpawnCalls: number;
+  expectedSendCalls: number;
   expectedToolResults: number;
   expectedSpawnedSessions: number;
+  expectedContinuedSessions: number;
   minEvidenceEvents: number;
   expectedBullets: number;
+}
+
+interface MissionScenarioResult {
+  scenario: MissionE2eScenario;
+  mission: Mission;
+  timeline: ActivityEvent[];
+  metrics: MissionObservabilitySnapshot;
+  final: ActivityEvent;
+  quality: ReturnType<typeof evaluateFinalQuality>;
 }
 
 function parseOptions(args: string[]): MissionToolUseE2eOptions {
@@ -148,8 +163,8 @@ function parseScenarioList(value: string): MissionE2eScenario[] {
 }
 
 function parseScenarioName(value: string, argName: string): MissionE2eScenario {
-  if (value === "basic" || value === "comparison") return value;
-  throw new Error(`${argName} must be basic or comparison`);
+  if (value === "basic" || value === "comparison" || value === "followup") return value;
+  throw new Error(`${argName} must be basic, comparison, or followup`);
 }
 
 async function main(options: MissionToolUseE2eOptions): Promise<void> {
@@ -199,14 +214,10 @@ async function runMissionScenario(input: {
   fixture: FixtureServer;
   scenario: MissionE2eScenario;
   timeoutMs: number;
-}): Promise<{
-  scenario: MissionE2eScenario;
-  mission: Mission;
-  timeline: ActivityEvent[];
-  metrics: MissionObservabilitySnapshot;
-  final: ActivityEvent;
-  quality: ReturnType<typeof evaluateFinalQuality>;
-}> {
+}): Promise<MissionScenarioResult> {
+  if (input.scenario === "followup") {
+    return runMissionFollowupScenario(input);
+  }
   const spec = buildScenarioSpec(input.scenario, input.fixture);
   const mission = await createMission({
     baseUrl: input.baseUrl,
@@ -240,14 +251,78 @@ async function runMissionScenario(input: {
   return { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
-function printScenarioResult(result: {
+async function runMissionFollowupScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
   scenario: MissionE2eScenario;
-  mission: Mission;
-  timeline: ActivityEvent[];
-  metrics: MissionObservabilitySnapshot;
-  final: ActivityEvent;
-  quality: ReturnType<typeof evaluateFinalQuality>;
-}): void {
+  timeoutMs: number;
+}): Promise<MissionScenarioResult> {
+  const initialSpec = buildFollowupInitialSpec(input.fixture);
+  const finalSpec = buildScenarioSpec("followup", input.fixture);
+  const mission = await createMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec: initialSpec,
+  });
+  assert.ok(mission.threadId, "mission route must create a linked team thread");
+
+  const initial = await waitForMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    finalMarker: initialSpec.finalMarker,
+    timeoutMs: input.timeoutMs,
+  });
+  assertMissionToolUseTimeline(initial.timeline, initialSpec);
+  const sessionKey = extractFirstSessionKey(initial.timeline);
+  assert.ok(sessionKey, "follow-up E2E requires a session_key from the phase-one sessions_spawn result");
+
+  await requestJson<{ accepted: boolean; missionId: string }>({
+    method: "POST",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+    token: input.token,
+    body: {
+      content: [
+        "Continue this mission from the existing explore child session.",
+        "Call sessions_send exactly once using the session_key from the prior sessions_spawn tool result.",
+        "Do not call sessions_spawn, sessions_history, or sessions_list.",
+        `The sessions_send message must ask the child to return its complete final report containing ${FIXTURE_MARKER}.`,
+        `Final answer must include ${FOLLOWUP_FINAL_MARKER}, ${FIXTURE_MARKER}, sessions_send, the reused session_key, the phrase no duplicate session, and the exact words residual risk.`,
+        "Use plain Markdown with heading `Evidence` and exactly three bullets: same-session follow-up, fixture evidence, residual risk.",
+        "Put the final success marker in the same-session follow-up bullet. Do not create a separate marker bullet.",
+      ].join("\n"),
+    },
+  });
+
+  const result = await waitForMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    finalMarker: finalSpec.finalMarker,
+    timeoutMs: input.timeoutMs,
+  });
+  assertMissionToolUseTimeline(result.timeline, finalSpec);
+  assertFollowupReusedSession(result.timeline, sessionKey);
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  assertMissionMetrics(metrics, finalSpec);
+  const final = findFinalEvent(result.timeline, finalSpec.finalMarker);
+  assert.ok(final, "mission timeline must include a follow-up final assistant answer");
+  const quality = evaluateFinalQuality(final.text, finalSpec);
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `mission followup final answer quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "followup", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+function printScenarioResult(result: MissionScenarioResult): void {
   console.log("mission tool-use real llm e2e passed");
   console.log(`mission-scenario: ${result.scenario}`);
   console.log(`mission-id: ${result.mission.id}`);
@@ -370,6 +445,32 @@ async function createMission(input: {
 }
 
 function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer): ScenarioSpec {
+  if (scenario === "followup") {
+    return {
+      scenario,
+      title: "Mission route real follow-up E2E",
+      finalMarker: FOLLOWUP_FINAL_MARKER,
+      evidenceMarkers: [FIXTURE_MARKER],
+      answerTerms: ["sessions_send", "no duplicate session", "residual risk"],
+      answerPatterns: [{ label: "session key", pattern: /session[_ -]?key/i }],
+      expectedSpawnCalls: 1,
+      expectedSendCalls: 1,
+      expectedToolResults: 2,
+      expectedSpawnedSessions: 1,
+      expectedContinuedSessions: 1,
+      minEvidenceEvents: 2,
+      expectedBullets: 3,
+      desc: [
+        "Run phase 1 of the mission route follow-up E2E.",
+        "Use the available session tool instead of answering from memory.",
+        "Call sessions_spawn with agent_id=explore exactly once.",
+        `The explore sub-agent task must fetch ${fixture.basicUrl}, report the page title, marker ${FIXTURE_MARKER}, and return a reusable session summary.`,
+        `Phase 1 final answer must include ${FOLLOWUP_PHASE_MARKER}, ${FIXTURE_MARKER}, the exact session_key returned by sessions_spawn, and the exact words residual risk.`,
+        "Use plain Markdown with heading `Evidence` and exactly three bullets: session tool call, fixture marker, residual risk.",
+        "Do not call sessions_send during phase 1.",
+      ].join("\n"),
+    };
+  }
   if (scenario === "comparison") {
     return {
       scenario,
@@ -377,8 +478,11 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       finalMarker: COMPARISON_FINAL_MARKER,
       evidenceMarkers: [ALPHA_MARKER, BETA_MARKER],
       answerTerms: ["Vendor Alpha", "Vendor Beta", "Source coverage", "residual risk"],
+      expectedSpawnCalls: 2,
+      expectedSendCalls: 0,
       expectedToolResults: 2,
       expectedSpawnedSessions: 2,
+      expectedContinuedSessions: 0,
       minEvidenceEvents: 2,
       expectedBullets: 4,
       desc: [
@@ -403,8 +507,11 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
     finalMarker: FINAL_MARKER,
     evidenceMarkers: [FIXTURE_MARKER],
     answerTerms: ["sessions_spawn", "residual risk"],
+    expectedSpawnCalls: 1,
+    expectedSendCalls: 0,
     expectedToolResults: 1,
     expectedSpawnedSessions: 1,
+    expectedContinuedSessions: 0,
     minEvidenceEvents: 1,
     expectedBullets: 3,
     desc: [
@@ -418,6 +525,32 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       "The residual risk bullet must contain the exact words `residual risk`.",
       "Keep the final answer under 120 words. Do not use tables, links, code fences, or bold/italic markup.",
       "Do not include the final success marker unless the session tool result contains the fixture marker.",
+    ].join("\n"),
+  };
+}
+
+function buildFollowupInitialSpec(fixture: FixtureServer): ScenarioSpec {
+  return {
+    scenario: "followup",
+    title: "Mission route real follow-up E2E",
+    finalMarker: FOLLOWUP_PHASE_MARKER,
+    evidenceMarkers: [FIXTURE_MARKER],
+    answerTerms: ["sessions_spawn", "session_key", "residual risk"],
+    expectedSpawnCalls: 1,
+    expectedSendCalls: 0,
+    expectedToolResults: 1,
+    expectedSpawnedSessions: 1,
+    expectedContinuedSessions: 0,
+    minEvidenceEvents: 1,
+    expectedBullets: 3,
+    desc: [
+      "Run phase 1 of the mission route follow-up E2E.",
+      "Use the available session tool instead of answering from memory.",
+      "Call sessions_spawn with agent_id=explore exactly once.",
+      `The explore sub-agent task must fetch ${fixture.basicUrl}, report the page title, marker ${FIXTURE_MARKER}, and return a reusable session summary.`,
+      `Phase 1 final answer must include ${FOLLOWUP_PHASE_MARKER}, ${FIXTURE_MARKER}, the exact session_key returned by sessions_spawn, and the exact words residual risk.`,
+      "Use plain Markdown with heading `Evidence` and exactly three bullets: session tool call, fixture marker, residual risk.",
+      "Do not call sessions_send during phase 1.",
     ].join("\n"),
   };
 }
@@ -459,29 +592,46 @@ async function waitForMissionCompletion(input: {
 function assertMissionToolUseTimeline(timeline: ActivityEvent[], spec: ScenarioSpec): void {
   assert.ok(timeline.length > 0, "mission timeline must not be empty");
   const planIndex = timeline.findIndex((event) => event.kind === "plan");
-  const callIndexes = findToolPhaseIndexes(timeline, "call");
-  const progressIndexes = findToolPhaseIndexes(timeline, "progress");
-  const resultIndexes = findToolPhaseIndexes(timeline, "result");
+  const spawnCallIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "call");
+  const sendCallIndexes = findToolPhaseIndexes(timeline, "sessions_send", "call");
+  const callIndexes = [...spawnCallIndexes, ...sendCallIndexes].sort((a, b) => a - b);
+  const progressIndexes = [
+    ...findToolPhaseIndexes(timeline, "sessions_spawn", "progress"),
+    ...findToolPhaseIndexes(timeline, "sessions_send", "progress"),
+  ].sort((a, b) => a - b);
+  const spawnResultIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "result");
+  const sendResultIndexes = findToolPhaseIndexes(timeline, "sessions_send", "result");
+  const resultIndexes = [...spawnResultIndexes, ...sendResultIndexes].sort((a, b) => a - b);
   const callIndex = callIndexes[0] ?? -1;
   const resultIndex = resultIndexes.at(-1) ?? -1;
   const finalIndex = timeline.findIndex((event) => event.kind === "thought" && event.text.includes(spec.finalMarker));
   assert.ok(planIndex >= 0, "mission timeline must include the user plan event");
-  assert.ok(callIndex > planIndex, "sessions_spawn call must appear after the user plan");
+  assert.ok(callIndex > planIndex, "session tool call must appear after the user plan");
+  assert.equal(
+    spawnCallIndexes.length,
+    spec.expectedSpawnCalls,
+    `${spec.scenario} expected exactly ${spec.expectedSpawnCalls} sessions_spawn calls`
+  );
+  assert.equal(
+    sendCallIndexes.length,
+    spec.expectedSendCalls,
+    `${spec.scenario} expected exactly ${spec.expectedSendCalls} sessions_send calls`
+  );
   assert.equal(
     callIndexes.length,
     spec.expectedToolResults,
-    `${spec.scenario} expected exactly ${spec.expectedToolResults} sessions_spawn calls`
+    `${spec.scenario} expected exactly ${spec.expectedToolResults} session tool calls`
   );
   assert.equal(
     resultIndexes.length,
     spec.expectedToolResults,
-    `${spec.scenario} expected exactly ${spec.expectedToolResults} sessions_spawn results`
+    `${spec.scenario} expected exactly ${spec.expectedToolResults} session tool results`
   );
   for (const progressIndex of progressIndexes) {
     assert.ok(progressIndex > callIndex, "sessions_spawn progress must appear after the first tool call");
   }
-  assert.ok(resultIndex > callIndex, "sessions_spawn result must appear after the tool call");
-  assert.ok(finalIndex > resultIndex, "final answer must appear after the sessions_spawn result");
+  assert.ok(resultIndex > callIndex, "session tool result must appear after the tool call");
+  assert.ok(finalIndex > resultIndex, "final answer must appear after the session tool result");
   const resultEvidence = resultIndexes
     .map((index) => timeline[index]!)
     .map((event) => String(event.runtime?.["resultContent"] ?? event.text))
@@ -491,6 +641,31 @@ function assertMissionToolUseTimeline(timeline: ActivityEvent[], spec: ScenarioS
   }
   const danger = timeline.find((event) => event.emph === "danger" || event.kind === "recovery");
   assert.equal(danger, undefined, `mission E2E timeline contains recovery/danger event: ${danger?.text ?? ""}`);
+}
+
+function extractFirstSessionKey(timeline: ActivityEvent[]): string | null {
+  for (const event of timeline) {
+    if (event.runtime?.["toolName"] !== "sessions_spawn" || event.runtime?.["toolPhase"] !== "result") {
+      continue;
+    }
+    const content = String(event.runtime?.["resultContent"] ?? event.text);
+    const match = content.match(/"session_key"\s*:\s*"([^"]+)"/);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+function assertFollowupReusedSession(timeline: ActivityEvent[], expectedSessionKey: string): void {
+  const sendCalls = timeline.filter(
+    (event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "call"
+  );
+  assert.equal(sendCalls.length, 1, "follow-up E2E must call sessions_send exactly once");
+  const callInput = sendCalls[0]?.runtime?.["callInput"];
+  assert.equal(typeof callInput, "string", "sessions_send call must persist structured callInput");
+  const parsed = JSON.parse(callInput as string) as { session_key?: string };
+  assert.equal(parsed.session_key, expectedSessionKey, "sessions_send must reuse the phase-one session_key");
 }
 
 async function waitForMissionMetricsSettled(input: {
@@ -520,9 +695,13 @@ async function waitForMissionMetricsSettled(input: {
   throw new Error(`mission metrics did not settle after terminal completion: ${JSON.stringify(latest)}`);
 }
 
-function findToolPhaseIndexes(timeline: ActivityEvent[], phase: "call" | "progress" | "result"): number[] {
+function findToolPhaseIndexes(
+  timeline: ActivityEvent[],
+  toolName: "sessions_spawn" | "sessions_send",
+  phase: "call" | "progress" | "result"
+): number[] {
   return timeline.flatMap((event, index) =>
-    event.runtime?.["toolName"] === "sessions_spawn" && event.runtime?.["toolPhase"] === phase ? [index] : []
+    event.runtime?.["toolName"] === toolName && event.runtime?.["toolPhase"] === phase ? [index] : []
   );
 }
 
@@ -533,6 +712,7 @@ function assertMissionMetrics(metrics: MissionObservabilitySnapshot, spec: Scena
   assert.equal(metrics.tool.failed, 0, "mission metrics must not report failed tool results");
   assert.equal(metrics.tool.timeouts, 0, "mission metrics must not report timed-out tools");
   assert.equal(metrics.sessions.spawned, spec.expectedSpawnedSessions, "mission metrics must match spawned sub-agent sessions");
+  assert.equal(metrics.sessions.continued, spec.expectedContinuedSessions, "mission metrics must match continued sub-agent sessions");
   assert.equal(metrics.recovery.events, 0, "mission metrics must not report recovery events");
   assert.equal(metrics.liveness.active, 0, "completed mission must not retain active runtime subjects");
   assert.equal(metrics.liveness.waiting, 0, "completed mission must not retain waiting runtime subjects");
@@ -559,6 +739,9 @@ function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bullets: n
   }
   for (const term of spec.answerTerms) {
     if (!content.toLowerCase().includes(term.toLowerCase())) failures.push(`missing ${term}`);
+  }
+  for (const item of spec.answerPatterns ?? []) {
+    if (!item.pattern.test(content)) failures.push(`missing ${item.label}`);
   }
   if (/\b(assume|assumes|assuming|assumed|estimate|estimated|estimates|estimating|guess|guessed|guesses|guessing|probably|probable|maybe|perhaps|approximately|approximate)\b/i.test(content)) {
     failures.push("final answer contains unsupported/hedged claim language");

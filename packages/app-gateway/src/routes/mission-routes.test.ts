@@ -773,6 +773,51 @@ describe("mission-routes", () => {
       }
     });
 
+    it("POST /missions/:id/messages reopens a done mission while the follow-up runs", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator } = buildOrchestrator();
+        const createResp = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "done mission follow-up" },
+          }),
+          res: createResp.res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        const created = createResp.getJson() as Mission;
+        await flushMicrotasks();
+        await deps.missionStore.putRaw({
+          ...created,
+          status: "done",
+          progress: 1,
+        });
+
+        const followUpResp = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: `/missions/${created.id}/messages`,
+            body: { content: "continue the completed mission" },
+          }),
+          res: followUpResp.res,
+          url: new URL(`http://127.0.0.1/missions/${created.id}/messages`),
+          deps: { ...deps, orchestrator },
+        });
+
+        assert.equal(followUpResp.getStatus(), 202);
+        const reopened = await waitForMissionStatus(deps, created.id, "working");
+        assert.equal(reopened.progress < 1, true, "follow-up should make completion visibly in-flight again");
+        assert.equal(reopened.blockers, 0);
+      } finally {
+        t.cleanup();
+      }
+    });
+
     it("POST /missions/:id/messages accepts follow-up before the agent turn finishes", async () => {
       const t = tmpDir();
       try {
