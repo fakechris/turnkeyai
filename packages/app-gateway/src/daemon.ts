@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type {
   BrowserContinuationHint,
+  BrowserSession,
   BrowserSessionOwnerType,
   BrowserTaskAction,
   BrowserTaskResult,
@@ -115,7 +116,10 @@ import {
   type BridgeStatusInfo,
 } from "./routes/bridge-routes";
 import { handleControlCenterRoutes } from "./routes/control-center-routes";
-import { handleDiagnosticsRoutes } from "./routes/diagnostics-routes";
+import {
+  handleDiagnosticsRoutes,
+  type DiagnosticsBrowserHealthSnapshot,
+} from "./routes/diagnostics-routes";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
 import { handleMissionRoutes } from "./routes/mission-routes";
 import { handleRecoveryRoutes } from "./routes/recovery-routes";
@@ -275,6 +279,42 @@ async function buildBridgeStatusSnapshot(): Promise<BridgeStatusInfo> {
     sessionCount: sessions.length,
     now: clock.now(),
   });
+}
+
+async function buildBrowserHealthSnapshot(
+  sessions: BrowserSession[]
+): Promise<DiagnosticsBrowserHealthSnapshot> {
+  const inspectedSessions = [...sessions]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, 25);
+  const histories = (
+    await Promise.all(
+      inspectedSessions.map((session) =>
+        browserBridge.getSessionHistory({ browserSessionId: session.browserSessionId, limit: 5 }).catch(() => [])
+      )
+    )
+  )
+    .flat()
+    .sort((left, right) => right.completedAt - left.completedAt);
+  const recentFailures = histories.filter((entry) => entry.status === "failed");
+  const profileFallbacks = histories.filter((entry) => entry.profileFallback);
+  const latestProfileFallback = profileFallbacks[0];
+  return {
+    inspectedSessionCount: inspectedSessions.length,
+    recentHistoryCount: histories.length,
+    recentFailureCount: recentFailures.length,
+    profileFallbackCount: profileFallbacks.length,
+    ...(recentFailures[0]?.summary ? { latestFailureSummary: recentFailures[0].summary } : {}),
+    ...(latestProfileFallback?.profileFallback
+      ? {
+          latestProfileFallback: {
+            browserSessionId: latestProfileFallback.browserSessionId,
+            completedAt: latestProfileFallback.completedAt,
+            fallbackDir: latestProfileFallback.profileFallback.fallbackDir,
+          },
+        }
+      : {}),
+  };
 }
 
 // PR K2 — Mission Control stores (mission/work-item/activity/approval/
@@ -502,6 +542,12 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 201, thread);
     }
 
+    let browserSessionsForDiagnostics: Promise<BrowserSession[]> | null = null;
+    const listBrowserSessionsForDiagnostics = () => {
+      browserSessionsForDiagnostics ??= browserBridge.listSessions();
+      return browserSessionsForDiagnostics;
+    };
+
     if (
       await handleDiagnosticsRoutes({
         req,
@@ -547,7 +593,7 @@ const server = http.createServer(async (req, res) => {
             // losing real signal. Each source defaults to 0 on failure.
             let sessionCount = 0;
             try {
-              const sessions = await browserBridge.listSessions();
+              const sessions = await listBrowserSessionsForDiagnostics();
               sessionCount = sessions.length;
             } catch {}
             let relayPeerCount = 0;
@@ -564,6 +610,7 @@ const server = http.createServer(async (req, res) => {
               relayTargetCount,
             };
           },
+          browserHealthSnapshot: async () => buildBrowserHealthSnapshot(await listBrowserSessionsForDiagnostics()),
         },
       })
     ) {

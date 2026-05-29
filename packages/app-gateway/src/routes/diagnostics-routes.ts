@@ -52,9 +52,24 @@ export interface DiagnosticsRouteDeps {
     relayPeerCount: number;
     relayTargetCount: number;
   }>;
+  /** Recent browser runtime health, derived from session history. */
+  browserHealthSnapshot?(): Promise<DiagnosticsBrowserHealthSnapshot>;
 }
 
 export type DiagnosticsReadinessStatus = "ok" | "warn" | "error";
+
+export interface DiagnosticsBrowserHealthSnapshot {
+  inspectedSessionCount: number;
+  recentHistoryCount: number;
+  recentFailureCount: number;
+  profileFallbackCount: number;
+  latestFailureSummary?: string;
+  latestProfileFallback?: {
+    browserSessionId: string;
+    completedAt: number;
+    fallbackDir: string;
+  };
+}
 
 export interface DiagnosticsReadinessCheck {
   id: string;
@@ -165,6 +180,7 @@ async function buildReadinessChecks(
     buildAuthReadiness(deps.authMode),
     await buildModelCatalogReadiness(deps.modelCatalogPath),
     buildBrowserTransportReadiness(deps),
+    ...(await buildBrowserRuntimeReadiness(deps)),
     await buildLogFileReadiness(deps.logFile, logFileStat),
   ];
   return checks;
@@ -280,6 +296,81 @@ function buildBrowserTransportReadiness(deps: DiagnosticsRouteDeps): Diagnostics
   };
 }
 
+async function buildBrowserRuntimeReadiness(
+  deps: DiagnosticsRouteDeps
+): Promise<DiagnosticsReadinessCheck[]> {
+  if (!deps.browserHealthSnapshot) {
+    return [];
+  }
+  let snapshot: DiagnosticsBrowserHealthSnapshot;
+  try {
+    snapshot = await deps.browserHealthSnapshot();
+  } catch (error) {
+    return [
+      {
+        id: "browser_runtime",
+        label: "Browser runtime",
+        status: "warn",
+        detail: `Browser runtime history is not readable: ${errorMessageForDiagnostics(error)}.`,
+        action: "Open Runtime logs if browser tasks are stuck or repeatedly respawning.",
+      },
+    ];
+  }
+
+  if (snapshot.profileFallbackCount > 0) {
+    const latest = snapshot.latestProfileFallback;
+    return [
+      {
+        id: "browser_runtime",
+        label: "Browser runtime",
+        status: "warn",
+        detail: latest
+          ? `Recent browser tasks used isolated runtime profiles ${snapshot.profileFallbackCount} time(s); latest session ${latest.browserSessionId}.`
+          : `Recent browser tasks used isolated runtime profiles ${snapshot.profileFallbackCount} time(s).`,
+        action: latest
+          ? `A persistent browser profile was locked. Close the conflicting browser profile or revoke/retry the session; fallback dir: ${latest.fallbackDir}.`
+          : "A persistent browser profile was locked. Close the conflicting browser profile or revoke/retry the session.",
+      },
+    ];
+  }
+
+  if (snapshot.recentFailureCount > 0) {
+    return [
+      {
+        id: "browser_runtime",
+        label: "Browser runtime",
+        status: "warn",
+        detail: `Recent browser history includes ${snapshot.recentFailureCount} failed task(s).`,
+        action: snapshot.latestFailureSummary
+          ? `Latest failure: ${trimDiagnosticText(snapshot.latestFailureSummary, 180)}`
+          : "Open the mission timeline and runtime logs before retrying browser work.",
+      },
+    ];
+  }
+
+  if (snapshot.recentHistoryCount === 0) {
+    return [
+      {
+        id: "browser_runtime",
+        label: "Browser runtime",
+        status: "ok",
+        detail: snapshot.inspectedSessionCount === 0
+          ? "No live browser sessions yet."
+          : `No recent browser task history across ${snapshot.inspectedSessionCount} session(s).`,
+      },
+    ];
+  }
+
+  return [
+    {
+      id: "browser_runtime",
+      label: "Browser runtime",
+      status: "ok",
+      detail: `Recent browser history is healthy across ${snapshot.inspectedSessionCount} session(s).`,
+    },
+  ];
+}
+
 function buildLogFileReadiness(
   logFile: string,
   logFileStat: Awaited<ReturnType<typeof stat>> | null
@@ -364,6 +455,17 @@ function shouldRedactEndpointPathSegment(segment: string): boolean {
     return true;
   }
   return false;
+}
+
+function errorMessageForDiagnostics(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return trimDiagnosticText(error.message.trim(), 180);
+  if (typeof error === "string" && error.trim()) return trimDiagnosticText(error.trim(), 180);
+  return "unknown error";
+}
+
+function trimDiagnosticText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function safeDecodeURIComponent(value: string): string {

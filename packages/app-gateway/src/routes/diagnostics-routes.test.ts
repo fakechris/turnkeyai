@@ -250,6 +250,82 @@ describe("diagnostics-routes", () => {
       assert.ok(!getBody().includes("123e4567-e89b-12d3-a456-426614174000"), "diagnostics must not expose CDP session ids");
     });
 
+    it("surfaces recent browser profile fallback as setup health warning", async () => {
+      const { res, getJson } = createResponse();
+      await handleDiagnosticsRoutes({
+        req: createRequest({ method: "GET", url: "/diagnostics" }),
+        res,
+        url: new URL("http://127.0.0.1/diagnostics"),
+        deps: makeDeps({
+          browserHealthSnapshot: async () => ({
+            inspectedSessionCount: 2,
+            recentHistoryCount: 3,
+            recentFailureCount: 0,
+            profileFallbackCount: 1,
+            latestProfileFallback: {
+              browserSessionId: "browser-session-locked",
+              completedAt: 1_700_000_000_100,
+              fallbackDir: "/tmp/fallback-profile",
+            },
+          }),
+        }),
+      });
+      const body = getJson() as {
+        readiness: { status: string; checks: Array<{ id: string; status: string; detail: string; action?: string }> };
+      };
+      const runtime = body.readiness.checks.find((check) => check.id === "browser_runtime");
+      assert.equal(body.readiness.status, "warn");
+      assert.equal(runtime?.status, "warn");
+      assert.match(runtime?.detail ?? "", /isolated runtime profiles 1 time/);
+      assert.match(runtime?.action ?? "", /persistent browser profile was locked/);
+    });
+
+    it("surfaces recent browser task failures as setup health warning", async () => {
+      const { res, getJson } = createResponse();
+      await handleDiagnosticsRoutes({
+        req: createRequest({ method: "GET", url: "/diagnostics" }),
+        res,
+        url: new URL("http://127.0.0.1/diagnostics"),
+        deps: makeDeps({
+          browserHealthSnapshot: async () => ({
+            inspectedSessionCount: 1,
+            recentHistoryCount: 4,
+            recentFailureCount: 2,
+            profileFallbackCount: 0,
+            latestFailureSummary: "Browser send failed for session browser-session-1. Error: target closed.",
+          }),
+        }),
+      });
+      const body = getJson() as {
+        readiness: { status: string; checks: Array<{ id: string; status: string; action?: string }> };
+      };
+      const runtime = body.readiness.checks.find((check) => check.id === "browser_runtime");
+      assert.equal(body.readiness.status, "warn");
+      assert.equal(runtime?.status, "warn");
+      assert.match(runtime?.action ?? "", /target closed/);
+    });
+
+    it("does not fail diagnostics when browser health history cannot be read", async () => {
+      const { res, getStatus, getJson } = createResponse();
+      await handleDiagnosticsRoutes({
+        req: createRequest({ method: "GET", url: "/diagnostics" }),
+        res,
+        url: new URL("http://127.0.0.1/diagnostics"),
+        deps: makeDeps({
+          browserHealthSnapshot: async () => {
+            throw new Error("history store unavailable");
+          },
+        }),
+      });
+      const body = getJson() as {
+        readiness: { checks: Array<{ id: string; status: string; detail: string }> };
+      };
+      const runtime = body.readiness.checks.find((check) => check.id === "browser_runtime");
+      assert.equal(getStatus(), 200);
+      assert.equal(runtime?.status, "warn");
+      assert.match(runtime?.detail ?? "", /history store unavailable/);
+    });
+
     it("supports HEAD with no body", async () => {
       const { res, getStatus, getBody, headers } = createResponse();
       await handleDiagnosticsRoutes({
