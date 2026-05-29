@@ -17,6 +17,18 @@ interface ProbeResult {
   error?: string;
 }
 
+interface DiagnosticsReadinessPayload {
+  readiness?: {
+    checks?: Array<{
+      id?: unknown;
+      label?: unknown;
+      status?: unknown;
+      detail?: unknown;
+      action?: unknown;
+    }>;
+  };
+}
+
 function getRuntimePaths() {
   const rootDir = process.env.TURNKEYAI_HOME?.trim() || path.join(homedir(), ".turnkeyai");
   return {
@@ -78,6 +90,30 @@ async function probeAuthenticatedUrl(
       if (token) headers.authorization = `Bearer ${token}`;
       const response = await fetch(url, { headers, signal: controller.signal });
       return { ok: response.ok, statusCode: response.status };
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+async function fetchAuthenticatedJson<T>(
+  url: string,
+  token: string | null
+): Promise<{ ok: true; statusCode: number; json: T } | { ok: false; statusCode?: number; error?: string }> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    try {
+      const headers: Record<string, string> = {};
+      if (token) headers.authorization = `Bearer ${token}`;
+      const response = await fetch(url, { headers, signal: controller.signal });
+      if (!response.ok) {
+        return { ok: false, statusCode: response.status };
+      }
+      const json = (await response.json()) as T;
+      return { ok: true, statusCode: response.status, json };
     } finally {
       clearTimeout(timeout);
     }
@@ -234,6 +270,58 @@ async function checkDaemonApiAuth(
   };
 }
 
+async function checkDaemonReadiness(
+  paths: ReturnType<typeof getRuntimePaths>,
+  daemonHealthy: boolean,
+  daemonApiAuthenticated: boolean
+): Promise<CheckResult[]> {
+  if (!daemonHealthy || !daemonApiAuthenticated) return [];
+  const config = readConfig(paths.configFile);
+  const token = resolveDaemonCliToken(process.env, config?.token, "read");
+  if (!token) return [];
+  const baseUrl = resolveDaemonBaseUrl(paths);
+  const result = await fetchAuthenticatedJson<DiagnosticsReadinessPayload>(`${baseUrl}/diagnostics`, token.token);
+  if (!result.ok) {
+    return [
+      {
+        name: "daemon readiness",
+        status: "warn",
+        detail: result.statusCode
+          ? `/diagnostics returned HTTP ${result.statusCode}`
+          : `/diagnostics unreachable: ${result.error ?? "request failed"}`,
+      },
+    ];
+  }
+  const checks = Array.isArray(result.json.readiness?.checks) ? result.json.readiness.checks : null;
+  if (!checks) {
+    return [
+      {
+        name: "daemon readiness",
+        status: "warn",
+        detail: "/diagnostics did not include readiness checks",
+      },
+    ];
+  }
+  return checks.map((check) => {
+    const status = normalizeReadinessStatus(check.status);
+    const label = typeof check.label === "string" && check.label.trim() ? check.label.trim() : "readiness";
+    const detail = typeof check.detail === "string" && check.detail.trim() ? check.detail.trim() : "no detail";
+    const action = typeof check.action === "string" && check.action.trim() ? ` next=${check.action.trim()}` : "";
+    return {
+      name: `readiness: ${label}`.slice(0, 80),
+      status,
+      detail: `${detail}${action}`,
+    };
+  });
+}
+
+function normalizeReadinessStatus(status: unknown): CheckResult["status"] {
+  if (status === "ok") return "ok";
+  if (status === "warn") return "warn";
+  if (status === "error") return "fail";
+  return "warn";
+}
+
 async function checkRelayExtension(
   paths: ReturnType<typeof getRuntimePaths>,
   transportMode: string
@@ -306,7 +394,9 @@ export async function runDoctor(_args: string[]): Promise<void> {
   const healthCheck = await checkDaemonHealth(paths);
   checks.push(await checkPort(paths, healthCheck.status === "ok"));
   checks.push(healthCheck);
-  checks.push(await checkDaemonApiAuth(paths, healthCheck.status === "ok"));
+  const apiAuthCheck = await checkDaemonApiAuth(paths, healthCheck.status === "ok");
+  checks.push(apiAuthCheck);
+  checks.push(...(await checkDaemonReadiness(paths, healthCheck.status === "ok", apiAuthCheck.status === "ok")));
   checks.push(await checkRelayExtension(paths, transportMode));
   const transport = await checkTransportSpecific();
   if (transport) checks.push(transport);
