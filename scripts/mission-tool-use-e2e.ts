@@ -15,7 +15,7 @@ interface MissionToolUseE2eOptions {
   matrixScenarios?: MissionE2eScenario[];
 }
 
-type MissionE2eScenario = "basic" | "comparison" | "followup" | "cancel";
+type MissionE2eScenario = "basic" | "comparison" | "followup" | "cancel" | "approval";
 
 interface Mission {
   id: string;
@@ -31,6 +31,7 @@ interface ActivityEvent {
   emph?: string;
   runtime?: Record<string, unknown>;
   tags?: string[];
+  approvalId?: string;
 }
 
 interface MissionObservabilitySnapshot {
@@ -45,6 +46,11 @@ interface MissionObservabilitySnapshot {
   sessions: {
     spawned: number;
     continued: number;
+  };
+  approvals: {
+    requested: number;
+    applied: number;
+    decided: number;
   };
   recovery: {
     events: number;
@@ -68,6 +74,8 @@ const BETA_MARKER = "TURNKEYAI_VENDOR_BETA_OK";
 const FOLLOWUP_PHASE_MARKER = "TURNKEYAI_MISSION_FOLLOWUP_PHASE_ONE";
 const FOLLOWUP_FINAL_MARKER = "TURNKEYAI_MISSION_FOLLOWUP_OK";
 const CANCEL_FINAL_MARKER = "TURNKEYAI_MISSION_CANCEL_OK";
+const APPROVAL_MARKER = "TURNKEYAI_APPROVAL_FIXTURE_OK";
+const APPROVAL_FINAL_MARKER = "TURNKEYAI_MISSION_APPROVAL_OK";
 
 interface FixtureServer {
   server: Server;
@@ -75,6 +83,7 @@ interface FixtureServer {
   alphaUrl: string;
   betaUrl: string;
   slowUrl: string;
+  approvalUrl: string;
 }
 
 interface ScenarioSpec {
@@ -112,6 +121,14 @@ interface WorkerSessionRecord {
     workerType?: string;
     lastError?: { message?: string };
   };
+}
+
+interface ApprovalRecord {
+  id: string;
+  missionId: string;
+  action: string;
+  decision?: unknown;
+  requestedAtMs?: number;
 }
 
 function parseOptions(args: string[]): MissionToolUseE2eOptions {
@@ -177,8 +194,8 @@ function parseScenarioList(value: string): MissionE2eScenario[] {
 }
 
 function parseScenarioName(value: string, argName: string): MissionE2eScenario {
-  if (value === "basic" || value === "comparison" || value === "followup" || value === "cancel") return value;
-  throw new Error(`${argName} must be basic, comparison, followup, or cancel`);
+  if (value === "basic" || value === "comparison" || value === "followup" || value === "cancel" || value === "approval") return value;
+  throw new Error(`${argName} must be basic, comparison, followup, cancel, or approval`);
 }
 
 async function main(options: MissionToolUseE2eOptions): Promise<void> {
@@ -235,6 +252,9 @@ async function runMissionScenario(input: {
   if (input.scenario === "cancel") {
     return runMissionCancelScenario(input);
   }
+  if (input.scenario === "approval") {
+    return runMissionApprovalScenario(input);
+  }
   const spec = buildScenarioSpec(input.scenario, input.fixture);
   const mission = await createMission({
     baseUrl: input.baseUrl,
@@ -248,6 +268,7 @@ async function runMissionScenario(input: {
     missionId: mission.id,
     finalMarker: spec.finalMarker,
     timeoutMs: input.timeoutMs,
+    failFastDoneWithoutMarker: true,
   });
   assertMissionToolUseTimeline(result.timeline, spec);
   const metrics = await waitForMissionMetricsSettled({
@@ -409,6 +430,66 @@ async function runMissionCancelScenario(input: {
   return { scenario: "cancel", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
+async function runMissionApprovalScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  scenario: MissionE2eScenario;
+  timeoutMs: number;
+}): Promise<MissionScenarioResult> {
+  const spec = buildScenarioSpec("approval", input.fixture);
+  const mission = await createMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "mission route must create a linked team thread");
+
+  const approval = await waitForApprovalRequest({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    action: "browser.form.submit",
+    timeoutMs: Math.min(input.timeoutMs, 90_000),
+  });
+  await requestJson<unknown>({
+    method: "POST",
+    url: `${input.baseUrl}/approvals/${encodeURIComponent(approval.id)}/decision`,
+    token: input.token,
+    body: {
+      decision: "approved",
+      decidedBy: "mission-e2e",
+      reason: "approving isolated mission E2E approval-gate fixture",
+    },
+  });
+
+  const result = await waitForMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    finalMarker: spec.finalMarker,
+    timeoutMs: input.timeoutMs,
+  });
+  assertMissionToolUseTimeline(result.timeline, spec);
+  assertMissionApprovalTimeline(result.timeline, spec, approval.id);
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  assertMissionApprovalMetrics(metrics, spec);
+  const final = findFinalEvent(result.timeline, spec.finalMarker);
+  assert.ok(final, "mission timeline must include an approval final assistant answer");
+  const quality = evaluateFinalQuality(final.text, spec);
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `mission approval final answer quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "approval", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
 function printScenarioResult(result: MissionScenarioResult): void {
   console.log("mission tool-use real llm e2e passed");
   console.log(`mission-scenario: ${result.scenario}`);
@@ -419,6 +500,9 @@ function printScenarioResult(result: MissionScenarioResult): void {
   console.log(`mission-quality-gate: ${result.metrics.qualityGate.status}`);
   console.log(`mission-metrics-tools: ${result.metrics.tool.requested}/${result.metrics.tool.results}`);
   console.log(`mission-metrics-sessions: ${result.metrics.sessions.spawned}/${result.metrics.sessions.continued}`);
+  console.log(
+    `mission-metrics-approvals: ${result.metrics.approvals.requested}/${result.metrics.approvals.decided}/${result.metrics.approvals.applied}`
+  );
   console.log(
     `mission-metrics-liveness: ${result.metrics.liveness.active}/${result.metrics.liveness.waiting}/${result.metrics.liveness.stale}`
   );
@@ -518,6 +602,21 @@ async function startFixtureServer(): Promise<FixtureServer> {
 </html>`);
       return;
     }
+    if (pathname === "/approval-form") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head><title>Approval Gate Fixture</title></head>
+  <body>
+    <main>
+      <h1>Approval gate fixture</h1>
+      <p id="marker">${APPROVAL_MARKER}</p>
+      <p>This local page is safe evidence for browser.form.submit approval gating; no external mutation is performed.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
     res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     res.end("not found");
     return;
@@ -529,6 +628,7 @@ async function startFixtureServer(): Promise<FixtureServer> {
     alphaUrl: `http://127.0.0.1:${port}/vendor-alpha`,
     betaUrl: `http://127.0.0.1:${port}/vendor-beta`,
     slowUrl: `http://127.0.0.1:${port}/slow-fixture`,
+    approvalUrl: `http://127.0.0.1:${port}/approval-form`,
   };
 }
 
@@ -552,6 +652,45 @@ async function createMission(input: {
 }
 
 function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer): ScenarioSpec {
+  if (scenario === "approval") {
+    return {
+      scenario,
+      title: "Mission route approval-gated browser E2E",
+      finalMarker: APPROVAL_FINAL_MARKER,
+      evidenceMarkers: [APPROVAL_MARKER],
+      answerTerms: ["permission.query", "permission.result", "permission.applied", "browser.form.submit", "residual risk"],
+      evidenceLinePatterns: [
+        { label: "approval request evidence", pattern: /^\s*(?:[-*+]\s+)?approval request\s*:/im },
+        { label: "approval decision/application evidence", pattern: /^\s*(?:[-*+]\s+)?approval decision\/application\s*:/im },
+        { label: "browser fixture evidence", pattern: /^\s*(?:[-*+]\s+)?browser fixture evidence\s*:/im },
+        { label: "residual risk evidence", pattern: /^\s*(?:[-*+]\s+)?residual risk\s*:/im },
+      ],
+      allowLabeledEvidenceWithoutBullets: true,
+      expectedSpawnCalls: 1,
+      expectedSendCalls: 0,
+      expectedToolResults: 1,
+      expectedSpawnedSessions: 1,
+      expectedContinuedSessions: 0,
+      minEvidenceEvents: 1,
+      expectedBullets: 4,
+      desc: [
+        "Run the mission route approval-gated browser E2E.",
+        "Use the available session tool instead of answering from memory.",
+        "Call sessions_spawn with agent_id=browser exactly once.",
+        "Do not call permission_query, permission_result, or permission_applied directly; the runtime gate must emit those while handling sessions_spawn.",
+        "The browser task must include the exact action phrase browser.form.submit and the word submit so the runtime approval gate is exercised before browser work starts.",
+        `After the runtime approval gate is cleared, the browser task must open ${fixture.approvalUrl}, verify marker ${APPROVAL_MARKER}, and report that this fixture performs no external mutation.`,
+        "Do not ask the browser sub-agent to click a real submit control; this is an approval-gate fixture, not a real external mutation.",
+        "Use this exact final answer shape after the browser worker result returns:",
+        "## Evidence",
+        `- Approval request: ${APPROVAL_FINAL_MARKER}; permission.query blocked browser.form.submit before browser work started.`,
+        "- Approval decision/application: permission.result approved the request and permission.applied cached it for the runtime gate.",
+        `- Browser fixture evidence: sessions_spawn(browser) verified ${APPROVAL_MARKER} on the local fixture and no external mutation was performed.`,
+        "- Residual risk: this validates the approval gate and local fixture path, not a real external submit.",
+        "Do not use tables, links, code fences, or bold/italic markup.",
+      ].join("\n"),
+    };
+  }
   if (scenario === "cancel") {
     return {
       scenario,
@@ -596,7 +735,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       finalMarker: FOLLOWUP_FINAL_MARKER,
       evidenceMarkers: [FIXTURE_MARKER],
       answerTerms: ["sessions_send", "no duplicate session", "residual risk"],
-      answerPatterns: [{ label: "session key", pattern: /session[_ -]?key/i }],
+      answerPatterns: [{ label: "same-session continuity", pattern: /same[- ]session|reused session|existing session/i }],
       expectedSpawnCalls: 1,
       expectedSendCalls: 1,
       expectedToolResults: 2,
@@ -864,6 +1003,54 @@ async function waitForToolCallEvent(input: {
   throw new Error(`mission did not emit ${input.toolName} call before cancellation:\n${summarizeMissionState(null, latestTimeline)}`);
 }
 
+async function waitForApprovalRequest(input: {
+  baseUrl: string;
+  token: string;
+  missionId: string;
+  action: string;
+  timeoutMs: number;
+}): Promise<ApprovalRecord> {
+  const startedAt = Date.now();
+  let latestApprovals: ApprovalRecord[] = [];
+  let latestMission: Mission | null = null;
+  while (Date.now() - startedAt < input.timeoutMs) {
+    latestApprovals = await requestJson<ApprovalRecord[]>({
+      method: "GET",
+      url: `${input.baseUrl}/approvals`,
+      token: input.token,
+    });
+    const approval = latestApprovals.find(
+      (item) => item.missionId === input.missionId && item.action === input.action && item.decision == null
+    );
+    latestMission = await requestJson<Mission>({
+      method: "GET",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}`,
+      token: input.token,
+    });
+    if (approval) {
+      assert.equal(latestMission.status, "needs_approval", "mission must expose needs_approval while approval is pending");
+      return approval;
+    }
+    if (latestMission.status === "blocked" || latestMission.status === "done") {
+      const timeline = await requestJson<ActivityEvent[]>({
+        method: "GET",
+        url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}/timeline?limit=200`,
+        token: input.token,
+      });
+      throw new Error(
+        `mission reached ${latestMission.status} before approval ${input.action} was requested:\n${summarizeMissionState(latestMission, timeline)}`
+      );
+    }
+    await sleep(500);
+  }
+  throw new Error(
+    `mission did not request approval ${input.action} within ${input.timeoutMs}ms: ${JSON.stringify({
+      mission: latestMission,
+      approvals: latestApprovals,
+    })}`
+  );
+}
+
 function assertMissionCancelTimeline(timeline: ActivityEvent[], spec: ScenarioSpec): void {
   assert.ok(timeline.length > 0, "mission cancellation timeline must not be empty");
   const planIndex = timeline.findIndex((event) => event.kind === "plan");
@@ -880,6 +1067,28 @@ function assertMissionCancelTimeline(timeline: ActivityEvent[], spec: ScenarioSp
   const resultBlob = [result?.text ?? "", String(result?.runtime?.["resultContent"] ?? "")].join("\n");
   assert.match(resultBlob, /\bcancel(?:led|ed)?\b/i, "cancelled sessions_spawn result must name cancellation");
   assert.equal(result?.emph, "danger", "cancelled sessions_spawn result should be marked as an attention event");
+}
+
+function assertMissionApprovalTimeline(timeline: ActivityEvent[], spec: ScenarioSpec, approvalId: string): void {
+  const approvalEvents = timeline.filter((event) => event.kind === "approval" || event.approvalId === approvalId);
+  assert.ok(approvalEvents.length >= 2, "approval E2E must record request and decision/application events");
+  const eventTypes = timeline.map((event) => String(event.runtime?.["eventType"] ?? "")).filter(Boolean);
+  assert.ok(eventTypes.includes("permission.query"), "approval E2E timeline must include permission.query");
+  assert.ok(eventTypes.includes("permission.result"), "approval E2E timeline must include permission.result");
+  assert.ok(eventTypes.includes("permission.applied"), "approval E2E timeline must include permission.applied");
+
+  const callIndex = findToolPhaseIndexes(timeline, "sessions_spawn", "call")[0] ?? -1;
+  const resultIndex = findToolPhaseIndexes(timeline, "sessions_spawn", "result")[0] ?? -1;
+  const queryIndex = timeline.findIndex((event) => event.runtime?.["eventType"] === "permission.query");
+  const decisionIndex = timeline.findIndex((event) => event.runtime?.["eventType"] === "permission.result");
+  const appliedIndex = timeline.findIndex((event) => event.runtime?.["eventType"] === "permission.applied");
+  const finalIndex = timeline.findIndex((event) => event.kind === "thought" && event.text.includes(spec.finalMarker));
+  assert.ok(queryIndex > callIndex, "permission.query must occur after the sessions_spawn call");
+  assert.ok(decisionIndex > queryIndex, "permission.result must occur after permission.query");
+  assert.ok(appliedIndex > decisionIndex, "permission.applied must occur after permission.result");
+  assert.ok(appliedIndex > queryIndex, "permission.applied must occur after permission.query");
+  assert.ok(resultIndex > appliedIndex, "browser worker result must occur after permission.applied");
+  assert.ok(finalIndex > resultIndex, "final answer must appear after the approved browser result");
 }
 
 async function assertWorkerSessionCancelled(input: {
@@ -964,6 +1173,13 @@ function assertMissionCancelMetrics(metrics: MissionObservabilitySnapshot, spec:
   assert.equal(metrics.liveness.stale, 0, "cancel E2E must not report stale runtime subjects");
   assert.equal(metrics.qualityGate.status, "blocked", "cancel E2E should keep failed-tool attention visible");
   assert.ok(metrics.qualityGate.evidenceEvents >= spec.minEvidenceEvents, "cancel E2E must count the cancelled tool result as evidence");
+}
+
+function assertMissionApprovalMetrics(metrics: MissionObservabilitySnapshot, spec: ScenarioSpec): void {
+  assertMissionMetrics(metrics, spec);
+  assert.equal(metrics.approvals.requested, 1, "approval E2E must count one requested approval");
+  assert.equal(metrics.approvals.decided, 1, "approval E2E must count one approval decision");
+  assert.equal(metrics.approvals.applied, 1, "approval E2E must count one applied approval");
 }
 
 function findFinalEvent(timeline: ActivityEvent[], finalMarker: string): ActivityEvent | null {

@@ -113,7 +113,7 @@ export function buildMissionObservabilitySnapshot(input: {
     approvals: {
       requested: approvalEvents.filter((event) => /requested approval|permission\.query/i.test(eventTextBlob(event))).length,
       applied: approvalEvents.filter((event) => /applied approval|permission\.applied/i.test(eventTextBlob(event))).length,
-      decided: approvalEvents.filter((event) => /\bapproved\b|\bdenied\b|permission\.result/i.test(eventTextBlob(event))).length,
+      decided: approvalEvents.filter(isApprovalDecisionEvent).length,
     },
     recovery: {
       events: recoveryEvents.length,
@@ -307,6 +307,14 @@ function distinctRuntimeValues(events: ActivityEvent[], key: string): Set<string
 
 function eventTextBlob(event: ActivityEvent): string {
   return [event.text, event.tags?.join(" ") ?? "", event.runtime ? Object.values(event.runtime).join(" ") : ""].join(" ");
+}
+
+function isApprovalDecisionEvent(event: ActivityEvent): boolean {
+  const runtimeEventType = event.runtime?.eventType;
+  if (runtimeEventType === "permission.result") {
+    return true;
+  }
+  return /^(approved|denied)\b/i.test(event.text.trim());
 }
 
 function mentionsResidualRisk(text: string): boolean {
