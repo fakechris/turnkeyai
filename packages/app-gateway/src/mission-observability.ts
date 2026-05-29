@@ -82,7 +82,9 @@ export function buildMissionObservabilitySnapshot(input: {
   const finalAnswer = latestFinalAnswer(input.mission, events);
   const evidenceEvents = countEvidenceEvents(events);
   const recoveryEvents = events.filter((event) => event.kind === "recovery");
-  const liveness = summarizeRuntimeLiveness(input.progressEvents ?? [], input.nowMs);
+  const liveness = summarizeRuntimeLiveness(input.progressEvents ?? [], input.nowMs, {
+    ...(terminal && finalAnswer ? { terminalLivenessCutoffMs: finalAnswer.tMs + 1_000 } : {}),
+  });
   const checks = buildQualityChecks({
     mission: input.mission,
     finalAnswer,
@@ -181,7 +183,8 @@ function buildQualityChecks(input: {
 
 function summarizeRuntimeLiveness(
   progressEvents: RuntimeProgressEvent[],
-  nowMs: number
+  nowMs: number,
+  options: { terminalLivenessCutoffMs?: number } = {}
 ): MissionObservabilitySnapshot["liveness"] {
   const bySubjectTask = new Map<string, RuntimeProgressEvent[]>();
   for (const event of progressEvents) {
@@ -210,6 +213,13 @@ function summarizeRuntimeLiveness(
   let lastProgressAtMs: number | undefined;
   const staleSubjects: MissionObservabilitySnapshot["liveness"]["staleSubjects"] = [];
   for (const event of latestBySubject.values()) {
+    if (
+      options.terminalLivenessCutoffMs !== undefined &&
+      !isTerminalProgress(event) &&
+      event.recordedAt <= options.terminalLivenessCutoffMs
+    ) {
+      continue;
+    }
     lastProgressAtMs = Math.max(lastProgressAtMs ?? event.recordedAt, event.recordedAt);
     if (isTerminalProgress(event)) {
       continue;
@@ -252,6 +262,9 @@ function compareProgress(left: RuntimeProgressEvent, right: RuntimeProgressEvent
 }
 
 function isTerminalProgress(event: RuntimeProgressEvent): boolean {
+  if (event.closeKind) {
+    return true;
+  }
   if (event.continuityState === "terminal" || event.continuityState === "resolved") {
     return true;
   }

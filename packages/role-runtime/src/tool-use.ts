@@ -1666,6 +1666,11 @@ async function sendWorkerWithOptionalTimeout(
   let hardTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let hardTimeoutFired = false;
   const sendPromise = workerRuntime.send(input);
+  sendPromise.catch(() => {
+    // The caller may already have received a timeout result while the
+    // interrupted worker is still unwinding. Keep observing that original
+    // send so a later rejection cannot terminate the daemon.
+  });
   const timeoutPromise = new Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT>((resolve) => {
     softTimeoutHandle = setTimeout(() => {
       hardTimeoutHandle = setTimeout(() => {
@@ -1728,6 +1733,11 @@ async function raceTimeoutSummary(
     typeof summaryGraceMs === "number" && Number.isFinite(summaryGraceMs) && summaryGraceMs > 0
       ? Math.floor(summaryGraceMs)
       : DEFAULT_WORKER_TIMEOUT_SUMMARY_GRACE_MS;
+  summaryPromise.catch(() => {
+    // If the no-tools summary pass exceeds its grace window, it may still
+    // reject later while the parent has already moved on with timeout
+    // recovery. Observe it to preserve process liveness.
+  });
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<null>((resolve) => {
     timeoutHandle = setTimeout(() => resolve(null), graceMs);
