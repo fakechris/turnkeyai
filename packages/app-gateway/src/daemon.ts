@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type {
   BrowserContinuationHint,
+  BrowserSession,
   BrowserSessionOwnerType,
   BrowserTaskAction,
   BrowserTaskResult,
@@ -115,7 +116,10 @@ import {
   type BridgeStatusInfo,
 } from "./routes/bridge-routes";
 import { handleControlCenterRoutes } from "./routes/control-center-routes";
-import { handleDiagnosticsRoutes } from "./routes/diagnostics-routes";
+import {
+  handleDiagnosticsRoutes,
+  type DiagnosticsBrowserHealthSnapshot,
+} from "./routes/diagnostics-routes";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
 import { handleMissionRoutes } from "./routes/mission-routes";
 import { handleRecoveryRoutes } from "./routes/recovery-routes";
@@ -277,19 +281,9 @@ async function buildBridgeStatusSnapshot(): Promise<BridgeStatusInfo> {
   });
 }
 
-async function buildBrowserHealthSnapshot(): Promise<{
-  inspectedSessionCount: number;
-  recentHistoryCount: number;
-  recentFailureCount: number;
-  profileFallbackCount: number;
-  latestFailureSummary?: string;
-  latestProfileFallback?: {
-    browserSessionId: string;
-    completedAt: number;
-    fallbackDir: string;
-  };
-}> {
-  const sessions = await browserBridge.listSessions();
+async function buildBrowserHealthSnapshot(
+  sessions: BrowserSession[]
+): Promise<DiagnosticsBrowserHealthSnapshot> {
   const inspectedSessions = [...sessions]
     .sort((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, 25);
@@ -548,6 +542,12 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 201, thread);
     }
 
+    let browserSessionsForDiagnostics: Promise<BrowserSession[]> | null = null;
+    const listBrowserSessionsForDiagnostics = () => {
+      browserSessionsForDiagnostics ??= browserBridge.listSessions();
+      return browserSessionsForDiagnostics;
+    };
+
     if (
       await handleDiagnosticsRoutes({
         req,
@@ -593,7 +593,7 @@ const server = http.createServer(async (req, res) => {
             // losing real signal. Each source defaults to 0 on failure.
             let sessionCount = 0;
             try {
-              const sessions = await browserBridge.listSessions();
+              const sessions = await listBrowserSessionsForDiagnostics();
               sessionCount = sessions.length;
             } catch {}
             let relayPeerCount = 0;
@@ -610,7 +610,7 @@ const server = http.createServer(async (req, res) => {
               relayTargetCount,
             };
           },
-          browserHealthSnapshot: buildBrowserHealthSnapshot,
+          browserHealthSnapshot: async () => buildBrowserHealthSnapshot(await listBrowserSessionsForDiagnostics()),
         },
       })
     ) {
