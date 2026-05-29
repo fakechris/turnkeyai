@@ -107,6 +107,29 @@ try {
     );
     await noTokenPage.close();
 
+    const operatorRuntimePage = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+    await operatorRuntimePage.addInitScript(() => {
+      sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-operator-token");
+      sessionStorage.setItem("turnkeyai.controlCenter.scope", "operator");
+    });
+    await operatorRuntimePage.goto(`http://127.0.0.1:${port}/app#/runtime`, {
+      waitUntil: "networkidle",
+    });
+    await operatorRuntimePage.waitForSelector("text=Runtime attention");
+    assert(
+      await operatorRuntimePage.locator(".card", { hasText: "Release acceptance" }).isVisible(),
+      "operator runtime should still render the release acceptance card"
+    );
+    assert(
+      await operatorRuntimePage.locator(".card", { hasText: "admin token required" }).isVisible(),
+      "operator runtime should explain that validation ops require admin scope"
+    );
+    assert(
+      await operatorRuntimePage.locator("text=Auth token required").count() === 0,
+      "operator runtime must not clear the token when validation ops are admin-only"
+    );
+    await operatorRuntimePage.close();
+
     const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
     page.on("console", (message) => {
       if (message.type() === "error") {
@@ -119,8 +142,8 @@ try {
       browserPageErrors.push(`browser-page-error: ${error.message}`);
     });
     await page.addInitScript(() => {
-      sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-token");
-      sessionStorage.setItem("turnkeyai.controlCenter.scope", "operator");
+      sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-admin-token");
+      sessionStorage.setItem("turnkeyai.controlCenter.scope", "admin");
     });
     await page.goto(`http://127.0.0.1:${port}/app#/missions`, {
       waitUntil: "networkidle",
@@ -615,6 +638,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
   if (method === "GET" && url.pathname === "/validation-ops") {
+    if (req.headers.authorization !== "Bearer ui-smoke-admin-token") {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized", requiredAccess: "admin" }));
+      return;
+    }
     json(res, validationOpsFixture());
     return;
   }
