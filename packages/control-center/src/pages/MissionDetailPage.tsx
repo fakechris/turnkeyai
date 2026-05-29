@@ -156,6 +156,16 @@ function LiveMissionView({ mission }: { mission: Mission }) {
     0
   );
   const finalAnswer = latestFinalAnswer(timeline.value);
+  const { refetch: refetchTimeline } = timeline;
+  const { refetch: refetchMetrics } = metrics;
+  const { refetch: refetchRoleRuns } = roleRuns;
+  const { refetch: refetchWorkerSessions } = workerSessions;
+  const refetchMissionRuntime = useCallback(() => {
+    refetchTimeline();
+    refetchMetrics();
+    refetchRoleRuns();
+    refetchWorkerSessions();
+  }, [refetchMetrics, refetchRoleRuns, refetchTimeline, refetchWorkerSessions]);
 
   const onSend = useCallback(async () => {
     const content = pending.trim();
@@ -167,13 +177,13 @@ function LiveMissionView({ mission }: { mission: Mission }) {
       await send({ missionId: mission.id, content });
       setPending("");
       setAcceptedNotice("Follow-up accepted. The team is working; updates will appear in the timeline.");
-      timeline.refetch();
+      refetchMissionRuntime();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }
-  }, [pending, submitting, send, mission.id, timeline]);
+  }, [pending, submitting, send, mission.id, refetchMissionRuntime]);
 
   const onContinueSession = useCallback(
     async (session: WorkerSessionRecord) => {
@@ -190,15 +200,14 @@ function LiveMissionView({ mission }: { mission: Mission }) {
           ].join(" "),
         });
         setAcceptedNotice("Session follow-up accepted. The lead will continue from the stored sub-agent history.");
-        timeline.refetch();
-        workerSessions.refetch();
+        refetchMissionRuntime();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setSessionActionKey(null);
       }
     },
-    [mission.id, send, sessionActionKey, timeline, workerSessions]
+    [mission.id, send, sessionActionKey, refetchMissionRuntime]
   );
 
   const onCancelRoleRun = useCallback(
@@ -213,15 +222,14 @@ function LiveMissionView({ mission }: { mission: Mission }) {
           reason: "operator cancelled active role run from Mission replay",
         });
         setAcceptedNotice("Active role run cancellation requested.");
-        roleRuns.refetch();
-        timeline.refetch();
+        refetchMissionRuntime();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setRoleRunActionKey(null);
       }
     },
-    [cancelRoleRun, roleRunActionKey, roleRuns, timeline]
+    [cancelRoleRun, roleRunActionKey, refetchMissionRuntime]
   );
 
   const onCancelSession = useCallback(
@@ -236,15 +244,14 @@ function LiveMissionView({ mission }: { mission: Mission }) {
           reason: "operator cancelled sub-agent session from Mission replay",
         });
         setAcceptedNotice("Sub-agent session cancelled.");
-        workerSessions.refetch();
-        timeline.refetch();
+        refetchMissionRuntime();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setSessionActionKey(null);
       }
     },
-    [cancelWorkerSession, sessionActionKey, timeline, workerSessions]
+    [cancelWorkerSession, sessionActionKey, refetchMissionRuntime]
   );
 
   return (
