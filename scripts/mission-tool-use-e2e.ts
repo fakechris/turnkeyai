@@ -15,7 +15,14 @@ interface MissionToolUseE2eOptions {
   matrixScenarios?: MissionE2eScenario[];
 }
 
-type MissionE2eScenario = "basic" | "comparison" | "followup" | "cancel" | "approval" | "browser-dynamic";
+type MissionE2eScenario =
+  | "basic"
+  | "comparison"
+  | "followup"
+  | "cancel"
+  | "approval"
+  | "browser-dynamic"
+  | "timeout-recovery";
 
 interface Mission {
   id: string;
@@ -78,6 +85,7 @@ const APPROVAL_MARKER = "TURNKEYAI_APPROVAL_FIXTURE_OK";
 const APPROVAL_FINAL_MARKER = "TURNKEYAI_MISSION_APPROVAL_OK";
 const DYNAMIC_BROWSER_MARKER = "TURNKEYAI_DYNAMIC_BROWSER_OK";
 const DYNAMIC_BROWSER_FINAL_MARKER = "TURNKEYAI_MISSION_DYNAMIC_BROWSER_OK";
+const TIMEOUT_FINAL_MARKER = "TURNKEYAI_MISSION_TIMEOUT_OK";
 
 interface FixtureServer {
   server: Server;
@@ -203,11 +211,12 @@ function parseScenarioName(value: string, argName: string): MissionE2eScenario {
     value === "followup" ||
     value === "cancel" ||
     value === "approval" ||
-    value === "browser-dynamic"
+    value === "browser-dynamic" ||
+    value === "timeout-recovery"
   ) {
     return value;
   }
-  throw new Error(`${argName} must be basic, comparison, followup, cancel, approval, or browser-dynamic`);
+  throw new Error(`${argName} must be basic, comparison, followup, cancel, approval, browser-dynamic, or timeout-recovery`);
 }
 
 async function main(options: MissionToolUseE2eOptions): Promise<void> {
@@ -228,15 +237,21 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
     const scenarios = options.matrixScenarios ?? [options.scenario];
     const results = [];
     for (const scenario of scenarios) {
-      results.push(
-        await runMissionScenario({
-          baseUrl,
-          token,
-          fixture,
-          scenario,
-          timeoutMs: options.scenarioTimeoutMs,
-        })
-      );
+      try {
+        results.push(
+          await runMissionScenario({
+            baseUrl,
+            token,
+            fixture,
+            scenario,
+            timeoutMs: options.scenarioTimeoutMs,
+          })
+        );
+      } catch (error) {
+        throw new Error(
+          `mission scenario ${scenario} failed: ${errorMessage(error)}\n\ndaemon output tail:\n${daemon.output()}`
+        );
+      }
     }
     for (const result of results) {
       printScenarioResult(result);
@@ -266,6 +281,9 @@ async function runMissionScenario(input: {
   }
   if (input.scenario === "approval") {
     return runMissionApprovalScenario(input);
+  }
+  if (input.scenario === "timeout-recovery") {
+    return runMissionTimeoutScenario(input);
   }
   const spec = buildScenarioSpec(input.scenario, input.fixture);
   const mission = await createMission({
@@ -502,6 +520,56 @@ async function runMissionApprovalScenario(input: {
   return { scenario: "approval", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
+async function runMissionTimeoutScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  scenario: MissionE2eScenario;
+  timeoutMs: number;
+}): Promise<MissionScenarioResult> {
+  const spec = buildScenarioSpec("timeout-recovery", input.fixture);
+  const mission = await createMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "mission route must create a linked team thread");
+
+  const result = await waitForMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    finalMarker: spec.finalMarker,
+    timeoutMs: input.timeoutMs,
+    failFastDoneWithoutMarker: true,
+  });
+  assertMissionTimeoutTimeline(result.timeline, spec);
+  const timeoutSessionKey = extractFirstSessionKey(result.timeline);
+  assert.ok(timeoutSessionKey, "timeout E2E requires a session_key from the timed-out sessions_spawn result");
+  await assertWorkerSessionResumableAfterTimeout({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    threadId: mission.threadId,
+    workerRunKey: timeoutSessionKey,
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  assertMissionTimeoutMetrics(metrics, spec);
+  const final = findFinalEvent(result.timeline, spec.finalMarker);
+  assert.ok(final, "mission timeline must include a timeout final assistant answer");
+  const quality = evaluateFinalQuality(final.text, spec);
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `mission timeout final answer quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "timeout-recovery", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
 function printScenarioResult(result: MissionScenarioResult): void {
   console.log("mission tool-use real llm e2e passed");
   console.log(`mission-scenario: ${result.scenario}`);
@@ -576,7 +644,7 @@ async function startFixtureServer(): Promise<FixtureServer> {
     </main>
   </body>
 </html>`);
-      }, 60_000);
+      }, 180_000);
       req.on("close", () => clearTimeout(timer));
       return;
     }
@@ -710,6 +778,35 @@ async function createMission(input: {
 }
 
 function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer): ScenarioSpec {
+  if (scenario === "timeout-recovery") {
+    return {
+      scenario,
+      title: "Mission route timeout recovery E2E",
+      finalMarker: TIMEOUT_FINAL_MARKER,
+      evidenceMarkers: [],
+      answerTerms: ["timed out", "verification did not complete", "continue", "residual risk"],
+      expectedSpawnCalls: 1,
+      expectedSendCalls: 0,
+      expectedToolResults: 1,
+      expectedSpawnedSessions: 1,
+      expectedContinuedSessions: 0,
+      minEvidenceEvents: 1,
+      expectedBullets: 3,
+      desc: [
+        "Run the mission route timeout recovery E2E.",
+        "Use the available session tool instead of answering from memory.",
+        "Call sessions_spawn with agent_id=explore exactly once.",
+        "The sessions_spawn input must include timeout_seconds as the JSON number 0.001.",
+        `The explore sub-agent task must fetch ${fixture.slowUrl} and report the page title plus marker ${FIXTURE_MARKER}.`,
+        "The local fixture is intentionally too slow; do not call sessions_send, sessions_history, sessions_list, or any fallback session after the timeout result.",
+        `Final answer must include ${TIMEOUT_FINAL_MARKER}, timed out, verification did not complete, continue, and the exact words residual risk.`,
+        `Use plain Markdown with heading \`Timeout result\` and exactly three bullets: timeout boundary, attempted verification, residual risk. The first bullet must start with "- timeout boundary: ${TIMEOUT_FINAL_MARKER} -". The third bullet must include the literal word continue.`,
+        "Do not add any paragraph, summary, or note after the three bullets.",
+        "Do not claim the fixture marker was verified unless it appears in the tool result.",
+        "Do not use tables, links, code fences, or bold/italic markup.",
+      ].join("\n"),
+    };
+  }
   if (scenario === "browser-dynamic") {
     return {
       scenario,
@@ -1177,6 +1274,34 @@ function assertMissionApprovalTimeline(timeline: ActivityEvent[], spec: Scenario
   assert.ok(finalIndex > resultIndex, "final answer must appear after the approved browser result");
 }
 
+function assertMissionTimeoutTimeline(timeline: ActivityEvent[], spec: ScenarioSpec): void {
+  assert.ok(timeline.length > 0, "mission timeout timeline must not be empty");
+  const planIndex = timeline.findIndex((event) => event.kind === "plan");
+  const spawnCallIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "call");
+  const sendCallIndexes = findToolPhaseIndexes(timeline, "sessions_send", "call");
+  const resultIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "result");
+  const finalIndex = timeline.findIndex((event) => event.kind === "thought" && event.text.includes(spec.finalMarker));
+  assert.ok(planIndex >= 0, "mission timeout timeline must include the user plan event");
+  assert.equal(spawnCallIndexes.length, 1, "timeout E2E expected exactly one sessions_spawn call");
+  assert.equal(sendCallIndexes.length, 0, "timeout E2E must not call sessions_send after timeout");
+  assert.equal(resultIndexes.length, 1, "timeout E2E expected exactly one sessions_spawn result");
+  assert.ok(spawnCallIndexes[0]! > planIndex, "sessions_spawn call must appear after the user plan");
+  assert.ok(resultIndexes[0]! > spawnCallIndexes[0]!, "timeout sessions_spawn result must appear after the call");
+  assert.ok(finalIndex > resultIndexes[0]!, "final answer must appear after the timeout result");
+
+  const callInput = timeline[spawnCallIndexes[0]!]!.runtime?.["callInput"];
+  assert.equal(typeof callInput, "string", "timeout sessions_spawn call must persist structured callInput");
+  const parsedCall = JSON.parse(callInput as string) as { timeout_seconds?: number; agent_id?: string };
+  assert.equal(parsedCall.agent_id, "explore", "timeout E2E must use the explore child session");
+  assert.equal(parsedCall.timeout_seconds, 0.001, "timeout E2E must request the bounded timeout_seconds value");
+
+  const result = timeline[resultIndexes[0]!];
+  const resultBlob = [result?.text ?? "", String(result?.runtime?.["resultContent"] ?? "")].join("\n");
+  assert.match(resultBlob, /\btimeout|timed out\b/i, "timeout sessions_spawn result must name the timeout");
+  assert.match(resultBlob, /"status"\s*:\s*"timeout"/, "timeout sessions_spawn result must use session status=timeout");
+  assert.equal(result?.emph, "danger", "timeout sessions_spawn result should be marked as an attention event");
+}
+
 async function assertWorkerSessionCancelled(input: {
   baseUrl: string;
   token: string;
@@ -1191,6 +1316,22 @@ async function assertWorkerSessionCancelled(input: {
   const session = sessions.find((item) => item.workerRunKey === input.workerRunKey);
   assert.ok(session, `cancel E2E must expose worker session ${input.workerRunKey}`);
   assert.equal(session.state.status, "cancelled", "cancel E2E worker session must end as cancelled");
+}
+
+async function assertWorkerSessionResumableAfterTimeout(input: {
+  baseUrl: string;
+  token: string;
+  threadId: string;
+  workerRunKey: string;
+}): Promise<void> {
+  const sessions = await requestJson<WorkerSessionRecord[]>({
+    method: "GET",
+    url: `${input.baseUrl}/runtime-worker-sessions?threadId=${encodeURIComponent(input.threadId)}&limit=20`,
+    token: input.token,
+  });
+  const session = sessions.find((item) => item.workerRunKey === input.workerRunKey);
+  assert.ok(session, `timeout E2E must expose worker session ${input.workerRunKey}`);
+  assert.equal(session.state.status, "resumable", "timeout E2E worker session must remain resumable");
 }
 
 async function waitForMissionMetricsSettled(input: {
@@ -1259,6 +1400,22 @@ function assertMissionCancelMetrics(metrics: MissionObservabilitySnapshot, spec:
   assert.equal(metrics.liveness.stale, 0, "cancel E2E must not report stale runtime subjects");
   assert.equal(metrics.qualityGate.status, "blocked", "cancel E2E should keep failed-tool attention visible");
   assert.ok(metrics.qualityGate.evidenceEvents >= spec.minEvidenceEvents, "cancel E2E must count the cancelled tool result as evidence");
+}
+
+function assertMissionTimeoutMetrics(metrics: MissionObservabilitySnapshot, spec: ScenarioSpec): void {
+  assert.equal(metrics.status, "done", "timeout E2E mission should complete with a bounded final answer");
+  assert.equal(metrics.tool.requested, spec.expectedToolResults, "timeout E2E must count the requested tool call");
+  assert.equal(metrics.tool.results, spec.expectedToolResults, "timeout E2E must count the timeout tool result");
+  assert.equal(metrics.tool.failed, 1, "timeout E2E must report the timed-out tool as failed attention");
+  assert.equal(metrics.tool.cancelled, 0, "timeout E2E timeout must not be reported as cancellation");
+  assert.equal(metrics.tool.timeouts, 1, "timeout E2E must report one timed-out tool");
+  assert.equal(metrics.sessions.spawned, spec.expectedSpawnedSessions, "timeout E2E must count the spawned sub-agent session");
+  assert.equal(metrics.sessions.continued, 0, "timeout E2E must not continue a sub-agent session");
+  assert.equal(metrics.liveness.active, 0, "timeout E2E must not retain active runtime subjects");
+  assert.equal(metrics.liveness.waiting, 0, "timeout E2E must not retain waiting runtime subjects");
+  assert.equal(metrics.liveness.stale, 0, "timeout E2E must not report stale runtime subjects");
+  assert.equal(metrics.qualityGate.status, "blocked", "timeout E2E should keep failed-tool attention visible");
+  assert.ok(metrics.qualityGate.evidenceEvents >= spec.minEvidenceEvents, "timeout E2E must count the timeout tool result as evidence");
 }
 
 function assertMissionApprovalMetrics(metrics: MissionObservabilitySnapshot, spec: ScenarioSpec): void {
@@ -1384,6 +1541,10 @@ async function requestJson<T>(input: {
     throw new Error(`${input.method} ${input.url} returned ${response.status}: ${JSON.stringify(parsed)}`);
   }
   return parsed as T;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.stack ?? error.message : String(error);
 }
 
 async function allocatePort(): Promise<number> {

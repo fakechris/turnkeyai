@@ -1041,6 +1041,71 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
   assert.equal(result.progress?.at(-1)?.detail?.evidence_available, true);
 });
 
+test("sessions_spawn observes late worker rejection after returning timeout", async () => {
+  let unhandled: unknown = null;
+  const onUnhandled = (reason: unknown) => {
+    unhandled = reason;
+  };
+  process.once("unhandledRejection", onUnhandled);
+  try {
+    const workerRuntime = {
+      async spawn() {
+        return { workerType: "explore", workerRunKey: "worker:explore:late-reject" };
+      },
+      async send() {
+        await sleep(25);
+        throw new Error("late worker failure after timeout");
+      },
+      async interrupt() {
+        return null;
+      },
+      async getState() {
+        return {
+          workerRunKey: "worker:explore:late-reject",
+          workerType: "explore",
+          status: "resumable",
+          createdAt: 1,
+          updatedAt: 2,
+        };
+      },
+    } as unknown as WorkerRuntime;
+    const executor = createWorkerSessionToolExecutor({
+      workerRuntime,
+      availableWorkerKinds: ["explore"],
+      hardTimeoutGraceMs: 1,
+    });
+
+    const result = await executor.execute({
+      call: {
+        id: "call-late-reject",
+        name: "sessions_spawn",
+        input: {
+          agent_id: "explore",
+          task: "Run a worker that rejects after timeout.",
+          timeout_seconds: 0.001,
+        },
+      },
+      activation: buildActivation(),
+      packet: {
+        roleId: "role-lead",
+        roleName: "Lead",
+        seat: "lead",
+        systemPrompt: "Lead.",
+        taskPrompt: "Run slow worker.",
+        outputContract: "Return result.",
+        suggestedMentions: [],
+      },
+    });
+
+    const body = JSON.parse(result.content) as { status: string };
+    assert.equal(body.status, "timeout");
+    await sleep(50);
+    assert.equal(unhandled, null);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("sessions_spawn applies a default timeout when timeout_seconds is absent", async () => {
   let sendStarted!: () => void;
   let interruptedReason: string | null = null;
@@ -2547,4 +2612,8 @@ function buildActivation(): RoleActivationInput {
       createdAt: 1,
     },
   };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

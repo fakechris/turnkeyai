@@ -370,6 +370,7 @@ export class ExploreWorkerHandler implements WorkerHandler {
     failureContext: Record<string, unknown>,
     preferredOrder: TransportKind[]
   ): Promise<WorkerExecutionResult> {
+    throwIfAborted(input.signal);
     const browserPage = await raceAbort(
       this.browserBridge!.inspectPublicPage(target.url),
       input.signal,
@@ -676,6 +677,11 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 async function raceAbort<T>(work: Promise<T>, signal: AbortSignal | undefined, fallbackReason: string): Promise<T> {
+  work.catch(() => {
+    // If cancellation wins the race, the underlying transport may still
+    // reject while unwinding. Observe it so a late browser/fetch failure
+    // cannot become a process-level unhandled rejection.
+  });
   if (!signal) {
     return work;
   }

@@ -309,6 +309,32 @@ test("explore worker does not use browser fallback when browser is not allowed",
   assert.match(payload.transportAudit.fallbackReason, /browser fallback blocked/i);
 });
 
+test("explore worker does not start browser fallback after cancellation", async () => {
+  const controller = new AbortController();
+  let browserCalled = false;
+  const handler = new ExploreWorkerHandler({
+    fetchFn: async () => {
+      controller.abort("session tool timeout");
+      throw new Error("direct fetch aborted");
+    },
+    browserBridge: {
+      async inspectPublicPage() {
+        browserCalled = true;
+        throw new Error("browser should not start after cancellation");
+      },
+    },
+  });
+
+  await assert.rejects(
+    handler.run({
+      ...buildExploreInvocationInput(),
+      signal: controller.signal,
+    }),
+    /session tool timeout/
+  );
+  assert.equal(browserCalled, false);
+});
+
 test("explore worker rejects private hosts before fetching", async () => {
   let called = false;
   const handler = new ExploreWorkerHandler({

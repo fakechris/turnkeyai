@@ -116,6 +116,58 @@ test("buildMissionObservabilitySnapshot lets terminal task progress dominate lat
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "runtime_liveness")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot treats timeout close progress as non-active", () => {
+  const degraded = {
+    ...progress(
+      "worker:explore:timeout",
+      "worker_run",
+      "degraded",
+      "transient_failure",
+      12_000,
+      13_000,
+      "Worker interrupted and marked resumable.",
+      "task-1"
+    ),
+    closeKind: "timeout" as const,
+  };
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 20_000,
+    events: [
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "sessions_spawn timed out."),
+      event("final-1", "thought", 5_000, "role-lead", "Final answer with residual risk."),
+    ],
+    progressEvents: [
+      progress("worker:explore:timeout", "worker_run", "started", "alive", 10_000, 15_000, "Worker started.", "task-1"),
+      degraded,
+    ],
+  });
+
+  assert.equal(snapshot.liveness.active, 0);
+  assert.equal(snapshot.liveness.waiting, 0);
+  assert.equal(snapshot.liveness.stale, 0);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "runtime_liveness")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot ignores near-final active heartbeat after terminal mission answer", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 20_000,
+    events: [
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "sessions_spawn timed out."),
+      event("final-1", "thought", 10_000, "role-lead", "Final answer with residual risk."),
+    ],
+    progressEvents: [
+      progress("role:lead", "role_run", "heartbeat", "alive", 10_001, 15_000, "Late heartbeat.", "task-1"),
+    ],
+  });
+
+  assert.equal(snapshot.liveness.active, 0);
+  assert.equal(snapshot.liveness.waiting, 0);
+  assert.equal(snapshot.liveness.stale, 0);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "runtime_liveness")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot still treats a newer task after a terminal task as active", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "working" }),
