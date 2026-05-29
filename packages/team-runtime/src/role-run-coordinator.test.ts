@@ -60,6 +60,45 @@ test("role run coordinator enqueues canonical handoff payloads", async () => {
   assert.deepEqual(storedRun?.inbox[0]?.payload.intent?.recentMessages, []);
 });
 
+test("role run coordinator resets iteration count when re-entering a terminal run", async () => {
+  const roleRunStore = createInMemoryRoleRunStore();
+  const coordinator = new DefaultRoleRunCoordinator({
+    roleRunStore,
+    runtimeLimits: {
+      memberMaxIterations: 4,
+      maxQueuedHandoffsPerRole: 4,
+    },
+    now: () => 20,
+  });
+  const run = await coordinator.getOrCreate("thread-1", "role-lead");
+  roleRunStore.records.set(run.runKey, {
+    ...run,
+    status: "failed",
+    iterationCount: 4,
+    lastActiveAt: 10,
+  });
+
+  await coordinator.enqueue(run.runKey, {
+    taskId: "task-continue",
+    flowId: "flow-1",
+    sourceMessageId: "message-2",
+    targetRoleId: "role-lead",
+    activationType: "mention",
+    threadId: "thread-1",
+    payload: normalizeRelayPayload({
+      threadId: "thread-1",
+      relayBrief: "Continue after the prior run reached its step budget.",
+      recentMessages: [],
+    }),
+    createdAt: 20,
+  });
+
+  const storedRun = await roleRunStore.get(run.runKey);
+  assert.equal(storedRun?.status, "queued");
+  assert.equal(storedRun?.iterationCount, 0);
+  assert.equal(storedRun?.inbox.length, 1);
+});
+
 test("role run coordinator uses expectedVersion zero when creating a run", async () => {
   let createExpectedVersion: number | undefined;
   const store: RoleRunStore = {

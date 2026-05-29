@@ -69,9 +69,11 @@ export class DefaultRoleRunCoordinator implements RoleRunCoordinator {
         payload: normalizeRelayPayload(handoff.payload),
       };
 
+      const reenteredTerminalRun = current.status === "failed" || current.status === "done";
       return {
         ...current,
         inbox: [...current.inbox, normalizedHandoff],
+        iterationCount: reenteredTerminalRun ? 0 : current.iterationCount,
         status: current.status === "running" ? "running" : "queued",
         lastActiveAt: this.now(),
       };
