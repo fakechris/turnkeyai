@@ -60,6 +60,17 @@ If the daemon requires auth, export `TURNKEYAI_DAEMON_TOKEN` or rely on the toke
 
 ## Real LLM Matrix
 
+Run the full release acceptance gate:
+
+```bash
+npm run acceptance:real -- --model-catalog models.local.json
+```
+
+This is the preferred pre-release command. It runs the provider-native
+tool-use matrix with browser/direct-CDP coverage, then runs the mission route
+matrix through the user-facing mission creation path. Use the narrower commands
+below only while investigating a specific failure.
+
 Run the default non-browser matrix:
 
 ```bash
@@ -90,6 +101,20 @@ Each real LLM scenario is wrapped in an outer hard timeout, defaulting to
 
 ```bash
 npm run tooluse:e2e:real-matrix -- --matrix-scenarios basic --model-catalog models.local.json --scenario-timeout-ms 60000
+```
+
+The combined release gate accepts the same timeout knobs:
+
+```bash
+npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 240000 --cdp-timeout-ms 45000
+```
+
+For environments without Chrome/CDP, the combined gate can skip only the
+provider-native browser/direct-CDP leg while still running the mission route
+browser-dynamic scenario:
+
+```bash
+npm run acceptance:real -- --model-catalog models.local.json --skip-browser-tooluse
 ```
 
 ## Mission Route Path
@@ -147,9 +172,10 @@ gating, direct-CDP transport, replay, cancellation, or release candidates. Run
 the mission route path before shipping user-entry or Control Center changes
 that rely on Mission Detail to show tool calls and completion status.
 
-Latest local acceptance on 2026-05-29:
+Latest local acceptance on 2026-05-30:
 
 - `npm run tooluse:e2e`
 - `npm run tooluse:e2e -- --real-llm --scenario approval --model-catalog models.local.json`
 - `npm run tooluse:e2e:real-matrix -- --model-catalog models.local.json`
+- `npm run tooluse:e2e:real-matrix -- --with-browser --model-catalog models.local.json --cdp-timeout-ms 45000 --scenario-timeout-ms 240000`
 - `npm run mission:e2e:matrix -- --model-catalog models.local.json --scenario-timeout-ms 240000`
