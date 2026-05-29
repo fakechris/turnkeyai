@@ -390,6 +390,8 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "Do not finalize until both child session tool results have returned and both markers are present in tool evidence.",
         `Final answer must include ${COMPARISON_FINAL_MARKER}, ${ALPHA_MARKER}, and ${BETA_MARKER}.`,
         "Use plain Markdown with heading `Source coverage` and exactly four bullets: Alpha evidence, Beta evidence, comparison conclusion, residual risk.",
+        "Do not create separate bullets for markers. Put the source markers in their source bullets and the final success marker in the comparison conclusion bullet.",
+        "The residual risk bullet must contain the exact words `residual risk`.",
         "Keep the final answer under 160 words. Do not use tables, links, code fences, or bold/italic markup.",
         "Do not make unsupported claims beyond the two local fixture sources.",
       ].join("\n"),
@@ -412,6 +414,8 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       `The explore sub-agent task must fetch ${fixture.basicUrl} and report the page title plus marker ${FIXTURE_MARKER}.`,
       `Final answer must include ${FINAL_MARKER} and ${FIXTURE_MARKER}.`,
       "Use plain Markdown with heading `Evidence` and exactly three bullets: session tool call, fixture marker, residual risk.",
+      "Do not create a separate bullet for the final success marker. Put it in the session tool call bullet.",
+      "The residual risk bullet must contain the exact words `residual risk`.",
       "Keep the final answer under 120 words. Do not use tables, links, code fences, or bold/italic markup.",
       "Do not include the final success marker unless the session tool result contains the fixture marker.",
     ].join("\n"),
@@ -556,7 +560,7 @@ function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bullets: n
   for (const term of spec.answerTerms) {
     if (!content.toLowerCase().includes(term.toLowerCase())) failures.push(`missing ${term}`);
   }
-  if (/\b(assum|estimat|guess|probab|maybe|perhaps|approximate)/i.test(content)) {
+  if (/\b(assume|assumes|assuming|assumed|estimate|estimated|estimates|estimating|guess|guessed|guesses|guessing|probably|probable|maybe|perhaps|approximately|approximate)\b/i.test(content)) {
     failures.push("final answer contains unsupported/hedged claim language");
   }
   return { bullets, failures };
