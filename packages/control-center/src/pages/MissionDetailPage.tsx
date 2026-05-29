@@ -772,23 +772,53 @@ function latestFinalAnswer(events: ActivityEvent[]): ActivityEvent | null {
 }
 
 function buildTraceFilterCounts(items: TimelineReplayItem[]): Record<TraceFilter, number> {
-  return TRACE_FILTERS.reduce(
-    (counts, filter) => ({
-      ...counts,
-      [filter.id]: items.filter((item) => traceFilterMatches(item, filter.id)).length,
-    }),
-    {} as Record<TraceFilter, number>
-  );
+  const counts: Record<TraceFilter, number> = {
+    all: 0,
+    agent: 0,
+    tools: 0,
+    approvals: 0,
+    recovery: 0,
+    evidence: 0,
+  };
+  for (const item of items) {
+    counts.all += 1;
+    const matches = classifyTraceItem(item);
+    if (matches.agent) counts.agent += 1;
+    if (matches.tools) counts.tools += 1;
+    if (matches.approvals) counts.approvals += 1;
+    if (matches.recovery) counts.recovery += 1;
+    if (matches.evidence) counts.evidence += 1;
+  }
+  return counts;
 }
 
 function traceFilterMatches(item: TimelineReplayItem, filter: TraceFilter): boolean {
   if (filter === "all") return true;
-  const events = item.kind === "event" ? [item.event] : [...item.toolEvents, ...item.processEvents];
-  if (filter === "tools") return item.kind === "tool-process" || events.some((event) => event.kind === "tool");
-  if (filter === "agent") return events.some((event) => event.kind === "plan" || event.kind === "thought");
-  if (filter === "approvals") return events.some((event) => event.kind === "approval");
-  if (filter === "recovery") return events.some((event) => event.kind === "recovery" || event.emph === "danger");
-  return events.some((event) => event.kind === "browser" || event.kind === "doc" || event.kind === "artifact");
+  return classifyTraceItem(item)[filter];
+}
+
+function classifyTraceItem(item: TimelineReplayItem): Record<Exclude<TraceFilter, "all">, boolean> {
+  const matches = {
+    agent: false,
+    tools: item.kind === "tool-process",
+    approvals: false,
+    recovery: false,
+    evidence: false,
+  };
+  const visit = (event: ActivityEvent) => {
+    if (event.kind === "plan" || event.kind === "thought") matches.agent = true;
+    if (event.kind === "tool") matches.tools = true;
+    if (event.kind === "approval") matches.approvals = true;
+    if (event.kind === "recovery" || event.emph === "danger") matches.recovery = true;
+    if (event.kind === "browser" || event.kind === "doc" || event.kind === "artifact") matches.evidence = true;
+  };
+  if (item.kind === "event") {
+    visit(item.event);
+  } else {
+    for (const event of item.toolEvents) visit(event);
+    for (const event of item.processEvents) visit(event);
+  }
+  return matches;
 }
 
 function ToolProcessRow({ process }: { process: ToolProcessItem }) {
