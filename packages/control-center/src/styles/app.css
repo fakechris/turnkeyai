@@ -1875,6 +1875,36 @@ a { color: inherit; text-decoration: none; }
   font-family: var(--font-mono);
   font-size: 10.5px;
 }
+.tool-process-session-actions {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+.tool-process-session-action-row {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+.tool-process-session-action-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tool-process-session-action-row .btn {
+  min-height: 26px;
+  padding: 3px 8px;
+  margin-left: auto;
+}
+.tool-process-session-action-row .btn + .btn {
+  margin-left: 0;
+}
 .markdown-body {
   color: var(--text);
   font-size: 13px;

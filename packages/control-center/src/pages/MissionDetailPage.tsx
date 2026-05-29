@@ -416,7 +416,14 @@ function LiveMissionView({ mission }: { mission: Mission }) {
                     item.kind === "event" ? (
                       <LiveTimelineRow key={item.event.id} event={item.event} />
                     ) : (
-                      <ToolProcessRow key={item.id} process={item} />
+                      <ToolProcessRow
+                        key={item.id}
+                        process={item}
+                        workerSessions={workerSessions.value}
+                        actionKey={sessionActionKey}
+                        onContinue={onContinueSession}
+                        onCancel={onCancelSession}
+                      />
                     )
                   )
                 )}
@@ -1574,7 +1581,19 @@ function classifyTraceItem(item: TimelineReplayItem): Record<Exclude<TraceFilter
   return matches;
 }
 
-function ToolProcessRow({ process }: { process: ToolProcessItem }) {
+function ToolProcessRow({
+  process,
+  workerSessions,
+  actionKey,
+  onContinue,
+  onCancel,
+}: {
+  process: ToolProcessItem;
+  workerSessions: WorkerSessionRecord[];
+  actionKey: string | null;
+  onContinue: (session: WorkerSessionRecord) => void;
+  onCancel: (session: WorkerSessionRecord) => void;
+}) {
   const toolNames = [...new Set(process.toolEvents.map((event) => event.runtime?.toolName).filter(Boolean))];
   const statusLabel =
     process.status === "failed" ? "failed" : process.status === "running" ? "running" : "completed";
@@ -1593,6 +1612,10 @@ function ToolProcessRow({ process }: { process: ToolProcessItem }) {
   );
   const duration = formatDurationMs(process.startMs, process.endMs);
   const emph = process.status === "failed" ? "danger" : process.status === "completed" ? "success" : undefined;
+  const processSessions = useMemo(
+    () => findWorkerSessionsForProcess(process, workerSessions),
+    [process, workerSessions]
+  );
 
   return (
     <div className="tl-event tool-process" data-kind="tool">
@@ -1618,6 +1641,33 @@ function ToolProcessRow({ process }: { process: ToolProcessItem }) {
         {process.finalThought && (
           <div className="tool-process-answer-link">Final answer appears below this trace.</div>
         )}
+        {processSessions.length > 0 && (
+          <div className="tool-process-session-actions">
+            {processSessions.map((session) => {
+              const busy = actionKey === session.workerRunKey;
+              const blocked = actionKey !== null && actionKey !== session.workerRunKey;
+              const terminal = isTerminalSession(session);
+              return (
+                <div key={session.workerRunKey} className="tool-process-session-action-row">
+                  <span className="mono">{session.state.workerType}</span>
+                  <span>{session.context?.label?.trim() || session.workerRunKey}</span>
+                  <span>{session.state.status.replace("_", " ")}</span>
+                  <button type="button" className="btn" disabled={busy || blocked} onClick={() => onContinue(session)}>
+                    <Icon name="send" size={13} /> {busy ? "Sending..." : "Continue session"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    disabled={busy || blocked || terminal}
+                    onClick={() => onCancel(session)}
+                  >
+                    {busy ? "Cancelling..." : "Cancel session"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
         <details className="tool-process-details">
           <summary>Show tool calls, progress, and results</summary>
           <div className="tool-process-steps">
@@ -1637,6 +1687,44 @@ function ToolProcessRow({ process }: { process: ToolProcessItem }) {
       </div>
     </div>
   );
+}
+
+function findWorkerSessionsForProcess(
+  process: ToolProcessItem,
+  sessions: WorkerSessionRecord[]
+): WorkerSessionRecord[] {
+  const sessionKeys = new Set<string>();
+  const toolCallIds = new Set<string>();
+  for (const event of process.toolEvents) {
+    const toolCallId = event.runtime?.toolCallId?.trim();
+    if (toolCallId) toolCallIds.add(toolCallId);
+    const resultContent = event.runtime?.resultContent;
+    if (typeof resultContent === "string") {
+      for (const key of extractSessionKeys(resultContent)) {
+        sessionKeys.add(key);
+      }
+    }
+  }
+  return sessions.filter((session) => {
+    if (sessionKeys.has(session.workerRunKey)) return true;
+    if (session.context?.parentSessionKey && sessionKeys.has(session.context.parentSessionKey)) return true;
+    if (session.context?.toolCallId && toolCallIds.has(session.context.toolCallId)) return true;
+    return false;
+  });
+}
+
+function extractSessionKeys(content: string): string[] {
+  const keys = new Set<string>();
+  for (const pattern of [
+    /"session_key"\s*:\s*"([^"]+)"/g,
+    /"workerRunKey"\s*:\s*"([^"]+)"/g,
+    /"worker_run_key"\s*:\s*"([^"]+)"/g,
+  ]) {
+    for (const match of content.matchAll(pattern)) {
+      if (match[1]?.trim()) keys.add(match[1].trim());
+    }
+  }
+  return [...keys];
 }
 
 function LiveTimelineRow({ event }: { event: ActivityEvent }) {
