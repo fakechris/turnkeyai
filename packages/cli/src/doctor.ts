@@ -5,7 +5,7 @@ import path from "node:path";
 
 interface CheckResult {
   name: string;
-  ok: boolean;
+  status: "ok" | "warn" | "fail";
   detail: string;
 }
 
@@ -62,7 +62,7 @@ function checkNodeVersion(): CheckResult {
   const major = Number(process.versions.node.split(".")[0]);
   return {
     name: "node version",
-    ok: major >= 24,
+    status: major >= 24 ? "ok" : "fail",
     detail: `node ${process.versions.node} (need >= 24)`,
   };
 }
@@ -70,7 +70,7 @@ function checkNodeVersion(): CheckResult {
 function checkRuntimeDir(paths: ReturnType<typeof getRuntimePaths>): CheckResult {
   return {
     name: "runtime dir",
-    ok: existsSync(paths.rootDir),
+    status: existsSync(paths.rootDir) ? "ok" : "fail",
     detail: paths.rootDir,
   };
 }
@@ -80,16 +80,25 @@ function checkConfig(paths: ReturnType<typeof getRuntimePaths>): CheckResult {
   if (!config) {
     return {
       name: "config file",
-      ok: false,
+      status: "fail",
       detail: `missing (run 'turnkeyai daemon start' to generate ${paths.configFile})`,
     };
   }
   const hasToken = typeof config.token === "string" && (config.token as string).length > 0;
   return {
     name: "config file",
-    ok: hasToken,
+    status: hasToken ? "ok" : "fail",
     detail: `${paths.configFile}${hasToken ? "" : " (no token field)"}`,
   };
+}
+
+function resolveTransportMode(paths: ReturnType<typeof getRuntimePaths>): string {
+  const envTransport = process.env.TURNKEYAI_BROWSER_TRANSPORT?.trim();
+  if (envTransport) return envTransport;
+  const config = readConfig(paths.configFile);
+  return typeof config?.transportMode === "string" && config.transportMode.trim()
+    ? config.transportMode.trim()
+    : "local";
 }
 
 async function checkPort(
@@ -101,14 +110,14 @@ async function checkPort(
   const port = envPort ? Number(envPort) : typeof config?.port === "number" ? (config.port as number) : 4100;
   const free = await isPortFree(port);
   if (free) {
-    return { name: `port ${port}`, ok: true, detail: "available" };
+    return { name: `port ${port}`, status: "ok", detail: "available" };
   }
   if (daemonHealthy) {
-    return { name: `port ${port}`, ok: true, detail: "in use by healthy daemon" };
+    return { name: `port ${port}`, status: "ok", detail: "in use by healthy daemon" };
   }
   return {
     name: `port ${port}`,
-    ok: false,
+    status: "fail",
     detail: "in use by another process (daemon /health is not responding)",
   };
 }
@@ -121,32 +130,40 @@ async function checkDaemonHealth(paths: ReturnType<typeof getRuntimePaths>): Pro
   const healthy = await probeUrl(`${baseUrl}/health`);
   return {
     name: "daemon /health",
-    ok: healthy,
+    status: healthy ? "ok" : "fail",
     detail: healthy ? baseUrl : `${baseUrl} unreachable`,
   };
 }
 
-async function checkRelayExtension(paths: ReturnType<typeof getRuntimePaths>): Promise<CheckResult> {
+async function checkRelayExtension(
+  paths: ReturnType<typeof getRuntimePaths>,
+  transportMode: string
+): Promise<CheckResult> {
   const manifestPath = path.join(paths.relayExtDir, "manifest.json");
+  const relayRequired = transportMode === "relay";
   if (!existsSync(manifestPath)) {
     return {
       name: "relay extension",
-      ok: false,
-      detail: `not installed (run 'turnkeyai bridge install-extension')`,
+      status: relayRequired ? "fail" : "warn",
+      detail: relayRequired
+        ? `required by relay transport but not installed (run 'turnkeyai bridge install-extension')`
+        : `not installed; only required when TURNKEYAI_BROWSER_TRANSPORT=relay`,
     };
   }
   try {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { version?: string; name?: string };
     return {
       name: "relay extension",
-      ok: true,
+      status: "ok",
       detail: `${manifest.name ?? "?"} v${manifest.version ?? "?"} at ${paths.relayExtDir}`,
     };
   } catch {
     return {
       name: "relay extension",
-      ok: false,
-      detail: `manifest unreadable at ${manifestPath}`,
+      status: relayRequired ? "fail" : "warn",
+      detail: relayRequired
+        ? `relay manifest unreadable at ${manifestPath}`
+        : `relay manifest unreadable at ${manifestPath}; only required for relay transport`,
     };
   }
 }
@@ -158,14 +175,14 @@ async function checkTransportSpecific(): Promise<CheckResult | null> {
     if (!endpoint) {
       return {
         name: "direct-cdp endpoint",
-        ok: false,
+        status: "fail",
         detail: "TURNKEYAI_BROWSER_CDP_ENDPOINT is unset",
       };
     }
     const reachable = await probeUrl(`${endpoint}/json/version`);
     return {
       name: "direct-cdp endpoint",
-      ok: reachable,
+      status: reachable ? "ok" : "fail",
       detail: reachable ? endpoint : `${endpoint} unreachable`,
     };
   }
@@ -173,7 +190,7 @@ async function checkTransportSpecific(): Promise<CheckResult | null> {
     const endpoint = process.env.TURNKEYAI_BROWSER_RELAY_ENDPOINT?.trim();
     return {
       name: "relay endpoint",
-      ok: Boolean(endpoint),
+      status: endpoint ? "ok" : "warn",
       detail: endpoint ? endpoint : "TURNKEYAI_BROWSER_RELAY_ENDPOINT is unset (defaults to local daemon)",
     };
   }
@@ -182,29 +199,35 @@ async function checkTransportSpecific(): Promise<CheckResult | null> {
 
 export async function runDoctor(_args: string[]): Promise<void> {
   const paths = getRuntimePaths();
+  const transportMode = resolveTransportMode(paths);
   const checks: CheckResult[] = [];
   checks.push(checkNodeVersion());
   checks.push(checkRuntimeDir(paths));
   checks.push(checkConfig(paths));
   const healthCheck = await checkDaemonHealth(paths);
-  checks.push(await checkPort(paths, healthCheck.ok));
+  checks.push(await checkPort(paths, healthCheck.status === "ok"));
   checks.push(healthCheck);
-  checks.push(await checkRelayExtension(paths));
+  checks.push(await checkRelayExtension(paths, transportMode));
   const transport = await checkTransportSpecific();
   if (transport) checks.push(transport);
 
   let failed = 0;
+  let warned = 0;
   for (const check of checks) {
-    const mark = check.ok ? "ok " : "fail";
-    if (!check.ok) failed += 1;
+    const mark = check.status === "ok" ? "ok  " : check.status;
+    if (check.status === "fail") failed += 1;
+    if (check.status === "warn") warned += 1;
     console.log(`[${mark}] ${check.name.padEnd(22)} ${check.detail}`);
   }
   console.log("");
   if (failed === 0) {
-    console.log("turnkeyai doctor: all checks passed");
+    if (warned === 0) {
+      console.log("turnkeyai doctor: all checks passed");
+    } else {
+      console.log(`turnkeyai doctor: ${warned} warning(s), no failures`);
+    }
     process.exit(0);
   }
-  console.error(`turnkeyai doctor: ${failed} check(s) failed`);
+  console.error(`turnkeyai doctor: ${failed} check(s) failed, ${warned} warning(s)`);
   process.exit(1);
 }
-
