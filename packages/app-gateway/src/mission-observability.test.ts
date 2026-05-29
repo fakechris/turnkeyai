@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ActivityEvent, Mission } from "@turnkeyai/core-types/mission";
+import type { RuntimeProgressEvent } from "@turnkeyai/core-types/team";
 import { buildMissionObservabilitySnapshot } from "./mission-observability";
 
 test("buildMissionObservabilitySnapshot summarizes mission tool/session quality signals", () => {
@@ -72,6 +73,27 @@ test("buildMissionObservabilitySnapshot keeps active missions running while fina
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "pending");
 });
 
+test("buildMissionObservabilitySnapshot marks stale runtime progress as blocked", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "working" }),
+    nowMs: 20_000,
+    events: [event("user-1", "plan", 1_000, "user", "Run task")],
+    progressEvents: [
+      progress("role:lead", "role_run", "heartbeat", "alive", 10_000, 15_000, "Lead is still working."),
+      progress("worker:browser:1", "worker_run", "waiting", "waiting", 18_000, 30_000, "Browser worker is waiting."),
+      progress("worker:done", "worker_run", "completed", "resolved", 19_000, 19_500, "Done worker."),
+    ],
+  });
+
+  assert.equal(snapshot.liveness.active, 1);
+  assert.equal(snapshot.liveness.waiting, 1);
+  assert.equal(snapshot.liveness.stale, 1);
+  assert.equal(snapshot.liveness.lastProgressAtMs, 19_000);
+  assert.equal(snapshot.liveness.staleSubjects[0]?.subjectId, "role:lead");
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "runtime_liveness")?.status, "fail");
+});
+
 function baseMission(overrides: Partial<Mission> = {}): Mission {
   return {
     id: "msn.test",
@@ -123,5 +145,27 @@ function tool(
       messageId: "msg-1",
       round: "1",
     },
+  };
+}
+
+function progress(
+  subjectId: string,
+  subjectKind: RuntimeProgressEvent["subjectKind"],
+  phase: RuntimeProgressEvent["phase"],
+  continuityState: NonNullable<RuntimeProgressEvent["continuityState"]>,
+  recordedAt: number,
+  responseTimeoutAt: number,
+  summary: string
+): RuntimeProgressEvent {
+  return {
+    progressId: `progress:${subjectId}:${recordedAt}`,
+    threadId: "thread-1",
+    subjectKind,
+    subjectId,
+    phase,
+    continuityState,
+    responseTimeoutAt,
+    summary,
+    recordedAt,
   };
 }

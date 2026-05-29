@@ -491,8 +491,25 @@ function MissionMetricsCard({
             <MetricTile label="skipped" value={String(metrics.tool.skipped)} tone={metrics.tool.skipped > 0 ? "warn" : undefined} />
             <MetricTile label="timeouts" value={String(metrics.tool.timeouts)} tone={metrics.tool.timeouts > 0 ? "warn" : undefined} />
             <MetricTile label="failed" value={String(metrics.tool.failed)} tone={metrics.tool.failed > 0 ? "danger" : undefined} />
+            <MetricTile
+              label="runtime"
+              value={`${metrics.liveness.active} active · ${metrics.liveness.waiting} waiting`}
+              tone={metrics.liveness.stale > 0 ? "danger" : undefined}
+            />
+            <MetricTile label="stale" value={String(metrics.liveness.stale)} tone={metrics.liveness.stale > 0 ? "danger" : undefined} />
             <MetricTile label="evidence" value={String(metrics.qualityGate.evidenceEvents)} />
           </div>
+          {metrics.liveness.staleSubjects.length > 0 && (
+            <div className="mission-liveness-alert" role="alert">
+              {metrics.liveness.staleSubjects.slice(0, 3).map((subject) => (
+                <div key={`${subject.subjectKind}:${subject.subjectId}`}>
+                  <span className="mono">{subject.subjectKind}</span>
+                  <span>{subject.summary}</span>
+                  <span className="mono">{formatDurationMs(0, subject.overdueMs)} overdue</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="mission-quality-checks">
             {metrics.qualityGate.checks.map((check) => (
               <div key={check.name} className="mission-quality-check" data-status={check.status} title={check.detail}>

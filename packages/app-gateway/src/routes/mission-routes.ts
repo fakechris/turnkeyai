@@ -33,6 +33,7 @@ import type {
   MissionStore,
   WorkItemStore,
 } from "@turnkeyai/core-types/mission";
+import type { RuntimeProgressStore } from "@turnkeyai/core-types/team";
 
 import {
   parsePositiveLimit,
@@ -116,6 +117,7 @@ export interface MissionRouteDeps {
   browserContextSourceProvider?: {
     listLive(): Promise<import("@turnkeyai/core-types/mission").ContextSource[]>;
   };
+  runtimeProgressStore?: Pick<RuntimeProgressStore, "listByThread">;
 }
 
 export async function handleMissionRoutes(input: {
@@ -516,6 +518,10 @@ export async function handleMissionRoutes(input: {
         buildMissionObservabilitySnapshot({
           mission,
           events: await deps.activityStore.listByMission(id),
+          progressEvents:
+            mission.threadId && deps.runtimeProgressStore
+              ? await deps.runtimeProgressStore.listByThread(mission.threadId, 500)
+              : [],
           nowMs: deps.clock.now(),
         })
       );

@@ -1,4 +1,5 @@
 import type { ActivityEvent, Mission } from "@turnkeyai/core-types/mission";
+import type { RuntimeProgressEvent } from "@turnkeyai/core-types/team";
 
 export interface MissionObservabilitySnapshot {
   missionId: string;
@@ -27,6 +28,18 @@ export interface MissionObservabilitySnapshot {
   recovery: {
     events: number;
   };
+  liveness: {
+    active: number;
+    waiting: number;
+    stale: number;
+    lastProgressAtMs?: number;
+    staleSubjects: Array<{
+      subjectKind: RuntimeProgressEvent["subjectKind"];
+      subjectId: string;
+      summary: string;
+      overdueMs: number;
+    }>;
+  };
   qualityGate: {
     status: "running" | "passed" | "needs_attention" | "blocked";
     finalAnswerEventId?: string;
@@ -42,6 +55,7 @@ export interface MissionObservabilitySnapshot {
 export function buildMissionObservabilitySnapshot(input: {
   mission: Mission;
   events: ActivityEvent[];
+  progressEvents?: RuntimeProgressEvent[];
   nowMs: number;
 }): MissionObservabilitySnapshot {
   const events = [...input.events].sort((a, b) => a.tMs - b.tMs || a.id.localeCompare(b.id));
@@ -68,11 +82,13 @@ export function buildMissionObservabilitySnapshot(input: {
   const finalAnswer = latestFinalAnswer(input.mission, events);
   const evidenceEvents = countEvidenceEvents(events);
   const recoveryEvents = events.filter((event) => event.kind === "recovery");
+  const liveness = summarizeRuntimeLiveness(input.progressEvents ?? [], input.nowMs);
   const checks = buildQualityChecks({
     mission: input.mission,
     finalAnswer,
     evidenceEvents,
     failureEvents: recoveryEvents.length + toolFailures.length,
+    staleRuntimeSubjects: liveness.stale,
   });
 
   return {
@@ -102,6 +118,7 @@ export function buildMissionObservabilitySnapshot(input: {
     recovery: {
       events: recoveryEvents.length,
     },
+    liveness,
     qualityGate: {
       status: deriveQualityStatus(input.mission, checks),
       ...(finalAnswer ? { finalAnswerEventId: finalAnswer.id } : {}),
@@ -116,6 +133,7 @@ function buildQualityChecks(input: {
   finalAnswer: ActivityEvent | null;
   evidenceEvents: number;
   failureEvents: number;
+  staleRuntimeSubjects: number;
 }): MissionObservabilitySnapshot["qualityGate"]["checks"] {
   const terminal = input.mission.status === "done" || input.mission.status === "blocked";
   const finalText = input.finalAnswer?.text ?? "";
@@ -143,6 +161,14 @@ function buildQualityChecks(input: {
         : "Waiting for the final answer.",
     },
     {
+      name: "runtime_liveness",
+      status: input.staleRuntimeSubjects === 0 ? "pass" : "fail",
+      detail:
+        input.staleRuntimeSubjects === 0
+          ? "No active role or worker span has exceeded its response timeout."
+          : `${input.staleRuntimeSubjects} active role/worker span(s) exceeded their response timeout.`,
+    },
+    {
       name: "failure_free",
       status: input.failureEvents === 0 ? "pass" : "fail",
       detail:
@@ -151,6 +177,63 @@ function buildQualityChecks(input: {
           : `${input.failureEvents} recovery/failed tool event(s) require attention.`,
     },
   ];
+}
+
+function summarizeRuntimeLiveness(
+  progressEvents: RuntimeProgressEvent[],
+  nowMs: number
+): MissionObservabilitySnapshot["liveness"] {
+  const latestBySubject = new Map<string, RuntimeProgressEvent>();
+  for (const event of progressEvents) {
+    const key = `${event.subjectKind}:${event.subjectId}`;
+    const current = latestBySubject.get(key);
+    if (
+      !current ||
+      event.recordedAt > current.recordedAt ||
+      (event.recordedAt === current.recordedAt && event.progressId > current.progressId)
+    ) {
+      latestBySubject.set(key, event);
+    }
+  }
+
+  let active = 0;
+  let waiting = 0;
+  let lastProgressAtMs: number | undefined;
+  const staleSubjects: MissionObservabilitySnapshot["liveness"]["staleSubjects"] = [];
+  for (const event of latestBySubject.values()) {
+    lastProgressAtMs = Math.max(lastProgressAtMs ?? event.recordedAt, event.recordedAt);
+    if (isTerminalProgress(event)) {
+      continue;
+    }
+    if (event.continuityState === "waiting" || event.phase === "waiting") {
+      waiting += 1;
+    } else {
+      active += 1;
+    }
+    if (event.responseTimeoutAt && nowMs > event.responseTimeoutAt) {
+      staleSubjects.push({
+        subjectKind: event.subjectKind,
+        subjectId: event.subjectId,
+        summary: event.summary,
+        overdueMs: Math.max(0, nowMs - event.responseTimeoutAt),
+      });
+    }
+  }
+
+  return {
+    active,
+    waiting,
+    stale: staleSubjects.length,
+    ...(lastProgressAtMs !== undefined ? { lastProgressAtMs } : {}),
+    staleSubjects,
+  };
+}
+
+function isTerminalProgress(event: RuntimeProgressEvent): boolean {
+  if (event.continuityState === "terminal" || event.continuityState === "resolved") {
+    return true;
+  }
+  return event.phase === "completed" || event.phase === "failed" || event.phase === "cancelled";
 }
 
 function deriveQualityStatus(

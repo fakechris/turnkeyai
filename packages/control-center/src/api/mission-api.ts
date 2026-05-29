@@ -91,6 +91,18 @@ export interface MissionObservabilitySnapshot {
   recovery: {
     events: number;
   };
+  liveness: {
+    active: number;
+    waiting: number;
+    stale: number;
+    lastProgressAtMs?: number;
+    staleSubjects: Array<{
+      subjectKind: string;
+      subjectId: string;
+      summary: string;
+      overdueMs: number;
+    }>;
+  };
   qualityGate: {
     status: "running" | "passed" | "needs_attention" | "blocked";
     finalAnswerEventId?: string;
