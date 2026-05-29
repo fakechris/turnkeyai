@@ -7,7 +7,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 
 import type { Mission } from "@turnkeyai/core-types/mission";
-import type { TeamMessage } from "@turnkeyai/core-types/team";
+import type { RuntimeProgressEvent, TeamMessage } from "@turnkeyai/core-types/team";
 
 import { composeMissionDeps } from "../composition/mission-deps";
 import { createMissionThreadBridge } from "../mission-thread-bridge";
@@ -225,6 +225,25 @@ describe("mission-routes", () => {
         threadId: "thread-metrics",
       };
       await deps.missionStore.putRaw(mission);
+      deps.runtimeProgressStore = {
+        async listByThread(threadId: string, limit?: number): Promise<RuntimeProgressEvent[]> {
+          assert.equal(threadId, "thread-metrics");
+          assert.equal(limit, 500);
+          return [
+            {
+              progressId: "progress.role.1",
+              threadId,
+              subjectKind: "role_run",
+              subjectId: "role:lead",
+              phase: "heartbeat",
+              continuityState: "alive",
+              responseTimeoutAt: clock.now() - 1,
+              summary: "Lead response heartbeat expired.",
+              recordedAt: clock.now() - 10,
+            },
+          ];
+        },
+      };
       await deps.activityStore.append({
         id: "ev.user",
         missionId: mission.id,
@@ -264,6 +283,7 @@ describe("mission-routes", () => {
         wallClockMs: number;
         tool: { requested: number; results: number };
         sessions: { spawned: number };
+        liveness: { active: number; waiting: number; stale: number };
         qualityGate: { status: string; evidenceEvents: number };
       }>(deps, "GET", "/missions/msn.metrics/metrics");
 
@@ -278,7 +298,10 @@ describe("mission-routes", () => {
         timeouts: 0,
       });
       assert.equal(metrics.sessions.spawned, 1);
-      assert.equal(metrics.qualityGate.status, "passed");
+      assert.equal(metrics.liveness.active, 1);
+      assert.equal(metrics.liveness.waiting, 0);
+      assert.equal(metrics.liveness.stale, 1);
+      assert.equal(metrics.qualityGate.status, "blocked");
       assert.equal(metrics.qualityGate.evidenceEvents, 1);
     } finally {
       t.cleanup();
