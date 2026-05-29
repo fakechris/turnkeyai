@@ -68,10 +68,14 @@ npm run acceptance:real -- --model-catalog models.local.json
 
 This is the preferred pre-release command. It runs the provider-native
 tool-use matrix with browser/direct-CDP coverage, then runs the mission route
-matrix through the user-facing mission creation path. On completion it records
-a `real-llm-acceptance` validation-ops run under the daemon data directory, so
-Runtime → Release acceptance can show whether the latest real LLM gate passed.
-Use the narrower commands below only while investigating a specific failure.
+matrix through the user-facing mission creation path. The default mission
+matrix includes the realistic operator brief scenario, so the release gate
+covers multi-source evidence gathering, browser-rendered dashboard extraction,
+and final-answer delivery quality in one product-level run. On completion it
+records a `real-llm-acceptance` validation-ops run under the daemon data
+directory, so Runtime → Release acceptance can show whether the latest real LLM
+gate passed. Use the narrower commands below only while investigating a
+specific failure.
 
 Run the default non-browser matrix:
 

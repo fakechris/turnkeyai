@@ -3,6 +3,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
+import {
+  DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS,
+  joinRealAcceptanceScenarios,
+} from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
 import { buildValidationOpsRecordFromRealLlmAcceptance } from "@turnkeyai/qc-runtime/validation-ops-inspection";
 import { FileValidationOpsRunStore } from "@turnkeyai/team-store/ops/file-validation-ops-run-store";
 
@@ -21,9 +27,9 @@ interface RuntimeConfig {
   dataDir?: string | null;
 }
 
-const DEFAULT_TOOLUSE_BROWSER_SCENARIOS = "basic,approval,followup,timeout,complex";
-const DEFAULT_TOOLUSE_NON_BROWSER_SCENARIOS = "basic,approval,followup,timeout";
-const DEFAULT_MISSION_SCENARIOS = "basic,comparison,followup,cancel,approval,browser-dynamic,browser-dashboard,timeout-recovery";
+const DEFAULT_TOOLUSE_BROWSER_SCENARIOS = joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS);
+const DEFAULT_TOOLUSE_NON_BROWSER_SCENARIOS = joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS);
+const DEFAULT_MISSION_SCENARIOS = joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS);
 
 const options = parseArgs(process.argv.slice(2));
 const startedAt = Date.now();
