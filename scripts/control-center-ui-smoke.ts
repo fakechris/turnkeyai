@@ -276,7 +276,8 @@ try {
     await assertVerticalOrder(page, ".context-continuity-card", ".mission-recovery-card", "context continuity should appear before recovery cases");
     await assertVerticalOrder(page, ".mission-recovery-card", ".browser-continuity-card", "recovery cases should appear before browser continuity");
     await assertVerticalOrder(page, ".browser-continuity-card", ".worker-session-card", "browser continuity should appear before sub-agent sessions");
-    await assertVerticalOrder(page, ".mission-evidence-card", ".thinking-card", "mission evidence should appear before work trace");
+    await assertVerticalOrder(page, ".thinking-card", ".mission-evidence-card", "work trace must appear before mission evidence");
+    await assertVerticalOrder(page, ".mission-evidence-card", ".final-answer-card", "mission evidence must appear before final answer");
     await assertVerticalOrder(page, ".thinking-card", ".final-answer-card", "work trace must appear before final answer");
 
     await page.getByRole("button", { name: "Show trace" }).click();
