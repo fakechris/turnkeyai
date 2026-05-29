@@ -82,9 +82,55 @@ describe("doctor", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it("prints daemon readiness warnings and failures from /diagnostics", async () => {
+    const server = await startHealthServer({
+      readiness: {
+        checks: [
+          {
+            label: "Model catalog",
+            status: "warn",
+            detail: "No model catalog is configured.",
+            action: "Configure a model catalog before production task runs.",
+          },
+          {
+            label: "Browser transport",
+            status: "error",
+            detail: "Direct CDP endpoint is unreachable.",
+          },
+        ],
+      },
+    });
+    const home = await mkdtemp(path.join(tmpdir(), "turnkeyai-doctor-readiness-"));
+    try {
+      await writeConfig(home, { token: "test-token", port: server.port, transportMode: "local" });
+      const result = await runCli(["doctor"], {
+        TURNKEYAI_HOME: home,
+        TURNKEYAI_DAEMON_URL: `http://127.0.0.1:${server.port}`,
+      });
+
+      assert.equal(result.code, 1);
+      assert.match(result.stdout, /\[warn\] readiness: Model catalog\s+No model catalog is configured\. next=Configure a model catalog/);
+      assert.match(result.stdout, /\[fail\] readiness: Browser transport\s+Direct CDP endpoint is unreachable\./);
+      assert.match(result.stderr, /turnkeyai doctor: 1 check\(s\) failed, 2 warning\(s\)/);
+    } finally {
+      server.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });
 
-async function startHealthServer(input: { acceptedBridgeToken?: string } = {}): Promise<{ port: number; close: () => void }> {
+async function startHealthServer(input: {
+  acceptedBridgeToken?: string;
+  readiness?: {
+    checks: Array<{
+      label: string;
+      status: string;
+      detail: string;
+      action?: string;
+    }>;
+  };
+} = {}): Promise<{ port: number; close: () => void }> {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (req.url === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
@@ -102,6 +148,23 @@ async function startHealthServer(input: { acceptedBridgeToken?: string } = {}): 
       }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.url === "/diagnostics") {
+      if (
+        input.acceptedBridgeToken &&
+        req.headers.authorization !== `Bearer ${input.acceptedBridgeToken}`
+      ) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        readiness: input.readiness ?? {
+          checks: [{ label: "Daemon", status: "ok", detail: "Listening." }],
+        },
+      }));
       return;
     }
     res.writeHead(404);
