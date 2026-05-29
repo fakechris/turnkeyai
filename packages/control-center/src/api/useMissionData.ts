@@ -23,6 +23,7 @@ import type {
   BootstrapDemoResult,
   ContextSource,
   Mission,
+  MissionObservabilitySnapshot,
   RoleRunState,
   WorkerSessionRecord,
   WorkItem,
@@ -206,6 +207,19 @@ export function useTimeline(
     `/missions/${encodeURIComponent(missionId)}/timeline?limit=${limit}`,
     fallback,
     { dependsOn: [missionId, limit], pollIntervalMs }
+  );
+}
+
+export function useMissionMetrics(
+  missionId: string,
+  fallback: MissionObservabilitySnapshot | null,
+  options: { pollIntervalMs?: number } = {}
+): RemoteData<MissionObservabilitySnapshot | null> {
+  const pollIntervalMs = options.pollIntervalMs ?? 2000;
+  return useRemote<MissionObservabilitySnapshot | null>(
+    `/missions/${encodeURIComponent(missionId)}/metrics`,
+    fallback,
+    { dependsOn: [missionId], pollIntervalMs }
   );
 }
 

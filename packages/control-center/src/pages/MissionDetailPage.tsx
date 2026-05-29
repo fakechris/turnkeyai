@@ -12,11 +12,18 @@
 
 import { useCallback, useMemo, useState } from "react";
 
-import type { ActivityEvent, Mission, RoleRunState, WorkerSessionRecord } from "../api/mission-api";
+import type {
+  ActivityEvent,
+  Mission,
+  MissionObservabilitySnapshot,
+  RoleRunState,
+  WorkerSessionRecord,
+} from "../api/mission-api";
 import {
   useCancelRoleRun,
   useCancelWorkerSession,
   useMission,
+  useMissionMetrics,
   useMissions,
   useRoleRuns,
   useSendMissionMessage,
@@ -112,6 +119,7 @@ function UnlinkedMissionView({ mission }: { mission: Mission }) {
 function LiveMissionView({ mission }: { mission: Mission }) {
   const { setRoute } = useAppState();
   const timeline = useTimeline(mission.id, []);
+  const metrics = useMissionMetrics(mission.id, null);
   const workerSessions = useWorkerSessions(mission.threadId, []);
   const roleRuns = useRoleRuns(mission.threadId, []);
   const send = useSendMissionMessage();
@@ -259,6 +267,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             actionKey={roleRunActionKey}
             onCancel={onCancelRoleRun}
           />
+          <MissionMetricsCard metrics={metrics.value} isLive={metrics.isLive} error={metrics.error} />
           <SubAgentSessionsCard
             sessions={workerSessions.value}
             isLive={workerSessions.isLive}
@@ -392,6 +401,102 @@ function LiveMissionView({ mission }: { mission: Mission }) {
       </div>
     </div>
   );
+}
+
+function MissionMetricsCard({
+  metrics,
+  isLive,
+  error,
+}: {
+  metrics: MissionObservabilitySnapshot | null;
+  isLive: boolean;
+  error: string | null;
+}) {
+  const qualityLabel = metrics ? qualityStatusLabel(metrics.qualityGate.status) : isLive ? "No data" : "Loading";
+  const qualityEmph =
+    metrics?.qualityGate.status === "blocked"
+      ? "danger"
+      : metrics?.qualityGate.status === "needs_attention"
+        ? "warn"
+        : metrics?.qualityGate.status === "passed"
+          ? "success"
+          : undefined;
+  return (
+    <section className="card mission-metrics-card">
+      <div className="subagent-session-head">
+        <div>
+          <div className="label" style={{ fontSize: 11 }}>Mission health</div>
+          <div className="muted" style={{ fontSize: 11.5 }}>
+            Runtime position, tool execution, and answer quality signals
+          </div>
+        </div>
+        <div className="mission-quality-pill" data-emph={qualityEmph}>
+          {qualityLabel}
+        </div>
+      </div>
+      {error && (
+        <div className="subagent-session-error" role="alert">
+          {error}
+        </div>
+      )}
+      {!metrics ? (
+        <div className="subagent-session-empty">
+          {isLive ? "No mission metrics are available yet." : "Loading mission metrics…"}
+        </div>
+      ) : (
+        <>
+          <div className="mission-metrics-grid">
+            <MetricTile label="wall clock" value={formatDurationMs(0, metrics.wallClockMs)} />
+            <MetricTile label="events" value={String(metrics.timelineEventCount)} />
+            <MetricTile label="tool calls" value={`${metrics.tool.requested}/${metrics.tool.results}`} />
+            <MetricTile label="sessions" value={`${metrics.sessions.spawned} spawned · ${metrics.sessions.continued} continued`} />
+            <MetricTile label="skipped" value={String(metrics.tool.skipped)} tone={metrics.tool.skipped > 0 ? "warn" : undefined} />
+            <MetricTile label="timeouts" value={String(metrics.tool.timeouts)} tone={metrics.tool.timeouts > 0 ? "warn" : undefined} />
+            <MetricTile label="failed" value={String(metrics.tool.failed)} tone={metrics.tool.failed > 0 ? "danger" : undefined} />
+            <MetricTile label="evidence" value={String(metrics.qualityGate.evidenceEvents)} />
+          </div>
+          <div className="mission-quality-checks">
+            {metrics.qualityGate.checks.map((check) => (
+              <div key={check.name} className="mission-quality-check" data-status={check.status} title={check.detail}>
+                <span>{check.name.replace("_", " ")}</span>
+                <span>{check.status}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function MetricTile({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "warn" | "danger";
+}) {
+  return (
+    <div className="mission-metric-tile" data-tone={tone}>
+      <span>{label}</span>
+      <b>{value}</b>
+    </div>
+  );
+}
+
+function qualityStatusLabel(status: MissionObservabilitySnapshot["qualityGate"]["status"]): string {
+  switch (status) {
+    case "passed":
+      return "Quality passed";
+    case "needs_attention":
+      return "Needs attention";
+    case "blocked":
+      return "Blocked";
+    case "running":
+      return "Running";
+  }
 }
 
 function ActiveRoleRunsCard({

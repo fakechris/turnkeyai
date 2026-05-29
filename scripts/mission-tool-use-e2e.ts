@@ -29,6 +29,27 @@ interface ActivityEvent {
   tags?: string[];
 }
 
+interface MissionObservabilitySnapshot {
+  status: string;
+  tool: {
+    requested: number;
+    results: number;
+    failed: number;
+    timeouts: number;
+  };
+  sessions: {
+    spawned: number;
+    continued: number;
+  };
+  recovery: {
+    events: number;
+  };
+  qualityGate: {
+    status: string;
+    evidenceEvents: number;
+  };
+}
+
 const FINAL_MARKER = "TURNKEYAI_MISSION_E2E_OK";
 const FIXTURE_MARKER = "TURNKEYAI_MISSION_FIXTURE_OK";
 
@@ -92,6 +113,12 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
       timeoutMs: options.scenarioTimeoutMs,
     });
     assertMissionToolUseTimeline(result.timeline);
+    const metrics = await requestJson<MissionObservabilitySnapshot>({
+      method: "GET",
+      url: `${baseUrl}/missions/${encodeURIComponent(mission.id)}/metrics`,
+      token,
+    });
+    assertMissionMetrics(metrics);
     const final = findFinalEvent(result.timeline);
     assert.ok(final, "mission timeline must include a final assistant answer");
     const quality = evaluateFinalQuality(final.text);
@@ -101,6 +128,10 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
     console.log(`mission-status: ${result.mission.status}`);
     console.log(`mission-thread-id: ${result.mission.threadId ?? ""}`);
     console.log(`mission-tool-events: ${result.timeline.filter((event) => event.kind === "tool").length}`);
+    console.log(`mission-quality-gate: ${metrics.qualityGate.status}`);
+    console.log(`mission-metrics-tools: ${metrics.tool.requested}/${metrics.tool.results}`);
+    console.log(`mission-metrics-sessions: ${metrics.sessions.spawned}/${metrics.sessions.continued}`);
+    console.log(`mission-metrics-evidence: ${metrics.qualityGate.evidenceEvents}`);
     console.log(`mission-final-bytes: ${Buffer.byteLength(final.text, "utf8")}`);
     console.log(`mission-final-bullets: ${quality.bullets}`);
   } finally {
@@ -242,6 +273,18 @@ function assertMissionToolUseTimeline(timeline: ActivityEvent[]): void {
   );
   const danger = timeline.find((event) => event.emph === "danger" || event.kind === "recovery");
   assert.equal(danger, undefined, `mission E2E timeline contains recovery/danger event: ${danger?.text ?? ""}`);
+}
+
+function assertMissionMetrics(metrics: MissionObservabilitySnapshot): void {
+  assert.equal(metrics.status, "done", "mission metrics must reflect the completed mission status");
+  assert.ok(metrics.tool.requested >= 1, "mission metrics must count requested tool calls");
+  assert.ok(metrics.tool.results >= 1, "mission metrics must count tool results");
+  assert.equal(metrics.tool.failed, 0, "mission metrics must not report failed tool results");
+  assert.equal(metrics.tool.timeouts, 0, "mission metrics must not report timed-out tools");
+  assert.ok(metrics.sessions.spawned >= 1, "mission metrics must count spawned sub-agent sessions");
+  assert.equal(metrics.recovery.events, 0, "mission metrics must not report recovery events");
+  assert.equal(metrics.qualityGate.status, "passed", "mission metrics quality gate must pass");
+  assert.ok(metrics.qualityGate.evidenceEvents >= 1, "mission metrics must count evidence-bearing events");
 }
 
 function findFinalEvent(timeline: ActivityEvent[]): ActivityEvent | null {

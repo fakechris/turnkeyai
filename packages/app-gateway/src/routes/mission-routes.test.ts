@@ -201,6 +201,90 @@ describe("mission-routes", () => {
     }
   });
 
+  it("GET /missions/:id/metrics returns derived tool/session observability", async () => {
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      const mission: Mission = {
+        id: "msn.metrics",
+        shortId: "MSN-9001",
+        title: "Metrics mission",
+        desc: "",
+        status: "done",
+        mode: "research",
+        modeLabel: "Research",
+        owner: "you",
+        ownerLabel: "You",
+        createdAt: new Date(1_000).toISOString(),
+        createdAtMs: 1_000,
+        agents: ["role-lead"],
+        progress: 1,
+        pendingApprovals: 0,
+        blockers: 0,
+        contextSummary: [],
+        threadId: "thread-metrics",
+      };
+      await deps.missionStore.putRaw(mission);
+      await deps.activityStore.append({
+        id: "ev.user",
+        missionId: mission.id,
+        tMs: 1_000,
+        kind: "plan",
+        actor: "user",
+        text: "Run metrics mission.",
+      });
+      await deps.activityStore.append({
+        id: "ev.call",
+        missionId: mission.id,
+        tMs: 2_000,
+        kind: "tool",
+        actor: "role-lead",
+        text: "Calling sessions_spawn",
+        runtime: { toolPhase: "call", toolName: "sessions_spawn", toolCallId: "call-1" },
+      });
+      await deps.activityStore.append({
+        id: "ev.result",
+        missionId: mission.id,
+        tMs: 4_000,
+        kind: "tool",
+        actor: "role-lead",
+        text: "Tool sessions_spawn returned evidence.",
+        runtime: { toolPhase: "result", toolName: "sessions_spawn", toolCallId: "call-1" },
+      });
+      await deps.activityStore.append({
+        id: "ev.final",
+        missionId: mission.id,
+        tMs: 5_000,
+        kind: "thought",
+        actor: "role-lead",
+        text: "Final answer with residual risk.",
+      });
+
+      const metrics = await runJson<{
+        wallClockMs: number;
+        tool: { requested: number; results: number };
+        sessions: { spawned: number };
+        qualityGate: { status: string; evidenceEvents: number };
+      }>(deps, "GET", "/missions/msn.metrics/metrics");
+
+      assert.equal(metrics.wallClockMs, 4_000);
+      assert.deepEqual(metrics.tool, {
+        requested: 1,
+        results: 1,
+        executed: 1,
+        skipped: 0,
+        failed: 0,
+        cancelled: 0,
+        timeouts: 0,
+      });
+      assert.equal(metrics.sessions.spawned, 1);
+      assert.equal(metrics.qualityGate.status, "passed");
+      assert.equal(metrics.qualityGate.evidenceEvents, 1);
+    } finally {
+      t.cleanup();
+    }
+  });
+
   it("GET /approvals attaches decisions when present", async () => {
     const t = tmpDir();
     try {

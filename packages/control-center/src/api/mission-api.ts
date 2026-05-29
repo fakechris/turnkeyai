@@ -64,6 +64,45 @@ export interface Mission {
   threadId?: string;
 }
 
+export interface MissionObservabilitySnapshot {
+  missionId: string;
+  status: MissionStatus;
+  generatedAtMs: number;
+  wallClockMs: number;
+  timelineEventCount: number;
+  tool: {
+    requested: number;
+    results: number;
+    executed: number;
+    skipped: number;
+    failed: number;
+    cancelled: number;
+    timeouts: number;
+  };
+  sessions: {
+    spawned: number;
+    continued: number;
+  };
+  approvals: {
+    requested: number;
+    applied: number;
+    decided: number;
+  };
+  recovery: {
+    events: number;
+  };
+  qualityGate: {
+    status: "running" | "passed" | "needs_attention" | "blocked";
+    finalAnswerEventId?: string;
+    evidenceEvents: number;
+    checks: Array<{
+      name: string;
+      status: "pass" | "warn" | "fail" | "pending";
+      detail: string;
+    }>;
+  };
+}
+
 export interface WorkItem {
   id: string;
   missionId: string;

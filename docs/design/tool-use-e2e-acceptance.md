@@ -101,9 +101,10 @@ npm run mission:e2e -- --model-catalog models.local.json
 ```
 
 This starts an isolated local daemon, creates a mission through `POST /missions`,
-and polls `GET /missions/:id` plus `GET /missions/:id/timeline`. The mission
-prompt points the explore sub-agent at a local fixture page, so the acceptance
-does not depend on public search results. It verifies:
+polls `GET /missions/:id` plus `GET /missions/:id/timeline`, and reads
+`GET /missions/:id/metrics` after completion. The mission prompt points the
+explore sub-agent at a local fixture page, so the acceptance does not depend on
+public search results. It verifies:
 
 - the product entry path creates a linked team-runtime thread
 - the lead model emits `sessions_spawn` from the mission route
@@ -111,6 +112,8 @@ does not depend on public search results. It verifies:
 - `sessions_spawn` progress appears in the correct order when the tool emits user-visible progress
 - the tool result contains fixture evidence
 - the mission reaches `done` rather than staying `working` or `blocked`
+- mission metrics count the tool call/result, spawned session, and evidence event
+- mission metrics quality gate reaches `passed` with no recovery, timeout, or failed-tool signal
 - the final answer includes the release marker, fixture marker, Markdown bullets, and residual risk
 
 The script honors `--scenario-timeout-ms` with a default of `180000` ms. It
@@ -131,3 +134,4 @@ Latest local acceptance on 2026-05-29:
 - `npm run tooluse:e2e`
 - `npm run tooluse:e2e -- --real-llm --scenario approval --model-catalog models.local.json`
 - `npm run tooluse:e2e:real-matrix -- --model-catalog models.local.json`
+- `npm run mission:e2e -- --model-catalog models.local.json --scenario-timeout-ms 180000`
