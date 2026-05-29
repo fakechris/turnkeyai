@@ -441,6 +441,9 @@ npm run daemon
 - [Browser Relay Bridge v1](./docs/design/browser-relay-bridge-v1.md)
 - [Browser Transport v1 Execution Plan](./docs/design/browser-transport-v1-execution-plan.md)
 - [Raw CDP Expert Lane Runbook](./docs/design/raw-cdp-expert-lane-runbook.md)
+- [Local Install And Control Center Runbook](./docs/design/local-install-runbook.md)
+- [Browser Sub-Agent Safety Runbook](./docs/design/browser-sub-agent-safety-runbook.md)
+- [Tool-Use E2E Acceptance](./docs/design/tool-use-e2e-acceptance.md)
 - [Prompt Context Compression Design](./docs/design/prompt-context-compression-design.md)
 - [Model Catalog And Chain Config](./docs/design/model-catalog-and-chain-config.md)
 
