@@ -422,6 +422,11 @@ export interface BrowserTaskResult {
   dispatchMode?: BrowserSessionDispatchMode;
   resumeMode?: BrowserResumeMode;
   targetResolution?: "attach" | "reconnect" | "reopen" | "new_target";
+  profileFallback?: {
+    reason: "profile_locked";
+    persistentDir: string;
+    fallbackDir: string;
+  };
   page: BrowserSnapshotResult;
   screenshotPaths: string[];
   trace: BrowserActionTrace[];
@@ -559,6 +564,7 @@ export interface BrowserSessionHistoryEntry {
   instructions: string;
   resumeMode?: BrowserResumeMode;
   targetResolution?: BrowserTaskResult["targetResolution"];
+  profileFallback?: BrowserTaskResult["profileFallback"];
   summary: string;
   finalUrl?: string;
   title?: string;

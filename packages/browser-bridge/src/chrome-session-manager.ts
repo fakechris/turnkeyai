@@ -577,6 +577,7 @@ export class ChromeSessionManager {
         dispatchMode,
         resumeMode,
         targetResolution,
+        ...(contextHandle.profileFallback ? { profileFallback: contextHandle.profileFallback } : {}),
         page: latestSnapshot,
         screenshotPaths,
         trace,
@@ -663,6 +664,7 @@ export class ChromeSessionManager {
       instructions: input.task.instructions,
       ...(result?.resumeMode ? { resumeMode: result.resumeMode } : {}),
       ...(result?.targetResolution ? { targetResolution: result.targetResolution } : {}),
+      ...(result?.profileFallback ? { profileFallback: result.profileFallback } : {}),
       summary: result
         ? summarizeBrowserHistorySuccess(input.dispatchMode, result)
         : summarizeBrowserHistoryFailure(input.dispatchMode, input.error),
@@ -853,15 +855,22 @@ export class ChromeSessionManager {
 
   private async createContext(
     lease: { session: { browserSessionId: string }; profile: { persistentDir: string } } | undefined
-  ): Promise<{ context: BrowserContext; keepAlive: boolean; liveReuse: boolean }> {
+  ): Promise<{
+    context: BrowserContext;
+    keepAlive: boolean;
+    liveReuse: boolean;
+    profileFallback?: BrowserTaskResult["profileFallback"];
+  }> {
     if (lease?.profile.persistentDir) {
       const existingLiveContext =
         this.liveContexts.has(lease.session.browserSessionId) ||
         this.livePersistentContexts.has(lease.profile.persistentDir);
+      const contextHandle = await this.getOrCreatePersistentContext(lease.session.browserSessionId, lease.profile.persistentDir);
       return {
-        context: await this.getOrCreatePersistentContext(lease.session.browserSessionId, lease.profile.persistentDir),
+        context: contextHandle.context,
         keepAlive: true,
         liveReuse: existingLiveContext,
+        ...(contextHandle.profileFallback ? { profileFallback: contextHandle.profileFallback } : {}),
       };
     }
 
@@ -872,10 +881,18 @@ export class ChromeSessionManager {
     };
   }
 
-  private async getOrCreatePersistentContext(browserSessionId: string, persistentDir: string): Promise<BrowserContext> {
+  private async getOrCreatePersistentContext(
+    browserSessionId: string,
+    persistentDir: string
+  ): Promise<{ context: BrowserContext; profileFallback?: BrowserTaskResult["profileFallback"] }> {
     const existing = this.liveContexts.get(browserSessionId);
     if (existing) {
-      return existing;
+      const context = await existing;
+      const fallbackDir = this.livePersistentContexts.get(persistentDir)?.fallbackDir;
+      return {
+        context,
+        ...(fallbackDir ? { profileFallback: browserProfileFallback(persistentDir, fallbackDir) } : {}),
+      };
     }
 
     const existingProfile = this.livePersistentContexts.get(persistentDir);
@@ -883,13 +900,19 @@ export class ChromeSessionManager {
       existingProfile.sessionIds.add(browserSessionId);
       this.liveContexts.set(browserSessionId, existingProfile.context);
       this.sessionPersistentDirs.set(browserSessionId, persistentDir);
-      return existingProfile.context;
+      const context = await existingProfile.context;
+      return {
+        context,
+        ...(existingProfile.fallbackDir
+          ? { profileFallback: browserProfileFallback(persistentDir, existingProfile.fallbackDir) }
+          : {}),
+      };
     }
 
     const record = {
       sessionIds: new Set([browserSessionId]),
     } as LivePersistentContextRecord;
-    const created = this.launchPersistentContextWithFallback(browserSessionId, persistentDir)
+    const createdWithMeta = this.launchPersistentContextWithFallback(browserSessionId, persistentDir)
       .then(({ context, fallbackDir }) => {
         if (fallbackDir) {
           record.fallbackDir = fallbackDir;
@@ -897,17 +920,22 @@ export class ChromeSessionManager {
         context.on("close", () => {
           this.forgetPersistentContext(persistentDir, record);
         });
-        return context;
+        return { context, fallbackDir };
       })
       .catch((error) => {
         this.forgetPersistentContext(persistentDir, record);
         throw error;
       });
+    const created = createdWithMeta.then(({ context }) => context);
     record.context = created;
     this.livePersistentContexts.set(persistentDir, record);
     this.liveContexts.set(browserSessionId, created);
     this.sessionPersistentDirs.set(browserSessionId, persistentDir);
-    return created;
+    const { context, fallbackDir } = await createdWithMeta;
+    return {
+      context,
+      ...(fallbackDir ? { profileFallback: browserProfileFallback(persistentDir, fallbackDir) } : {}),
+    };
   }
 
   private async launchPersistentContextWithFallback(
@@ -3171,6 +3199,9 @@ function summarizeBrowserHistorySuccess(
     result.transportLabel ? `Transport: ${result.transportLabel}.` : result.transportMode ? `Transport: ${result.transportMode}.` : null,
     result.transportTargetId ? `Transport target: ${result.transportTargetId}.` : null,
     result.resumeMode ? `Resume mode: ${result.resumeMode}.` : null,
+    result.profileFallback
+      ? `Profile fallback: ${result.profileFallback.reason} (${result.profileFallback.fallbackDir}).`
+      : null,
   ]
     .filter((line): line is string => Boolean(line))
     .join(" ");
@@ -3193,6 +3224,14 @@ function summarizeBrowserFailureSummary(error: unknown): FailureSummary {
 function isBrowserProfileLockError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /ProcessSingleton|profile is already in use|profile.*locked|user data directory.*already/i.test(message);
+}
+
+function browserProfileFallback(persistentDir: string, fallbackDir: string): NonNullable<BrowserTaskResult["profileFallback"]> {
+  return {
+    reason: "profile_locked",
+    persistentDir,
+    fallbackDir,
+  };
 }
 
 async function safeClose(target: BrowserContext | Browser | Page): Promise<void> {
