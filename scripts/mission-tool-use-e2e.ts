@@ -15,7 +15,7 @@ interface MissionToolUseE2eOptions {
   matrixScenarios?: MissionE2eScenario[];
 }
 
-type MissionE2eScenario = "basic" | "comparison" | "followup";
+type MissionE2eScenario = "basic" | "comparison" | "followup" | "cancel";
 
 interface Mission {
   id: string;
@@ -39,6 +39,7 @@ interface MissionObservabilitySnapshot {
     requested: number;
     results: number;
     failed: number;
+    cancelled: number;
     timeouts: number;
   };
   sessions: {
@@ -66,12 +67,14 @@ const ALPHA_MARKER = "TURNKEYAI_VENDOR_ALPHA_OK";
 const BETA_MARKER = "TURNKEYAI_VENDOR_BETA_OK";
 const FOLLOWUP_PHASE_MARKER = "TURNKEYAI_MISSION_FOLLOWUP_PHASE_ONE";
 const FOLLOWUP_FINAL_MARKER = "TURNKEYAI_MISSION_FOLLOWUP_OK";
+const CANCEL_FINAL_MARKER = "TURNKEYAI_MISSION_CANCEL_OK";
 
 interface FixtureServer {
   server: Server;
   basicUrl: string;
   alphaUrl: string;
   betaUrl: string;
+  slowUrl: string;
 }
 
 interface ScenarioSpec {
@@ -98,6 +101,15 @@ interface MissionScenarioResult {
   metrics: MissionObservabilitySnapshot;
   final: ActivityEvent;
   quality: ReturnType<typeof evaluateFinalQuality>;
+}
+
+interface WorkerSessionRecord {
+  workerRunKey: string;
+  state: {
+    status: string;
+    workerType?: string;
+    lastError?: { message?: string };
+  };
 }
 
 function parseOptions(args: string[]): MissionToolUseE2eOptions {
@@ -163,8 +175,8 @@ function parseScenarioList(value: string): MissionE2eScenario[] {
 }
 
 function parseScenarioName(value: string, argName: string): MissionE2eScenario {
-  if (value === "basic" || value === "comparison" || value === "followup") return value;
-  throw new Error(`${argName} must be basic, comparison, or followup`);
+  if (value === "basic" || value === "comparison" || value === "followup" || value === "cancel") return value;
+  throw new Error(`${argName} must be basic, comparison, followup, or cancel`);
 }
 
 async function main(options: MissionToolUseE2eOptions): Promise<void> {
@@ -217,6 +229,9 @@ async function runMissionScenario(input: {
 }): Promise<MissionScenarioResult> {
   if (input.scenario === "followup") {
     return runMissionFollowupScenario(input);
+  }
+  if (input.scenario === "cancel") {
+    return runMissionCancelScenario(input);
   }
   const spec = buildScenarioSpec(input.scenario, input.fixture);
   const mission = await createMission({
@@ -291,6 +306,7 @@ async function runMissionFollowupScenario(input: {
         `Final answer must include ${FOLLOWUP_FINAL_MARKER}, ${FIXTURE_MARKER}, sessions_send, the reused session_key, the phrase no duplicate session, and the exact words residual risk.`,
         "Use plain Markdown with heading `Evidence` and exactly three bullets: same-session follow-up, fixture evidence, residual risk.",
         "Put the final success marker in the same-session follow-up bullet. Do not create a separate marker bullet.",
+        "Do not use tables, links, code fences, or bold/italic markup.",
       ].join("\n"),
     },
   });
@@ -320,6 +336,75 @@ async function runMissionFollowupScenario(input: {
     `mission followup final answer quality failures: ${quality.failures.join("; ")}\n${final.text}`
   );
   return { scenario: "followup", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function runMissionCancelScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  scenario: MissionE2eScenario;
+  timeoutMs: number;
+}): Promise<MissionScenarioResult> {
+  const spec = buildScenarioSpec("cancel", input.fixture);
+  const mission = await createMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "mission route must create a linked team thread");
+
+  const activeCall = await waitForToolCallEvent({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    toolName: "sessions_spawn",
+    timeoutMs: Math.min(input.timeoutMs, 60_000),
+  });
+  await requestJson<{ cancelled: boolean }>({
+    method: "POST",
+    url: `${input.baseUrl}/message/cancel-tools`,
+    token: input.token,
+    body: {
+      messageId: activeCall.messageId,
+      threadId: mission.threadId,
+      toolCallIds: [activeCall.toolCallId],
+      reason: "operator cancelled mission e2e slow tool",
+    },
+  });
+
+  const result = await waitForMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    finalMarker: spec.finalMarker,
+    timeoutMs: input.timeoutMs,
+    failFastDoneWithoutMarker: true,
+  });
+  assertMissionCancelTimeline(result.timeline, spec);
+  const cancelledSessionKey = extractFirstSessionKey(result.timeline);
+  assert.ok(cancelledSessionKey, "cancel E2E requires a session_key from the cancelled sessions_spawn result");
+  await assertWorkerSessionCancelled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    threadId: mission.threadId,
+    workerRunKey: cancelledSessionKey,
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  assertMissionCancelMetrics(metrics, spec);
+  const final = findFinalEvent(result.timeline, spec.finalMarker);
+  assert.ok(final, "mission timeline must include a cancellation final assistant answer");
+  const quality = evaluateFinalQuality(final.text, spec);
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `mission cancel final answer quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "cancel", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
 function printScenarioResult(result: MissionScenarioResult): void {
@@ -378,6 +463,25 @@ async function startFixtureServer(): Promise<FixtureServer> {
 </html>`);
       return;
     }
+    if (pathname === "/slow-fixture") {
+      const timer = setTimeout(() => {
+        if (res.destroyed) return;
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(`<!doctype html>
+<html>
+  <head><title>TurnkeyAI Slow Mission E2E Fixture</title></head>
+  <body>
+    <main>
+      <h1>Slow mission route tool-use fixture</h1>
+      <p id="marker">${FIXTURE_MARKER}</p>
+      <p>This response is intentionally delayed so the cancellation path can stop the active tool call.</p>
+    </main>
+  </body>
+</html>`);
+      }, 60_000);
+      req.on("close", () => clearTimeout(timer));
+      return;
+    }
     if (pathname === "/vendor-alpha") {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(`<!doctype html>
@@ -422,6 +526,7 @@ async function startFixtureServer(): Promise<FixtureServer> {
     basicUrl: `http://127.0.0.1:${port}/fixture`,
     alphaUrl: `http://127.0.0.1:${port}/vendor-alpha`,
     betaUrl: `http://127.0.0.1:${port}/vendor-beta`,
+    slowUrl: `http://127.0.0.1:${port}/slow-fixture`,
   };
 }
 
@@ -445,6 +550,37 @@ async function createMission(input: {
 }
 
 function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer): ScenarioSpec {
+  if (scenario === "cancel") {
+    return {
+      scenario,
+      title: "Mission route real cancellation E2E",
+      finalMarker: CANCEL_FINAL_MARKER,
+      evidenceMarkers: [],
+      answerTerms: ["cancelled", "sessions_spawn", "residual risk"],
+      expectedSpawnCalls: 1,
+      expectedSendCalls: 0,
+      expectedToolResults: 1,
+      expectedSpawnedSessions: 1,
+      expectedContinuedSessions: 0,
+      minEvidenceEvents: 1,
+      expectedBullets: 3,
+      desc: [
+        "Run the mission route cancellation E2E.",
+        "Use the available session tool instead of answering from memory.",
+        "Call sessions_spawn with agent_id=explore exactly once.",
+        `The explore sub-agent task must fetch ${fixture.slowUrl} and report the page title plus marker ${FIXTURE_MARKER}.`,
+        "Wait for the sessions_spawn tool result before writing the final answer.",
+        "If the tool result is cancelled by the operator, stop using tools and write the final answer from the cancellation evidence.",
+        "Use this exact final answer shape after cancellation:",
+        "## Evidence",
+        `- cancelled tool call: ${CANCEL_FINAL_MARKER}; sessions_spawn was cancelled by the operator.`,
+        "- control-path evidence: the cancellation came from the tool result and no extra session tools were used.",
+        "- residual risk: the slow page may not have returned evidence before cancellation.",
+        "Do not use tables, links, code fences, or bold/italic markup.",
+        "Do not call sessions_send, sessions_history, or sessions_list.",
+      ].join("\n"),
+    };
+  }
   if (scenario === "followup") {
     return {
       scenario,
@@ -467,6 +603,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         `The explore sub-agent task must fetch ${fixture.basicUrl}, report the page title, marker ${FIXTURE_MARKER}, and return a reusable session summary.`,
         `Phase 1 final answer must include ${FOLLOWUP_PHASE_MARKER}, ${FIXTURE_MARKER}, the exact session_key returned by sessions_spawn, and the exact words residual risk.`,
         "Use plain Markdown with heading `Evidence` and exactly three bullets: session tool call, fixture marker, residual risk.",
+        "Do not use tables, links, code fences, or bold/italic markup.",
         "Do not call sessions_send during phase 1.",
       ].join("\n"),
     };
@@ -550,6 +687,7 @@ function buildFollowupInitialSpec(fixture: FixtureServer): ScenarioSpec {
       `The explore sub-agent task must fetch ${fixture.basicUrl}, report the page title, marker ${FIXTURE_MARKER}, and return a reusable session summary.`,
       `Phase 1 final answer must include ${FOLLOWUP_PHASE_MARKER}, ${FIXTURE_MARKER}, the exact session_key returned by sessions_spawn, and the exact words residual risk.`,
       "Use plain Markdown with heading `Evidence` and exactly three bullets: session tool call, fixture marker, residual risk.",
+      "Do not use tables, links, code fences, or bold/italic markup.",
       "Do not call sessions_send during phase 1.",
     ].join("\n"),
   };
@@ -561,6 +699,7 @@ async function waitForMissionCompletion(input: {
   missionId: string;
   finalMarker: string;
   timeoutMs: number;
+  failFastDoneWithoutMarker?: boolean;
 }): Promise<{ mission: Mission; timeline: ActivityEvent[] }> {
   const startedAt = Date.now();
   let latestMission: Mission | null = null;
@@ -581,6 +720,27 @@ async function waitForMissionCompletion(input: {
     }
     if (latestMission.status === "done" && findFinalEvent(latestTimeline, input.finalMarker)) {
       return { mission: latestMission, timeline: latestTimeline };
+    }
+    if (input.failFastDoneWithoutMarker && latestMission.status === "done") {
+      await sleep(1_000);
+      latestMission = await requestJson<Mission>({
+        method: "GET",
+        url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}`,
+        token: input.token,
+      });
+      latestTimeline = await requestJson<ActivityEvent[]>({
+        method: "GET",
+        url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}/timeline?limit=200`,
+        token: input.token,
+      });
+      if (latestMission.status === "done" && findFinalEvent(latestTimeline, input.finalMarker)) {
+        return { mission: latestMission, timeline: latestTimeline };
+      }
+      if (latestMission.status === "done") {
+        throw new Error(
+          `mission completed without final marker ${input.finalMarker}:\n${summarizeMissionState(latestMission, latestTimeline)}`
+        );
+      }
     }
     await sleep(1_000);
   }
@@ -668,6 +828,68 @@ function assertFollowupReusedSession(timeline: ActivityEvent[], expectedSessionK
   assert.equal(parsed.session_key, expectedSessionKey, "sessions_send must reuse the phase-one session_key");
 }
 
+async function waitForToolCallEvent(input: {
+  baseUrl: string;
+  token: string;
+  missionId: string;
+  toolName: "sessions_spawn" | "sessions_send";
+  timeoutMs: number;
+}): Promise<{ messageId: string; toolCallId: string; timeline: ActivityEvent[] }> {
+  const startedAt = Date.now();
+  let latestTimeline: ActivityEvent[] = [];
+  while (Date.now() - startedAt < input.timeoutMs) {
+    latestTimeline = await requestJson<ActivityEvent[]>({
+      method: "GET",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}/timeline?limit=200`,
+      token: input.token,
+    });
+    const event = latestTimeline.find(
+      (item) => item.runtime?.["toolName"] === input.toolName && item.runtime?.["toolPhase"] === "call"
+    );
+    const messageId = event?.runtime?.["messageId"];
+    const toolCallId = event?.runtime?.["toolCallId"];
+    if (typeof messageId === "string" && messageId.length > 0 && typeof toolCallId === "string" && toolCallId.length > 0) {
+      return { messageId, toolCallId, timeline: latestTimeline };
+    }
+    await sleep(500);
+  }
+  throw new Error(`mission did not emit ${input.toolName} call before cancellation:\n${summarizeMissionState(null, latestTimeline)}`);
+}
+
+function assertMissionCancelTimeline(timeline: ActivityEvent[], spec: ScenarioSpec): void {
+  assert.ok(timeline.length > 0, "mission cancellation timeline must not be empty");
+  const planIndex = timeline.findIndex((event) => event.kind === "plan");
+  const callIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "call");
+  const resultIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "result");
+  const finalIndex = timeline.findIndex((event) => event.kind === "thought" && event.text.includes(spec.finalMarker));
+  assert.ok(planIndex >= 0, "mission cancellation timeline must include the user plan event");
+  assert.equal(callIndexes.length, 1, "cancel E2E expected exactly one sessions_spawn call");
+  assert.equal(resultIndexes.length, 1, "cancel E2E expected exactly one sessions_spawn result");
+  assert.ok(callIndexes[0]! > planIndex, "sessions_spawn call must appear after the user plan");
+  assert.ok(resultIndexes[0]! > callIndexes[0]!, "cancelled sessions_spawn result must appear after the call");
+  assert.ok(finalIndex > resultIndexes[0]!, "final answer must appear after the cancelled sessions_spawn result");
+  const result = timeline[resultIndexes[0]!];
+  const resultBlob = [result?.text ?? "", String(result?.runtime?.["resultContent"] ?? "")].join("\n");
+  assert.match(resultBlob, /\bcancel(?:led|ed)?\b/i, "cancelled sessions_spawn result must name cancellation");
+  assert.equal(result?.emph, "danger", "cancelled sessions_spawn result should be marked as an attention event");
+}
+
+async function assertWorkerSessionCancelled(input: {
+  baseUrl: string;
+  token: string;
+  threadId: string;
+  workerRunKey: string;
+}): Promise<void> {
+  const sessions = await requestJson<WorkerSessionRecord[]>({
+    method: "GET",
+    url: `${input.baseUrl}/runtime-worker-sessions?threadId=${encodeURIComponent(input.threadId)}&limit=20`,
+    token: input.token,
+  });
+  const session = sessions.find((item) => item.workerRunKey === input.workerRunKey);
+  assert.ok(session, `cancel E2E must expose worker session ${input.workerRunKey}`);
+  assert.equal(session.state.status, "cancelled", "cancel E2E worker session must end as cancelled");
+}
+
 async function waitForMissionMetricsSettled(input: {
   baseUrl: string;
   token: string;
@@ -719,6 +941,21 @@ function assertMissionMetrics(metrics: MissionObservabilitySnapshot, spec: Scena
   assert.equal(metrics.liveness.stale, 0, "mission metrics must not report stale runtime subjects");
   assert.equal(metrics.qualityGate.status, "passed", "mission metrics quality gate must pass");
   assert.ok(metrics.qualityGate.evidenceEvents >= spec.minEvidenceEvents, "mission metrics must count evidence-bearing events");
+}
+
+function assertMissionCancelMetrics(metrics: MissionObservabilitySnapshot, spec: ScenarioSpec): void {
+  assert.equal(metrics.status, "done", "cancel E2E mission should still complete with a final answer");
+  assert.equal(metrics.tool.requested, spec.expectedToolResults, "cancel E2E must count the requested tool call");
+  assert.equal(metrics.tool.results, spec.expectedToolResults, "cancel E2E must count the cancelled tool result");
+  assert.equal(metrics.tool.cancelled, 1, "cancel E2E must report one cancelled tool");
+  assert.equal(metrics.tool.timeouts, 0, "cancel E2E cancellation must not be reported as a timeout");
+  assert.equal(metrics.sessions.spawned, spec.expectedSpawnedSessions, "cancel E2E must count the spawned sub-agent session");
+  assert.equal(metrics.sessions.continued, 0, "cancel E2E must not continue a sub-agent session");
+  assert.equal(metrics.liveness.active, 0, "cancel E2E must not retain active runtime subjects");
+  assert.equal(metrics.liveness.waiting, 0, "cancel E2E must not retain waiting runtime subjects");
+  assert.equal(metrics.liveness.stale, 0, "cancel E2E must not report stale runtime subjects");
+  assert.equal(metrics.qualityGate.status, "blocked", "cancel E2E should keep failed-tool attention visible");
+  assert.ok(metrics.qualityGate.evidenceEvents >= spec.minEvidenceEvents, "cancel E2E must count the cancelled tool result as evidence");
 }
 
 function findFinalEvent(timeline: ActivityEvent[], finalMarker: string): ActivityEvent | null {

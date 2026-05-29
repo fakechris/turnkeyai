@@ -129,6 +129,7 @@ Mission scenarios:
 - `basic`: one explore child session verifies a single local fixture source
 - `comparison`: two independent explore child sessions verify two local fixture sources, and the final answer must preserve both source markers, source names, source coverage, a comparison conclusion, and residual risk
 - `followup`: a user follow-up reopens a completed mission, calls `sessions_send` exactly once on the existing child session, avoids duplicate `sessions_spawn`, and completes with the same mission metrics quality gate
+- `cancel`: a slow explore child session is cancelled through `/message/cancel-tools`, the worker session reaches `cancelled`, mission liveness settles to zero, and the final answer reports the controlled cancellation instead of leaving the mission `working`
 
 The script honors `--scenario-timeout-ms` with a default of `180000` ms. It
 also sets `TURNKEYAI_MODEL_CATALOG` for the isolated daemon when
