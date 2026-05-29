@@ -3,6 +3,8 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 
+import { resolveDaemonCliToken } from "./daemon-token";
+
 interface CheckResult {
   name: string;
   status: "ok" | "warn" | "fail";
@@ -77,18 +79,34 @@ function checkRuntimeDir(paths: ReturnType<typeof getRuntimePaths>): CheckResult
 
 function checkConfig(paths: ReturnType<typeof getRuntimePaths>): CheckResult {
   const config = readConfig(paths.configFile);
+  const token = resolveDaemonCliToken(process.env, config?.token, "read");
   if (!config) {
+    if (token) {
+      return {
+        name: "config/auth",
+        status: "warn",
+        detail: `missing ${paths.configFile}; using ${token.scope} token from ${token.source}`,
+      };
+    }
     return {
-      name: "config file",
+      name: "config/auth",
       status: "fail",
-      detail: `missing (run 'turnkeyai daemon start' to generate ${paths.configFile})`,
+      detail: `missing config and token (run 'turnkeyai daemon start' to generate ${paths.configFile})`,
     };
   }
-  const hasToken = typeof config.token === "string" && (config.token as string).length > 0;
+  if (!token) {
+    return {
+      name: "config/auth",
+      status: "fail",
+      detail: `${paths.configFile} has no token and no TURNKEYAI_DAEMON_* token is set`,
+    };
+  }
   return {
-    name: "config file",
-    status: hasToken ? "ok" : "fail",
-    detail: `${paths.configFile}${hasToken ? "" : " (no token field)"}`,
+    name: "config/auth",
+    status: token.source === "config" ? "ok" : "warn",
+    detail: token.source === "config"
+      ? `${paths.configFile} (token present)`
+      : `${paths.configFile} (using ${token.scope} token from ${token.source})`,
   };
 }
 
