@@ -593,9 +593,11 @@ test("llm role response generator persists native tool progress while the tool i
   assert.equal(completedAssistant?.toolStatus, "completed");
   assert.equal(completedAssistant?.toolProgress?.some((event) => event.summary === "Browser snapshot captured"), true);
   assert.equal(completedAssistant?.toolProgress?.at(-1)?.phase, "completed");
+  assert.equal(completedAssistant?.timeCost, 4);
   assert.equal(toolMessage?.role, "tool");
   assert.equal(toolMessage?.toolCallId, "toolu-live");
   assert.equal(toolMessage?.content, "Example Domain");
+  assert.equal(toolMessage?.timeCost, 4);
   assert.ok(appendedMessages.length >= 3);
 });
 
