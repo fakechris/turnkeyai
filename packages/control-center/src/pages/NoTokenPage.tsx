@@ -76,8 +76,8 @@ export function NoTokenPage() {
             </button>
           </form>
           <p className="note">
-            Token is read from <code>~/.turnkeyai/config.json</code> by the CLI. It is also visible
-            in <code>turnkeyai daemon status</code> output.
+            Token is read from <code>~/.turnkeyai/config.json</code> by the launcher.{" "}
+            <code>turnkeyai daemon status</code> checks whether that token can access the daemon.
           </p>
         </div>
       </div>

@@ -88,6 +88,7 @@ import {
   createRelayPeerIdentityBindingStore,
   resolveDaemonAuthConfig,
 } from "./daemon-auth";
+import { buildControlCenterStartupBanner } from "./daemon-startup-banner";
 import {
   ensureDaemonAuthToken,
   ensureDaemonRuntimeDirs,
@@ -724,18 +725,16 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`data dir: ${DATA_DIR}`);
   console.log(`runtime dir: ${RUNTIME_PATHS.rootDir}`);
   console.log(`model catalog: ${modelCatalogPath ?? "(none)"}`);
-  console.log(
-    `control center: ${
-      CONTROL_CENTER_ASSET_DIR
-        ? `http://127.0.0.1:${PORT}/app`
-        : "(bundle not found — rebuild @turnkeyai/cli)"
-    }`
-  );
+  for (const line of buildControlCenterStartupBanner({
+    port: PORT,
+    assetAvailable: Boolean(CONTROL_CENTER_ASSET_DIR),
+    authMode: DAEMON_AUTH.authMode,
+    tokenGenerated: TOKEN_BOOTSTRAP.generated,
+    configFile: RUNTIME_PATHS.configFile,
+  })) {
+    console.log(line);
+  }
   if (DAEMON_AUTH.authMode !== "disabled") {
-    console.log("auth: token required via x-turnkeyai-token or Authorization: Bearer <token>");
-    if (TOKEN_BOOTSTRAP.generated) {
-      console.log(`auth: generated token written to ${RUNTIME_PATHS.configFile}`);
-    }
     if (DAEMON_AUTH.authMode === "token-layered") {
       console.log("auth access levels: read / operator / admin");
       console.log("  TURNKEYAI_DAEMON_READ_TOKEN       Read-only inspection and replay routes");
