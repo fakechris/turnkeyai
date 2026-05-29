@@ -83,6 +83,7 @@ function printHelp(exitCode: number): never {
     "  turnkeyai bridge install-extension | status | install-skill",
     "  turnkeyai app [--route missions|approvals|agents|context|agent-connect|runtime|settings] [--no-open]",
     "  npm run app -- --no-open     Source-tree launcher when turnkeyai is not on PATH",
+    "  npm run daemon:status        Source-tree status check when turnkeyai is not on PATH",
     "  turnkeyai doctor",
     "  turnkeyai tui",
     "",

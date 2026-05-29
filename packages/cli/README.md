@@ -29,6 +29,14 @@ npx @turnkeyai/cli app --no-open
 npx @turnkeyai/cli app --no-start
 ```
 
+Source checkout fallback when `turnkeyai` is not on PATH:
+
+```bash
+npm run app -- --no-open
+npm run daemon:status
+npm run doctor
+```
+
 ## Daemon lifecycle (advanced)
 
 ```bash
