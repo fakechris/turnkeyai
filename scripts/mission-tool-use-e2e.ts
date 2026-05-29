@@ -22,6 +22,7 @@ type MissionE2eScenario =
   | "cancel"
   | "approval"
   | "browser-dynamic"
+  | "browser-dashboard"
   | "timeout-recovery";
 
 interface Mission {
@@ -85,6 +86,8 @@ const APPROVAL_MARKER = "TURNKEYAI_APPROVAL_FIXTURE_OK";
 const APPROVAL_FINAL_MARKER = "TURNKEYAI_MISSION_APPROVAL_OK";
 const DYNAMIC_BROWSER_MARKER = "TURNKEYAI_DYNAMIC_BROWSER_OK";
 const DYNAMIC_BROWSER_FINAL_MARKER = "TURNKEYAI_MISSION_DYNAMIC_BROWSER_OK";
+const DASHBOARD_TRIAGE_MARKER = "TURNKEYAI_DASHBOARD_TRIAGE_OK";
+const DASHBOARD_TRIAGE_FINAL_MARKER = "TURNKEYAI_MISSION_DASHBOARD_TRIAGE_OK";
 const TIMEOUT_FINAL_MARKER = "TURNKEYAI_MISSION_TIMEOUT_OK";
 
 interface FixtureServer {
@@ -95,6 +98,7 @@ interface FixtureServer {
   slowUrl: string;
   approvalUrl: string;
   dynamicUrl: string;
+  dashboardUrl: string;
 }
 
 interface ScenarioSpec {
@@ -106,7 +110,10 @@ interface ScenarioSpec {
   answerTerms: string[];
   answerPatterns?: Array<{ label: string; pattern: RegExp }>;
   evidenceLinePatterns?: Array<{ label: string; pattern: RegExp }>;
+  forbiddenPatterns?: Array<{ label: string; pattern: RegExp }>;
   allowLabeledEvidenceWithoutBullets?: boolean;
+  minBytes?: number;
+  maxBytes?: number;
   expectedSpawnCalls: number;
   expectedSendCalls: number;
   expectedToolResults: number;
@@ -212,11 +219,14 @@ function parseScenarioName(value: string, argName: string): MissionE2eScenario {
     value === "cancel" ||
     value === "approval" ||
     value === "browser-dynamic" ||
+    value === "browser-dashboard" ||
     value === "timeout-recovery"
   ) {
     return value;
   }
-  throw new Error(`${argName} must be basic, comparison, followup, cancel, approval, browser-dynamic, or timeout-recovery`);
+  throw new Error(
+    `${argName} must be basic, comparison, followup, cancel, approval, browser-dynamic, browser-dashboard, or timeout-recovery`
+  );
 }
 
 async function main(options: MissionToolUseE2eOptions): Promise<void> {
@@ -356,9 +366,14 @@ async function runMissionFollowupScenario(input: {
         "Call sessions_send exactly once using the session_key from the prior sessions_spawn tool result.",
         "Do not call sessions_spawn, sessions_history, or sessions_list.",
         `The sessions_send message must ask the child to return its complete final report containing ${FIXTURE_MARKER}.`,
-        `Final answer must include ${FOLLOWUP_FINAL_MARKER}, ${FIXTURE_MARKER}, sessions_send, the reused session_key, the phrase no duplicate session, and the exact words residual risk.`,
-        "Use plain Markdown with heading `Evidence` and exactly three bullets: same-session follow-up, fixture evidence, residual risk.",
-        "Put the final success marker in the same-session follow-up bullet. Do not create a separate marker bullet.",
+        `The final answer may include ${FOLLOWUP_FINAL_MARKER} only once, inside the first bullet of the exact shape below; it must also include ${FIXTURE_MARKER}, sessions_send, the reused session_key, the phrase no duplicate session, and the exact words residual risk.`,
+        "Use this exact final answer shape after sessions_send returns:",
+        "## Evidence",
+        `- same-session follow-up: ${FOLLOWUP_FINAL_MARKER}; sessions_send reused the existing session_key with no duplicate session.`,
+        `- fixture evidence: ${FIXTURE_MARKER} confirmed by the continued child session.`,
+        "- residual risk: this validates local fixture continuity only, not an external source.",
+        "Do not create a separate bullet, heading, or paragraph for the final success marker.",
+        "Do not include source URLs; name sessions_send, the reused session_key, and the fixture marker instead.",
         "Do not use tables, links, code fences, or bold/italic markup.",
       ].join("\n"),
     },
@@ -742,6 +757,55 @@ async function startFixtureServer(): Promise<FixtureServer> {
 </html>`);
       return;
     }
+    if (pathname === "/ops-dashboard") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head>
+    <title>Operations Dashboard Fixture</title>
+    <script>
+      window.__turnkeyDashboardState = { status: "booting" };
+      const renderTurnkeyDashboardFixture = () => {
+        const root = document.getElementById("dashboard-root");
+        if (!root) {
+          window.__turnkeyDashboardState = { status: "missing-root" };
+          return;
+        }
+        window.__turnkeyDashboardState = {
+          status: "ready",
+          marker: "${DASHBOARD_TRIAGE_MARKER}",
+          queueDepth: 11,
+          slaBreaches: 3,
+          escalationThreshold: "queue depth above 5 or SLA breaches above 0",
+          recommendedOwner: "Incident Commander",
+          source: "client-rendered local dashboard fixture"
+        };
+        root.innerHTML = [
+          "<h1>Operations dashboard</h1>",
+          "<p id='marker'>${DASHBOARD_TRIAGE_MARKER}</p>",
+          "<p id='queue-depth'>Queue depth: 11</p>",
+          "<p id='sla-breaches'>SLA breaches: 3</p>",
+          "<p id='escalation-threshold'>Escalation threshold: queue depth above 5 or SLA breaches above 0 pages the on-call.</p>",
+          "<p id='recommended-owner'>Recommended owner: Incident Commander</p>",
+          "<p id='scope'>Residual risk: local dynamic dashboard fixture only.</p>"
+        ].join("");
+      };
+      if (document.readyState === "loading") {
+        window.addEventListener("DOMContentLoaded", renderTurnkeyDashboardFixture, { once: true });
+      } else {
+        renderTurnkeyDashboardFixture();
+      }
+    </script>
+  </head>
+  <body>
+    <main id="dashboard-root">
+      <h1>Loading operations dashboard</h1>
+      <p>Server HTML does not contain triage evidence; browser JavaScript must render it.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
     res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     res.end("not found");
     return;
@@ -755,6 +819,7 @@ async function startFixtureServer(): Promise<FixtureServer> {
     slowUrl: `http://127.0.0.1:${port}/slow-fixture`,
     approvalUrl: `http://127.0.0.1:${port}/approval-form`,
     dynamicUrl: `http://127.0.0.1:${port}/dynamic-dashboard`,
+    dashboardUrl: `http://127.0.0.1:${port}/ops-dashboard`,
   };
 }
 
@@ -814,6 +879,28 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       finalMarker: DYNAMIC_BROWSER_FINAL_MARKER,
       evidenceMarkers: [DYNAMIC_BROWSER_MARKER],
       answerTerms: ["browser", "Active users: 42", "Queue depth: 7", "residual risk"],
+      answerPatterns: [
+        { label: "rendered DOM source", pattern: /(?:JavaScript|client-rendered|rendered DOM|dynamic DOM)/i },
+        { label: "browser-only evidence", pattern: /browser/i },
+      ],
+      evidenceLinePatterns: [
+        {
+          label: "dynamic DOM evidence line",
+          pattern: /^\s*[-*+]\s+dynamic DOM evidence\s*:.*TURNKEYAI_MISSION_DYNAMIC_BROWSER_OK.*TURNKEYAI_DYNAMIC_BROWSER_OK.*(?:JavaScript|client-rendered|rendered DOM|dynamic DOM)/im,
+        },
+        {
+          label: "dashboard facts line",
+          pattern: /^\s*[-*+]\s+extracted dashboard facts\s*:.*Active users: 42.*Queue depth: 7/im,
+        },
+        { label: "residual risk evidence line", pattern: /^\s*[-*+]\s+residual risk\s*:/im },
+      ],
+      forbiddenPatterns: [
+        { label: "non-local adoption claim", pattern: /\b(millions of users|market share|customers|widely adopted)\b/i },
+        { label: "non-local pricing claim", pattern: /\bfree plan|enterprise pricing|starts at \$\d+\b/i },
+        { label: "unresolved placeholder", pattern: /\b(TBD|to be confirmed|needs confirmation|待确认|估算)\b/i },
+      ],
+      minBytes: 260,
+      maxBytes: 1_100,
       expectedSpawnCalls: 1,
       expectedSendCalls: 0,
       expectedToolResults: 1,
@@ -829,9 +916,79 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "The task must also report the exact dynamic facts Active users: 42 and Queue depth: 7.",
         "Do not use an explore/fetch session for this task; the marker is intentionally rendered by browser JavaScript.",
         `Final answer must include ${DYNAMIC_BROWSER_FINAL_MARKER}, ${DYNAMIC_BROWSER_MARKER}, Active users: 42, Queue depth: 7, and the exact words residual risk.`,
-        "Use plain Markdown with heading `Browser evidence` and exactly three bullets: dynamic DOM evidence, extracted dashboard facts, residual risk.",
-        "Do not create a separate bullet for the final success marker. Put it in the dynamic DOM evidence bullet.",
+        "Use this exact final answer shape after the browser worker result returns:",
+        "## Browser evidence",
+        `- dynamic DOM evidence: ${DYNAMIC_BROWSER_FINAL_MARKER}; ${DYNAMIC_BROWSER_MARKER} found in browser-rendered JavaScript or client-rendered DOM evidence.`,
+        "- extracted dashboard facts: Active users: 42; Queue depth: 7.",
+        "- residual risk: this validates the local dynamic fixture only, not a wider deployment.",
+        "Do not create a separate bullet or paragraph for the final success marker.",
         "Keep the final answer under 140 words. Do not use tables, links, code fences, or bold/italic markup.",
+      ].join("\n"),
+    };
+  }
+  if (scenario === "browser-dashboard") {
+    return {
+      scenario,
+      title: "Mission route browser dashboard triage E2E",
+      finalMarker: DASHBOARD_TRIAGE_FINAL_MARKER,
+      evidenceMarkers: [DASHBOARD_TRIAGE_MARKER],
+      answerTerms: [
+        "browser",
+        "Queue depth: 11",
+        "SLA breaches: 3",
+        "page on-call",
+        "Incident Commander",
+        "residual risk",
+      ],
+      answerPatterns: [
+        { label: "rendered dashboard source", pattern: /(?:JavaScript|client-rendered|rendered DOM|dynamic dashboard)/i },
+        { label: "policy-backed action", pattern: /queue depth above 5|SLA breach(?:es)? above 0|threshold/i },
+      ],
+      evidenceLinePatterns: [
+        {
+          label: "rendered source evidence line",
+          pattern: /^\s*[-*+]\s+rendered source evidence\s*:.*TURNKEYAI_MISSION_DASHBOARD_TRIAGE_OK.*TURNKEYAI_DASHBOARD_TRIAGE_OK.*(?:JavaScript|client-rendered|rendered DOM|dynamic dashboard)/im,
+        },
+        {
+          label: "current state evidence line",
+          pattern: /^\s*[-*+]\s+current state\s*:.*Queue depth: 11.*SLA breaches: 3/im,
+        },
+        {
+          label: "recommended action line",
+          pattern: /^\s*[-*+]\s+recommended action\s*:.*page on-call.*Incident Commander/im,
+        },
+        { label: "residual risk evidence line", pattern: /^\s*[-*+]\s+residual risk\s*:/im },
+      ],
+      forbiddenPatterns: [
+        { label: "unsupported external incident claim", pattern: /\b(real outage|production outage|customer impact confirmed)\b/i },
+        { label: "unresolved placeholder", pattern: /\b(TBD|to be confirmed|needs confirmation|待确认|估算)\b/i },
+      ],
+      minBytes: 320,
+      maxBytes: 1_300,
+      expectedSpawnCalls: 1,
+      expectedSendCalls: 0,
+      expectedToolResults: 1,
+      expectedSpawnedSessions: 1,
+      expectedContinuedSessions: 0,
+      minEvidenceEvents: 1,
+      expectedBullets: 4,
+      desc: [
+        "Run the mission route browser dashboard triage E2E.",
+        "Use the available session tool instead of answering from memory.",
+        "Call sessions_spawn with agent_id=browser exactly once.",
+        `The browser sub-agent task must open ${fixture.dashboardUrl}, inspect the JavaScript-rendered dashboard, and report marker ${DASHBOARD_TRIAGE_MARKER}.`,
+        "The task must return the exact facts Queue depth: 11, SLA breaches: 3, Escalation threshold: queue depth above 5 or SLA breaches above 0, and Recommended owner: Incident Commander.",
+        "Do not use an explore/fetch session for this task; the evidence is intentionally rendered by browser JavaScript.",
+        `Final answer must include ${DASHBOARD_TRIAGE_FINAL_MARKER}, ${DASHBOARD_TRIAGE_MARKER}, Queue depth: 11, SLA breaches: 3, page on-call, Incident Commander, and the exact words residual risk.`,
+        "Use this exact final answer shape after the browser worker result returns:",
+        "## Dashboard triage",
+        `- rendered source evidence: ${DASHBOARD_TRIAGE_FINAL_MARKER}; ${DASHBOARD_TRIAGE_MARKER} found in browser-rendered JavaScript or client-rendered dynamic dashboard evidence.`,
+        "- current state: Queue depth: 11; SLA breaches: 3; threshold says queue depth above 5 or SLA breaches above 0 pages the on-call.",
+        "- recommended action: page on-call and assign Incident Commander as owner.",
+        "- residual risk: this validates the local dashboard fixture only, not a real production incident.",
+        "Do not create a separate bullet or paragraph for the final success marker.",
+        "Do not claim a real production outage or confirmed customer impact. This is a local fixture.",
+        "Keep the final answer under 160 words. Do not use tables, links, code fences, or bold/italic markup.",
       ].join("\n"),
     };
   }
@@ -919,6 +1076,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       evidenceMarkers: [FIXTURE_MARKER],
       answerTerms: ["sessions_send", "no duplicate session", "residual risk"],
       answerPatterns: [{ label: "same-session continuity", pattern: /same[- ]session|reused session|existing session/i }],
+      forbiddenPatterns: [{ label: "internal fixture URL", pattern: /https?:\/\//i }],
       expectedSpawnCalls: 1,
       expectedSendCalls: 1,
       expectedToolResults: 2,
@@ -933,6 +1091,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         `The explore sub-agent task must fetch ${fixture.basicUrl}, report the page title, marker ${FIXTURE_MARKER}, and return a reusable session summary.`,
         `Phase 1 final answer must include ${FOLLOWUP_PHASE_MARKER}, ${FIXTURE_MARKER}, the exact session_key returned by sessions_spawn, and the exact words residual risk.`,
         "Use plain Markdown with heading `Evidence` and exactly three bullets: session tool call, fixture marker, residual risk.",
+        "Do not include source URLs; name the session tool and fixture marker instead.",
         "Do not use tables, links, code fences, or bold/italic markup.",
         "Do not call sessions_send during phase 1.",
       ].join("\n"),
@@ -944,7 +1103,44 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       title: "Mission route real comparison E2E",
       finalMarker: COMPARISON_FINAL_MARKER,
       evidenceMarkers: [ALPHA_MARKER, BETA_MARKER],
-      answerTerms: ["Vendor Alpha", "Vendor Beta", "Source coverage", "residual risk"],
+      answerTerms: [
+        "Alpha",
+        "Beta",
+        "$19 per seat",
+        "$29 per workspace",
+        "browser automation",
+        "approval workflow",
+        "API integration catalog",
+        "separate connector",
+        "Source coverage",
+        "residual risk",
+      ],
+      answerPatterns: [
+        { label: "explicit source-bounded comparison", pattern: /local fixture|local endpoint|source-bounded|single endpoint/i },
+        { label: "actionable comparison conclusion", pattern: /recommend|choose|prefer|better fit|suits|fits|prioritiz/i },
+      ],
+      evidenceLinePatterns: [
+        {
+          label: "Alpha evidence line",
+          pattern: /^\s*[-*+]\s+Alpha evidence\s*:.*TURNKEYAI_VENDOR_ALPHA_OK.*\$19 per seat.*browser automation.*API integration catalog/im,
+        },
+        {
+          label: "Beta evidence line",
+          pattern: /^\s*[-*+]\s+Beta evidence\s*:.*TURNKEYAI_VENDOR_BETA_OK.*\$29 per workspace.*approval workflow.*separate connector/im,
+        },
+        {
+          label: "comparison conclusion line",
+          pattern: /^\s*[-*+]\s+comparison conclusion\s*:.*TURNKEYAI_MISSION_COMPARISON_OK.*(?:recommend|choose|prefer|better fit|suits|fits|prioritiz)/im,
+        },
+        { label: "residual risk evidence line", pattern: /^\s*[-*+]\s+residual risk\s*:/im },
+      ],
+      forbiddenPatterns: [
+        { label: "unsupported adoption claim", pattern: /\b(millions of users|large community|market share|widely adopted|customers)\b/i },
+        { label: "unsupported pricing claim", pattern: /\bfree plan|enterprise pricing|starts at \$\d+\b/i },
+        { label: "unresolved placeholder", pattern: /\b(TBD|to be confirmed|needs confirmation|待确认|估算)\b/i },
+      ],
+      minBytes: 520,
+      maxBytes: 1_400,
       expectedSpawnCalls: 2,
       expectedSendCalls: 0,
       expectedToolResults: 2,
@@ -960,9 +1156,13 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         `Vendor Beta task: fetch ${fixture.betaUrl}; report title, marker ${BETA_MARKER}, pricing, strength, and risk.`,
         "Do not finalize until both child session tool results have returned and both markers are present in tool evidence.",
         `Final answer must include ${COMPARISON_FINAL_MARKER}, ${ALPHA_MARKER}, and ${BETA_MARKER}.`,
-        "Use plain Markdown with heading `Source coverage` and exactly four bullets: Alpha evidence, Beta evidence, comparison conclusion, residual risk.",
-        "Do not create separate bullets for markers. Put the source markers in their source bullets and the final success marker in the comparison conclusion bullet.",
-        "The residual risk bullet must contain the exact words `residual risk`.",
+        "Use this exact final answer shape after both child session tool results return:",
+        "## Source coverage",
+        `- Alpha evidence: ${ALPHA_MARKER}; $19 per seat; browser automation and traceable screenshots; risk is limited API integration catalog.`,
+        `- Beta evidence: ${BETA_MARKER}; $29 per workspace; approval workflow and team handoff history; risk is separate connector for browser control.`,
+        `- comparison conclusion: ${COMPARISON_FINAL_MARKER}; Alpha fits browser-centric lower-cost work, while Beta fits approval-heavy team handoff work.`,
+        "- residual risk: source-bounded to two local fixture sources; pricing and feature depth are not verified elsewhere.",
+        "Do not create separate bullets or paragraphs for markers.",
         "Keep the final answer under 160 words. Do not use tables, links, code fences, or bold/italic markup.",
         "Do not make unsupported claims beyond the two local fixture sources.",
       ].join("\n"),
@@ -974,6 +1174,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
     finalMarker: FINAL_MARKER,
     evidenceMarkers: [FIXTURE_MARKER],
     answerTerms: ["sessions_spawn", "residual risk"],
+    forbiddenPatterns: [{ label: "internal fixture URL", pattern: /https?:\/\//i }],
     expectedSpawnCalls: 1,
     expectedSendCalls: 0,
     expectedToolResults: 1,
@@ -987,10 +1188,14 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       "Call sessions_spawn with agent_id=explore exactly once.",
       `The explore sub-agent task must fetch ${fixture.basicUrl} and report the page title plus marker ${FIXTURE_MARKER}.`,
       `Final answer must include ${FINAL_MARKER} and ${FIXTURE_MARKER}.`,
-      "Use plain Markdown with heading `Evidence` and exactly three bullets: session tool call, fixture marker, residual risk.",
-      "Do not create a separate bullet for the final success marker. Put it in the session tool call bullet.",
-      "The residual risk bullet must contain the exact words `residual risk`.",
+      "Use this exact final answer shape after the session tool result returns:",
+      "## Evidence",
+      `- session tool call: ${FINAL_MARKER}; sessions_spawn(explore) returned fixture evidence.`,
+      `- fixture marker: ${FIXTURE_MARKER} confirmed in the local fixture result.`,
+      "- residual risk: this validates the local fixture path only, not an external source.",
+      "Do not create a separate bullet or paragraph for the final success marker.",
       "Keep the final answer under 120 words. Do not use tables, links, code fences, or bold/italic markup.",
+      "Do not include source URLs; name the session tool and fixture marker instead.",
       "Do not include the final success marker unless the session tool result contains the fixture marker.",
     ].join("\n"),
   };
@@ -1003,6 +1208,7 @@ function buildFollowupInitialSpec(fixture: FixtureServer): ScenarioSpec {
     finalMarker: FOLLOWUP_PHASE_MARKER,
     evidenceMarkers: [FIXTURE_MARKER],
     answerTerms: ["sessions_spawn", "session_key", "residual risk"],
+    forbiddenPatterns: [{ label: "internal fixture URL", pattern: /https?:\/\//i }],
     expectedSpawnCalls: 1,
     expectedSendCalls: 0,
     expectedToolResults: 1,
@@ -1017,6 +1223,7 @@ function buildFollowupInitialSpec(fixture: FixtureServer): ScenarioSpec {
       `The explore sub-agent task must fetch ${fixture.basicUrl}, report the page title, marker ${FIXTURE_MARKER}, and return a reusable session summary.`,
       `Phase 1 final answer must include ${FOLLOWUP_PHASE_MARKER}, ${FIXTURE_MARKER}, the exact session_key returned by sessions_spawn, and the exact words residual risk.`,
       "Use plain Markdown with heading `Evidence` and exactly three bullets: session tool call, fixture marker, residual risk.",
+      "Do not include source URLs; name the session tool and fixture marker instead.",
       "Do not use tables, links, code fences, or bold/italic markup.",
       "Do not call sessions_send during phase 1.",
     ].join("\n"),
@@ -1438,7 +1645,10 @@ function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bullets: n
     spec.allowLabeledEvidenceWithoutBullets === true &&
     requiredEvidenceLineCount === spec.expectedBullets &&
     spec.evidenceLinePatterns?.every((item) => item.pattern.test(content)) === true;
-  if (bytes < 180) failures.push("final answer is too short");
+  if (bytes < (spec.minBytes ?? 180)) failures.push("final answer is too short");
+  if (spec.maxBytes !== undefined && bytes > spec.maxBytes) {
+    failures.push(`final answer is too long: ${bytes} > ${spec.maxBytes} bytes`);
+  }
   if (bullets !== spec.expectedBullets && !(bullets === 0 && hasLabeledEvidenceShape)) {
     failures.push(`final answer must include exactly ${spec.expectedBullets} Markdown bullets`);
   }
@@ -1454,6 +1664,18 @@ function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bullets: n
   }
   for (const item of spec.evidenceLinePatterns ?? []) {
     if (!item.pattern.test(content)) failures.push(`missing ${item.label}`);
+  }
+  for (const item of spec.forbiddenPatterns ?? []) {
+    if (item.pattern.test(content)) failures.push(`forbidden ${item.label}`);
+  }
+  if (/```/.test(content)) failures.push("final answer must not use code fences");
+  if (/^\s*\|.*\|\s*$/m.test(content)) failures.push("final answer must not use Markdown tables");
+  if (/\*\*|__/.test(content)) failures.push("final answer must not use bold markup");
+  if (/\[[^\]]+\]\([^)]+\)|https?:\/\//i.test(content)) failures.push("final answer must not include links");
+  const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const finalMarkerLines = lines.filter((line) => line.includes(spec.finalMarker));
+  if (finalMarkerLines.length !== 1 || !/^\s*[-*+]\s+/.test(finalMarkerLines[0] ?? "")) {
+    failures.push("final success marker must appear exactly once inside an evidence bullet");
   }
   if (/\b(assume|assumes|assuming|assumed|estimate|estimated|estimates|estimating|guess|guessed|guesses|guessing|probably|probable|maybe|perhaps|approximately|approximate)\b/i.test(content)) {
     failures.push("final answer contains unsupported/hedged claim language");
