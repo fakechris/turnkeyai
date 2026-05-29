@@ -539,6 +539,7 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
     ];
   }
   if (message.role === "tool") {
+    const admission = readStringMetadata(message.metadata, "admission");
     const event = buildPlainEvent({
       ...input,
       kind: "tool",
@@ -553,8 +554,9 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
         toolCallId: message.toolCallId,
         toolPhase: "result",
         resultContent: message.content,
+        ...(admission ? { admission } : {}),
       };
-      if (message.toolStatus === "failed" || message.toolStatus === "cancelled") {
+      if (admission !== "skipped" && (message.toolStatus === "failed" || message.toolStatus === "cancelled")) {
         event.emph = "danger";
       }
     }
@@ -584,13 +586,22 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
     );
     let stepIndex = 0;
     for (const round of toolUse.rounds) {
+      const resultsByCallId = new Map(round.results.map((result) => [result.toolCallId, result]));
+      const skippedProgressCallIds = new Set(
+        round.progress
+          .filter((progress) => progress.detail?.["admission"] === "skipped")
+          .map((progress) => progress.toolCallId)
+      );
       for (const call of round.calls) {
+        const matchingResult = resultsByCallId.get(call.id);
+        const skippedByAdmission = matchingResult?.skipped === true || skippedProgressCallIds.has(call.id);
         events.push(
           buildToolCallEvent({
             ...input,
             tMs: tMsForStep(message.createdAt, stepIndex, totalSubEvents),
             call,
             roundNumber: round.round,
+            ...(skippedByAdmission ? { admission: "skipped" } : matchingResult ? { admission: "admitted" } : {}),
           })
         );
         stepIndex += 1;
@@ -662,6 +673,7 @@ interface ToolUseTrace {
       contentBytes: number;
       content?: string;
       contentTruncated?: boolean;
+      skipped?: boolean;
     }>;
     progress: Array<{
       toolCallId: string;
@@ -697,6 +709,7 @@ function extractToolUseTrace(metadata: unknown): ToolUseTrace | null {
               typeof result.contentBytes === "number" ? result.contentBytes : 0,
             ...(typeof result.content === "string" ? { content: result.content } : {}),
             ...(result.contentTruncated === true ? { contentTruncated: true } : {}),
+            ...(result.skipped === true ? { skipped: true } : {}),
           }))
         : [];
       const progress = Array.isArray(round.progress)
@@ -742,6 +755,7 @@ function extractNativeToolUseTrace(
             contentBytes: typeof progress.detail?.contentBytes === "number" ? progress.detail.contentBytes : 0,
             ...(progress.summary ? { content: progress.summary } : {}),
             ...(progress.detail?.contentTruncated === true ? { contentTruncated: true } : {}),
+            ...(progress.detail?.["admission"] === "skipped" ? { skipped: true } : {}),
           }));
   const progress = (message.toolProgress ?? [])
     .filter(isUserVisibleToolProgress)
@@ -835,6 +849,7 @@ interface BuildToolCallEventInput {
   tMs: number;
   call: { id: string; name: string; input: Record<string, unknown> };
   roundNumber: number;
+  admission?: "admitted" | "skipped";
 }
 
 function buildToolCallEvent(input: BuildToolCallEventInput): ActivityEvent {
@@ -869,6 +884,7 @@ function buildToolCallEvent(input: BuildToolCallEventInput): ActivityEvent {
       toolPhase: "call",
       round: String(input.roundNumber),
       callInput: inputJson,
+      ...(input.admission ? { admission: input.admission } : {}),
     },
   };
 }
@@ -885,6 +901,7 @@ interface BuildToolResultEventInput {
     contentBytes: number;
     content?: string;
     contentTruncated?: boolean;
+    skipped?: boolean;
   };
   roundNumber: number;
   callName: string;
@@ -926,6 +943,9 @@ function buildToolProgressEvent(input: BuildToolProgressEventInput): ActivityEve
     if (detail.truncated) {
       runtime.progressTruncated = "true";
     }
+    if (input.progress.detail["admission"] === "skipped") {
+      runtime.admission = "skipped";
+    }
   }
   const event: ActivityEvent = {
     id: input.newEventId(),
@@ -937,7 +957,10 @@ function buildToolProgressEvent(input: BuildToolProgressEventInput): ActivityEve
     tags: ["thread", "tool-progress", input.progress.toolName, input.progress.phase],
     runtime,
   };
-  if (input.progress.phase === "failed" || input.progress.phase === "cancelled") {
+  if (
+    input.progress.detail?.["admission"] !== "skipped" &&
+    (input.progress.phase === "failed" || input.progress.phase === "cancelled")
+  ) {
     event.emph = "danger";
   }
   return event;
@@ -955,7 +978,11 @@ function buildToolResultEvent(input: BuildToolResultEventInput): ActivityEvent {
   const trimmed = input.result.content?.trim() ?? "";
   const head = sliceForDisplay(trimmed, ACTIVITY_EVENT_TEXT_CAP);
   const sizeLabel = formatBytes(input.result.contentBytes);
-  const text = input.result.isError
+  const text = input.result.skipped
+    ? trimmed
+      ? `Tool ${input.callName} skipped by runtime budget: ${head}`
+      : `Tool ${input.callName} skipped by runtime budget.`
+    : input.result.isError
     ? trimmed
       ? `Tool ${input.callName} failed: ${head}`
       : `Tool ${input.callName} failed (${sizeLabel}).`
@@ -971,6 +998,7 @@ function buildToolResultEvent(input: BuildToolResultEventInput): ActivityEvent {
     toolPhase: "result",
     round: String(input.roundNumber),
     contentBytes: String(input.result.contentBytes),
+    ...(input.result.skipped ? { admission: "skipped" } : {}),
   };
   if (input.result.content !== undefined) {
     runtime.resultContent = input.result.content;
@@ -988,7 +1016,7 @@ function buildToolResultEvent(input: BuildToolResultEventInput): ActivityEvent {
     tags: ["thread", "tool-result", input.result.toolName],
     runtime,
   };
-  if (input.result.isError) event.emph = "danger";
+  if (input.result.isError && !input.result.skipped) event.emph = "danger";
   return event;
 }
 

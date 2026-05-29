@@ -632,6 +632,9 @@ function ToolProcessRow({ process }: { process: ToolProcessItem }) {
     process.status === "failed" ? "failed" : process.status === "running" ? "running" : "completed";
   const resultCount = process.toolEvents.filter((event) => event.runtime?.toolPhase === "result").length;
   const progressCount = process.toolEvents.filter((event) => event.runtime?.toolPhase === "progress").length;
+  const skippedCount = process.toolEvents.filter(
+    (event) => event.runtime?.toolPhase === "result" && event.runtime?.admission === "skipped"
+  ).length;
   const processEventCount = process.processEvents.length;
   const processSteps = useMemo(
     () =>
@@ -660,6 +663,7 @@ function ToolProcessRow({ process }: { process: ToolProcessItem }) {
           <span>{toolNames.length ? toolNames.join(", ") : "tool chain"}</span>
           <span>{process.toolEvents.length} step{process.toolEvents.length === 1 ? "" : "s"}</span>
           <span>{resultCount} result{resultCount === 1 ? "" : "s"}</span>
+          {skippedCount > 0 && <span>{skippedCount} skipped</span>}
           {progressCount > 0 && <span>{progressCount} progress</span>}
           {processEventCount > 0 && <span>{processEventCount} runtime event{processEventCount === 1 ? "" : "s"}</span>}
         </div>

@@ -240,5 +240,8 @@ function deriveToolProcessStatus(
 }
 
 function isFailureEvent(event: ActivityEvent): boolean {
+  if (event.runtime?.admission === "skipped") {
+    return false;
+  }
   return event.emph === "danger" || event.kind === "recovery";
 }

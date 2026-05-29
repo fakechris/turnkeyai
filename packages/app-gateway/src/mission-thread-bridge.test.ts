@@ -761,6 +761,56 @@ describe("MissionThreadBridge", () => {
     assert.equal(ordered[2]!.runtime?.toolCallId, "c-native");
   });
 
+  it("marks split native budget-skipped tool calls from progress admission", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const message: TeamMessage = {
+      ...baseMessage("a-native-skipped-progress", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Done.",
+      metadata: { nativeToolUse: true },
+      toolCalls: [
+        {
+          id: "c-skipped",
+          name: "sessions_spawn",
+          arguments: { agent_id: "browser", prompt: "open the dashboard" },
+        },
+      ],
+      toolProgress: [
+        {
+          toolCallId: "c-skipped",
+          toolName: "sessions_spawn",
+          phase: "progress",
+          summary: "Skipped sessions_spawn: per-turn tool call limit exceeded.",
+          detail: {
+            admission: "skipped",
+            reason: "max_tool_calls_per_round",
+            max_tool_calls_per_round: 2,
+            requested_tool_calls: 20,
+          },
+          ts: 4_900,
+        },
+      ],
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([message]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const call = activity.events.find((event) => event.runtime?.toolPhase === "call");
+    const progress = activity.events.find((event) => event.runtime?.toolPhase === "progress");
+    const result = activity.events.find((event) => event.runtime?.toolPhase === "result");
+    assert.equal(call?.runtime?.admission, "skipped");
+    assert.equal(progress?.runtime?.admission, "skipped");
+    assert.equal(result, undefined);
+    assert.equal(progress?.emph, undefined);
+  });
+
   it("does not expand native progress events with blank summaries", async () => {
     counter = 0;
     const activity = memActivityStore();
@@ -1075,6 +1125,50 @@ describe("MissionThreadBridge", () => {
     assert.ok(result, "expected a tool-result event");
     assert.equal(result?.emph, "danger");
     assert.match(result!.text, /failed/);
+  });
+
+  it("tool-result event marks budget-skipped calls without danger emphasis", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const message: TeamMessage = {
+      ...baseMessage("a", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Done.",
+      metadata: {
+        toolUse: {
+          rounds: [
+            {
+              round: 1,
+              calls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "explore" } }],
+              results: [
+                {
+                  toolCallId: "c1",
+                  toolName: "sessions_spawn",
+                  isError: true,
+                  skipped: true,
+                  contentBytes: 42,
+                  content: "tool_call_limit_exceeded: skipped sessions_spawn",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([message]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+    await bridge.tickMission("msn.1");
+    const call = activity.events.find((e) => e.runtime?.toolPhase === "call");
+    const result = activity.events.find((e) => e.runtime?.toolPhase === "result");
+    assert.equal(call?.runtime?.admission, "skipped");
+    assert.equal(result?.runtime?.admission, "skipped");
+    assert.equal(result?.emph, undefined);
+    assert.match(result!.text, /skipped by runtime budget/);
   });
 
   it("never throws on activity append failure — logs and continues", async () => {
