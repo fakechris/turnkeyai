@@ -25,6 +25,7 @@ import {
   useApprovals,
   useContextSources,
   useMissions,
+  useRuntimeSummary,
 } from "./api/useMissionData";
 import { useAppState } from "./state/AppState";
 
@@ -44,6 +45,7 @@ export function App() {
   const approvals = useApprovals([]).value;
   const agents = useAgents([]).value;
   const contextSources = useContextSources([]).value;
+  const runtimeSummary = useRuntimeSummary(null, { limit: 1 }).value;
   const counts: SidebarCounts = {
     missions: missions.filter((m) => m.status !== "archived").length,
     // Approvals: subtract optimistic local decisions while the daemon
@@ -53,7 +55,7 @@ export function App() {
     ).length,
     agents: agents.length,
     context: contextSources.length,
-    recoveries: 0,
+    recoveries: runtimeSummary?.attentionCount ?? 0,
   };
 
   if (state.token === null) {

@@ -255,6 +255,19 @@ try {
       await page.locator("text=browser: browser").isVisible(),
       "agent connect should show live transport preferences"
     );
+
+    await page.goto(`http://127.0.0.1:${port}/app#/runtime`, {
+      waitUntil: "networkidle",
+    });
+    await page.waitForSelector("text=Runtime attention");
+    assert(
+      await page.locator("text=chain.browser.waiting").isVisible(),
+      "runtime page should show live attention chains"
+    );
+    assert(
+      await page.locator("text=wrk.browser.1").isVisible(),
+      "runtime page should show live worker sessions"
+    );
     await page.close();
 
     const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -368,6 +381,14 @@ try {
       requestedPaths.some((value) => value.startsWith("/capabilities")),
       "agent connect capabilities endpoint was not requested"
     );
+    assert(
+      requestedPaths.some((value) => value.startsWith("/runtime-summary")),
+      "runtime summary endpoint was not requested"
+    );
+    assert(
+      requestedPaths.some((value) => value.startsWith("/runtime-worker-sessions")),
+      "runtime worker sessions endpoint was not requested"
+    );
     console.log("control-center-ui-smoke: passed");
     console.log(`control-center-ui-smoke: screenshot-bytes ${screenshot.byteLength}`);
     console.log(`control-center-ui-smoke: mobile-screenshot-bytes ${mobileScreenshot.byteLength}`);
@@ -423,6 +444,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (method === "GET" && url.pathname === "/runtime-worker-sessions") {
     json(res, workerSessionsFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/runtime-summary") {
+    json(res, runtimeSummaryFixture());
     return;
   }
   if (method === "GET" && url.pathname === "/recovery-runs") {
@@ -862,6 +887,50 @@ function workerSessionsFixture() {
       },
     },
   ];
+}
+
+function runtimeSummaryFixture() {
+  const attentionChain = {
+    chainId: "chain.browser.waiting",
+    threadId,
+    rootKind: "worker",
+    rootId: "wrk.browser.1",
+    phase: "waiting",
+    canonicalState: "waiting",
+    continuityState: "recoverable",
+    attention: true,
+    updatedAt: Date.now() - 2_000,
+    activeSubjectKind: "worker",
+    activeSubjectId: "wrk.browser.1",
+    waitingReason: "approval required",
+    currentWaitingPoint: "browser.form.submit",
+    headline: "Browser worker waiting for operator approval",
+    nextStep: "Decide the pending browser approval.",
+  };
+  return {
+    totalChains: 2,
+    activeCount: 1,
+    waitingCount: 1,
+    failedCount: 0,
+    resolvedCount: 1,
+    staleCount: 0,
+    attentionCount: 1,
+    stateCounts: { waiting: 1, resolved: 1 },
+    continuityCounts: { recoverable: 1 },
+    caseStateCounts: {},
+    attentionChains: [attentionChain],
+    activeChains: [attentionChain],
+    waitingChains: [attentionChain],
+    staleChains: [],
+    failedChains: [],
+    recentlyResolved: [],
+    workerSessionHealth: {
+      totalSessions: 1,
+      activeSessions: 1,
+      orphanedSessions: 0,
+      missingContextSessions: 0,
+    },
+  };
 }
 
 function recoveryRunsFixture() {
