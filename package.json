@@ -22,6 +22,7 @@
     "tooluse:e2e": "tsx scripts/tool-use-e2e.ts",
     "tooluse:e2e:real-matrix": "tsx scripts/tool-use-e2e.ts --real-llm-matrix",
     "mission:e2e": "tsx scripts/mission-tool-use-e2e.ts",
+    "control-center:smoke": "tsx scripts/control-center-ui-smoke.ts",
     "pack:cli": "npm pack --workspace @turnkeyai/cli --dry-run",
     "release:verify": "tsx scripts/release-readiness.ts",
     "phase1:baseline": "tsx scripts/phase1-readiness-baseline.ts",
