@@ -13,6 +13,7 @@ import { useApprovals, useBootstrapDemo, useMissions } from "../api/useMissionDa
 import { Icon } from "../components/Icon";
 import { AgentStack, StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
+import { canUseOperatorActions, OPERATOR_ACTION_SCOPE_HINT } from "../state/scopeAccess";
 import { type MissionStatus } from "../state/types";
 
 interface Filter {
@@ -50,7 +51,8 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
   // operator-only, so a read-token user clicking would 401 and apiClient
   // would clear their token, dropping them to the no-token page. Hide
   // the button entirely for read scope to avoid the trap.
-  const canBootstrap = state.scope !== "read";
+  const canCreateMission = canUseOperatorActions(state.scope);
+  const canBootstrap = canCreateMission;
   const onLoadDemo = async () => {
     setBootstrapStatus("loading");
     try {
@@ -79,7 +81,13 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
           <button type="button" className="btn" onClick={() => setRoute("approvals")}>
             <Icon name="approvals" size={13} /> {pendingTotal} pending
           </button>
-          <button type="button" className="btn primary" onClick={onNewMission}>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={onNewMission}
+            disabled={!canCreateMission}
+            title={canCreateMission ? undefined : OPERATOR_ACTION_SCOPE_HINT}
+          >
             <Icon name="plus" size={13} /> New mission
           </button>
         </div>
@@ -118,6 +126,7 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
           bootstrapStatus={bootstrapStatus}
           onBootstrap={onLoadDemo}
           onNewMission={onNewMission}
+          canCreateMission={canCreateMission}
         />
       ) : list.length > 0 ? (
         <div className="mission-grid">
@@ -154,12 +163,14 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
 function EmptyMissionsState({
   isLive,
   canBootstrap,
+  canCreateMission,
   bootstrapStatus,
   onBootstrap,
   onNewMission,
 }: {
   isLive: boolean;
   canBootstrap: boolean;
+  canCreateMission: boolean;
   bootstrapStatus: "idle" | "loading" | "error";
   onBootstrap: () => void;
   onNewMission: () => void;
@@ -191,7 +202,13 @@ function EmptyMissionsState({
         up from the mission's detail page.
       </div>
       <div className="row" style={{ gap: 8 }}>
-        <button type="button" className="btn primary" onClick={onNewMission}>
+        <button
+          type="button"
+          className="btn primary"
+          onClick={onNewMission}
+          disabled={!canCreateMission}
+          title={canCreateMission ? undefined : OPERATOR_ACTION_SCOPE_HINT}
+        >
           <Icon name="plus" size={13} /> Create your first mission
         </button>
         {canBootstrap && (

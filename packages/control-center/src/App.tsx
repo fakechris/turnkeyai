@@ -30,10 +30,17 @@ import {
   useOnboardingState,
 } from "./api/useMissionData";
 import { useAppState } from "./state/AppState";
+import { canUseOperatorActions } from "./state/scopeAccess";
 
 export function App() {
   useHashRoute();
   const { state, openMission } = useAppState();
+  const canCreateMission = state.token !== null && canUseOperatorActions(state.scope);
+  const openNewMission = () => {
+    if (canCreateMission) {
+      setNewMissionOpen(true);
+    }
+  };
   // PR K3.5: the modal is now real — it POSTs /missions and the
   // daemon spawns a linked team-runtime thread. On success we navigate
   // to Mission Detail so the user can watch the coordination engine
@@ -76,7 +83,7 @@ export function App() {
   if (state.token === null) {
     return (
       <div className="app">
-        <Sidebar counts={counts} onNewMission={() => setNewMissionOpen(true)} />
+        <Sidebar counts={counts} canCreateMission={false} onNewMission={openNewMission} />
         <div className="main">
           <Toolbar crumbs="home" />
           <div className="content">
@@ -89,15 +96,15 @@ export function App() {
 
   return (
     <div className="app">
-      <Sidebar counts={counts} onNewMission={() => setNewMissionOpen(true)} />
+      <Sidebar counts={counts} canCreateMission={canCreateMission} onNewMission={openNewMission} />
       <div className="main">
         {state.route !== "mission" && <PageToolbar />}
         <div className="content">
-          <RoutedPage onNewMission={() => setNewMissionOpen(true)} />
+          <RoutedPage onNewMission={openNewMission} />
         </div>
       </div>
       <NewMissionModal
-        open={newMissionOpen}
+        open={newMissionOpen && canCreateMission}
         onClose={() => setNewMissionOpen(false)}
         onCreated={(missionId) => {
           setNewMissionOpen(false);

@@ -31,9 +31,11 @@ export interface SidebarCounts {
 
 export function Sidebar({
   counts,
+  canCreateMission,
   onNewMission,
 }: {
   counts: SidebarCounts;
+  canCreateMission: boolean;
   onNewMission: () => void;
 }) {
   const { state, setRoute } = useAppState();
@@ -94,6 +96,8 @@ export function Sidebar({
       <button
         type="button"
         className="sb-item"
+        disabled={!canCreateMission}
+        title={canCreateMission ? undefined : "Open with an operator or admin token to create missions."}
         style={{
           background: "var(--surface)",
           border: "1px dashed var(--border)",
