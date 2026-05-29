@@ -43,7 +43,9 @@ interface ToolUseE2eOptions {
   withBrowser: boolean;
   cdpTimeoutMs: number;
   realLlm: boolean;
+  realLlmMatrix: boolean;
   scenario: ToolUseScenario;
+  matrixScenarios?: ToolUseScenario[];
   modelCatalogPath?: string;
   modelId?: string;
   modelChainId?: string;
@@ -51,11 +53,26 @@ interface ToolUseE2eOptions {
 
 type ToolUseScenario = "basic" | "complex" | "acceptance" | "followup" | "timeout" | "approval";
 
+interface RealToolUseE2eResult {
+  mode: "llm-only" | "llm-browser";
+  scenario: ToolUseScenario;
+  modelCatalogPath: string;
+  toolCallNames: string[];
+  finalMarker: string;
+  finalBytes: number;
+  evidenceBullets: number;
+  qualityFailures: number;
+  spawnedSessionCount?: number;
+  childTranscriptMessages?: number;
+  permissionEvents?: string[];
+}
+
 function parseOptions(args: string[]): ToolUseE2eOptions {
   const options: ToolUseE2eOptions = {
     withBrowser: false,
     cdpTimeoutMs: 45_000,
     realLlm: false,
+    realLlmMatrix: false,
     scenario: "basic",
   };
   for (let index = 0; index < args.length; index += 1) {
@@ -68,19 +85,26 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
       options.realLlm = true;
       continue;
     }
+    if (arg === "--real-llm-matrix") {
+      options.realLlm = true;
+      options.realLlmMatrix = true;
+      continue;
+    }
     if (arg === "--scenario") {
       const value = args[index + 1];
-      if (
-        value !== "basic" &&
-        value !== "complex" &&
-        value !== "acceptance" &&
-        value !== "followup" &&
-        value !== "timeout" &&
-        value !== "approval"
-      ) {
-        throw new Error("--scenario must be basic, complex, acceptance, followup, timeout, or approval");
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --scenario");
       }
-      options.scenario = value;
+      options.scenario = parseScenarioName(value);
+      index += 1;
+      continue;
+    }
+    if (arg === "--matrix-scenarios") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --matrix-scenarios");
+      }
+      options.matrixScenarios = parseScenarioList(value);
       index += 1;
       continue;
     }
@@ -128,6 +152,31 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
   return options;
 }
 
+function parseScenarioList(value: string): ToolUseScenario[] {
+  const scenarios = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  if (scenarios.length === 0) {
+    throw new Error("--matrix-scenarios must include at least one scenario");
+  }
+  return scenarios.map((scenario) => parseScenarioName(scenario));
+}
+
+function parseScenarioName(value: string): ToolUseScenario {
+  if (
+    value === "basic" ||
+    value === "complex" ||
+    value === "acceptance" ||
+    value === "followup" ||
+    value === "timeout" ||
+    value === "approval"
+  ) {
+    return value;
+  }
+  throw new Error("--scenario must be basic, complex, acceptance, followup, timeout, or approval");
+}
+
 async function main(options: ToolUseE2eOptions): Promise<void> {
   const mock = await runMockNativeToolUseE2e();
   console.log("tool-use mock e2e passed");
@@ -148,24 +197,12 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
   console.log(`acceptance-total-final-bytes: ${acceptance.totalFinalBytes}`);
 
   if (options.realLlm) {
-    const real = await runRealLlmToolUseE2e(options);
-    console.log("tool-use real llm e2e passed");
-    console.log(`real-mode: ${real.mode}`);
-    console.log(`real-scenario: ${real.scenario}`);
-    console.log(`real-model-catalog: ${real.modelCatalogPath}`);
-    console.log(`real-tool-calls: ${real.toolCallNames.join(",")}`);
-    console.log(`real-final: ${real.finalMarker}`);
-    console.log(`real-final-bytes: ${real.finalBytes}`);
-    console.log(`real-evidence-bullets: ${real.evidenceBullets}`);
-    console.log(`real-quality-failures: ${real.qualityFailures}`);
-    if (real.spawnedSessionCount !== undefined) {
-      console.log(`real-spawned-sessions: ${real.spawnedSessionCount}`);
+    const realRuns = options.realLlmMatrix ? await runRealLlmToolUseE2eMatrix(options) : [await runRealLlmToolUseE2e(options)];
+    for (const real of realRuns) {
+      printRealLlmResult(real);
     }
-    if (real.childTranscriptMessages !== undefined) {
-      console.log(`real-child-transcript-messages: ${real.childTranscriptMessages}`);
-    }
-    if (real.permissionEvents !== undefined) {
-      console.log(`real-permission-events: ${real.permissionEvents.join(",")}`);
+    if (options.realLlmMatrix) {
+      console.log(`tool-use real llm matrix passed: ${realRuns.map((run) => run.scenario).join(",")}`);
     }
   }
 
@@ -175,19 +212,51 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
   }
 }
 
-async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
-  mode: "llm-only" | "llm-browser";
-  scenario: ToolUseScenario;
-  modelCatalogPath: string;
-  toolCallNames: string[];
-  finalMarker: string;
-  finalBytes: number;
-  evidenceBullets: number;
-  qualityFailures: number;
-  spawnedSessionCount?: number;
-  childTranscriptMessages?: number;
-  permissionEvents?: string[];
-}> {
+function printRealLlmResult(real: RealToolUseE2eResult): void {
+  console.log("tool-use real llm e2e passed");
+  console.log(`real-mode: ${real.mode}`);
+  console.log(`real-scenario: ${real.scenario}`);
+  console.log(`real-model-catalog: ${real.modelCatalogPath}`);
+  console.log(`real-tool-calls: ${real.toolCallNames.join(",")}`);
+  console.log(`real-final: ${real.finalMarker}`);
+  console.log(`real-final-bytes: ${real.finalBytes}`);
+  console.log(`real-evidence-bullets: ${real.evidenceBullets}`);
+  console.log(`real-quality-failures: ${real.qualityFailures}`);
+  if (real.spawnedSessionCount !== undefined) {
+    console.log(`real-spawned-sessions: ${real.spawnedSessionCount}`);
+  }
+  if (real.childTranscriptMessages !== undefined) {
+    console.log(`real-child-transcript-messages: ${real.childTranscriptMessages}`);
+  }
+  if (real.permissionEvents !== undefined) {
+    console.log(`real-permission-events: ${real.permissionEvents.join(",")}`);
+  }
+}
+
+async function runRealLlmToolUseE2eMatrix(options: ToolUseE2eOptions): Promise<RealToolUseE2eResult[]> {
+  const scenarios = options.matrixScenarios ?? defaultRealLlmMatrixScenarios(options.withBrowser);
+  const results: RealToolUseE2eResult[] = [];
+  for (const scenario of scenarios) {
+    if (isMultiSourceScenario(scenario) && !options.withBrowser) {
+      throw new Error(`matrix scenario ${scenario} requires --with-browser`);
+    }
+    results.push(
+      await runRealLlmToolUseE2e({
+        ...options,
+        realLlmMatrix: false,
+        scenario,
+        withBrowser: isMultiSourceScenario(scenario),
+      })
+    );
+  }
+  return results;
+}
+
+function defaultRealLlmMatrixScenarios(withBrowser: boolean): ToolUseScenario[] {
+  return withBrowser ? ["basic", "approval", "followup", "timeout", "complex"] : ["basic", "approval", "followup", "timeout"];
+}
+
+async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<RealToolUseE2eResult> {
   const multiSourceScenario = isMultiSourceScenario(options.scenario);
   const followupScenario = options.scenario === "followup";
   const timeoutScenario = options.scenario === "timeout";
