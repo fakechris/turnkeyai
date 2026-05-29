@@ -568,6 +568,7 @@ export interface CreateMissionInput {
   title: string;
   desc: string;
   mode?: string;
+  agents?: string[];
 }
 
 /**
@@ -586,6 +587,7 @@ export function useCreateMission(): (input: CreateMissionInput) => Promise<Missi
         title: input.title,
         desc: input.desc,
         ...(input.mode ? { mode: input.mode } : {}),
+        ...(input.agents && input.agents.length > 0 ? { agents: input.agents } : {}),
       }),
     [client]
   );
