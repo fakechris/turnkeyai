@@ -134,16 +134,29 @@ async function waitForHealth(baseUrl: string, deadlineMs: number): Promise<boole
   return false;
 }
 
-async function fetchJson(url: string, token: string | null): Promise<unknown | null> {
+interface FetchJsonResult {
+  ok: boolean;
+  statusCode?: number;
+  json?: unknown;
+  error?: string;
+}
+
+async function fetchJson(url: string, token: string | null): Promise<FetchJsonResult> {
   try {
     const headers: Record<string, string> = {};
     if (token) headers.authorization = `Bearer ${token}`;
     const response = await fetch(url, { headers });
-    if (!response.ok) return null;
-    return await response.json();
-  } catch {
-    return null;
+    if (!response.ok) return { ok: false, statusCode: response.status };
+    return { ok: true, statusCode: response.status, json: await response.json() };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
   }
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "request failed";
 }
 
 function findDaemonEntry(): string {
@@ -391,8 +404,9 @@ export async function runDaemonStatus(_args: string[]): Promise<void> {
 
   if (healthy) {
     const status = await fetchJson(`${baseUrl}/bridge/status`, token);
-    if (status && typeof status === "object") {
-      const s = status as Record<string, unknown>;
+    if (status.ok && status.json && typeof status.json === "object") {
+      console.log("api auth:   ok");
+      const s = status.json as Record<string, unknown>;
       const transport = s.transport as { mode?: string; label?: string } | undefined;
       const relay = s.relay as { configured?: boolean; peerCount?: number; targetCount?: number } | undefined;
       const expert = s.expertLane as { available?: boolean } | undefined;
@@ -403,6 +417,11 @@ export async function runDaemonStatus(_args: string[]): Promise<void> {
       }
       console.log(`expert:     ${expert?.available ? "available" : "unavailable"}`);
       console.log(`sessions:   ${sessions?.count ?? 0}`);
+    } else {
+      const detail = status.statusCode
+        ? `/bridge/status returned HTTP ${status.statusCode}`
+        : `/bridge/status unreachable: ${status.error ?? "request failed"}`;
+      console.log(`api auth:   ${detail}`);
     }
   }
 
