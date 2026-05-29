@@ -25,6 +25,17 @@ type MissionE2eScenario =
   | "browser-dashboard"
   | "timeout-recovery";
 
+const MISSION_E2E_SCENARIOS = [
+  "basic",
+  "comparison",
+  "followup",
+  "cancel",
+  "approval",
+  "browser-dynamic",
+  "browser-dashboard",
+  "timeout-recovery",
+] as const satisfies readonly MissionE2eScenario[];
+
 interface Mission {
   id: string;
   status: string;
@@ -156,6 +167,13 @@ function parseOptions(args: string[]): MissionToolUseE2eOptions {
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "--help" || arg === "-h" || arg === "help") {
+      printHelp(0);
+    }
+    if (arg === "--list-scenarios") {
+      console.log(MISSION_E2E_SCENARIOS.join("\n"));
+      process.exit(0);
+    }
     if (arg === "--model-catalog") {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) {
@@ -212,21 +230,38 @@ function parseScenarioList(value: string): MissionE2eScenario[] {
 }
 
 function parseScenarioName(value: string, argName: string): MissionE2eScenario {
-  if (
-    value === "basic" ||
-    value === "comparison" ||
-    value === "followup" ||
-    value === "cancel" ||
-    value === "approval" ||
-    value === "browser-dynamic" ||
-    value === "browser-dashboard" ||
-    value === "timeout-recovery"
-  ) {
-    return value;
+  for (const scenario of MISSION_E2E_SCENARIOS) {
+    if (value === scenario) return scenario;
   }
-  throw new Error(
-    `${argName} must be basic, comparison, followup, cancel, approval, browser-dynamic, browser-dashboard, or timeout-recovery`
-  );
+  throw new Error(`${argName} must be one of: ${MISSION_E2E_SCENARIOS.join(", ")}`);
+}
+
+function printHelp(exitCode: number): never {
+  const lines = [
+    "TurnkeyAI mission tool-use real LLM E2E",
+    "",
+    "Usage:",
+    "  npm run mission:e2e -- [options]",
+    "  npm run mission:e2e:matrix -- [options]",
+    "",
+    "Options:",
+    "  --scenario <name>              Run one scenario. Default: basic",
+    "  --matrix-scenarios <a,b,...>   Run a comma-separated scenario matrix",
+    "  --scenario-timeout-ms <ms>     Per-scenario timeout. Default: 180000",
+    "  --model-catalog <path>         Model catalog path. Also reads TURNKEYAI_MODEL_CATALOG, models.local.json, models.json",
+    "  --list-scenarios              Print scenario names and exit",
+    "  --help, -h                    Show this help and exit",
+    "",
+    "Scenarios:",
+    `  ${MISSION_E2E_SCENARIOS.join(", ")}`,
+    "",
+    "Examples:",
+    "  npm run mission:e2e -- --scenario comparison --model-catalog models.local.json --scenario-timeout-ms 240000",
+    "  npm run mission:e2e:matrix -- --model-catalog models.local.json --scenario-timeout-ms 240000",
+  ];
+  const output = exitCode === 0 ? console.log : console.error;
+  output(lines.join("\n"));
+  process.exit(exitCode);
 }
 
 async function main(options: MissionToolUseE2eOptions): Promise<void> {
