@@ -22,8 +22,8 @@ export class ApiError extends Error {
 }
 
 export class UnauthorizedError extends ApiError {
-  constructor(pathname: string) {
-    super(401, pathname, "unauthorized");
+  constructor(pathname: string, message = "unauthorized") {
+    super(401, pathname, message);
     this.name = "UnauthorizedError";
   }
 }
@@ -71,18 +71,15 @@ export function createApiClient(options: ApiClientOptions) {
       init.body = JSON.stringify(body);
     }
     const response = await fetch(pathname, init);
-    if (response.status === 401) {
-      if (sendOptions.clearOnUnauthorized !== false && options.getToken() === requestToken) {
-        options.onUnauthorized?.(pathname);
-      }
-      throw new UnauthorizedError(pathname);
-    }
     if (!response.ok) {
-      throw new ApiError(
-        response.status,
-        pathname,
-        `${pathname} responded ${response.status}`
-      );
+      const message = await readApiErrorMessage(response, pathname);
+      if (response.status === 401) {
+        if (sendOptions.clearOnUnauthorized !== false && options.getToken() === requestToken) {
+          options.onUnauthorized?.(pathname);
+        }
+        throw new UnauthorizedError(pathname, message);
+      }
+      throw new ApiError(response.status, pathname, message);
     }
     // 204 No Content is rare on our routes today but be defensive.
     if (response.status === 204) return undefined as T;
@@ -96,4 +93,43 @@ export function createApiClient(options: ApiClientOptions) {
     post: <T>(pathname: string, body?: unknown) => send<T>("POST", pathname, body),
     put: <T>(pathname: string, body?: unknown) => send<T>("PUT", pathname, body),
   };
+}
+
+async function readApiErrorMessage(response: Response, pathname: string): Promise<string> {
+  const fallback = `${pathname} responded ${response.status}`;
+  let text = "";
+  try {
+    text = await response.text();
+  } catch {
+    return fallback;
+  }
+  const trimmed = text.trim();
+  if (!trimmed) return fallback;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    const message = extractErrorMessage(parsed);
+    if (message) return message;
+  } catch {
+    // Non-JSON error bodies still make useful operator feedback when
+    // they are short plain text.
+  }
+  return truncateErrorMessage(trimmed);
+}
+
+function extractErrorMessage(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return truncateErrorMessage(value.trim());
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  for (const key of ["error", "message", "detail"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      return truncateErrorMessage(candidate.trim());
+    }
+  }
+  return null;
+}
+
+function truncateErrorMessage(value: string): string {
+  const maxLength = 320;
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 }
