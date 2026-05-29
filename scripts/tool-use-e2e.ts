@@ -49,7 +49,7 @@ interface ToolUseE2eOptions {
   modelChainId?: string;
 }
 
-type ToolUseScenario = "basic" | "complex" | "acceptance" | "followup";
+type ToolUseScenario = "basic" | "complex" | "acceptance" | "followup" | "timeout";
 
 function parseOptions(args: string[]): ToolUseE2eOptions {
   const options: ToolUseE2eOptions = {
@@ -70,8 +70,8 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
     }
     if (arg === "--scenario") {
       const value = args[index + 1];
-      if (value !== "basic" && value !== "complex" && value !== "acceptance" && value !== "followup") {
-        throw new Error("--scenario must be basic, complex, acceptance, or followup");
+      if (value !== "basic" && value !== "complex" && value !== "acceptance" && value !== "followup" && value !== "timeout") {
+        throw new Error("--scenario must be basic, complex, acceptance, followup, or timeout");
       }
       options.scenario = value;
       index += 1;
@@ -179,6 +179,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
 }> {
   const multiSourceScenario = isMultiSourceScenario(options.scenario);
   const followupScenario = options.scenario === "followup";
+  const timeoutScenario = options.scenario === "timeout";
   if (multiSourceScenario && !options.withBrowser) {
     throw new Error(`--scenario ${options.scenario} requires --with-browser`);
   }
@@ -207,7 +208,9 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-tooluse-real-e2e-"));
   let closeWorkerRuntime: (() => Promise<void>) | null = null;
   try {
-    const workerRuntimeBundle = followupScenario
+    const workerRuntimeBundle = timeoutScenario
+      ? { workerRuntime: buildRealTimeoutWorkerRuntime(), close: async () => {} }
+      : followupScenario
       ? { workerRuntime: buildRealFollowupWorkerRuntime(), close: async () => {} }
       : multiSourceScenario
       ? buildRealComplexWorkerRuntime({ gateway, fixtureUrl: fixture!.url, tempDir })
@@ -228,11 +231,12 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
           workerRuntime,
           toolCapabilityRegistry,
           maxSessionToolTimeoutMs: options.withBrowser ? 180_000 : 60_000,
+          ...(timeoutScenario ? { hardTimeoutGraceMs: 20 } : {}),
         }),
-        maxRounds: followupScenario ? 6 : multiSourceScenario ? 8 : options.withBrowser ? 6 : 4,
+        maxRounds: followupScenario || timeoutScenario ? 6 : multiSourceScenario ? 8 : options.withBrowser ? 6 : 4,
         maxParallelToolCalls: multiSourceScenario ? 2 : 1,
         maxToolCallsPerRound: multiSourceScenario ? 4 : 2,
-        maxWallClockMs: followupScenario ? 120_000 : multiSourceScenario ? 300_000 : options.withBrowser ? 240_000 : 90_000,
+        maxWallClockMs: followupScenario || timeoutScenario ? 120_000 : multiSourceScenario ? 300_000 : options.withBrowser ? 240_000 : 90_000,
       },
       clock: { now: () => Date.now() },
     });
@@ -244,6 +248,8 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
     const targetMarker =
       followupScenario
         ? "TURNKEYAI_FOLLOWUP_E2E_OK"
+        : timeoutScenario
+        ? "TURNKEYAI_TIMEOUT_E2E_OK"
         : multiSourceScenario
         ? "TURNKEYAI_COMPLEX_E2E_OK"
         : options.withBrowser
@@ -267,6 +273,14 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
                 "4. Do not spawn a second session for the continuation.",
                 "5. Finalize only after sessions_send returns TURNKEYAI_FOLLOWUP_E2E_OK.",
               ].join("\n")
+            : timeoutScenario
+            ? [
+                "You must verify bounded timeout recovery:",
+                "1. Call sessions_spawn with agent_id=explore exactly once.",
+                "2. Set timeout_seconds to 0.001 so the sub-agent times out quickly.",
+                "3. After the timeout result, do not call more tools or spawn fallback sessions.",
+                "4. Produce an evidence-only final answer from the timeout result.",
+              ].join("\n")
             : multiSourceScenario
             ? [
                 "You must gather two independent evidence sources before final answer:",
@@ -285,6 +299,12 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
               "Phase 2: continue the same sub-agent session with sessions_send using the continuation instruction from phase 1.",
               `Final answer must include ${targetMarker}, the reused session_key, and a short note that no duplicate session was spawned.`,
             ].join("\n")
+          : timeoutScenario
+          ? [
+              "Run the bounded timeout recovery E2E.",
+              "Ask the explore sub-agent to perform a deliberately slow verification with timeout_seconds=0.001.",
+              `Final answer must include ${targetMarker}, explain that verification timed out, and mark missing evidence as not verified.`,
+            ].join("\n")
           : multiSourceScenario
           ? [
               "Run the production-grade multi-agent tool-use E2E.",
@@ -301,6 +321,13 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
                 `Final answer must include ${targetMarker}.`,
                 "Use Markdown with a heading `Evidence` and at least three bullets: phase-one partial result, follow-up result, residual risk.",
                 "Mention the reused session_key and state that the continuation used sessions_send rather than a duplicate sessions_spawn.",
+              ].join("\n")
+            : timeoutScenario
+            ? [
+                `Final answer must include ${targetMarker}.`,
+                "Use Markdown with a heading `Evidence` and at least three bullets: timeout result, attempted verification, residual risk.",
+                "State `not verified` for anything the timed-out worker did not prove.",
+                "Do not claim the underlying slow verification succeeded.",
               ].join("\n")
             : multiSourceScenario
             ? [
@@ -337,6 +364,24 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
         spawnedSessionCount: sessions.length,
       });
       assertAnswerQuality(quality);
+    } else if (timeoutScenario) {
+      const spawnedAgents = toolCalls
+        .filter((call) => call.name === "sessions_spawn")
+        .map((call) => readObservedToolCallInput(call)?.agent_id);
+      const sessions = workerRuntime.listSessions ? await workerRuntime.listSessions() : [];
+      assert.deepEqual(spawnedAgents, ["explore"], "timeout real LLM E2E must spawn exactly one explore session");
+      assert.equal(toolCallNames.includes("sessions_send"), false, "timeout real LLM E2E must not follow up automatically");
+      assert.equal(sessions.length, 1, `timeout real LLM E2E must leave one resumable session, got ${sessions.length}`);
+      assert.match(reply.content, /timeout|timed out/i);
+      assert.match(reply.content, /not verified/i);
+      quality = evaluateAnswerQuality({
+        scenario: options.scenario,
+        answer: reply.content,
+        gate: timeoutQualityGate(targetMarker),
+        toolCallNames,
+        spawnedSessionCount: sessions.length,
+      });
+      assertAnswerQuality(quality);
     } else if (multiSourceScenario) {
       const spawnedAgents = toolCalls
         .filter((call) => call.name === "sessions_spawn")
@@ -358,7 +403,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       assertAnswerQuality(quality);
     }
     assert.match(reply.content, new RegExp(targetMarker));
-    const childTranscriptMessages = options.withBrowser || followupScenario
+    const childTranscriptMessages = options.withBrowser || followupScenario || timeoutScenario
       ? (await firstWorkerHistoryLength(workerRuntime))
       : undefined;
     if (options.withBrowser) {
@@ -373,7 +418,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       finalBytes: Buffer.byteLength(reply.content, "utf8"),
       evidenceBullets: countMarkdownBullets(reply.content),
       qualityFailures: quality?.failures.length ?? 0,
-      ...((multiSourceScenario || followupScenario) && workerRuntime.listSessions
+      ...((multiSourceScenario || followupScenario || timeoutScenario) && workerRuntime.listSessions
         ? { spawnedSessionCount: (await workerRuntime.listSessions()).length }
         : {}),
       ...(childTranscriptMessages !== undefined ? { childTranscriptMessages } : {}),
@@ -465,6 +510,26 @@ function followupQualityGate(targetMarker: string): AnswerQualityGate {
     ],
     forbiddenPatterns: [
       { label: "duplicate-session claim", pattern: /\b(spawned a second session|duplicate session was used)\b/i },
+    ],
+  };
+}
+
+function timeoutQualityGate(targetMarker: string): AnswerQualityGate {
+  return {
+    minBytes: 170,
+    minBullets: 3,
+    minEvidenceSources: 1,
+    maxSpawnedSessions: 1,
+    requiredToolNames: ["sessions_spawn"],
+    requiredPatterns: [
+      { label: "target success marker", pattern: new RegExp(escapeRegExp(targetMarker)) },
+      { label: "evidence heading", pattern: /Evidence/i },
+      { label: "timeout disclosure", pattern: /timeout|timed out/i },
+      { label: "not verified", pattern: /not verified/i },
+      { label: "residual risk", pattern: /residual risk/i },
+    ],
+    forbiddenPatterns: [
+      { label: "successful slow verification claim", pattern: /\b(slow verification succeeded|verified the slow source)\b/i },
     ],
   };
 }
@@ -729,6 +794,33 @@ function buildRealFollowupWorkerRuntime(): WorkerRuntime {
           content:
             "Follow-up evidence: sessions_send resumed the existing deterministic worker session and returned TURNKEYAI_FOLLOWUP_E2E_OK.",
         },
+      };
+    },
+  };
+  const registry: WorkerRegistry = {
+    async selectHandler(input) {
+      return input.packet.preferredWorkerKinds?.includes("explore") ? handler : null;
+    },
+    async getHandler(kind) {
+      return kind === "explore" ? handler : null;
+    },
+  };
+  return new InMemoryWorkerRuntime({ workerRegistry: registry });
+}
+
+function buildRealTimeoutWorkerRuntime(): WorkerRuntime {
+  const handler: WorkerHandler = {
+    kind: "explore",
+    canHandle(input) {
+      return input.packet.preferredWorkerKinds?.includes("explore") === true;
+    },
+    async run(): Promise<WorkerExecutionResult> {
+      await new Promise(() => undefined);
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "unreachable slow verification result",
+        payload: null,
       };
     },
   };
