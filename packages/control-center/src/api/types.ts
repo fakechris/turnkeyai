@@ -98,6 +98,16 @@ export interface DiagnosticsSnapshot {
     platform: string;
     arch: string;
   };
+  readiness?: {
+    status: "ok" | "warn" | "error";
+    checks: Array<{
+      id: string;
+      label: string;
+      status: "ok" | "warn" | "error";
+      detail: string;
+      action?: string;
+    }>;
+  };
 }
 
 export interface DiagnosticsLogs {
