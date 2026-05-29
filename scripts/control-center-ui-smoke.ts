@@ -304,10 +304,40 @@ try {
       "agent connect should show live transport preferences"
     );
 
+    await page.goto(`http://127.0.0.1:${port}/app#/approvals`, {
+      waitUntil: "networkidle",
+    });
+    await page.waitForSelector("text=Approvals");
+    assert(
+      await page.getByRole("button", { name: /Policy rules/ }).isDisabled(),
+      "approval policy action should be disabled until policy editing exists"
+    );
+    await page.getByRole("button", { name: /Decided/ }).click();
+    await page.getByRole("button", { name: /View timeline/ }).click();
+    await page.waitForSelector(".mission-bar");
+    assert(page.url().includes(`#/mission/${missionId}`), "approval timeline action should open the mission");
+
+    await page.goto(`http://127.0.0.1:${port}/app#/context`, {
+      waitUntil: "networkidle",
+    });
+    await page.waitForSelector("text=Context sources");
+    assert(
+      await page.getByRole("button", { name: /Policies/ }).isDisabled(),
+      "context policies action should be disabled until policy editing exists"
+    );
+    assert(
+      await page.getByRole("button", { name: /Attach source/ }).isDisabled(),
+      "context attach action should be disabled until a mutation route exists"
+    );
+
     await page.goto(`http://127.0.0.1:${port}/app#/runtime`, {
       waitUntil: "networkidle",
     });
     await page.waitForSelector("text=Runtime attention");
+    assert(
+      await page.getByRole("button", { name: /Open replay/ }).isDisabled(),
+      "runtime global replay action should be disabled until a replay index exists"
+    );
     assert(
       await page.locator("text=chain.browser.waiting").isVisible(),
       "runtime page should show live attention chains"

@@ -38,8 +38,22 @@ export function ContextSourcesPage() {
           </div>
         </div>
         <div className="right">
-          <button type="button" className="btn"><Icon name="shield" size={13} /> Policies</button>
-          <button type="button" className="btn primary"><Icon name="plus" size={13} /> Attach source</button>
+          <button
+            type="button"
+            className="btn"
+            disabled
+            title="Context policy editing is not available in the Control Center yet."
+          >
+            <Icon name="shield" size={13} /> Policies
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            disabled
+            title="Manual context attachment needs a daemon mutation route before this can be enabled."
+          >
+            <Icon name="plus" size={13} /> Attach source
+          </button>
         </div>
       </div>
 
