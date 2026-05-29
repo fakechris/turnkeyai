@@ -63,7 +63,7 @@ function resolveDaemonUrl(paths: DaemonRuntimePaths): string {
 }
 
 function resolveDaemonToken(paths: DaemonRuntimePaths): string | null {
-  return resolveDaemonCliToken(process.env, readConfig(paths)?.token)?.token ?? null;
+  return resolveDaemonCliToken(process.env, readConfig(paths)?.token, "read")?.token ?? null;
 }
 
 function readPid(paths: DaemonRuntimePaths): number | null {
@@ -447,10 +447,10 @@ export function runDaemonHelp(exitCode: number): never {
     "  TURNKEYAI_HOME                    Override ~/.turnkeyai root",
     "  TURNKEYAI_DAEMON_PORT             Override listen port (default 4100)",
     "  TURNKEYAI_DAEMON_URL              Override daemon base URL for CLI/TUI",
+    "  TURNKEYAI_DAEMON_READ_TOKEN       Preferred token for status/diagnostics",
     "  TURNKEYAI_DAEMON_OPERATOR_TOKEN   Preferred token for local app + browser routes",
     "  TURNKEYAI_DAEMON_TOKEN            Legacy single-token override",
     "  TURNKEYAI_DAEMON_ADMIN_TOKEN      Admin-scoped token override",
-    "  TURNKEYAI_DAEMON_READ_TOKEN       Read-scoped token override",
     "  TURNKEYAI_DATA_DIR                Override the data directory",
     "  TURNKEYAI_BROWSER_TRANSPORT       local | relay | direct-cdp",
   ];

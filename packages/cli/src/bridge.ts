@@ -44,7 +44,8 @@ function resolveDaemonToken(paths: ReturnType<typeof getRuntimePaths>): string |
   const configToken = readConfig(paths.configFile)?.token;
   return resolveDaemonCliToken(
     process.env,
-    typeof configToken === "string" ? configToken : null
+    typeof configToken === "string" ? configToken : null,
+    "read"
   )?.token ?? null;
 }
 
@@ -185,10 +186,10 @@ export function runBridgeHelp(exitCode: number): never {
     "  turnkeyai bridge install-skill       Write agent-skill descriptor + OpenAPI schema",
     "",
     "Environment:",
-    "  TURNKEYAI_DAEMON_OPERATOR_TOKEN      Preferred token for bridge/browser routes",
+    "  TURNKEYAI_DAEMON_READ_TOKEN          Preferred token for bridge status",
+    "  TURNKEYAI_DAEMON_OPERATOR_TOKEN      Operator token for bridge/browser mutations",
     "  TURNKEYAI_DAEMON_TOKEN               Legacy single-token override",
     "  TURNKEYAI_DAEMON_ADMIN_TOKEN         Admin-scoped token override",
-    "  TURNKEYAI_DAEMON_READ_TOKEN          Read-scoped token override",
   ];
   (exitCode === 0 ? console.log : console.error)(lines.join("\n"));
   process.exit(exitCode);

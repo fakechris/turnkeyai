@@ -60,4 +60,34 @@ describe("resolveDaemonCliToken", () => {
     assert.equal(resolveDaemonCliToken({}, 123), null);
     assert.equal(resolveDaemonCliToken({}, { token: "nested" }), null);
   });
+
+  it("prefers read token for read-only callers", () => {
+    assert.deepEqual(
+      resolveDaemonCliToken(
+        {
+          TURNKEYAI_DAEMON_READ_TOKEN: "read",
+          TURNKEYAI_DAEMON_OPERATOR_TOKEN: "operator",
+          TURNKEYAI_DAEMON_TOKEN: "legacy",
+        },
+        "config-token",
+        "read"
+      ),
+      { token: "read", scope: "read", source: "env" }
+    );
+  });
+
+  it("does not use read tokens for operator or admin callers", () => {
+    assert.deepEqual(
+      resolveDaemonCliToken(
+        {
+          TURNKEYAI_DAEMON_READ_TOKEN: "read",
+          TURNKEYAI_DAEMON_OPERATOR_TOKEN: "operator",
+        },
+        null,
+        "operator"
+      ),
+      { token: "operator", scope: "operator", source: "env" }
+    );
+    assert.equal(resolveDaemonCliToken({ TURNKEYAI_DAEMON_READ_TOKEN: "read" }, null, "admin"), null);
+  });
 });

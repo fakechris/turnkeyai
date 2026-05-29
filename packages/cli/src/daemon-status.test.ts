@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 
 describe("daemon status", () => {
   it("exits successfully when the daemon is healthy but not tracked by a pid file", async () => {
+    let bridgeAuthHeader: string | undefined;
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       if (req.url === "/health") {
         res.writeHead(200, { "content-type": "application/json" });
@@ -15,6 +16,7 @@ describe("daemon status", () => {
         return;
       }
       if (req.url === "/bridge/status") {
+        bridgeAuthHeader = req.headers.authorization;
         res.writeHead(200, { "content-type": "application/json" });
         res.end(
           JSON.stringify({
@@ -46,6 +48,7 @@ describe("daemon status", () => {
       assert.match(result.stdout, /health:\s+ok/);
       assert.match(result.stdout, /transport:\s+local \(local-automation\)/);
       assert.match(result.stdout, /sessions:\s+2/);
+      assert.equal(bridgeAuthHeader, "Bearer read-token");
     } finally {
       server.close();
       await rm(home, { recursive: true, force: true });
@@ -63,6 +66,10 @@ function runCli(
       env: { ...process.env, ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error(`CLI command timed out: ${args.join(" ")}`));
+    }, 5000);
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -73,8 +80,12 @@ function runCli(
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
     child.on("close", (code) => {
+      clearTimeout(timeout);
       resolve({ code, stdout, stderr });
     });
   });
