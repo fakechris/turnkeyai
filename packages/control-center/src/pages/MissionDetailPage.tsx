@@ -352,15 +352,6 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             onContinue={onContinueSession}
             onCancel={onCancelSession}
           />
-          <MissionEvidenceCard
-            contextSources={missionContextSources}
-            artifacts={artifacts.value}
-            approvals={missionApprovals}
-            isSettled={evidenceSettled}
-            errors={[contextSources.error, artifacts.error, approvals.error].filter(
-              (value): value is string => Boolean(value)
-            )}
-          />
           <section className="card thinking-card">
             <div className="thinking-card-head">
               <div>
@@ -433,6 +424,15 @@ function LiveMissionView({ mission }: { mission: Mission }) {
               </>
             )}
           </section>
+          <MissionEvidenceCard
+            contextSources={missionContextSources}
+            artifacts={artifacts.value}
+            approvals={missionApprovals}
+            isSettled={evidenceSettled}
+            errors={[contextSources.error, artifacts.error, approvals.error].filter(
+              (value): value is string => Boolean(value)
+            )}
+          />
           {finalAnswer && (
             <section className="card final-answer-card">
               <div className="label" style={{ fontSize: 11, marginBottom: 8 }}>
