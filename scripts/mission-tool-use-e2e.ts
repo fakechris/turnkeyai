@@ -15,7 +15,7 @@ interface MissionToolUseE2eOptions {
   matrixScenarios?: MissionE2eScenario[];
 }
 
-type MissionE2eScenario = "basic" | "comparison" | "followup" | "cancel" | "approval";
+type MissionE2eScenario = "basic" | "comparison" | "followup" | "cancel" | "approval" | "browser-dynamic";
 
 interface Mission {
   id: string;
@@ -76,6 +76,8 @@ const FOLLOWUP_FINAL_MARKER = "TURNKEYAI_MISSION_FOLLOWUP_OK";
 const CANCEL_FINAL_MARKER = "TURNKEYAI_MISSION_CANCEL_OK";
 const APPROVAL_MARKER = "TURNKEYAI_APPROVAL_FIXTURE_OK";
 const APPROVAL_FINAL_MARKER = "TURNKEYAI_MISSION_APPROVAL_OK";
+const DYNAMIC_BROWSER_MARKER = "TURNKEYAI_DYNAMIC_BROWSER_OK";
+const DYNAMIC_BROWSER_FINAL_MARKER = "TURNKEYAI_MISSION_DYNAMIC_BROWSER_OK";
 
 interface FixtureServer {
   server: Server;
@@ -84,6 +86,7 @@ interface FixtureServer {
   betaUrl: string;
   slowUrl: string;
   approvalUrl: string;
+  dynamicUrl: string;
 }
 
 interface ScenarioSpec {
@@ -194,8 +197,17 @@ function parseScenarioList(value: string): MissionE2eScenario[] {
 }
 
 function parseScenarioName(value: string, argName: string): MissionE2eScenario {
-  if (value === "basic" || value === "comparison" || value === "followup" || value === "cancel" || value === "approval") return value;
-  throw new Error(`${argName} must be basic, comparison, followup, cancel, or approval`);
+  if (
+    value === "basic" ||
+    value === "comparison" ||
+    value === "followup" ||
+    value === "cancel" ||
+    value === "approval" ||
+    value === "browser-dynamic"
+  ) {
+    return value;
+  }
+  throw new Error(`${argName} must be basic, comparison, followup, cancel, approval, or browser-dynamic`);
 }
 
 async function main(options: MissionToolUseE2eOptions): Promise<void> {
@@ -617,6 +629,51 @@ async function startFixtureServer(): Promise<FixtureServer> {
 </html>`);
       return;
     }
+    if (pathname === "/dynamic-dashboard") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head>
+    <title>Dynamic Browser Fixture</title>
+    <script>
+      window.__turnkeyDynamicState = { status: "booting" };
+      const renderTurnkeyDynamicFixture = () => {
+        const root = document.getElementById("dynamic-root");
+        if (!root) {
+          window.__turnkeyDynamicState = { status: "missing-root" };
+          return;
+        }
+        window.__turnkeyDynamicState = {
+          status: "ready",
+          marker: "${DYNAMIC_BROWSER_MARKER}",
+          activeUsers: 42,
+          queueDepth: 7,
+          source: "client-rendered local fixture"
+        };
+        root.innerHTML = [
+          "<h1>Dynamic operations dashboard</h1>",
+          "<p id='marker'>${DYNAMIC_BROWSER_MARKER}</p>",
+          "<p id='active-users'>Active users: 42</p>",
+          "<p id='queue-depth'>Queue depth: 7</p>",
+          "<p id='risk'>Residual risk: local dynamic fixture only.</p>"
+        ].join("");
+      };
+      if (document.readyState === "loading") {
+        window.addEventListener("DOMContentLoaded", renderTurnkeyDynamicFixture, { once: true });
+      } else {
+        renderTurnkeyDynamicFixture();
+      }
+    </script>
+  </head>
+  <body>
+    <main id="dynamic-root">
+      <h1>Loading dynamic dashboard</h1>
+      <p>Server HTML does not contain the evidence marker; browser JavaScript must render it.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
     res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     res.end("not found");
     return;
@@ -629,6 +686,7 @@ async function startFixtureServer(): Promise<FixtureServer> {
     betaUrl: `http://127.0.0.1:${port}/vendor-beta`,
     slowUrl: `http://127.0.0.1:${port}/slow-fixture`,
     approvalUrl: `http://127.0.0.1:${port}/approval-form`,
+    dynamicUrl: `http://127.0.0.1:${port}/dynamic-dashboard`,
   };
 }
 
@@ -652,6 +710,34 @@ async function createMission(input: {
 }
 
 function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer): ScenarioSpec {
+  if (scenario === "browser-dynamic") {
+    return {
+      scenario,
+      title: "Mission route dynamic browser extraction E2E",
+      finalMarker: DYNAMIC_BROWSER_FINAL_MARKER,
+      evidenceMarkers: [DYNAMIC_BROWSER_MARKER],
+      answerTerms: ["browser", "Active users: 42", "Queue depth: 7", "residual risk"],
+      expectedSpawnCalls: 1,
+      expectedSendCalls: 0,
+      expectedToolResults: 1,
+      expectedSpawnedSessions: 1,
+      expectedContinuedSessions: 0,
+      minEvidenceEvents: 1,
+      expectedBullets: 3,
+      desc: [
+        "Run the mission route dynamic browser extraction E2E.",
+        "Use the available session tool instead of answering from memory.",
+        "Call sessions_spawn with agent_id=browser exactly once.",
+        `The browser sub-agent task must open ${fixture.dynamicUrl}, inspect the JavaScript-rendered DOM, and report marker ${DYNAMIC_BROWSER_MARKER}.`,
+        "The task must also report the exact dynamic facts Active users: 42 and Queue depth: 7.",
+        "Do not use an explore/fetch session for this task; the marker is intentionally rendered by browser JavaScript.",
+        `Final answer must include ${DYNAMIC_BROWSER_FINAL_MARKER}, ${DYNAMIC_BROWSER_MARKER}, Active users: 42, Queue depth: 7, and the exact words residual risk.`,
+        "Use plain Markdown with heading `Browser evidence` and exactly three bullets: dynamic DOM evidence, extracted dashboard facts, residual risk.",
+        "Do not create a separate bullet for the final success marker. Put it in the dynamic DOM evidence bullet.",
+        "Keep the final answer under 140 words. Do not use tables, links, code fences, or bold/italic markup.",
+      ].join("\n"),
+    };
+  }
   if (scenario === "approval") {
     return {
       scenario,
