@@ -7,7 +7,8 @@
 import { useState } from "react";
 
 import { useApiClient } from "../api/useApiClient";
-import type { BridgeStatus, DiagnosticsLogs, DiagnosticsSnapshot } from "../api/types";
+import type { WorkerSessionRecord } from "../api/mission-api";
+import type { BridgeStatus, DiagnosticsLogs, DiagnosticsSnapshot, RuntimeSummaryReport } from "../api/types";
 import { Icon } from "../components/Icon";
 import { usePolling } from "../hooks/usePolling";
 import { useAppState } from "../state/AppState";
@@ -20,6 +21,8 @@ interface Live {
   diagnostics: DiagnosticsSnapshot | null;
   status: BridgeStatus | null;
   logs: DiagnosticsLogs | null;
+  runtimeSummary: RuntimeSummaryReport | null;
+  workerSessions: WorkerSessionRecord[];
   reachable: boolean;
 }
 
@@ -30,20 +33,26 @@ export function RuntimePage() {
     diagnostics: null,
     status: null,
     logs: null,
+    runtimeSummary: null,
+    workerSessions: [],
     reachable: false,
   });
 
   usePolling(async () => {
-    const [diagResult, statusResult, logsResult] = await Promise.allSettled([
+    const [diagResult, statusResult, logsResult, runtimeResult, sessionsResult] = await Promise.allSettled([
       client.get<DiagnosticsSnapshot>("/diagnostics"),
       client.get<BridgeStatus>("/bridge/status"),
       client.get<DiagnosticsLogs>(`/diagnostics/logs?limit=${LOG_LIMIT}`),
+      client.get<RuntimeSummaryReport>("/runtime-summary?limit=8"),
+      client.get<WorkerSessionRecord[]>("/runtime-worker-sessions?limit=8"),
     ]);
 
     const diagnostics = diagResult.status === "fulfilled" ? diagResult.value : null;
     const status = statusResult.status === "fulfilled" ? statusResult.value : null;
     const logs = logsResult.status === "fulfilled" ? logsResult.value : null;
-    const reachable = diagnostics != null || status != null;
+    const runtimeSummary = runtimeResult.status === "fulfilled" ? runtimeResult.value : null;
+    const workerSessions = sessionsResult.status === "fulfilled" ? sessionsResult.value : [];
+    const reachable = diagnostics != null || status != null || runtimeSummary != null;
 
     if (status) {
       setLastStatus(status);
@@ -54,12 +63,12 @@ export function RuntimePage() {
       // Don't blast "Unreachable" on a single transient 401 from one
       // of the three fetches — apiClient already cleared the token if
       // applicable. Only set bad when ALL three failed.
-      const allUnauth = [diagResult, statusResult, logsResult].every(
+      const allUnauth = [diagResult, statusResult, logsResult, runtimeResult, sessionsResult].every(
         (r) => r.status === "rejected" && (r.reason as Error)?.message === "unauthorized"
       );
       if (!allUnauth) setPill({ state: "bad", label: "Unreachable" });
     }
-    setLive({ diagnostics, status, logs, reachable });
+    setLive({ diagnostics, status, logs, runtimeSummary, workerSessions, reachable });
   }, POLL_MS);
 
   const exportBundle = () => {
@@ -111,12 +120,12 @@ export function RuntimePage() {
         <div>
           <MetricTiles live={live} />
           <SetupHealthCard diagnostics={live.diagnostics} reachable={live.reachable} />
-          <BrowserSessionsCard />
+          <BrowserSessionsCard sessions={live.workerSessions} reachable={live.reachable} />
           <DaemonLogCard logs={live.logs} reachable={live.reachable} />
         </div>
 
         <div className="col" style={{ gap: 14 }}>
-          <RecoveryCard />
+          <RecoveryCard summary={live.runtimeSummary} reachable={live.reachable} />
           <TransportCard status={live.status} />
           <TokensCard />
         </div>
@@ -159,10 +168,11 @@ function buildLiveTiles(live: Live): Array<{ l: string; v: string; d: string }> 
   const sessionCount = d?.counters.sessionCount ?? s?.sessions.count ?? 0;
   const relayPeer = d?.counters.relayPeerCount ?? s?.relay.peerCount ?? 0;
   const relayTargets = d?.counters.relayTargetCount ?? s?.relay.targetCount ?? 0;
+  const runtime = live.runtimeSummary;
   return [
     { l: "Daemon", v: `v${d?.daemon.version ?? "?"}`, d: `:${d?.daemon.port ?? "?"}` },
     { l: "Browser sessions", v: String(sessionCount), d: `transport: ${transport}` },
-    { l: "Relay peers", v: String(relayPeer), d: `${relayTargets} discovered tabs` },
+    { l: "Runtime attention", v: String(runtime?.attentionCount ?? 0), d: `${runtime?.activeCount ?? 0} active` },
     {
       l: "Auth mode",
       v: d?.daemon.authMode ?? "?",
@@ -176,7 +186,11 @@ function buildLiveTiles(live: Live): Array<{ l: string; v: string; d: string }> 
     {
       l: "Action queue",
       v: String(s?.relay.actionRequestQueueDepth ?? 0),
-      d: s?.relay.lastHeartbeatAgeMs != null ? `hb ${Math.round(s.relay.lastHeartbeatAgeMs / 1000)}s ago` : "no relay",
+      d: relayPeer > 0
+        ? `${relayPeer} relay peer(s), ${relayTargets} target(s)`
+        : s?.relay.lastHeartbeatAgeMs != null
+          ? `hb ${Math.round(s.relay.lastHeartbeatAgeMs / 1000)}s ago`
+          : "no relay",
     },
   ];
 }
@@ -253,24 +267,132 @@ function formatUptimeShort(ms: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-function BrowserSessionsCard() {
+function formatRelativeAge(timestamp: number): string {
+  const delta = Math.max(0, Date.now() - timestamp);
+  if (delta < 1_000) return "now";
+  if (delta < 60_000) return `${Math.round(delta / 1_000)}s ago`;
+  if (delta < 3_600_000) return `${Math.round(delta / 60_000)}m ago`;
+  return `${Math.round(delta / 3_600_000)}h ago`;
+}
+
+function workerStatusDot(status: string): string {
+  if (status === "done") return "done";
+  if (status === "failed" || status === "cancelled" || status === "unrecoverable") return "blocked";
+  if (status === "running" || status === "resuming") return "working";
+  return "planning";
+}
+
+function runtimeChainDot(state: string): string {
+  if (state === "failed" || state === "stale") return "blocked";
+  if (state === "waiting") return "needs_approval";
+  if (state === "resolved") return "done";
+  return "working";
+}
+
+function BrowserSessionsCard({
+  sessions,
+  reachable,
+}: {
+  sessions: WorkerSessionRecord[];
+  reachable: boolean;
+}) {
   return (
     <div className="card">
       <div className="card-hd">
         <h3>Browser sessions</h3>
         <span className="mono faint" style={{ fontSize: 10 }}>
-          live · see Context for details
+          {sessions.length > 0 ? `${sessions.length} worker session(s)` : reachable ? "none active" : "offline"}
         </span>
       </div>
-      <div style={{ padding: 14 }}>
-        <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
-          Live sessions are surfaced as Browser context sources on the{" "}
-          <b>Context</b> tab of any mission, and aggregated on{" "}
-          <b>#/context</b>. A dedicated /browser-sessions runtime table
-          will return in a later phase once the daemon exposes per-session
-          uptime alongside the live list.
+      {sessions.length > 0 ? (
+        <div style={{ display: "grid" }}>
+          {sessions.map((session) => (
+            <div key={session.workerRunKey} className="runtime-health-row">
+              <span className={`status-dot ${workerStatusDot(session.state.status)}`} />
+              <div style={{ minWidth: 0 }}>
+                <div className="runtime-health-label">
+                  {session.state.workerType} · {session.state.status}
+                </div>
+                <div className="runtime-health-detail">
+                  {session.workerRunKey} · thread {session.context?.threadId ?? "-"}
+                </div>
+                <div className="runtime-health-action">
+                  updated {formatRelativeAge(session.state.updatedAt)}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
+      ) : (
+        <div style={{ padding: 14 }}>
+          <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+            {reachable
+              ? "No active or recently persisted worker sessions are visible to the runtime summary."
+              : "Connect to the daemon to see worker sessions."}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecoveryCard({
+  summary,
+  reachable,
+}: {
+  summary: RuntimeSummaryReport | null;
+  reachable: boolean;
+}) {
+  const chains = summary?.attentionChains ?? [];
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <Icon name="warning" size={13} />
+        <h3>Runtime attention</h3>
+        <span className={`tag ${summary && summary.attentionCount > 0 ? "warning" : "success"}`} style={{ marginLeft: "auto" }}>
+          {summary ? `${summary.attentionCount} attention` : reachable ? "checking" : "offline"}
+        </span>
       </div>
+      {summary ? (
+        <div style={{ display: "grid" }}>
+          {chains.length > 0 ? (
+            chains.map((chain) => (
+              <div key={chain.chainId} className="runtime-health-row">
+                <span className={`status-dot ${runtimeChainDot(chain.canonicalState)}`} />
+                <div style={{ minWidth: 0 }}>
+                  <div className="runtime-health-label">
+                    {chain.headline ?? `${chain.rootKind} · ${chain.canonicalState}`}
+                  </div>
+                  <div className="runtime-health-detail">
+                    {chain.chainId} · {chain.phase}
+                    {chain.waitingReason ? ` · ${chain.waitingReason}` : ""}
+                  </div>
+                  {chain.nextStep || chain.staleReason ? (
+                    <div className="runtime-health-action">{chain.nextStep ?? chain.staleReason}</div>
+                  ) : null}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div style={{ padding: 14 }}>
+              <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+                Runtime has no waiting, failed, stale, or attention chains.
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ padding: 14 }}>
+          <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+            {reachable ? "Waiting for runtime summary…" : "Connect to the daemon to see runtime attention."}
+          </div>
+        </div>
+      )}
+      {summary ? (
+        <div style={{ padding: "0 14px 14px" }} className="muted">
+          active {summary.activeCount} · waiting {summary.waitingCount} · failed {summary.failedCount} · stale {summary.staleCount}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -310,27 +432,6 @@ function DaemonLogCard({
               : "Connect to the daemon to see live logs."}
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-function RecoveryCard() {
-  // No `/recovery-runs` enumeration for the dashboard yet — leave a
-  // placeholder so the layout stays balanced without lying about
-  // recovery state.
-  return (
-    <div className="card">
-      <div className="card-hd">
-        <Icon name="warning" size={13} />
-        <h3>Recovery cases</h3>
-      </div>
-      <div style={{ padding: 14 }}>
-        <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
-          No active recovery cases. Bridge failures during a mission appear
-          here when a real <code>/recovery-runs</code> enumeration lands
-          (K4+).
-        </div>
       </div>
     </div>
   );

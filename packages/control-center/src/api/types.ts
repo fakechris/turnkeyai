@@ -174,3 +174,55 @@ export interface CapabilityInspectionReport {
   unavailableCapabilities: string[];
   generatedAt: number;
 }
+
+// --- /runtime-summary (packages/app-gateway/src/routes/inspection-routes.ts) ---
+
+export interface RuntimeSummaryEntry {
+  chainId: string;
+  threadId: string;
+  rootKind: string;
+  rootId: string;
+  phase: string;
+  canonicalState: string;
+  continuityState?: string;
+  attention: boolean;
+  updatedAt: number;
+  stale?: boolean;
+  staleReason?: string;
+  activeSubjectKind?: string;
+  activeSubjectId?: string;
+  waitingReason?: string;
+  currentWaitingPoint?: string;
+  caseKey?: string;
+  caseState?: string;
+  headline?: string;
+  nextStep?: string;
+  truthState?: string;
+  truthSource?: string;
+  remediation?: string[];
+}
+
+export interface RuntimeSummaryReport {
+  totalChains: number;
+  activeCount: number;
+  waitingCount: number;
+  failedCount: number;
+  resolvedCount: number;
+  staleCount: number;
+  attentionCount: number;
+  stateCounts: Record<string, number>;
+  continuityCounts: Record<string, number>;
+  caseStateCounts: Record<string, number>;
+  attentionChains: RuntimeSummaryEntry[];
+  activeChains: RuntimeSummaryEntry[];
+  waitingChains: RuntimeSummaryEntry[];
+  staleChains: RuntimeSummaryEntry[];
+  failedChains: RuntimeSummaryEntry[];
+  recentlyResolved: RuntimeSummaryEntry[];
+  workerSessionHealth?: {
+    totalSessions: number;
+    activeSessions: number;
+    orphanedSessions: number;
+    missingContextSessions: number;
+  };
+}

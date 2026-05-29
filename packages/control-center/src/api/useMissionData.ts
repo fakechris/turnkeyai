@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "./client";
+import type { RuntimeSummaryReport } from "./types";
 import { useApiClient } from "./useApiClient";
 import type {
   ActivityEvent,
@@ -115,6 +116,19 @@ function useRemote<T>(
 
 export function useMissions(fallback: Mission[]): RemoteData<Mission[]> {
   return useRemote<Mission[]>("/missions", fallback);
+}
+
+export function useRuntimeSummary(
+  fallback: RuntimeSummaryReport | null,
+  options: { limit?: number; pollIntervalMs?: number } = {}
+): RemoteData<RuntimeSummaryReport | null> {
+  const limit = options.limit ?? 25;
+  const pollIntervalMs = options.pollIntervalMs ?? 5_000;
+  return useRemote<RuntimeSummaryReport | null>(
+    `/runtime-summary?limit=${encodeURIComponent(String(limit))}`,
+    fallback,
+    { dependsOn: [limit], pollIntervalMs }
+  );
 }
 
 export function useMission(
