@@ -116,6 +116,7 @@ try {
     });
 
     await page.waitForSelector(".thinking-card");
+    await page.waitForSelector(".mission-evidence-card");
     await page.waitForSelector(".final-answer-card .markdown-body h2");
     await page.waitForSelector(".final-answer-card .markdown-body ul li");
     await page.waitForSelector(".final-answer-card .markdown-body table");
@@ -123,11 +124,25 @@ try {
 
     assert(await page.locator(".final-answer-card").count() === 1, "expected exactly one final answer card");
     assert(await page.locator(".thinking-card").count() === 1, "expected exactly one work trace card");
+    assert(await page.locator(".mission-evidence-card").count() === 1, "expected one mission evidence card");
+    assert(
+      await page.locator(".mission-evidence-card", { hasText: "Browser evidence" }).isVisible(),
+      "mission evidence should show context sources used by the mission"
+    );
+    assert(
+      await page.locator(".mission-evidence-card", { hasText: "snapshot-ui.json" }).isVisible(),
+      "mission evidence should show saved artifacts"
+    );
+    assert(
+      await page.locator(".mission-evidence-card", { hasText: "browser.form.submit" }).isVisible(),
+      "mission evidence should show approval actions"
+    );
     assert(await page.locator("#thinking-record-timeline").count() === 0, "trace should be collapsed by default");
     assert(
       await page.locator(".thinking-card-preview", { hasText: "Final answer remains below" }).isVisible(),
       "collapsed trace preview should tell the user the final answer remains below"
     );
+    await assertVerticalOrder(page, ".mission-evidence-card", ".thinking-card", "mission evidence should appear before work trace");
     await assertVerticalOrder(page, ".thinking-card", ".final-answer-card", "work trace must appear before final answer");
 
     await page.getByRole("button", { name: "Show trace" }).click();
@@ -163,6 +178,18 @@ try {
     assert(
       requestedPaths.some((value) => value.startsWith(`/missions/${missionId}/timeline`)),
       "mission timeline endpoint was not requested"
+    );
+    assert(
+      requestedPaths.some((value) => value.startsWith(`/missions/${missionId}/artifacts`)),
+      "mission artifacts endpoint was not requested"
+    );
+    assert(
+      requestedPaths.some((value) => value.startsWith("/mission-context-sources")),
+      "mission context sources endpoint was not requested"
+    );
+    assert(
+      requestedPaths.some((value) => value.startsWith("/approvals")),
+      "approvals endpoint was not requested"
     );
     console.log("control-center-ui-smoke: passed");
     console.log(`control-center-ui-smoke: screenshot-bytes ${screenshot.byteLength}`);
@@ -212,6 +239,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     json(res, metricsFixture());
     return;
   }
+  if (method === "GET" && url.pathname === `/missions/${missionId}/artifacts`) {
+    json(res, artifactsFixture());
+    return;
+  }
   if (method === "GET" && url.pathname === "/runtime-worker-sessions") {
     json(res, workerSessionsFixture());
     return;
@@ -221,7 +252,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
   if (method === "GET" && url.pathname === "/approvals") {
-    json(res, []);
+    json(res, approvalsFixture());
     return;
   }
   if (method === "GET" && url.pathname === "/mission-agents") {
@@ -229,7 +260,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
   if (method === "GET" && url.pathname === "/mission-context-sources") {
-    json(res, []);
+    json(res, contextSourcesFixture());
     return;
   }
   if (method === "POST" && url.pathname === `/missions/${missionId}/messages`) {
@@ -322,6 +353,15 @@ function timelineFixture() {
   ].join("\n");
   return [
     event("ev.user", "plan", 1_000, "user", "Compare two browser-backed sources."),
+    event(
+      "ev.browser.context",
+      "browser",
+      1_700,
+      "role-browser",
+      "Browser evidence captured.",
+      { route: "worker-session" },
+      "ctx.browser.session.browser-ui"
+    ),
     tool("ev.tool.call", 2_000, "call", "sessions_spawn", "call-browser", "Spawn browser worker."),
     tool("ev.tool.progress", 2_700, "progress", "sessions_spawn", "call-browser", "Browser worker opened context."),
     tool("ev.tool.result", 4_300, "result", "sessions_spawn", "call-browser", "Returned 3 evidence bullets."),
@@ -335,7 +375,7 @@ function metricsFixture() {
     status: "done",
     generatedAtMs: 1_779_984_005_000,
     wallClockMs: 5_200,
-    timelineEventCount: 5,
+    timelineEventCount: 6,
     tool: {
       requested: 1,
       results: 1,
@@ -350,9 +390,9 @@ function metricsFixture() {
       continued: 0,
     },
     approvals: {
-      requested: 0,
-      applied: 0,
-      decided: 0,
+      requested: 1,
+      applied: 1,
+      decided: 1,
     },
     recovery: {
       events: 0,
@@ -367,13 +407,80 @@ function metricsFixture() {
     qualityGate: {
       status: "passed",
       finalAnswerEventId: "ev.final",
-      evidenceEvents: 1,
+      evidenceEvents: 2,
       checks: [
         { name: "final_answer", status: "pass", detail: "Final answer event exists." },
         { name: "evidence", status: "pass", detail: "Evidence event exists." },
       ],
     },
   };
+}
+
+function artifactsFixture() {
+  return [
+    {
+      id: "artifact.snapshot.ui",
+      missionId,
+      label: "snapshot-ui.json",
+      kind: "snapshot",
+      path: "artifacts/ui/snapshot-ui.json",
+      sizeBytes: 2480,
+      sha: "sha256:ui-smoke",
+      createdAtMs: 1_779_984_004_100,
+    },
+  ];
+}
+
+function contextSourcesFixture() {
+  return [
+    {
+      id: "ctx.browser.session.browser-ui",
+      kind: "browser",
+      title: "Browser evidence",
+      url: "https://example.com/ui-smoke",
+      state: "live",
+      lastUse: "now",
+      transport: "direct-cdp",
+      session: "browser-ui",
+      counts: { files: 0, snapshots: 1, screenshots: 0 },
+    },
+    {
+      id: "ctx.doc.unused",
+      kind: "doc",
+      title: "Unreferenced source",
+      url: "file://unused.md",
+      state: "idle",
+      lastUse: "1h ago",
+    },
+  ];
+}
+
+function approvalsFixture() {
+  return [
+    {
+      id: "appr.browser.submit",
+      approvalId: "appr.browser.submit",
+      missionId,
+      missionTitle: "UI smoke mission",
+      agent: "role-browser",
+      action: "browser.form.submit",
+      title: "Submit browser form",
+      affects: ["ctx.browser.session.browser-ui"],
+      risk: "Would submit data in the active browser session.",
+      severity: "medium",
+      requestedAt: "2026-05-29 12:00",
+      requestedAtMs: 1_779_984_003_000,
+      requestedAgo: "now",
+      policyHint: "Operator approval required before browser form submission.",
+      decision: {
+        approvalId: "appr.browser.submit",
+        decision: "approved",
+        decidedBy: "operator",
+        decidedAtMs: 1_779_984_003_500,
+        reason: "UI smoke fixture",
+      },
+    },
+  ];
 }
 
 function workerSessionsFixture() {
@@ -442,7 +549,8 @@ function event(
   tMs: number,
   actor: string,
   text: string,
-  runtime?: Record<string, string>
+  runtime?: Record<string, string>,
+  target?: string
 ) {
   return {
     id,
@@ -453,6 +561,7 @@ function event(
     actor,
     text,
     ...(runtime ? { runtime } : {}),
+    ...(target ? { target } : {}),
   };
 }
 

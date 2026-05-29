@@ -10,10 +10,13 @@
 // records — they render an explanatory placeholder rather than the
 // K1 fake three-pane that hardcoded MSN-1042-specific content.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 
 import type {
   ActivityEvent,
+  Artifact,
+  ApprovalRow,
+  ContextSource,
   Mission,
   MissionObservabilitySnapshot,
   RoleRunState,
@@ -22,6 +25,9 @@ import type {
 import {
   useCancelRoleRun,
   useCancelWorkerSession,
+  useApprovals,
+  useArtifacts,
+  useContextSources,
   useMission,
   useMissionMetrics,
   useMissions,
@@ -133,6 +139,9 @@ function LiveMissionView({ mission }: { mission: Mission }) {
   const metrics = useMissionMetrics(mission.id, null);
   const workerSessions = useWorkerSessions(mission.threadId, []);
   const roleRuns = useRoleRuns(mission.threadId, []);
+  const artifacts = useArtifacts(mission.id, []);
+  const contextSources = useContextSources([]);
+  const approvals = useApprovals([]);
   const send = useSendMissionMessage();
   const cancelRoleRun = useCancelRoleRun();
   const cancelWorkerSession = useCancelWorkerSession();
@@ -150,6 +159,18 @@ function LiveMissionView({ mission }: { mission: Mission }) {
     () => replayItems.filter((item) => traceFilterMatches(item, traceFilter)),
     [replayItems, traceFilter]
   );
+  const missionApprovals = useMemo(
+    () => approvals.value.filter((approval) => approval.missionId === mission.id),
+    [approvals.value, mission.id]
+  );
+  const missionContextSources = useMemo(
+    () => selectMissionContextSources(contextSources.value, timeline.value, missionApprovals),
+    [contextSources.value, missionApprovals, timeline.value]
+  );
+  const evidenceSettled =
+    (contextSources.isLive || Boolean(contextSources.error)) &&
+    (artifacts.isLive || Boolean(artifacts.error)) &&
+    (approvals.isLive || Boolean(approvals.error));
   const toolProcessCount = replayItems.filter((item) => item.kind === "tool-process").length;
   const toolStepCount = replayItems.reduce(
     (count, item) => count + (item.kind === "tool-process" ? item.toolEvents.length : 0),
@@ -300,6 +321,15 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             onContinue={onContinueSession}
             onCancel={onCancelSession}
           />
+          <MissionEvidenceCard
+            contextSources={missionContextSources}
+            artifacts={artifacts.value}
+            approvals={missionApprovals}
+            isSettled={evidenceSettled}
+            errors={[contextSources.error, artifacts.error, approvals.error].filter(
+              (value): value is string => Boolean(value)
+            )}
+          />
           <section className="card thinking-card">
             <div className="thinking-card-head">
               <div>
@@ -446,6 +476,182 @@ function LiveMissionView({ mission }: { mission: Mission }) {
       </div>
     </div>
   );
+}
+
+function MissionEvidenceCard({
+  contextSources,
+  artifacts,
+  approvals,
+  isSettled,
+  errors,
+}: {
+  contextSources: ContextSource[];
+  artifacts: Artifact[];
+  approvals: ApprovalRow[];
+  isSettled: boolean;
+  errors: string[];
+}) {
+  const pendingApprovals = approvals.filter((approval) => !approval.decision).length;
+  const decidedApprovals = approvals.length - pendingApprovals;
+  return (
+    <section className="card mission-evidence-card">
+      <div className="subagent-session-head">
+        <div>
+          <div className="label" style={{ fontSize: 11 }}>Mission evidence</div>
+          <div className="muted" style={{ fontSize: 11.5 }}>
+            Context, artifacts, and approval decisions linked to this mission
+          </div>
+        </div>
+        <div className="thinking-card-meta">
+          <span>{contextSources.length} context</span>
+          <span>{artifacts.length} artifact{artifacts.length === 1 ? "" : "s"}</span>
+          <span>{pendingApprovals} pending</span>
+          {decidedApprovals > 0 && <span>{decidedApprovals} decided</span>}
+        </div>
+      </div>
+      {errors.map((error) => (
+        <div key={error} className="subagent-session-error" role="alert">
+          {error}
+        </div>
+      ))}
+      {!isSettled && contextSources.length === 0 && artifacts.length === 0 && approvals.length === 0 ? (
+        <div className="subagent-session-empty">Loading mission evidence…</div>
+      ) : contextSources.length === 0 && artifacts.length === 0 && approvals.length === 0 ? (
+        <div className="subagent-session-empty">
+          No linked context sources, artifacts, or approvals have been recorded yet.
+        </div>
+      ) : (
+        <div className="mission-evidence-grid">
+          <EvidenceColumn title="Context sources" count={contextSources.length}>
+            {contextSources.length === 0 ? (
+              <EmptyEvidenceLine text="No context sources referenced yet." />
+            ) : (
+              contextSources.slice(0, 4).map((source) => (
+                <ContextSourceLine key={source.id} source={source} />
+              ))
+            )}
+          </EvidenceColumn>
+          <EvidenceColumn title="Artifacts" count={artifacts.length}>
+            {artifacts.length === 0 ? (
+              <EmptyEvidenceLine text="No artifacts saved yet." />
+            ) : (
+              artifacts.slice(0, 4).map((artifact) => (
+                <ArtifactLine key={artifact.id} artifact={artifact} />
+              ))
+            )}
+          </EvidenceColumn>
+          <EvidenceColumn title="Approvals" count={approvals.length}>
+            {approvals.length === 0 ? (
+              <EmptyEvidenceLine text="No approval decisions for this mission." />
+            ) : (
+              approvals.slice(0, 4).map((approval) => (
+                <ApprovalLine key={approval.id} approval={approval} />
+              ))
+            )}
+          </EvidenceColumn>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function EvidenceColumn({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count: number;
+  children: ReactNode;
+}) {
+  return (
+    <div className="mission-evidence-column">
+      <div className="mission-evidence-column-head">
+        <span>{title}</span>
+        <span className="mono">{count}</span>
+      </div>
+      <div className="mission-evidence-list">{children}</div>
+    </div>
+  );
+}
+
+function EmptyEvidenceLine({ text }: { text: string }) {
+  return <div className="mission-evidence-empty">{text}</div>;
+}
+
+function ContextSourceLine({ source }: { source: ContextSource }) {
+  return (
+    <div className="mission-evidence-line">
+      <div className="mission-evidence-line-main">
+        <span className="mission-evidence-kind">{source.kind}</span>
+        <span>{source.title}</span>
+      </div>
+      <div className="mission-evidence-line-meta">
+        <span>{source.state}</span>
+        {source.transport && <span>{source.transport}</span>}
+        {source.session && <span className="mono">{source.session}</span>}
+      </div>
+    </div>
+  );
+}
+
+function ArtifactLine({ artifact }: { artifact: Artifact }) {
+  return (
+    <div className="mission-evidence-line">
+      <div className="mission-evidence-line-main">
+        <span className="mission-evidence-kind">{artifact.kind}</span>
+        <span>{artifact.label}</span>
+      </div>
+      <div className="mission-evidence-line-meta">
+        <span className="mono">{artifact.id}</span>
+        {typeof artifact.sizeBytes === "number" && <span>{formatBytes(artifact.sizeBytes)}</span>}
+      </div>
+    </div>
+  );
+}
+
+function ApprovalLine({ approval }: { approval: ApprovalRow }) {
+  const status = approval.decision?.decision ?? "pending";
+  return (
+    <div className="mission-evidence-line" data-status={status}>
+      <div className="mission-evidence-line-main">
+        <span className="mission-evidence-kind">{approval.severity}</span>
+        <span>{approval.title}</span>
+      </div>
+      <div className="mission-evidence-line-meta">
+        <span>{approval.action}</span>
+        <span>{status}</span>
+      </div>
+    </div>
+  );
+}
+
+function selectMissionContextSources(
+  sources: ContextSource[],
+  timeline: ActivityEvent[],
+  approvals: ApprovalRow[]
+): ContextSource[] {
+  const referencedIds = new Set<string>();
+  for (const event of timeline) {
+    if (event.target?.trim()) referencedIds.add(event.target.trim());
+  }
+  for (const approval of approvals) {
+    for (const affected of approval.affects) {
+      if (affected.trim()) referencedIds.add(affected.trim());
+    }
+  }
+  const selected = sources.filter((source) => referencedIds.has(source.id));
+  if (selected.length > 0) return selected;
+  return sources.slice(0, 4);
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(kb >= 10 ? 0 : 1)} kB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
 }
 
 function MissionMetricsCard({
