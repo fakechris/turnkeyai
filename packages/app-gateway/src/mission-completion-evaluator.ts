@@ -34,7 +34,7 @@ export type MissionCompletionRecovery =
   | {
       kind: "stalled_tool_turn";
       message: TeamMessage;
-      status: "pending" | "completed" | "failed" | "cancelled" | "skipped";
+      status: "pending" | "completed" | "failed" | "cancelled" | "skipped" | "timeout";
     };
 
 export function evaluateMissionCompletion(input: {
@@ -227,7 +227,7 @@ function looksLikeTruncatedMarkdown(content: string): boolean {
 function findStalledLeadToolTurn(
   mission: Mission,
   messages: TeamMessage[]
-): { message: TeamMessage; status: "pending" | "failed" | "cancelled" } | null {
+): { message: TeamMessage; status: "pending" | "failed" | "cancelled" | "timeout" } | null {
   const latest = findLatestLeadToolMessage(mission, messages);
   if (!latest) return null;
   if (
@@ -238,6 +238,9 @@ function findStalledLeadToolTurn(
     return null;
   }
   if (!latest.toolCalls || latest.toolCalls.length === 0) return null;
+  if (latest.toolStatus === "failed" && isTimeoutToolTurn(latest, messages)) {
+    return { message: latest, status: "timeout" };
+  }
   return { message: latest, status: latest.toolStatus };
 }
 
@@ -296,6 +299,36 @@ function findLatestLeadToolMessage(mission: Mission, messages: TeamMessage[]): T
     .filter((message) => (message.toolCalls?.length ?? 0) > 0)
     .sort((a, b) => a.createdAt - b.createdAt);
   return leadMessages.at(-1) ?? null;
+}
+
+function isTimeoutToolTurn(assistant: TeamMessage, messages: TeamMessage[]): boolean {
+  const callIds = new Set((assistant.toolCalls ?? []).map((call) => call.id));
+  if (callIds.size === 0) return false;
+  for (const progress of assistant.toolProgress ?? []) {
+    if (
+      callIds.has(progress.toolCallId) &&
+      (progress.phase === "failed" || progress.phase === "cancelled") &&
+      mentionsTimeout(`${progress.summary} ${JSON.stringify(progress.detail ?? {})}`)
+    ) {
+      return true;
+    }
+  }
+  for (const message of messages) {
+    if (
+      message.role === "tool" &&
+      message.createdAt >= assistant.createdAt &&
+      message.toolCallId &&
+      callIds.has(message.toolCallId) &&
+      mentionsTimeout(`${message.content} ${JSON.stringify(message.metadata ?? {})}`)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function mentionsTimeout(text: string): boolean {
+  return /\btime(?:d)?\s*out\b|\btimeout\b/i.test(text);
 }
 
 function isActiveRoleRun(run: RoleRunState): boolean {
