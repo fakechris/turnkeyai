@@ -96,10 +96,34 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
         }
 
         if (current.iterationCount >= current.maxIterations) {
-          await this.roleRunCoordinator.fail(runKey, {
-            code: "RUN_ITERATION_LIMIT",
-            message: "member run iteration limit reached",
-            retryable: false,
+          const handoff = await this.roleRunCoordinator.dequeue(runKey);
+          const error = buildRoleRunIterationLimitError(current);
+          await this.roleRunCoordinator.fail(runKey, error);
+          if (!handoff) {
+            return;
+          }
+
+          const flow = await this.flowLedgerStore.get(handoff.flowId);
+          const thread = await this.teamThreadStore.get(handoff.threadId);
+          if (!flow || !thread) {
+            return;
+          }
+
+          await this.recordRoleProgress({
+            runState: current,
+            flowId: flow.flowId,
+            taskId: handoff.taskId,
+            phase: "failed",
+            summary: `Role ${current.roleId} paused after reaching its step budget`,
+            continuityState: "terminal",
+            statusReason: error.message,
+          });
+          await this.onRoleFailure({
+            flow,
+            thread,
+            runState: current,
+            handoff,
+            error,
           });
           return;
         }
@@ -348,6 +372,14 @@ function buildRoleRunCancelledError(signal: AbortSignal): RuntimeError {
   return {
     code: "ROLE_RUN_CANCELLED",
     message,
+    retryable: false,
+  };
+}
+
+function buildRoleRunIterationLimitError(runState: RoleRunState): RuntimeError {
+  return {
+    code: "RUN_ITERATION_LIMIT",
+    message: `Role ${runState.roleId} paused after reaching its ${runState.maxIterations}-step budget. Send a follow-up such as "continue" to resume from the latest state.`,
     retryable: false,
   };
 }

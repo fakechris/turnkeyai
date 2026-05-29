@@ -75,6 +75,22 @@ test("role run coordinator resets iteration count when re-entering a terminal ru
     ...run,
     status: "failed",
     iterationCount: 4,
+    inbox: [
+      {
+        taskId: "task-stale",
+        flowId: "flow-old",
+        sourceMessageId: "message-old",
+        targetRoleId: "role-lead",
+        activationType: "mention",
+        threadId: "thread-1",
+        payload: normalizeRelayPayload({
+          threadId: "thread-1",
+          relayBrief: "Stale work from before the terminal run.",
+          recentMessages: [],
+        }),
+        createdAt: 10,
+      },
+    ],
     lastActiveAt: 10,
   });
 
@@ -97,6 +113,7 @@ test("role run coordinator resets iteration count when re-entering a terminal ru
   assert.equal(storedRun?.status, "queued");
   assert.equal(storedRun?.iterationCount, 0);
   assert.equal(storedRun?.inbox.length, 1);
+  assert.equal(storedRun?.inbox[0]?.taskId, "task-continue");
 });
 
 test("role run coordinator uses expectedVersion zero when creating a run", async () => {

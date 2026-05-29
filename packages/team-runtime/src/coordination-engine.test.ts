@@ -3938,6 +3938,166 @@ test("coordination engine retries failed shard before merge synthesis", async ()
   assert.match(enqueued[2]?.handoff.payload.intent?.instructions ?? "", /Retry shard research/);
 });
 
+test("coordination engine persists role failure notices before closing failed handoffs", async () => {
+  const thread: TeamThread = {
+    threadId: "thread-role-failure-notice",
+    teamId: "team-role-failure-notice",
+    teamName: "Demo",
+    leadRoleId: "lead",
+    roles: [{ roleId: "lead", name: "Lead", seat: "lead", runtime: "local" }],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const handoff: HandoffEnvelope = {
+    taskId: "task-role-failure-notice",
+    flowId: "flow-role-failure-notice",
+    sourceMessageId: "msg-user",
+    targetRoleId: "lead",
+    activationType: "mention",
+    threadId: thread.threadId,
+    payload: normalizeRelayPayload({
+      threadId: thread.threadId,
+      relayBrief: "Continue.",
+      recentMessages: [],
+      dispatchPolicy: {
+        allowParallel: false,
+        allowReenter: true,
+        sourceFlowMode: "serial",
+      },
+    }),
+    createdAt: 1,
+  };
+  let storedFlow: FlowLedger = {
+    flowId: handoff.flowId,
+    threadId: thread.threadId,
+    rootMessageId: "msg-user",
+    mode: "serial",
+    status: "waiting_role",
+    currentStageIndex: 0,
+    activeRoleIds: ["lead"],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    nextExpectedRoleId: "lead",
+    hopCount: 1,
+    maxHops: 5,
+    edges: [
+      {
+        edgeId: `${handoff.taskId}:edge`,
+        flowId: handoff.flowId,
+        toRoleId: "lead",
+        sourceMessageId: handoff.sourceMessageId,
+        state: "delivered",
+        createdAt: 1,
+      },
+    ],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const messages = new Map<string, TeamMessage>();
+  const engine = buildEngine({
+    teamThreadStore: {
+      async get(threadId) {
+        return threadId === thread.threadId ? thread : null;
+      },
+      async list() {
+        return [thread];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore: {
+      async append(message) {
+        messages.set(message.id, message);
+      },
+      async appendIfAbsent(message) {
+        const existing = messages.get(message.id);
+        if (existing) {
+          return { written: false, existing };
+        }
+        messages.set(message.id, message);
+        return { written: true };
+      },
+      async list() {
+        return [...messages.values()];
+      },
+      async get(messageId) {
+        return messages.get(messageId) ?? null;
+      },
+    },
+    flowLedgerStore: {
+      async get(flowId) {
+        return flowId === storedFlow.flowId ? storedFlow : null;
+      },
+      async put(flow) {
+        storedFlow = flow;
+      },
+      async listByThread() {
+        return [storedFlow];
+      },
+    },
+    roleRunCoordinator: {
+      async getOrCreate(): Promise<RoleRunState> {
+        throw new Error("not used");
+      },
+      async enqueue(): Promise<RoleRunState> {
+        throw new Error("not used");
+      },
+      async dequeue() {
+        return null;
+      },
+      async ack() {},
+      async setStatus() {},
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async incrementIteration() {
+        return 1;
+      },
+      async fail() {},
+      async finish() {},
+    },
+    roleLoopRunner: {
+      async ensureRunning() {},
+    },
+  });
+
+  await engine.onRoleFailure({
+    flow: storedFlow,
+    thread,
+    runState: {
+      runKey: `role:lead:thread:${thread.threadId}`,
+      threadId: thread.threadId,
+      roleId: "lead",
+      mode: "group",
+      status: "failed",
+      iterationCount: 128,
+      maxIterations: 128,
+      inbox: [],
+      lastActiveAt: 1,
+    },
+    handoff,
+    error: {
+      code: "RUN_ITERATION_LIMIT",
+      message: 'Role lead paused after reaching its 128-step budget. Send a follow-up such as "continue" to resume.',
+      retryable: false,
+    },
+  });
+
+  const persistedNotice = [...messages.values()].find((message) => message.metadata?.code === "RUN_ITERATION_LIMIT");
+  assert.equal(persistedNotice?.role, "system");
+  assert.equal(persistedNotice?.metadata?.status, "paused");
+  assert.equal(persistedNotice?.metadata?.continuationAvailable, true);
+  assert.match(persistedNotice?.content ?? "", /continue/i);
+  assert.equal(storedFlow.status, "aborted");
+  assert.equal(storedFlow.edges[0]?.state, "closed");
+});
+
 test("coordination engine emits runtime chain records for new flows and dispatches", async () => {
   const thread: TeamThread = {
     threadId: "thread-runtime",
