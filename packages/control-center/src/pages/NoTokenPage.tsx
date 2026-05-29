@@ -77,7 +77,9 @@ export function NoTokenPage() {
           </form>
           <p className="note">
             Token is read from <code>~/.turnkeyai/config.json</code> by the launcher.{" "}
-            <code>turnkeyai daemon status</code> checks whether that token can access the daemon.
+            Check access with <code>turnkeyai daemon status</code>,{" "}
+            <code>npx @turnkeyai/cli daemon status</code>, or <code>npm run daemon:status</code>{" "}
+            from a source checkout.
           </p>
         </div>
       </div>

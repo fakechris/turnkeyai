@@ -100,6 +100,10 @@ try {
       await noTokenPage.locator("text=npm run app -- --no-open").isVisible(),
       "no-token page should include the source-checkout launcher"
     );
+    assert(
+      await noTokenPage.locator("text=npm run daemon:status").isVisible(),
+      "no-token page should include the source-checkout daemon status fallback"
+    );
     await noTokenPage.close();
 
     const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
