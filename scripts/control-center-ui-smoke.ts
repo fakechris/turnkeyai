@@ -423,6 +423,27 @@ try {
       waitUntil: "networkidle",
     });
     await page.waitForSelector("text=First run");
+    await page.waitForSelector("text=Production readiness");
+    assert(
+      await page.locator(".onboarding-readiness-card", { hasText: "Daemon reachable" }).isVisible(),
+      "onboarding should show daemon readiness"
+    );
+    assert(
+      await page.locator(".onboarding-readiness-card", { hasText: "Default model route" }).isVisible(),
+      "onboarding should show default model readiness"
+    );
+    assert(
+      await page.locator(".onboarding-readiness-card", { hasText: "Browser bridge route" }).isVisible(),
+      "onboarding should show browser bridge readiness"
+    );
+    assert(
+      await page.locator(".onboarding-readiness-card", { hasText: "Real acceptance gate" }).isVisible(),
+      "onboarding should show real acceptance readiness"
+    );
+    assert(
+      await page.locator(".onboarding-readiness-card", { hasText: "npm run acceptance:real -- --model-catalog models.local.json" }).isVisible(),
+      "onboarding should show the real acceptance command"
+    );
     assert(
       await page.locator(".onboarding-step", { hasText: "Daemon and token" }).isVisible(),
       "onboarding should show daemon/token setup"
