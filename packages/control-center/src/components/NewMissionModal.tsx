@@ -1,25 +1,18 @@
-// New Mission modal (PR K3.5).
-//
-// Lightweight — title + goal description. The daemon will spawn the
-// linked team-runtime thread and post the initial user message; the
-// modal just collects what the user wants done and hands off. On
-// success the caller (App.tsx) navigates to Mission Detail so the user
-// can watch the coordination engine pick it up.
-//
-// No mode picker / agent picker yet — K4+ can expose those once we
-// have a real story for capability gating.
+// New Mission modal. Creates a mission, seeds the initial brief, and lets
+// the operator choose the agent team that should be recorded on the mission.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { useCreateMission } from "../api/useMissionData";
+import type { Agent, MissionMode } from "../api/mission-api";
+import { useAgents, useCreateMission } from "../api/useMissionData";
 
-const MODES: Array<{ id: string; label: string }> = [
-  { id: "research", label: "Research and summarize" },
-  { id: "monitor", label: "Monitor and update" },
-  { id: "browser", label: "Operate browser" },
-  { id: "review", label: "Review and verify" },
-  { id: "investigation", label: "Multi-agent investigation" },
-  { id: "custom", label: "Custom" },
+const MODES: Array<{ id: MissionMode; label: string; hint: string }> = [
+  { id: "research", label: "Research and summarize", hint: "Explore sources, compare evidence, and synthesize." },
+  { id: "monitor", label: "Monitor and update", hint: "Watch context over time and report material changes." },
+  { id: "browser", label: "Operate browser", hint: "Use browser workers for dynamic pages and UI actions." },
+  { id: "review", label: "Review and verify", hint: "Check claims, artifacts, citations, and residual risk." },
+  { id: "investigation", label: "Multi-agent investigation", hint: "Coordinate browser, research, document, and review agents." },
+  { id: "custom", label: "Custom", hint: "Use the default runtime team unless you select agents manually." },
 ];
 
 export function NewMissionModal({
@@ -32,9 +25,13 @@ export function NewMissionModal({
   onCreated: (missionId: string) => void;
 }) {
   const createMission = useCreateMission();
+  const agentsRemote = useAgents([]);
+  const agents = agentsRemote.value;
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
-  const [mode, setMode] = useState("research");
+  const [mode, setMode] = useState<MissionMode>("research");
+  const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
+  const [agentSelectionTouched, setAgentSelectionTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -58,6 +55,8 @@ export function NewMissionModal({
       setTitle("");
       setDesc("");
       setMode("research");
+      setSelectedAgents(recommendedAgentIds("research", agents));
+      setAgentSelectionTouched(false);
       setSubmitting(false);
       setError(null);
     }
@@ -73,7 +72,12 @@ export function NewMissionModal({
       clearTimeout(t);
       window.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [agents, open]);
+
+  useEffect(() => {
+    if (!open || agentSelectionTouched) return;
+    setSelectedAgents(recommendedAgentIds(mode, agents));
+  }, [agentSelectionTouched, agents, mode, open]);
 
   const handleSubmit = useCallback(async () => {
     const trimmedTitle = title.trim();
@@ -89,13 +93,25 @@ export function NewMissionModal({
         title: trimmedTitle,
         desc: trimmedDesc,
         mode,
+        agents: selectedAgents,
       });
       onCreated(mission.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setSubmitting(false);
     }
-  }, [title, desc, mode, createMission, onCreated]);
+  }, [title, desc, mode, selectedAgents, createMission, onCreated]);
+
+  const toggleAgent = useCallback((agentId: string) => {
+    setAgentSelectionTouched(true);
+    setSelectedAgents((current) =>
+      current.includes(agentId)
+        ? current.filter((candidate) => candidate !== agentId)
+        : [...current, agentId]
+    );
+  }, []);
+
+  const modeHint = MODES.find((candidate) => candidate.id === mode)?.hint ?? "";
 
   if (!open) return null;
 
@@ -152,7 +168,7 @@ export function NewMissionModal({
             <span className="label" style={{ fontSize: 11 }}>Mode</span>
             <select
               value={mode}
-              onChange={(e) => setMode(e.target.value)}
+              onChange={(e) => setMode(e.target.value as MissionMode)}
               disabled={submitting}
               style={inputStyle}
             >
@@ -162,7 +178,56 @@ export function NewMissionModal({
                 </option>
               ))}
             </select>
+            <span className="muted" style={{ fontSize: 11.5 }}>{modeHint}</span>
           </label>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
+              <span className="label" style={{ fontSize: 11 }}>Agent team</span>
+              {agents.length > 0 && (
+                <button
+                  type="button"
+                  className="btn ghost"
+                  style={{ padding: "3px 8px" }}
+                  disabled={submitting}
+                  onClick={() => {
+                    setSelectedAgents(recommendedAgentIds(mode, agents));
+                    setAgentSelectionTouched(false);
+                  }}
+                >
+                  Auto
+                </button>
+              )}
+            </div>
+            {agents.length > 0 ? (
+              <div className="agent-select-grid" aria-label="Agent team">
+                {agents.map((agent) => {
+                  const selected = selectedAgents.includes(agent.id);
+                  return (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      className={"agent-select-item" + (selected ? " selected" : "")}
+                      aria-pressed={selected}
+                      disabled={submitting}
+                      onClick={() => toggleAgent(agent.id)}
+                    >
+                      <span className="agent-select-name">{agent.name}</span>
+                      <span className="agent-select-role">{agent.role} · {agent.provider}</span>
+                      <span className="agent-select-caps">
+                        {agent.capabilities.slice(0, 3).join(" · ")}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                {agentsRemote.isLive
+                  ? "No mission agents are registered yet. The daemon will use the spawned runtime team's default roles."
+                  : "Loading available mission agents…"}
+              </div>
+            )}
+          </div>
           {error && (
             <div
               role="alert"
@@ -206,3 +271,45 @@ const inputStyle: React.CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontSize: 12,
 };
+
+function recommendedAgentIds(mode: MissionMode, agents: Agent[]): string[] {
+  if (agents.length === 0) return [];
+  const matches = (agent: Agent, terms: string[]) => {
+    const haystack = [
+      agent.id,
+      agent.name,
+      agent.role,
+      agent.provider,
+      ...agent.capabilities,
+    ].join(" ").toLowerCase();
+    return terms.some((term) => haystack.includes(term));
+  };
+  const coordinator = agents.filter((agent) => matches(agent, ["coord", "lead", "plan", "delegate"]));
+  const reviewer = agents.filter((agent) => matches(agent, ["review", "citation", "consistency"]));
+  let specialists: Agent[] = [];
+  switch (mode) {
+    case "research":
+      specialists = agents.filter((agent) => matches(agent, ["research", "search", "browser.read", "doc.read"]));
+      break;
+    case "monitor":
+      specialists = agents.filter((agent) => matches(agent, ["monitor", "diagnostics", "replay", "browser", "doc"]));
+      break;
+    case "browser":
+      specialists = agents.filter((agent) => matches(agent, ["browser", "session", "snapshot", "navigate"]));
+      break;
+    case "review":
+      specialists = reviewer;
+      break;
+    case "investigation":
+      specialists = agents.filter((agent) => matches(agent, ["research", "browser", "doc", "review"]));
+      break;
+    case "custom":
+      specialists = agents.filter((agent) => matches(agent, ["coord", "lead"]));
+      break;
+  }
+  return uniqueAgentIds([...coordinator, ...specialists, ...reviewer]);
+}
+
+function uniqueAgentIds(agents: Agent[]): string[] {
+  return [...new Set(agents.map((agent) => agent.id))];
+}

@@ -42,6 +42,7 @@ await access(indexHtmlPath).catch(() => {
 const missionId = "msn.ui-smoke.1";
 const threadId = "thr.ui-smoke.1";
 const requestedPaths: string[] = [];
+const postedMissions: unknown[] = [];
 const postedMessages: unknown[] = [];
 const port = await resolveFreePort();
 const sockets = new Set<net.Socket>();
@@ -112,6 +113,35 @@ try {
       sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-token");
       sessionStorage.setItem("turnkeyai.controlCenter.scope", "operator");
     });
+    await page.goto(`http://127.0.0.1:${port}/app#/missions`, {
+      waitUntil: "networkidle",
+    });
+    await page.getByRole("button", { name: /New mission/ }).first().click();
+    await page.waitForSelector("text=Agent team");
+    await page.locator("input").first().fill("Browser-backed competitor check");
+    await page.locator("textarea").fill("Open dynamic pages, collect browser evidence, and compare the result.");
+    await page.locator(".modal-panel select").selectOption("browser");
+    await page.waitForSelector(".agent-select-item.selected", { state: "attached" });
+    assert(
+      await page.locator(".agent-select-item.selected", { hasText: "Browser Operator" }).isVisible(),
+      "browser mode should auto-select the browser operator"
+    );
+    assert(
+      await page.locator(".agent-select-item.selected", { hasText: "Reviewer" }).isVisible(),
+      "browser mode should keep reviewer selected for verification"
+    );
+    await page.getByRole("button", { name: "Create mission" }).click();
+    await page.waitForSelector(".mission-bar");
+    assert(postedMissions.length === 1, "expected one create mission POST");
+    assert(
+      JSON.stringify(postedMissions[0]).includes('"mode":"browser"'),
+      "create mission POST should include selected mode"
+    );
+    assert(
+      JSON.stringify(postedMissions[0]).includes("agent.browser"),
+      "create mission POST should include selected browser agent"
+    );
+
     await page.goto(`http://127.0.0.1:${port}/app#/mission/${encodeURIComponent(missionId)}`, {
       waitUntil: "networkidle",
     });
@@ -426,6 +456,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     json(res, [missionFixture()]);
     return;
   }
+  if (method === "POST" && url.pathname === "/missions") {
+    postedMissions.push(await readJsonBody(req));
+    json(res, missionFixture());
+    return;
+  }
   if (method === "GET" && url.pathname === `/missions/${missionId}`) {
     json(res, missionFixture());
     return;
@@ -483,7 +518,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
   if (method === "GET" && url.pathname === "/mission-agents") {
-    json(res, []);
+    json(res, agentsFixture());
     return;
   }
   if (method === "GET" && url.pathname === "/mission-context-sources") {
@@ -809,6 +844,53 @@ function contextSourcesFixture() {
       url: "file://unused.md",
       state: "idle",
       lastUse: "1h ago",
+    },
+  ];
+}
+
+function agentsFixture() {
+  return [
+    {
+      id: "agent.coord",
+      name: "Coordinator",
+      role: "Coordinator",
+      provider: "local runtime",
+      providerNote: "lead role",
+      status: "working",
+      ava: "Co",
+      color: "info",
+      capabilities: ["plan", "delegate", "review.plan"],
+      missions: 1,
+      tokensIn: "12k",
+      tokensOut: "2k",
+    },
+    {
+      id: "agent.browser",
+      name: "Browser Operator",
+      role: "Browser",
+      provider: "local worker",
+      providerNote: "browser tool runtime",
+      status: "working",
+      ava: "Br",
+      color: "warning",
+      capabilities: ["browser.navigate", "browser.snapshot", "browser.form"],
+      missions: 1,
+      tokensIn: "-",
+      tokensOut: "-",
+    },
+    {
+      id: "agent.review",
+      name: "Reviewer",
+      role: "Reviewer",
+      provider: "local runtime",
+      providerNote: "quality gate",
+      status: "planning",
+      ava: "Rv",
+      color: "success",
+      capabilities: ["citation.check", "consistency.check"],
+      missions: 1,
+      tokensIn: "4k",
+      tokensOut: "1k",
     },
   ];
 }
