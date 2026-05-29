@@ -464,8 +464,17 @@ function errorMessageForDiagnostics(error: unknown): string {
 }
 
 function trimDiagnosticText(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value;
-  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+  const cleaned = cleanDiagnosticText(value);
+  if (cleaned.length <= maxLength) return cleaned;
+  return `${cleaned.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function cleanDiagnosticText(value: string): string {
+  return value
+    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 function safeDecodeURIComponent(value: string): string {

@@ -292,7 +292,8 @@ describe("diagnostics-routes", () => {
             recentHistoryCount: 4,
             recentFailureCount: 2,
             profileFallbackCount: 0,
-            latestFailureSummary: "Browser send failed for session browser-session-1. Error: target closed.",
+            latestFailureSummary:
+              "Browser send failed for session browser-session-1.\n\u001b[2m  - navigating to \"https://example.invalid\", waiting until \"domcontentloaded\"\u001b[22m\nError: target closed.",
           }),
         }),
       });
@@ -303,6 +304,9 @@ describe("diagnostics-routes", () => {
       assert.equal(body.readiness.status, "warn");
       assert.equal(runtime?.status, "warn");
       assert.match(runtime?.action ?? "", /target closed/);
+      assert.match(runtime?.action ?? "", /navigating to "https:\/\/example\.invalid"/);
+      assert.doesNotMatch(runtime?.action ?? "", /\u001b/);
+      assert.doesNotMatch(runtime?.action ?? "", /\n/);
     });
 
     it("does not fail diagnostics when browser health history cannot be read", async () => {
