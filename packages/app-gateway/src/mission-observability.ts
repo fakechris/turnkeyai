@@ -1,0 +1,209 @@
+import type { ActivityEvent, Mission } from "@turnkeyai/core-types/mission";
+
+export interface MissionObservabilitySnapshot {
+  missionId: string;
+  status: Mission["status"];
+  generatedAtMs: number;
+  wallClockMs: number;
+  timelineEventCount: number;
+  tool: {
+    requested: number;
+    results: number;
+    executed: number;
+    skipped: number;
+    failed: number;
+    cancelled: number;
+    timeouts: number;
+  };
+  sessions: {
+    spawned: number;
+    continued: number;
+  };
+  approvals: {
+    requested: number;
+    applied: number;
+    decided: number;
+  };
+  recovery: {
+    events: number;
+  };
+  qualityGate: {
+    status: "running" | "passed" | "needs_attention" | "blocked";
+    finalAnswerEventId?: string;
+    evidenceEvents: number;
+    checks: Array<{
+      name: string;
+      status: "pass" | "warn" | "fail" | "pending";
+      detail: string;
+    }>;
+  };
+}
+
+export function buildMissionObservabilitySnapshot(input: {
+  mission: Mission;
+  events: ActivityEvent[];
+  nowMs: number;
+}): MissionObservabilitySnapshot {
+  const events = [...input.events].sort((a, b) => a.tMs - b.tMs || a.id.localeCompare(b.id));
+  const firstMs = events[0]?.tMs ?? input.mission.createdAtMs;
+  const terminal = input.mission.status === "done" || input.mission.status === "blocked";
+  const lastMs = terminal ? (events.at(-1)?.tMs ?? input.nowMs) : input.nowMs;
+  const toolCalls = events.filter((event) => event.kind === "tool" && event.runtime?.toolPhase === "call");
+  const toolResults = events.filter((event) => event.kind === "tool" && event.runtime?.toolPhase === "result");
+  const toolFailures = toolResults.filter((event) => event.emph === "danger" && event.runtime?.admission !== "skipped");
+  const outcomeEvents = events.filter(
+    (event) => event.kind === "recovery" || (event.kind === "tool" && event.runtime?.toolPhase === "result")
+  );
+  const cancelled = outcomeEvents.filter((event) => /\bcancel(?:led|ed)?\b/i.test(eventTextBlob(event)));
+  const timeouts = outcomeEvents.filter((event) => /\btime(?:d)?\s*out|timeout\b/i.test(eventTextBlob(event)));
+  const sessionSpawnCalls = distinctRuntimeValues(
+    toolCalls.filter((event) => event.runtime?.toolName === "sessions_spawn"),
+    "toolCallId"
+  );
+  const sessionSendCalls = distinctRuntimeValues(
+    toolCalls.filter((event) => event.runtime?.toolName === "sessions_send"),
+    "toolCallId"
+  );
+  const approvalEvents = events.filter((event) => event.kind === "approval");
+  const finalAnswer = latestFinalAnswer(input.mission, events);
+  const evidenceEvents = countEvidenceEvents(events);
+  const recoveryEvents = events.filter((event) => event.kind === "recovery");
+  const checks = buildQualityChecks({
+    mission: input.mission,
+    finalAnswer,
+    evidenceEvents,
+    failureEvents: recoveryEvents.length + toolFailures.length,
+  });
+
+  return {
+    missionId: input.mission.id,
+    status: input.mission.status,
+    generatedAtMs: input.nowMs,
+    wallClockMs: Math.max(0, Math.round(lastMs - firstMs)),
+    timelineEventCount: events.length,
+    tool: {
+      requested: toolCalls.length,
+      results: toolResults.length,
+      executed: toolResults.filter((event) => event.runtime?.admission !== "skipped").length,
+      skipped: toolResults.filter((event) => event.runtime?.admission === "skipped").length,
+      failed: toolFailures.length,
+      cancelled: cancelled.length,
+      timeouts: timeouts.length,
+    },
+    sessions: {
+      spawned: sessionSpawnCalls.size,
+      continued: sessionSendCalls.size,
+    },
+    approvals: {
+      requested: approvalEvents.filter((event) => /requested approval|permission\.query/i.test(eventTextBlob(event))).length,
+      applied: approvalEvents.filter((event) => /applied approval|permission\.applied/i.test(eventTextBlob(event))).length,
+      decided: approvalEvents.filter((event) => /\bapproved\b|\bdenied\b|permission\.result/i.test(eventTextBlob(event))).length,
+    },
+    recovery: {
+      events: recoveryEvents.length,
+    },
+    qualityGate: {
+      status: deriveQualityStatus(input.mission, checks),
+      ...(finalAnswer ? { finalAnswerEventId: finalAnswer.id } : {}),
+      evidenceEvents,
+      checks,
+    },
+  };
+}
+
+function buildQualityChecks(input: {
+  mission: Mission;
+  finalAnswer: ActivityEvent | null;
+  evidenceEvents: number;
+  failureEvents: number;
+}): MissionObservabilitySnapshot["qualityGate"]["checks"] {
+  const terminal = input.mission.status === "done" || input.mission.status === "blocked";
+  const finalText = input.finalAnswer?.text ?? "";
+  return [
+    {
+      name: "final_answer",
+      status: input.finalAnswer ? "pass" : terminal ? "fail" : "pending",
+      detail: input.finalAnswer ? "Lead final answer is present." : "No lead final answer has been mirrored yet.",
+    },
+    {
+      name: "evidence_backed",
+      status: input.evidenceEvents > 0 ? "pass" : terminal ? "fail" : "pending",
+      detail:
+        input.evidenceEvents > 0
+          ? `${input.evidenceEvents} evidence-bearing event(s) are attached to the mission.`
+          : "No tool/browser/doc/artifact evidence event is visible yet.",
+    },
+    {
+      name: "residual_risk",
+      status: !input.finalAnswer ? "pending" : mentionsResidualRisk(finalText) ? "pass" : "warn",
+      detail: input.finalAnswer
+        ? mentionsResidualRisk(finalText)
+          ? "Final answer names residual risk or unverified scope."
+          : "Final answer does not explicitly name residual risk."
+        : "Waiting for the final answer.",
+    },
+    {
+      name: "failure_free",
+      status: input.failureEvents === 0 ? "pass" : "fail",
+      detail:
+        input.failureEvents === 0
+          ? "No recovery or failed tool-result event is present."
+          : `${input.failureEvents} recovery/failed tool event(s) require attention.`,
+    },
+  ];
+}
+
+function deriveQualityStatus(
+  mission: Mission,
+  checks: MissionObservabilitySnapshot["qualityGate"]["checks"]
+): MissionObservabilitySnapshot["qualityGate"]["status"] {
+  if (mission.status === "blocked" || checks.some((check) => check.status === "fail")) {
+    return "blocked";
+  }
+  if (mission.status !== "done") {
+    return "running";
+  }
+  if (checks.some((check) => check.status === "warn" || check.status === "pending")) {
+    return "needs_attention";
+  }
+  return "passed";
+}
+
+function latestFinalAnswer(mission: Mission, events: ActivityEvent[]): ActivityEvent | null {
+  const candidates = events.filter((event) => {
+    if (event.kind !== "thought" || event.text.trim().length === 0) return false;
+    if (event.runtime?.route === "lead-role") return true;
+    if (event.actor === "role-lead") return true;
+    return mission.agents[0] === event.actor;
+  });
+  return candidates.at(-1) ?? null;
+}
+
+function countEvidenceEvents(events: ActivityEvent[]): number {
+  return events.filter((event) => {
+    if (event.evidence?.length) return true;
+    if (event.kind === "browser" || event.kind === "doc" || event.kind === "artifact") return true;
+    if (event.kind !== "tool") return false;
+    if (event.runtime?.toolPhase !== "result") return false;
+    return event.runtime.admission !== "skipped";
+  }).length;
+}
+
+function distinctRuntimeValues(events: ActivityEvent[], key: string): Set<string> {
+  const values = new Set<string>();
+  for (const event of events) {
+    const value = event.runtime?.[key];
+    if (typeof value === "string" && value.trim()) {
+      values.add(value);
+    }
+  }
+  return values;
+}
+
+function eventTextBlob(event: ActivityEvent): string {
+  return [event.text, event.tags?.join(" ") ?? "", event.runtime ? Object.values(event.runtime).join(" ") : ""].join(" ");
+}
+
+function mentionsResidualRisk(text: string): boolean {
+  return /\b(residual risk|risk|not verified|unverified|limitation|unknown)\b|风险|未验证|待确认/i.test(text);
+}

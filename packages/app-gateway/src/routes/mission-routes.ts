@@ -6,6 +6,7 @@
 //   GET  /missions/:id/timeline?limit=N     → ActivityEvent[]
 //   GET  /missions/:id/artifacts            → Artifact[]
 //   GET  /missions/:id/approvals            → ApprovalRequest[]
+//   GET  /missions/:id/metrics              → MissionObservabilitySnapshot
 //   GET  /approvals                         → ApprovalRequest[]  (global queue)
 //   GET  /mission-agents                    → Agent[]
 //   GET  /mission-context-sources           → ContextSource[]
@@ -43,6 +44,7 @@ import {
   type RouteIdempotencyStore,
 } from "../idempotency-store";
 import { buildDemoFixtures } from "../mission-demo-fixtures";
+import { buildMissionObservabilitySnapshot } from "../mission-observability";
 import type { MissionThreadBridge } from "../mission-thread-bridge";
 import { recordApprovalDecision } from "../tool-permission-service";
 
@@ -457,7 +459,7 @@ export async function handleMissionRoutes(input: {
 
   // /missions/:id and friends — parse the id from the path.
   const missionMatch = pathname.match(
-    /^\/missions\/([^/]+)(?:\/(work-items|timeline|artifacts|approvals))?$/
+    /^\/missions\/([^/]+)(?:\/(work-items|timeline|artifacts|approvals|metrics))?$/
   );
   if (method === "GET" && missionMatch) {
     const id = decodeURIComponent(missionMatch[1]!);
@@ -500,6 +502,23 @@ export async function handleMissionRoutes(input: {
     }
     if (sub === "approvals") {
       sendJson(res, 200, await deps.approvalStore.listByMission(id));
+      return true;
+    }
+    if (sub === "metrics") {
+      const mission = await deps.missionStore.get(id);
+      if (!mission) {
+        sendJson(res, 404, { error: "mission not found" });
+        return true;
+      }
+      sendJson(
+        res,
+        200,
+        buildMissionObservabilitySnapshot({
+          mission,
+          events: await deps.activityStore.listByMission(id),
+          nowMs: deps.clock.now(),
+        })
+      );
       return true;
     }
   }

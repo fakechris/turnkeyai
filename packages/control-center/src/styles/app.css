@@ -579,6 +579,93 @@ a { color: inherit; text-decoration: none; }
 .thinking-card .timeline {
   padding: 8px 14px 14px;
 }
+.mission-metrics-card {
+  padding: 0;
+  margin-bottom: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.mission-quality-pill {
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text-muted);
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.mission-quality-pill[data-emph="success"] {
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
+  background: var(--success-soft);
+  color: var(--success);
+}
+.mission-quality-pill[data-emph="warn"] {
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.mission-quality-pill[data-emph="danger"] {
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.mission-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px 14px 10px;
+}
+.mission-metric-tile {
+  min-width: 0;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  padding: 8px;
+}
+.mission-metric-tile span {
+  display: block;
+  color: var(--text-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  margin-bottom: 4px;
+}
+.mission-metric-tile b {
+  display: block;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.mission-metric-tile[data-tone="warn"] b { color: var(--warning); }
+.mission-metric-tile[data-tone="danger"] b { color: var(--danger); }
+.mission-quality-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 12px;
+}
+.mission-quality-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text-muted);
+  padding: 3px 6px;
+  font-size: 10.5px;
+}
+.mission-quality-check span:first-child { color: var(--text-faint); }
+.mission-quality-check[data-status="pass"] span:last-child { color: var(--success); }
+.mission-quality-check[data-status="warn"] span:last-child { color: var(--warning); }
+.mission-quality-check[data-status="fail"] span:last-child { color: var(--danger); }
+.mission-quality-check[data-status="pending"] span:last-child { color: var(--text-faint); }
+@media (max-width: 760px) {
+  .mission-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .subagent-session-card {
   padding: 0;
   margin-bottom: 12px;

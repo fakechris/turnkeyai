@@ -1,0 +1,127 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import type { ActivityEvent, Mission } from "@turnkeyai/core-types/mission";
+import { buildMissionObservabilitySnapshot } from "./mission-observability";
+
+test("buildMissionObservabilitySnapshot summarizes mission tool/session quality signals", () => {
+  const mission = baseMission({ status: "done" });
+  const events: ActivityEvent[] = [
+    event("user-1", "plan", 1_000, "user", "Compare products."),
+    tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+    tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
+    event("final-1", "thought", 5_000, "role-lead", "Final answer with residual risk and evidence-backed summary."),
+  ];
+
+  const snapshot = buildMissionObservabilitySnapshot({ mission, events, nowMs: 6_000 });
+
+  assert.equal(snapshot.wallClockMs, 4_000);
+  assert.equal(snapshot.timelineEventCount, 4);
+  assert.deepEqual(snapshot.tool, {
+    requested: 1,
+    results: 1,
+    executed: 1,
+    skipped: 0,
+    failed: 0,
+    cancelled: 0,
+    timeouts: 0,
+  });
+  assert.deepEqual(snapshot.sessions, { spawned: 1, continued: 0 });
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.finalAnswerEventId, "final-1");
+  assert.equal(snapshot.qualityGate.evidenceEvents, 1);
+});
+
+test("buildMissionObservabilitySnapshot surfaces skipped timeout and missing residual risk", () => {
+  const mission = baseMission({ status: "done" });
+  const skipped = tool("result-skipped", 2_500, "result", "sessions_spawn", "call-skip", "Skipped by budget.");
+  const failed = {
+    ...tool("result-timeout", 3_000, "result", "sessions_send", "call-timeout", "sessions_send timed out."),
+    emph: "danger" as const,
+  };
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission,
+    nowMs: 4_000,
+    events: [
+      tool("call-skip", 1_000, "call", "sessions_spawn", "call-skip", "Calling sessions_spawn"),
+      { ...skipped, runtime: { ...skipped.runtime, admission: "skipped" } },
+      tool("call-timeout", 2_800, "call", "sessions_send", "call-timeout", "Calling sessions_send"),
+      failed,
+      event("final-1", "thought", 3_500, "role-lead", "Final answer without caveats."),
+    ],
+  });
+
+  assert.equal(snapshot.tool.skipped, 1);
+  assert.equal(snapshot.tool.failed, 1);
+  assert.equal(snapshot.tool.timeouts, 1);
+  assert.equal(snapshot.sessions.spawned, 1);
+  assert.equal(snapshot.sessions.continued, 1);
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "residual_risk")?.status, "warn");
+});
+
+test("buildMissionObservabilitySnapshot keeps active missions running while final answer is pending", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "working" }),
+    nowMs: 3_000,
+    events: [event("user-1", "plan", 1_000, "user", "Run task")],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "running");
+  assert.equal(snapshot.wallClockMs, 2_000);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "pending");
+});
+
+function baseMission(overrides: Partial<Mission> = {}): Mission {
+  return {
+    id: "msn.test",
+    shortId: "MSN-0001",
+    title: "Test mission",
+    desc: "",
+    status: "working",
+    mode: "research",
+    modeLabel: "Research",
+    owner: "you",
+    ownerLabel: "You",
+    createdAt: new Date(1_000).toISOString(),
+    createdAtMs: 1_000,
+    agents: ["role-lead"],
+    progress: 0,
+    pendingApprovals: 0,
+    blockers: 0,
+    contextSummary: [],
+    threadId: "thread-1",
+    ...overrides,
+  };
+}
+
+function event(id: string, kind: ActivityEvent["kind"], tMs: number, actor: string, text: string): ActivityEvent {
+  return {
+    id,
+    missionId: "msn.test",
+    tMs,
+    kind,
+    actor,
+    text,
+  };
+}
+
+function tool(
+  id: string,
+  tMs: number,
+  phase: "call" | "progress" | "result",
+  toolName: string,
+  toolCallId: string,
+  text: string
+): ActivityEvent {
+  return {
+    ...event(id, "tool", tMs, "role-lead", text),
+    runtime: {
+      toolPhase: phase,
+      toolName,
+      toolCallId,
+      messageId: "msg-1",
+      round: "1",
+    },
+  };
+}
