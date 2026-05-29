@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -59,6 +59,7 @@ const REQUIRED_PACKAGE_FILES = [
   "package/dist/cli.js",
   "package/dist/tui.js",
   "package/dist/daemon.js",
+  "package/dist/control-center/index.html",
   "package/README.md",
   "package/LICENSE",
 ] as const;
@@ -208,6 +209,51 @@ export async function runReleaseReadiness(
       };
     });
 
+    await recordCheck(checks, "control-center-assets", "Validate packaged Control Center assets", async () => {
+      const bundleDir = path.join(extractedPackageDir, "dist", "control-center");
+      const indexPath = path.join(bundleDir, "index.html");
+      const assetsDir = path.join(bundleDir, "assets");
+      const failures: string[] = [];
+      let indexHtml = "";
+      try {
+        indexHtml = await readFile(indexPath, "utf8");
+      } catch {
+        failures.push("missing dist/control-center/index.html");
+      }
+      const assetEntries = await listControlCenterAssets(assetsDir).catch(() => {
+        failures.push("missing dist/control-center/assets");
+        return [];
+      });
+      const jsAssets = assetEntries.filter((entry) => entry.name.endsWith(".js"));
+      const cssAssets = assetEntries.filter((entry) => entry.name.endsWith(".css"));
+      if (indexHtml && !indexHtml.includes("/app/assets/")) {
+        failures.push("index.html does not reference /app/assets/");
+      }
+      if (jsAssets.length === 0) {
+        failures.push("missing bundled JavaScript asset");
+      }
+      if (cssAssets.length === 0) {
+        failures.push("missing bundled CSS asset");
+      }
+      for (const entry of [...jsAssets, ...cssAssets]) {
+        if (entry.size < 32) {
+          failures.push(`asset too small: ${entry.name} (${entry.size} bytes)`);
+        }
+      }
+
+      return {
+        status: failures.length === 0 ? "passed" : "failed",
+        details: failures.length > 0
+          ? failures
+          : [
+              `index=dist/control-center/index.html`,
+              `jsAssets=${jsAssets.length}`,
+              `cssAssets=${cssAssets.length}`,
+              `assetBytes=${assetEntries.reduce((sum, entry) => sum + entry.size, 0)}`,
+            ],
+      };
+    });
+
     await recordCheck(checks, "bin-help-smoke", "Run packaged bin help smoke test", async () => {
       const stdout = await runNodeCommand(
         [path.join(extractedPackageDir, "bin/turnkeyai.js"), "--help"],
@@ -301,6 +347,18 @@ async function extractPackedArtifact(tarballPath: string, extractDir: string): P
   await execFile("tar", ["-xzf", tarballPath, "-C", extractDir], {
     maxBuffer: 8 * 1024 * 1024,
   });
+}
+
+async function listControlCenterAssets(assetsDir: string): Promise<Array<{ name: string; size: number }>> {
+  const names = await readdir(assetsDir);
+  const entries: Array<{ name: string; size: number }> = [];
+  for (const name of names) {
+    const entryStat = await stat(path.join(assetsDir, name));
+    if (entryStat.isFile()) {
+      entries.push({ name, size: entryStat.size });
+    }
+  }
+  return entries;
 }
 
 async function runPublishDryRun(
