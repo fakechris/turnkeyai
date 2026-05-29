@@ -92,12 +92,39 @@ Each real LLM scenario is wrapped in an outer hard timeout, defaulting to
 npm run tooluse:e2e:real-matrix -- --matrix-scenarios basic --model-catalog models.local.json --scenario-timeout-ms 60000
 ```
 
+## Mission Route Path
+
+Run:
+
+```bash
+npm run mission:e2e -- --model-catalog models.local.json
+```
+
+This starts an isolated local daemon, creates a mission through `POST /missions`,
+and polls `GET /missions/:id` plus `GET /missions/:id/timeline`. The mission
+prompt points the explore sub-agent at a local fixture page, so the acceptance
+does not depend on public search results. It verifies:
+
+- the product entry path creates a linked team-runtime thread
+- the lead model emits `sessions_spawn` from the mission route
+- `sessions_spawn` call, result, and final answer appear in timeline order
+- `sessions_spawn` progress appears in the correct order when the tool emits user-visible progress
+- the tool result contains fixture evidence
+- the mission reaches `done` rather than staying `working` or `blocked`
+- the final answer includes the release marker, fixture marker, Markdown bullets, and residual risk
+
+The script honors `--scenario-timeout-ms` with a default of `180000` ms. It
+also sets `TURNKEYAI_MODEL_CATALOG` for the isolated daemon when
+`--model-catalog` is supplied.
+
 ## When To Run
 
 Run the mock path for every tool-runtime or provider-adapter PR. Run the real
 LLM matrix before high-risk tool runtime changes. Run the real LLM + browser
 matrix before merging changes that affect browser worker execution, permission
-gating, direct-CDP transport, replay, cancellation, or release candidates.
+gating, direct-CDP transport, replay, cancellation, or release candidates. Run
+the mission route path before shipping user-entry or Control Center changes
+that rely on Mission Detail to show tool calls and completion status.
 
 Latest local acceptance on 2026-05-29:
 
