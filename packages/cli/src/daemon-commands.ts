@@ -417,7 +417,11 @@ export async function runDaemonStatus(_args: string[]): Promise<void> {
   console.log(`logs:       ${paths.logFile}`);
 
   if (healthy) {
-    const status = await fetchJson(`${baseUrl}/bridge/status`, token);
+    const [status, diagnostics, models] = await Promise.all([
+      fetchJson(`${baseUrl}/bridge/status`, token),
+      fetchJson(`${baseUrl}/diagnostics`, token),
+      fetchJson(`${baseUrl}/models`, token),
+    ]);
     if (status.ok && status.json && typeof status.json === "object") {
       console.log("api auth:   ok");
       const s = status.json as Record<string, unknown>;
@@ -437,9 +441,80 @@ export async function runDaemonStatus(_args: string[]): Promise<void> {
         : `/bridge/status unreachable: ${status.error ?? "request failed"}`;
       console.log(`api auth:   ${detail}`);
     }
+    printDiagnosticsStatus(diagnostics);
+    printModelsStatus(models);
   }
 
   process.exit(healthy ? 0 : 1);
+}
+
+function printDiagnosticsStatus(result: FetchJsonResult): void {
+  if (!result.ok || !result.json || typeof result.json !== "object") {
+    const detail = result.statusCode
+      ? `/diagnostics returned HTTP ${result.statusCode}`
+      : `/diagnostics unreachable: ${result.error ?? "request failed"}`;
+    console.log(`setup:      ${detail}`);
+    return;
+  }
+  const snapshot = result.json as Record<string, unknown>;
+  const readiness = snapshot.readiness as
+    | { status?: string; checks?: Array<{ label?: string; status?: string; detail?: string; action?: string }> }
+    | undefined;
+  if (!readiness) {
+    console.log("setup:      no readiness report");
+    return;
+  }
+  console.log(`setup:      ${readiness.status ?? "unknown"}`);
+  for (const check of readiness.checks ?? []) {
+    const label = check.label ?? "check";
+    const status = check.status ?? "unknown";
+    const detail = check.detail ? ` - ${check.detail}` : "";
+    console.log(`  check:    ${label} [${status}]${detail}`);
+    if (check.action) {
+      console.log(`            action: ${check.action}`);
+    }
+  }
+}
+
+function printModelsStatus(result: FetchJsonResult): void {
+  if (!result.ok || !result.json || typeof result.json !== "object") {
+    const detail = result.statusCode
+      ? `/models returned HTTP ${result.statusCode}`
+      : `/models unreachable: ${result.error ?? "request failed"}`;
+    console.log(`models:     ${detail}`);
+    return;
+  }
+  const report = result.json as {
+    defaultSelection?: {
+      ok?: boolean;
+      chainId?: string;
+      primaryModelId?: string;
+      fallbackModelIds?: string[];
+      error?: string;
+    };
+    models?: Array<{ id?: string; configured?: boolean; apiKeyEnv?: string }>;
+  };
+  const selection = report.defaultSelection;
+  if (!selection?.ok || !selection.primaryModelId) {
+    console.log(`models:     attention (${selection?.error ?? "no default selection"})`);
+    return;
+  }
+  const fallbackIds = selection.fallbackModelIds ?? [];
+  const route = selection.chainId
+    ? `${selection.chainId}: ${selection.primaryModelId}${fallbackIds.length > 0 ? ` -> ${fallbackIds.join(" -> ")}` : ""}`
+    : selection.primaryModelId;
+  const primary = report.models?.find((model) => model.id === selection.primaryModelId);
+  const missingFallbacks = fallbackIds.filter((id) => {
+    const model = report.models?.find((candidate) => candidate.id === id);
+    return model && !model.configured;
+  });
+  const modelStatus = primary?.configured
+    ? missingFallbacks.length > 0
+      ? `primary ok, ${missingFallbacks.length} fallback key(s) missing`
+      : "ready"
+    : `primary key missing (${primary?.apiKeyEnv ?? selection.primaryModelId})`;
+  console.log(`models:     ${route}`);
+  console.log(`model keys: ${modelStatus}`);
 }
 
 export async function runDaemonLogs(args: string[]): Promise<void> {
