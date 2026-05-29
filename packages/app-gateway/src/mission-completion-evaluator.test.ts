@@ -131,6 +131,91 @@ describe("MissionCompletionEvaluator", () => {
     }
   });
 
+  it("blocks skipped lead tool turn when no final answer follows", () => {
+    const skipped = {
+      ...message("a-skipped", "assistant", 100),
+      roleId: "role-lead",
+      name: "Lead",
+      toolCalls: [
+        { id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } },
+        { id: "call-2", name: "sessions_send", arguments: { session_key: "worker:browser:1" } },
+      ],
+      toolStatus: "completed" as const,
+      toolProgress: [
+        {
+          toolCallId: "call-1",
+          toolName: "sessions_spawn",
+          phase: "completed" as const,
+          summary: "Skipped browser spawn.",
+          detail: { admission: "skipped" },
+          ts: 101,
+        },
+        {
+          toolCallId: "call-2",
+          toolName: "sessions_send",
+          phase: "completed" as const,
+          summary: "Skipped browser follow-up.",
+          detail: { admission: "skipped" },
+          ts: 102,
+        },
+      ],
+    };
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [skipped],
+      roleRuns: [idleRun],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "skipped_tool_turn");
+      assert.deepEqual(decision.patch, { status: "blocked", blockers: 1 });
+      assert.equal(decision.recovery?.kind, "stalled_tool_turn");
+      assert.equal(decision.recovery?.status, "skipped");
+    }
+  });
+
+  it("blocks a completed lead tool turn when the run idles before a final answer", () => {
+    const completed = {
+      ...message("a-partial", "assistant", 100),
+      roleId: "role-lead",
+      name: "Lead",
+      toolCalls: [
+        { id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } },
+        { id: "call-2", name: "sessions_send", arguments: { session_key: "worker:browser:1" } },
+      ],
+      toolStatus: "completed" as const,
+      toolProgress: [
+        {
+          toolCallId: "call-1",
+          toolName: "sessions_spawn",
+          phase: "completed" as const,
+          summary: "Skipped browser spawn.",
+          detail: { admission: "skipped" },
+          ts: 101,
+        },
+        {
+          toolCallId: "call-2",
+          toolName: "sessions_send",
+          phase: "completed" as const,
+          summary: "Browser follow-up completed.",
+          ts: 102,
+        },
+      ],
+    };
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [completed],
+      roleRuns: [idleRun],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "completed_tool_turn");
+      assert.deepEqual(decision.patch, { status: "blocked", blockers: 1 });
+      assert.equal(decision.recovery?.kind, "stalled_tool_turn");
+      assert.equal(decision.recovery?.status, "completed");
+    }
+  });
+
   it("returns stale needs_approval mission to working after approvals clear", () => {
     const decision = evaluateMissionCompletion({
       mission: { ...mission, status: "needs_approval", pendingApprovals: 0 },

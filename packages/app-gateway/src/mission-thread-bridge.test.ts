@@ -506,6 +506,138 @@ describe("MissionThreadBridge", () => {
     assert.equal(updated?.status, "working");
   });
 
+  it("marks a mission blocked when the latest lead tool turn was skipped without a final answer", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"] };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+          toolCalls: [
+            { id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } },
+          ],
+          toolProgress: [
+            {
+              toolCallId: "call-1",
+              toolName: "sessions_spawn",
+              phase: "completed",
+              summary: "Browser spawn skipped by policy.",
+              detail: { admission: "skipped" },
+              ts: 201,
+            },
+          ],
+          toolStatus: "completed",
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.blockers, 1);
+    const stalled = activity.events.find((event) => event.runtime?.eventType === "mission.stalled_no_final_answer");
+    assert.equal(stalled?.kind, "recovery");
+    assert.equal(stalled?.runtime?.toolStatus, "skipped");
+  });
+
+  it("marks a mission blocked when a completed lead tool turn never produces a final answer", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"] };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+          toolCalls: [
+            { id: "call-1", name: "sessions_spawn", arguments: { agent_id: "explore" } },
+          ],
+          toolProgress: [
+            {
+              toolCallId: "call-1",
+              toolName: "sessions_spawn",
+              phase: "completed",
+              summary: "Explore session returned source evidence.",
+              ts: 201,
+            },
+          ],
+          toolStatus: "completed",
+        },
+        {
+          ...baseMessage("m2", "tool", 201),
+          name: "sessions_spawn",
+          content: "Evidence from the child session.",
+          toolCallId: "call-1",
+          toolStatus: "completed",
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.blockers, 1);
+    const stalled = activity.events.find((event) => event.runtime?.eventType === "mission.stalled_no_final_answer");
+    assert.equal(stalled?.kind, "recovery");
+    assert.equal(stalled?.runtime?.toolStatus, "completed");
+  });
+
   it("appends only new messages on incremental tick", async () => {
     counter = 0;
     const activity = memActivityStore();

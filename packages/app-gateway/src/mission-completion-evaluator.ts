@@ -6,7 +6,9 @@ export type MissionCompletionReason =
   | "pending_approval"
   | "existing_blocker"
   | "final_answer"
+  | "completed_tool_turn"
   | "incomplete_final_answer"
+  | "skipped_tool_turn"
   | "stalled_tool_turn"
   | "active_role_run"
   | "awaiting_work";
@@ -32,7 +34,7 @@ export type MissionCompletionRecovery =
   | {
       kind: "stalled_tool_turn";
       message: TeamMessage;
-      status: "pending" | "failed" | "cancelled";
+      status: "pending" | "completed" | "failed" | "cancelled" | "skipped";
     };
 
 export function evaluateMissionCompletion(input: {
@@ -85,6 +87,32 @@ export function evaluateMissionCompletion(input: {
       action: "update",
       reason: "final_answer",
       patch: { status: "done", progress: 1 },
+    };
+  }
+
+  const skipped = findSkippedLeadToolTurn(mission, messages);
+  if (skipped) {
+    if (hasActiveRoleRun(input.roleRuns)) {
+      return { action: "none", reason: "active_role_run" };
+    }
+    return {
+      action: "update",
+      reason: "skipped_tool_turn",
+      patch: { status: "blocked", blockers: 1 },
+      recovery: { kind: "stalled_tool_turn", ...skipped },
+    };
+  }
+
+  const completed = findCompletedLeadToolTurnWithoutFinal(mission, messages);
+  if (completed) {
+    if (hasActiveRoleRun(input.roleRuns)) {
+      return { action: "none", reason: "active_role_run" };
+    }
+    return {
+      action: "update",
+      reason: "completed_tool_turn",
+      patch: { status: "blocked", blockers: 1 },
+      recovery: { kind: "stalled_tool_turn", ...completed },
     };
   }
 
@@ -200,10 +228,7 @@ function findStalledLeadToolTurn(
   mission: Mission,
   messages: TeamMessage[]
 ): { message: TeamMessage; status: "pending" | "failed" | "cancelled" } | null {
-  const leadMessages = messages
-    .filter((message) => message.role === "assistant" && isLeadAssistantMessage(mission, message))
-    .sort((a, b) => a.createdAt - b.createdAt);
-  const latest = leadMessages.at(-1);
+  const latest = findLatestLeadToolMessage(mission, messages);
   if (!latest) return null;
   if (
     latest.toolStatus !== "pending" &&
@@ -214,6 +239,63 @@ function findStalledLeadToolTurn(
   }
   if (!latest.toolCalls || latest.toolCalls.length === 0) return null;
   return { message: latest, status: latest.toolStatus };
+}
+
+function findSkippedLeadToolTurn(
+  mission: Mission,
+  messages: TeamMessage[]
+): { message: TeamMessage; status: "skipped" } | null {
+  const latest = findLatestLeadToolMessage(mission, messages);
+  if (!latest) return null;
+  if (latest.content.trim().length > 0) return null;
+  if (latest.toolStatus !== "completed") return null;
+
+  const toolCalls = latest.toolCalls ?? [];
+  if (toolCalls.length === 0) return null;
+  const callIds = new Set(toolCalls.map((call) => call.id));
+  const skippedIds = new Set<string>();
+  for (const progress of latest.toolProgress ?? []) {
+    if (
+      callIds.has(progress.toolCallId) &&
+      progress.phase === "completed" &&
+      progress.detail?.["admission"] === "skipped"
+    ) {
+      skippedIds.add(progress.toolCallId);
+    }
+  }
+  for (const message of messages) {
+    if (
+      message.role === "tool" &&
+      message.createdAt >= latest.createdAt &&
+      message.toolCallId &&
+      callIds.has(message.toolCallId) &&
+      readStringMetadata(message.metadata, "admission") === "skipped"
+    ) {
+      skippedIds.add(message.toolCallId);
+    }
+  }
+  if (skippedIds.size === callIds.size) {
+    return { message: latest, status: "skipped" };
+  }
+  return null;
+}
+
+function findCompletedLeadToolTurnWithoutFinal(
+  mission: Mission,
+  messages: TeamMessage[]
+): { message: TeamMessage; status: "completed" } | null {
+  const latest = findLatestLeadToolMessage(mission, messages);
+  if (!latest || latest.toolStatus !== "completed") return null;
+  if (latest.content.trim().length > 0) return null;
+  return { message: latest, status: "completed" };
+}
+
+function findLatestLeadToolMessage(mission: Mission, messages: TeamMessage[]): TeamMessage | null {
+  const leadMessages = messages
+    .filter((message) => message.role === "assistant" && isLeadAssistantMessage(mission, message))
+    .filter((message) => (message.toolCalls?.length ?? 0) > 0)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  return leadMessages.at(-1) ?? null;
 }
 
 function isActiveRoleRun(run: RoleRunState): boolean {
