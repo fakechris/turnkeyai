@@ -1641,6 +1641,10 @@ test("llm role response generator skips per-turn tool calls above the execution 
     ["toolu-a", "toolu-b", "toolu-c"]
   );
   assert.match(secondRoundToolResults?.[2]?.content ?? "", /tool_call_limit_exceeded/);
+  const trace = result.metadata?.toolUse as
+    | { rounds?: Array<{ results?: Array<{ toolCallId?: string; skipped?: boolean }> }> }
+    | undefined;
+  assert.equal(trace?.rounds?.[0]?.results?.find((item) => item.toolCallId === "toolu-c")?.skipped, true);
 });
 
 function buildActivation(

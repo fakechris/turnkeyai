@@ -19,6 +19,7 @@ export interface NativeToolResultTrace {
   content?: string;
   contentTruncated?: boolean;
   cancelled?: boolean;
+  skipped?: boolean;
 }
 
 export interface NativeToolProgressTrace {
@@ -76,7 +77,7 @@ export function buildNativeToolMessages(
           ? "pending"
           : round.results.some((result) => result.cancelled)
               ? "cancelled"
-              : round.results.some((result) => result.isError)
+              : round.results.some((result) => result.isError && !result.skipped)
                 ? "failed"
                 : "completed",
       metadata: {
@@ -118,6 +119,7 @@ export function buildNativeToolMessages(
           toolRound: round.round,
           toolName: result.toolName,
           contentBytes: result.contentBytes,
+          ...(result.skipped ? { admission: "skipped" } : {}),
           ...(result.contentTruncated ? { contentTruncated: true } : {}),
         },
       };
@@ -155,6 +157,7 @@ function parseToolUseTrace(value: unknown): NativeToolTrace | null {
             ...(typeof result.content === "string" ? { content: result.content } : {}),
             ...(result.contentTruncated === true ? { contentTruncated: true } : {}),
             ...(result.cancelled === true ? { cancelled: true } : {}),
+            ...(result.skipped === true ? { skipped: true } : {}),
           }))
         : [];
       const progress = Array.isArray(round.progress)
@@ -213,7 +216,9 @@ function buildRoundToolProgress(
       toolCallId: result.toolCallId,
       toolName: result.toolName,
       phase: result.cancelled ? "cancelled" : result.isError ? "failed" : "completed",
-      summary: result.cancelled
+      summary: result.skipped
+        ? `Tool call skipped: ${result.toolName}`
+        : result.cancelled
         ? `Tool call cancelled: ${result.toolName}`
         : result.isError
           ? `Tool call failed: ${result.toolName}`
@@ -221,6 +226,7 @@ function buildRoundToolProgress(
       detail: {
         contentBytes: result.contentBytes,
         ...(result.contentTruncated ? { contentTruncated: true } : {}),
+        ...(result.skipped ? { admission: "skipped", reason: "max_tool_calls_per_round" } : {}),
       },
       ts: baseTimestamp + offset,
     });

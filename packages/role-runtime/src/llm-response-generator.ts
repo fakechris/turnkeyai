@@ -622,12 +622,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolName: call.name,
         content: `tool_call_limit_exceeded: skipped ${call.name}; at most ${maxToolCallsPerRound} tool calls may be executed in one assistant turn.`,
         isError: true,
+        skipped: true,
         progress: [
           {
             phase: "failed",
             toolName: call.name,
             summary: `Skipped ${call.name}: per-turn tool call limit exceeded.`,
             detail: {
+              admission: "skipped",
+              reason: "max_tool_calls_per_round",
               max_tool_calls_per_round: maxToolCallsPerRound,
               requested_tool_calls: input.toolCalls.length,
             },
@@ -918,6 +921,7 @@ function toNativeToolResultTrace(toolResult: RoleToolExecutionResult): NativeToo
     content: truncated ? sliceUtf8(toolResult.content, ROLE_TOOL_RESULT_TRACE_CAP_BYTES) : toolResult.content,
     ...(truncated ? { contentTruncated: true } : {}),
     ...(toolResult.cancelled ? { cancelled: true } : {}),
+    ...(toolResult.skipped ? { skipped: true } : {}),
   };
 }
 

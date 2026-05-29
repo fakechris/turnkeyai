@@ -53,6 +53,7 @@ export interface RoleToolExecutionResult {
   content: string;
   isError?: boolean;
   cancelled?: boolean;
+  skipped?: boolean;
   progress?: RoleToolProgressEvent[];
   raw?: unknown;
 }

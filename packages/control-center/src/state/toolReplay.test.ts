@@ -143,6 +143,200 @@ test("groupTimelineForReplay treats recovery events as failed even without expli
   assert.equal(grouped[0].status, "failed");
 });
 
+test("groupTimelineForReplay does not fail a process for budget-skipped tool calls", () => {
+  const skippedCall = toolWithMessage("call-1", 1_000, "role-lead", "call", "sessions_spawn", "call-a", "Tool call", "msg-1", "1");
+  const skippedResult = toolWithMessage("result-1", 1_100, "role-lead", "result", "sessions_spawn", "call-a", "Skipped", "msg-1", "1");
+  const events: ActivityEvent[] = [
+    {
+      ...skippedCall,
+      runtime: {
+        ...skippedCall.runtime,
+        admission: "skipped",
+      },
+    },
+    {
+      ...skippedResult,
+      runtime: {
+        ...skippedResult.runtime,
+        admission: "skipped",
+      },
+      emph: "danger" as const,
+    },
+  ];
+
+  const grouped = groupTimelineForReplay(events);
+
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0]?.kind, "tool-process");
+  if (grouped[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.equal(grouped[0].status, "completed");
+});
+
+test("groupTimelineForReplay completes a process with skipped plus successful tool results", () => {
+  const skippedResult = toolWithAdmission(
+    "result-skipped",
+    1_100,
+    "role-lead",
+    "result",
+    "sessions_spawn",
+    "call-skipped",
+    "Skipped",
+    "msg-1",
+    "1",
+    "skipped"
+  );
+  const successfulResult = toolWithMessage(
+    "result-success",
+    1_500,
+    "role-lead",
+    "result",
+    "sessions_send",
+    "call-success",
+    "Returned evidence",
+    "msg-1",
+    "1"
+  );
+
+  const grouped = groupTimelineForReplay([
+    toolWithAdmission(
+      "call-skipped",
+      1_000,
+      "role-lead",
+      "call",
+      "sessions_spawn",
+      "call-skipped",
+      "Tool call",
+      "msg-1",
+      "1",
+      "skipped"
+    ),
+    {
+      ...skippedResult,
+      emph: "danger" as const,
+    },
+    toolWithMessage(
+      "call-success",
+      1_200,
+      "role-lead",
+      "call",
+      "sessions_send",
+      "call-success",
+      "Tool call",
+      "msg-1",
+      "1"
+    ),
+    successfulResult,
+  ]);
+
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0]?.kind, "tool-process");
+  if (grouped[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.equal(grouped[0].status, "completed");
+});
+
+test("groupTimelineForReplay still fails a process with a real failed result after skipped calls", () => {
+  const failedResult = toolWithMessage(
+    "result-failed",
+    1_500,
+    "role-lead",
+    "result",
+    "sessions_send",
+    "call-failed",
+    "Worker failed",
+    "msg-1",
+    "1"
+  );
+
+  const grouped = groupTimelineForReplay([
+    toolWithAdmission(
+      "call-skipped",
+      1_000,
+      "role-lead",
+      "call",
+      "sessions_spawn",
+      "call-skipped",
+      "Tool call",
+      "msg-1",
+      "1",
+      "skipped"
+    ),
+    toolWithAdmission(
+      "result-skipped",
+      1_100,
+      "role-lead",
+      "result",
+      "sessions_spawn",
+      "call-skipped",
+      "Skipped",
+      "msg-1",
+      "1",
+      "skipped"
+    ),
+    toolWithMessage(
+      "call-failed",
+      1_200,
+      "role-lead",
+      "call",
+      "sessions_send",
+      "call-failed",
+      "Tool call",
+      "msg-1",
+      "1"
+    ),
+    {
+      ...failedResult,
+      emph: "danger" as const,
+    },
+  ]);
+
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0]?.kind, "tool-process");
+  if (grouped[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.equal(grouped[0].status, "failed");
+});
+
+test("groupTimelineForReplay completes skipped-only process without danger emphasis", () => {
+  const grouped = groupTimelineForReplay([
+    toolWithAdmission(
+      "call-skipped",
+      1_000,
+      "role-lead",
+      "call",
+      "sessions_spawn",
+      "call-skipped",
+      "Tool call",
+      "msg-1",
+      "1",
+      "skipped"
+    ),
+    toolWithAdmission(
+      "result-skipped",
+      1_100,
+      "role-lead",
+      "result",
+      "sessions_spawn",
+      "call-skipped",
+      "Skipped",
+      "msg-1",
+      "1",
+      "skipped"
+    ),
+  ]);
+
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0]?.kind, "tool-process");
+  if (grouped[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.equal(grouped[0].status, "completed");
+});
+
 test("formatDurationMs normalizes rounded second rollover into minutes", () => {
   assert.equal(formatDurationMs(0, 119_900), "2m");
 });
@@ -185,6 +379,28 @@ function toolWithMessage(
       toolCallId,
       messageId,
       round,
+    },
+  };
+}
+
+function toolWithAdmission(
+  id: string,
+  tMs: number,
+  actor: string,
+  phase: "call" | "progress" | "result",
+  toolName: string,
+  toolCallId: string,
+  text: string,
+  messageId: string,
+  round: string,
+  admission: "admitted" | "skipped"
+): ActivityEvent {
+  const item = toolWithMessage(id, tMs, actor, phase, toolName, toolCallId, text, messageId, round);
+  return {
+    ...item,
+    runtime: {
+      ...item.runtime,
+      admission,
     },
   };
 }
