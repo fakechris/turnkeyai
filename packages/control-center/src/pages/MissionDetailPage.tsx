@@ -19,6 +19,7 @@ import type {
   ContextSource,
   Mission,
   MissionObservabilitySnapshot,
+  RecoveryRun,
   RoleRunState,
   WorkerSessionRecord,
 } from "../api/mission-api";
@@ -31,12 +32,13 @@ import {
   useMission,
   useMissionMetrics,
   useMissions,
+  useRecoveryRuns,
   useRoleRuns,
   useSendMissionMessage,
   useTimeline,
   useWorkerSessions,
 } from "../api/useMissionData";
-import { formatTimeOfDay } from "../util/format-time";
+import { formatRelativeAgo, formatTimeOfDay } from "../util/format-time";
 import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { StatusTag } from "../components/atoms";
@@ -138,6 +140,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
   const timeline = useTimeline(mission.id, []);
   const metrics = useMissionMetrics(mission.id, null);
   const workerSessions = useWorkerSessions(mission.threadId, []);
+  const recoveryRuns = useRecoveryRuns(mission.threadId, { totalRuns: 0, runs: [] });
   const roleRuns = useRoleRuns(mission.threadId, []);
   const artifacts = useArtifacts(mission.id, []);
   const contextSources = useContextSources([]);
@@ -321,6 +324,11 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             onCancel={onCancelRoleRun}
           />
           <MissionMetricsCard metrics={metrics.value} isLive={metrics.isLive} error={metrics.error} />
+          <MissionRecoveryCasesCard
+            response={recoveryRuns.value}
+            isLive={recoveryRuns.isLive}
+            error={recoveryRuns.error}
+          />
           <BrowserContinuityCard
             signals={browserContinuitySignals}
             isSettled={browserContinuitySettled}
@@ -491,6 +499,146 @@ function LiveMissionView({ mission }: { mission: Mission }) {
       </div>
     </div>
   );
+}
+
+function MissionRecoveryCasesCard({
+  response,
+  isLive,
+  error,
+}: {
+  response: { totalRuns: number; runs: RecoveryRun[] };
+  isLive: boolean;
+  error: string | null;
+}) {
+  const runs = response.runs;
+  const attentionCount = runs.filter((run) => recoveryRunNeedsAttention(run)).length;
+  const recoveringCount = runs.filter((run) => recoveryRunIsRecovering(run.status)).length;
+  const recoveredCount = runs.filter((run) => run.status === "recovered").length;
+  return (
+    <section className="card mission-recovery-card">
+      <div className="subagent-session-head">
+        <div>
+          <div className="label" style={{ fontSize: 11 }}>Recovery cases</div>
+          <div className="muted" style={{ fontSize: 11.5 }}>
+            Runtime recovery gates, next actions, and browser resume outcomes for this mission
+          </div>
+        </div>
+        <div className="thinking-card-meta">
+          <span>{attentionCount} attention</span>
+          <span>{recoveringCount} recovering</span>
+          <span>{recoveredCount} recovered</span>
+          {response.totalRuns > runs.length && <span>{response.totalRuns} total</span>}
+        </div>
+      </div>
+      {error && (
+        <div className="subagent-session-error" role="alert">
+          {error}
+        </div>
+      )}
+      {runs.length === 0 ? (
+        <div className="subagent-session-empty">
+          {isLive ? "No recovery cases for this mission." : "Loading recovery cases…"}
+        </div>
+      ) : (
+        <div className="mission-recovery-list">
+          {runs.map((run) => (
+            <MissionRecoveryCaseRow key={run.recoveryRunId} run={run} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MissionRecoveryCaseRow({ run }: { run: RecoveryRun }) {
+  const tone = recoveryRunTone(run);
+  const latestAttempt = run.attempts.find((attempt) => attempt.attemptId === run.currentAttemptId) ?? run.attempts.at(-1);
+  const browserSession = latestAttempt?.browserSession ?? run.browserSession;
+  const failure = latestAttempt?.failure ?? run.latestFailure;
+  const browserOutcome = latestAttempt?.browserOutcome;
+  const browserOutcomeSummary = latestAttempt?.browserOutcomeSummary;
+  const gate = describeRecoveryGate(run.status);
+  return (
+    <div className="mission-recovery-row" data-tone={tone}>
+      <div className="mission-recovery-main">
+        <span className="mission-recovery-status">{statusLabel(run.status)}</span>
+        <span className="mission-recovery-title">{run.latestSummary || run.sourceGroupId}</span>
+        {run.requiresManualIntervention && <span className="mission-recovery-gate">manual gate</span>}
+      </div>
+      <div className="mission-recovery-detail">
+        <span>{gate}</span>
+        {run.nextAction && run.nextAction !== "none" && <span>next: {run.nextAction}</span>}
+        {run.waitingReason && <span>{run.waitingReason}</span>}
+      </div>
+      <div className="mission-recovery-meta">
+        <span className="mono">{run.recoveryRunId}</span>
+        <span>{run.targetWorker ?? "unknown worker"}</span>
+        <span>{run.targetLayer ?? "unknown layer"}</span>
+        <span>{run.attempts.length} attempt{run.attempts.length === 1 ? "" : "s"}</span>
+        <span>updated {formatRelativeAgo(run.updatedAt)}</span>
+        {run.confirmed === false && <span>inferred</span>}
+      </div>
+      {(browserSession || browserOutcome || browserOutcomeSummary || failure) && (
+        <div className="mission-recovery-runtime">
+          {browserSession?.sessionId && <span className="mono">session {browserSession.sessionId}</span>}
+          {browserSession?.targetId && <span className="mono">target {browserSession.targetId}</span>}
+          {browserSession?.resumeMode && <span>{browserSession.resumeMode}</span>}
+          {browserOutcome && <span>{browserOutcome}</span>}
+          {browserOutcomeSummary && <span>{browserOutcomeSummary}</span>}
+          {failure?.category && <span>{failure.category}</span>}
+          {failure?.message && <span>{failure.message}</span>}
+          {failure?.recommendedAction && <span>recommend: {failure.recommendedAction}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function recoveryRunNeedsAttention(run: RecoveryRun): boolean {
+  return run.requiresManualIntervention || run.status === "failed" || run.status === "waiting_approval" || run.status === "waiting_external";
+}
+
+function recoveryRunIsRecovering(status: RecoveryRun["status"]): boolean {
+  return status === "running" || status === "retrying" || status === "fallback_running" || status === "resumed" || status === "superseded";
+}
+
+function recoveryRunTone(run: RecoveryRun): "ok" | "warning" | "danger" | "muted" {
+  if (run.status === "recovered") return "ok";
+  if (run.status === "failed" || run.status === "aborted") return "danger";
+  if (recoveryRunNeedsAttention(run) || recoveryRunIsRecovering(run.status)) return "warning";
+  return "muted";
+}
+
+function describeRecoveryGate(status: RecoveryRun["status"]): string {
+  switch (status) {
+    case "waiting_approval":
+      return "waiting for approval";
+    case "waiting_external":
+      return "waiting for external/manual follow-up";
+    case "retrying":
+      return "retrying same layer";
+    case "fallback_running":
+      return "running fallback transport";
+    case "resumed":
+      return "resuming existing session";
+    case "running":
+      return "dispatch in progress";
+    case "recovered":
+      return "recovered";
+    case "failed":
+      return "failed and awaiting next recovery action";
+    case "aborted":
+      return "aborted";
+    case "superseded":
+      return "superseded by a newer recovery attempt";
+    case "planned":
+    default:
+      return "planned";
+  }
+}
+
+function statusLabel(status: string): string {
+  return status.replace(/_/g, " ");
 }
 
 function MissionEvidenceCard({

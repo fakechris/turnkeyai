@@ -256,6 +256,96 @@ export interface WorkerSessionRecord {
   };
 }
 
+// ── Recovery Runs ─────────────────────────────────────────────────────
+
+export type RecoveryRunStatus =
+  | "planned"
+  | "running"
+  | "waiting_approval"
+  | "waiting_external"
+  | "retrying"
+  | "fallback_running"
+  | "resumed"
+  | "superseded"
+  | "recovered"
+  | "failed"
+  | "aborted";
+
+export type RecoveryRunAction = "dispatch" | "retry" | "fallback" | "resume" | "approve" | "reject";
+
+export type RecoveryBrowserOutcome =
+  | "hot_reuse"
+  | "warm_attach"
+  | "cold_reopen"
+  | "detached_target_recovered"
+  | "resume_failed";
+
+export interface RecoveryFailureSummary {
+  category?: string;
+  layer?: string;
+  retryable?: boolean;
+  message?: string;
+  recommendedAction?: string;
+}
+
+export interface RecoveryBrowserSessionHint {
+  sessionId?: string;
+  targetId?: string;
+  resumeMode?: string;
+  [key: string]: unknown;
+}
+
+export interface RecoveryRunAttempt {
+  attemptId: string;
+  action: RecoveryRunAction;
+  requestedAt: number;
+  updatedAt: number;
+  status: RecoveryRunStatus;
+  nextAction: string;
+  summary: string;
+  targetLayer?: string;
+  targetWorker?: string;
+  browserSession?: RecoveryBrowserSessionHint;
+  browserOutcome?: RecoveryBrowserOutcome;
+  browserOutcomeSummary?: string;
+  failure?: RecoveryFailureSummary;
+  completedAt?: number;
+}
+
+export interface RecoveryRun {
+  recoveryRunId: string;
+  threadId: string;
+  sourceGroupId: string;
+  taskId?: string;
+  flowId?: string;
+  roleId?: string;
+  targetLayer?: string;
+  targetWorker?: string;
+  latestStatus: string;
+  status: RecoveryRunStatus;
+  nextAction: string;
+  autoDispatchReady: boolean;
+  requiresManualIntervention: boolean;
+  latestSummary: string;
+  waitingReason?: string;
+  latestFailure?: RecoveryFailureSummary;
+  currentAttemptId?: string;
+  browserSession?: RecoveryBrowserSessionHint;
+  attempts: RecoveryRunAttempt[];
+  version?: number;
+  createdAt: number;
+  updatedAt: number;
+  confirmed?: boolean;
+  inferred?: boolean;
+  truthSource?: string;
+  remediation?: Array<Record<string, unknown>>;
+}
+
+export interface RecoveryRunsResponse {
+  totalRuns: number;
+  runs: RecoveryRun[];
+}
+
 // ── Role Runs ────────────────────────────────────────────────────────
 
 export type RoleRunStatus =
