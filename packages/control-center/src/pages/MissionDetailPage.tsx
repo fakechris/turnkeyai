@@ -442,16 +442,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             </section>
           )}
         </div>
-        <div
-          className="row"
-          style={{
-            borderTop: "1px solid var(--border)",
-            padding: 12,
-            gap: 8,
-            background: "var(--surface)",
-            alignItems: "flex-end",
-          }}
-        >
+        <div className="row mission-follow-up-bar">
           <textarea
             aria-label="Follow-up message to mission team"
             value={pending}
@@ -468,18 +459,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             placeholder="Follow up with the team… (⌘↩ to send)"
             rows={2}
             disabled={submitting}
-            style={{
-              flex: 1,
-              padding: "8px 10px",
-              background: "var(--bg)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--r-sm)",
-              color: "var(--text)",
-              fontFamily: "var(--font-sans)",
-              fontSize: 12.5,
-              resize: "vertical",
-              minHeight: 38,
-            }}
+            className="mission-follow-up-input"
           />
           <button
             type="button"

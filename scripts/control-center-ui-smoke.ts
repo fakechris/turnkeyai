@@ -4,6 +4,7 @@ import net from "node:net";
 import path from "node:path";
 
 import { chromium } from "playwright-core";
+import type { Page } from "playwright-core";
 
 const args = process.argv.slice(2);
 let explicitBrowserPath: string | undefined;
@@ -216,6 +217,79 @@ try {
 
     const screenshot = await page.screenshot({ fullPage: true });
     assert(screenshot.byteLength > 20_000, `expected non-trivial screenshot, got ${screenshot.byteLength} bytes`);
+    await page.close();
+
+    const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    mobilePage.on("console", (message) => {
+      if (message.type() === "error") {
+        console.error(`mobile-browser-console-error: ${message.text()}`);
+      }
+    });
+    mobilePage.on("pageerror", (error) => {
+      console.error(`mobile-browser-page-error: ${error.message}`);
+    });
+    await mobilePage.addInitScript(() => {
+      sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-token");
+      sessionStorage.setItem("turnkeyai.controlCenter.scope", "operator");
+    });
+    await mobilePage.goto(`http://127.0.0.1:${port}/app#/mission/${encodeURIComponent(missionId)}`, {
+      waitUntil: "networkidle",
+    });
+    await mobilePage.waitForSelector(".thinking-card");
+    await mobilePage.waitForSelector(".final-answer-card .markdown-body h2");
+    await mobilePage.waitForSelector(".final-answer-card .markdown-table-wrap");
+    await assertNoPageHorizontalOverflow(mobilePage, "mobile mission detail should not create page-level horizontal scroll");
+    await assertWithinViewport(mobilePage, ".mission-bar", "mobile mission bar should fit the viewport");
+    await assertWithinViewport(mobilePage, ".mission-detail-pane", "mobile mission detail pane should fit the viewport");
+    await assertWithinViewport(mobilePage, ".thinking-card", "mobile work trace card should fit the viewport");
+    await assertWithinViewport(mobilePage, ".final-answer-card", "mobile final answer card should fit the viewport");
+    await assertWithinViewport(
+      mobilePage,
+      ".final-answer-card .markdown-table-wrap",
+      "mobile markdown table wrapper should fit the viewport"
+    );
+    await assertTableScrollsInsideWrapper(
+      mobilePage,
+      ".final-answer-card .markdown-table-wrap",
+      "wide markdown tables should scroll inside the answer card instead of overflowing the page"
+    );
+    assert(await mobilePage.locator("#thinking-record-timeline").count() === 0, "mobile trace should be collapsed by default");
+    await assertVerticalOrder(
+      mobilePage,
+      ".thinking-card",
+      ".final-answer-card",
+      "mobile work trace must appear before final answer"
+    );
+    await mobilePage.getByRole("button", { name: "Show trace" }).click();
+    await mobilePage.waitForSelector("#thinking-record-timeline .tool-process");
+    await assertVerticalOrder(
+      mobilePage,
+      "#thinking-record-timeline",
+      ".final-answer-card",
+      "mobile expanded trace timeline must stay before final answer"
+    );
+    await assertNoOverlap(
+      mobilePage,
+      ".thinking-card",
+      ".final-answer-card",
+      "mobile trace and final answer should not overlap"
+    );
+    await assertNoPageHorizontalOverflow(
+      mobilePage,
+      "expanded mobile mission trace should not create page-level horizontal scroll"
+    );
+    const mobileFollowUp = mobilePage.getByLabel("Follow-up message to mission team");
+    await mobileFollowUp.fill("Mobile follow-up remains usable.");
+    assert(
+      await mobilePage.getByRole("button", { name: /Send/ }).isEnabled(),
+      "mobile follow-up send button should be enabled after text input"
+    );
+    const mobileScreenshot = await mobilePage.screenshot({ fullPage: true });
+    assert(
+      mobileScreenshot.byteLength > 15_000,
+      `expected non-trivial mobile screenshot, got ${mobileScreenshot.byteLength} bytes`
+    );
+    await mobilePage.close();
     assert(
       requestedPaths.some((value) => value.startsWith(`/missions/${missionId}/timeline`)),
       "mission timeline endpoint was not requested"
@@ -242,6 +316,7 @@ try {
     );
     console.log("control-center-ui-smoke: passed");
     console.log(`control-center-ui-smoke: screenshot-bytes ${screenshot.byteLength}`);
+    console.log(`control-center-ui-smoke: mobile-screenshot-bytes ${mobileScreenshot.byteLength}`);
   }
 } finally {
   if (browser) {
@@ -737,7 +812,7 @@ function tool(
 }
 
 async function assertVerticalOrder(
-  page: import("playwright-core").Page,
+  page: Page,
   topSelector: string,
   bottomSelector: string,
   message: string
@@ -758,7 +833,7 @@ async function assertVerticalOrder(
 }
 
 async function assertNoOverlap(
-  page: import("playwright-core").Page,
+  page: Page,
   firstSelector: string,
   secondSelector: string,
   message: string
@@ -775,6 +850,50 @@ async function assertNoOverlap(
     [firstSelector, secondSelector]
   );
   assert(overlap === false, message);
+}
+
+async function assertWithinViewport(page: Page, selector: string, message: string): Promise<void> {
+  const result = await page.evaluate((target) => {
+    const el = document.querySelector(target);
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      width: rect.width,
+      viewportWidth: document.documentElement.clientWidth,
+    };
+  }, selector);
+  assert(result !== null, `missing element for viewport check: ${selector}`);
+  assert(result.left >= -1, `${message}: ${JSON.stringify(result)}`);
+  assert(result.right <= result.viewportWidth + 1, `${message}: ${JSON.stringify(result)}`);
+}
+
+async function assertNoPageHorizontalOverflow(page: Page, message: string): Promise<void> {
+  const result = await page.evaluate(() => ({
+    bodyScrollWidth: document.body.scrollWidth,
+    docScrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  assert(
+    Math.max(result.bodyScrollWidth, result.docScrollWidth) <= result.clientWidth + 1,
+    `${message}: ${JSON.stringify(result)}`
+  );
+}
+
+async function assertTableScrollsInsideWrapper(page: Page, selector: string, message: string): Promise<void> {
+  const result = await page.evaluate((target) => {
+    const el = document.querySelector(target);
+    if (!el) return null;
+    return {
+      clientWidth: el.clientWidth,
+      scrollWidth: el.scrollWidth,
+      overflowX: getComputedStyle(el).overflowX,
+    };
+  }, selector);
+  assert(result !== null, `missing element for table scroll check: ${selector}`);
+  assert(result.overflowX === "auto" || result.overflowX === "scroll", `${message}: ${JSON.stringify(result)}`);
+  assert(result.scrollWidth > result.clientWidth, `${message}: ${JSON.stringify(result)}`);
 }
 
 function assert(condition: boolean, message: string): asserts condition {
