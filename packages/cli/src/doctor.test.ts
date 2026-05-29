@@ -63,11 +63,43 @@ describe("doctor", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it("fails when the resolved token cannot read daemon APIs", async () => {
+    const server = await startHealthServer({ acceptedBridgeToken: "actual-token" });
+    const home = await mkdtemp(path.join(tmpdir(), "turnkeyai-doctor-bad-token-"));
+    try {
+      await writeConfig(home, { token: "stale-token", port: server.port, transportMode: "local" });
+      const result = await runCli(["doctor"], {
+        TURNKEYAI_HOME: home,
+        TURNKEYAI_DAEMON_URL: `http://127.0.0.1:${server.port}`,
+      });
+
+      assert.equal(result.code, 1);
+      assert.match(result.stdout, /\[fail\] daemon api auth\s+\/bridge\/status rejected unknown token from config \(HTTP 401\)/);
+      assert.match(result.stderr, /turnkeyai doctor: 1 check\(s\) failed/);
+    } finally {
+      server.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });
 
-async function startHealthServer(): Promise<{ port: number; close: () => void }> {
+async function startHealthServer(input: { acceptedBridgeToken?: string } = {}): Promise<{ port: number; close: () => void }> {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (req.url === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.url === "/bridge/status") {
+      if (
+        input.acceptedBridgeToken &&
+        req.headers.authorization !== `Bearer ${input.acceptedBridgeToken}`
+      ) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
       return;

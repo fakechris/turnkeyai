@@ -11,6 +11,12 @@ interface CheckResult {
   detail: string;
 }
 
+interface ProbeResult {
+  ok: boolean;
+  statusCode?: number;
+  error?: string;
+}
+
 function getRuntimePaths() {
   const rootDir = process.env.TURNKEYAI_HOME?.trim() || path.join(homedir(), ".turnkeyai");
   return {
@@ -58,6 +64,32 @@ async function probeUrl(url: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function probeAuthenticatedUrl(
+  url: string,
+  token: string | null
+): Promise<ProbeResult> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    try {
+      const headers: Record<string, string> = {};
+      if (token) headers.authorization = `Bearer ${token}`;
+      const response = await fetch(url, { headers, signal: controller.signal });
+      return { ok: response.ok, statusCode: response.status };
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "request failed";
 }
 
 function checkNodeVersion(): CheckResult {
@@ -119,6 +151,13 @@ function resolveTransportMode(paths: ReturnType<typeof getRuntimePaths>): string
     : "local";
 }
 
+function resolveDaemonBaseUrl(paths: ReturnType<typeof getRuntimePaths>): string {
+  const config = readConfig(paths.configFile);
+  const envPort = process.env.TURNKEYAI_DAEMON_PORT?.trim();
+  const port = envPort ? Number(envPort) : typeof config?.port === "number" ? (config.port as number) : 4100;
+  return process.env.TURNKEYAI_DAEMON_URL?.trim()?.replace(/\/$/, "") ?? `http://127.0.0.1:${port}`;
+}
+
 async function checkPort(
   paths: ReturnType<typeof getRuntimePaths>,
   daemonHealthy: boolean
@@ -141,15 +180,57 @@ async function checkPort(
 }
 
 async function checkDaemonHealth(paths: ReturnType<typeof getRuntimePaths>): Promise<CheckResult> {
-  const config = readConfig(paths.configFile);
-  const envPort = process.env.TURNKEYAI_DAEMON_PORT?.trim();
-  const port = envPort ? Number(envPort) : typeof config?.port === "number" ? (config.port as number) : 4100;
-  const baseUrl = process.env.TURNKEYAI_DAEMON_URL?.trim()?.replace(/\/$/, "") ?? `http://127.0.0.1:${port}`;
+  const baseUrl = resolveDaemonBaseUrl(paths);
   const healthy = await probeUrl(`${baseUrl}/health`);
   return {
     name: "daemon /health",
     status: healthy ? "ok" : "fail",
     detail: healthy ? baseUrl : `${baseUrl} unreachable`,
+  };
+}
+
+async function checkDaemonApiAuth(
+  paths: ReturnType<typeof getRuntimePaths>,
+  daemonHealthy: boolean
+): Promise<CheckResult> {
+  const config = readConfig(paths.configFile);
+  const token = resolveDaemonCliToken(process.env, config?.token, "read");
+  const baseUrl = resolveDaemonBaseUrl(paths);
+  if (!daemonHealthy) {
+    return {
+      name: "daemon api auth",
+      status: "warn",
+      detail: "skipped because daemon /health is unreachable",
+    };
+  }
+  if (!token) {
+    return {
+      name: "daemon api auth",
+      status: "fail",
+      detail: "no read-capable daemon token available for /bridge/status",
+    };
+  }
+  const result = await probeAuthenticatedUrl(`${baseUrl}/bridge/status`, token.token);
+  if (result.ok) {
+    return {
+      name: "daemon api auth",
+      status: "ok",
+      detail: `/bridge/status accepted ${token.scope} token from ${token.source}`,
+    };
+  }
+  if (result.statusCode === 401 || result.statusCode === 403) {
+    return {
+      name: "daemon api auth",
+      status: "fail",
+      detail: `/bridge/status rejected ${token.scope} token from ${token.source} (HTTP ${result.statusCode})`,
+    };
+  }
+  return {
+    name: "daemon api auth",
+    status: "fail",
+    detail: result.statusCode
+      ? `/bridge/status returned HTTP ${result.statusCode}`
+      : `/bridge/status unreachable: ${result.error ?? "request failed"}`,
   };
 }
 
@@ -225,6 +306,7 @@ export async function runDoctor(_args: string[]): Promise<void> {
   const healthCheck = await checkDaemonHealth(paths);
   checks.push(await checkPort(paths, healthCheck.status === "ok"));
   checks.push(healthCheck);
+  checks.push(await checkDaemonApiAuth(paths, healthCheck.status === "ok"));
   checks.push(await checkRelayExtension(paths, transportMode));
   const transport = await checkTransportSpecific();
   if (transport) checks.push(transport);
