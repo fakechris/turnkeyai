@@ -43,11 +43,16 @@ const threadId = "thr.ui-smoke.1";
 const requestedPaths: string[] = [];
 const postedMessages: unknown[] = [];
 const port = await resolveFreePort();
+const sockets = new Set<net.Socket>();
 const server = createServer((req, res) => {
   void handleRequest(req, res).catch((error: unknown) => {
     res.writeHead(500, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
   });
+});
+server.on("connection", (socket) => {
+  sockets.add(socket);
+  socket.on("close", () => sockets.delete(socket));
 });
 await new Promise<void>((resolve, reject) => {
   server.once("error", reject);
@@ -74,6 +79,25 @@ try {
       headless: !headful,
       args: ["--no-sandbox", "--disable-dev-shm-usage"],
     });
+    const noTokenPage = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+    await noTokenPage.goto(`http://127.0.0.1:${port}/app#/missions`, {
+      waitUntil: "networkidle",
+    });
+    await noTokenPage.waitForSelector(".launch-command-list");
+    assert(
+      await noTokenPage.locator("text=Auth token required").isVisible(),
+      "no-token page should explain that a daemon token is required"
+    );
+    assert(
+      await noTokenPage.locator("text=npx @turnkeyai/cli app").isVisible(),
+      "no-token page should include the no-install launcher"
+    );
+    assert(
+      await noTokenPage.locator("text=npm run app -- --no-open").isVisible(),
+      "no-token page should include the source-checkout launcher"
+    );
+    await noTokenPage.close();
+
     const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
     page.on("console", (message) => {
       if (message.type() === "error") {
@@ -146,6 +170,9 @@ try {
 } finally {
   if (browser) {
     await browser.close();
+  }
+  for (const socket of sockets) {
+    socket.destroy();
   }
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
