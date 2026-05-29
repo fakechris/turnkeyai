@@ -15,6 +15,14 @@ export class LLMGateway {
     return this.registry.list();
   }
 
+  async listModelChains() {
+    return this.registry.listChains();
+  }
+
+  async describeSelection(input: { modelId?: string; modelChainId?: string }) {
+    return this.registry.describeSelection(input);
+  }
+
   async generate(input: GenerateTextInput): Promise<GenerateTextResult> {
     const selection = await this.registry.resolveSelection({
       ...(input.modelId ? { modelId: input.modelId } : {}),

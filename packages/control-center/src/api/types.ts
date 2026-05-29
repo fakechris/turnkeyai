@@ -135,6 +135,18 @@ export interface OnboardingState {
 export interface ModelsReport {
   modelCatalogPath: string | null;
   adapterMode: "heuristic-only" | "llm+heuristic-fallback" | string;
+  modelChains?: Array<{
+    id: string;
+    primary: string;
+    fallbacks: string[];
+  }>;
+  defaultSelection?: {
+    ok: boolean;
+    chainId?: string;
+    primaryModelId?: string;
+    fallbackModelIds?: string[];
+    error?: string;
+  };
   models: Array<{
     id: string;
     label: string;

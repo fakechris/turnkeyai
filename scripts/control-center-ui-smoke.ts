@@ -319,12 +319,24 @@ try {
       "settings should show the live model catalog path"
     );
     assert(
-      await page.locator('input[value="ANTHROPIC_API_KEY"]').isVisible(),
+      await page.locator('input[value="OPENAI_API_KEY"]').isVisible(),
       "settings should show the live model key env"
     );
     assert(
       await page.getByText("missing key").isVisible(),
       "settings should show model readiness from /models"
+    );
+    assert(
+      await page.locator('input[value*="chain lead_reasoning"]').isVisible(),
+      "settings should show the live default model chain"
+    );
+    assert(
+      await page.locator("text=lead_reasoning").isVisible(),
+      "settings should show live model chain routing"
+    );
+    assert(
+      await page.locator("text=minimax-m2 -> gpt-5").isVisible(),
+      "settings should show model chain primary and fallback order"
     );
     assert(
       await page.locator('input[value="/tmp/turnkeyai-ui-smoke/data"]').isVisible(),
@@ -985,14 +997,36 @@ function modelsFixture() {
   return {
     modelCatalogPath: "/tmp/turnkeyai-ui-smoke-models.json",
     adapterMode: "llm+heuristic-fallback",
+    modelChains: [
+      {
+        id: "lead_reasoning",
+        primary: "minimax-m2",
+        fallbacks: ["gpt-5"],
+      },
+    ],
+    defaultSelection: {
+      ok: true,
+      chainId: "lead_reasoning",
+      primaryModelId: "minimax-m2",
+      fallbackModelIds: ["gpt-5"],
+    },
     models: [
       {
-        id: "claude-sonnet",
-        label: "Claude Sonnet",
-        providerId: "anthropic",
+        id: "minimax-m2",
+        label: "MiniMax M2",
+        providerId: "minimax",
         protocol: "anthropic-compatible",
-        model: "claude-sonnet-4-5",
-        apiKeyEnv: "ANTHROPIC_API_KEY",
+        model: "MiniMax-M2.7-highspeed",
+        apiKeyEnv: "MINIMAX_API_KEY",
+        configured: true,
+      },
+      {
+        id: "gpt-5",
+        label: "GPT 5",
+        providerId: "openai",
+        protocol: "openai-compatible",
+        model: "gpt-5",
+        apiKeyEnv: "OPENAI_API_KEY",
         configured: false,
       },
     ],
