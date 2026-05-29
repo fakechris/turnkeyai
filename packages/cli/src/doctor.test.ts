@@ -44,6 +44,25 @@ describe("doctor", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it("warns instead of failing when config is absent but an env token is configured", async () => {
+    const server = await startHealthServer();
+    const home = await mkdtemp(path.join(tmpdir(), "turnkeyai-doctor-env-token-"));
+    try {
+      const result = await runCli(["doctor"], {
+        TURNKEYAI_HOME: home,
+        TURNKEYAI_DAEMON_URL: `http://127.0.0.1:${server.port}`,
+        TURNKEYAI_DAEMON_READ_TOKEN: "read-token",
+      });
+
+      assert.equal(result.code, 0);
+      assert.match(result.stdout, /\[warn\] config\/auth\s+missing .*config\.json; using read token from env/);
+      assert.match(result.stdout, /turnkeyai doctor: 2 warning\(s\), no failures/);
+    } finally {
+      server.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });
 
 async function startHealthServer(): Promise<{ port: number; close: () => void }> {
