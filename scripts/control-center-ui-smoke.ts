@@ -367,6 +367,18 @@ try {
       await page.locator("text=wrk.browser.1").isVisible(),
       "runtime page should show live worker sessions"
     );
+    assert(
+      await page.locator(".card", { hasText: "Release acceptance" }).isVisible(),
+      "runtime page should show release acceptance gates"
+    );
+    assert(
+      await page.locator(".card", { hasText: "Mission route real LLM matrix" }).isVisible(),
+      "release acceptance should show the latest gate title"
+    );
+    assert(
+      await page.locator(".card", { hasText: "phase1-readiness 3 3" }).isVisible(),
+      "release acceptance should show the next validation command"
+    );
 
     await page.goto(`http://127.0.0.1:${port}/app#/onboarding`, {
       waitUntil: "networkidle",
@@ -511,6 +523,10 @@ try {
       "runtime worker sessions endpoint was not requested"
     );
     assert(
+      requestedPaths.some((value) => value.startsWith("/validation-ops")),
+      "validation ops endpoint was not requested"
+    );
+    assert(
       browserConsoleErrors.length === 0,
       `browser console errors should stay clean:\n${browserConsoleErrors.join("\n")}`
     );
@@ -596,6 +612,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (method === "GET" && url.pathname === "/runtime-summary") {
     json(res, runtimeSummaryFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/validation-ops") {
+    json(res, validationOpsFixture());
     return;
   }
   if (method === "GET" && url.pathname === "/recovery-runs") {
@@ -1153,6 +1173,102 @@ function runtimeSummaryFixture() {
       activeSessions: 1,
       orphanedSessions: 0,
       missingContextSessions: 0,
+    },
+  };
+}
+
+function validationOpsFixture() {
+  const completedAt = 1_779_984_003_000;
+  return {
+    totalRuns: 4,
+    failedRuns: 0,
+    passedRuns: 4,
+    attentionCount: 0,
+    runTypeCounts: {
+      "validation-profile": 1,
+      "release-readiness": 1,
+      "transport-soak": 1,
+      "soak-series": 1,
+    },
+    bucketCounts: {},
+    severityCounts: {},
+    recommendedActionCounts: {},
+    latestRuns: [
+      {
+        runId: "validation-profile-run-ui",
+        runType: "validation-profile",
+        title: "Mission route real LLM matrix",
+        status: "passed",
+        startedAt: completedAt - 60_000,
+        completedAt,
+        durationMs: 60_000,
+        issueCount: 0,
+      },
+      {
+        runId: "release-readiness-run-ui",
+        runType: "release-readiness",
+        title: "Release readiness verification",
+        status: "passed",
+        startedAt: completedAt - 30_000,
+        completedAt: completedAt - 1_000,
+        durationMs: 29_000,
+        issueCount: 0,
+      },
+    ],
+    activeIssues: [],
+    readiness: {
+      status: "passed",
+      summary: "Phase 1 exit gates have passing recorded validation runs.",
+      passedGates: 4,
+      failedGates: 0,
+      missingGates: 0,
+      nextCommand: "phase1-readiness 3 3",
+      gates: [
+        {
+          gateId: "phase1-e2e-profile",
+          title: "Mission route real LLM matrix",
+          status: "passed",
+          summary: "Mission route real LLM matrix passed with 0 issue(s).",
+          commandHint: "validation-profile-run phase1-e2e",
+          latestRunId: "validation-profile-run-ui",
+          recordedAt: completedAt,
+        },
+        {
+          gateId: "release-readiness",
+          title: "Release readiness",
+          status: "passed",
+          summary: "Release readiness verification passed with 0 issue(s).",
+          commandHint: "release-verify",
+          latestRunId: "release-readiness-run-ui",
+          recordedAt: completedAt - 1_000,
+        },
+      ],
+    },
+    closedLoop: {
+      closedLoopStatus: "completed",
+      totalCases: 8,
+      completedCases: 8,
+      actionableCases: 0,
+      silentFailureCases: 0,
+      ambiguousFailureCases: 0,
+      closedLoopCases: 8,
+      closedLoopRate: 1,
+      rerunCommand: "validation-ops",
+      measuredRuns: 4,
+      statusCounts: { completed: 4 },
+      nextCommand: "validation-ops",
+      latestRunId: "validation-profile-run-ui",
+    },
+    baseline: {
+      status: "fresh-passing",
+      summary: "Phase 1 baseline is fresh and passing.",
+      nextCommand: "validation-ops",
+      staleAfterMs: 129_600_000,
+      latestRunId: "phase1-baseline-run-ui",
+      recordedAt: completedAt,
+      ageMs: 12_000,
+      requiredRuns: 3,
+      consecutivePassedRuns: 3,
     },
   };
 }
