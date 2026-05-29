@@ -179,6 +179,7 @@ export function buildDashboardUrl(
  */
 export function parseAppRoute(args: string[]): string {
   const VALID = new Set([
+    "onboarding",
     "missions",
     "approvals",
     "agents",
@@ -326,8 +327,8 @@ export function runAppHelp(exitCode: number): never {
     "Mission Control in your default browser with the daemon token preloaded.",
     "",
     "Options:",
-    "  --route <name>     Open a specific page (missions | approvals | agents |",
-    "                     context | agent-connect | runtime | settings).",
+    "  --route <name>     Open a specific page (onboarding | missions | approvals |",
+    "                     agents | context | agent-connect | runtime | settings).",
     "                     Default: missions",
     "  --no-open          Print the URL instead of launching a browser",
     "  --no-start         Do not auto-start the daemon; require an existing one",

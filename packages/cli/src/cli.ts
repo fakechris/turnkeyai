@@ -81,7 +81,7 @@ function printHelp(exitCode: number): never {
     "  turnkeyai daemon stop | restart | status | logs [--follow]",
     "  turnkeyai daemon                  Run daemon in foreground (legacy)",
     "  turnkeyai bridge install-extension | status | install-skill",
-    "  turnkeyai app [--route missions|approvals|agents|context|agent-connect|runtime|settings] [--no-open]",
+    "  turnkeyai app [--route onboarding|missions|approvals|agents|context|agent-connect|runtime|settings] [--no-open]",
     "  npm run app -- --no-open     Source-tree launcher when turnkeyai is not on PATH",
     "  npm run daemon:status        Source-tree status check when turnkeyai is not on PATH",
     "  turnkeyai doctor",

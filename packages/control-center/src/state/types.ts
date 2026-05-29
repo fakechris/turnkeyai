@@ -13,6 +13,7 @@ export const KNOWN_SCOPES: readonly Scope[] = ["read", "operator", "admin", "unk
 // objects don't exist yet (Missions, Approvals, Agents) render against
 // the mock data layer.
 export type Route =
+  | "onboarding"
   | "missions"
   | "mission"
   | "approvals"
@@ -23,6 +24,7 @@ export type Route =
   | "settings";
 
 export const KNOWN_ROUTES: readonly Route[] = [
+  "onboarding",
   "missions",
   "mission",
   "approvals",

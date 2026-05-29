@@ -44,6 +44,7 @@ const threadId = "thr.ui-smoke.1";
 const requestedPaths: string[] = [];
 const postedMissions: unknown[] = [];
 const postedMessages: unknown[] = [];
+let onboardingState = onboardingStateFixture();
 const browserConsoleErrors: string[] = [];
 const browserPageErrors: string[] = [];
 const port = await resolveFreePort();
@@ -366,6 +367,22 @@ try {
       await page.locator("text=wrk.browser.1").isVisible(),
       "runtime page should show live worker sessions"
     );
+
+    await page.goto(`http://127.0.0.1:${port}/app#/onboarding`, {
+      waitUntil: "networkidle",
+    });
+    await page.waitForSelector("text=First run");
+    assert(
+      await page.locator(".onboarding-step", { hasText: "Daemon and token" }).isVisible(),
+      "onboarding should show daemon/token setup"
+    );
+    assert(
+      await page.locator(".onboarding-step", { hasText: "Browser bridge" }).isVisible(),
+      "onboarding should show browser bridge setup"
+    );
+    await page.getByRole("button", { name: "Mark runtime reviewed" }).click();
+    await page.waitForFunction(() => document.body.innerText.includes("reviewed-runtime"));
+    assert(onboardingState.step === "reviewed-runtime", "onboarding PUT should persist the reviewed-runtime step");
     await page.close();
 
     const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -538,6 +555,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     json(res, [missionFixture()]);
     return;
   }
+  if (method === "GET" && url.pathname === "/onboarding/state") {
+    json(res, onboardingState);
+    return;
+  }
+  if (method === "PUT" && url.pathname === "/onboarding/state") {
+    const body = (await readJsonBody(req)) as Record<string, unknown>;
+    onboardingState = {
+      ...onboardingState,
+      ...body,
+      updatedAt: 1_779_984_006_000,
+    };
+    json(res, onboardingState);
+    return;
+  }
   if (method === "POST" && url.pathname === "/missions") {
     postedMissions.push(await readJsonBody(req));
     json(res, missionFixture());
@@ -680,6 +711,16 @@ function missionFixture() {
     blockers: 0,
     contextSummary: ["browser evidence", "tool result"],
     threadId,
+  };
+}
+
+function onboardingStateFixture() {
+  return {
+    completedAt: 1_779_984_000_000,
+    transportChosen: "local",
+    transportVerifiedAt: 1_779_984_000_000,
+    step: "ready",
+    updatedAt: 1_779_984_000_000,
   };
 }
 

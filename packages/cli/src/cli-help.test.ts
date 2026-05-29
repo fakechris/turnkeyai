@@ -6,7 +6,7 @@ describe("cli help", () => {
   it("documents the source-tree app launcher and current app routes", async () => {
     const result = await runCliHelp(["--help"]);
     assert.equal(result.code, 0);
-    assert.match(result.stdout, /turnkeyai app \[--route missions\|approvals\|agents\|context\|agent-connect\|runtime\|settings\]/);
+    assert.match(result.stdout, /turnkeyai app \[--route onboarding\|missions\|approvals\|agents\|context\|agent-connect\|runtime\|settings\]/);
     assert.match(result.stdout, /npm run app -- --no-open/);
     assert.match(result.stdout, /npm run daemon:status/);
     assert.doesNotMatch(result.stdout, /--route setup\|bridge\|agent/);

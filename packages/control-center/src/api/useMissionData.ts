@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "./client";
-import type { RuntimeSummaryReport } from "./types";
+import type { OnboardingState, RuntimeSummaryReport } from "./types";
 import { useApiClient } from "./useApiClient";
 import type {
   ActivityEvent,
@@ -128,6 +128,21 @@ export function useRuntimeSummary(
     `/runtime-summary?limit=${encodeURIComponent(String(limit))}`,
     fallback,
     { dependsOn: [limit], pollIntervalMs }
+  );
+}
+
+export function useOnboardingState(fallback: OnboardingState | null): RemoteData<OnboardingState | null> {
+  return useRemote<OnboardingState | null>("/onboarding/state", fallback);
+}
+
+export function useUpdateOnboardingState(): (
+  input: Partial<Pick<OnboardingState, "completedAt" | "transportChosen" | "transportVerifiedAt" | "step">>
+) => Promise<OnboardingState> {
+  const client = useApiClient();
+  return useCallback(
+    (input: Partial<Pick<OnboardingState, "completedAt" | "transportChosen" | "transportVerifiedAt" | "step">>) =>
+      client.put<OnboardingState>("/onboarding/state", input),
+    [client]
   );
 }
 

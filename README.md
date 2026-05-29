@@ -147,14 +147,14 @@ npx @turnkeyai/cli app
 2. 等待 `/health` 就绪
 3. 在浏览器打开 `http://127.0.0.1:4100/app`，并把 daemon token 通过 URL fragment 预填
 
-Control Center 现在覆盖五个页面：Setup / Bridge / Tabs / Agent Connect / Diagnostics。无需额外构建步骤，daemon 直接服务静态 bundle。
+Control Center 现在是 Mission Control 工作台：First Run、Missions、Approvals、Agents、Context、Agent Connect、Runtime、Settings。无需额外构建步骤，daemon 直接服务静态 bundle。
 
 如果希望安装成全局命令：
 
 ```bash
 npm install -g @turnkeyai/cli
 turnkeyai app                         # 推荐入口
-turnkeyai app --route diagnostics     # 直接打开某个页面
+turnkeyai app --route onboarding      # 直接打开 first-run 页面
 turnkeyai app --no-open               # 只打印 URL（CI / SSH / headless 适用）
 turnkeyai app --no-start              # 要求 daemon 已运行，禁用 auto-start
 ```
