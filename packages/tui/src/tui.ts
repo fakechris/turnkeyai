@@ -39,8 +39,14 @@ import {
   buildFlowConsoleReport,
   buildGovernanceConsoleReport,
 } from "@turnkeyai/qc-runtime/operator-inspection";
+import {
+  buildTuiRequestHeaders,
+  resolveTuiToken,
+  type ResolvedTuiToken,
+} from "./tui-auth";
 
 const baseUrl = process.env.TURNKEYAI_DAEMON_URL ?? "http://127.0.0.1:4100";
+const authToken = resolveTuiToken();
 
 if (wantsProcessHelp(process.argv.slice(2))) {
   printTuiUsage(0);
@@ -682,8 +688,12 @@ function printTuiUsage(exitCode: number): never {
     "  turnkeyai tui --help",
     "",
     "Environment:",
-    "  TURNKEYAI_DAEMON_URL  Override the daemon base URL",
-    "  TURNKEYAI_DAEMON_TOKEN  Send bearer auth for daemon requests",
+    "  TURNKEYAI_DAEMON_URL             Override the daemon base URL",
+    "  TURNKEYAI_DAEMON_OPERATOR_TOKEN  Preferred token for mutation commands",
+    "  TURNKEYAI_DAEMON_TOKEN           Legacy single-token override",
+    "  TURNKEYAI_DAEMON_ADMIN_TOKEN     Admin-scoped token override",
+    "  TURNKEYAI_DAEMON_READ_TOKEN      Read-scoped token override",
+    "  TURNKEYAI_HOME                   Read config token from this runtime root",
     "",
     "Run without flags to enter interactive mode.",
   ];
@@ -695,6 +705,14 @@ function printTuiUsage(exitCode: number): never {
 function printBanner(): void {
   console.log("Runtime Lab TUI");
   console.log(`daemon: ${baseUrl}`);
+  if (authToken) {
+    console.log(`auth: ${authToken.scope} token from ${authToken.source}`);
+    if (authToken.scope === "read") {
+      console.log("auth note: read token can inspect state; mutation commands may require operator/admin.");
+    }
+  } else {
+    console.log("auth: none (commands will fail if daemon auth is enabled)");
+  }
   printHelp();
 }
 
@@ -790,16 +808,18 @@ function printHelp(): void {
 }
 
 async function getJson(pathname: string): Promise<unknown> {
-  const response = await fetch(`${baseUrl}${pathname}`);
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    headers: buildTuiRequestHeaders(authToken),
+  });
   return parseJsonResponse(response);
 }
 
 async function postJson(pathname: string, body: unknown): Promise<any> {
   const response = await fetch(`${baseUrl}${pathname}`, {
     method: "POST",
-    headers: {
+    headers: buildTuiRequestHeaders(authToken, {
       "content-type": "application/json",
-    },
+    }),
     body: JSON.stringify(body),
   });
 
@@ -840,10 +860,28 @@ async function parseJsonResponse(response: Response): Promise<any> {
   const json = text ? JSON.parse(text) : {};
 
   if (!response.ok) {
-    throw new Error(json.error ?? `${response.status} ${response.statusText}`);
+    throw new Error(formatHttpError(response, json, authToken));
   }
 
   return json;
+}
+
+function formatHttpError(
+  response: Response,
+  json: Record<string, unknown>,
+  token: ResolvedTuiToken | null
+): string {
+  if (response.status === 401 || response.status === 403) {
+    const required =
+      typeof json.requiredAccess === "string" ? `; required access: ${json.requiredAccess}` : "";
+    const tokenHint = token
+      ? `current token: ${token.scope} from ${token.source}`
+      : "no daemon token configured";
+    return `unauthorized (${response.status})${required}; ${tokenHint}. Set TURNKEYAI_DAEMON_OPERATOR_TOKEN or reopen with turnkeyai app for the browser UI.`;
+  }
+  return typeof json.error === "string" && json.error.trim()
+    ? json.error
+    : `${response.status} ${response.statusText}`;
 }
 
 function printJson(value: unknown): void {
