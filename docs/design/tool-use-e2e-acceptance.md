@@ -58,15 +58,42 @@ real configured model to delegate to a browser sub-agent. It verifies:
 
 If the daemon requires auth, export `TURNKEYAI_DAEMON_TOKEN` or rely on the token in `~/.turnkeyai/config.json` as supported by `npm run cdp:smoke`.
 
+## Real LLM Matrix
+
+Run the default non-browser matrix:
+
+```bash
+npm run tooluse:e2e:real-matrix -- --model-catalog models.local.json
+```
+
+By default this runs:
+
+- `basic`: provider-native `sessions_spawn` instead of answering from memory
+- `approval`: `permission_query` → `permission_result` → `permission_applied` → `sessions_spawn(browser)` with runtime approval-cache reuse
+- `followup`: `sessions_spawn` partial result followed by `sessions_send` on the same child session
+- `timeout`: bounded soft timeout with evidence-only synthesis and no automatic follow-up
+
+Run the browser-inclusive matrix:
+
+```bash
+npm run tooluse:e2e:real-matrix -- --with-browser --model-catalog models.local.json --cdp-timeout-ms 45000
+```
+
+This adds `complex`, which requires independent explore and browser sub-agent evidence, then runs direct-CDP smoke once at the end. To run a smaller subset:
+
+```bash
+npm run tooluse:e2e:real-matrix -- --matrix-scenarios approval,followup --model-catalog models.local.json
+```
+
 ## When To Run
 
 Run the mock path for every tool-runtime or provider-adapter PR. Run the real
-LLM path before high-risk tool runtime changes. Run the real LLM + browser path
-before merging changes that affect browser worker execution, permission gating,
-direct-CDP transport, replay, cancellation, or release candidates.
+LLM matrix before high-risk tool runtime changes. Run the real LLM + browser
+matrix before merging changes that affect browser worker execution, permission
+gating, direct-CDP transport, replay, cancellation, or release candidates.
 
-Latest local acceptance on 2026-05-22:
+Latest local acceptance on 2026-05-29:
 
 - `npm run tooluse:e2e`
-- `npm run tooluse:e2e -- --real-llm --model-catalog models.local.json`
-- `npm run tooluse:e2e -- --real-llm --with-browser --model-catalog models.local.json --cdp-timeout-ms 45000`
+- `npm run tooluse:e2e -- --real-llm --scenario approval --model-catalog models.local.json`
+- `npm run tooluse:e2e:real-matrix -- --model-catalog models.local.json`
