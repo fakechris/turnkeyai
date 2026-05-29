@@ -143,7 +143,7 @@ test("workflow routes return 400 for malformed message JSON", async () => {
   assert.deepEqual(response.json, { error: "Invalid JSON" });
 });
 
-test("workflow routes cancel assistant tool calls and append cancelled tool results", async () => {
+test("workflow routes cancel active assistant tool calls without duplicating runtime tool results", async () => {
   const messages = new Map<string, TeamMessage>();
   let runtimeCancelInput: { threadId: string; toolCallIds: string[]; reason: string } | null = null;
   messages.set("assistant-1", {
@@ -240,11 +240,172 @@ test("workflow routes cancel assistant tool calls and append cancelled tool resu
     toolCallIds: ["call-1"],
     reason: "operator cancelled browser work",
   });
+  assert.equal(messages.has("assistant-1:tool-cancelled:call-1"), false);
+});
+
+test("workflow routes append a cancelled tool result when no active runtime owns the call", async () => {
+  const messages = new Map<string, TeamMessage>();
+  messages.set("assistant-1", {
+    id: "assistant-1",
+    threadId: "thread-1",
+    role: "assistant",
+    name: "Lead",
+    content: "",
+    createdAt: 100,
+    updatedAt: 100,
+    toolCalls: [
+      {
+        id: "call-1",
+        name: "sessions_spawn",
+        arguments: { agent_id: "browser", task: "Open page" },
+      },
+    ],
+    toolProgress: [
+      {
+        toolCallId: "call-1",
+        toolName: "sessions_spawn",
+        phase: "started",
+        summary: "started",
+        ts: 100,
+      },
+    ],
+    toolStatus: "pending",
+  });
+  const deps = createDeps({
+    clock: { now: () => 200 },
+    teamMessageStore: {
+      async append(message) {
+        messages.set(message.id, message);
+      },
+      async appendIfAbsent(message) {
+        const existing = messages.get(message.id);
+        if (existing) return { written: false, existing };
+        messages.set(message.id, message);
+        return { written: true };
+      },
+      async list(threadId) {
+        return [...messages.values()].filter((message) => message.threadId === threadId);
+      },
+      async get(messageId) {
+        return messages.get(messageId) ?? null;
+      },
+    },
+    toolCancellationRegistry: {
+      register() {
+        throw new Error("not used");
+      },
+      async cancel(input) {
+        return input.toolCallIds.map((toolCallId) => ({ toolCallId, active: false, cancelled: false }));
+      },
+    },
+  });
+  const response = createResponse();
+
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/message/cancel-tools",
+      body: {
+        messageId: "assistant-1",
+        threadId: "thread-1",
+        toolCallIds: ["call-1"],
+        reason: "operator cancelled browser work",
+      },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/message/cancel-tools"),
+    deps,
+  });
+
+  assert.equal(response.res.statusCode, 200);
   const toolResult = messages.get("assistant-1:tool-cancelled:call-1");
   assert.equal(toolResult?.role, "tool");
   assert.equal(toolResult?.toolCallId, "call-1");
   assert.equal(toolResult?.toolStatus, "cancelled");
   assert.equal(toolResult?.content, "operator cancelled browser work");
+});
+
+test("workflow routes do not synthesize a cancelled result when active runtime cancellation fails", async () => {
+  const messages = new Map<string, TeamMessage>();
+  messages.set("assistant-1", {
+    id: "assistant-1",
+    threadId: "thread-1",
+    role: "assistant",
+    name: "Lead",
+    content: "",
+    createdAt: 100,
+    updatedAt: 100,
+    toolCalls: [
+      {
+        id: "call-1",
+        name: "sessions_spawn",
+        arguments: { agent_id: "browser", task: "Open page" },
+      },
+    ],
+    toolProgress: [
+      {
+        toolCallId: "call-1",
+        toolName: "sessions_spawn",
+        phase: "started",
+        summary: "started",
+        ts: 100,
+      },
+    ],
+    toolStatus: "pending",
+  });
+  const deps = createDeps({
+    clock: { now: () => 200 },
+    teamMessageStore: {
+      async append(message) {
+        messages.set(message.id, message);
+      },
+      async appendIfAbsent(message) {
+        const existing = messages.get(message.id);
+        if (existing) return { written: false, existing };
+        messages.set(message.id, message);
+        return { written: true };
+      },
+      async list(threadId) {
+        return [...messages.values()].filter((message) => message.threadId === threadId);
+      },
+      async get(messageId) {
+        return messages.get(messageId) ?? null;
+      },
+    },
+    toolCancellationRegistry: {
+      register() {
+        throw new Error("not used");
+      },
+      async cancel(input) {
+        return input.toolCallIds.map((toolCallId) => ({
+          toolCallId,
+          active: true,
+          cancelled: false,
+          error: "runtime cancel failed",
+        }));
+      },
+    },
+  });
+  const response = createResponse();
+
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/message/cancel-tools",
+      body: {
+        messageId: "assistant-1",
+        threadId: "thread-1",
+        toolCallIds: ["call-1"],
+        reason: "operator cancelled browser work",
+      },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/message/cancel-tools"),
+    deps,
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.equal(messages.has("assistant-1:tool-cancelled:call-1"), false);
 });
 
 test("workflow routes cancel worker sessions directly", async () => {

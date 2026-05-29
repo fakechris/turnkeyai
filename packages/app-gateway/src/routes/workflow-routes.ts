@@ -578,12 +578,18 @@ async function cancelToolCallsOnMessage(input: {
       ts: input.now,
     };
   });
-  await input.toolCancellationRegistry?.cancel({
+  const runtimeCancelResults = await input.toolCancellationRegistry?.cancel({
     threadId: message.threadId,
     toolCallIds: cancellableIds,
     reason: input.reason,
   });
-  const toolMessages = cancellableIds.map((id, index) => {
+  const runtimeOwned = new Set(
+    (runtimeCancelResults ?? [])
+      .filter((result) => result.active)
+      .map((result) => result.toolCallId)
+  );
+  const syntheticResultIds = cancellableIds.filter((id) => !runtimeOwned.has(id));
+  const toolMessages = syntheticResultIds.map((id, index) => {
     const call = callById.get(id)!;
     return {
       id: `${message.id}:tool-cancelled:${id}`,
