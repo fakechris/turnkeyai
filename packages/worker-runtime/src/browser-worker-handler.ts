@@ -347,8 +347,13 @@ function summarizeBrowserTask(result: Awaited<ReturnType<BrowserBridge["runTask"
     `Page title: ${result.page.title}.`,
     `Excerpt: ${result.page.textExcerpt}`,
     `Trace steps: ${result.trace.map((step) => step.kind).join(" -> ")}.`,
+    result.profileFallback
+      ? `Profile fallback: ${result.profileFallback.reason}; persistent profile was unavailable, used ${result.profileFallback.fallbackDir}.`
+      : null,
     result.screenshotPaths.length > 0 ? `Screenshots: ${result.screenshotPaths.join(", ")}` : "Screenshots: none",
-  ].join("\n");
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 }
 
 function summarizeBrowserFailure(

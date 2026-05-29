@@ -9,6 +9,17 @@ import type { BrowserContext, Page } from "playwright-core";
 
 import { ChromeSessionManager } from "./chrome-session-manager";
 
+type InternalContextHandle = {
+  context: BrowserContext;
+  keepAlive: boolean;
+  liveReuse: boolean;
+  profileFallback?: {
+    reason: "profile_locked";
+    persistentDir: string;
+    fallbackDir: string;
+  };
+};
+
 test("chrome session manager reuses and closes live persistent contexts by browser session id", async () => {
   let closeHandler: (() => void) | undefined;
   let closeCount = 0;
@@ -46,7 +57,7 @@ test("chrome session manager reuses and closes live persistent contexts by brows
     createContext(lease: {
       session: { browserSessionId: string };
       profile: { persistentDir: string };
-    }): Promise<{ context: BrowserContext; keepAlive: boolean; liveReuse: boolean }>;
+    }): Promise<InternalContextHandle>;
   };
 
   const first = await internal.createContext({
@@ -115,7 +126,7 @@ test("chrome session manager reuses one live persistent context per profile dir 
     createContext(lease: {
       session: { browserSessionId: string };
       profile: { persistentDir: string };
-    }): Promise<{ context: BrowserContext; keepAlive: boolean; liveReuse: boolean }>;
+    }): Promise<InternalContextHandle>;
   };
 
   const first = await internal.createContext({
@@ -184,7 +195,7 @@ test("chrome session manager falls back to an isolated runtime profile when Chro
     createContext(lease: {
       session: { browserSessionId: string };
       profile: { persistentDir: string };
-    }): Promise<{ context: BrowserContext; keepAlive: boolean; liveReuse: boolean }>;
+    }): Promise<InternalContextHandle>;
   };
 
   const contextHandle = await internal.createContext({
@@ -195,9 +206,102 @@ test("chrome session manager falls back to an isolated runtime profile when Chro
   assert.equal(contextHandle.context, fakeContext);
   assert.equal(launchedDirs[0], primaryProfileDir);
   assert.match(launchedDirs[1] ?? "", /_runtime-fallback\/browser-session-locked\//);
+  assert.deepEqual(contextHandle.profileFallback, {
+    reason: "profile_locked",
+    persistentDir: primaryProfileDir,
+    fallbackDir: launchedDirs[1],
+  });
 
   await manager.closeSession("browser-session-locked", "fallback done");
   assert.equal(closeCount, 1);
+});
+
+test("chrome session manager surfaces profile fallback in task result and history", async () => {
+  const historyEntries: Array<Record<string, unknown>> = [];
+  const primaryProfileDir = "/tmp/locked-profile-result/chrome-profile";
+  const fakePage = {
+    async waitForLoadState() {
+      return undefined;
+    },
+    async waitForTimeout() {
+      return undefined;
+    },
+    url() {
+      return "https://example.com/fallback";
+    },
+    async title() {
+      return "Fallback";
+    },
+  } as unknown as Page;
+  const fakeContext = {
+    pages() {
+      return [fakePage];
+    },
+    async newPage() {
+      return fakePage;
+    },
+    on() {
+      return this;
+    },
+    async close() {
+      return undefined;
+    },
+  } as unknown as BrowserContext;
+
+  const manager = new ChromeSessionManager({
+    artifactRootDir: ".daemon-data/test-browser-artifacts",
+    browserSessionManager: {
+      async acquireSession() {
+        return {
+          session: {
+            browserSessionId: "browser-session-profile-fallback",
+            ownerType: "thread",
+            ownerId: "thread-profile-fallback",
+            targetIds: [],
+          },
+          profile: { persistentDir: primaryProfileDir },
+        };
+      },
+      async listTargets() {
+        return [];
+      },
+      async releaseSession() {
+        return undefined;
+      },
+    } as never,
+    browserSessionHistoryStore: {
+      async append(entry: Record<string, unknown>) {
+        historyEntries.push(entry);
+      },
+    } as never,
+    launchPersistentContext: async (persistentDir) => {
+      if (persistentDir === primaryProfileDir) {
+        throw new Error("ProcessSingleton: profile is already in use");
+      }
+      return fakeContext;
+    },
+    captureSnapshot: async () => ({
+      requestedUrl: "https://example.com/fallback",
+      finalUrl: "https://example.com/fallback",
+      title: "Fallback",
+      textExcerpt: "Fallback profile page",
+      statusCode: 200,
+      interactives: [],
+    }),
+  });
+
+  const result = await manager.spawnSession({
+    taskId: "task-profile-fallback",
+    threadId: "thread-profile-fallback",
+    instructions: "Read the fallback page",
+    actions: [{ kind: "snapshot", note: "fallback" }],
+  });
+
+  assert.equal(result.profileFallback?.reason, "profile_locked");
+  assert.equal(result.profileFallback?.persistentDir, primaryProfileDir);
+  assert.match(result.profileFallback?.fallbackDir ?? "", /_runtime-fallback\/browser-session-profile-fallback\//);
+  assert.deepEqual(historyEntries[0]?.profileFallback, result.profileFallback);
+  assert.match(String(historyEntries[0]?.summary), /Profile fallback: profile_locked/);
 });
 
 test("chrome session manager reports hot resume when matching the active target in a live context", async () => {
