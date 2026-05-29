@@ -277,6 +277,52 @@ async function buildBridgeStatusSnapshot(): Promise<BridgeStatusInfo> {
   });
 }
 
+async function buildBrowserHealthSnapshot(): Promise<{
+  inspectedSessionCount: number;
+  recentHistoryCount: number;
+  recentFailureCount: number;
+  profileFallbackCount: number;
+  latestFailureSummary?: string;
+  latestProfileFallback?: {
+    browserSessionId: string;
+    completedAt: number;
+    fallbackDir: string;
+  };
+}> {
+  const sessions = await browserBridge.listSessions();
+  const inspectedSessions = [...sessions]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, 25);
+  const histories = (
+    await Promise.all(
+      inspectedSessions.map((session) =>
+        browserBridge.getSessionHistory({ browserSessionId: session.browserSessionId, limit: 5 }).catch(() => [])
+      )
+    )
+  )
+    .flat()
+    .sort((left, right) => right.completedAt - left.completedAt);
+  const recentFailures = histories.filter((entry) => entry.status === "failed");
+  const profileFallbacks = histories.filter((entry) => entry.profileFallback);
+  const latestProfileFallback = profileFallbacks[0];
+  return {
+    inspectedSessionCount: inspectedSessions.length,
+    recentHistoryCount: histories.length,
+    recentFailureCount: recentFailures.length,
+    profileFallbackCount: profileFallbacks.length,
+    ...(recentFailures[0]?.summary ? { latestFailureSummary: recentFailures[0].summary } : {}),
+    ...(latestProfileFallback?.profileFallback
+      ? {
+          latestProfileFallback: {
+            browserSessionId: latestProfileFallback.browserSessionId,
+            completedAt: latestProfileFallback.completedAt,
+            fallbackDir: latestProfileFallback.profileFallback.fallbackDir,
+          },
+        }
+      : {}),
+  };
+}
+
 // PR K2 — Mission Control stores (mission/work-item/activity/approval/
 // artifact + agent + context-source registries). Composed before the
 // role runtime so native permission tools can file approval requests
@@ -564,6 +610,7 @@ const server = http.createServer(async (req, res) => {
               relayTargetCount,
             };
           },
+          browserHealthSnapshot: buildBrowserHealthSnapshot,
         },
       })
     ) {
