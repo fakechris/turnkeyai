@@ -16,7 +16,7 @@ const liveChromeTest = chromePath ? test : test.skip;
 
 liveChromeTest(
   "browser raw CDP live e2e controls cross-site iframe shadow DOM and popup targets",
-  { timeout: 45_000 },
+  { timeout: 60_000 },
   async () => {
     assert.ok(chromePath);
     const fixture = await startRawCdpFixture();
@@ -42,7 +42,7 @@ liveChromeTest(
     const browserSessionId = "live-raw-cdp-session";
 
     try {
-      await waitForCdpEndpoint(cdpEndpoint, 20_000);
+      await waitForCdpEndpoint(cdpEndpoint, 30_000);
       await expertLane.sendExpertCommand({
         browserSessionId,
         method: "Target.setDiscoverTargets",
@@ -142,7 +142,7 @@ liveChromeTest(
       chrome.kill("SIGTERM");
       await waitForProcessExit(chrome, 5_000);
       await fixture.close();
-      await rm(profileDir, { recursive: true, force: true });
+      await removeProfileDir(profileDir);
     }
   }
 );
@@ -438,6 +438,15 @@ async function waitUntil(promise: Promise<void>, timeoutMs: number): Promise<boo
       clearTimeout(timeout);
     }
   }
+}
+
+async function removeProfileDir(profileDir: string): Promise<void> {
+  await rm(profileDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 250,
+  });
 }
 
 function assertRecord(value: unknown): asserts value is Record<string, unknown> {

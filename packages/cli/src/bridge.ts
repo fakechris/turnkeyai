@@ -4,6 +4,8 @@ import { homedir, platform } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { resolveDaemonCliToken } from "./daemon-token";
+
 function getRuntimePaths() {
   const rootDir = process.env.TURNKEYAI_HOME?.trim() || path.join(homedir(), ".turnkeyai");
   return {
@@ -39,10 +41,12 @@ function resolveDaemonBaseUrl(paths: ReturnType<typeof getRuntimePaths>): string
 }
 
 function resolveDaemonToken(paths: ReturnType<typeof getRuntimePaths>): string | null {
-  if (process.env.TURNKEYAI_DAEMON_TOKEN?.trim()) {
-    return process.env.TURNKEYAI_DAEMON_TOKEN.trim();
-  }
-  return (readConfig(paths.configFile)?.token as string | undefined) ?? null;
+  const configToken = readConfig(paths.configFile)?.token;
+  return resolveDaemonCliToken(
+    process.env,
+    typeof configToken === "string" ? configToken : null,
+    "read"
+  )?.token ?? null;
 }
 
 function findRepoRoot(): string | null {
@@ -180,6 +184,12 @@ export function runBridgeHelp(exitCode: number): never {
     "  turnkeyai bridge install-extension   Build and install the relay extension",
     "  turnkeyai bridge status              Print /bridge/status as JSON",
     "  turnkeyai bridge install-skill       Write agent-skill descriptor + OpenAPI schema",
+    "",
+    "Environment:",
+    "  TURNKEYAI_DAEMON_READ_TOKEN          Preferred token for bridge status",
+    "  TURNKEYAI_DAEMON_OPERATOR_TOKEN      Operator token for bridge/browser mutations",
+    "  TURNKEYAI_DAEMON_TOKEN               Legacy single-token override",
+    "  TURNKEYAI_DAEMON_ADMIN_TOKEN         Admin-scoped token override",
   ];
   (exitCode === 0 ? console.log : console.error)(lines.join("\n"));
   process.exit(exitCode);
@@ -306,4 +316,3 @@ function buildOpenApiSchema(baseUrl: string): Record<string, unknown> {
     },
   };
 }
-

@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { resolveDaemonCliToken } from "./daemon-token";
+
 const DEFAULT_PORT = 4100;
 
 interface DaemonRuntimePaths {
@@ -61,10 +63,7 @@ function resolveDaemonUrl(paths: DaemonRuntimePaths): string {
 }
 
 function resolveDaemonToken(paths: DaemonRuntimePaths): string | null {
-  if (process.env.TURNKEYAI_DAEMON_TOKEN?.trim()) {
-    return process.env.TURNKEYAI_DAEMON_TOKEN.trim();
-  }
-  return readConfig(paths)?.token ?? null;
+  return resolveDaemonCliToken(process.env, readConfig(paths)?.token, "read")?.token ?? null;
 }
 
 function readPid(paths: DaemonRuntimePaths): number | null {
@@ -407,7 +406,7 @@ export async function runDaemonStatus(_args: string[]): Promise<void> {
     }
   }
 
-  process.exit(alive && healthy ? 0 : 1);
+  process.exit(healthy ? 0 : 1);
 }
 
 export async function runDaemonLogs(args: string[]): Promise<void> {
@@ -448,7 +447,10 @@ export function runDaemonHelp(exitCode: number): never {
     "  TURNKEYAI_HOME                    Override ~/.turnkeyai root",
     "  TURNKEYAI_DAEMON_PORT             Override listen port (default 4100)",
     "  TURNKEYAI_DAEMON_URL              Override daemon base URL for CLI/TUI",
-    "  TURNKEYAI_DAEMON_TOKEN            Override the auth token",
+    "  TURNKEYAI_DAEMON_READ_TOKEN       Preferred token for status/diagnostics",
+    "  TURNKEYAI_DAEMON_OPERATOR_TOKEN   Preferred token for local app + browser routes",
+    "  TURNKEYAI_DAEMON_TOKEN            Legacy single-token override",
+    "  TURNKEYAI_DAEMON_ADMIN_TOKEN      Admin-scoped token override",
     "  TURNKEYAI_DATA_DIR                Override the data directory",
     "  TURNKEYAI_BROWSER_TRANSPORT       local | relay | direct-cdp",
   ];

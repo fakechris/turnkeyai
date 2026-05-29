@@ -81,7 +81,8 @@ function printHelp(exitCode: number): never {
     "  turnkeyai daemon stop | restart | status | logs [--follow]",
     "  turnkeyai daemon                  Run daemon in foreground (legacy)",
     "  turnkeyai bridge install-extension | status | install-skill",
-    "  turnkeyai app [--route setup|bridge|agent] [--no-open]",
+    "  turnkeyai app [--route missions|approvals|agents|context|agent-connect|runtime|settings] [--no-open]",
+    "  npm run app -- --no-open     Source-tree launcher when turnkeyai is not on PATH",
     "  turnkeyai doctor",
     "  turnkeyai tui",
     "",
@@ -94,7 +95,10 @@ function printHelp(exitCode: number): never {
     "  TURNKEYAI_HOME                    Override ~/.turnkeyai root",
     "  TURNKEYAI_DAEMON_PORT             Override the daemon listen port",
     "  TURNKEYAI_DAEMON_URL              Override the daemon base URL for CLI/TUI",
-    "  TURNKEYAI_DAEMON_TOKEN            Override the auth token",
+    "  TURNKEYAI_DAEMON_OPERATOR_TOKEN   Preferred token for local app + browser routes",
+    "  TURNKEYAI_DAEMON_TOKEN            Legacy single-token override",
+    "  TURNKEYAI_DAEMON_ADMIN_TOKEN      Admin-scoped token override",
+    "  TURNKEYAI_DAEMON_READ_TOKEN       Read-scoped token override",
   ];
 
   const output = exitCode === 0 ? console.log : console.error;
