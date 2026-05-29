@@ -117,6 +117,7 @@ try {
 
     await page.waitForSelector(".thinking-card");
     await page.waitForSelector(".browser-continuity-card");
+    await page.waitForSelector(".mission-recovery-card");
     await page.waitForSelector(".mission-evidence-card");
     await page.waitForSelector(".final-answer-card .markdown-body h2");
     await page.waitForSelector(".final-answer-card .markdown-body ul li");
@@ -126,6 +127,19 @@ try {
     assert(await page.locator(".final-answer-card").count() === 1, "expected exactly one final answer card");
     assert(await page.locator(".thinking-card").count() === 1, "expected exactly one work trace card");
     assert(await page.locator(".browser-continuity-card").count() === 1, "expected one browser continuity card");
+    assert(await page.locator(".mission-recovery-card").count() === 1, "expected one recovery cases card");
+    assert(
+      await page.locator(".mission-recovery-card", { hasText: "Browser target detached" }).isVisible(),
+      "recovery cases should show the latest recovery summary"
+    );
+    assert(
+      await page.locator(".mission-recovery-card", { hasText: "waiting for approval" }).isVisible(),
+      "recovery cases should show the operator gate"
+    );
+    assert(
+      await page.locator(".mission-recovery-card", { hasText: "browser-ui" }).isVisible(),
+      "recovery cases should show browser session continuity"
+    );
     assert(
       await page.locator(".browser-continuity-card", { hasText: "target-reopen" }).isVisible(),
       "browser continuity should show target ids from worker results or timeline runtime"
@@ -152,6 +166,7 @@ try {
       await page.locator(".thinking-card-preview", { hasText: "Final answer remains below" }).isVisible(),
       "collapsed trace preview should tell the user the final answer remains below"
     );
+    await assertVerticalOrder(page, ".mission-recovery-card", ".browser-continuity-card", "recovery cases should appear before browser continuity");
     await assertVerticalOrder(page, ".browser-continuity-card", ".worker-session-card", "browser continuity should appear before sub-agent sessions");
     await assertVerticalOrder(page, ".mission-evidence-card", ".thinking-card", "mission evidence should appear before work trace");
     await assertVerticalOrder(page, ".thinking-card", ".final-answer-card", "work trace must appear before final answer");
@@ -197,6 +212,10 @@ try {
     assert(
       requestedPaths.some((value) => value.startsWith("/mission-context-sources")),
       "mission context sources endpoint was not requested"
+    );
+    assert(
+      requestedPaths.some((value) => value.startsWith(`/recovery-runs?threadId=${encodeURIComponent(threadId)}`)),
+      "mission recovery runs endpoint was not requested"
     );
     assert(
       requestedPaths.some((value) => value.startsWith("/approvals")),
@@ -256,6 +275,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (method === "GET" && url.pathname === "/runtime-worker-sessions") {
     json(res, workerSessionsFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/recovery-runs") {
+    json(res, recoveryRunsFixture());
     return;
   }
   if (method === "GET" && url.pathname === "/runs") {
@@ -547,6 +570,69 @@ function workerSessionsFixture() {
       },
     },
   ];
+}
+
+function recoveryRunsFixture() {
+  return {
+    totalRuns: 1,
+    runs: [
+      {
+        recoveryRunId: "recovery:browser-detached",
+        threadId,
+        sourceGroupId: "group.browser-detached",
+        taskId: "task.browser-detached",
+        flowId: "flow.ui",
+        roleId: "role-browser",
+        targetLayer: "worker",
+        targetWorker: "browser",
+        latestStatus: "failed",
+        status: "waiting_approval",
+        nextAction: "resume_session",
+        autoDispatchReady: false,
+        requiresManualIntervention: true,
+        latestSummary: "Browser target detached while collecting evidence.",
+        waitingReason: "Approval required before browser resume.",
+        latestFailure: {
+          category: "stale_session",
+          layer: "browser",
+          retryable: true,
+          message: "Browser target detached.",
+          recommendedAction: "resume",
+        },
+        currentAttemptId: "attempt.browser.resume",
+        browserSession: {
+          sessionId: "browser-ui",
+          targetId: "target-reopen",
+          resumeMode: "cold",
+        },
+        attempts: [
+          {
+            attemptId: "attempt.browser.resume",
+            action: "resume",
+            requestedAt: 1_779_984_004_000,
+            updatedAt: 1_779_984_004_400,
+            status: "waiting_approval",
+            nextAction: "resume_session",
+            summary: "Waiting for approval before resuming the browser session.",
+            targetLayer: "worker",
+            targetWorker: "browser",
+            browserSession: {
+              sessionId: "browser-ui",
+              targetId: "target-reopen",
+              resumeMode: "cold",
+            },
+            browserOutcome: "cold_reopen",
+            browserOutcomeSummary: "Will reopen the last known target if approved.",
+          },
+        ],
+        createdAt: 1_779_984_004_000,
+        updatedAt: 1_779_984_004_400,
+        confirmed: true,
+        inferred: false,
+        truthSource: "recovery-runtime",
+      },
+    ],
+  };
 }
 
 function roleRunsFixture() {

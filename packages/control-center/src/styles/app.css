@@ -648,6 +648,92 @@ a { color: inherit; text-decoration: none; }
   background: var(--surface);
   overflow: hidden;
 }
+.mission-recovery-card {
+  padding: 0;
+  margin-bottom: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.mission-recovery-list {
+  display: grid;
+}
+.mission-recovery-row {
+  min-width: 0;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-faint);
+  display: grid;
+  gap: 7px;
+}
+.mission-recovery-row:first-child {
+  border-top: 0;
+}
+.mission-recovery-row[data-tone="ok"] {
+  background: var(--success-soft);
+}
+.mission-recovery-row[data-tone="warning"] {
+  background: var(--warning-soft);
+}
+.mission-recovery-row[data-tone="danger"] {
+  background: var(--danger-soft);
+}
+.mission-recovery-main,
+.mission-recovery-detail,
+.mission-recovery-meta,
+.mission-recovery-runtime {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.mission-recovery-main {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.mission-recovery-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+.mission-recovery-status,
+.mission-recovery-gate {
+  flex-shrink: 0;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-sm);
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.mission-recovery-status {
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+.mission-recovery-gate {
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.mission-recovery-detail {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.mission-recovery-meta,
+.mission-recovery-runtime {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+.mission-recovery-meta > span,
+.mission-recovery-runtime > span,
+.mission-recovery-detail > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mission-recovery-runtime {
+  padding-top: 1px;
+}
 .mission-evidence-card {
   padding: 0;
   margin-bottom: 12px;

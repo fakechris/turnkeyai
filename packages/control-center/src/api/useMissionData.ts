@@ -24,6 +24,7 @@ import type {
   ContextSource,
   Mission,
   MissionObservabilitySnapshot,
+  RecoveryRunsResponse,
   RoleRunState,
   WorkerSessionRecord,
   WorkItem,
@@ -299,6 +300,64 @@ export function useCancelWorkerSession(): (input: {
     },
     [client]
   );
+}
+
+export function useRecoveryRuns(
+  threadId: string | null | undefined,
+  fallback: RecoveryRunsResponse,
+  options: { limit?: number; pollIntervalMs?: number } = {}
+): RemoteData<RecoveryRunsResponse> {
+  const client = useApiClient();
+  const [value, setValue] = useState<RecoveryRunsResponse>(fallback);
+  const [isLive, setIsLive] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [epoch, setEpoch] = useState(0);
+
+  useEffect(() => {
+    const normalizedThreadId = threadId?.trim();
+    if (!normalizedThreadId) {
+      setValue(fallback);
+      setIsLive(false);
+      setError(null);
+      return;
+    }
+    let cancelled = false;
+    let pollTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const limit = options.limit ?? 10;
+    const pathname =
+      `/recovery-runs?threadId=${encodeURIComponent(normalizedThreadId)}` +
+      `&limit=${encodeURIComponent(String(limit))}`;
+    const issueFetch = () => {
+      void client
+        .get<RecoveryRunsResponse>(pathname)
+        .then((data) => {
+          if (cancelled) return;
+          setValue(data);
+          setIsLive(true);
+          setError(null);
+        })
+        .catch((err: Error) => {
+          if (cancelled) return;
+          if (err.message !== "unauthorized") setError(err.message);
+        })
+        .finally(() => {
+          if (cancelled) return;
+          const pollIntervalMs = options.pollIntervalMs ?? 2000;
+          if (pollIntervalMs > 0) {
+            pollTimeoutHandle = setTimeout(issueFetch, pollIntervalMs);
+          }
+        });
+    };
+    issueFetch();
+    return () => {
+      cancelled = true;
+      if (pollTimeoutHandle) clearTimeout(pollTimeoutHandle);
+    };
+    // fallback is intentionally not a dep; it is a static caller fallback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, threadId, epoch, options.limit, options.pollIntervalMs]);
+
+  return { value, isLive, error, refetch: () => setEpoch((n) => n + 1) };
 }
 
 export function useRoleRuns(
