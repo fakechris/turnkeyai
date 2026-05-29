@@ -98,6 +98,10 @@ try {
       "no-token page should include the no-install launcher"
     );
     assert(
+      await noTokenPage.locator("text=npm run app:install-launcher").isVisible(),
+      "no-token page should include the source-checkout launcher installer"
+    );
+    assert(
       await noTokenPage.locator("text=npm run app -- --no-open").isVisible(),
       "no-token page should include the source-checkout launcher"
     );

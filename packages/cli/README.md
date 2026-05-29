@@ -40,6 +40,16 @@ turnkeyai app
 turnkeyai daemon status
 ```
 
+To create a double-click Mission Control launcher from the source checkout:
+
+```bash
+npm run app:install-launcher
+```
+
+When installed from a checkout, the launcher falls back to that checkout before
+using `npx`, so it keeps opening the local code you are testing even when the
+global `turnkeyai` command is not on `PATH`.
+
 If you do not want to modify the global npm link, use the source-tree scripts:
 
 ```bash

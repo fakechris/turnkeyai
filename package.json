@@ -34,6 +34,7 @@
     "test": "tsx --test packages/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "app": "tsx packages/cli/src/cli.ts app",
+    "app:install-launcher": "tsx packages/cli/src/cli.ts app install-launcher",
     "doctor": "tsx packages/cli/src/cli.ts doctor",
     "daemon:start": "tsx packages/cli/src/cli.ts daemon start",
     "daemon:status": "tsx packages/cli/src/cli.ts daemon status",

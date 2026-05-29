@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   buildAppLauncherScript,
@@ -7,6 +10,7 @@ import {
   parseAppRoute,
   resolveDefaultAppLauncherPath,
   resolveAppToken,
+  resolveSourceCheckoutDir,
 } from "./app-command";
 
 describe("app-command", () => {
@@ -154,6 +158,37 @@ describe("app-command", () => {
       assert.match(script, /command -v turnkeyai/);
       assert.match(script, /exec turnkeyai app "\$@"/);
       assert.match(script, /exec npx @turnkeyai\/cli app "\$@"/);
+    });
+
+    it("can pin the launcher to a source checkout before falling back to npx", () => {
+      const script = buildAppLauncherScript({ sourceCheckoutDir: "/Users/alice/Turnkey AI" });
+      assert.match(script, /exec turnkeyai app "\$@"/);
+      assert.match(script, /npm --prefix '\/Users\/alice\/Turnkey AI' run app -- "\$@"/);
+      assert.match(script, /exec npx @turnkeyai\/cli app "\$@"/);
+    });
+
+    it("recognizes a TurnkeyAI source checkout", async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "turnkeyai-source-checkout-"));
+      try {
+        await mkdir(path.join(dir, "packages", "cli", "src"), { recursive: true });
+        await writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "turnkeyai" }), "utf8");
+        await writeFile(path.join(dir, "packages", "cli", "src", "cli.ts"), "", "utf8");
+        assert.equal(resolveSourceCheckoutDir(dir), dir);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("does not pin launchers to unrelated package directories", async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "turnkeyai-unrelated-checkout-"));
+      try {
+        await mkdir(path.join(dir, "packages", "cli", "src"), { recursive: true });
+        await writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "other" }), "utf8");
+        await writeFile(path.join(dir, "packages", "cli", "src", "cli.ts"), "", "utf8");
+        assert.equal(resolveSourceCheckoutDir(dir), null);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     });
 
     it("defaults to a macOS Desktop launcher when Desktop exists", () => {
