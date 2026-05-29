@@ -150,6 +150,39 @@ test("buildMissionObservabilitySnapshot does not let no-task terminal progress s
   assert.equal(snapshot.liveness.lastProgressAtMs, 14_000);
 });
 
+test("buildMissionObservabilitySnapshot counts approval decisions without double-counting applied approvals", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...event("approval-request", "approval", 2_000, "role-lead", "Requested approval · browser.form.submit"),
+        runtime: { eventType: "permission.query" },
+        tags: ["needs_approval", "mutate"],
+      },
+      {
+        ...event("approval-decision", "approval", 3_000, "operator", "Approved · browser.form.submit"),
+        runtime: { eventType: "permission.result" },
+        tags: ["approved"],
+      },
+      {
+        ...event("approval-applied", "approval", 4_000, "role-lead", "Applied approval · browser.form.submit"),
+        runtime: { eventType: "permission.applied" },
+        tags: ["approved", "permission.applied"],
+      },
+      tool("result-1", 4_500, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
+      event("final-1", "thought", 5_000, "role-lead", "Final answer with residual risk."),
+    ],
+  });
+
+  assert.deepEqual(snapshot.approvals, {
+    requested: 1,
+    decided: 1,
+    applied: 1,
+  });
+  assert.equal(snapshot.qualityGate.status, "passed");
+});
+
 function baseMission(overrides: Partial<Mission> = {}): Mission {
   return {
     id: "msn.test",
