@@ -294,9 +294,11 @@ test("policy role runtime returns native tool-use message sequence before the fi
   assert.equal(result.messages?.[0]?.role, "assistant");
   assert.equal(result.messages?.[0]?.toolCalls?.[0]?.name, "sessions_spawn");
   assert.equal(result.messages?.[0]?.toolProgress?.at(-1)?.phase, "completed");
+  assert.equal(result.messages?.[0]?.timeCost, 1);
   assert.equal(result.messages?.[1]?.role, "tool");
   assert.equal(result.messages?.[1]?.toolCallId, "toolu-1");
   assert.equal(result.messages?.[1]?.content, "Example Domain");
+  assert.equal(result.messages?.[1]?.timeCost, 1);
   assert.equal(result.messages?.[2]?.id, "msg-final");
 });
 

@@ -54,6 +54,7 @@ export function buildNativeToolMessages(
       arguments: call.input,
     }));
     const roundProgress = buildRoundToolProgress(round, baseTimestamp + ordinal);
+    const roundTimeCost = computeProgressTimeCost(roundProgress);
     const assistantToolMessage: TeamMessage = {
       id: `${input.handoff.taskId}:tool-round:${round.round}:assistant`,
       threadId: input.thread.threadId,
@@ -80,6 +81,7 @@ export function buildNativeToolMessages(
               : round.results.some((result) => result.isError && !result.skipped)
                 ? "failed"
                 : "completed",
+      ...(roundTimeCost > 0 ? { timeCost: roundTimeCost } : {}),
       metadata: {
         activationType: input.handoff.activationType,
         flowId: input.flow.flowId,
@@ -93,6 +95,9 @@ export function buildNativeToolMessages(
 
     for (const result of round.results) {
       const content = result.content ?? "";
+      const toolTimeCost = computeProgressTimeCost(
+        roundProgress.filter((progress) => progress.toolCallId === result.toolCallId)
+      );
       const toolMessage: TeamMessage = {
         id: `${input.handoff.taskId}:tool-round:${round.round}:result:${result.toolCallId}`,
         threadId: input.thread.threadId,
@@ -111,6 +116,7 @@ export function buildNativeToolMessages(
         },
         toolCallId: result.toolCallId,
         toolStatus: result.cancelled ? "cancelled" : result.isError ? "failed" : "completed",
+        ...(toolTimeCost > 0 ? { timeCost: toolTimeCost } : {}),
         metadata: {
           activationType: input.handoff.activationType,
           flowId: input.flow.flowId,
@@ -233,6 +239,19 @@ function buildRoundToolProgress(
     offset += 1;
   }
   return progress;
+}
+
+function computeProgressTimeCost(progress: NonNullable<TeamMessage["toolProgress"]>): number {
+  if (progress.length === 0) {
+    return 0;
+  }
+  const timestamps = progress.map((event) => event.ts).filter((ts) => Number.isFinite(ts));
+  if (timestamps.length === 0) {
+    return 0;
+  }
+  const start = Math.min(...timestamps);
+  const end = Math.max(...timestamps);
+  return Math.max(0, Math.floor(end - start));
 }
 
 function parseToolProgressPhase(value: unknown): NativeToolProgressTrace["phase"] {
