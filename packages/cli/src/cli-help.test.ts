@@ -11,6 +11,7 @@ describe("cli help", () => {
     assert.equal(result.code, 0);
     assert.match(result.stdout, /turnkeyai app \[--route onboarding\|missions\|approvals\|agents\|context\|agent-connect\|runtime\|settings\]/);
     assert.match(result.stdout, /turnkeyai app install-launcher \[--path <file>\]/);
+    assert.match(result.stdout, /npm run app:install-launcher/);
     assert.match(result.stdout, /npm run app -- --no-open/);
     assert.match(result.stdout, /npm run daemon:status/);
     assert.doesNotMatch(result.stdout, /--route setup\|bridge\|agent/);
@@ -55,6 +56,7 @@ describe("cli help", () => {
       assert.ok((info.mode & 0o111) !== 0, "launcher should be executable");
       const content = await readFile(launcherPath, "utf8");
       assert.match(content, /exec turnkeyai app "\$@"/);
+      assert.match(content, /npm --prefix .* run app -- "\$@"/);
       assert.match(content, /exec npx @turnkeyai\/cli app "\$@"/);
     } finally {
       await rm(dir, { recursive: true, force: true });

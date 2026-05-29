@@ -33,6 +33,11 @@ export function NoTokenPage() {
           <p style={{ marginTop: 0 }}>Open Mission Control through one of these entry points:</p>
           <div className="launch-command-list" aria-label="Mission Control launch commands">
             <LaunchCommand
+              label="Double-click launcher"
+              command="npm run app:install-launcher"
+              note="Use this from the repository root to install a local Mission Control launcher."
+            />
+            <LaunchCommand
               label="Installed CLI"
               command="turnkeyai app"
               note="Use this after installing or linking the TurnkeyAI CLI."

@@ -227,8 +227,12 @@ function readOption(args: string[], name: string): string | null {
   return match ? match.slice(prefix.length) : null;
 }
 
-export function buildAppLauncherScript(): string {
-  return [
+export interface AppLauncherScriptOptions {
+  sourceCheckoutDir?: string | null;
+}
+
+export function buildAppLauncherScript(options: AppLauncherScriptOptions = {}): string {
+  const lines = [
     "#!/usr/bin/env sh",
     "set -eu",
     "",
@@ -236,15 +240,30 @@ export function buildAppLauncherScript(): string {
     '  exec turnkeyai app "$@"',
     "fi",
     "",
+  ];
+  if (options.sourceCheckoutDir) {
+    const quotedCheckout = shellQuote(options.sourceCheckoutDir);
+    lines.push(
+      `if [ -f ${quotedCheckout}/package.json ]; then`,
+      `  exec npm --prefix ${quotedCheckout} run app -- "$@"`,
+      "fi",
+      ""
+    );
+  }
+  lines.push(
     "if command -v npx >/dev/null 2>&1; then",
     '  exec npx @turnkeyai/cli app "$@"',
     "fi",
     "",
     'echo "TurnkeyAI launcher could not find turnkeyai or npx on PATH." >&2',
+    options.sourceCheckoutDir
+      ? `echo "Tried source checkout: ${options.sourceCheckoutDir}" >&2`
+      : 'echo "From a source checkout, run: npm run app -- --no-open" >&2',
     'echo "Install with: npm install -g @turnkeyai/cli" >&2',
     "exit 127",
     "",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 export function resolveDefaultAppLauncherPath(input: {
@@ -260,6 +279,22 @@ export function resolveDefaultAppLauncherPath(input: {
       ? "TurnkeyAI Mission Control.command"
       : "turnkeyai-mission-control.sh";
   return path.join(input.homeDir, ".turnkeyai", fileName);
+}
+
+export function resolveSourceCheckoutDir(cwd: string): string | null {
+  const packageJsonPath = path.join(cwd, "package.json");
+  const cliSourcePath = path.join(cwd, "packages", "cli", "src", "cli.ts");
+  if (!existsSync(packageJsonPath) || !existsSync(cliSourcePath)) return null;
+  try {
+    const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
+    return pkg.name === "turnkeyai" ? cwd : null;
+  } catch {
+    return null;
+  }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 async function runInstallLauncherCommand(args: string[]): Promise<void> {
@@ -278,9 +313,13 @@ async function runInstallLauncherCommand(args: string[]): Promise<void> {
         });
 
   await mkdir(path.dirname(launcherPath), { recursive: true });
-  await writeFile(launcherPath, buildAppLauncherScript(), { mode: 0o755 });
+  const sourceCheckoutDir = resolveSourceCheckoutDir(process.cwd());
+  await writeFile(launcherPath, buildAppLauncherScript({ sourceCheckoutDir }), { mode: 0o755 });
   await chmod(launcherPath, 0o755);
   console.log(`installed TurnkeyAI Mission Control launcher: ${launcherPath}`);
+  if (sourceCheckoutDir) {
+    console.log(`source checkout fallback: ${sourceCheckoutDir}`);
+  }
   console.log("open it from Finder, or run it directly to start the local app.");
 }
 
