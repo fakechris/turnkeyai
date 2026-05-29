@@ -1242,7 +1242,10 @@ test("llm role response generator synthesizes immediately after completed sub-ag
         readToolContent(message.content).includes("Source 1 final_content")
     )
   );
-  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("Do not add extra sections, summaries, notes"));
+  const synthesisPrompt = finalSynthesisPrompt(gatewayInputs[1]) ?? "";
+  assert.ok(synthesisPrompt.includes("Do not add extra sections, summaries, notes"));
+  assert.ok(synthesisPrompt.includes("line must start with a literal prefix"));
+  assert.ok(synthesisPrompt.includes("Do not write a preamble before a requested final shape"));
 });
 
 test("llm role response generator accepts short completed sub-agent final content", async () => {
