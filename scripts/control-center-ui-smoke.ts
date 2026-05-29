@@ -1,0 +1,543 @@
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { access, readFile } from "node:fs/promises";
+import net from "node:net";
+import path from "node:path";
+
+import { chromium } from "playwright-core";
+
+const args = process.argv.slice(2);
+let explicitBrowserPath: string | undefined;
+let headful = false;
+let allowMissingBrowser = false;
+
+for (let index = 0; index < args.length; index += 1) {
+  const arg = args[index];
+  if (arg === "--browser-path") {
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) {
+      throw new Error("missing value for --browser-path");
+    }
+    explicitBrowserPath = value;
+    index += 1;
+    continue;
+  }
+  if (arg === "--headed") {
+    headful = true;
+    continue;
+  }
+  if (arg === "--allow-missing-browser") {
+    allowMissingBrowser = true;
+    continue;
+  }
+  throw new Error(`unknown argument: ${arg}`);
+}
+
+const distDir = path.resolve(process.cwd(), "packages/control-center/dist");
+const indexHtmlPath = path.join(distDir, "index.html");
+await access(indexHtmlPath).catch(() => {
+  throw new Error("Control Center dist is missing. Run `npm run build:control-center` before control-center:smoke.");
+});
+
+const missionId = "msn.ui-smoke.1";
+const threadId = "thr.ui-smoke.1";
+const requestedPaths: string[] = [];
+const postedMessages: unknown[] = [];
+const port = await resolveFreePort();
+const server = createServer((req, res) => {
+  void handleRequest(req, res).catch((error: unknown) => {
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+  });
+});
+await new Promise<void>((resolve, reject) => {
+  server.once("error", reject);
+  server.listen(port, "127.0.0.1", () => {
+    server.off("error", reject);
+    resolve();
+  });
+});
+
+let browser;
+try {
+  const browserPath = await resolveChromePath(explicitBrowserPath ?? process.env.TURNKEYAI_BROWSER_PATH).catch((error) => {
+    if (allowMissingBrowser) {
+      console.log(`control-center-ui-smoke: skipped (${error.message})`);
+      return null;
+    }
+    throw error;
+  });
+  if (!browserPath) {
+    process.exitCode = 0;
+  } else {
+    browser = await chromium.launch({
+      executablePath: browserPath,
+      headless: !headful,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        console.error(`browser-console-error: ${message.text()}`);
+      }
+    });
+    page.on("pageerror", (error) => {
+      console.error(`browser-page-error: ${error.message}`);
+    });
+    await page.addInitScript(() => {
+      sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-token");
+      sessionStorage.setItem("turnkeyai.controlCenter.scope", "operator");
+    });
+    await page.goto(`http://127.0.0.1:${port}/app#/mission/${encodeURIComponent(missionId)}`, {
+      waitUntil: "networkidle",
+    });
+
+    await page.waitForSelector(".thinking-card");
+    await page.waitForSelector(".final-answer-card .markdown-body h2");
+    await page.waitForSelector(".final-answer-card .markdown-body ul li");
+    await page.waitForSelector(".final-answer-card .markdown-body table");
+    await page.waitForSelector(".final-answer-card .markdown-body code");
+
+    assert(await page.locator(".final-answer-card").count() === 1, "expected exactly one final answer card");
+    assert(await page.locator(".thinking-card").count() === 1, "expected exactly one work trace card");
+    assert(await page.locator("#thinking-record-timeline").count() === 0, "trace should be collapsed by default");
+    assert(
+      await page.locator(".thinking-card-preview", { hasText: "Final answer remains below" }).isVisible(),
+      "collapsed trace preview should tell the user the final answer remains below"
+    );
+    await assertVerticalOrder(page, ".thinking-card", ".final-answer-card", "work trace must appear before final answer");
+
+    await page.getByRole("button", { name: "Show trace" }).click();
+    await page.waitForSelector("#thinking-record-timeline .tool-process");
+    await assertVerticalOrder(
+      page,
+      "#thinking-record-timeline",
+      ".final-answer-card",
+      "expanded trace timeline must stay before final answer"
+    );
+    await assertNoOverlap(page, ".thinking-card", ".final-answer-card", "trace and final answer should not overlap");
+    assert(
+      await page.locator(".tool-process-answer-link", { hasText: "Final answer appears below this trace." }).isVisible(),
+      "tool process should point to the final answer below, not duplicate it inside the trace"
+    );
+
+    const followUp = page.getByLabel("Follow-up message to mission team");
+    await followUp.fill("Please tighten the result with the same evidence.");
+    await page.getByRole("button", { name: /Send/ }).click();
+    await page.waitForSelector("[role='status']");
+    assert(
+      await page.locator("[role='status']", { hasText: "Follow-up accepted" }).isVisible(),
+      "follow-up accepted status should be visible after send"
+    );
+    assert(postedMessages.length === 1, "expected one follow-up POST");
+    assert(
+      JSON.stringify(postedMessages[0]).includes("Please tighten the result"),
+      "follow-up POST should include textarea content"
+    );
+
+    const screenshot = await page.screenshot({ fullPage: true });
+    assert(screenshot.byteLength > 20_000, `expected non-trivial screenshot, got ${screenshot.byteLength} bytes`);
+    assert(
+      requestedPaths.some((value) => value.startsWith(`/missions/${missionId}/timeline`)),
+      "mission timeline endpoint was not requested"
+    );
+    console.log("control-center-ui-smoke: passed");
+    console.log(`control-center-ui-smoke: screenshot-bytes ${screenshot.byteLength}`);
+  }
+} finally {
+  if (browser) {
+    await browser.close();
+  }
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const method = req.method ?? "GET";
+  const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
+  requestedPaths.push(url.pathname + url.search);
+
+  if (url.pathname === "/app" || url.pathname === "/app/" || url.pathname === "/" || url.pathname === "/index.html") {
+    await serveStatic(req, res, indexHtmlPath);
+    return;
+  }
+  if (url.pathname === "/favicon.ico") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+  if (url.pathname.startsWith("/app/assets/")) {
+    await serveStatic(req, res, path.join(distDir, url.pathname.slice("/app/".length)));
+    return;
+  }
+
+  if (method === "GET" && url.pathname === "/missions") {
+    json(res, [missionFixture()]);
+    return;
+  }
+  if (method === "GET" && url.pathname === `/missions/${missionId}`) {
+    json(res, missionFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === `/missions/${missionId}/timeline`) {
+    json(res, timelineFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === `/missions/${missionId}/metrics`) {
+    json(res, metricsFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/runtime-worker-sessions") {
+    json(res, workerSessionsFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/runs") {
+    json(res, roleRunsFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/approvals") {
+    json(res, []);
+    return;
+  }
+  if (method === "GET" && url.pathname === "/mission-agents") {
+    json(res, []);
+    return;
+  }
+  if (method === "GET" && url.pathname === "/mission-context-sources") {
+    json(res, []);
+    return;
+  }
+  if (method === "POST" && url.pathname === `/missions/${missionId}/messages`) {
+    postedMessages.push(await readJsonBody(req));
+    res.writeHead(202, { "content-type": "application/json" });
+    res.end(JSON.stringify({ accepted: true }));
+    return;
+  }
+
+  res.writeHead(404, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: `not found: ${method} ${url.pathname}` }));
+}
+
+async function serveStatic(req: IncomingMessage, res: ServerResponse, filePath: string): Promise<void> {
+  if (req.method !== "GET") {
+    res.writeHead(405);
+    res.end();
+    return;
+  }
+  const normalized = path.resolve(filePath);
+  if (!normalized.startsWith(distDir)) {
+    res.writeHead(403);
+    res.end();
+    return;
+  }
+  const body = await readFile(normalized);
+  res.writeHead(200, { "content-type": contentTypeFor(normalized) });
+  res.end(body);
+}
+
+function contentTypeFor(filePath: string): string {
+  if (filePath.endsWith(".html")) return "text/html; charset=utf-8";
+  if (filePath.endsWith(".js")) return "text/javascript; charset=utf-8";
+  if (filePath.endsWith(".css")) return "text/css; charset=utf-8";
+  if (filePath.endsWith(".svg")) return "image/svg+xml";
+  return "application/octet-stream";
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  return raw ? JSON.parse(raw) : null;
+}
+
+function json(res: ServerResponse, body: unknown): void {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+function missionFixture() {
+  return {
+    id: missionId,
+    shortId: "UI-1",
+    title: "UI smoke mission",
+    desc: "Verifies Mission Detail ordering and rendering.",
+    status: "done",
+    mode: "research",
+    modeLabel: "Research",
+    owner: "operator",
+    ownerLabel: "Operator",
+    createdAt: "2026-05-29 12:00",
+    createdAtMs: 1_779_984_000_000,
+    agents: ["role-lead"],
+    progress: 100,
+    pendingApprovals: 0,
+    blockers: 0,
+    contextSummary: ["browser evidence", "tool result"],
+    threadId,
+  };
+}
+
+function timelineFixture() {
+  const finalAnswer = [
+    "# Result",
+    "",
+    "The mission completed with **browser evidence** and a durable tool result.",
+    "",
+    "- Evidence item: captured page title",
+    "- Follow-up state: accepted by the daemon",
+    "",
+    "| Check | Value |",
+    "| --- | --- |",
+    "| order | trace before final answer |",
+    "| markdown | rendered |",
+    "",
+    "`tool_result` is rendered as inline code. See [example](https://example.com).",
+  ].join("\n");
+  return [
+    event("ev.user", "plan", 1_000, "user", "Compare two browser-backed sources."),
+    tool("ev.tool.call", 2_000, "call", "sessions_spawn", "call-browser", "Spawn browser worker."),
+    tool("ev.tool.progress", 2_700, "progress", "sessions_spawn", "call-browser", "Browser worker opened context."),
+    tool("ev.tool.result", 4_300, "result", "sessions_spawn", "call-browser", "Returned 3 evidence bullets."),
+    event("ev.final", "thought", 5_200, "role-lead", finalAnswer, { route: "lead-role" }),
+  ];
+}
+
+function metricsFixture() {
+  return {
+    missionId,
+    status: "done",
+    generatedAtMs: 1_779_984_005_000,
+    wallClockMs: 5_200,
+    timelineEventCount: 5,
+    tool: {
+      requested: 1,
+      results: 1,
+      executed: 1,
+      skipped: 0,
+      failed: 0,
+      cancelled: 0,
+      timeouts: 0,
+    },
+    sessions: {
+      spawned: 1,
+      continued: 0,
+    },
+    approvals: {
+      requested: 0,
+      applied: 0,
+      decided: 0,
+    },
+    recovery: {
+      events: 0,
+    },
+    liveness: {
+      active: 0,
+      waiting: 0,
+      stale: 0,
+      lastProgressAtMs: 1_779_984_005_000,
+      staleSubjects: [],
+    },
+    qualityGate: {
+      status: "passed",
+      finalAnswerEventId: "ev.final",
+      evidenceEvents: 1,
+      checks: [
+        { name: "final_answer", status: "pass", detail: "Final answer event exists." },
+        { name: "evidence", status: "pass", detail: "Evidence event exists." },
+      ],
+    },
+  };
+}
+
+function workerSessionsFixture() {
+  return [
+    {
+      workerRunKey: "wrk.browser.1",
+      executionToken: 1,
+      context: {
+        threadId,
+        flowId: "flow.ui",
+        taskId: "task.ui",
+        roleId: "role-lead",
+        parentSpanId: "span.ui",
+        toolCallId: "call-browser",
+        label: "Browser evidence",
+      },
+      state: {
+        workerRunKey: "wrk.browser.1",
+        workerType: "browser",
+        status: "done",
+        createdAt: 1_779_984_002_000,
+        updatedAt: 1_779_984_004_500,
+        history: [
+          {
+            id: "hist.1",
+            role: "tool",
+            content: "Captured browser context evidence.",
+            createdAt: 1_779_984_004_000,
+            toolCallId: "call-browser",
+            toolName: "snapshot",
+            status: "completed",
+          },
+        ],
+        lastResult: {
+          workerType: "browser",
+          status: "completed",
+          summary: "Captured a browser source and returned evidence.",
+        },
+      },
+    },
+  ];
+}
+
+function roleRunsFixture() {
+  return [
+    {
+      runKey: "run.role-lead.done",
+      threadId,
+      roleId: "role-lead",
+      status: "done",
+      generation: 1,
+      iterationCount: 2,
+      maxIterations: 128,
+      queuedAt: 1_779_984_001_000,
+      startedAt: 1_779_984_001_200,
+      lastActiveAt: 1_779_984_005_000,
+      workerSessions: {},
+      inbox: [],
+    },
+  ];
+}
+
+function event(
+  id: string,
+  kind: string,
+  tMs: number,
+  actor: string,
+  text: string,
+  runtime?: Record<string, string>
+) {
+  return {
+    id,
+    missionId,
+    t: `12:00:${String(Math.floor(tMs / 1000)).padStart(2, "0")}`,
+    tMs,
+    kind,
+    actor,
+    text,
+    ...(runtime ? { runtime } : {}),
+  };
+}
+
+function tool(
+  id: string,
+  tMs: number,
+  phase: "call" | "progress" | "result",
+  toolName: string,
+  toolCallId: string,
+  text: string
+) {
+  return event(id, "tool", tMs, "role-lead", text, {
+    route: "lead-role",
+    toolPhase: phase,
+    toolName,
+    toolCallId,
+    messageId: "msg.ui.1",
+    round: "1",
+    ...(phase === "call" ? { callInput: JSON.stringify({ workerType: "browser" }) } : {}),
+    ...(phase === "progress" ? { progressDetail: "context opened" } : {}),
+    ...(phase === "result" ? { resultContent: "3 evidence bullets" } : {}),
+  });
+}
+
+async function assertVerticalOrder(
+  page: import("playwright-core").Page,
+  topSelector: string,
+  bottomSelector: string,
+  message: string
+): Promise<void> {
+  const order = await page.evaluate(
+    ([top, bottom]) => {
+      const topEl = document.querySelector(top);
+      const bottomEl = document.querySelector(bottom);
+      if (!topEl || !bottomEl) return null;
+      const topRect = topEl.getBoundingClientRect();
+      const bottomRect = bottomEl.getBoundingClientRect();
+      return { topBottom: topRect.bottom, bottomTop: bottomRect.top };
+    },
+    [topSelector, bottomSelector]
+  );
+  assert(order !== null, `missing elements for order check: ${topSelector}, ${bottomSelector}`);
+  assert(order.topBottom <= order.bottomTop + 1, `${message}: ${JSON.stringify(order)}`);
+}
+
+async function assertNoOverlap(
+  page: import("playwright-core").Page,
+  firstSelector: string,
+  secondSelector: string,
+  message: string
+): Promise<void> {
+  const overlap = await page.evaluate(
+    ([first, second]) => {
+      const firstEl = document.querySelector(first);
+      const secondEl = document.querySelector(second);
+      if (!firstEl || !secondEl) return null;
+      const a = firstEl.getBoundingClientRect();
+      const b = secondEl.getBoundingClientRect();
+      return !(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top);
+    },
+    [firstSelector, secondSelector]
+  );
+  assert(overlap === false, message);
+}
+
+function assert(condition: boolean, message: string): asserts condition {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+async function resolveChromePath(explicitPath?: string): Promise<string> {
+  const candidates = [
+    explicitPath,
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {}
+  }
+
+  throw new Error("no supported Chromium executable found; pass --browser-path or set TURNKEYAI_BROWSER_PATH");
+}
+
+async function resolveFreePort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("failed to resolve free port"));
+        return;
+      }
+      const { port } = address;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+    server.on("error", reject);
+  });
+}
