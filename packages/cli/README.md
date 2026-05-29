@@ -22,6 +22,9 @@ Current routes: `onboarding`, `missions`, `approvals`, `agents`, `context`,
 # Open straight to a specific page
 npx @turnkeyai/cli app --route runtime
 
+# Install a local double-click launcher
+npx @turnkeyai/cli app install-launcher
+
 # Print the URL instead of launching a browser (CI / SSH / headless)
 npx @turnkeyai/cli app --no-open
 
