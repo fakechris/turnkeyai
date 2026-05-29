@@ -43,11 +43,21 @@ export interface ApiClientOptions {
   onUnauthorized?(pathname: string): void;
 }
 
+interface SendOptions {
+  /**
+   * Optional/admin-only panels should report their own 401 state without
+   * clearing the whole dashboard token. Normal product calls keep the
+   * existing clear-on-401 behavior.
+   */
+  clearOnUnauthorized?: boolean;
+}
+
 export function createApiClient(options: ApiClientOptions) {
   async function send<T>(
     method: "GET" | "POST" | "PUT",
     pathname: string,
-    body?: unknown
+    body?: unknown,
+    sendOptions: SendOptions = {}
   ): Promise<T> {
     const requestToken = options.getToken();
     const headers: Record<string, string> = { accept: "application/json" };
@@ -62,7 +72,7 @@ export function createApiClient(options: ApiClientOptions) {
     }
     const response = await fetch(pathname, init);
     if (response.status === 401) {
-      if (options.getToken() === requestToken) {
+      if (sendOptions.clearOnUnauthorized !== false && options.getToken() === requestToken) {
         options.onUnauthorized?.(pathname);
       }
       throw new UnauthorizedError(pathname);
@@ -81,6 +91,8 @@ export function createApiClient(options: ApiClientOptions) {
 
   return {
     get: <T>(pathname: string) => send<T>("GET", pathname),
+    getNoAuthReset: <T>(pathname: string) =>
+      send<T>("GET", pathname, undefined, { clearOnUnauthorized: false }),
     post: <T>(pathname: string, body?: unknown) => send<T>("POST", pathname, body),
     put: <T>(pathname: string, body?: unknown) => send<T>("PUT", pathname, body),
   };

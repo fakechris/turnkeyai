@@ -37,7 +37,7 @@ interface Live {
 
 export function RuntimePage() {
   const client = useApiClient();
-  const { setPill, setLastStatus } = useAppState();
+  const { state, setPill, setLastStatus } = useAppState();
   const [live, setLive] = useState<Live>({
     diagnostics: null,
     status: null,
@@ -50,13 +50,16 @@ export function RuntimePage() {
   });
 
   usePolling(async () => {
+    const shouldFetchValidationOps = state.scope === "admin" || state.scope === "unknown";
     const [diagResult, statusResult, logsResult, runtimeResult, sessionsResult, validationOpsResult] = await Promise.allSettled([
       client.get<DiagnosticsSnapshot>("/diagnostics"),
       client.get<BridgeStatus>("/bridge/status"),
       client.get<DiagnosticsLogs>(`/diagnostics/logs?limit=${LOG_LIMIT}`),
       client.get<RuntimeSummaryReport>("/runtime-summary?limit=8"),
       client.get<WorkerSessionRecord[]>("/runtime-worker-sessions?limit=8"),
-      client.get<ValidationOpsReport>("/validation-ops?limit=6"),
+      shouldFetchValidationOps
+        ? client.getNoAuthReset<ValidationOpsReport>("/validation-ops?limit=6")
+        : Promise.resolve(null),
     ]);
 
     const diagnostics = diagResult.status === "fulfilled" ? diagResult.value : null;
@@ -66,7 +69,11 @@ export function RuntimePage() {
     const workerSessions = sessionsResult.status === "fulfilled" ? sessionsResult.value : [];
     const validationOps = validationOpsResult.status === "fulfilled" ? validationOpsResult.value : null;
     const validationOpsError =
-      validationOpsResult.status === "rejected" ? readableRuntimeError(validationOpsResult.reason) : null;
+      !shouldFetchValidationOps
+        ? "admin token required"
+        : validationOpsResult.status === "rejected"
+          ? readableRuntimeError(validationOpsResult.reason)
+          : null;
     const reachable = diagnostics != null || status != null || runtimeSummary != null;
 
     if (status) {
