@@ -1141,6 +1141,7 @@ function MissionMetricsCard({
         </div>
       ) : (
         <>
+          <MissionQualityActionPanel metrics={metrics} />
           <div className="mission-metrics-grid">
             <MetricTile label="wall clock" value={formatDurationMs(0, metrics.wallClockMs)} />
             <MetricTile label="events" value={String(metrics.timelineEventCount)} />
@@ -1182,6 +1183,42 @@ function MissionMetricsCard({
   );
 }
 
+function MissionQualityActionPanel({
+  metrics,
+}: {
+  metrics: MissionObservabilitySnapshot;
+}) {
+  const visibleChecks = metrics.qualityGate.checks.filter(
+    (check) => check.status === "fail" || check.status === "warn"
+  );
+  if (visibleChecks.length === 0 && metrics.qualityGate.status === "passed") {
+    return null;
+  }
+  const action = missionQualityAction(metrics, visibleChecks);
+  return (
+    <div className="mission-quality-action-panel" data-status={metrics.qualityGate.status}>
+      <div className="mission-quality-action-head">
+        <span>{metrics.qualityGate.status === "running" ? "Still running" : "Attention points"}</span>
+        <span>{action}</span>
+      </div>
+      {visibleChecks.length > 0 ? (
+        <div className="mission-quality-action-list">
+          {visibleChecks.map((check) => (
+            <div key={check.name} className="mission-quality-action-line" data-status={check.status}>
+              <span>{check.name.replace("_", " ")}</span>
+              <span>{check.detail}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mission-quality-action-empty">
+          Waiting for a final answer, evidence, and runtime closeout.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MetricTile({
   label,
   value,
@@ -1197,6 +1234,31 @@ function MetricTile({
       <b>{value}</b>
     </div>
   );
+}
+
+function missionQualityAction(
+  metrics: MissionObservabilitySnapshot,
+  visibleChecks: MissionObservabilitySnapshot["qualityGate"]["checks"]
+): string {
+  if (metrics.liveness.stale > 0) {
+    return "Inspect stale runs, then cancel or continue from the stored session.";
+  }
+  if (metrics.tool.timeouts > 0 || visibleChecks.some((check) => check.name === "failure_free")) {
+    return "Open the trace, use the tool result or recovery event, then continue with bounded scope.";
+  }
+  if (visibleChecks.some((check) => check.name === "final_answer")) {
+    return "Continue the mission so the lead can synthesize a final answer.";
+  }
+  if (visibleChecks.some((check) => check.name === "evidence_backed")) {
+    return "Ask a follow-up that gathers source evidence before synthesis.";
+  }
+  if (visibleChecks.some((check) => check.name === "residual_risk")) {
+    return "Ask a follow-up to name residual risk or unverified scope.";
+  }
+  if (metrics.qualityGate.status === "running") {
+    return "Wait for active tool and session progress, or cancel stale work.";
+  }
+  return "Review the trace and continue with a narrower follow-up.";
 }
 
 function qualityStatusLabel(status: MissionObservabilitySnapshot["qualityGate"]["status"]): string {

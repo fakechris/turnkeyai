@@ -961,6 +961,72 @@ a { color: inherit; text-decoration: none; }
   background: var(--danger-soft);
   color: var(--danger);
 }
+.mission-quality-action-panel {
+  margin: 12px 14px 0;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  overflow: hidden;
+}
+.mission-quality-action-panel[data-status="blocked"] {
+  border-color: color-mix(in srgb, var(--danger) 26%, transparent);
+  background: var(--danger-soft);
+}
+.mission-quality-action-panel[data-status="needs_attention"] {
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+  background: var(--warning-soft);
+}
+.mission-quality-action-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-faint);
+  font-size: 11px;
+}
+.mission-quality-action-head span:first-child {
+  color: var(--text);
+  font-weight: 650;
+}
+.mission-quality-action-head span:last-child {
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+.mission-quality-action-list {
+  display: grid;
+  gap: 1px;
+}
+.mission-quality-action-line {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 10px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.mission-quality-action-line span:first-child {
+  color: var(--text-faint);
+  text-transform: uppercase;
+  font-size: 9.5px;
+}
+.mission-quality-action-line span:last-child {
+  color: var(--text-muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mission-quality-action-line[data-status="fail"] span:last-child {
+  color: var(--danger);
+}
+.mission-quality-action-line[data-status="warn"] span:last-child {
+  color: var(--warning);
+}
+.mission-quality-action-empty {
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
 .mission-metrics-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1037,6 +1103,10 @@ a { color: inherit; text-decoration: none; }
 .mission-quality-check[data-status="pending"] span:last-child { color: var(--text-faint); }
 @media (max-width: 760px) {
   .mission-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mission-quality-action-head,
+  .mission-quality-action-line {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .browser-continuity-card {
   padding: 0;

@@ -184,6 +184,18 @@ try {
 
     assert(await page.locator(".final-answer-card").count() === 1, "expected exactly one final answer card");
     assert(await page.locator(".thinking-card").count() === 1, "expected exactly one work trace card");
+    assert(
+      await page.locator(".mission-metrics-card", { hasText: "Needs attention" }).isVisible(),
+      "mission health should surface the quality gate status"
+    );
+    assert(
+      await page.locator(".mission-quality-action-panel", { hasText: "Final answer does not explicitly name residual risk." }).isVisible(),
+      "mission health should show the actionable quality-gate detail"
+    );
+    assert(
+      await page.locator(".mission-quality-action-panel", { hasText: "Ask a follow-up to name residual risk" }).isVisible(),
+      "mission health should suggest a concrete follow-up action"
+    );
     assert(await page.locator(".context-continuity-card").count() === 1, "expected one context continuity card");
     assert(
       await page.locator(".context-continuity-card", { hasText: "Verify final answer against captured browser evidence" }).isVisible(),
@@ -748,12 +760,13 @@ function metricsFixture() {
       staleSubjects: [],
     },
     qualityGate: {
-      status: "passed",
+      status: "needs_attention",
       finalAnswerEventId: "ev.final",
       evidenceEvents: 2,
       checks: [
         { name: "final_answer", status: "pass", detail: "Final answer event exists." },
         { name: "evidence", status: "pass", detail: "Evidence event exists." },
+        { name: "residual_risk", status: "warn", detail: "Final answer does not explicitly name residual risk." },
       ],
     },
   };
