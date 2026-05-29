@@ -438,6 +438,7 @@ export function composeDaemonFoundations(inputs: DaemonFoundationsInputs): Daemo
     }),
     new ExploreWorkerHandler({
       browserBridge,
+      allowLoopbackHosts: process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE === "1",
     }),
     new FinanceWorkerHandler(),
   ];

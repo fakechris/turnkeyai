@@ -331,6 +331,32 @@ test("explore worker rejects private hosts before fetching", async () => {
   assert.match(result?.summary ?? "", /blocked explore URL host/i);
 });
 
+test("explore worker can explicitly allow loopback hosts for isolated E2E fixtures", async () => {
+  let fetchedUrl = "";
+  const handler = new ExploreWorkerHandler({
+    allowLoopbackHosts: true,
+    fetchFn: async (input) => {
+      fetchedUrl = String(input);
+      return new Response(
+        "<html><head><title>Local Fixture</title></head><body>TURNKEYAI_LOCAL_FIXTURE_OK</body></html>",
+        { status: 200, headers: { "content-type": "text/html" } }
+      );
+    },
+  });
+
+  const result = await handler.run({
+    ...buildExploreInvocationInput(),
+    packet: {
+      ...buildExploreInvocationInput().packet,
+      taskPrompt: "Inspect http://127.0.0.1:49152/fixture",
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.equal(fetchedUrl, "http://127.0.0.1:49152/fixture");
+  assert.match(result?.summary ?? "", /TURNKEYAI_LOCAL_FIXTURE_OK/);
+});
+
 test("explore worker rejects bracketed IPv6 loopback hosts before fetching", async () => {
   let called = false;
   const handler = new ExploreWorkerHandler({
@@ -351,6 +377,34 @@ test("explore worker rejects bracketed IPv6 loopback hosts before fetching", asy
   assert.equal(called, false);
   assert.equal(result?.status, "failed");
   assert.match(result?.summary ?? "", /blocked explore URL host/i);
+});
+
+test("explore worker rejects IPv4-mapped IPv6 private hosts before fetching", async () => {
+  let called = false;
+  const handler = new ExploreWorkerHandler({
+    fetchFn: async () => {
+      called = true;
+      return new Response("ok", { status: 200 });
+    },
+  });
+
+  for (const taskPrompt of [
+    "Inspect http://[::ffff:127.0.0.1]/pricing",
+    "Inspect http://[::ffff:10.0.0.1]/pricing",
+    "Inspect http://[::7f00:1]/pricing",
+  ]) {
+    const result = await handler.run({
+      ...buildExploreInvocationInput(),
+      packet: {
+        ...buildExploreInvocationInput().packet,
+        taskPrompt,
+      },
+    });
+
+    assert.equal(result?.status, "failed");
+    assert.match(result?.summary ?? "", /blocked explore URL host/i);
+  }
+  assert.equal(called, false);
 });
 
 function buildExploreInvocationInput(): WorkerInvocationInput {
