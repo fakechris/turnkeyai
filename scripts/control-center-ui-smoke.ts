@@ -116,6 +116,24 @@ try {
     await page.goto(`http://127.0.0.1:${port}/app#/missions`, {
       waitUntil: "networkidle",
     });
+
+    await page.goto(`http://127.0.0.1:${port}/app#/agents`, {
+      waitUntil: "networkidle",
+    });
+    await page.waitForSelector("text=Agents");
+    await page.getByRole("button", { name: /Manage tokens/ }).click();
+    await page.waitForSelector("text=Settings");
+    assert(page.url().includes("#/settings"), "agents token action should route to settings");
+    await page.goto(`http://127.0.0.1:${port}/app#/agents`, {
+      waitUntil: "networkidle",
+    });
+    await page.getByRole("button", { name: /Connect agent/ }).click();
+    await page.waitForSelector("text=Agent Connect");
+    assert(page.url().includes("#/agent-connect"), "agents connect action should route to Agent Connect");
+
+    await page.goto(`http://127.0.0.1:${port}/app#/missions`, {
+      waitUntil: "networkidle",
+    });
     await page.getByRole("button", { name: /New mission/ }).first().click();
     await page.waitForSelector("text=Agent team");
     await page.locator("input").first().fill("Browser-backed competitor check");
