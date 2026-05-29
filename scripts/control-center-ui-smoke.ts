@@ -293,6 +293,17 @@ try {
       await page.locator(".tool-process-answer-link", { hasText: "Final answer appears below this trace." }).isVisible(),
       "tool process should point to the final answer below, not duplicate it inside the trace"
     );
+    const processRow = page.locator(".tool-process").first();
+    assert(
+      await processRow.locator(".tool-process-session-action-row", { hasText: "Browser evidence" }).isVisible(),
+      "tool process should expose the matching child session controls in context"
+    );
+    await processRow.getByRole("button", { name: /Continue session/ }).click();
+    await page.waitForSelector("[role='status']");
+    assert(
+      await page.locator("[role='status']", { hasText: "Session follow-up accepted" }).isVisible(),
+      "process-level session continue should submit a session follow-up"
+    );
 
     const followUp = page.getByLabel("Follow-up message to mission team");
     await followUp.fill("Please tighten the result with the same evidence.");
@@ -302,9 +313,13 @@ try {
       await page.locator("[role='status']", { hasText: "Follow-up accepted" }).isVisible(),
       "follow-up accepted status should be visible after send"
     );
-    assert(postedMessages.length === 1, "expected one follow-up POST");
+    assert(postedMessages.length === 2, "expected session continue plus one follow-up POST");
     assert(
-      JSON.stringify(postedMessages[0]).includes("Please tighten the result"),
+      JSON.stringify(postedMessages[0]).includes("Continue sub-agent session wrk.browser.1"),
+      "process-level Continue session should post the matched worker session key"
+    );
+    assert(
+      JSON.stringify(postedMessages[1]).includes("Please tighten the result"),
       "follow-up POST should include textarea content"
     );
 
@@ -1536,7 +1551,17 @@ function tool(
     round: "1",
     ...(phase === "call" ? { callInput: JSON.stringify({ workerType: "browser" }) } : {}),
     ...(phase === "progress" ? { progressDetail: "context opened" } : {}),
-    ...(phase === "result" ? { resultContent: "3 evidence bullets" } : {}),
+    ...(phase === "result"
+      ? {
+          resultContent: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            session_key: "wrk.browser.1",
+            agent_id: "browser",
+            status: "completed",
+            result: "3 evidence bullets",
+          }),
+        }
+      : {}),
   });
 }
 
