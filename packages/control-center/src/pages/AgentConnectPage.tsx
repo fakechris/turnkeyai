@@ -1,32 +1,105 @@
-// Agent Connect — preset cards on the left, detail panel on the right.
-// Carries forward PR I's scope-aware downgrade: when the daemon token is
-// scope=read, fields are still shown (so the user can see what the
-// endpoint LOOKS like) but the bottom "why not admin?" card surfaces +
-// the Rotate/Capabilities controls are styled as visibly read-only.
+// Agent Connect — live bridge endpoint, token scope, and tool capability surface.
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
-import { MOCK_DATA } from "../mock/mission-data";
-import { COLOR_BG, COLOR_FG } from "../components/atoms";
+import type { BridgeStatus, CapabilityInspectionReport } from "../api/types";
+import { useApiClient } from "../api/useApiClient";
 import { Icon } from "../components/Icon";
+import { usePolling } from "../hooks/usePolling";
 import { useAppState } from "../state/AppState";
+
+const POLL_MS = 5_000;
+const CAPABILITY_THREAD = "agent-connect-preview";
+const CAPABILITY_ROLE = "role-lead";
+const REQUESTED_CAPABILITIES = ["browser", "research", "social-publish", "workspace"];
+
+interface AgentProfile {
+  id: string;
+  name: string;
+  note: string;
+  configHint: string;
+}
+
+const AGENT_PROFILES: AgentProfile[] = [
+  {
+    id: "codex",
+    name: "Codex CLI",
+    note: "Use the local bridge endpoint as an authenticated tool gateway for browser and mission actions.",
+    configHint: "Set base URL to the bridge endpoint and send the daemon token as Bearer or x-turnkeyai-token.",
+  },
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    note: "Connect through an HTTP tool adapter that calls the bridge command route with operator scope.",
+    configHint: "Expose only operator-safe commands by default; reserve admin token use for short diagnostics windows.",
+  },
+  {
+    id: "comet",
+    name: "Comet / Browser Agent",
+    note: "Use the bridge as the browser-control backend while keeping raw CDP behind the daemon boundary.",
+    configHint: "Route browser actions through /bridge/command; do not give the client direct CDP credentials.",
+  },
+  {
+    id: "custom",
+    name: "Custom OpenAPI Client",
+    note: "Any local client can call the same authenticated daemon routes once it has a scoped token.",
+    configHint: "Start with read or operator scope, then add approval handling before enabling write-heavy tools.",
+  },
+];
+
+interface AgentConnectLive {
+  bridge: BridgeStatus | null;
+  capabilities: CapabilityInspectionReport | null;
+  reachable: boolean;
+  error: string | null;
+}
 
 export function AgentConnectPage() {
   const { state } = useAppState();
-  const [selected, setSelected] = useState<string>("codex");
-  const preset = MOCK_DATA.presets.find((p) => p.id === selected) ?? MOCK_DATA.presets[0];
-  if (!preset) return null;
+  const client = useApiClient();
+  const [selected, setSelected] = useState<string>(AGENT_PROFILES[0]?.id ?? "custom");
+  const [live, setLive] = useState<AgentConnectLive>({
+    bridge: null,
+    capabilities: null,
+    reachable: false,
+    error: null,
+  });
 
-  // For K1 we keep the design's tokens display (sk-•••… style mask).
-  // K3 will source the real daemon token + scope from AppState.
-  const tokenMasked = state.token ? maskToken(state.token) : "tk_op_••••••••••••••••4f12";
+  const refreshLive = useCallback(async () => {
+    const capabilityQuery = new URLSearchParams({
+      threadId: CAPABILITY_THREAD,
+      roleId: CAPABILITY_ROLE,
+      requestedCapabilities: REQUESTED_CAPABILITIES.join(","),
+    });
+    const [bridgeResult, capabilityResult] = await Promise.allSettled([
+      client.get<BridgeStatus>("/bridge/status"),
+      client.get<CapabilityInspectionReport>(`/capabilities?${capabilityQuery.toString()}`),
+    ]);
+    const bridge = bridgeResult.status === "fulfilled" ? bridgeResult.value : null;
+    const capabilities = capabilityResult.status === "fulfilled" ? capabilityResult.value : null;
+    const error =
+      bridgeResult.status === "rejected"
+        ? bridgeResult.reason instanceof Error
+          ? bridgeResult.reason.message
+          : String(bridgeResult.reason)
+        : capabilityResult.status === "rejected"
+          ? capabilityResult.reason instanceof Error
+            ? capabilityResult.reason.message
+            : String(capabilityResult.reason)
+          : null;
+    setLive({ bridge, capabilities, reachable: bridge != null || capabilities != null, error });
+  }, [client]);
+
+  usePolling(refreshLive, POLL_MS);
+
+  const profile = AGENT_PROFILES.find((candidate) => candidate.id === selected) ?? AGENT_PROFILES[0];
+  const tokenMasked = state.token ? maskToken(state.token) : "(token missing)";
   const endpoint = `${window.location.origin}/bridge/command`;
+  const status = bridgeStatusLabel(live);
 
   const copy = (text: string) => {
     void navigator.clipboard.writeText(text).catch(() => {
-      // Clipboard can fail in non-HTTPS / unfocused contexts; for K1
-      // we just swallow — the value is still visible in the readOnly
-      // input so the user can select+copy manually.
+      // Visible read-only fields remain selectable if clipboard access is blocked.
     });
   };
 
@@ -36,45 +109,29 @@ export function AgentConnectPage() {
         <div>
           <h2>Agent Connect</h2>
           <div className="sub">
-            把 Codex / Claude Code / Kimi / Comet / 自定义 OpenAPI client 接进来。Token scope 默认 operator。
+            Connect external agents to the local daemon without handing them direct browser or filesystem control.
           </div>
         </div>
         <div className="right">
-          <button type="button" className="btn"><Icon name="external" size={13} /> Bridge docs</button>
+          <button type="button" className="btn" onClick={() => void refreshLive()}>
+            <Icon name="diagnose" size={13} /> Test connection
+          </button>
         </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 20 }}>
         <div className="col" style={{ gap: 4 }}>
-          {MOCK_DATA.presets.map((p) => (
+          {AGENT_PROFILES.map((candidate) => (
             <button
-              key={p.id}
+              key={candidate.id}
               type="button"
-              className={"sb-item" + (selected === p.id ? " active" : "")}
-              onClick={() => setSelected(p.id)}
-              style={{ background: selected === p.id ? "var(--surface)" : "transparent" }}
+              className={"sb-item" + (selected === candidate.id ? " active" : "")}
+              onClick={() => setSelected(candidate.id)}
+              style={{ background: selected === candidate.id ? "var(--surface)" : "transparent" }}
             >
-              <span className="glyph">
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: 10,
-                    height: 10,
-                    borderRadius: 3,
-                    background: COLOR_BG[p.color],
-                    border: `1.5px solid ${COLOR_FG[p.color]}`,
-                  }}
-                />
-              </span>
-              <span style={{ flex: 1 }}>{p.name}</span>
-              <span
-                className={
-                  "tag " +
-                  (p.state === "connected" ? "success" : p.state === "ready" ? "info" : "")
-                }
-              >
-                {p.state}
-              </span>
+              <span className="glyph"><Icon name="connect" size={13} /></span>
+              <span style={{ flex: 1 }}>{candidate.name}</span>
+              <span className={"tag " + status.tone}>{status.label}</span>
             </button>
           ))}
         </div>
@@ -90,18 +147,17 @@ export function AgentConnectPage() {
                 color: "var(--text)",
               }}
             >
-              {preset.name}
+              {profile?.name ?? "Agent client"}
             </h3>
-            <span className={"tag " + (preset.state === "connected" ? "success" : "info")}>
-              {preset.state}
-            </span>
-            <button type="button" className="btn"><Icon name="diagnose" size={12} /> Test connection</button>
+            <span className={"tag " + status.tone}>{status.label}</span>
           </div>
           <div style={{ padding: "16px 18px" }}>
-            <div className="muted" style={{ marginBottom: 14, fontSize: 12.5 }}>{preset.note}</div>
+            <div className="muted" style={{ marginBottom: 14, fontSize: 12.5 }}>
+              {profile?.note}
+            </div>
 
             <div className="setting-row" style={{ paddingTop: 4 }}>
-              <div className="lbl"><b>Endpoint</b><span>本地 daemon · 不出网</span></div>
+              <div className="lbl"><b>Endpoint</b><span>local daemon bridge command route</span></div>
               <div>
                 <input className="field" readOnly value={endpoint} />
               </div>
@@ -112,13 +168,8 @@ export function AgentConnectPage() {
               </div>
             </div>
             <div className="setting-row">
-              <div className="lbl"><b>Token</b><span>本地存储 · 启动 daemon 时生成</span></div>
+              <div className="lbl"><b>Token</b><span>stored in this browser session</span></div>
               <div>
-                {/* readOnly, no type=password — the value is already
-                    masked client-side. Double-masking with input type
-                    would render dots-over-dots. Copy button puts the
-                    UNMASKED token on the clipboard so the user can
-                    actually plug it into an agent config. */}
                 <input className="field" readOnly value={tokenMasked} />
               </div>
               <div className="row" style={{ justifyContent: "flex-end" }}>
@@ -133,43 +184,42 @@ export function AgentConnectPage() {
               </div>
             </div>
             <div className="setting-row">
-              <div className="lbl"><b>Scope</b><span>operator = 调度 + 工具调用 · 不含 raw CDP</span></div>
+              <div className="lbl"><b>Scope</b><span>current token access level</span></div>
               <div>
-                {/* disabled (read-only) — scope changes need K3's
-                    /daemon/auth/regenerate-token endpoint. Showing
-                    the current scope here is informational. */}
-                <select
-                  className="field"
-                  disabled
-                  value={state.scope === "unknown" ? "operator" : state.scope}
-                  onChange={() => undefined}
-                >
-                  <option value="read">read · 只读视图 / 不可写入</option>
-                  <option value="operator">operator · 调度 + 工具 + 审批触发</option>
-                  <option value="admin">admin · 含 raw-CDP / 配置变更（不推荐）</option>
-                </select>
+                <input className="field" readOnly value={state.scope === "unknown" ? "checking" : state.scope} />
+              </div>
+              <div><span className={"tag " + scopeTone(state.scope)}>{state.scope}</span></div>
+            </div>
+            <div className="setting-row">
+              <div className="lbl"><b>Bridge health</b><span>transport and expert-lane availability</span></div>
+              <div className="row" style={{ flexWrap: "wrap" }}>
+                <span className="tag">{live.bridge?.transport.label ?? "transport pending"}</span>
+                <span className="tag">{live.bridge?.transport.mode ?? "mode pending"}</span>
+                <span className={"tag " + (live.bridge?.expertLane.available ? "success" : "warning")}>
+                  {live.bridge?.expertLane.available ? "expert lane available" : "expert lane gated"}
+                </span>
               </div>
               <div />
             </div>
             <div className="setting-row" style={{ borderBottom: 0 }}>
-              <div className="lbl"><b>Capabilities</b><span>当前 scope 下可用工具</span></div>
-              <div className="row" style={{ flexWrap: "wrap" }}>
-                {[
-                  "mission.create",
-                  "mission.read",
-                  "browser.snapshot",
-                  "browser.click",
-                  "browser.form.submit (approval)",
-                  "doc.read",
-                  "doc.write (approval)",
-                  "search.web",
-                ].map((c) => (
-                  <span key={c} className="tag">{c}</span>
-                ))}
-              </div>
+              <div className="lbl"><b>Client note</b><span>recommended integration posture</span></div>
+              <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.55 }}>{profile?.configHint}</div>
               <div />
             </div>
           </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 20 }}>
+        <div className="card-hd">
+          <Icon name="agents" size={13} />
+          <h3>Live capability surface</h3>
+          <span className="mono faint" style={{ fontSize: 10, marginLeft: "auto" }}>
+            {live.capabilities ? `generated ${formatRelativeMs(live.capabilities.generatedAt)}` : live.error ?? "checking"}
+          </span>
+        </div>
+        <div className="card-bd">
+          <CapabilityRows report={live.capabilities} />
         </div>
       </div>
 
@@ -179,17 +229,100 @@ export function AgentConnectPage() {
           <h3>Why not admin by default?</h3>
         </div>
         <div className="card-bd muted" style={{ fontSize: 12.5, lineHeight: 1.6 }}>
-          Admin scope 暴露 raw-CDP 与配置变更——对日常 agent 而言风险大于收益。推荐 operator scope
-          配合 approval 规则；只有运行时排错需要短期临时 admin。
+          Admin scope exposes raw-CDP and configuration mutation. Daily agent clients should use operator scope
+          with approval gates; keep admin tokens short-lived and local to runtime diagnostics.
         </div>
       </div>
     </div>
   );
 }
 
-// Mask a token so only the last 4 chars are visible (matches PR I behavior).
+function CapabilityRows({ report }: { report: CapabilityInspectionReport | null }) {
+  if (!report) {
+    return (
+      <div className="setting-row" style={{ borderBottom: 0, paddingTop: 4 }}>
+        <div className="lbl"><b>Capabilities</b><span>daemon has not returned a report yet</span></div>
+        <div className="muted">Waiting for /capabilities.</div>
+        <div><span className="tag warning">pending</span></div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <CapabilityRow label="Workers" items={report.availableWorkers} empty="no workers" />
+      <CapabilityRow
+        label="Native tools"
+        items={(report.toolCapabilities ?? []).map((tool) => `${tool.name} · ${tool.executorKind}`)}
+        empty="no native tools"
+      />
+      <CapabilityRow
+        label="Connectors"
+        items={report.connectorStates.map((connector) =>
+          `${connector.provider} · ${connector.available && connector.authorized ? "ready" : "needs setup"}`
+        )}
+        empty="no connectors"
+      />
+      <CapabilityRow
+        label="APIs"
+        items={report.apiStates.map((api) => `${api.name} · ${api.ready ? "ready" : "needs env"}`)}
+        empty="no APIs"
+      />
+      <CapabilityRow
+        label="Transport order"
+        items={report.transportPreferences.map(
+          (preference) => `${preference.capability}: ${preference.orderedTransports.join(" > ")}`
+        )}
+        empty="no transport preferences"
+        last
+      />
+    </>
+  );
+}
+
+function CapabilityRow({
+  label,
+  items,
+  empty,
+  last,
+}: {
+  label: string;
+  items: string[];
+  empty: string;
+  last?: boolean;
+}) {
+  return (
+    <div className="setting-row" style={{ borderBottom: last ? 0 : undefined, paddingTop: label === "Workers" ? 4 : undefined }}>
+      <div className="lbl"><b>{label}</b><span>from daemon capability inspection</span></div>
+      <div className="row" style={{ flexWrap: "wrap" }}>
+        {items.length > 0 ? items.map((item) => <span key={item} className="tag">{item}</span>) : <span className="muted">{empty}</span>}
+      </div>
+      <div />
+    </div>
+  );
+}
+
+function bridgeStatusLabel(live: AgentConnectLive): { label: string; tone: string } {
+  if (live.bridge?.ok) return { label: "ready", tone: "success" };
+  if (live.reachable) return { label: "partial", tone: "warning" };
+  return { label: "offline", tone: "warning" };
+}
+
+function scopeTone(scope: string): string {
+  if (scope === "admin") return "warning";
+  if (scope === "operator") return "success";
+  return "info";
+}
+
+function formatRelativeMs(timestamp: number): string {
+  const delta = Math.max(0, Date.now() - timestamp);
+  if (delta < 1_000) return "now";
+  if (delta < 60_000) return `${Math.round(delta / 1_000)}s ago`;
+  return `${Math.round(delta / 60_000)}m ago`;
+}
+
 function maskToken(token: string): string {
-  if (token.length <= 6) return "tk_••••";
+  if (token.length <= 6) return "tk_....";
   const tail = token.slice(-4);
-  return `tk_••••••••••••••••${tail}`;
+  return `tk_................${tail}`;
 }

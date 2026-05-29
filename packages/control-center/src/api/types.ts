@@ -139,3 +139,38 @@ export interface ModelsReport {
     baseURLEnv?: string;
   }>;
 }
+
+// --- /capabilities (packages/app-gateway/src/routes/inspection-routes.ts) ---
+
+export interface CapabilityInspectionReport {
+  availableWorkers: string[];
+  toolCapabilities?: Array<{
+    name: string;
+    executorKind: string;
+    promptGroup: string;
+  }>;
+  connectorStates: Array<{
+    provider: string;
+    available: boolean;
+    authorized: boolean;
+    issues?: string[];
+    suggestedActions?: string[];
+  }>;
+  apiStates: Array<{
+    name: string;
+    configured: boolean;
+    ready: boolean;
+    issues?: string[];
+    suggestedActions?: string[];
+  }>;
+  skillStates: Array<{
+    skillId: string;
+    installed: boolean;
+  }>;
+  transportPreferences: Array<{
+    capability: string;
+    orderedTransports: string[];
+  }>;
+  unavailableCapabilities: string[];
+  generatedAt: number;
+}
