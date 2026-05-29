@@ -44,6 +44,8 @@ const threadId = "thr.ui-smoke.1";
 const requestedPaths: string[] = [];
 const postedMissions: unknown[] = [];
 const postedMessages: unknown[] = [];
+const browserConsoleErrors: string[] = [];
+const browserPageErrors: string[] = [];
 const port = await resolveFreePort();
 const sockets = new Set<net.Socket>();
 const server = createServer((req, res) => {
@@ -103,11 +105,13 @@ try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
     page.on("console", (message) => {
       if (message.type() === "error") {
-        console.error(`browser-console-error: ${message.text()}`);
+        const location = message.location();
+        const source = location.url ? ` ${location.url}:${location.lineNumber}` : "";
+        browserConsoleErrors.push(`browser-console-error:${source} ${message.text()}`);
       }
     });
     page.on("pageerror", (error) => {
-      console.error(`browser-page-error: ${error.message}`);
+      browserPageErrors.push(`browser-page-error: ${error.message}`);
     });
     await page.addInitScript(() => {
       sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-token");
@@ -351,11 +355,13 @@ try {
     const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
     mobilePage.on("console", (message) => {
       if (message.type() === "error") {
-        console.error(`mobile-browser-console-error: ${message.text()}`);
+        const location = message.location();
+        const source = location.url ? ` ${location.url}:${location.lineNumber}` : "";
+        browserConsoleErrors.push(`mobile-browser-console-error:${source} ${message.text()}`);
       }
     });
     mobilePage.on("pageerror", (error) => {
-      console.error(`mobile-browser-page-error: ${error.message}`);
+      browserPageErrors.push(`mobile-browser-page-error: ${error.message}`);
     });
     await mobilePage.addInitScript(() => {
       sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-token");
@@ -448,6 +454,10 @@ try {
       "settings diagnostics endpoint was not requested"
     );
     assert(
+      requestedPaths.some((value) => value.startsWith("/diagnostics/logs")),
+      "runtime diagnostics logs endpoint was not requested"
+    );
+    assert(
       requestedPaths.some((value) => value.startsWith("/models")),
       "settings models endpoint was not requested"
     );
@@ -466,6 +476,14 @@ try {
     assert(
       requestedPaths.some((value) => value.startsWith("/runtime-worker-sessions")),
       "runtime worker sessions endpoint was not requested"
+    );
+    assert(
+      browserConsoleErrors.length === 0,
+      `browser console errors should stay clean:\n${browserConsoleErrors.join("\n")}`
+    );
+    assert(
+      browserPageErrors.length === 0,
+      `browser page errors should stay clean:\n${browserPageErrors.join("\n")}`
     );
     console.log("control-center-ui-smoke: passed");
     console.log(`control-center-ui-smoke: screenshot-bytes ${screenshot.byteLength}`);
@@ -555,6 +573,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (method === "GET" && url.pathname === "/diagnostics") {
     json(res, diagnosticsFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/diagnostics/logs") {
+    json(res, diagnosticsLogsFixture());
     return;
   }
   if (method === "GET" && url.pathname === "/models") {
@@ -776,6 +798,20 @@ function diagnosticsFixture() {
         },
       ],
     },
+  };
+}
+
+function diagnosticsLogsFixture() {
+  return {
+    logFile: "/tmp/turnkeyai-ui-smoke/logs/daemon.log",
+    limit: 50,
+    lineCount: 2,
+    lines: [
+      "2026-05-29T04:00:01.000Z daemon started",
+      "2026-05-29T04:00:08.000Z mission replay indexed",
+    ],
+    truncatedFromHead: false,
+    redacted: true,
   };
 }
 
