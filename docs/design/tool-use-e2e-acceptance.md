@@ -85,6 +85,13 @@ This adds `complex`, which requires independent explore and browser sub-agent ev
 npm run tooluse:e2e:real-matrix -- --matrix-scenarios approval,followup --model-catalog models.local.json
 ```
 
+Each real LLM scenario is wrapped in an outer hard timeout, defaulting to
+`180000` ms. Override it when investigating a hang:
+
+```bash
+npm run tooluse:e2e:real-matrix -- --matrix-scenarios basic --model-catalog models.local.json --scenario-timeout-ms 60000
+```
+
 ## When To Run
 
 Run the mock path for every tool-runtime or provider-adapter PR. Run the real
