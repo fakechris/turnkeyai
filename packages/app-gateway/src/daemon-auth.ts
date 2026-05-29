@@ -176,6 +176,9 @@ export function resolveDaemonRequestAccess(
   if (req.method === "POST" && url.pathname === "/missions/bootstrap-demo") {
     return "operator";
   }
+  if (req.method === "PUT" && url.pathname === "/onboarding/state") {
+    return "operator";
+  }
   if (
     req.method === "POST" &&
     /^\/approvals\/[^/]+\/decision$/.test(url.pathname)

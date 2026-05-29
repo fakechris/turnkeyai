@@ -99,8 +99,8 @@ describe("app-command", () => {
   });
 
   describe("parseAppRoute", () => {
-    // K1 IA: routes match the Mission Control shell (missions/approvals/
-    // agents/context/agent-connect/runtime/settings). The old PR F→I routes
+    // K1 IA plus first-run onboarding: routes match the Mission Control shell
+    // (onboarding/missions/approvals/agents/context/agent-connect/runtime/settings). The old PR F→I routes
     // (setup/bridge/tabs/diagnostics) folded into those, so they're
     // rejected back to the new default ("missions").
     it("defaults to missions when no --route is present", () => {
@@ -109,6 +109,7 @@ describe("app-command", () => {
     });
 
     it("accepts --route <name> form for K1 routes", () => {
+      assert.equal(parseAppRoute(["--route", "onboarding"]), "onboarding");
       assert.equal(parseAppRoute(["--route", "missions"]), "missions");
       assert.equal(parseAppRoute(["--route", "approvals"]), "approvals");
       assert.equal(parseAppRoute(["--route", "runtime"]), "runtime");

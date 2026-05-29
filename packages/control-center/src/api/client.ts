@@ -45,7 +45,7 @@ export interface ApiClientOptions {
 
 export function createApiClient(options: ApiClientOptions) {
   async function send<T>(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "PUT",
     pathname: string,
     body?: unknown
   ): Promise<T> {
@@ -82,5 +82,6 @@ export function createApiClient(options: ApiClientOptions) {
   return {
     get: <T>(pathname: string) => send<T>("GET", pathname),
     post: <T>(pathname: string, body?: unknown) => send<T>("POST", pathname, body),
+    put: <T>(pathname: string, body?: unknown) => send<T>("PUT", pathname, body),
   };
 }

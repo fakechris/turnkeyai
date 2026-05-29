@@ -15,7 +15,7 @@ That's the recommended product entry point: Mission Control. The dashboard is
 a React + Vite + TS app shipped inside the CLI tarball; daemon serves it as
 static assets at `/app`. Built from `@turnkeyai/control-center` workspace.
 
-Current routes: `missions`, `approvals`, `agents`, `context`,
+Current routes: `onboarding`, `missions`, `approvals`, `agents`, `context`,
 `agent-connect`, `runtime`, and `settings`.
 
 ```bash

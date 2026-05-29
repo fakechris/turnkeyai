@@ -120,6 +120,16 @@ export interface DiagnosticsLogs {
   note?: string;
 }
 
+// --- /onboarding/state (packages/app-gateway/src/routes/onboarding-routes.ts) ---
+
+export interface OnboardingState {
+  completedAt: number | null;
+  transportChosen: string | null;
+  transportVerifiedAt: number | null;
+  step: string | null;
+  updatedAt: number | null;
+}
+
 // --- /models (packages/app-gateway/src/routes/inspection-routes.ts) ---
 
 export interface ModelsReport {

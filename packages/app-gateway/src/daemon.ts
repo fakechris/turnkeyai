@@ -122,6 +122,7 @@ import {
 } from "./routes/diagnostics-routes";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
 import { handleMissionRoutes } from "./routes/mission-routes";
+import { handleOnboardingRoutes } from "./routes/onboarding-routes";
 import { handleRecoveryRoutes } from "./routes/recovery-routes";
 import { handleRelayRoutes } from "./routes/relay-routes";
 import { handleValidationRoutes } from "./routes/validation-routes";
@@ -611,6 +612,20 @@ const server = http.createServer(async (req, res) => {
             };
           },
           browserHealthSnapshot: async () => buildBrowserHealthSnapshot(await listBrowserSessionsForDiagnostics()),
+        },
+      })
+    ) {
+      return;
+    }
+
+    if (
+      await handleOnboardingRoutes({
+        req,
+        res,
+        url,
+        deps: {
+          stateFile: path.join(RUNTIME_PATHS.rootDir, "onboarding.json"),
+          clock,
         },
       })
     ) {

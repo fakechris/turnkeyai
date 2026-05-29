@@ -4,7 +4,7 @@
 // own mission-bar header (with mission title + status). Other pages get
 // a breadcrumb toolbar.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Sidebar, type SidebarCounts } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
@@ -18,6 +18,7 @@ import { ContextSourcesPage } from "./pages/ContextSourcesPage";
 import { MissionDetailPage } from "./pages/MissionDetailPage";
 import { MissionsPage } from "./pages/MissionsPage";
 import { NoTokenPage } from "./pages/NoTokenPage";
+import { OnboardingPage } from "./pages/OnboardingPage";
 import { RuntimePage } from "./pages/RuntimePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import {
@@ -26,6 +27,7 @@ import {
   useContextSources,
   useMissions,
   useRuntimeSummary,
+  useOnboardingState,
 } from "./api/useMissionData";
 import { useAppState } from "./state/AppState";
 
@@ -46,6 +48,7 @@ export function App() {
   const agents = useAgents([]).value;
   const contextSources = useContextSources([]).value;
   const runtimeSummary = useRuntimeSummary(null, { limit: 1 }).value;
+  const onboarding = useOnboardingState(null);
   const counts: SidebarCounts = {
     missions: missions.filter((m) => m.status !== "archived").length,
     // Approvals: subtract optimistic local decisions while the daemon
@@ -57,6 +60,18 @@ export function App() {
     context: contextSources.length,
     recoveries: runtimeSummary?.attentionCount ?? 0,
   };
+
+  useEffect(() => {
+    if (
+      state.token !== null &&
+      onboarding.isLive &&
+      onboarding.value?.completedAt == null &&
+      state.route === "missions" &&
+      state.scope !== "read"
+    ) {
+      window.location.hash = "#/onboarding";
+    }
+  }, [onboarding.isLive, onboarding.value?.completedAt, state.route, state.scope, state.token]);
 
   if (state.token === null) {
     return (
@@ -98,6 +113,8 @@ function PageToolbar() {
   switch (state.route) {
     case "missions":
       return <Toolbar crumbs="home" title="Missions" right={<SearchSlot />} />;
+    case "onboarding":
+      return <Toolbar crumbs="home / first-run" right={<SearchSlot />} />;
     case "approvals":
       return <Toolbar crumbs="home / approvals" right={<SearchSlot />} />;
     case "agents":
@@ -131,6 +148,8 @@ function RoutedPage({ onNewMission }: { onNewMission: () => void }) {
   switch (state.route) {
     case "missions":
       return <MissionsPage onNewMission={onNewMission} />;
+    case "onboarding":
+      return <OnboardingPage />;
     case "mission": {
       // K3.5: route directly to the selected mission. MissionDetailPage
       // owns the "loading" / "no such mission" empty states.
