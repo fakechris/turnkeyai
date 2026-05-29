@@ -43,11 +43,13 @@ interface ToolUseE2eOptions {
   withBrowser: boolean;
   cdpTimeoutMs: number;
   realLlm: boolean;
-  scenario: "basic" | "complex";
+  scenario: ToolUseScenario;
   modelCatalogPath?: string;
   modelId?: string;
   modelChainId?: string;
 }
+
+type ToolUseScenario = "basic" | "complex" | "acceptance";
 
 function parseOptions(args: string[]): ToolUseE2eOptions {
   const options: ToolUseE2eOptions = {
@@ -68,8 +70,8 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
     }
     if (arg === "--scenario") {
       const value = args[index + 1];
-      if (value !== "basic" && value !== "complex") {
-        throw new Error("--scenario must be basic or complex");
+      if (value !== "basic" && value !== "complex" && value !== "acceptance") {
+        throw new Error("--scenario must be basic, complex, or acceptance");
       }
       options.scenario = value;
       index += 1;
@@ -133,6 +135,11 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
   console.log(`sub-agent-llm-rounds: ${subAgent.llmRounds}`);
   console.log(`sub-agent-private-tool: ${subAgent.privateToolName}`);
 
+  const acceptance = runMockAcceptanceQualitySuiteE2e();
+  console.log("tool-use acceptance quality suite passed");
+  console.log(`acceptance-scenarios: ${acceptance.scenarios.join(",")}`);
+  console.log(`acceptance-total-final-bytes: ${acceptance.totalFinalBytes}`);
+
   if (options.realLlm) {
     const real = await runRealLlmToolUseE2e(options);
     console.log("tool-use real llm e2e passed");
@@ -143,6 +150,7 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
     console.log(`real-final: ${real.finalMarker}`);
     console.log(`real-final-bytes: ${real.finalBytes}`);
     console.log(`real-evidence-bullets: ${real.evidenceBullets}`);
+    console.log(`real-quality-failures: ${real.qualityFailures}`);
     if (real.spawnedSessionCount !== undefined) {
       console.log(`real-spawned-sessions: ${real.spawnedSessionCount}`);
     }
@@ -159,17 +167,19 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
 
 async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
   mode: "llm-only" | "llm-browser";
-  scenario: "basic" | "complex";
+  scenario: ToolUseScenario;
   modelCatalogPath: string;
   toolCallNames: string[];
   finalMarker: string;
   finalBytes: number;
   evidenceBullets: number;
+  qualityFailures: number;
   spawnedSessionCount?: number;
   childTranscriptMessages?: number;
 }> {
-  if (options.scenario === "complex" && !options.withBrowser) {
-    throw new Error("--scenario complex requires --with-browser");
+  const multiSourceScenario = isMultiSourceScenario(options.scenario);
+  if (multiSourceScenario && !options.withBrowser) {
+    throw new Error(`--scenario ${options.scenario} requires --with-browser`);
   }
   const modelCatalogPath = resolveModelCatalogPath(options.modelCatalogPath);
   const modelSelection = resolveRealModelSelection(modelCatalogPath, options);
@@ -178,7 +188,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
     clients: [new OpenAICompatibleClient(), new AnthropicCompatibleClient()],
   });
   const toolCapabilityRegistry = createNativeToolCapabilityRegistry({
-    availableWorkerKinds: options.scenario === "complex" ? ["explore", "browser"] : options.withBrowser ? ["browser"] : ["explore"],
+    availableWorkerKinds: multiSourceScenario ? ["explore", "browser"] : options.withBrowser ? ["browser"] : ["explore"],
     permissionsEnabled: false,
     memoryEnabled: false,
     tasksEnabled: false,
@@ -186,9 +196,9 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
   const nativeMessages: TeamMessage[] = [];
   const fixture = options.withBrowser
     ? await startBrowserFixture({
-        marker: options.scenario === "complex" ? "TURNKEYAI_COMPLEX_BROWSER_OK" : "TURNKEYAI_BROWSER_E2E_OK",
+        marker: multiSourceScenario ? "TURNKEYAI_COMPLEX_BROWSER_OK" : "TURNKEYAI_BROWSER_E2E_OK",
         evidence:
-          options.scenario === "complex"
+          multiSourceScenario
             ? "Browser fixture says: complex browser evidence was observed by private browser tools."
             : "Browser fixture says: private browser tools observed this page.",
       })
@@ -196,7 +206,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-tooluse-real-e2e-"));
   let closeWorkerRuntime: (() => Promise<void>) | null = null;
   try {
-    const workerRuntimeBundle = options.scenario === "complex"
+    const workerRuntimeBundle = multiSourceScenario
       ? buildRealComplexWorkerRuntime({ gateway, fixtureUrl: fixture!.url, tempDir })
       : options.withBrowser
       ? buildRealBrowserWorkerRuntime({ gateway, fixtureUrl: fixture!.url, tempDir })
@@ -216,10 +226,10 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
           toolCapabilityRegistry,
           maxSessionToolTimeoutMs: options.withBrowser ? 180_000 : 60_000,
         }),
-        maxRounds: options.scenario === "complex" ? 8 : options.withBrowser ? 6 : 4,
-        maxParallelToolCalls: options.scenario === "complex" ? 2 : 1,
-        maxToolCallsPerRound: options.scenario === "complex" ? 4 : 2,
-        maxWallClockMs: options.scenario === "complex" ? 300_000 : options.withBrowser ? 240_000 : 90_000,
+        maxRounds: multiSourceScenario ? 8 : options.withBrowser ? 6 : 4,
+        maxParallelToolCalls: multiSourceScenario ? 2 : 1,
+        maxToolCallsPerRound: multiSourceScenario ? 4 : 2,
+        maxWallClockMs: multiSourceScenario ? 300_000 : options.withBrowser ? 240_000 : 90_000,
       },
       clock: { now: () => Date.now() },
     });
@@ -229,7 +239,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
     });
     const mode = options.withBrowser ? "llm-browser" : "llm-only";
     const targetMarker =
-      options.scenario === "complex"
+      multiSourceScenario
         ? "TURNKEYAI_COMPLEX_E2E_OK"
         : options.withBrowser
           ? "TURNKEYAI_BROWSER_E2E_OK"
@@ -243,7 +253,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
         systemPrompt: [
           toolCapabilityRegistry.renderPromptHarness({ seat: "lead" }),
           "You are running a release-gate E2E. Use the available session tool instead of answering from memory.",
-          options.scenario === "complex"
+          multiSourceScenario
             ? [
                 "You must gather two independent evidence sources before final answer:",
                 "1. Call sessions_spawn with agent_id=explore to verify TURNKEYAI_COMPLEX_EXPLORE_OK.",
@@ -254,7 +264,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
             ? "You must call sessions_spawn with agent_id=browser exactly once, then base your final answer on browser-observed evidence."
             : "You must call sessions_spawn with agent_id=explore exactly once, then base your final answer on the tool result.",
         ].join("\n\n"),
-        taskPrompt: options.scenario === "complex"
+        taskPrompt: multiSourceScenario
           ? [
               "Run the production-grade multi-agent tool-use E2E.",
               "Explore task: retrieve the release marker TURNKEYAI_COMPLEX_EXPLORE_OK and its deterministic source label.",
@@ -265,7 +275,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
           ? `Open ${fixture!.url}, read the fixture marker and page title with the browser sub-agent, then answer with ${targetMarker}.`
           : `Ask the explore sub-agent for the release marker, then answer with ${targetMarker}.`,
         outputContract:
-          options.scenario === "complex"
+          multiSourceScenario
             ? [
                 `Final answer must include ${targetMarker}.`,
                 "Use Markdown with a heading `Evidence` and at least three bullets: explore evidence, browser evidence, residual risk.",
@@ -280,7 +290,8 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
     );
     const toolCallNames = toolCalls.map((call) => call.name);
     assert.ok(toolCallNames.includes("sessions_spawn"), "real LLM must call sessions_spawn");
-    if (options.scenario === "complex") {
+    let quality: AnswerQualityReport | null = null;
+    if (multiSourceScenario) {
       const spawnedAgents = toolCalls
         .filter((call) => call.name === "sessions_spawn")
         .map((call) => (call.arguments as Record<string, unknown> | undefined)?.agent_id);
@@ -291,15 +302,14 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       assert.ok(sessions.length <= 4, `complex real LLM E2E spawned too many sub-agent sessions: ${sessions.length}`);
       assert.ok(sessionKinds.includes("explore"), "complex real LLM E2E must execute explore");
       assert.ok(sessionKinds.includes("browser"), "complex real LLM E2E must execute browser");
-      assert.match(reply.content, /TURNKEYAI_COMPLEX_EXPLORE_OK/);
-      assert.match(reply.content, /TURNKEYAI_COMPLEX_BROWSER_OK/);
-      assert.match(reply.content, /Evidence/i);
-      assert.match(reply.content, /deterministic e2e worker/i);
-      assert.match(reply.content, /complex browser evidence/i);
-      assert.match(reply.content, /residual risk/i);
-      const evidenceBullets = countMarkdownBullets(reply.content);
-      assert.ok(evidenceBullets >= 3, `complex real LLM E2E must include at least 3 evidence bullets, got ${evidenceBullets}`);
-      assert.ok(Buffer.byteLength(reply.content, "utf8") >= 180, "complex real LLM E2E final answer is too thin");
+      quality = evaluateAnswerQuality({
+        scenario: options.scenario,
+        answer: reply.content,
+        gate: multiSourceQualityGate(targetMarker),
+        toolCallNames,
+        spawnedSessionCount: sessions.length,
+      });
+      assertAnswerQuality(quality);
     }
     assert.match(reply.content, new RegExp(targetMarker));
     const childTranscriptMessages = options.withBrowser
@@ -316,7 +326,8 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       finalMarker: targetMarker,
       finalBytes: Buffer.byteLength(reply.content, "utf8"),
       evidenceBullets: countMarkdownBullets(reply.content),
-      ...(options.scenario === "complex" && workerRuntime.listSessions
+      qualityFailures: quality?.failures.length ?? 0,
+      ...(multiSourceScenario && workerRuntime.listSessions
         ? { spawnedSessionCount: (await workerRuntime.listSessions()).length }
         : {}),
       ...(childTranscriptMessages !== undefined ? { childTranscriptMessages } : {}),
@@ -330,6 +341,247 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
 
 function countMarkdownBullets(value: string): number {
   return (value.match(/^\s*[-*+]\s+\S/gm) ?? []).length;
+}
+
+interface AnswerQualityGate {
+  minBytes?: number;
+  minBullets?: number;
+  minEvidenceSources?: number;
+  maxSpawnedSessions?: number;
+  requiredPatterns?: Array<{ label: string; pattern: RegExp }>;
+  forbiddenPatterns?: Array<{ label: string; pattern: RegExp }>;
+  requiredToolNames?: string[];
+}
+
+interface AnswerQualityReport {
+  scenario: ToolUseScenario | AcceptanceScenarioName;
+  finalBytes: number;
+  evidenceBullets: number;
+  evidenceSourceCount: number;
+  failures: string[];
+}
+
+type AcceptanceScenarioName =
+  | "comparison_research"
+  | "browser_dynamic_extraction"
+  | "follow_up_resume"
+  | "timeout_recovery"
+  | "approval_gated_side_effect";
+
+function isMultiSourceScenario(scenario: ToolUseScenario): boolean {
+  return scenario === "complex" || scenario === "acceptance";
+}
+
+function multiSourceQualityGate(targetMarker: string): AnswerQualityGate {
+  return {
+    minBytes: 180,
+    minBullets: 3,
+    minEvidenceSources: 2,
+    maxSpawnedSessions: 4,
+    requiredToolNames: ["sessions_spawn"],
+    requiredPatterns: [
+      { label: "target success marker", pattern: new RegExp(escapeRegExp(targetMarker)) },
+      { label: "explore evidence marker", pattern: /TURNKEYAI_COMPLEX_EXPLORE_OK/ },
+      { label: "browser evidence marker", pattern: /TURNKEYAI_COMPLEX_BROWSER_OK/ },
+      { label: "evidence heading", pattern: /Evidence/i },
+      { label: "explore source label", pattern: /deterministic e2e worker/i },
+      { label: "browser evidence text", pattern: /complex browser evidence/i },
+      { label: "residual risk", pattern: /residual risk/i },
+    ],
+    forbiddenPatterns: [
+      { label: "unsupported user-scale claim", pattern: /\b(millions of users|large community|widely adopted)\b/i },
+      { label: "unsupported pricing claim", pattern: /\bfree plan|enterprise pricing|starts at \$\d+\b/i },
+    ],
+  };
+}
+
+function evaluateAnswerQuality(input: {
+  scenario: ToolUseScenario | AcceptanceScenarioName;
+  answer: string;
+  gate: AnswerQualityGate;
+  toolCallNames?: string[];
+  spawnedSessionCount?: number;
+}): AnswerQualityReport {
+  const finalBytes = Buffer.byteLength(input.answer, "utf8");
+  const evidenceBullets = countMarkdownBullets(input.answer);
+  const evidenceSourceCount = countEvidenceSources(input.answer);
+  const failures: string[] = [];
+  if (input.gate.minBytes !== undefined && finalBytes < input.gate.minBytes) {
+    failures.push(`final answer too thin: ${finalBytes} < ${input.gate.minBytes} bytes`);
+  }
+  if (input.gate.minBullets !== undefined && evidenceBullets < input.gate.minBullets) {
+    failures.push(`not enough evidence bullets: ${evidenceBullets} < ${input.gate.minBullets}`);
+  }
+  if (input.gate.minEvidenceSources !== undefined && evidenceSourceCount < input.gate.minEvidenceSources) {
+    failures.push(`not enough evidence sources: ${evidenceSourceCount} < ${input.gate.minEvidenceSources}`);
+  }
+  if (
+    input.gate.maxSpawnedSessions !== undefined &&
+    input.spawnedSessionCount !== undefined &&
+    input.spawnedSessionCount > input.gate.maxSpawnedSessions
+  ) {
+    failures.push(`too many spawned sessions: ${input.spawnedSessionCount} > ${input.gate.maxSpawnedSessions}`);
+  }
+  for (const required of input.gate.requiredPatterns ?? []) {
+    if (!required.pattern.test(input.answer)) {
+      failures.push(`missing ${required.label}`);
+    }
+  }
+  for (const forbidden of input.gate.forbiddenPatterns ?? []) {
+    if (forbidden.pattern.test(input.answer)) {
+      failures.push(`forbidden unsupported claim: ${forbidden.label}`);
+    }
+  }
+  for (const requiredTool of input.gate.requiredToolNames ?? []) {
+    if (!input.toolCallNames?.includes(requiredTool)) {
+      failures.push(`required tool not used: ${requiredTool}`);
+    }
+  }
+  return {
+    scenario: input.scenario,
+    finalBytes,
+    evidenceBullets,
+    evidenceSourceCount,
+    failures,
+  };
+}
+
+function assertAnswerQuality(report: AnswerQualityReport): void {
+  assert.deepEqual(report.failures, [], `quality gate failed for ${report.scenario}: ${report.failures.join("; ")}`);
+}
+
+function countEvidenceSources(value: string): number {
+  const sourceLines = value
+    .split(/\r?\n/)
+    .filter((line) => /\b(source|evidence|browser|explore|https?:\/\/|deterministic e2e worker)\b/i.test(line));
+  return new Set(sourceLines.map((line) => line.trim().toLowerCase())).size;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function runMockAcceptanceQualitySuiteE2e(): {
+  scenarios: AcceptanceScenarioName[];
+  totalFinalBytes: number;
+} {
+  const cases: Array<{ name: AcceptanceScenarioName; answer: string; gate: AnswerQualityGate }> = [
+    {
+      name: "comparison_research",
+      answer: [
+        "## Evidence",
+        "- Source: official product page verified positioning and primary workflow.",
+        "- Source: repository release notes verified update cadence.",
+        "- Residual risk: pricing was not verified, so it is marked not verified.",
+        "",
+        "Final: comparison completed with unsupported user-scale and pricing claims marked not verified.",
+      ].join("\n"),
+      gate: {
+        minBytes: 180,
+        minBullets: 3,
+        minEvidenceSources: 2,
+        requiredPatterns: [
+          { label: "evidence heading", pattern: /Evidence/i },
+          { label: "residual risk", pattern: /Residual risk/i },
+          { label: "not verified labels", pattern: /not verified/i },
+        ],
+        forbiddenPatterns: [{ label: "unsupported adoption claim", pattern: /\bmillions of users\b/i }],
+      },
+    },
+    {
+      name: "browser_dynamic_extraction",
+      answer: [
+        "## Evidence",
+        "- Browser evidence: the dashboard title and live metric were observed from the rendered page.",
+        "- Source: screenshot artifact captured the visible state for operator review.",
+        "- Residual risk: data may change after the snapshot timestamp.",
+        "",
+        "Final: dynamic browser extraction completed from rendered page evidence.",
+      ].join("\n"),
+      gate: {
+        minBytes: 170,
+        minBullets: 3,
+        minEvidenceSources: 2,
+        requiredPatterns: [
+          { label: "browser evidence", pattern: /Browser evidence/i },
+          { label: "screenshot artifact", pattern: /screenshot artifact/i },
+          { label: "residual risk", pattern: /Residual risk/i },
+        ],
+      },
+    },
+    {
+      name: "follow_up_resume",
+      answer: [
+        "## Evidence",
+        "- Source: existing session history supplied the original browser session id and prior finding.",
+        "- Browser evidence: follow-up reused the existing session before issuing the continuation.",
+        "- Residual risk: if the page expires, a cold resume may need operator confirmation.",
+        "",
+        "Final: follow-up continued from durable session history without starting a duplicate investigation.",
+      ].join("\n"),
+      gate: {
+        minBytes: 210,
+        minBullets: 3,
+        minEvidenceSources: 2,
+        requiredPatterns: [
+          { label: "session history", pattern: /session history/i },
+          { label: "existing session", pattern: /existing session/i },
+          { label: "residual risk", pattern: /Residual risk/i },
+        ],
+      },
+    },
+    {
+      name: "timeout_recovery",
+      answer: [
+        "## Evidence",
+        "- Evidence: the worker returned a timeout summary with partial transcript before hard abort.",
+        "- Source: available tool result was used for the final answer instead of inventing missing data.",
+        "- Residual risk: unresolved fields are listed as not verified until the user asks to continue.",
+        "",
+        "Final: timeout recovery produced an evidence-only answer and preserved a continuation path.",
+      ].join("\n"),
+      gate: {
+        minBytes: 220,
+        minBullets: 3,
+        minEvidenceSources: 2,
+        requiredPatterns: [
+          { label: "timeout summary", pattern: /timeout summary/i },
+          { label: "not verified", pattern: /not verified/i },
+          { label: "continue path", pattern: /continu/i },
+        ],
+      },
+    },
+    {
+      name: "approval_gated_side_effect",
+      answer: [
+        "## Evidence",
+        "- Source: permission.query recorded the proposed side effect before browser mutation.",
+        "- Source: permission.applied confirmed approval before executing the action.",
+        "- Residual risk: if approval is denied, the action must remain unexecuted and the final answer must explain the safe fallback.",
+        "",
+        "Final: side-effectful browser work remained permission-gated and auditable.",
+      ].join("\n"),
+      gate: {
+        minBytes: 220,
+        minBullets: 3,
+        minEvidenceSources: 2,
+        requiredPatterns: [
+          { label: "permission query", pattern: /permission\.query/i },
+          { label: "permission applied", pattern: /permission\.applied/i },
+          { label: "residual risk", pattern: /Residual risk/i },
+        ],
+      },
+    },
+  ];
+  const reports = cases.map((item) => {
+    const report = evaluateAnswerQuality({ scenario: item.name, answer: item.answer, gate: item.gate });
+    assertAnswerQuality(report);
+    return report;
+  });
+  return {
+    scenarios: cases.map((item) => item.name),
+    totalFinalBytes: reports.reduce((sum, report) => sum + report.finalBytes, 0),
+  };
 }
 
 function buildRealExploreWorkerRuntime(): WorkerRuntime {
