@@ -94,6 +94,62 @@ test("buildMissionObservabilitySnapshot marks stale runtime progress as blocked"
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "runtime_liveness")?.status, "fail");
 });
 
+test("buildMissionObservabilitySnapshot lets terminal task progress dominate late heartbeats", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 20_000,
+    events: [
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
+      event("final-1", "thought", 5_000, "role-lead", "Final answer with residual risk."),
+    ],
+    progressEvents: [
+      progress("role:lead", "role_run", "started", "alive", 10_000, 15_000, "Lead started.", "task-1"),
+      progress("role:lead", "role_run", "completed", "resolved", 12_000, 12_500, "Lead completed.", "task-1"),
+      progress("role:lead", "role_run", "heartbeat", "alive", 13_000, 18_000, "Late heartbeat.", "task-1"),
+    ],
+  });
+
+  assert.equal(snapshot.liveness.active, 0);
+  assert.equal(snapshot.liveness.waiting, 0);
+  assert.equal(snapshot.liveness.stale, 0);
+  assert.equal(snapshot.liveness.lastProgressAtMs, 12_000);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "runtime_liveness")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot still treats a newer task after a terminal task as active", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "working" }),
+    nowMs: 20_000,
+    events: [event("user-1", "plan", 1_000, "user", "Run task")],
+    progressEvents: [
+      progress("role:lead", "role_run", "completed", "resolved", 12_000, 12_500, "Lead completed.", "task-1"),
+      progress("role:lead", "role_run", "started", "alive", 14_000, 30_000, "Lead started next task.", "task-2"),
+    ],
+  });
+
+  assert.equal(snapshot.liveness.active, 1);
+  assert.equal(snapshot.liveness.waiting, 0);
+  assert.equal(snapshot.liveness.stale, 0);
+  assert.equal(snapshot.liveness.lastProgressAtMs, 14_000);
+});
+
+test("buildMissionObservabilitySnapshot does not let no-task terminal progress suppress newer no-task active progress", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "working" }),
+    nowMs: 20_000,
+    events: [event("user-1", "plan", 1_000, "user", "Run task")],
+    progressEvents: [
+      progress("role:lead", "role_run", "completed", "resolved", 12_000, 12_500, "Lead completed."),
+      progress("role:lead", "role_run", "started", "alive", 14_000, 30_000, "Lead started without task id."),
+    ],
+  });
+
+  assert.equal(snapshot.liveness.active, 1);
+  assert.equal(snapshot.liveness.waiting, 0);
+  assert.equal(snapshot.liveness.stale, 0);
+  assert.equal(snapshot.liveness.lastProgressAtMs, 14_000);
+});
+
 function baseMission(overrides: Partial<Mission> = {}): Mission {
   return {
     id: "msn.test",
@@ -155,7 +211,8 @@ function progress(
   continuityState: NonNullable<RuntimeProgressEvent["continuityState"]>,
   recordedAt: number,
   responseTimeoutAt: number,
-  summary: string
+  summary: string,
+  taskId?: string
 ): RuntimeProgressEvent {
   return {
     progressId: `progress:${subjectId}:${recordedAt}`,
@@ -167,5 +224,6 @@ function progress(
     responseTimeoutAt,
     summary,
     recordedAt,
+    ...(taskId ? { taskId } : {}),
   };
 }

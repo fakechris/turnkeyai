@@ -183,16 +183,25 @@ function summarizeRuntimeLiveness(
   progressEvents: RuntimeProgressEvent[],
   nowMs: number
 ): MissionObservabilitySnapshot["liveness"] {
-  const latestBySubject = new Map<string, RuntimeProgressEvent>();
+  const bySubjectTask = new Map<string, RuntimeProgressEvent[]>();
   for (const event of progressEvents) {
-    const key = `${event.subjectKind}:${event.subjectId}`;
-    const current = latestBySubject.get(key);
-    if (
-      !current ||
-      event.recordedAt > current.recordedAt ||
-      (event.recordedAt === current.recordedAt && event.progressId > current.progressId)
-    ) {
-      latestBySubject.set(key, event);
+    const taskKey = event.taskId ? `task:${event.taskId}` : `progress:${event.progressId}`;
+    const key = `${event.subjectKind}:${event.subjectId}:${taskKey}`;
+    const eventsForTask = bySubjectTask.get(key);
+    if (eventsForTask) {
+      eventsForTask.push(event);
+    } else {
+      bySubjectTask.set(key, [event]);
+    }
+  }
+
+  const latestBySubject = new Map<string, RuntimeProgressEvent>();
+  for (const eventsForTask of bySubjectTask.values()) {
+    const candidate = summarizeTaskProgress(eventsForTask);
+    const subjectKey = `${candidate.subjectKind}:${candidate.subjectId}`;
+    const current = latestBySubject.get(subjectKey);
+    if (!current || compareProgress(candidate, current) > 0) {
+      latestBySubject.set(subjectKey, candidate);
     }
   }
 
@@ -227,6 +236,19 @@ function summarizeRuntimeLiveness(
     ...(lastProgressAtMs !== undefined ? { lastProgressAtMs } : {}),
     staleSubjects,
   };
+}
+
+function summarizeTaskProgress(events: RuntimeProgressEvent[]): RuntimeProgressEvent {
+  const terminalEvents = events.filter(isTerminalProgress);
+  const candidates = terminalEvents.length > 0 ? terminalEvents : events;
+  return candidates.reduce((latest, event) => (compareProgress(event, latest) > 0 ? event : latest));
+}
+
+function compareProgress(left: RuntimeProgressEvent, right: RuntimeProgressEvent): number {
+  if (left.recordedAt !== right.recordedAt) {
+    return left.recordedAt - right.recordedAt;
+  }
+  return left.progressId.localeCompare(right.progressId);
 }
 
 function isTerminalProgress(event: RuntimeProgressEvent): boolean {
