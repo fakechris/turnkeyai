@@ -141,6 +141,8 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
     console.log(`real-model-catalog: ${real.modelCatalogPath}`);
     console.log(`real-tool-calls: ${real.toolCallNames.join(",")}`);
     console.log(`real-final: ${real.finalMarker}`);
+    console.log(`real-final-bytes: ${real.finalBytes}`);
+    console.log(`real-evidence-bullets: ${real.evidenceBullets}`);
     if (real.spawnedSessionCount !== undefined) {
       console.log(`real-spawned-sessions: ${real.spawnedSessionCount}`);
     }
@@ -161,6 +163,8 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
   modelCatalogPath: string;
   toolCallNames: string[];
   finalMarker: string;
+  finalBytes: number;
+  evidenceBullets: number;
   spawnedSessionCount?: number;
   childTranscriptMessages?: number;
 }> {
@@ -290,6 +294,12 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       assert.match(reply.content, /TURNKEYAI_COMPLEX_EXPLORE_OK/);
       assert.match(reply.content, /TURNKEYAI_COMPLEX_BROWSER_OK/);
       assert.match(reply.content, /Evidence/i);
+      assert.match(reply.content, /deterministic e2e worker/i);
+      assert.match(reply.content, /complex browser evidence/i);
+      assert.match(reply.content, /residual risk/i);
+      const evidenceBullets = countMarkdownBullets(reply.content);
+      assert.ok(evidenceBullets >= 3, `complex real LLM E2E must include at least 3 evidence bullets, got ${evidenceBullets}`);
+      assert.ok(Buffer.byteLength(reply.content, "utf8") >= 180, "complex real LLM E2E final answer is too thin");
     }
     assert.match(reply.content, new RegExp(targetMarker));
     const childTranscriptMessages = options.withBrowser
@@ -304,6 +314,8 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       modelCatalogPath,
       toolCallNames,
       finalMarker: targetMarker,
+      finalBytes: Buffer.byteLength(reply.content, "utf8"),
+      evidenceBullets: countMarkdownBullets(reply.content),
       ...(options.scenario === "complex" && workerRuntime.listSessions
         ? { spawnedSessionCount: (await workerRuntime.listSessions()).length }
         : {}),
@@ -314,6 +326,10 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
     await fixture?.close();
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+function countMarkdownBullets(value: string): number {
+  return (value.match(/^\s*[-*+]\s+\S/gm) ?? []).length;
 }
 
 function buildRealExploreWorkerRuntime(): WorkerRuntime {
