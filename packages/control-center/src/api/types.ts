@@ -119,3 +119,23 @@ export interface DiagnosticsLogs {
   redacted?: boolean;
   note?: string;
 }
+
+// --- /models (packages/app-gateway/src/routes/inspection-routes.ts) ---
+
+export interface ModelsReport {
+  modelCatalogPath: string | null;
+  adapterMode: "heuristic-only" | "llm+heuristic-fallback" | string;
+  models: Array<{
+    id: string;
+    label: string;
+    providerId: string;
+    protocol: "openai-compatible" | "anthropic-compatible" | string;
+    model: string;
+    apiKeyEnv: string;
+    configured: boolean;
+    enabled?: boolean;
+    aliases?: string[];
+    baseURL?: string;
+    baseURLEnv?: string;
+  }>;
+}

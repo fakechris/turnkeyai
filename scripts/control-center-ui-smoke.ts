@@ -217,6 +217,27 @@ try {
 
     const screenshot = await page.screenshot({ fullPage: true });
     assert(screenshot.byteLength > 20_000, `expected non-trivial screenshot, got ${screenshot.byteLength} bytes`);
+
+    await page.goto(`http://127.0.0.1:${port}/app#/settings`, {
+      waitUntil: "networkidle",
+    });
+    await page.waitForSelector("text=LLM models");
+    assert(
+      await page.locator('input[value="/tmp/turnkeyai-ui-smoke-models.json"]').count() > 0,
+      "settings should show the live model catalog path"
+    );
+    assert(
+      await page.locator('input[value="ANTHROPIC_API_KEY"]').isVisible(),
+      "settings should show the live model key env"
+    );
+    assert(
+      await page.getByText("missing key").isVisible(),
+      "settings should show model readiness from /models"
+    );
+    assert(
+      await page.locator('input[value="/tmp/turnkeyai-ui-smoke/data"]').isVisible(),
+      "settings should show live daemon paths"
+    );
     await page.close();
 
     const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -314,6 +335,14 @@ try {
       requestedPaths.some((value) => value.startsWith("/approvals")),
       "approvals endpoint was not requested"
     );
+    assert(
+      requestedPaths.some((value) => value.startsWith("/diagnostics")),
+      "settings diagnostics endpoint was not requested"
+    );
+    assert(
+      requestedPaths.some((value) => value.startsWith("/models")),
+      "settings models endpoint was not requested"
+    );
     console.log("control-center-ui-smoke: passed");
     console.log(`control-center-ui-smoke: screenshot-bytes ${screenshot.byteLength}`);
     console.log(`control-center-ui-smoke: mobile-screenshot-bytes ${mobileScreenshot.byteLength}`);
@@ -385,6 +414,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (method === "GET" && url.pathname === "/approvals") {
     json(res, approvalsFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/diagnostics") {
+    json(res, diagnosticsFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/models") {
+    json(res, modelsFixture());
     return;
   }
   if (method === "GET" && url.pathname === "/mission-agents") {
@@ -552,6 +589,70 @@ function metricsFixture() {
         { name: "evidence", status: "pass", detail: "Evidence event exists." },
       ],
     },
+  };
+}
+
+function diagnosticsFixture() {
+  return {
+    daemon: {
+      version: "0.1.1",
+      port,
+      startedAt: "2026-05-29T04:00:00.000Z",
+      uptimeMs: 12_000,
+      authMode: "token",
+    },
+    paths: {
+      runtimeRoot: "/tmp/turnkeyai-ui-smoke",
+      dataDir: "/tmp/turnkeyai-ui-smoke/data",
+      configFile: "/tmp/turnkeyai-ui-smoke/config.json",
+      logFile: "/tmp/turnkeyai-ui-smoke/logs/daemon.log",
+      modelCatalogPath: "/tmp/turnkeyai-ui-smoke-models.json",
+      logFileBytes: 120,
+      logFileModifiedAt: "2026-05-29T04:00:10.000Z",
+    },
+    transport: {
+      mode: "local",
+      label: "local-automation",
+    },
+    counters: {
+      sessionCount: 1,
+      relayPeerCount: 0,
+      relayTargetCount: 0,
+    },
+    node: {
+      version: process.versions.node,
+      platform: process.platform,
+      arch: process.arch,
+    },
+    readiness: {
+      status: "warn",
+      checks: [
+        {
+          id: "model_catalog",
+          label: "Model catalog",
+          status: "warn",
+          detail: "One configured model is missing its API key.",
+        },
+      ],
+    },
+  };
+}
+
+function modelsFixture() {
+  return {
+    modelCatalogPath: "/tmp/turnkeyai-ui-smoke-models.json",
+    adapterMode: "llm+heuristic-fallback",
+    models: [
+      {
+        id: "claude-sonnet",
+        label: "Claude Sonnet",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        model: "claude-sonnet-4-5",
+        apiKeyEnv: "ANTHROPIC_API_KEY",
+        configured: false,
+      },
+    ],
   };
 }
 
