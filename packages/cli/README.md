@@ -32,6 +32,14 @@ npx @turnkeyai/cli app --no-start
 Source checkout fallback when `turnkeyai` is not on PATH:
 
 ```bash
+npm run install:local-cli
+turnkeyai app
+turnkeyai daemon status
+```
+
+If you do not want to modify the global npm link, use the source-tree scripts:
+
+```bash
 npm run app -- --no-open
 npm run daemon:status
 npm run doctor

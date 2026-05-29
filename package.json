@@ -26,6 +26,7 @@
     "acceptance:real": "tsx scripts/real-llm-acceptance.ts",
     "control-center:smoke": "tsx scripts/control-center-ui-smoke.ts",
     "pack:cli": "npm pack --workspace @turnkeyai/cli --dry-run",
+    "install:local-cli": "npm link --workspace @turnkeyai/cli",
     "release:verify": "tsx scripts/release-readiness.ts",
     "phase1:baseline": "tsx scripts/phase1-readiness-baseline.ts",
     "soak:long": "tsx scripts/validation-soak-series.ts",

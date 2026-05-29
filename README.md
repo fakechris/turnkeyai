@@ -162,6 +162,14 @@ turnkeyai app --no-start              # 要求 daemon 已运行，禁用 auto-st
 如果你在源码 checkout 里还没有全局 `turnkeyai` 命令，用：
 
 ```bash
+npm run install:local-cli
+turnkeyai app
+turnkeyai daemon status
+```
+
+不想改全局 npm link 时，也可以直接用源码脚本：
+
+```bash
 npm run app -- --no-open
 npm run daemon:status
 npm run doctor
