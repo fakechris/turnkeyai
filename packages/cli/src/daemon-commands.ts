@@ -159,9 +159,23 @@ function errorMessage(error: unknown): string {
   return "request failed";
 }
 
-function findDaemonEntry(): string {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  return path.join(here, "daemon.js");
+interface DaemonLaunchCommand {
+  executable: string;
+  args: string[];
+}
+
+export function resolveDaemonLaunchCommand(currentDir = path.dirname(fileURLToPath(import.meta.url))): DaemonLaunchCommand {
+  const packagedEntry = path.join(currentDir, "daemon.js");
+  if (existsSync(packagedEntry)) {
+    return { executable: process.execPath, args: [packagedEntry] };
+  }
+
+  const sourceEntry = path.resolve(currentDir, "../../app-gateway/src/daemon.ts");
+  if (existsSync(sourceEntry)) {
+    return { executable: process.execPath, args: ["--import", "tsx", sourceEntry] };
+  }
+
+  return { executable: process.execPath, args: [packagedEntry] };
 }
 
 /**
@@ -233,11 +247,11 @@ export async function ensureDaemonRunning(
     }
   }
 
-  const entry = findDaemonEntry();
+  const launch = resolveDaemonLaunchCommand();
   const { mkdirSync } = await import("node:fs");
   mkdirSync(paths.logsDir, { recursive: true });
   const logFd = openSync(paths.logFile, "a", 0o600);
-  const child = spawn(process.execPath, [entry, ...args], {
+  const child = spawn(launch.executable, [...launch.args, ...args], {
     detached: true,
     stdio: ["ignore", logFd, logFd],
     env: process.env,
@@ -291,8 +305,8 @@ export async function runDaemonStart(args: string[]): Promise<void> {
 }
 
 async function runDaemonForeground(args: string[]): Promise<void> {
-  const entry = findDaemonEntry();
-  const child = spawn(process.execPath, [entry, ...args], {
+  const launch = resolveDaemonLaunchCommand();
+  const child = spawn(launch.executable, [...launch.args, ...args], {
     stdio: "inherit",
     env: process.env,
   });
