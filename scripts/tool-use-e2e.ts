@@ -49,7 +49,7 @@ interface ToolUseE2eOptions {
   modelChainId?: string;
 }
 
-type ToolUseScenario = "basic" | "complex" | "acceptance";
+type ToolUseScenario = "basic" | "complex" | "acceptance" | "followup";
 
 function parseOptions(args: string[]): ToolUseE2eOptions {
   const options: ToolUseE2eOptions = {
@@ -70,8 +70,8 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
     }
     if (arg === "--scenario") {
       const value = args[index + 1];
-      if (value !== "basic" && value !== "complex" && value !== "acceptance") {
-        throw new Error("--scenario must be basic, complex, or acceptance");
+      if (value !== "basic" && value !== "complex" && value !== "acceptance" && value !== "followup") {
+        throw new Error("--scenario must be basic, complex, acceptance, or followup");
       }
       options.scenario = value;
       index += 1;
@@ -178,6 +178,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
   childTranscriptMessages?: number;
 }> {
   const multiSourceScenario = isMultiSourceScenario(options.scenario);
+  const followupScenario = options.scenario === "followup";
   if (multiSourceScenario && !options.withBrowser) {
     throw new Error(`--scenario ${options.scenario} requires --with-browser`);
   }
@@ -206,7 +207,9 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-tooluse-real-e2e-"));
   let closeWorkerRuntime: (() => Promise<void>) | null = null;
   try {
-    const workerRuntimeBundle = multiSourceScenario
+    const workerRuntimeBundle = followupScenario
+      ? { workerRuntime: buildRealFollowupWorkerRuntime(), close: async () => {} }
+      : multiSourceScenario
       ? buildRealComplexWorkerRuntime({ gateway, fixtureUrl: fixture!.url, tempDir })
       : options.withBrowser
       ? buildRealBrowserWorkerRuntime({ gateway, fixtureUrl: fixture!.url, tempDir })
@@ -226,10 +229,10 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
           toolCapabilityRegistry,
           maxSessionToolTimeoutMs: options.withBrowser ? 180_000 : 60_000,
         }),
-        maxRounds: multiSourceScenario ? 8 : options.withBrowser ? 6 : 4,
+        maxRounds: followupScenario ? 6 : multiSourceScenario ? 8 : options.withBrowser ? 6 : 4,
         maxParallelToolCalls: multiSourceScenario ? 2 : 1,
         maxToolCallsPerRound: multiSourceScenario ? 4 : 2,
-        maxWallClockMs: multiSourceScenario ? 300_000 : options.withBrowser ? 240_000 : 90_000,
+        maxWallClockMs: followupScenario ? 120_000 : multiSourceScenario ? 300_000 : options.withBrowser ? 240_000 : 90_000,
       },
       clock: { now: () => Date.now() },
     });
@@ -239,7 +242,9 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
     });
     const mode = options.withBrowser ? "llm-browser" : "llm-only";
     const targetMarker =
-      multiSourceScenario
+      followupScenario
+        ? "TURNKEYAI_FOLLOWUP_E2E_OK"
+        : multiSourceScenario
         ? "TURNKEYAI_COMPLEX_E2E_OK"
         : options.withBrowser
           ? "TURNKEYAI_BROWSER_E2E_OK"
@@ -253,7 +258,16 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
         systemPrompt: [
           toolCapabilityRegistry.renderPromptHarness({ seat: "lead" }),
           "You are running a release-gate E2E. Use the available session tool instead of answering from memory.",
-          multiSourceScenario
+          followupScenario
+            ? [
+                "You must verify same-session follow-up behavior:",
+                "1. Call sessions_spawn with agent_id=explore exactly once for phase 1.",
+                "2. Read the returned session_key from that partial result.",
+                "3. Call sessions_send exactly once on that same session_key using the requested continuation message.",
+                "4. Do not spawn a second session for the continuation.",
+                "5. Finalize only after sessions_send returns TURNKEYAI_FOLLOWUP_E2E_OK.",
+              ].join("\n")
+            : multiSourceScenario
             ? [
                 "You must gather two independent evidence sources before final answer:",
                 "1. Call sessions_spawn with agent_id=explore to verify TURNKEYAI_COMPLEX_EXPLORE_OK.",
@@ -264,7 +278,14 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
             ? "You must call sessions_spawn with agent_id=browser exactly once, then base your final answer on browser-observed evidence."
             : "You must call sessions_spawn with agent_id=explore exactly once, then base your final answer on the tool result.",
         ].join("\n\n"),
-        taskPrompt: multiSourceScenario
+        taskPrompt: followupScenario
+          ? [
+              "Run the same-session follow-up E2E.",
+              "Phase 1: ask the explore sub-agent for the phase-one checkpoint.",
+              "Phase 2: continue the same sub-agent session with sessions_send using the continuation instruction from phase 1.",
+              `Final answer must include ${targetMarker}, the reused session_key, and a short note that no duplicate session was spawned.`,
+            ].join("\n")
+          : multiSourceScenario
           ? [
               "Run the production-grade multi-agent tool-use E2E.",
               "Explore task: retrieve the release marker TURNKEYAI_COMPLEX_EXPLORE_OK and its deterministic source label.",
@@ -275,7 +296,13 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
           ? `Open ${fixture!.url}, read the fixture marker and page title with the browser sub-agent, then answer with ${targetMarker}.`
           : `Ask the explore sub-agent for the release marker, then answer with ${targetMarker}.`,
         outputContract:
-          multiSourceScenario
+          followupScenario
+            ? [
+                `Final answer must include ${targetMarker}.`,
+                "Use Markdown with a heading `Evidence` and at least three bullets: phase-one partial result, follow-up result, residual risk.",
+                "Mention the reused session_key and state that the continuation used sessions_send rather than a duplicate sessions_spawn.",
+              ].join("\n")
+            : multiSourceScenario
             ? [
                 `Final answer must include ${targetMarker}.`,
                 "Use Markdown with a heading `Evidence` and at least three bullets: explore evidence, browser evidence, residual risk.",
@@ -285,16 +312,35 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
         suggestedMentions: [],
       },
     });
-    const toolCalls = nativeMessages.flatMap((message) =>
+    const latestNativeMessages = [...new Map(nativeMessages.map((message) => [message.id, message])).values()];
+    const toolCalls = latestNativeMessages.flatMap((message) =>
       message.role === "assistant" && message.toolCalls?.length ? message.toolCalls : []
     );
     const toolCallNames = toolCalls.map((call) => call.name);
     assert.ok(toolCallNames.includes("sessions_spawn"), "real LLM must call sessions_spawn");
     let quality: AnswerQualityReport | null = null;
-    if (multiSourceScenario) {
+    if (followupScenario) {
       const spawnedAgents = toolCalls
         .filter((call) => call.name === "sessions_spawn")
-        .map((call) => (call.arguments as Record<string, unknown> | undefined)?.agent_id);
+        .map((call) => readObservedToolCallInput(call)?.agent_id);
+      const sessions = workerRuntime.listSessions ? await workerRuntime.listSessions() : [];
+      assert.deepEqual(spawnedAgents, ["explore"], "follow-up real LLM E2E must spawn exactly one explore session");
+      assert.ok(toolCallNames.includes("sessions_send"), "follow-up real LLM E2E must call sessions_send");
+      assert.equal(sessions.length, 1, `follow-up real LLM E2E must reuse one sub-agent session, got ${sessions.length}`);
+      assert.equal(sessions[0]?.state.status, "done");
+      assert.ok((sessions[0]?.state.history?.length ?? 0) >= 4, "follow-up session should preserve spawn/send transcript");
+      quality = evaluateAnswerQuality({
+        scenario: options.scenario,
+        answer: reply.content,
+        gate: followupQualityGate(targetMarker),
+        toolCallNames,
+        spawnedSessionCount: sessions.length,
+      });
+      assertAnswerQuality(quality);
+    } else if (multiSourceScenario) {
+      const spawnedAgents = toolCalls
+        .filter((call) => call.name === "sessions_spawn")
+        .map((call) => readObservedToolCallInput(call)?.agent_id);
       assert.ok(spawnedAgents.includes("explore"), "complex real LLM E2E must spawn explore");
       assert.ok(spawnedAgents.includes("browser"), "complex real LLM E2E must spawn browser");
       const sessions = workerRuntime.listSessions ? await workerRuntime.listSessions() : [];
@@ -312,7 +358,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       assertAnswerQuality(quality);
     }
     assert.match(reply.content, new RegExp(targetMarker));
-    const childTranscriptMessages = options.withBrowser
+    const childTranscriptMessages = options.withBrowser || followupScenario
       ? (await firstWorkerHistoryLength(workerRuntime))
       : undefined;
     if (options.withBrowser) {
@@ -327,7 +373,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       finalBytes: Buffer.byteLength(reply.content, "utf8"),
       evidenceBullets: countMarkdownBullets(reply.content),
       qualityFailures: quality?.failures.length ?? 0,
-      ...(multiSourceScenario && workerRuntime.listSessions
+      ...((multiSourceScenario || followupScenario) && workerRuntime.listSessions
         ? { spawnedSessionCount: (await workerRuntime.listSessions()).length }
         : {}),
       ...(childTranscriptMessages !== undefined ? { childTranscriptMessages } : {}),
@@ -341,6 +387,13 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
 
 function countMarkdownBullets(value: string): number {
   return (value.match(/^\s*[-*+]\s+\S/gm) ?? []).length;
+}
+
+function readObservedToolCallInput(call: {
+  arguments?: Record<string, unknown>;
+  input?: Record<string, unknown>;
+}): Record<string, unknown> | undefined {
+  return call.arguments ?? call.input;
 }
 
 interface AnswerQualityGate {
@@ -391,6 +444,27 @@ function multiSourceQualityGate(targetMarker: string): AnswerQualityGate {
     forbiddenPatterns: [
       { label: "unsupported user-scale claim", pattern: /\b(millions of users|large community|widely adopted)\b/i },
       { label: "unsupported pricing claim", pattern: /\bfree plan|enterprise pricing|starts at \$\d+\b/i },
+    ],
+  };
+}
+
+function followupQualityGate(targetMarker: string): AnswerQualityGate {
+  return {
+    minBytes: 180,
+    minBullets: 3,
+    minEvidenceSources: 2,
+    maxSpawnedSessions: 1,
+    requiredToolNames: ["sessions_spawn", "sessions_send"],
+    requiredPatterns: [
+      { label: "target success marker", pattern: new RegExp(escapeRegExp(targetMarker)) },
+      { label: "evidence heading", pattern: /Evidence/i },
+      { label: "phase-one marker", pattern: /TURNKEYAI_FOLLOWUP_PHASE_ONE/ },
+      { label: "same-session continuation", pattern: /sessions_send|same session|reused session|follow-up/i },
+      { label: "session key", pattern: /session[_ -]?key/i },
+      { label: "residual risk", pattern: /residual risk/i },
+    ],
+    forbiddenPatterns: [
+      { label: "duplicate-session claim", pattern: /\b(spawned a second session|duplicate session was used)\b/i },
     ],
   };
 }
@@ -601,6 +675,59 @@ function buildRealExploreWorkerRuntime(): WorkerRuntime {
           source: "deterministic e2e worker",
           content:
             "Explore evidence: deterministic e2e worker verified TURNKEYAI_COMPLEX_EXPLORE_OK from the release-gate source.",
+        },
+      };
+    },
+  };
+  const registry: WorkerRegistry = {
+    async selectHandler(input) {
+      return input.packet.preferredWorkerKinds?.includes("explore") ? handler : null;
+    },
+    async getHandler(kind) {
+      return kind === "explore" ? handler : null;
+    },
+  };
+  return new InMemoryWorkerRuntime({ workerRegistry: registry });
+}
+
+function buildRealFollowupWorkerRuntime(): WorkerRuntime {
+  const handler: WorkerHandler = {
+    kind: "explore",
+    canHandle(input) {
+      return input.packet.preferredWorkerKinds?.includes("explore") === true;
+    },
+    async run(input: WorkerInvocationInput): Promise<WorkerExecutionResult> {
+      const isFollowup = input.packet.continuityMode === "resume-existing";
+      if (!isFollowup) {
+        return {
+          workerType: "explore",
+          status: "partial",
+          summary:
+            "Phase one complete: TURNKEYAI_FOLLOWUP_PHASE_ONE. Continue this same session with sessions_send message: continue-followup-phase-two.",
+          payload: {
+            mode: "deterministic_followup_phase_one",
+            marker: "TURNKEYAI_FOLLOWUP_PHASE_ONE",
+            continuation_message: "continue-followup-phase-two",
+            content:
+              "Phase-one evidence: deterministic follow-up worker returned TURNKEYAI_FOLLOWUP_PHASE_ONE and requested sessions_send continuation on the same session.",
+          },
+        };
+      }
+      const message = input.packet.taskPrompt;
+      const usedRequestedContinuation = /continue-followup-phase-two/i.test(message);
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: usedRequestedContinuation
+          ? "Follow-up completed on the same session with TURNKEYAI_FOLLOWUP_E2E_OK."
+          : "Follow-up completed, but the requested continuation phrase was not preserved.",
+        payload: {
+          mode: "deterministic_followup_phase_two",
+          marker: "TURNKEYAI_FOLLOWUP_E2E_OK",
+          phase_one_marker: "TURNKEYAI_FOLLOWUP_PHASE_ONE",
+          used_requested_continuation: usedRequestedContinuation,
+          content:
+            "Follow-up evidence: sessions_send resumed the existing deterministic worker session and returned TURNKEYAI_FOLLOWUP_E2E_OK.",
         },
       };
     },
