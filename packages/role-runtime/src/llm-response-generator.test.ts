@@ -1001,6 +1001,7 @@ test("llm role response generator synthesizes instead of falling back when tool 
         readToolContent(message.content).includes("Tool-use round limit reached (2)")
     )
   );
+  assert.ok(finalSynthesisPrompt(gatewayInputs[3])?.includes("Do not collapse requested bullets into a paragraph"));
 });
 
 test("llm role response generator synthesizes from evidence when tool wall-clock budget is reached", async () => {
@@ -1068,6 +1069,7 @@ test("llm role response generator synthesizes from evidence when tool wall-clock
         readToolContent(message.content).includes("Tool-use wall-clock budget reached")
     )
   );
+  assert.ok(finalSynthesisPrompt(gatewayInputs[2])?.includes("Final synthesis format contract"));
 });
 
 test("llm role response generator synthesizes immediately after sub-agent timeout", async () => {
@@ -1146,6 +1148,9 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
         readToolContent(message.content).includes("No usable evidence was gathered before the timeout")
     )
   );
+  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("If the task specifies a heading, bullet count"));
+  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("bare http:// / https:// URLs"));
+  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("Do not copy internal fetch URLs"));
 });
 
 test("llm role response generator synthesizes immediately after completed sub-agent final content", async () => {
@@ -1237,6 +1242,7 @@ test("llm role response generator synthesizes immediately after completed sub-ag
         readToolContent(message.content).includes("Source 1 final_content")
     )
   );
+  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("Do not add extra sections, summaries, notes"));
 });
 
 test("llm role response generator accepts short completed sub-agent final content", async () => {
@@ -1752,6 +1758,20 @@ function readToolContent(content: GenerateTextInput["messages"][number]["content
     })
     .filter(Boolean)
     .join("\n");
+}
+
+function finalSynthesisPrompt(input: GenerateTextInput | undefined): string | undefined {
+  const messages = input?.messages ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (
+      message.role === "user" &&
+      readToolContent(message.content).includes("Final synthesis format contract")
+    ) {
+      return readToolContent(message.content);
+    }
+  }
+  return undefined;
 }
 
 async function waitUntil(predicate: () => boolean): Promise<void> {

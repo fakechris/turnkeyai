@@ -271,6 +271,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           reasonLines: [
             `${timeoutSignal.toolName} timed out${timeoutSignal.timeoutSeconds == null ? "" : ` after ${timeoutSignal.timeoutSeconds}s`}.`,
             "Do not call more tools or spawn fallback sessions for this timeout.",
+            "Do not copy internal fetch URLs, local fixture URLs, session keys, or raw tool arguments into the final answer unless the original user requested those exact raw identifiers.",
             timeoutSignal.evidenceAvailable
               ? "Produce the best final answer from the evidence already gathered and state any remaining uncertainty."
               : "No usable evidence was gathered before the timeout. Say that verification did not complete, summarize what was attempted, and tell the user they can ask to continue.",
@@ -465,11 +466,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       ...input.messages,
       {
         role: "user",
-        content: (input.reasonLines ?? [
-          `Tool-use round limit reached (${input.maxRounds}).`,
-          "Do not call more tools. Produce the best final answer from the evidence already gathered.",
-          "State uncertainties and missing verification explicitly instead of trying another lookup.",
-        ]).join("\n"),
+        content: [
+          ...finalSynthesisFormatContract(),
+          ...(input.reasonLines ?? [
+            `Tool-use round limit reached (${input.maxRounds}).`,
+            "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+            "State uncertainties and missing verification explicitly instead of trying another lookup.",
+          ]),
+        ].join("\n"),
       },
     ]);
     const generated = await this.generateWithEnvelopeRetry({
@@ -1067,6 +1071,16 @@ function buildGatewayInput(input: {
         input.envelopeHint?.multimodalPartCount ?? input.packet.promptAssembly?.envelopeHint?.multimodalPartCount ?? 0,
     },
   };
+}
+
+function finalSynthesisFormatContract(): string[] {
+  return [
+    "Final synthesis format contract:",
+    "Review the original user/task request for any explicit final answer shape before writing.",
+    "If the task specifies a heading, bullet count, bullet labels, order, table/no-table rule, link/no-link rule, or forbidden markup, follow those format constraints exactly.",
+    "When links are forbidden, do not include Markdown links or bare http:// / https:// URLs, even if tool results contain internal fetch URLs.",
+    "Do not collapse requested bullets into a paragraph. Do not add extra sections, summaries, notes, or prose after an exact requested shape.",
+  ];
 }
 
 function withoutToolUse(input: GenerateTextInput): GenerateTextInput {
