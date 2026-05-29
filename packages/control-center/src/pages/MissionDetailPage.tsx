@@ -569,11 +569,13 @@ function SubAgentSessionRow({
   const latestHistory = history.slice(-4).reverse();
   const terminal = isTerminalSession(session);
   const summary = session.state.lastResult?.summary ?? session.state.continuationDigest?.summary ?? "No result summary yet.";
+  const label = session.context?.label?.trim();
   return (
     <details className="subagent-session-row">
       <summary>
         <span className="subagent-session-main">
           <span className="mono">{session.state.workerType}</span>
+          {label && <span>{label}</span>}
           <span>{session.state.status.replace("_", " ")}</span>
           <span className="faint mono">{session.workerRunKey}</span>
         </span>

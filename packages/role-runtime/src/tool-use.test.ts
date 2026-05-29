@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { RoleActivationInput, WorkerRuntime } from "@turnkeyai/core-types/team";
+import type { RoleActivationInput, WorkerInvocationInput, WorkerRuntime } from "@turnkeyai/core-types/team";
 
 import type { TaskToolService } from "./task-tool-service";
 import type { RolePromptPacket } from "./prompt-policy";
@@ -96,8 +96,10 @@ test("sessions_spawn marks a selected worker with no executable result as a fail
 });
 
 test("sessions_spawn exposes sub-agent final content at top level", async () => {
+  let capturedWorkerSession: unknown = null;
   const workerRuntime = {
-    async spawn() {
+    async spawn(input: WorkerInvocationInput) {
+      capturedWorkerSession = input.packet.workerSession;
       return { workerType: "explore", workerRunKey: "worker:explore:task-1" };
     },
     async send() {
@@ -122,6 +124,7 @@ test("sessions_spawn exposes sub-agent final content at top level", async () => 
       input: {
         agent_id: "explore",
         task: "Research target.",
+        label: "Primary research",
       },
     },
     activation: buildActivation(),
@@ -140,6 +143,11 @@ test("sessions_spawn exposes sub-agent final content at top level", async () => 
   assert.equal(body.protocol, "turnkeyai.session_tool_result.v1");
   assert.equal(body.final_content, "Full evidence ledger with source URLs.");
   assert.equal(body.payload?.content, "Full evidence ledger with source URLs.");
+  assert.deepEqual(capturedWorkerSession, {
+    parentSessionKey: "role:role-lead:thread:thread-1",
+    toolCallId: "call-result",
+    label: "Primary research",
+  });
 });
 
 test("sessions_spawn rejects worker kinds that were not advertised as executable", async () => {
@@ -1872,6 +1880,9 @@ test("sessions_list filters by thread, kind, agent_id, parentSessionKey, and act
             taskId: "task-1",
             roleId: "role-lead",
             parentSpanId: "role:role:role-lead:thread:thread-1",
+            parentSessionKey: "role:role-lead:thread:thread-1",
+            toolCallId: "call-browser",
+            label: "Live browser check",
           },
           state: {
             workerRunKey: "worker:browser:recent",
@@ -1997,8 +2008,20 @@ test("sessions_list filters by thread, kind, agent_id, parentSessionKey, and act
     },
   });
 
-  const body = JSON.parse(result.content) as { sessions: Array<{ session_key: string }> };
+  const body = JSON.parse(result.content) as {
+    sessions: Array<{
+      session_key: string;
+      label: string | null;
+      parent_session_key: string | null;
+      tool_call_id: string | null;
+      message_count: number;
+    }>;
+  };
   assert.deepEqual(body.sessions.map((session) => session.session_key), ["worker:browser:recent"]);
+  assert.equal(body.sessions[0]?.label, "Live browser check");
+  assert.equal(body.sessions[0]?.parent_session_key, "role:role-lead:thread:thread-1");
+  assert.equal(body.sessions[0]?.tool_call_id, "call-browser");
+  assert.equal(body.sessions[0]?.message_count, 1);
 });
 
 test("sessions_history reads durable session history with pagination and payload gating", async () => {

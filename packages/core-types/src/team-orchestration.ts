@@ -80,6 +80,11 @@ export interface RolePromptPacketLike {
   outputContract: string;
   suggestedMentions: RoleId[];
   preferredWorkerKinds?: WorkerKind[];
+  workerSession?: {
+    label?: string;
+    parentSessionKey?: RunKey;
+    toolCallId?: string;
+  };
   toolUseMode?: "auto" | "disabled";
   resumeTarget?: SessionTarget;
   continuityMode?: ContinuityMode;

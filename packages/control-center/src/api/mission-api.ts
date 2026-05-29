@@ -199,6 +199,9 @@ export interface WorkerSessionRecord {
     taskId: string;
     roleId: string;
     parentSpanId: string;
+    parentSessionKey?: string;
+    toolCallId?: string;
+    label?: string;
   };
 }
 

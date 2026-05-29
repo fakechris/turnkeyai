@@ -102,6 +102,9 @@ export interface WorkerSessionContextRecord {
   taskId: TaskId;
   roleId: RoleId;
   parentSpanId: string;
+  parentSessionKey?: RunKey;
+  toolCallId?: string;
+  label?: string;
 }
 
 export interface WorkerSessionRecord {
