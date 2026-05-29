@@ -236,3 +236,89 @@ export interface RuntimeSummaryReport {
     missingContextSessions: number;
   };
 }
+
+// --- /validation-ops (packages/app-gateway/src/routes/validation-routes.ts) ---
+
+export type ValidationOpsStatus = "passed" | "failed" | "missing";
+export type ValidationOpsClosedLoopStatus =
+  | "completed"
+  | "actionable"
+  | "silent_failure"
+  | "ambiguous_failure";
+export type ValidationOpsBaselineStatus = "fresh-passing" | "fresh-failing" | "stale" | "missing";
+
+export interface ValidationOpsReadinessGate {
+  gateId: "phase1-e2e-profile" | "release-readiness" | "transport-soak" | "soak-series";
+  title: string;
+  status: ValidationOpsStatus;
+  summary: string;
+  commandHint: string;
+  latestRunId?: string;
+  recordedAt?: number;
+}
+
+export interface ValidationOpsRunRecord {
+  runId: string;
+  runType: "release-readiness" | "validation-profile" | "soak-series" | "transport-soak" | "phase1-baseline";
+  title: string;
+  status: "passed" | "failed";
+  completedAt: number;
+  durationMs: number;
+  issueCount: number;
+}
+
+export interface ValidationOpsReport {
+  totalRuns: number;
+  failedRuns: number;
+  passedRuns: number;
+  attentionCount: number;
+  latestRuns: ValidationOpsRunRecord[];
+  activeIssues: Array<{
+    issueId: string;
+    kind: string;
+    scope: string;
+    summary: string;
+    bucket: string;
+    severity: "warning" | "critical";
+    recommendedAction: string;
+    commandHint: string;
+    runId: string;
+    runType: string;
+    title: string;
+    recordedAt: number;
+  }>;
+  readiness: {
+    status: ValidationOpsStatus;
+    summary: string;
+    passedGates: number;
+    failedGates: number;
+    missingGates: number;
+    nextCommand: string;
+    gates: ValidationOpsReadinessGate[];
+  };
+  closedLoop: {
+    closedLoopStatus: ValidationOpsClosedLoopStatus;
+    totalCases: number;
+    completedCases: number;
+    actionableCases: number;
+    silentFailureCases: number;
+    ambiguousFailureCases: number;
+    closedLoopCases: number;
+    closedLoopRate: number;
+    rerunCommand: string;
+    measuredRuns: number;
+    nextCommand: string;
+    latestRunId?: string;
+  };
+  baseline: {
+    status: ValidationOpsBaselineStatus;
+    summary: string;
+    nextCommand: string;
+    staleAfterMs: number;
+    latestRunId?: string;
+    recordedAt?: number;
+    ageMs?: number;
+    consecutivePassedRuns?: number;
+    requiredRuns?: number;
+  };
+}

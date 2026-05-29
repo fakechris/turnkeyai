@@ -8,7 +8,14 @@ import { useState } from "react";
 
 import { useApiClient } from "../api/useApiClient";
 import type { WorkerSessionRecord } from "../api/mission-api";
-import type { BridgeStatus, DiagnosticsLogs, DiagnosticsSnapshot, RuntimeSummaryReport } from "../api/types";
+import type {
+  BridgeStatus,
+  DiagnosticsLogs,
+  DiagnosticsSnapshot,
+  RuntimeSummaryReport,
+  ValidationOpsReport,
+  ValidationOpsStatus,
+} from "../api/types";
 import { Icon } from "../components/Icon";
 import { usePolling } from "../hooks/usePolling";
 import { useAppState } from "../state/AppState";
@@ -23,6 +30,8 @@ interface Live {
   logs: DiagnosticsLogs | null;
   runtimeSummary: RuntimeSummaryReport | null;
   workerSessions: WorkerSessionRecord[];
+  validationOps: ValidationOpsReport | null;
+  validationOpsError: string | null;
   reachable: boolean;
 }
 
@@ -35,16 +44,19 @@ export function RuntimePage() {
     logs: null,
     runtimeSummary: null,
     workerSessions: [],
+    validationOps: null,
+    validationOpsError: null,
     reachable: false,
   });
 
   usePolling(async () => {
-    const [diagResult, statusResult, logsResult, runtimeResult, sessionsResult] = await Promise.allSettled([
+    const [diagResult, statusResult, logsResult, runtimeResult, sessionsResult, validationOpsResult] = await Promise.allSettled([
       client.get<DiagnosticsSnapshot>("/diagnostics"),
       client.get<BridgeStatus>("/bridge/status"),
       client.get<DiagnosticsLogs>(`/diagnostics/logs?limit=${LOG_LIMIT}`),
       client.get<RuntimeSummaryReport>("/runtime-summary?limit=8"),
       client.get<WorkerSessionRecord[]>("/runtime-worker-sessions?limit=8"),
+      client.get<ValidationOpsReport>("/validation-ops?limit=6"),
     ]);
 
     const diagnostics = diagResult.status === "fulfilled" ? diagResult.value : null;
@@ -52,6 +64,9 @@ export function RuntimePage() {
     const logs = logsResult.status === "fulfilled" ? logsResult.value : null;
     const runtimeSummary = runtimeResult.status === "fulfilled" ? runtimeResult.value : null;
     const workerSessions = sessionsResult.status === "fulfilled" ? sessionsResult.value : [];
+    const validationOps = validationOpsResult.status === "fulfilled" ? validationOpsResult.value : null;
+    const validationOpsError =
+      validationOpsResult.status === "rejected" ? readableRuntimeError(validationOpsResult.reason) : null;
     const reachable = diagnostics != null || status != null || runtimeSummary != null;
 
     if (status) {
@@ -63,12 +78,12 @@ export function RuntimePage() {
       // Don't blast "Unreachable" on a single transient 401 from one
       // of the three fetches — apiClient already cleared the token if
       // applicable. Only set bad when ALL three failed.
-      const allUnauth = [diagResult, statusResult, logsResult, runtimeResult, sessionsResult].every(
+      const allUnauth = [diagResult, statusResult, logsResult, runtimeResult, sessionsResult, validationOpsResult].every(
         (r) => r.status === "rejected" && (r.reason as Error)?.message === "unauthorized"
       );
       if (!allUnauth) setPill({ state: "bad", label: "Unreachable" });
     }
-    setLive({ diagnostics, status, logs, runtimeSummary, workerSessions, reachable });
+    setLive({ diagnostics, status, logs, runtimeSummary, workerSessions, validationOps, validationOpsError, reachable });
   }, POLL_MS);
 
   const exportBundle = () => {
@@ -133,6 +148,7 @@ export function RuntimePage() {
 
         <div className="col" style={{ gap: 14 }}>
           <RecoveryCard summary={live.runtimeSummary} reachable={live.reachable} />
+          <ValidationOpsCard report={live.validationOps} error={live.validationOpsError} reachable={live.reachable} />
           <TransportCard status={live.status} />
           <TokensCard />
         </div>
@@ -296,6 +312,26 @@ function runtimeChainDot(state: string): string {
   return "working";
 }
 
+function validationStatusTone(status: ValidationOpsStatus | undefined): string {
+  if (status === "passed") return "success";
+  if (status === "failed") return "danger";
+  if (status === "missing") return "warning";
+  return "info";
+}
+
+function validationStatusDot(status: ValidationOpsStatus | "stale" | undefined): string {
+  if (status === "passed") return "done";
+  if (status === "failed") return "blocked";
+  if (status === "missing" || status === "stale") return "needs_approval";
+  return "planning";
+}
+
+function readableRuntimeError(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "request failed";
+}
+
 function BrowserSessionsCard({
   sessions,
   reachable,
@@ -400,6 +436,86 @@ function RecoveryCard({
           active {summary.activeCount} · waiting {summary.waitingCount} · failed {summary.failedCount} · stale {summary.staleCount}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ValidationOpsCard({
+  report,
+  error,
+  reachable,
+}: {
+  report: ValidationOpsReport | null;
+  error: string | null;
+  reachable: boolean;
+}) {
+  const gates = report?.readiness.gates ?? [];
+  const runs = report?.latestRuns ?? [];
+  const baselineStatus = report?.baseline.status;
+  return (
+    <div className="card">
+      <div className="card-hd">
+        <Icon name="check" size={13} />
+        <h3>Release acceptance</h3>
+        <span className={`tag ${validationStatusTone(report?.readiness.status)}`} style={{ marginLeft: "auto" }}>
+          {report ? report.readiness.status : reachable ? "admin check" : "offline"}
+        </span>
+      </div>
+      {report ? (
+        <>
+          <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border-soft)" }}>
+            <div className="runtime-health-label">{report.readiness.summary}</div>
+            <div className="runtime-health-detail">
+              gates {report.readiness.passedGates} passed · {report.readiness.failedGates} failed · {report.readiness.missingGates} missing
+            </div>
+            <div className="runtime-health-action">next: {report.readiness.nextCommand}</div>
+          </div>
+          <div style={{ display: "grid" }}>
+            {gates.map((gate) => (
+              <div key={gate.gateId} className="runtime-health-row">
+                <span className={`status-dot ${validationStatusDot(gate.status)}`} />
+                <div style={{ minWidth: 0 }}>
+                  <div className="runtime-health-label">{gate.title}</div>
+                  <div className="runtime-health-detail">{gate.summary}</div>
+                  <div className="runtime-health-action">{gate.commandHint}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ padding: "12px 14px", borderTop: "1px solid var(--border-soft)" }}>
+            <div className="runtime-health-label">
+              Closed loop · {report.closedLoop.closedLoopStatus}
+            </div>
+            <div className="runtime-health-detail">
+              {report.closedLoop.closedLoopCases}/{report.closedLoop.totalCases} closed · measured runs {report.closedLoop.measuredRuns}
+            </div>
+            <div className="runtime-health-action">baseline: {baselineStatus} · {report.baseline.nextCommand}</div>
+          </div>
+          {runs.length > 0 ? (
+            <div style={{ display: "grid" }}>
+              {runs.slice(0, 3).map((run) => (
+                <div key={run.runId} className="runtime-health-row">
+                  <span className={`status-dot ${validationStatusDot(run.status)}`} />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="runtime-health-label">{run.title}</div>
+                    <div className="runtime-health-detail">
+                      {run.runType} · {run.issueCount} issue(s) · {formatRelativeAge(run.completedAt)}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div style={{ padding: 14 }}>
+          <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+            {reachable
+              ? `Validation ops are not visible with the current token${error ? ` (${error})` : ""}. Reopen with an admin token to inspect release gates.`
+              : "Connect to the daemon to see release acceptance gates."}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
