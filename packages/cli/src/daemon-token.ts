@@ -8,7 +8,7 @@ export interface ResolvedDaemonCliToken {
 
 export function resolveDaemonCliToken(
   env: NodeJS.ProcessEnv,
-  configToken: string | null | undefined
+  configToken: unknown
 ): ResolvedDaemonCliToken | null {
   const operator = normalizeToken(env.TURNKEYAI_DAEMON_OPERATOR_TOKEN);
   if (operator) return { token: operator, scope: "operator", source: "env" };
@@ -28,7 +28,8 @@ export function resolveDaemonCliToken(
   return null;
 }
 
-function normalizeToken(value: string | null | undefined): string | null {
+function normalizeToken(value: unknown): string | null {
+  if (typeof value !== "string") return null;
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
 }

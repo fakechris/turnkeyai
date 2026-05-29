@@ -55,4 +55,9 @@ describe("resolveDaemonCliToken", () => {
       { token: "read", scope: "read", source: "env" }
     );
   });
+
+  it("ignores non-string config token values", () => {
+    assert.equal(resolveDaemonCliToken({}, 123), null);
+    assert.equal(resolveDaemonCliToken({}, { token: "nested" }), null);
+  });
 });
