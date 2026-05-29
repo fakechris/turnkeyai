@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { ApiError } from "./client";
 import { useApiClient } from "./useApiClient";
 import type {
   ActivityEvent,
@@ -26,6 +27,7 @@ import type {
   MissionObservabilitySnapshot,
   RecoveryRunsResponse,
   RoleRunState,
+  ThreadSessionMemoryRecord,
   WorkerSessionRecord,
   WorkItem,
 } from "./mission-api";
@@ -356,6 +358,68 @@ export function useRecoveryRuns(
     // fallback is intentionally not a dep; it is a static caller fallback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, threadId, epoch, options.limit, options.pollIntervalMs]);
+
+  return { value, isLive, error, refetch: () => setEpoch((n) => n + 1) };
+}
+
+export function useSessionMemory(
+  threadId: string | null | undefined,
+  fallback: ThreadSessionMemoryRecord | null,
+  options: { pollIntervalMs?: number } = {}
+): RemoteData<ThreadSessionMemoryRecord | null> {
+  const client = useApiClient();
+  const [value, setValue] = useState<ThreadSessionMemoryRecord | null>(fallback);
+  const [isLive, setIsLive] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [epoch, setEpoch] = useState(0);
+
+  useEffect(() => {
+    const normalizedThreadId = threadId?.trim();
+    if (!normalizedThreadId) {
+      setValue(fallback);
+      setIsLive(false);
+      setError(null);
+      return;
+    }
+    let cancelled = false;
+    let pollTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const pathname = `/context/session-memory?threadId=${encodeURIComponent(normalizedThreadId)}`;
+    const issueFetch = () => {
+      void client
+        .get<ThreadSessionMemoryRecord>(pathname)
+        .then((data) => {
+          if (cancelled) return;
+          setValue(data);
+          setIsLive(true);
+          setError(null);
+        })
+        .catch((err: Error) => {
+          if (cancelled) return;
+          if (err.message === "unauthorized") return;
+          if (err instanceof ApiError && err.status === 404) {
+            setValue(null);
+            setIsLive(true);
+            setError(null);
+            return;
+          }
+          setError(err.message);
+        })
+        .finally(() => {
+          if (cancelled) return;
+          const pollIntervalMs = options.pollIntervalMs ?? 5000;
+          if (pollIntervalMs > 0) {
+            pollTimeoutHandle = setTimeout(issueFetch, pollIntervalMs);
+          }
+        });
+    };
+    issueFetch();
+    return () => {
+      cancelled = true;
+      if (pollTimeoutHandle) clearTimeout(pollTimeoutHandle);
+    };
+    // fallback is intentionally not a dep; it is a static caller fallback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, threadId, epoch, options.pollIntervalMs]);
 
   return { value, isLive, error, refetch: () => setEpoch((n) => n + 1) };
 }

@@ -21,6 +21,7 @@ import type {
   MissionObservabilitySnapshot,
   RecoveryRun,
   RoleRunState,
+  ThreadSessionMemoryRecord,
   WorkerSessionRecord,
 } from "../api/mission-api";
 import {
@@ -35,6 +36,7 @@ import {
   useRecoveryRuns,
   useRoleRuns,
   useSendMissionMessage,
+  useSessionMemory,
   useTimeline,
   useWorkerSessions,
 } from "../api/useMissionData";
@@ -141,6 +143,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
   const metrics = useMissionMetrics(mission.id, null);
   const workerSessions = useWorkerSessions(mission.threadId, []);
   const recoveryRuns = useRecoveryRuns(mission.threadId, { totalRuns: 0, runs: [] });
+  const sessionMemory = useSessionMemory(mission.threadId, null);
   const roleRuns = useRoleRuns(mission.threadId, []);
   const artifacts = useArtifacts(mission.id, []);
   const contextSources = useContextSources([]);
@@ -324,6 +327,11 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             onCancel={onCancelRoleRun}
           />
           <MissionMetricsCard metrics={metrics.value} isLive={metrics.isLive} error={metrics.error} />
+          <ContextContinuityCard
+            memory={sessionMemory.value}
+            isLive={sessionMemory.isLive}
+            error={sessionMemory.error}
+          />
           <MissionRecoveryCasesCard
             response={recoveryRuns.value}
             isLive={recoveryRuns.isLive}
@@ -495,6 +503,104 @@ function LiveMissionView({ mission }: { mission: Mission }) {
           >
             {acceptedNotice}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ContextContinuityCard({
+  memory,
+  isLive,
+  error,
+}: {
+  memory: ThreadSessionMemoryRecord | null;
+  isLive: boolean;
+  error: string | null;
+}) {
+  const totalItems = memory
+    ? memory.activeTasks.length +
+      memory.openQuestions.length +
+      memory.recentDecisions.length +
+      memory.constraints.length +
+      memory.continuityNotes.length +
+      memory.latestJournalEntries.length
+    : 0;
+  return (
+    <section className="card context-continuity-card">
+      <div className="subagent-session-head">
+        <div>
+          <div className="label" style={{ fontSize: 11 }}>Context continuity</div>
+          <div className="muted" style={{ fontSize: 11.5 }}>
+            Pending work, open questions, decisions, and carry-forward notes retained for re-entry
+          </div>
+        </div>
+        <div className="thinking-card-meta">
+          <span>{memory?.activeTasks.length ?? 0} active</span>
+          <span>{memory?.openQuestions.length ?? 0} open</span>
+          <span>{memory?.continuityNotes.length ?? 0} continuity</span>
+          {memory?.memoryVersion != null && <span>v{memory.memoryVersion}</span>}
+        </div>
+      </div>
+      {error && (
+        <div className="subagent-session-error" role="alert">
+          {error}
+        </div>
+      )}
+      {!memory ? (
+        <div className="subagent-session-empty">
+          {isLive ? "No session memory has been written for this mission yet." : "Loading context continuity…"}
+        </div>
+      ) : totalItems === 0 ? (
+        <div className="subagent-session-empty">
+          Session memory exists but has no active tasks, open questions, decisions, constraints, or continuity notes.
+        </div>
+      ) : (
+        <>
+          <div className="context-continuity-grid">
+            <ContextContinuityColumn title="Active work" items={memory.activeTasks} empty="No active work carried forward." />
+            <ContextContinuityColumn title="Open questions" items={memory.openQuestions} empty="No open questions." />
+            <ContextContinuityColumn title="Continuity notes" items={memory.continuityNotes} empty="No continuity notes." />
+            <ContextContinuityColumn title="Decisions" items={memory.recentDecisions} empty="No recent decisions." />
+            <ContextContinuityColumn title="Constraints" items={memory.constraints} empty="No constraints." />
+            <ContextContinuityColumn title="Journal" items={memory.latestJournalEntries} empty="No recent journal entries." />
+          </div>
+          <div className="context-continuity-footer">
+            <span className="mono">thread {memory.threadId}</span>
+            {memory.sourceMessageCount != null && <span>{memory.sourceMessageCount} source messages</span>}
+            <span>updated {formatRelativeAgo(memory.updatedAt)}</span>
+            {memory.sectionFingerprint && <span className="mono">fp {memory.sectionFingerprint}</span>}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function ContextContinuityColumn({
+  title,
+  items,
+  empty,
+}: {
+  title: string;
+  items: string[];
+  empty: string;
+}) {
+  return (
+    <div className="context-continuity-column">
+      <div className="context-continuity-column-head">
+        <span>{title}</span>
+        <span className="mono">{items.length}</span>
+      </div>
+      <div className="context-continuity-list">
+        {items.length === 0 ? (
+          <div className="context-continuity-empty">{empty}</div>
+        ) : (
+          items.slice(0, 3).map((item, index) => (
+            <div key={`${title}:${index}:${item}`} className="context-continuity-item">
+              {item}
+            </div>
+          ))
         )}
       </div>
     </div>

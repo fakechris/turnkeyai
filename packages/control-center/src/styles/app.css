@@ -648,6 +648,81 @@ a { color: inherit; text-decoration: none; }
   background: var(--surface);
   overflow: hidden;
 }
+.context-continuity-card {
+  padding: 0;
+  margin-bottom: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.context-continuity-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px 14px 10px;
+}
+.context-continuity-column {
+  min-width: 0;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  overflow: hidden;
+}
+.context-continuity-column-head {
+  min-height: 32px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-faint);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.context-continuity-column-head .mono {
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 400;
+}
+.context-continuity-list {
+  display: grid;
+}
+.context-continuity-item,
+.context-continuity-empty {
+  min-height: 40px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--border-faint);
+  font-size: 11.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.context-continuity-item:first-child,
+.context-continuity-empty:first-child {
+  border-top: 0;
+}
+.context-continuity-item {
+  color: var(--text);
+}
+.context-continuity-empty {
+  color: var(--text-muted);
+}
+.context-continuity-footer {
+  padding: 0 14px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+.context-continuity-footer > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 980px) {
+  .context-continuity-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .mission-recovery-card {
   padding: 0;
   margin-bottom: 12px;
