@@ -9,6 +9,9 @@ export interface SessionToolResultV1 {
   task_id: string;
   session_key: string;
   agent_id: WorkerKind;
+  label?: string;
+  parent_session_key?: string;
+  tool_call_id?: string;
   status: SessionToolResultStatus;
   cached?: boolean;
   resumable?: boolean;
@@ -28,12 +31,18 @@ export function buildSessionToolResult(input: {
   result: WorkerExecutionResult | null;
   missingResultMessage: string;
   cached?: boolean;
+  label?: string | null;
+  parentSessionKey?: string | null;
+  toolCallId?: string | null;
 }): SessionToolResultV1 {
   return {
     protocol: SESSION_TOOL_RESULT_PROTOCOL,
     task_id: input.taskId,
     session_key: input.sessionKey,
     agent_id: input.result?.workerType ?? input.agentId,
+    ...(input.label ? { label: input.label } : {}),
+    ...(input.parentSessionKey ? { parent_session_key: input.parentSessionKey } : {}),
+    ...(input.toolCallId ? { tool_call_id: input.toolCallId } : {}),
     status: input.result?.status ?? "failed",
     ...(input.cached ? { cached: true } : {}),
     tool_chain: input.result ? [input.result.workerType] : [],
@@ -50,6 +59,9 @@ export function buildSessionToolTimeoutResult(input: {
   result: string;
   timeoutSeconds: number | null;
   evidenceSummary?: string | null;
+  label?: string | null;
+  parentSessionKey?: string | null;
+  toolCallId?: string | null;
 }): SessionToolResultV1 {
   const evidenceSummary = sanitizeEvidenceSummary(input.evidenceSummary);
   return {
@@ -57,6 +69,9 @@ export function buildSessionToolTimeoutResult(input: {
     task_id: input.taskId,
     session_key: input.sessionKey,
     agent_id: input.agentId,
+    ...(input.label ? { label: input.label } : {}),
+    ...(input.parentSessionKey ? { parent_session_key: input.parentSessionKey } : {}),
+    ...(input.toolCallId ? { tool_call_id: input.toolCallId } : {}),
     status: "timeout",
     timeout_seconds: input.timeoutSeconds,
     resumable: true,
@@ -74,12 +89,18 @@ export function buildSessionToolCancelledResult(input: {
   sessionKey: string;
   agentId: WorkerKind;
   result: string;
+  label?: string | null;
+  parentSessionKey?: string | null;
+  toolCallId?: string | null;
 }): SessionToolResultV1 {
   return {
     protocol: SESSION_TOOL_RESULT_PROTOCOL,
     task_id: input.taskId,
     session_key: input.sessionKey,
     agent_id: input.agentId,
+    ...(input.label ? { label: input.label } : {}),
+    ...(input.parentSessionKey ? { parent_session_key: input.parentSessionKey } : {}),
+    ...(input.toolCallId ? { tool_call_id: input.toolCallId } : {}),
     status: "cancelled",
     resumable: true,
     tool_chain: [],
@@ -151,11 +172,17 @@ function normalizeSessionToolResult(value: Record<string, unknown>): SessionTool
   const timeoutSeconds = typeof value.timeout_seconds === "number" ? value.timeout_seconds : null;
   const finalContent = typeof value.final_content === "string" && value.final_content.trim() ? value.final_content : null;
   const evidenceSummary = sanitizeEvidenceSummary(readString(value.evidence_summary));
+  const label = readString(value.label);
+  const parentSessionKey = readString(value.parent_session_key);
+  const toolCallId = readString(value.tool_call_id);
   return {
     protocol: SESSION_TOOL_RESULT_PROTOCOL,
     task_id: taskId,
     session_key: sessionKey,
     agent_id: agentId,
+    ...(label ? { label } : {}),
+    ...(parentSessionKey ? { parent_session_key: parentSessionKey } : {}),
+    ...(toolCallId ? { tool_call_id: toolCallId } : {}),
     status,
     ...(value.cached === true ? { cached: true } : {}),
     ...(value.resumable === true ? { resumable: true } : {}),

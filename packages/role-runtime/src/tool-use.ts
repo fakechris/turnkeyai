@@ -942,6 +942,9 @@ async function executeSessionsSpawn(
         taskId: input.activation.handoff.taskId,
         timeoutMs,
         evidenceSummary: summarizeWorkerEvidence(timeoutState),
+        label,
+        parentSessionKey: input.activation.runState.runKey,
+        toolCallId: input.call.id,
       });
     }
     result = sendResult;
@@ -954,6 +957,9 @@ async function executeSessionsSpawn(
       sessionKey: spawned.workerRunKey,
       agentId: spawned.workerType,
       reason: registration.cancellationReason() ?? "Tool call cancelled.",
+      label,
+      parentSessionKey: input.activation.runState.runKey,
+      toolCallId: input.call.id,
     });
   }
   const missingResultMessage = `${agentId} sub-agent returned no executable result. The requested task did not match the worker's implemented capability.`;
@@ -963,6 +969,9 @@ async function executeSessionsSpawn(
     agentId: spawned.workerType,
     result,
     missingResultMessage,
+    label,
+    parentSessionKey: input.activation.runState.runKey,
+    toolCallId: input.call.id,
   });
   return {
     toolCallId: input.call.id,
@@ -1030,6 +1039,7 @@ async function executeSessionsSend(
       taskId: input.activation.handoff.taskId,
       sessionKey,
       result: state.lastResult,
+      context: record.context,
     });
   }
   const gate = await maybeGateBrowserSideEffect({
@@ -1079,6 +1089,9 @@ async function executeSessionsSend(
         taskId: input.activation.handoff.taskId,
         timeoutMs,
         evidenceSummary: summarizeWorkerEvidence(timeoutState),
+        label: record.context?.label ?? null,
+        parentSessionKey: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
+        toolCallId: record.context?.toolCallId ?? input.call.id,
       });
     }
     result = sendResult;
@@ -1091,6 +1104,9 @@ async function executeSessionsSend(
       sessionKey,
       agentId: state.workerType,
       reason: registration.cancellationReason() ?? "Tool call cancelled.",
+      label: record.context?.label ?? null,
+      parentSessionKey: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
+      toolCallId: record.context?.toolCallId ?? input.call.id,
     });
   }
   const missingResultMessage = `${state.workerType} sub-agent returned no executable result for the follow-up.`;
@@ -1100,6 +1116,9 @@ async function executeSessionsSend(
     agentId: state.workerType,
     result,
     missingResultMessage,
+    label: record.context?.label ?? null,
+    parentSessionKey: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
+    toolCallId: record.context?.toolCallId ?? input.call.id,
   });
   return {
     toolCallId: input.call.id,
@@ -1125,6 +1144,7 @@ function cachedCompletedSessionResult(
     taskId: string;
     sessionKey: string;
     result: WorkerExecutionResult;
+    context?: { label?: string; parentSessionKey?: string; parentSpanId?: string; toolCallId?: string };
   }
 ): RoleToolExecutionResult {
   const phase = mapCachedWorkerResultPhase(input.result.status);
@@ -1135,6 +1155,9 @@ function cachedCompletedSessionResult(
     result: input.result,
     missingResultMessage: input.result.summary,
     cached: true,
+    label: input.context?.label ?? null,
+    parentSessionKey: input.context?.parentSessionKey ?? input.context?.parentSpanId ?? null,
+    toolCallId: input.context?.toolCallId ?? call.id,
   });
   return {
     toolCallId: call.id,
@@ -1409,13 +1432,24 @@ function errorResult(call: LLMToolCall, content: string): RoleToolExecutionResul
 
 function cancelledSessionToolResult(
   call: LLMToolCall,
-  input: { taskId: string; sessionKey: string; agentId: WorkerKind; reason: string }
+  input: {
+    taskId: string;
+    sessionKey: string;
+    agentId: WorkerKind;
+    reason: string;
+    label?: string | null;
+    parentSessionKey?: string | null;
+    toolCallId?: string | null;
+  }
 ): RoleToolExecutionResult {
   const sessionToolResult = buildSessionToolCancelledResult({
     taskId: input.taskId,
     sessionKey: input.sessionKey,
     agentId: input.agentId,
     result: input.reason,
+    ...(input.label ? { label: input.label } : {}),
+    ...(input.parentSessionKey ? { parentSessionKey: input.parentSessionKey } : {}),
+    ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
   });
   return {
     toolCallId: call.id,
@@ -1543,6 +1577,9 @@ function timedOutResult(
     taskId: string;
     timeoutMs: number | null;
     evidenceSummary?: string | null;
+    label?: string | null;
+    parentSessionKey?: string | null;
+    toolCallId?: string | null;
   }
 ): RoleToolExecutionResult {
   const timeoutSeconds = input.timeoutMs == null ? null : Number((input.timeoutMs / 1_000).toFixed(3));
@@ -1572,6 +1609,9 @@ function timedOutResult(
         result,
         timeoutSeconds,
         evidenceSummary,
+        ...(input.label ? { label: input.label } : {}),
+        ...(input.parentSessionKey ? { parentSessionKey: input.parentSessionKey } : {}),
+        ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
       })
     ),
     progress: [

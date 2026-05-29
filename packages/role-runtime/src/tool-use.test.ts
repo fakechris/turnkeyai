@@ -139,9 +139,19 @@ test("sessions_spawn exposes sub-agent final content at top level", async () => 
     },
   });
 
-  const body = JSON.parse(result.content) as { protocol?: string; final_content?: string; payload?: { content?: string } };
+  const body = JSON.parse(result.content) as {
+    protocol?: string;
+    final_content?: string;
+    label?: string;
+    parent_session_key?: string;
+    tool_call_id?: string;
+    payload?: { content?: string };
+  };
   assert.equal(body.protocol, "turnkeyai.session_tool_result.v1");
   assert.equal(body.final_content, "Full evidence ledger with source URLs.");
+  assert.equal(body.label, "Primary research");
+  assert.equal(body.parent_session_key, "role:role-lead:thread:thread-1");
+  assert.equal(body.tool_call_id, "call-result");
   assert.equal(body.payload?.content, "Full evidence ledger with source URLs.");
   assert.deepEqual(capturedWorkerSession, {
     parentSessionKey: "role:role-lead:thread:thread-1",
