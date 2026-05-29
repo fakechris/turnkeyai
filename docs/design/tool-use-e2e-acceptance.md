@@ -116,11 +116,11 @@ hosts in the explore worker. It verifies:
 
 - the product entry path creates a linked team-runtime thread
 - the lead model emits `sessions_spawn` from the mission route
-- `sessions_spawn` call, result, and final answer appear in timeline order
+- session tool calls, results, and final answer appear in timeline order
 - `sessions_spawn` progress appears in the correct order when the tool emits user-visible progress
 - the tool result contains fixture evidence
 - the mission reaches `done` rather than staying `working` or `blocked`
-- mission metrics count the tool call/result, spawned session, and evidence event
+- mission metrics count tool calls/results, spawned/continued sessions, and evidence events
 - mission metrics quality gate reaches `passed` with no active/waiting/stale runtime, recovery, timeout, or failed-tool signal
 - the final answer includes the release marker, fixture marker, Markdown bullets, and residual risk
 
@@ -128,6 +128,7 @@ Mission scenarios:
 
 - `basic`: one explore child session verifies a single local fixture source
 - `comparison`: two independent explore child sessions verify two local fixture sources, and the final answer must preserve both source markers, source names, source coverage, a comparison conclusion, and residual risk
+- `followup`: a user follow-up reopens a completed mission, calls `sessions_send` exactly once on the existing child session, avoids duplicate `sessions_spawn`, and completes with the same mission metrics quality gate
 
 The script honors `--scenario-timeout-ms` with a default of `180000` ms. It
 also sets `TURNKEYAI_MODEL_CATALOG` for the isolated daemon when

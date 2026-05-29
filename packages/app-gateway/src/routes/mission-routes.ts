@@ -411,10 +411,11 @@ export async function handleMissionRoutes(input: {
       scope: `missions:${mission.id}:messages`,
       fingerprint: { missionId: mission.id, content },
       execute: async () => {
+        const followUpMission = await reopenDoneMissionForFollowUp(deps, mission);
         startMissionFollowUpInBackground({
           deps,
           orchestrator,
-          mission,
+          mission: followUpMission,
           threadId: linkedThreadId,
           content,
         });
@@ -530,6 +531,24 @@ export async function handleMissionRoutes(input: {
   }
 
   return false;
+}
+
+async function reopenDoneMissionForFollowUp(
+  deps: MissionRouteDeps,
+  mission: Mission
+): Promise<Mission> {
+  const latest = (await deps.missionStore.get(mission.id)) ?? mission;
+  if (latest.status !== "done") {
+    return latest;
+  }
+  const reopened: Mission = {
+    ...latest,
+    status: "working",
+    progress: Math.min(latest.progress, 0.99),
+    blockers: 0,
+  };
+  await deps.missionStore.putRaw(reopened);
+  return reopened;
 }
 
 function startMissionInBackground(input: {
