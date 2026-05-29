@@ -16,16 +16,19 @@ import type {
 interface ExploreWorkerHandlerOptions {
   browserBridge?: Pick<BrowserBridge, "inspectPublicPage">;
   fetchFn?: typeof fetch;
+  allowLoopbackHosts?: boolean;
 }
 
 export class ExploreWorkerHandler implements WorkerHandler {
   readonly kind = "explore" as const;
   private readonly browserBridge: Pick<BrowserBridge, "inspectPublicPage"> | undefined;
   private readonly fetchFn: typeof fetch;
+  private readonly allowLoopbackHosts: boolean;
 
   constructor(options: ExploreWorkerHandlerOptions = {}) {
     this.browserBridge = options.browserBridge;
     this.fetchFn = options.fetchFn ?? fetch;
+    this.allowLoopbackHosts = options.allowLoopbackHosts === true;
   }
 
   async canHandle(input: WorkerInvocationInput): Promise<boolean> {
@@ -59,7 +62,7 @@ export class ExploreWorkerHandler implements WorkerHandler {
     let safeUrl: string;
 
     try {
-      safeUrl = validatePublicHttpUrl(target.url);
+      safeUrl = validatePublicHttpUrl(target.url, { allowLoopbackHosts: this.allowLoopbackHosts });
     } catch (error) {
       return {
         workerType: this.kind,
@@ -82,7 +85,9 @@ export class ExploreWorkerHandler implements WorkerHandler {
     }
 
     try {
-      const { response, finalUrl } = await fetchWithValidation(this.fetchFn, safeUrl, input.signal);
+      const { response, finalUrl } = await fetchWithValidation(this.fetchFn, safeUrl, input.signal, {
+        allowLoopbackHosts: this.allowLoopbackHosts,
+      });
       throwIfAborted(input.signal);
       const html = await response.text();
       const page = toPageResult(target.url, finalUrl, response.status, html);
@@ -630,6 +635,7 @@ async function fetchWithValidation(
   fetchFn: typeof fetch,
   inputUrl: string,
   signal?: AbortSignal,
+  options: { allowLoopbackHosts?: boolean } = {},
   redirectCount = 0
 ): Promise<{ response: Response; finalUrl: string }> {
   throwIfAborted(signal);
@@ -652,8 +658,8 @@ async function fetchWithValidation(
       throw new Error(`redirect without location for ${inputUrl}`);
     }
 
-    const nextUrl = validatePublicHttpUrl(new URL(location, inputUrl).toString());
-    return fetchWithValidation(fetchFn, nextUrl, signal, redirectCount + 1);
+    const nextUrl = validatePublicHttpUrl(new URL(location, inputUrl).toString(), options);
+    return fetchWithValidation(fetchFn, nextUrl, signal, options, redirectCount + 1);
   }
 
   return {
@@ -692,20 +698,25 @@ function abortReason(signal: AbortSignal, fallback: string): string {
   return typeof signal.reason === "string" && signal.reason.trim() ? signal.reason : fallback;
 }
 
-function validatePublicHttpUrl(inputUrl: string): string {
+function validatePublicHttpUrl(inputUrl: string, options: { allowLoopbackHosts?: boolean } = {}): string {
   const parsed = new URL(inputUrl);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`unsupported explore URL protocol: ${parsed.protocol}`);
   }
 
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (
+  const hostname = normalizeHostnameForPrivateRangeChecks(parsed.hostname);
+  const loopbackHost =
     hostname === "localhost" ||
+    hostname === "::1" ||
+    hostname.startsWith("127.");
+  if (loopbackHost && options.allowLoopbackHosts === true) {
+    return parsed.toString();
+  }
+  if (
+    loopbackHost ||
     hostname.endsWith(".local") ||
     hostname === "0.0.0.0" ||
     hostname === "169.254.169.254" ||
-    hostname === "::1" ||
-    hostname.startsWith("127.") ||
     hostname.startsWith("10.") ||
     hostname.startsWith("192.168.") ||
     /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname) ||
@@ -718,4 +729,28 @@ function validatePublicHttpUrl(inputUrl: string): string {
   }
 
   return parsed.toString();
+}
+
+function normalizeHostnameForPrivateRangeChecks(hostname: string): string {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return parseIpv4MappedIpv6Host(normalized) ?? normalized;
+}
+
+function parseIpv4MappedIpv6Host(hostname: string): string | null {
+  const dotted = hostname.match(/^(?:::ffff:|::)(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted?.[1]) {
+    return dotted[1];
+  }
+
+  const hex = hostname.match(/^(?:::ffff:|::ffff:0:|::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (!hex?.[1] || !hex[2]) {
+    return null;
+  }
+
+  const high = Number.parseInt(hex[1], 16);
+  const low = Number.parseInt(hex[2], 16);
+  if (!Number.isFinite(high) || !Number.isFinite(low)) {
+    return null;
+  }
+  return `${(high >> 8) & 255}.${high & 255}.${(low >> 8) & 255}.${low & 255}`;
 }

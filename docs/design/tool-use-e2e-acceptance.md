@@ -100,11 +100,19 @@ Run:
 npm run mission:e2e -- --model-catalog models.local.json
 ```
 
+Run the mission-level matrix:
+
+```bash
+npm run mission:e2e:matrix -- --model-catalog models.local.json
+```
+
 This starts an isolated local daemon, creates a mission through `POST /missions`,
 polls `GET /missions/:id` plus `GET /missions/:id/timeline`, and reads
 `GET /missions/:id/metrics` after completion. The mission prompt points the
 explore sub-agent at a local fixture page, so the acceptance does not depend on
-public search results. It verifies:
+public search results. The isolated daemon enables loopback-only explore access
+for these fixtures; production daemon defaults still reject loopback/private
+hosts in the explore worker. It verifies:
 
 - the product entry path creates a linked team-runtime thread
 - the lead model emits `sessions_spawn` from the mission route
@@ -113,8 +121,13 @@ public search results. It verifies:
 - the tool result contains fixture evidence
 - the mission reaches `done` rather than staying `working` or `blocked`
 - mission metrics count the tool call/result, spawned session, and evidence event
-- mission metrics quality gate reaches `passed` with no recovery, timeout, or failed-tool signal
+- mission metrics quality gate reaches `passed` with no active/waiting/stale runtime, recovery, timeout, or failed-tool signal
 - the final answer includes the release marker, fixture marker, Markdown bullets, and residual risk
+
+Mission scenarios:
+
+- `basic`: one explore child session verifies a single local fixture source
+- `comparison`: two independent explore child sessions verify two local fixture sources, and the final answer must preserve both source markers, source names, source coverage, a comparison conclusion, and residual risk
 
 The script honors `--scenario-timeout-ms` with a default of `180000` ms. It
 also sets `TURNKEYAI_MODEL_CATALOG` for the isolated daemon when
@@ -134,4 +147,4 @@ Latest local acceptance on 2026-05-29:
 - `npm run tooluse:e2e`
 - `npm run tooluse:e2e -- --real-llm --scenario approval --model-catalog models.local.json`
 - `npm run tooluse:e2e:real-matrix -- --model-catalog models.local.json`
-- `npm run mission:e2e -- --model-catalog models.local.json --scenario-timeout-ms 180000`
+- `npm run mission:e2e:matrix -- --model-catalog models.local.json --scenario-timeout-ms 240000`
