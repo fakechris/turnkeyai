@@ -794,7 +794,23 @@ function buildTraceFilterCounts(items: TimelineReplayItem[]): Record<TraceFilter
 
 function traceFilterMatches(item: TimelineReplayItem, filter: TraceFilter): boolean {
   if (filter === "all") return true;
-  return classifyTraceItem(item)[filter];
+  const matches = classifyTraceItem(item);
+  switch (filter) {
+    case "agent":
+      return matches.agent;
+    case "tools":
+      return matches.tools;
+    case "approvals":
+      return matches.approvals;
+    case "recovery":
+      return matches.recovery;
+    case "evidence":
+      return matches.evidence;
+    default: {
+      const exhaustive: never = filter;
+      return exhaustive;
+    }
+  }
 }
 
 function classifyTraceItem(item: TimelineReplayItem): Record<Exclude<TraceFilter, "all">, boolean> {
