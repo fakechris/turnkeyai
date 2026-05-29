@@ -434,7 +434,7 @@ function resolveExploreTarget(input: WorkerInvocationInput): ExploreTarget | nul
     .filter(Boolean)
     .join("\n");
 
-  const explicitUrl = sourceText.match(/https?:\/\/[^\s)]+/i)?.[0]?.replace(/["'`,;。，“”‘’]+$/g, "");
+  const explicitUrl = sourceText.match(/https?:\/\/[^\s)]+/i)?.[0]?.replace(/["'`,;:.!?。，“”‘’！？：]+$/g, "");
   if (explicitUrl) {
     return {
       kind: "page",
@@ -488,7 +488,7 @@ function extractExploreSearchQuery(sourceText: string): string | null {
 function stripSearchNoise(value: string): string {
   return value
     .replace(/^https?:\/\//i, "")
-    .replace(/["'`,;。，“”‘’]+$/g, "")
+    .replace(/["'`,;:.!?。，“”‘’！？：]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }

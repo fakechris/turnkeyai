@@ -85,6 +85,8 @@ interface ScenarioSpec {
   evidenceMarkers: string[];
   answerTerms: string[];
   answerPatterns?: Array<{ label: string; pattern: RegExp }>;
+  evidenceLinePatterns?: Array<{ label: string; pattern: RegExp }>;
+  allowLabeledEvidenceWithoutBullets?: boolean;
   expectedSpawnCalls: number;
   expectedSendCalls: number;
   expectedToolResults: number;
@@ -557,6 +559,12 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       finalMarker: CANCEL_FINAL_MARKER,
       evidenceMarkers: [],
       answerTerms: ["cancelled", "sessions_spawn", "residual risk"],
+      evidenceLinePatterns: [
+        { label: "cancelled tool call evidence", pattern: /^\s*(?:[-*+]\s+)?cancelled tool call\s*:/im },
+        { label: "control-path evidence", pattern: /^\s*(?:[-*+]\s+)?control-path evidence\s*:/im },
+        { label: "residual risk evidence", pattern: /^\s*(?:[-*+]\s+)?residual risk\s*:/im },
+      ],
+      allowLabeledEvidenceWithoutBullets: true,
       expectedSpawnCalls: 1,
       expectedSendCalls: 0,
       expectedToolResults: 1,
@@ -966,8 +974,13 @@ function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bullets: n
   const failures: string[] = [];
   const bytes = Buffer.byteLength(content, "utf8");
   const bullets = (content.match(/^\s*[-*+]\s+\S/gm) ?? []).length;
+  const requiredEvidenceLineCount = spec.evidenceLinePatterns?.length ?? 0;
+  const hasLabeledEvidenceShape =
+    spec.allowLabeledEvidenceWithoutBullets === true &&
+    requiredEvidenceLineCount === spec.expectedBullets &&
+    spec.evidenceLinePatterns?.every((item) => item.pattern.test(content)) === true;
   if (bytes < 180) failures.push("final answer is too short");
-  if (bullets !== spec.expectedBullets) {
+  if (bullets !== spec.expectedBullets && !(bullets === 0 && hasLabeledEvidenceShape)) {
     failures.push(`final answer must include exactly ${spec.expectedBullets} Markdown bullets`);
   }
   if (!content.includes(spec.finalMarker)) failures.push(`missing ${spec.finalMarker}`);
@@ -978,6 +991,9 @@ function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bullets: n
     if (!content.toLowerCase().includes(term.toLowerCase())) failures.push(`missing ${term}`);
   }
   for (const item of spec.answerPatterns ?? []) {
+    if (!item.pattern.test(content)) failures.push(`missing ${item.label}`);
+  }
+  for (const item of spec.evidenceLinePatterns ?? []) {
     if (!item.pattern.test(content)) failures.push(`missing ${item.label}`);
   }
   if (/\b(assume|assumes|assuming|assumed|estimate|estimated|estimates|estimating|guess|guessed|guesses|guessing|probably|probable|maybe|perhaps|approximately|approximate)\b/i.test(content)) {
