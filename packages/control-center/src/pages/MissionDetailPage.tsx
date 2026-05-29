@@ -35,7 +35,18 @@ import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
-import { formatDurationMs, groupTimelineForReplay, type ToolProcessItem } from "../state/toolReplay";
+import { formatDurationMs, groupTimelineForReplay, type TimelineReplayItem, type ToolProcessItem } from "../state/toolReplay";
+
+type TraceFilter = "all" | "agent" | "tools" | "approvals" | "recovery" | "evidence";
+
+const TRACE_FILTERS: Array<{ id: TraceFilter; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "agent", label: "Agent" },
+  { id: "tools", label: "Tools" },
+  { id: "approvals", label: "Approvals" },
+  { id: "recovery", label: "Recovery" },
+  { id: "evidence", label: "Evidence" },
+];
 
 export function MissionDetailPage({ missionId }: { missionId: string }) {
   const { setRoute } = useAppState();
@@ -132,7 +143,13 @@ function LiveMissionView({ mission }: { mission: Mission }) {
   const [error, setError] = useState<string | null>(null);
   const [acceptedNotice, setAcceptedNotice] = useState<string | null>(null);
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
+  const [traceFilter, setTraceFilter] = useState<TraceFilter>("all");
   const replayItems = useMemo(() => groupTimelineForReplay(timeline.value), [timeline.value]);
+  const traceFilterCounts = useMemo(() => buildTraceFilterCounts(replayItems), [replayItems]);
+  const visibleReplayItems = useMemo(
+    () => replayItems.filter((item) => traceFilterMatches(item, traceFilter)),
+    [replayItems, traceFilter]
+  );
   const toolProcessCount = replayItems.filter((item) => item.kind === "tool-process").length;
   const toolStepCount = replayItems.reduce(
     (count, item) => count + (item.kind === "tool-process" ? item.toolEvents.length : 0),
@@ -308,15 +325,35 @@ function LiveMissionView({ mission }: { mission: Mission }) {
               </div>
             )}
             {thinkingExpanded && (
-              <div id="thinking-record-timeline" className="timeline">
+              <>
+                <div className="trace-filter-bar" role="group" aria-label="Trace filters">
+                  {TRACE_FILTERS.map((filter) => (
+                    <button
+                      key={filter.id}
+                      type="button"
+                      className="trace-filter-chip"
+                      data-active={traceFilter === filter.id}
+                      aria-pressed={traceFilter === filter.id}
+                      onClick={() => setTraceFilter(filter.id)}
+                    >
+                      <span>{filter.label}</span>
+                      <span className="mono">{traceFilterCounts[filter.id]}</span>
+                    </button>
+                  ))}
+                </div>
+                <div id="thinking-record-timeline" className="timeline">
                 {timeline.value.length === 0 ? (
                   <div className="muted" style={{ padding: 28, textAlign: "center", fontSize: 11.5 }}>
                     {timeline.isLive
                       ? "No activity yet. Agents will reply here as they work — the timeline refreshes every 2 seconds."
                       : "Loading activity…"}
                   </div>
+                ) : visibleReplayItems.length === 0 ? (
+                  <div className="muted" style={{ padding: 28, textAlign: "center", fontSize: 11.5 }}>
+                    No trace entries match this filter.
+                  </div>
                 ) : (
-                  replayItems.map((item) =>
+                  visibleReplayItems.map((item) =>
                     item.kind === "event" ? (
                       <LiveTimelineRow key={item.event.id} event={item.event} />
                     ) : (
@@ -325,6 +362,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
                   )
                 )}
               </div>
+              </>
             )}
           </section>
           {finalAnswer && (
@@ -731,6 +769,26 @@ function latestFinalAnswer(events: ActivityEvent[]): ActivityEvent | null {
       (event.runtime?.route === "lead-role" || event.actor === "role-lead")
   );
   return candidates.at(-1) ?? null;
+}
+
+function buildTraceFilterCounts(items: TimelineReplayItem[]): Record<TraceFilter, number> {
+  return TRACE_FILTERS.reduce(
+    (counts, filter) => ({
+      ...counts,
+      [filter.id]: items.filter((item) => traceFilterMatches(item, filter.id)).length,
+    }),
+    {} as Record<TraceFilter, number>
+  );
+}
+
+function traceFilterMatches(item: TimelineReplayItem, filter: TraceFilter): boolean {
+  if (filter === "all") return true;
+  const events = item.kind === "event" ? [item.event] : [...item.toolEvents, ...item.processEvents];
+  if (filter === "tools") return item.kind === "tool-process" || events.some((event) => event.kind === "tool");
+  if (filter === "agent") return events.some((event) => event.kind === "plan" || event.kind === "thought");
+  if (filter === "approvals") return events.some((event) => event.kind === "approval");
+  if (filter === "recovery") return events.some((event) => event.kind === "recovery" || event.emph === "danger");
+  return events.some((event) => event.kind === "browser" || event.kind === "doc" || event.kind === "artifact");
 }
 
 function ToolProcessRow({ process }: { process: ToolProcessItem }) {
