@@ -346,6 +346,22 @@ export interface RecoveryRunsResponse {
   runs: RecoveryRun[];
 }
 
+// ── Context Runtime ───────────────────────────────────────────────────
+
+export interface ThreadSessionMemoryRecord {
+  threadId: string;
+  memoryVersion?: number;
+  sourceMessageCount?: number;
+  sectionFingerprint?: string;
+  updatedAt: number;
+  activeTasks: string[];
+  openQuestions: string[];
+  recentDecisions: string[];
+  constraints: string[];
+  continuityNotes: string[];
+  latestJournalEntries: string[];
+}
+
 // ── Role Runs ────────────────────────────────────────────────────────
 
 export type RoleRunStatus =

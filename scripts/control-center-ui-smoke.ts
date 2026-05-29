@@ -116,6 +116,7 @@ try {
     });
 
     await page.waitForSelector(".thinking-card");
+    await page.waitForSelector(".context-continuity-card");
     await page.waitForSelector(".browser-continuity-card");
     await page.waitForSelector(".mission-recovery-card");
     await page.waitForSelector(".mission-evidence-card");
@@ -126,6 +127,19 @@ try {
 
     assert(await page.locator(".final-answer-card").count() === 1, "expected exactly one final answer card");
     assert(await page.locator(".thinking-card").count() === 1, "expected exactly one work trace card");
+    assert(await page.locator(".context-continuity-card").count() === 1, "expected one context continuity card");
+    assert(
+      await page.locator(".context-continuity-card", { hasText: "Verify final answer against captured browser evidence" }).isVisible(),
+      "context continuity should show active work"
+    );
+    assert(
+      await page.locator(".context-continuity-card", { hasText: "Does the source need a screenshot artifact?" }).isVisible(),
+      "context continuity should show open questions"
+    );
+    assert(
+      await page.locator(".context-continuity-card", { hasText: "Keep browser evidence ahead of final synthesis" }).isVisible(),
+      "context continuity should show carry-forward notes"
+    );
     assert(await page.locator(".browser-continuity-card").count() === 1, "expected one browser continuity card");
     assert(await page.locator(".mission-recovery-card").count() === 1, "expected one recovery cases card");
     assert(
@@ -166,6 +180,7 @@ try {
       await page.locator(".thinking-card-preview", { hasText: "Final answer remains below" }).isVisible(),
       "collapsed trace preview should tell the user the final answer remains below"
     );
+    await assertVerticalOrder(page, ".context-continuity-card", ".mission-recovery-card", "context continuity should appear before recovery cases");
     await assertVerticalOrder(page, ".mission-recovery-card", ".browser-continuity-card", "recovery cases should appear before browser continuity");
     await assertVerticalOrder(page, ".browser-continuity-card", ".worker-session-card", "browser continuity should appear before sub-agent sessions");
     await assertVerticalOrder(page, ".mission-evidence-card", ".thinking-card", "mission evidence should appear before work trace");
@@ -216,6 +231,10 @@ try {
     assert(
       requestedPaths.some((value) => value.startsWith(`/recovery-runs?threadId=${encodeURIComponent(threadId)}`)),
       "mission recovery runs endpoint was not requested"
+    );
+    assert(
+      requestedPaths.some((value) => value.startsWith(`/context/session-memory?threadId=${encodeURIComponent(threadId)}`)),
+      "mission session memory endpoint was not requested"
     );
     assert(
       requestedPaths.some((value) => value.startsWith("/approvals")),
@@ -279,6 +298,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (method === "GET" && url.pathname === "/recovery-runs") {
     json(res, recoveryRunsFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/context/session-memory") {
+    json(res, sessionMemoryFixture());
     return;
   }
   if (method === "GET" && url.pathname === "/runs") {
@@ -632,6 +655,22 @@ function recoveryRunsFixture() {
         truthSource: "recovery-runtime",
       },
     ],
+  };
+}
+
+function sessionMemoryFixture() {
+  return {
+    threadId,
+    memoryVersion: 3,
+    sourceMessageCount: 6,
+    sectionFingerprint: "ctx-ui-smoke",
+    updatedAt: 1_779_984_004_800,
+    activeTasks: ["Verify final answer against captured browser evidence."],
+    openQuestions: ["Does the source need a screenshot artifact?"],
+    recentDecisions: ["Use the browser worker result as the primary evidence source."],
+    constraints: ["Do not treat unreferenced context sources as evidence."],
+    continuityNotes: ["Keep browser evidence ahead of final synthesis."],
+    latestJournalEntries: ["Browser worker captured the relevant page state."],
   };
 }
 
