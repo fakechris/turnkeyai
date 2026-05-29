@@ -188,3 +188,48 @@ test("llm gateway reports only actually attempted models when the primary succee
     }
   }
 });
+
+test("llm gateway exposes model chains and default selection for operator settings", async () => {
+  const gateway = new LLMGateway({
+    registry: new ModelRegistry(
+      new InMemoryCatalogSource({
+        defaultModelChainId: "reasoning_primary",
+        models: {
+          "primary-model": {
+            label: "Primary",
+            providerId: "openai",
+            protocol: "openai-compatible",
+            model: "primary-model",
+            baseURL: "https://primary.example/v1",
+            apiKeyEnv: "TEST_PRIMARY_KEY",
+          },
+          "fallback-model": {
+            label: "Fallback",
+            providerId: "openai",
+            protocol: "openai-compatible",
+            model: "fallback-model",
+            baseURL: "https://fallback.example/v1",
+            apiKeyEnv: "TEST_FALLBACK_KEY",
+          },
+        },
+        modelChains: {
+          reasoning_primary: {
+            primary: "primary-model",
+            fallbacks: ["fallback-model"],
+          },
+        },
+      })
+    ),
+    clients: [new SuccessProtocolClient()],
+  });
+
+  const chains = await gateway.listModelChains();
+  assert.equal(chains[0]?.id, "reasoning_primary");
+  assert.equal(chains[0]?.primary, "primary-model");
+  assert.deepEqual(chains[0]?.fallbacks, ["fallback-model"]);
+
+  const selection = await gateway.describeSelection({});
+  assert.equal(selection.chainId, "reasoning_primary");
+  assert.equal(selection.primary.id, "primary-model");
+  assert.deepEqual(selection.fallbacks.map((model) => model.id), ["fallback-model"]);
+});

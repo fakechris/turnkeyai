@@ -388,10 +388,32 @@ async function buildModelsReport(llmGateway: LLMGateway | null, modelCatalogPath
       adapterMode: "heuristic-only",
     };
   }
-  const models = await llmGateway.listModels();
+  const [models, modelChains, defaultSelection] = await Promise.all([
+    llmGateway.listModels(),
+    llmGateway.listModelChains(),
+    llmGateway.describeSelection({}).catch((error) => ({
+      error: error instanceof Error ? error.message : String(error),
+    })),
+  ]);
   return {
     modelCatalogPath,
     adapterMode: "llm+heuristic-fallback",
+    modelChains: modelChains.map((chain) => ({
+      id: chain.id,
+      primary: chain.primary,
+      fallbacks: chain.fallbacks ?? [],
+    })),
+    defaultSelection: "error" in defaultSelection
+      ? {
+          ok: false,
+          error: defaultSelection.error,
+        }
+      : {
+          ok: true,
+          ...(defaultSelection.chainId ? { chainId: defaultSelection.chainId } : {}),
+          primaryModelId: defaultSelection.primary.id,
+          fallbackModelIds: defaultSelection.fallbacks.map((model) => model.id),
+        },
     models: models.map((model) => ({
       ...model,
       configured: Boolean(process.env[model.apiKeyEnv]),

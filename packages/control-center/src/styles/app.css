@@ -2322,6 +2322,29 @@ a { color: inherit; text-decoration: none; }
   display: block; margin-bottom: 2px;
 }
 .setting-row .lbl span { color: var(--text-faint); font-size: 11.5px; }
+.settings-chain-list {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.settings-chain-line {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 7px 9px;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.settings-chain-line b,
+.settings-chain-line span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.settings-chain-line b { color: var(--text); font-weight: 600; }
+.settings-chain-line span { color: var(--text-muted); }
 
 .field {
   width: 100%;

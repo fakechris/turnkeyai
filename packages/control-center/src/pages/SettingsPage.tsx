@@ -75,6 +75,8 @@ export function SettingsPage() {
         </div>
         <div className="card-bd">
           <ModelCatalogRow models={live.models} />
+          <DefaultModelSelectionRow models={live.models} />
+          <ModelChainsBlock models={live.models} />
           {live.models?.models.length ? (
             live.models.models.map((model) => (
               <div key={model.id} className="setting-row">
@@ -141,6 +143,49 @@ function ModelCatalogRow({ models }: { models: ModelsReport | null }) {
       <div className="lbl"><b>Catalog</b><span>daemon 解析后的模型 catalog</span></div>
       <div><input className="field" value={path ?? "(none)"} readOnly /></div>
       <div><span className={"tag " + (path ? "success" : "warning")}>{path ? "loaded" : "missing"}</span></div>
+    </div>
+  );
+}
+
+function DefaultModelSelectionRow({ models }: { models: ModelsReport | null }) {
+  const selection = models?.defaultSelection;
+  const primary = selection?.ok ? selection.primaryModelId : null;
+  const fallbacks = selection?.ok ? selection.fallbackModelIds ?? [] : [];
+  const detail = selection?.ok
+    ? [
+        selection.chainId ? `chain ${selection.chainId}` : "direct model",
+        primary ? `primary ${primary}` : null,
+        fallbacks.length ? `fallbacks ${fallbacks.join(", ")}` : "no fallbacks",
+      ].filter(Boolean).join(" · ")
+    : selection?.error ?? "waiting for model selection";
+  return (
+    <div className="setting-row">
+      <div className="lbl"><b>Default selection</b><span>what production tasks use when no model is specified</span></div>
+      <div><input className="field" value={detail} readOnly /></div>
+      <div>
+        <span className={"tag " + (selection?.ok ? "success" : "warning")}>
+          {selection?.ok ? "ready" : "attention"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ModelChainsBlock({ models }: { models: ModelsReport | null }) {
+  const chains = models?.modelChains ?? [];
+  if (chains.length === 0) return null;
+  return (
+    <div className="setting-row">
+      <div className="lbl"><b>Model chains</b><span>primary and fallback routing</span></div>
+      <div className="settings-chain-list">
+        {chains.map((chain) => (
+          <div key={chain.id} className="settings-chain-line">
+            <b>{chain.id}</b>
+            <span>{chain.primary}{chain.fallbacks.length ? ` -> ${chain.fallbacks.join(" -> ")}` : ""}</span>
+          </div>
+        ))}
+      </div>
+      <div><span className="tag info">{chains.length} chain(s)</span></div>
     </div>
   );
 }
