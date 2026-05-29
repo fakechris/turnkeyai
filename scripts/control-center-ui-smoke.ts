@@ -410,10 +410,8 @@ try {
       waitUntil: "networkidle",
     });
     await page.waitForSelector("text=Runtime attention");
-    assert(
-      await page.getByRole("button", { name: /Open replay/ }).isDisabled(),
-      "runtime global replay action should be disabled until a replay index exists"
-    );
+    const openReplay = page.getByRole("button", { name: /Open replay/ });
+    assert(!(await openReplay.isDisabled()), "runtime replay action should open a mission-linked trace");
     assert(
       await page.locator("text=chain.browser.waiting").isVisible(),
       "runtime page should show live attention chains"
@@ -438,6 +436,8 @@ try {
       await page.locator(".card", { hasText: "validation-ops" }).isVisible(),
       "release acceptance should show the next validation command"
     );
+    await openReplay.click();
+    assert(page.url().includes(`#/mission/${missionId}`), "runtime replay action should open the mission trace");
 
     await page.goto(`http://127.0.0.1:${port}/app#/onboarding`, {
       waitUntil: "networkidle",
