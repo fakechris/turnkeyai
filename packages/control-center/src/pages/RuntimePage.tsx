@@ -7,7 +7,7 @@
 import { useState } from "react";
 
 import { useApiClient } from "../api/useApiClient";
-import type { WorkerSessionRecord } from "../api/mission-api";
+import type { Mission, WorkerSessionRecord } from "../api/mission-api";
 import type {
   BridgeStatus,
   DiagnosticsLogs,
@@ -29,6 +29,7 @@ interface Live {
   status: BridgeStatus | null;
   logs: DiagnosticsLogs | null;
   runtimeSummary: RuntimeSummaryReport | null;
+  missions: Mission[];
   workerSessions: WorkerSessionRecord[];
   validationOps: ValidationOpsReport | null;
   validationOpsError: string | null;
@@ -37,12 +38,13 @@ interface Live {
 
 export function RuntimePage() {
   const client = useApiClient();
-  const { state, setPill, setLastStatus } = useAppState();
+  const { state, setPill, setLastStatus, openMission } = useAppState();
   const [live, setLive] = useState<Live>({
     diagnostics: null,
     status: null,
     logs: null,
     runtimeSummary: null,
+    missions: [],
     workerSessions: [],
     validationOps: null,
     validationOpsError: null,
@@ -51,11 +53,12 @@ export function RuntimePage() {
 
   usePolling(async () => {
     const shouldFetchValidationOps = state.scope === "admin" || state.scope === "unknown";
-    const [diagResult, statusResult, logsResult, runtimeResult, sessionsResult, validationOpsResult] = await Promise.allSettled([
+    const [diagResult, statusResult, logsResult, runtimeResult, missionsResult, sessionsResult, validationOpsResult] = await Promise.allSettled([
       client.get<DiagnosticsSnapshot>("/diagnostics"),
       client.get<BridgeStatus>("/bridge/status"),
       client.get<DiagnosticsLogs>(`/diagnostics/logs?limit=${LOG_LIMIT}`),
       client.get<RuntimeSummaryReport>("/runtime-summary?limit=8"),
+      client.get<Mission[]>("/missions"),
       client.get<WorkerSessionRecord[]>("/runtime-worker-sessions?limit=8"),
       shouldFetchValidationOps
         ? client.getNoAuthReset<ValidationOpsReport>("/validation-ops?limit=6")
@@ -66,6 +69,7 @@ export function RuntimePage() {
     const status = statusResult.status === "fulfilled" ? statusResult.value : null;
     const logs = logsResult.status === "fulfilled" ? logsResult.value : null;
     const runtimeSummary = runtimeResult.status === "fulfilled" ? runtimeResult.value : null;
+    const missions = missionsResult.status === "fulfilled" ? missionsResult.value : [];
     const workerSessions = sessionsResult.status === "fulfilled" ? sessionsResult.value : [];
     const validationOps = validationOpsResult.status === "fulfilled" ? validationOpsResult.value : null;
     const validationOpsError =
@@ -85,12 +89,12 @@ export function RuntimePage() {
       // Don't blast "Unreachable" on a single transient 401 from one
       // of the three fetches — apiClient already cleared the token if
       // applicable. Only set bad when ALL three failed.
-      const allUnauth = [diagResult, statusResult, logsResult, runtimeResult, sessionsResult, validationOpsResult].every(
+      const allUnauth = [diagResult, statusResult, logsResult, runtimeResult, missionsResult, sessionsResult, validationOpsResult].every(
         (r) => r.status === "rejected" && (r.reason as Error)?.message === "unauthorized"
       );
       if (!allUnauth) setPill({ state: "bad", label: "Unreachable" });
     }
-    setLive({ diagnostics, status, logs, runtimeSummary, workerSessions, validationOps, validationOpsError, reachable });
+    setLive({ diagnostics, status, logs, runtimeSummary, missions, workerSessions, validationOps, validationOpsError, reachable });
   }, POLL_MS);
 
   const exportBundle = () => {
@@ -114,6 +118,7 @@ export function RuntimePage() {
     });
   };
   const bundleReady = live.diagnostics != null;
+  const replayMissionId = findReplayMissionId(live.runtimeSummary, live.missions);
 
   return (
     <div className="page">
@@ -137,8 +142,15 @@ export function RuntimePage() {
           <button
             type="button"
             className="btn"
-            disabled
-            title="Open a mission to inspect replay. A global replay index is not available yet."
+            disabled={!replayMissionId}
+            title={
+              replayMissionId
+                ? "Open the mission trace for the latest runtime attention item"
+                : "No mission-linked runtime chain is available yet."
+            }
+            onClick={() => {
+              if (replayMissionId) openMission(replayMissionId);
+            }}
           >
             <Icon name="play" size={13} /> Open replay
           </button>
@@ -223,6 +235,28 @@ function buildLiveTiles(live: Live): Array<{ l: string; v: string; d: string }> 
           : "no relay",
     },
   ];
+}
+
+function findReplayMissionId(summary: RuntimeSummaryReport | null, missions: Mission[]): string | null {
+  if (!summary || missions.length === 0) return null;
+  const missionByThread = new Map(
+    missions
+      .filter((mission) => typeof mission.threadId === "string" && mission.threadId.trim().length > 0)
+      .map((mission) => [mission.threadId as string, mission.id])
+  );
+  const candidateChains = [
+    ...summary.attentionChains,
+    ...summary.waitingChains,
+    ...summary.failedChains,
+    ...summary.staleChains,
+    ...summary.activeChains,
+    ...summary.recentlyResolved,
+  ];
+  for (const chain of candidateChains) {
+    const missionId = missionByThread.get(chain.threadId);
+    if (missionId) return missionId;
+  }
+  return null;
 }
 
 function SetupHealthCard({
