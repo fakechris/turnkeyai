@@ -23,7 +23,7 @@ interface RuntimeConfig {
 
 const DEFAULT_TOOLUSE_BROWSER_SCENARIOS = "basic,approval,followup,timeout,complex";
 const DEFAULT_TOOLUSE_NON_BROWSER_SCENARIOS = "basic,approval,followup,timeout";
-const DEFAULT_MISSION_SCENARIOS = "basic,comparison,followup,cancel,approval,browser-dynamic,timeout-recovery";
+const DEFAULT_MISSION_SCENARIOS = "basic,comparison,followup,cancel,approval,browser-dynamic,browser-dashboard,timeout-recovery";
 
 const options = parseArgs(process.argv.slice(2));
 const startedAt = Date.now();
