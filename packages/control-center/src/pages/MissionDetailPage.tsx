@@ -156,12 +156,16 @@ function LiveMissionView({ mission }: { mission: Mission }) {
     0
   );
   const finalAnswer = latestFinalAnswer(timeline.value);
+  const { refetch: refetchTimeline } = timeline;
+  const { refetch: refetchMetrics } = metrics;
+  const { refetch: refetchRoleRuns } = roleRuns;
+  const { refetch: refetchWorkerSessions } = workerSessions;
   const refetchMissionRuntime = useCallback(() => {
-    timeline.refetch();
-    metrics.refetch();
-    roleRuns.refetch();
-    workerSessions.refetch();
-  }, [metrics, roleRuns, timeline, workerSessions]);
+    refetchTimeline();
+    refetchMetrics();
+    refetchRoleRuns();
+    refetchWorkerSessions();
+  }, [refetchMetrics, refetchRoleRuns, refetchTimeline, refetchWorkerSessions]);
 
   const onSend = useCallback(async () => {
     const content = pending.trim();
