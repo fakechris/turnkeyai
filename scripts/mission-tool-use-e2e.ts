@@ -44,6 +44,11 @@ interface MissionObservabilitySnapshot {
   recovery: {
     events: number;
   };
+  liveness: {
+    active: number;
+    waiting: number;
+    stale: number;
+  };
   qualityGate: {
     status: string;
     evidenceEvents: number;
@@ -131,6 +136,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
     console.log(`mission-quality-gate: ${metrics.qualityGate.status}`);
     console.log(`mission-metrics-tools: ${metrics.tool.requested}/${metrics.tool.results}`);
     console.log(`mission-metrics-sessions: ${metrics.sessions.spawned}/${metrics.sessions.continued}`);
+    console.log(`mission-metrics-liveness: ${metrics.liveness.active}/${metrics.liveness.waiting}/${metrics.liveness.stale}`);
     console.log(`mission-metrics-evidence: ${metrics.qualityGate.evidenceEvents}`);
     console.log(`mission-final-bytes: ${Buffer.byteLength(final.text, "utf8")}`);
     console.log(`mission-final-bullets: ${quality.bullets}`);
@@ -283,6 +289,7 @@ function assertMissionMetrics(metrics: MissionObservabilitySnapshot): void {
   assert.equal(metrics.tool.timeouts, 0, "mission metrics must not report timed-out tools");
   assert.ok(metrics.sessions.spawned >= 1, "mission metrics must count spawned sub-agent sessions");
   assert.equal(metrics.recovery.events, 0, "mission metrics must not report recovery events");
+  assert.equal(metrics.liveness.stale, 0, "mission metrics must not report stale runtime subjects");
   assert.equal(metrics.qualityGate.status, "passed", "mission metrics quality gate must pass");
   assert.ok(metrics.qualityGate.evidenceEvents >= 1, "mission metrics must count evidence-bearing events");
 }
