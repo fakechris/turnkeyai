@@ -37,11 +37,13 @@ import { createNativeToolCapabilityRegistry } from "@turnkeyai/role-runtime/tool
 import type { ToolPermissionService } from "@turnkeyai/role-runtime/tool-permission-service";
 import { createWorkerSessionToolExecutor } from "@turnkeyai/role-runtime/tool-use";
 import { LLMSubAgentWorkerHandler } from "@turnkeyai/role-runtime/sub-agent-worker-handler";
+import type { RolePromptPacket } from "@turnkeyai/role-runtime/prompt-policy";
 import { InMemoryWorkerRuntime } from "@turnkeyai/worker-runtime/in-memory-worker-runtime";
 
 interface ToolUseE2eOptions {
   withBrowser: boolean;
   cdpTimeoutMs: number;
+  scenarioTimeoutMs: number;
   realLlm: boolean;
   realLlmMatrix: boolean;
   scenario: ToolUseScenario;
@@ -71,6 +73,7 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
   const options: ToolUseE2eOptions = {
     withBrowser: false,
     cdpTimeoutMs: 45_000,
+    scenarioTimeoutMs: 180_000,
     realLlm: false,
     realLlmMatrix: false,
     scenario: "basic",
@@ -145,6 +148,19 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
         throw new Error("--cdp-timeout-ms must be a positive integer");
       }
       options.cdpTimeoutMs = parsed;
+      index += 1;
+      continue;
+    }
+    if (arg === "--scenario-timeout-ms") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --scenario-timeout-ms");
+      }
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+        throw new Error("--scenario-timeout-ms must be a positive integer");
+      }
+      options.scenarioTimeoutMs = parsed;
       index += 1;
       continue;
     }
@@ -236,10 +252,13 @@ function printRealLlmResult(real: RealToolUseE2eResult): void {
 async function runRealLlmToolUseE2eMatrix(options: ToolUseE2eOptions): Promise<RealToolUseE2eResult[]> {
   const scenarios = options.matrixScenarios ?? defaultRealLlmMatrixScenarios(options.withBrowser);
   const results: RealToolUseE2eResult[] = [];
+  console.log(`tool-use real llm matrix starting: ${scenarios.join(",")}`);
   for (const scenario of scenarios) {
     if (isMultiSourceScenario(scenario) && !options.withBrowser) {
       throw new Error(`matrix scenario ${scenario} requires --with-browser`);
     }
+    const startedAt = Date.now();
+    console.log(`tool-use real llm matrix scenario starting: ${scenario}`);
     results.push(
       await runRealLlmToolUseE2e({
         ...options,
@@ -248,6 +267,7 @@ async function runRealLlmToolUseE2eMatrix(options: ToolUseE2eOptions): Promise<R
         withBrowser: isMultiSourceScenario(scenario),
       })
     );
+    console.log(`tool-use real llm matrix scenario passed: ${scenario} (${Date.now() - startedAt}ms)`);
   }
   return results;
 }
@@ -353,110 +373,21 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<RealToo
         : options.withBrowser
           ? "TURNKEYAI_BROWSER_E2E_OK"
           : "TURNKEYAI_LLM_E2E_OK";
-    const reply = await generator.generate({
+    const reply = await generateWithScenarioTimeout({
+      generator,
       activation,
-      packet: {
-        roleId: "role-lead",
-        roleName: "Lead",
-        seat: "lead",
-        systemPrompt: [
-          toolCapabilityRegistry.renderPromptHarness({ seat: "lead" }),
-          "You are running a release-gate E2E. Use the available session tool instead of answering from memory.",
-          followupScenario
-            ? [
-                "You must verify same-session follow-up behavior:",
-                "1. Call sessions_spawn with agent_id=explore exactly once for phase 1.",
-                "2. Read the returned session_key from that partial result.",
-                "3. Call sessions_send exactly once on that same session_key using the requested continuation message.",
-                "4. Do not spawn a second session for the continuation.",
-                "5. Finalize only after sessions_send returns TURNKEYAI_FOLLOWUP_E2E_OK.",
-              ].join("\n")
-            : timeoutScenario
-            ? [
-                "You must verify bounded timeout recovery:",
-                "1. Call sessions_spawn with agent_id=explore exactly once.",
-                "2. Set timeout_seconds to 0.001 so the sub-agent times out quickly.",
-                "3. After the timeout result, do not call more tools or spawn fallback sessions.",
-                "4. Produce an evidence-only final answer from the timeout result.",
-              ].join("\n")
-            : approvalScenario
-            ? [
-                "You must verify approval-gated browser side effects:",
-                "1. Call permission_query for browser.form.submit before starting the browser worker.",
-                "2. Call permission_result and permission_applied after the approval id is available.",
-                "3. Call sessions_spawn with agent_id=browser exactly once after permission_applied.",
-                "4. The browser task must clearly ask to submit the approved form so the runtime gate verifies the cached approval.",
-                "5. Finalize only after the browser worker result confirms browser.form.submit completed.",
-              ].join("\n")
-            : multiSourceScenario
-            ? [
-                "You must gather two independent evidence sources before final answer:",
-                "1. Call sessions_spawn with agent_id=explore to verify TURNKEYAI_COMPLEX_EXPLORE_OK.",
-                "2. Call sessions_spawn with agent_id=browser to open the fixture page and verify TURNKEYAI_COMPLEX_BROWSER_OK.",
-                "The two tasks are independent; use both session results and do not finalize from one source only.",
-              ].join("\n")
-            : options.withBrowser
-            ? "You must call sessions_spawn with agent_id=browser exactly once, then base your final answer on browser-observed evidence."
-            : "You must call sessions_spawn with agent_id=explore exactly once, then base your final answer on the tool result.",
-        ].join("\n\n"),
-        taskPrompt: followupScenario
-          ? [
-              "Run the same-session follow-up E2E.",
-              "Phase 1: ask the explore sub-agent for the phase-one checkpoint.",
-              "Phase 2: continue the same sub-agent session with sessions_send using the continuation instruction from phase 1.",
-              `Final answer must include ${targetMarker}, the reused session_key, and a short note that no duplicate session was spawned.`,
-            ].join("\n")
-          : timeoutScenario
-          ? [
-              "Run the bounded timeout recovery E2E.",
-              "Ask the explore sub-agent to perform a deliberately slow verification with timeout_seconds=0.001.",
-              `Final answer must include ${targetMarker}, explain that verification timed out, and mark missing evidence as not verified.`,
-            ].join("\n")
-          : approvalScenario
-          ? [
-              "Run the approval-gated browser side-effect E2E.",
-              "Request approval for browser.form.submit, apply the approval, then ask the browser sub-agent to open https://example.test/account and submit the approved form.",
-              `Final answer must include ${targetMarker}, permission.query, permission.result, permission.applied, and browser.form.submit.`,
-            ].join("\n")
-          : multiSourceScenario
-          ? [
-              "Run the production-grade multi-agent tool-use E2E.",
-              "Explore task: retrieve the release marker TURNKEYAI_COMPLEX_EXPLORE_OK and its deterministic source label.",
-              `Browser task: open ${fixture!.url}, read the page title, marker TURNKEYAI_COMPLEX_BROWSER_OK, and evidence text.`,
-              `Final answer must include ${targetMarker}, TURNKEYAI_COMPLEX_EXPLORE_OK, and TURNKEYAI_COMPLEX_BROWSER_OK.`,
-            ].join("\n")
-          : options.withBrowser
-          ? `Open ${fixture!.url}, read the fixture marker and page title with the browser sub-agent, then answer with ${targetMarker}.`
-          : `Ask the explore sub-agent for the release marker, then answer with ${targetMarker}.`,
-        outputContract:
-          followupScenario
-            ? [
-                `Final answer must include ${targetMarker}.`,
-                "Use Markdown with a heading `Evidence` and at least three bullets: phase-one partial result, follow-up result, residual risk.",
-                "Mention the reused session_key and state that the continuation used sessions_send rather than a duplicate sessions_spawn.",
-              ].join("\n")
-            : timeoutScenario
-            ? [
-                `Final answer must include ${targetMarker}.`,
-                "Use Markdown with a heading `Evidence` and at least three bullets: timeout result, attempted verification, residual risk.",
-                "State `not verified` for anything the timed-out worker did not prove.",
-                "Do not claim the underlying slow verification succeeded.",
-              ].join("\n")
-            : approvalScenario
-            ? [
-                `Final answer must include ${targetMarker}.`,
-                "Use Markdown with a heading `Evidence` and at least three bullets: permission.query, permission.result, permission.applied, browser worker result, residual risk.",
-                "Mention browser.form.submit and state the action was not executed before permission.applied.",
-              ].join("\n")
-            : multiSourceScenario
-            ? [
-                `Final answer must include ${targetMarker}.`,
-                "Use Markdown with a heading `Evidence` and at least three bullets: explore evidence, browser evidence, residual risk.",
-                "Do not include the success marker unless both sub-agent results were used.",
-              ].join("\n")
-            : `Final answer must include ${targetMarker} and must mention the session tool evidence.`,
-        suggestedMentions: [],
-      },
+      packet: buildRealLlmScenarioPacket({
+        toolHarness: toolCapabilityRegistry.renderPromptHarness({ seat: "lead" }),
+        followupScenario,
+        timeoutScenario,
+        approvalScenario,
+        multiSourceScenario,
+        withBrowser: options.withBrowser,
+        targetMarker,
+        fixtureUrl: fixture?.url,
+      }),
+      scenario: options.scenario,
+      timeoutMs: options.scenarioTimeoutMs,
     });
     const latestNativeMessages = [...new Map(nativeMessages.map((message) => [message.id, message])).values()];
     const toolCalls = latestNativeMessages.flatMap((message) =>
@@ -588,6 +519,165 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<RealToo
     await closeWorkerRuntime?.();
     await fixture?.close();
     await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+function buildRealLlmScenarioPacket(input: {
+  toolHarness: string;
+  followupScenario: boolean;
+  timeoutScenario: boolean;
+  approvalScenario: boolean;
+  multiSourceScenario: boolean;
+  withBrowser: boolean;
+  targetMarker: string;
+  fixtureUrl?: string;
+}): RolePromptPacket {
+  const systemPrompt = [
+    input.toolHarness,
+    "You are running a release-gate E2E. Use the available session tool instead of answering from memory.",
+    input.followupScenario
+      ? [
+          "You must verify same-session follow-up behavior:",
+          "1. Call sessions_spawn with agent_id=explore exactly once for phase 1.",
+          "2. Read the returned session_key from that partial result.",
+          "3. Call sessions_send exactly once on that same session_key using the requested continuation message.",
+          "4. Do not spawn a second session for the continuation.",
+          "5. Finalize only after sessions_send returns TURNKEYAI_FOLLOWUP_E2E_OK.",
+        ].join("\n")
+      : input.timeoutScenario
+      ? [
+          "You must verify bounded timeout recovery:",
+          "1. Call sessions_spawn with agent_id=explore exactly once.",
+          "2. Set timeout_seconds to 0.001 so the sub-agent times out quickly.",
+          "3. After the timeout result, do not call more tools or spawn fallback sessions.",
+          "4. Produce an evidence-only final answer from the timeout result.",
+        ].join("\n")
+      : input.approvalScenario
+      ? [
+          "You must verify approval-gated browser side effects:",
+          "1. Call permission_query for browser.form.submit before starting the browser worker.",
+          "2. Call permission_result and permission_applied after the approval id is available.",
+          "3. Call sessions_spawn with agent_id=browser exactly once after permission_applied.",
+          "4. The browser task must clearly ask to submit the approved form so the runtime gate verifies the cached approval.",
+          "5. Finalize only after the browser worker result confirms browser.form.submit completed.",
+        ].join("\n")
+      : input.multiSourceScenario
+      ? [
+          "You must gather two independent evidence sources before final answer:",
+          "1. Call sessions_spawn with agent_id=explore to verify TURNKEYAI_COMPLEX_EXPLORE_OK.",
+          "2. Call sessions_spawn with agent_id=browser to open the fixture page and verify TURNKEYAI_COMPLEX_BROWSER_OK.",
+          "The two tasks are independent; use both session results and do not finalize from one source only.",
+        ].join("\n")
+      : input.withBrowser
+      ? "You must call sessions_spawn with agent_id=browser exactly once, then base your final answer on browser-observed evidence."
+      : "You must call sessions_spawn with agent_id=explore exactly once, then base your final answer on the tool result.",
+  ].join("\n\n");
+  const taskPrompt = input.followupScenario
+    ? [
+        "Run the same-session follow-up E2E.",
+        "Phase 1: ask the explore sub-agent for the phase-one checkpoint.",
+        "Phase 2: continue the same sub-agent session with sessions_send using the continuation instruction from phase 1.",
+        `Final answer must include ${input.targetMarker}, the reused session_key, and a short note that no duplicate session was spawned.`,
+      ].join("\n")
+    : input.timeoutScenario
+    ? [
+        "Run the bounded timeout recovery E2E.",
+        "Ask the explore sub-agent to perform a deliberately slow verification with timeout_seconds=0.001.",
+        `Final answer must include ${input.targetMarker}, explain that verification timed out, and mark missing evidence as not verified.`,
+      ].join("\n")
+    : input.approvalScenario
+    ? [
+        "Run the approval-gated browser side-effect E2E.",
+        "Request approval for browser.form.submit, apply the approval, then ask the browser sub-agent to open https://example.test/account and submit the approved form.",
+        `Final answer must include ${input.targetMarker}, permission.query, permission.result, permission.applied, and browser.form.submit.`,
+      ].join("\n")
+    : input.multiSourceScenario
+    ? [
+        "Run the production-grade multi-agent tool-use E2E.",
+        "Explore task: retrieve the release marker TURNKEYAI_COMPLEX_EXPLORE_OK and its deterministic source label.",
+        `Browser task: open ${requiredFixtureUrl(input)}, read the page title, marker TURNKEYAI_COMPLEX_BROWSER_OK, and evidence text.`,
+        `Final answer must include ${input.targetMarker}, TURNKEYAI_COMPLEX_EXPLORE_OK, and TURNKEYAI_COMPLEX_BROWSER_OK.`,
+      ].join("\n")
+    : input.withBrowser
+    ? `Open ${requiredFixtureUrl(input)}, read the fixture marker and page title with the browser sub-agent, then answer with ${input.targetMarker}.`
+    : `Ask the explore sub-agent for the release marker, then answer with ${input.targetMarker}.`;
+  const outputContract = input.followupScenario
+    ? [
+        `Final answer must include ${input.targetMarker}.`,
+        "Use Markdown with a heading `Evidence` and at least three bullets: phase-one partial result, follow-up result, residual risk.",
+        "Mention the reused session_key and state that the continuation used sessions_send rather than a duplicate sessions_spawn.",
+      ].join("\n")
+    : input.timeoutScenario
+    ? [
+        `Final answer must include ${input.targetMarker}.`,
+        "Use Markdown with a heading `Evidence` and at least three bullets: timeout result, attempted verification, residual risk.",
+        "State `not verified` for anything the timed-out worker did not prove.",
+        "Do not claim the underlying slow verification succeeded.",
+      ].join("\n")
+    : input.approvalScenario
+    ? [
+        `Final answer must include ${input.targetMarker}.`,
+        "Use Markdown with a heading `Evidence` and at least three bullets: permission.query, permission.result, permission.applied, browser worker result, residual risk.",
+        "Mention browser.form.submit and state the action was not executed before permission.applied.",
+      ].join("\n")
+    : input.multiSourceScenario
+    ? [
+        `Final answer must include ${input.targetMarker}.`,
+        "Use Markdown with a heading `Evidence` and at least three bullets: explore evidence, browser evidence, residual risk.",
+        "Do not include the success marker unless both sub-agent results were used.",
+      ].join("\n")
+    : `Final answer must include ${input.targetMarker} and must mention the session tool evidence.`;
+  return {
+    roleId: "role-lead",
+    roleName: "Lead",
+    seat: "lead",
+    systemPrompt,
+    taskPrompt,
+    outputContract,
+    suggestedMentions: [],
+  };
+}
+
+function requiredFixtureUrl(input: { fixtureUrl?: string }): string {
+  assert.ok(input.fixtureUrl, "browser scenario requires a fixture URL");
+  return input.fixtureUrl;
+}
+
+async function generateWithScenarioTimeout(input: {
+  generator: LLMRoleResponseGenerator;
+  activation: RoleActivationInput;
+  packet: RolePromptPacket;
+  scenario: ToolUseScenario;
+  timeoutMs: number;
+}): Promise<Awaited<ReturnType<LLMRoleResponseGenerator["generate"]>>> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const generation = input.generator.generate({
+    activation: input.activation,
+    packet: input.packet,
+    signal: controller.signal,
+  });
+  try {
+    return await Promise.race([
+      generation,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+          reject(new Error(`real LLM scenario ${input.scenario} timed out after ${input.timeoutMs}ms`));
+        }, input.timeoutMs);
+      }),
+    ]);
+  } catch (error) {
+    if (timedOut) {
+      generation.catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
 }
 
