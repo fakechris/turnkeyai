@@ -15,6 +15,9 @@ test("session tool result protocol serializes completed sub-agent evidence", () 
     sessionKey: "worker:explore:task-1",
     agentId: "explore",
     missingResultMessage: "missing",
+    label: "Primary source sweep",
+    parentSessionKey: "role:lead:thread:1",
+    toolCallId: "call-1",
     result: {
       workerType: "explore",
       status: "completed",
@@ -29,6 +32,9 @@ test("session tool result protocol serializes completed sub-agent evidence", () 
 
   assert.equal(result.protocol, "turnkeyai.session_tool_result.v1");
   assert.equal(result.status, "completed");
+  assert.equal(result.label, "Primary source sweep");
+  assert.equal(result.parent_session_key, "role:lead:thread:1");
+  assert.equal(result.tool_call_id, "call-1");
   assert.equal(result.final_content, "Verified: yes.");
   assert.deepEqual(result.tool_chain, ["explore"]);
 
@@ -41,12 +47,18 @@ test("session tool result protocol preserves timeout evidence semantics", () => 
     taskId: "task-1",
     sessionKey: "worker:browser:task-1",
     agentId: "browser",
+    label: "Checkout verification",
+    parentSessionKey: "role:lead:thread:1",
+    toolCallId: "call-timeout",
     timeoutSeconds: 120,
     result: "Timed out after 120s.",
     evidenceSummary: "Observed checkout page title before timeout.",
   });
 
   assert.equal(result.status, "timeout");
+  assert.equal(result.label, "Checkout verification");
+  assert.equal(result.parent_session_key, "role:lead:thread:1");
+  assert.equal(result.tool_call_id, "call-timeout");
   assert.equal(result.resumable, true);
   assert.equal(result.evidence_available, true);
   assert.equal(result.evidence_summary, "Observed checkout page title before timeout.");
@@ -64,6 +76,9 @@ test("session tool result protocol normalizes legacy session results", () => {
       session_key: "worker:explore:task-1",
       agent_id: "explore",
       status: "completed",
+      label: "Legacy label",
+      parent_session_key: "role:lead:thread:1",
+      tool_call_id: "call-legacy",
       tool_chain: ["explore"],
       result: "Legacy result.",
       final_content: "Short final.",
@@ -76,6 +91,9 @@ test("session tool result protocol normalizes legacy session results", () => {
 
   assert.equal(parsed?.protocol, "turnkeyai.session_tool_result.v1");
   assert.equal(parsed?.status, "completed");
+  assert.equal(parsed?.label, "Legacy label");
+  assert.equal(parsed?.parent_session_key, "role:lead:thread:1");
+  assert.equal(parsed?.tool_call_id, "call-legacy");
   assert.equal(parsed?.final_content, "Short final.");
 });
 
