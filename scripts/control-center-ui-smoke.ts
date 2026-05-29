@@ -44,6 +44,7 @@ const threadId = "thr.ui-smoke.1";
 const requestedPaths: string[] = [];
 const postedMissions: unknown[] = [];
 const postedMessages: unknown[] = [];
+const postedRecoveryActions: string[] = [];
 let onboardingState = onboardingStateFixture();
 const browserConsoleErrors: string[] = [];
 const browserPageErrors: string[] = [];
@@ -250,6 +251,16 @@ try {
     assert(
       await page.locator(".mission-recovery-card", { hasText: "browser-ui" }).isVisible(),
       "recovery cases should show browser session continuity"
+    );
+    await page.getByRole("button", { name: "Approve recovery" }).click();
+    await page.waitForSelector("[role='status']");
+    assert(
+      await page.locator("[role='status']", { hasText: "Recovery action requested: Approve recovery" }).isVisible(),
+      "recovery approve action should show accepted operator feedback"
+    );
+    assert(
+      postedRecoveryActions.includes("recovery:browser-detached:approve"),
+      "recovery approve action should POST to the recovery run action route"
     );
     assert(
       await page.locator(".browser-continuity-card", { hasText: "target-reopen" }).isVisible(),
@@ -705,6 +716,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (method === "GET" && url.pathname === "/recovery-runs") {
     json(res, recoveryRunsFixture());
+    return;
+  }
+  const recoveryRunAction = url.pathname.match(/^\/recovery-runs\/([^/]+)\/(approve|reject|retry|fallback|resume)$/);
+  if (method === "POST" && recoveryRunAction) {
+    postedRecoveryActions.push(`${decodeURIComponent(recoveryRunAction[1]!)}:${recoveryRunAction[2]!}`);
+    json(res, { accepted: true, action: recoveryRunAction[2], recoveryRunId: decodeURIComponent(recoveryRunAction[1]!) });
     return;
   }
   if (method === "GET" && url.pathname === "/context/session-memory") {

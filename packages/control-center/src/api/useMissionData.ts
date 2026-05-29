@@ -26,6 +26,7 @@ import type {
   ContextSource,
   Mission,
   MissionObservabilitySnapshot,
+  RecoveryRunAction,
   RecoveryRunsResponse,
   RoleRunState,
   ThreadSessionMemoryRecord,
@@ -546,6 +547,21 @@ export function useDecideApproval(): (input: {
       );
       return { ...result.approval, decision: result.decision };
     },
+    [client]
+  );
+}
+
+export function useRecoveryRunAction(): (input: {
+  threadId: string;
+  recoveryRunId: string;
+  action: Exclude<RecoveryRunAction, "dispatch">;
+}) => Promise<unknown> {
+  const client = useApiClient();
+  return useCallback(
+    (input) =>
+      client.post(
+        `/recovery-runs/${encodeURIComponent(input.recoveryRunId)}/${input.action}?threadId=${encodeURIComponent(input.threadId)}`
+      ),
     [client]
   );
 }
