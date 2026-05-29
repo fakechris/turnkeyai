@@ -20,6 +20,7 @@ import type {
   Mission,
   MissionObservabilitySnapshot,
   RecoveryRun,
+  RecoveryRunAction,
   RoleRunState,
   ThreadSessionMemoryRecord,
   WorkerSessionRecord,
@@ -33,6 +34,7 @@ import {
   useMission,
   useMissionMetrics,
   useMissions,
+  useRecoveryRunAction,
   useRecoveryRuns,
   useRoleRuns,
   useSendMissionMessage,
@@ -151,10 +153,12 @@ function LiveMissionView({ mission }: { mission: Mission }) {
   const send = useSendMissionMessage();
   const cancelRoleRun = useCancelRoleRun();
   const cancelWorkerSession = useCancelWorkerSession();
+  const executeRecoveryRunAction = useRecoveryRunAction();
   const [pending, setPending] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [roleRunActionKey, setRoleRunActionKey] = useState<string | null>(null);
   const [sessionActionKey, setSessionActionKey] = useState<string | null>(null);
+  const [recoveryActionKey, setRecoveryActionKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [acceptedNotice, setAcceptedNotice] = useState<string | null>(null);
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
@@ -193,14 +197,16 @@ function LiveMissionView({ mission }: { mission: Mission }) {
   const finalAnswer = latestFinalAnswer(timeline.value);
   const { refetch: refetchTimeline } = timeline;
   const { refetch: refetchMetrics } = metrics;
+  const { refetch: refetchRecoveryRuns } = recoveryRuns;
   const { refetch: refetchRoleRuns } = roleRuns;
   const { refetch: refetchWorkerSessions } = workerSessions;
   const refetchMissionRuntime = useCallback(() => {
     refetchTimeline();
     refetchMetrics();
+    refetchRecoveryRuns();
     refetchRoleRuns();
     refetchWorkerSessions();
-  }, [refetchMetrics, refetchRoleRuns, refetchTimeline, refetchWorkerSessions]);
+  }, [refetchMetrics, refetchRecoveryRuns, refetchRoleRuns, refetchTimeline, refetchWorkerSessions]);
 
   const onSend = useCallback(async () => {
     const content = pending.trim();
@@ -265,6 +271,30 @@ function LiveMissionView({ mission }: { mission: Mission }) {
       }
     },
     [cancelRoleRun, roleRunActionKey, refetchMissionRuntime]
+  );
+
+  const onRecoveryRunAction = useCallback(
+    async (run: RecoveryRun, action: Exclude<RecoveryRunAction, "dispatch">) => {
+      if (recoveryActionKey) return;
+      const actionKey = `${run.recoveryRunId}:${action}`;
+      setRecoveryActionKey(actionKey);
+      setError(null);
+      setAcceptedNotice(null);
+      try {
+        await executeRecoveryRunAction({
+          threadId: run.threadId,
+          recoveryRunId: run.recoveryRunId,
+          action,
+        });
+        setAcceptedNotice(`Recovery action requested: ${recoveryActionLabel(action)}.`);
+        refetchMissionRuntime();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setRecoveryActionKey(null);
+      }
+    },
+    [executeRecoveryRunAction, recoveryActionKey, refetchMissionRuntime]
   );
 
   const onCancelSession = useCallback(
@@ -336,6 +366,8 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             response={recoveryRuns.value}
             isLive={recoveryRuns.isLive}
             error={recoveryRuns.error}
+            actionKey={recoveryActionKey}
+            onAction={onRecoveryRunAction}
           />
           <BrowserContinuityCard
             signals={browserContinuitySignals}
@@ -598,10 +630,14 @@ function MissionRecoveryCasesCard({
   response,
   isLive,
   error,
+  actionKey,
+  onAction,
 }: {
   response: { totalRuns: number; runs: RecoveryRun[] };
   isLive: boolean;
   error: string | null;
+  actionKey: string | null;
+  onAction: (run: RecoveryRun, action: Exclude<RecoveryRunAction, "dispatch">) => void;
 }) {
   const runs = response.runs;
   const attentionCount = runs.filter((run) => recoveryRunNeedsAttention(run)).length;
@@ -635,7 +671,12 @@ function MissionRecoveryCasesCard({
       ) : (
         <div className="mission-recovery-list">
           {runs.map((run) => (
-            <MissionRecoveryCaseRow key={run.recoveryRunId} run={run} />
+            <MissionRecoveryCaseRow
+              key={run.recoveryRunId}
+              run={run}
+              actionKey={actionKey}
+              onAction={onAction}
+            />
           ))}
         </div>
       )}
@@ -643,7 +684,15 @@ function MissionRecoveryCasesCard({
   );
 }
 
-function MissionRecoveryCaseRow({ run }: { run: RecoveryRun }) {
+function MissionRecoveryCaseRow({
+  run,
+  actionKey,
+  onAction,
+}: {
+  run: RecoveryRun;
+  actionKey: string | null;
+  onAction: (run: RecoveryRun, action: Exclude<RecoveryRunAction, "dispatch">) => void;
+}) {
   const tone = recoveryRunTone(run);
   const latestAttempt = run.attempts.find((attempt) => attempt.attemptId === run.currentAttemptId) ?? run.attempts.at(-1);
   const browserSession = latestAttempt?.browserSession ?? run.browserSession;
@@ -651,6 +700,7 @@ function MissionRecoveryCaseRow({ run }: { run: RecoveryRun }) {
   const browserOutcome = latestAttempt?.browserOutcome;
   const browserOutcomeSummary = latestAttempt?.browserOutcomeSummary;
   const gate = describeRecoveryGate(run.status);
+  const actions = listOperatorRecoveryActions(run.status);
   return (
     <div className="mission-recovery-row" data-tone={tone}>
       <div className="mission-recovery-main">
@@ -683,8 +733,64 @@ function MissionRecoveryCaseRow({ run }: { run: RecoveryRun }) {
           {failure?.recommendedAction && <span>recommend: {failure.recommendedAction}</span>}
         </div>
       )}
+      {actions.length > 0 && (
+        <div className="mission-recovery-actions">
+          {actions.map((action) => {
+            const key = `${run.recoveryRunId}:${action}`;
+            const busy = actionKey === key;
+            const blocked = actionKey !== null && !busy;
+            return (
+              <button
+                key={action}
+                type="button"
+                className={`btn ${action === "approve" || action === "retry" || action === "resume" ? "primary" : "ghost"}`}
+                disabled={busy || blocked}
+                onClick={() => onAction(run, action)}
+              >
+                {busy ? "Requesting…" : recoveryActionLabel(action)}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
+}
+
+function listOperatorRecoveryActions(status: RecoveryRun["status"]): Array<Exclude<RecoveryRunAction, "dispatch">> {
+  switch (status) {
+    case "waiting_approval":
+      return ["approve", "reject"];
+    case "planned":
+    case "waiting_external":
+    case "superseded":
+    case "failed":
+      return ["retry", "fallback", "resume", "reject"];
+    case "running":
+    case "retrying":
+    case "fallback_running":
+    case "resumed":
+      return ["reject"];
+    case "recovered":
+    case "aborted":
+    default:
+      return [];
+  }
+}
+
+function recoveryActionLabel(action: Exclude<RecoveryRunAction, "dispatch">): string {
+  switch (action) {
+    case "approve":
+      return "Approve recovery";
+    case "reject":
+      return "Reject";
+    case "retry":
+      return "Retry";
+    case "fallback":
+      return "Fallback";
+    case "resume":
+      return "Resume";
+  }
 }
 
 function recoveryRunNeedsAttention(run: RecoveryRun): boolean {
