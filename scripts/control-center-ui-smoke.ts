@@ -116,6 +116,7 @@ try {
     });
 
     await page.waitForSelector(".thinking-card");
+    await page.waitForSelector(".browser-continuity-card");
     await page.waitForSelector(".mission-evidence-card");
     await page.waitForSelector(".final-answer-card .markdown-body h2");
     await page.waitForSelector(".final-answer-card .markdown-body ul li");
@@ -124,6 +125,15 @@ try {
 
     assert(await page.locator(".final-answer-card").count() === 1, "expected exactly one final answer card");
     assert(await page.locator(".thinking-card").count() === 1, "expected exactly one work trace card");
+    assert(await page.locator(".browser-continuity-card").count() === 1, "expected one browser continuity card");
+    assert(
+      await page.locator(".browser-continuity-card", { hasText: "target-reopen" }).isVisible(),
+      "browser continuity should show target ids from worker results or timeline runtime"
+    );
+    assert(
+      await page.locator(".browser-continuity-card", { hasText: "reopen" }).isVisible(),
+      "browser continuity should show target resolution"
+    );
     assert(await page.locator(".mission-evidence-card").count() === 1, "expected one mission evidence card");
     assert(
       await page.locator(".mission-evidence-card", { hasText: "Browser evidence" }).isVisible(),
@@ -142,6 +152,7 @@ try {
       await page.locator(".thinking-card-preview", { hasText: "Final answer remains below" }).isVisible(),
       "collapsed trace preview should tell the user the final answer remains below"
     );
+    await assertVerticalOrder(page, ".browser-continuity-card", ".worker-session-card", "browser continuity should appear before sub-agent sessions");
     await assertVerticalOrder(page, ".mission-evidence-card", ".thinking-card", "mission evidence should appear before work trace");
     await assertVerticalOrder(page, ".thinking-card", ".final-answer-card", "work trace must appear before final answer");
 
@@ -359,7 +370,14 @@ function timelineFixture() {
       1_700,
       "role-browser",
       "Browser evidence captured.",
-      { route: "worker-session" },
+      {
+        route: "worker-session",
+        browserSessionId: "browser-ui",
+        browserTargetId: "target-reopen",
+        resumeMode: "cold",
+        targetResolution: "reopen",
+        transport: "direct-cdp",
+      },
       "ctx.browser.session.browser-ui"
     ),
     tool("ev.tool.call", 2_000, "call", "sessions_spawn", "call-browser", "Spawn browser worker."),
@@ -518,6 +536,13 @@ function workerSessionsFixture() {
           workerType: "browser",
           status: "completed",
           summary: "Captured a browser source and returned evidence.",
+          payload: {
+            sessionId: "browser-ui",
+            targetId: "target-reopen",
+            resumeMode: "cold",
+            targetResolution: "reopen",
+            transportLabel: "direct-cdp",
+          },
         },
       },
     },

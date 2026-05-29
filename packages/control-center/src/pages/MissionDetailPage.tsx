@@ -167,10 +167,18 @@ function LiveMissionView({ mission }: { mission: Mission }) {
     () => selectMissionContextSources(contextSources.value, timeline.value, missionApprovals),
     [contextSources.value, missionApprovals, timeline.value]
   );
+  const browserContinuitySignals = useMemo(
+    () => buildBrowserContinuitySignals(missionContextSources, workerSessions.value, timeline.value),
+    [missionContextSources, timeline.value, workerSessions.value]
+  );
   const evidenceSettled =
     (contextSources.isLive || Boolean(contextSources.error)) &&
     (artifacts.isLive || Boolean(artifacts.error)) &&
     (approvals.isLive || Boolean(approvals.error));
+  const browserContinuitySettled =
+    (contextSources.isLive || Boolean(contextSources.error)) &&
+    (workerSessions.isLive || Boolean(workerSessions.error)) &&
+    (timeline.isLive || Boolean(timeline.error));
   const toolProcessCount = replayItems.filter((item) => item.kind === "tool-process").length;
   const toolStepCount = replayItems.reduce(
     (count, item) => count + (item.kind === "tool-process" ? item.toolEvents.length : 0),
@@ -313,6 +321,13 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             onCancel={onCancelRoleRun}
           />
           <MissionMetricsCard metrics={metrics.value} isLive={metrics.isLive} error={metrics.error} />
+          <BrowserContinuityCard
+            signals={browserContinuitySignals}
+            isSettled={browserContinuitySettled}
+            errors={[contextSources.error, workerSessions.error, timeline.error].filter(
+              (value): value is string => Boolean(value)
+            )}
+          />
           <SubAgentSessionsCard
             sessions={workerSessions.value}
             isLive={workerSessions.isLive}
@@ -654,6 +669,202 @@ function formatBytes(bytes: number): string {
   return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
 }
 
+type BrowserContinuitySignal = {
+  key: string;
+  source: "context" | "worker" | "timeline";
+  title: string;
+  state: string;
+  detail: string;
+  sessionId?: string;
+  targetId?: string;
+  transport?: string;
+  resumeMode?: string;
+  targetResolution?: string;
+  tone: "ok" | "warning" | "danger" | "muted";
+};
+
+function BrowserContinuityCard({
+  signals,
+  isSettled,
+  errors,
+}: {
+  signals: BrowserContinuitySignal[];
+  isSettled: boolean;
+  errors: string[];
+}) {
+  const detachedCount = signals.filter((signal) => isDetachedBrowserState(signal.state)).length;
+  const reconnectCount = signals.filter(
+    (signal) =>
+      signal.resumeMode === "cold" ||
+      signal.targetResolution === "reconnect" ||
+      signal.targetResolution === "reopen" ||
+      signal.state === "reconnecting"
+  ).length;
+  const activeCount = signals.filter((signal) => signal.tone === "ok").length;
+  return (
+    <section className="card browser-continuity-card">
+      <div className="subagent-session-head">
+        <div>
+          <div className="label" style={{ fontSize: 11 }}>Browser continuity</div>
+          <div className="muted" style={{ fontSize: 11.5 }}>
+            Session state, target reuse, and reconnect/reopen signals visible to the operator
+          </div>
+        </div>
+        <div className="thinking-card-meta">
+          <span>{activeCount} active</span>
+          <span>{detachedCount} detached</span>
+          <span>{reconnectCount} reconnect/reopen</span>
+        </div>
+      </div>
+      {errors.map((error) => (
+        <div key={error} className="subagent-session-error" role="alert">
+          {error}
+        </div>
+      ))}
+      {signals.length === 0 ? (
+        <div className="subagent-session-empty">
+          {isSettled ? "No browser continuity signals for this mission yet." : "Loading browser continuity…"}
+        </div>
+      ) : (
+        <div className="browser-continuity-list">
+          {signals.slice(0, 6).map((signal) => (
+            <BrowserContinuityRow key={signal.key} signal={signal} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function BrowserContinuityRow({ signal }: { signal: BrowserContinuitySignal }) {
+  return (
+    <div className="browser-continuity-row" data-tone={signal.tone}>
+      <div className="browser-continuity-main">
+        <span className="browser-continuity-kind">{signal.source}</span>
+        <span>{signal.title}</span>
+        <span className="mono">{signal.state}</span>
+      </div>
+      <div className="browser-continuity-detail">{signal.detail}</div>
+      <div className="browser-continuity-meta">
+        {signal.sessionId && <span className="mono">session {signal.sessionId}</span>}
+        {signal.targetId && <span className="mono">target {signal.targetId}</span>}
+        {signal.transport && <span>{signal.transport}</span>}
+        {signal.resumeMode && <span>{signal.resumeMode}</span>}
+        {signal.targetResolution && <span>{signal.targetResolution}</span>}
+      </div>
+    </div>
+  );
+}
+
+function buildBrowserContinuitySignals(
+  contextSources: ContextSource[],
+  workerSessions: WorkerSessionRecord[],
+  timeline: ActivityEvent[]
+): BrowserContinuitySignal[] {
+  const signals: BrowserContinuitySignal[] = [];
+  const seen = new Set<string>();
+  for (const source of contextSources) {
+    if (source.kind !== "browser") continue;
+    const key = `context:${source.id}`;
+    seen.add(key);
+    signals.push({
+      key,
+      source: "context",
+      title: source.title,
+      state: source.state || "unknown",
+      detail: source.url ? `Current browser context at ${source.url}` : "Live browser context surfaced by the daemon.",
+      ...(source.session ? { sessionId: source.session } : {}),
+      ...(source.transport ? { transport: source.transport } : {}),
+      tone: browserContinuityTone(source.state),
+    });
+  }
+
+  for (const session of workerSessions) {
+    if (session.state.workerType !== "browser") continue;
+    const payload = isRecord(session.state.lastResult?.payload) ? session.state.lastResult.payload : null;
+    const sessionId = stringField(payload, "sessionId") ?? stringField(payload, "browserSessionId");
+    const targetId = stringField(payload, "targetId");
+    const resumeMode = stringField(payload, "resumeMode");
+    const targetResolution = stringField(payload, "targetResolution");
+    const transport = stringField(payload, "transportLabel");
+    const key = `worker:${session.workerRunKey}`;
+    seen.add(key);
+    signals.push({
+      key,
+      source: "worker",
+      title: session.context?.label?.trim() || session.workerRunKey,
+      state: session.state.status,
+      detail: session.state.lastResult?.summary ?? session.state.continuationDigest?.summary ?? "Browser worker has no result summary yet.",
+      ...(sessionId ? { sessionId } : {}),
+      ...(targetId ? { targetId } : {}),
+      ...(transport ? { transport } : {}),
+      ...(resumeMode ? { resumeMode } : {}),
+      ...(targetResolution ? { targetResolution } : {}),
+      tone: browserContinuityTone(session.state.status, targetResolution),
+    });
+  }
+
+  for (const event of timeline) {
+    const runtime = event.runtime ?? {};
+    const sessionId = runtime.browserSessionId ?? runtime.sessionId;
+    const targetId = runtime.browserTargetId ?? runtime.targetId;
+    const targetResolution = runtime.targetResolution;
+    const resumeMode = runtime.resumeMode;
+    const diagnosticBucket = runtime.browserDiagnosticBucket ?? runtime.closeKind;
+    if (!sessionId && !targetId && !targetResolution && !resumeMode && !diagnosticBucket) continue;
+    const key = `timeline:${event.id}`;
+    if (seen.has(key)) continue;
+    signals.push({
+      key,
+      source: "timeline",
+      title: event.actor,
+      state: diagnosticBucket ?? targetResolution ?? resumeMode ?? event.kind,
+      detail: stripTags(event.text),
+      ...(sessionId ? { sessionId } : {}),
+      ...(targetId ? { targetId } : {}),
+      ...(runtime.transport ? { transport: runtime.transport } : {}),
+      ...(resumeMode ? { resumeMode } : {}),
+      ...(targetResolution ? { targetResolution } : {}),
+      tone: browserContinuityTone(diagnosticBucket ?? targetResolution ?? resumeMode ?? event.kind, targetResolution),
+    });
+  }
+
+  return signals.sort((left, right) => browserSignalRank(left) - browserSignalRank(right)).slice(0, 8);
+}
+
+function browserSignalRank(signal: BrowserContinuitySignal): number {
+  const toneRank = signal.tone === "danger" ? 0 : signal.tone === "warning" ? 1 : signal.tone === "ok" ? 2 : 3;
+  const sourceRank = signal.source === "timeline" ? 0 : signal.source === "worker" ? 1 : 2;
+  return toneRank * 10 + sourceRank;
+}
+
+function browserContinuityTone(state: string | undefined, targetResolution?: string): BrowserContinuitySignal["tone"] {
+  const blob = `${state ?? ""} ${targetResolution ?? ""}`.toLowerCase();
+  if (/\b(failed|cancelled|closed|owner_mismatch|unknown|terminal)\b/.test(blob)) return "danger";
+  if (/\b(detached|reconnecting|reconnect|reopen|cold|timeout|lease_conflict|transport_failure|resumable)\b/.test(blob)) {
+    return "warning";
+  }
+  if (/\b(attached|ready|busy|running|done|completed|resolved|hot|send|spawn)\b/.test(blob)) return "ok";
+  return "muted";
+}
+
+function isDetachedBrowserState(state: string): boolean {
+  return /\b(detached|disconnected|reconnecting|reconnect|reopen|cold|resumable)\b/i.test(state);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(record: Record<string, unknown> | null, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stripTags(value: string): string {
+  return value.replace(/<[^>]*>/g, "").trim();
+}
+
 function MissionMetricsCard({
   metrics,
   isLive,
@@ -885,7 +1096,7 @@ function SubAgentSessionsCard({
 }) {
   const activeCount = sessions.filter((session) => !isTerminalSession(session)).length;
   return (
-    <section className="card subagent-session-card">
+    <section className="card subagent-session-card worker-session-card">
       <div className="subagent-session-head">
         <div>
           <div className="label" style={{ fontSize: 11 }}>Sub-agent sessions</div>
