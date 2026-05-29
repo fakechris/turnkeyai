@@ -238,6 +238,23 @@ try {
       await page.locator('input[value="/tmp/turnkeyai-ui-smoke/data"]').isVisible(),
       "settings should show live daemon paths"
     );
+
+    await page.goto(`http://127.0.0.1:${port}/app#/agent-connect`, {
+      waitUntil: "networkidle",
+    });
+    await page.waitForSelector("text=Agent Connect");
+    assert(
+      await page.locator('input[value^="http://127.0.0.1:"][value$="/bridge/command"]').count() > 0,
+      "agent connect should show the local bridge command endpoint"
+    );
+    assert(
+      await page.locator("text=sessions_spawn · worker-session").isVisible(),
+      "agent connect should show live native tool capabilities"
+    );
+    assert(
+      await page.locator("text=browser: browser").isVisible(),
+      "agent connect should show live transport preferences"
+    );
     await page.close();
 
     const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -343,6 +360,14 @@ try {
       requestedPaths.some((value) => value.startsWith("/models")),
       "settings models endpoint was not requested"
     );
+    assert(
+      requestedPaths.some((value) => value.startsWith("/bridge/status")),
+      "agent connect bridge status endpoint was not requested"
+    );
+    assert(
+      requestedPaths.some((value) => value.startsWith("/capabilities")),
+      "agent connect capabilities endpoint was not requested"
+    );
     console.log("control-center-ui-smoke: passed");
     console.log(`control-center-ui-smoke: screenshot-bytes ${screenshot.byteLength}`);
     console.log(`control-center-ui-smoke: mobile-screenshot-bytes ${mobileScreenshot.byteLength}`);
@@ -416,12 +441,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     json(res, approvalsFixture());
     return;
   }
+  if (method === "GET" && url.pathname === "/bridge/status") {
+    json(res, bridgeStatusFixture());
+    return;
+  }
   if (method === "GET" && url.pathname === "/diagnostics") {
     json(res, diagnosticsFixture());
     return;
   }
   if (method === "GET" && url.pathname === "/models") {
     json(res, modelsFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/capabilities") {
+    json(res, capabilitiesFixture());
     return;
   }
   if (method === "GET" && url.pathname === "/mission-agents") {
@@ -635,6 +668,66 @@ function diagnosticsFixture() {
         },
       ],
     },
+  };
+}
+
+function bridgeStatusFixture() {
+  return {
+    ok: true,
+    port,
+    version: "0.1.1",
+    dataDir: "/tmp/turnkeyai-ui-smoke/data",
+    logsPath: "/tmp/turnkeyai-ui-smoke/logs/daemon.log",
+    configFile: "/tmp/turnkeyai-ui-smoke/config.json",
+    transport: {
+      mode: "local",
+      label: "local-automation",
+    },
+    relay: {
+      configured: false,
+      peerCount: 0,
+      targetCount: 0,
+      lastHeartbeatAgeMs: null,
+      actionRequestQueueDepth: 0,
+    },
+    directCdp: {
+      configured: false,
+      endpoint: null,
+    },
+    expertLane: {
+      available: false,
+      reason: "direct CDP not configured",
+    },
+    sessions: {
+      count: 1,
+    },
+  };
+}
+
+function capabilitiesFixture() {
+  return {
+    availableWorkers: ["browser", "explore"],
+    toolCapabilities: [
+      { name: "sessions_spawn", executorKind: "worker-session", promptGroup: "sessions" },
+      { name: "sessions_send", executorKind: "worker-session", promptGroup: "sessions" },
+      { name: "permission_query", executorKind: "permission", promptGroup: "permissions" },
+    ],
+    connectorStates: [
+      { provider: "browser", available: true, authorized: true },
+      { provider: "exa", available: false, authorized: false, issues: ["exa connector is not authorized"] },
+    ],
+    apiStates: [
+      { name: "exa-search", configured: false, ready: false, issues: ["missing EXA_API_KEY"] },
+    ],
+    skillStates: [
+      { skillId: "browser", installed: true },
+    ],
+    transportPreferences: [
+      { capability: "browser", orderedTransports: ["browser"] },
+      { capability: "research", orderedTransports: ["official_api", "business_tool", "browser"] },
+    ],
+    unavailableCapabilities: ["workspace"],
+    generatedAt: Date.now(),
   };
 }
 
