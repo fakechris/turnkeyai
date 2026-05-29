@@ -46,9 +46,48 @@ describe("daemon status", () => {
       assert.equal(result.code, 0);
       assert.match(result.stdout, /pid:\s+\(none\)/);
       assert.match(result.stdout, /health:\s+ok/);
+      assert.match(result.stdout, /api auth:\s+ok/);
       assert.match(result.stdout, /transport:\s+local \(local-automation\)/);
       assert.match(result.stdout, /sessions:\s+2/);
       assert.equal(bridgeAuthHeader, "Bearer read-token");
+    } finally {
+      server.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("shows bridge API auth failures instead of silently omitting status fields", async () => {
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      if (req.url === "/health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (req.url === "/bridge/status") {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized", requiredAccess: "read" }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const home = await mkdtemp(path.join(tmpdir(), "turnkeyai-cli-status-auth-"));
+
+    try {
+      const result = await runCli(["daemon", "status"], {
+        TURNKEYAI_HOME: home,
+        TURNKEYAI_DAEMON_URL: `http://127.0.0.1:${address.port}`,
+        TURNKEYAI_DAEMON_READ_TOKEN: "stale-token",
+      });
+
+      assert.equal(result.code, 0);
+      assert.match(result.stdout, /health:\s+ok/);
+      assert.match(result.stdout, /api auth:\s+\/bridge\/status returned HTTP 401/);
+      assert.doesNotMatch(result.stdout, /transport:\s+/);
     } finally {
       server.close();
       await rm(home, { recursive: true, force: true });
