@@ -49,7 +49,7 @@ interface ToolUseE2eOptions {
   modelChainId?: string;
 }
 
-type ToolUseScenario = "basic" | "complex" | "acceptance" | "followup" | "timeout";
+type ToolUseScenario = "basic" | "complex" | "acceptance" | "followup" | "timeout" | "approval";
 
 function parseOptions(args: string[]): ToolUseE2eOptions {
   const options: ToolUseE2eOptions = {
@@ -70,8 +70,15 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
     }
     if (arg === "--scenario") {
       const value = args[index + 1];
-      if (value !== "basic" && value !== "complex" && value !== "acceptance" && value !== "followup" && value !== "timeout") {
-        throw new Error("--scenario must be basic, complex, acceptance, followup, or timeout");
+      if (
+        value !== "basic" &&
+        value !== "complex" &&
+        value !== "acceptance" &&
+        value !== "followup" &&
+        value !== "timeout" &&
+        value !== "approval"
+      ) {
+        throw new Error("--scenario must be basic, complex, acceptance, followup, timeout, or approval");
       }
       options.scenario = value;
       index += 1;
@@ -157,6 +164,9 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
     if (real.childTranscriptMessages !== undefined) {
       console.log(`real-child-transcript-messages: ${real.childTranscriptMessages}`);
     }
+    if (real.permissionEvents !== undefined) {
+      console.log(`real-permission-events: ${real.permissionEvents.join(",")}`);
+    }
   }
 
   if (options.withBrowser) {
@@ -176,12 +186,17 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
   qualityFailures: number;
   spawnedSessionCount?: number;
   childTranscriptMessages?: number;
+  permissionEvents?: string[];
 }> {
   const multiSourceScenario = isMultiSourceScenario(options.scenario);
   const followupScenario = options.scenario === "followup";
   const timeoutScenario = options.scenario === "timeout";
+  const approvalScenario = options.scenario === "approval";
   if (multiSourceScenario && !options.withBrowser) {
     throw new Error(`--scenario ${options.scenario} requires --with-browser`);
+  }
+  if (approvalScenario && options.withBrowser) {
+    throw new Error("--scenario approval uses a deterministic browser worker and must not be combined with --with-browser");
   }
   const modelCatalogPath = resolveModelCatalogPath(options.modelCatalogPath);
   const modelSelection = resolveRealModelSelection(modelCatalogPath, options);
@@ -190,12 +205,14 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
     clients: [new OpenAICompatibleClient(), new AnthropicCompatibleClient()],
   });
   const toolCapabilityRegistry = createNativeToolCapabilityRegistry({
-    availableWorkerKinds: multiSourceScenario ? ["explore", "browser"] : options.withBrowser ? ["browser"] : ["explore"],
-    permissionsEnabled: false,
+    availableWorkerKinds:
+      multiSourceScenario || approvalScenario ? ["explore", "browser"] : options.withBrowser ? ["browser"] : ["explore"],
+    permissionsEnabled: approvalScenario,
     memoryEnabled: false,
     tasksEnabled: false,
   });
   const nativeMessages: TeamMessage[] = [];
+  const approvalPermissionEvents: string[] = [];
   const fixture = options.withBrowser
     ? await startBrowserFixture({
         marker: multiSourceScenario ? "TURNKEYAI_COMPLEX_BROWSER_OK" : "TURNKEYAI_BROWSER_E2E_OK",
@@ -212,6 +229,8 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       ? { workerRuntime: buildRealTimeoutWorkerRuntime(), close: async () => {} }
       : followupScenario
       ? { workerRuntime: buildRealFollowupWorkerRuntime(), close: async () => {} }
+      : approvalScenario
+      ? { workerRuntime: buildRealApprovalWorkerRuntime(), close: async () => {} }
       : multiSourceScenario
       ? buildRealComplexWorkerRuntime({ gateway, fixtureUrl: fixture!.url, tempDir })
       : options.withBrowser
@@ -230,13 +249,21 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
         executor: createWorkerSessionToolExecutor({
           workerRuntime,
           toolCapabilityRegistry,
+          ...(approvalScenario ? { toolPermissionService: buildApprovalToolPermissionService(approvalPermissionEvents) } : {}),
           maxSessionToolTimeoutMs: options.withBrowser ? 180_000 : 60_000,
           ...(timeoutScenario ? { hardTimeoutGraceMs: 20 } : {}),
         }),
-        maxRounds: followupScenario || timeoutScenario ? 6 : multiSourceScenario ? 8 : options.withBrowser ? 6 : 4,
+        maxRounds: followupScenario || timeoutScenario || approvalScenario ? 6 : multiSourceScenario ? 8 : options.withBrowser ? 6 : 4,
         maxParallelToolCalls: multiSourceScenario ? 2 : 1,
         maxToolCallsPerRound: multiSourceScenario ? 4 : 2,
-        maxWallClockMs: followupScenario || timeoutScenario ? 120_000 : multiSourceScenario ? 300_000 : options.withBrowser ? 240_000 : 90_000,
+        maxWallClockMs:
+          followupScenario || timeoutScenario || approvalScenario
+            ? 120_000
+            : multiSourceScenario
+            ? 300_000
+            : options.withBrowser
+              ? 240_000
+              : 90_000,
       },
       clock: { now: () => Date.now() },
     });
@@ -250,6 +277,8 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
         ? "TURNKEYAI_FOLLOWUP_E2E_OK"
         : timeoutScenario
         ? "TURNKEYAI_TIMEOUT_E2E_OK"
+        : approvalScenario
+        ? "TURNKEYAI_APPROVAL_E2E_OK"
         : multiSourceScenario
         ? "TURNKEYAI_COMPLEX_E2E_OK"
         : options.withBrowser
@@ -281,6 +310,15 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
                 "3. After the timeout result, do not call more tools or spawn fallback sessions.",
                 "4. Produce an evidence-only final answer from the timeout result.",
               ].join("\n")
+            : approvalScenario
+            ? [
+                "You must verify approval-gated browser side effects:",
+                "1. Call permission_query for browser.form.submit before starting the browser worker.",
+                "2. Call permission_result and permission_applied after the approval id is available.",
+                "3. Call sessions_spawn with agent_id=browser exactly once after permission_applied.",
+                "4. The browser task must clearly ask to submit the approved form so the runtime gate verifies the cached approval.",
+                "5. Finalize only after the browser worker result confirms browser.form.submit completed.",
+              ].join("\n")
             : multiSourceScenario
             ? [
                 "You must gather two independent evidence sources before final answer:",
@@ -305,6 +343,12 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
               "Ask the explore sub-agent to perform a deliberately slow verification with timeout_seconds=0.001.",
               `Final answer must include ${targetMarker}, explain that verification timed out, and mark missing evidence as not verified.`,
             ].join("\n")
+          : approvalScenario
+          ? [
+              "Run the approval-gated browser side-effect E2E.",
+              "Request approval for browser.form.submit, apply the approval, then ask the browser sub-agent to open https://example.test/account and submit the approved form.",
+              `Final answer must include ${targetMarker}, permission.query, permission.result, permission.applied, and browser.form.submit.`,
+            ].join("\n")
           : multiSourceScenario
           ? [
               "Run the production-grade multi-agent tool-use E2E.",
@@ -328,6 +372,12 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
                 "Use Markdown with a heading `Evidence` and at least three bullets: timeout result, attempted verification, residual risk.",
                 "State `not verified` for anything the timed-out worker did not prove.",
                 "Do not claim the underlying slow verification succeeded.",
+              ].join("\n")
+            : approvalScenario
+            ? [
+                `Final answer must include ${targetMarker}.`,
+                "Use Markdown with a heading `Evidence` and at least three bullets: permission.query, permission.result, permission.applied, browser worker result, residual risk.",
+                "Mention browser.form.submit and state the action was not executed before permission.applied.",
               ].join("\n")
             : multiSourceScenario
             ? [
@@ -382,6 +432,48 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
         spawnedSessionCount: sessions.length,
       });
       assertAnswerQuality(quality);
+    } else if (approvalScenario) {
+      const spawnedAgents = toolCalls
+        .filter((call) => call.name === "sessions_spawn")
+        .map((call) => readObservedToolCallInput(call)?.agent_id);
+      const sessions = workerRuntime.listSessions ? await workerRuntime.listSessions() : [];
+      const progressEventTypes = latestNativeMessages.flatMap((message) =>
+        (message.toolProgress ?? []).map((event) => String(event.detail?.eventType ?? ""))
+      );
+      const progressStatuses = latestNativeMessages.flatMap((message) =>
+        (message.toolProgress ?? []).map((event) => String(event.detail?.status ?? ""))
+      );
+      assert.deepEqual(spawnedAgents, ["browser"], "approval real LLM E2E must spawn exactly one browser session");
+      assert.equal(sessions.length, 1, `approval real LLM E2E must execute one browser sub-agent session, got ${sessions.length}`);
+      assert.equal(sessions[0]?.state.status, "done");
+      assert.ok(approvalPermissionEvents.some((event) => event.startsWith("query:")), "approval query was not requested");
+      assert.ok(approvalPermissionEvents.some((event) => event.startsWith("result:")), "approval result was not observed");
+      assert.ok(approvalPermissionEvents.some((event) => event.startsWith("applied:")), "approval was not applied");
+      assert.equal(
+        approvalPermissionEvents.filter((event) => event.startsWith("applied:")).length,
+        1,
+        "approval should be applied once and then reused by the runtime gate"
+      );
+      assert.equal(
+        approvalPermissionEvents.filter((event) => event.startsWith("query:")).length,
+        2,
+        "approval real LLM E2E should query once explicitly and once through the runtime gate"
+      );
+      assert.ok(toolCallNames.includes("permission_query"), "approval real LLM E2E must call permission_query");
+      assert.ok(toolCallNames.includes("permission_result"), "approval real LLM E2E must call permission_result");
+      assert.ok(toolCallNames.includes("permission_applied"), "approval real LLM E2E must call permission_applied");
+      assert.ok(progressEventTypes.includes("permission.query"), "assistant message must persist permission.query progress");
+      assert.ok(progressEventTypes.includes("permission.result"), "assistant message must persist permission.result progress");
+      assert.ok(progressEventTypes.includes("permission.applied"), "assistant message must persist permission.applied progress");
+      assert.ok(progressStatuses.includes("already_granted"), "runtime gate must reuse the applied approval");
+      quality = evaluateAnswerQuality({
+        scenario: options.scenario,
+        answer: reply.content,
+        gate: approvalQualityGate(targetMarker),
+        toolCallNames,
+        spawnedSessionCount: sessions.length,
+      });
+      assertAnswerQuality(quality);
     } else if (multiSourceScenario) {
       const spawnedAgents = toolCalls
         .filter((call) => call.name === "sessions_spawn")
@@ -403,9 +495,8 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       assertAnswerQuality(quality);
     }
     assert.match(reply.content, new RegExp(targetMarker));
-    const childTranscriptMessages = options.withBrowser || followupScenario || timeoutScenario
-      ? (await firstWorkerHistoryLength(workerRuntime))
-      : undefined;
+    const shouldReadChildTranscript = options.withBrowser || followupScenario || timeoutScenario || approvalScenario;
+    const childTranscriptMessages = shouldReadChildTranscript ? (await firstWorkerHistoryLength(workerRuntime)) : undefined;
     if (options.withBrowser) {
       assert.ok((childTranscriptMessages ?? 0) >= 4, "browser sub-agent should persist child transcript entries");
     }
@@ -418,10 +509,11 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<{
       finalBytes: Buffer.byteLength(reply.content, "utf8"),
       evidenceBullets: countMarkdownBullets(reply.content),
       qualityFailures: quality?.failures.length ?? 0,
-      ...((multiSourceScenario || followupScenario || timeoutScenario) && workerRuntime.listSessions
+      ...((multiSourceScenario || followupScenario || timeoutScenario || approvalScenario) && workerRuntime.listSessions
         ? { spawnedSessionCount: (await workerRuntime.listSessions()).length }
         : {}),
       ...(childTranscriptMessages !== undefined ? { childTranscriptMessages } : {}),
+      ...(approvalScenario ? { permissionEvents: approvalPermissionEvents } : {}),
     };
   } finally {
     await closeWorkerRuntime?.();
@@ -534,6 +626,25 @@ function timeoutQualityGate(targetMarker: string): AnswerQualityGate {
   };
 }
 
+function approvalQualityGate(targetMarker: string): AnswerQualityGate {
+  return {
+    minBytes: 220,
+    minBullets: 3,
+    minEvidenceSources: 2,
+    maxSpawnedSessions: 1,
+    requiredToolNames: ["permission_query", "permission_result", "permission_applied", "sessions_spawn"],
+    requiredPatterns: [
+      { label: "target success marker", pattern: new RegExp(escapeRegExp(targetMarker)) },
+      { label: "evidence heading", pattern: /Evidence/i },
+      { label: "permission query", pattern: /permission\.query/i },
+      { label: "permission result", pattern: /permission\.result/i },
+      { label: "permission applied", pattern: /permission\.applied/i },
+      { label: "browser side effect", pattern: /browser\.form\.submit/i },
+      { label: "residual risk", pattern: /residual risk/i },
+    ],
+  };
+}
+
 function evaluateAnswerQuality(input: {
   scenario: ToolUseScenario | AcceptanceScenarioName;
   answer: string;
@@ -592,7 +703,9 @@ function assertAnswerQuality(report: AnswerQualityReport): void {
 function countEvidenceSources(value: string): number {
   const sourceLines = value
     .split(/\r?\n/)
-    .filter((line) => /\b(source|evidence|browser|explore|https?:\/\/|deterministic e2e worker)\b/i.test(line));
+    .filter((line) =>
+      /\b(source|evidence|browser|explore|permission|https?:\/\/|deterministic e2e worker)\b/i.test(line)
+    );
   return new Set(sourceLines.map((line) => line.trim().toLowerCase())).size;
 }
 
@@ -835,6 +948,37 @@ function buildRealTimeoutWorkerRuntime(): WorkerRuntime {
   return new InMemoryWorkerRuntime({ workerRegistry: registry });
 }
 
+function buildRealApprovalWorkerRuntime(): WorkerRuntime {
+  const handler: WorkerHandler = {
+    kind: "browser",
+    canHandle(input) {
+      return input.packet.preferredWorkerKinds?.includes("browser") === true;
+    },
+    async run(): Promise<WorkerExecutionResult> {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Approved browser.form.submit completed after permission.applied.",
+        payload: {
+          marker: "TURNKEYAI_APPROVAL_WORKER_OK",
+          action: "browser.form.submit",
+          content:
+            "Browser evidence: browser.form.submit completed only after permission.query, permission.result, and permission.applied.",
+        },
+      };
+    },
+  };
+  const registry: WorkerRegistry = {
+    async selectHandler(input) {
+      return input.packet.preferredWorkerKinds?.includes("browser") ? handler : null;
+    },
+    async getHandler(kind) {
+      return kind === "browser" ? handler : null;
+    },
+  };
+  return new InMemoryWorkerRuntime({ workerRegistry: registry });
+}
+
 function buildRealComplexWorkerRuntime(input: {
   gateway: LLMGateway;
   fixtureUrl: string;
@@ -969,6 +1113,90 @@ function buildRealBrowserWorkerRuntime(input: {
       );
     },
   };
+}
+
+function buildApprovalToolPermissionService(permissionEvents: string[]): ToolPermissionService {
+  const pendingApprovals = new Map<string, { action: string; cacheKey: string }>();
+  const appliedCacheKeys = new Set<string>();
+  const appliedActions = new Set<string>();
+  return {
+    async request(input) {
+      permissionEvents.push(`query:${input.toolCallId}`);
+      const cacheKey = input.requirement.cacheKey ?? deriveApprovalCacheKey(input);
+      if (appliedCacheKeys.has(cacheKey) || appliedActions.has(input.action)) {
+        return {
+          status: "already_granted",
+          action: input.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey,
+            rationale: input.requirement.rationale,
+            workerType: input.requirement.workerType ?? "browser",
+          },
+          message: "Approval already applied.",
+        };
+      }
+      const approvalId = `ap.${input.threadId}.${input.toolCallId}`;
+      pendingApprovals.set(approvalId, { action: input.action, cacheKey });
+      return {
+        status: "pending",
+        approvalId,
+        action: input.action,
+        requirement: {
+          level: input.requirement.level,
+          scope: input.requirement.scope,
+          cacheKey,
+          rationale: input.requirement.rationale,
+          workerType: input.requirement.workerType ?? "browser",
+        },
+        message: "Approval pending.",
+      };
+    },
+    async result(input) {
+      permissionEvents.push(`result:${input.approvalId}`);
+      const pending = pendingApprovals.get(input.approvalId);
+      return {
+        status: "approved",
+        approvalId: input.approvalId,
+        action: pending?.action ?? "browser.form.submit",
+        message: "Approved.",
+      };
+    },
+    async waitForDecision(input) {
+      permissionEvents.push(`result:${input.approvalId}`);
+      const pending = pendingApprovals.get(input.approvalId);
+      return {
+        status: "approved",
+        approvalId: input.approvalId,
+        action: pending?.action ?? "browser.form.submit",
+        message: "Approved.",
+      };
+    },
+    async apply(input) {
+      permissionEvents.push(`applied:${input.approvalId}`);
+      const pending = pendingApprovals.get(input.approvalId);
+      const cacheKey = pending?.cacheKey ?? "thread-tool-e2e:browser:mutate:approval:browser.form.submit";
+      appliedCacheKeys.add(cacheKey);
+      appliedActions.add(pending?.action ?? "browser.form.submit");
+      return {
+        status: "applied",
+        approvalId: input.approvalId,
+        cacheKey,
+        message: "Applied.",
+      };
+    },
+  };
+}
+
+function deriveApprovalCacheKey(input: Parameters<ToolPermissionService["request"]>[0]): string {
+  return [
+    input.threadId,
+    input.requirement.workerType ?? "browser",
+    input.requirement.scope,
+    input.requirement.level,
+    input.action,
+  ].join(":");
 }
 
 async function firstWorkerHistoryLength(workerRuntime: WorkerRuntime): Promise<number> {
@@ -1148,45 +1376,7 @@ async function runMockNativeToolUseE2e(): Promise<{
       throw new Error("not used");
     },
   };
-  const toolPermissionService: ToolPermissionService = {
-    async request(input) {
-      permissionEvents.push(`query:${input.toolCallId}`);
-      return {
-        status: "pending",
-        approvalId: "ap.thread-tool-e2e.call-browser-submit",
-        action: input.action,
-        requirement: {
-          level: input.requirement.level,
-          scope: input.requirement.scope,
-          cacheKey: input.requirement.cacheKey ?? "missing",
-          rationale: input.requirement.rationale,
-          workerType: input.requirement.workerType ?? "browser",
-        },
-        message: "Approval pending.",
-      };
-    },
-    async result() {
-      throw new Error("not used");
-    },
-    async waitForDecision(input) {
-      permissionEvents.push(`result:${input.approvalId}`);
-      return {
-        status: "approved",
-        approvalId: input.approvalId,
-        action: "browser.form.submit",
-        message: "Approved.",
-      };
-    },
-    async apply(input) {
-      permissionEvents.push(`applied:${input.approvalId}`);
-      return {
-        status: "applied",
-        approvalId: input.approvalId,
-        cacheKey: "thread-tool-e2e:browser:mutate:approval:browser.form.submit",
-        message: "Applied.",
-      };
-    },
-  };
+  const toolPermissionService = buildApprovalToolPermissionService(permissionEvents);
 
   const generator = new LLMRoleResponseGenerator({
     gateway,
