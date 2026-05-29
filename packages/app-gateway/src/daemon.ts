@@ -858,6 +858,13 @@ async function hydrateMissionShortIdSeed(dataDir: string): Promise<number> {
 }
 
 async function resolveModelCatalogPath(): Promise<string | null> {
+  const explicit = process.env.TURNKEYAI_MODEL_CATALOG?.trim();
+  if (explicit) {
+    const candidate = path.resolve(explicit);
+    await access(candidate);
+    return candidate;
+  }
+
   const candidates = [
     path.resolve(process.cwd(), "models.local.json"),
     path.resolve(process.cwd(), "models.json"),
@@ -894,6 +901,7 @@ function printDaemonHelp(exitCode: number): never {
     "  TURNKEYAI_DAEMON_OPERATOR_TOKEN Optional operator-scoped daemon token",
     "  TURNKEYAI_BROWSER_RELAY_TOKEN Optional relay-peer-scoped daemon token",
     "  TURNKEYAI_DAEMON_ADMIN_TOKEN Optional admin-scoped daemon token",
+    "  TURNKEYAI_MODEL_CATALOG      Override model catalog path",
     "  TURNKEYAI_BROWSER_TRANSPORT Select browser transport: local | relay | direct-cdp",
     "  TURNKEYAI_BROWSER_CDP_ENDPOINT  CDP endpoint for direct-cdp transport",
     "  TURNKEYAI_BROWSER_CHROME_EXECUTABLE Optional browser executable override",
