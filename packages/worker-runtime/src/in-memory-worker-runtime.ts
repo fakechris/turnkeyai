@@ -213,6 +213,11 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         taskId: input.activation.handoff.taskId,
         roleId: input.activation.runState.roleId,
         parentSpanId: `role:${input.activation.runState.runKey}`,
+        ...(input.packet.workerSession?.parentSessionKey
+          ? { parentSessionKey: input.packet.workerSession.parentSessionKey }
+          : {}),
+        ...(input.packet.workerSession?.toolCallId ? { toolCallId: input.packet.workerSession.toolCallId } : {}),
+        ...(input.packet.workerSession?.label ? { label: input.packet.workerSession.label } : {}),
       },
     });
     await this.persistSession(workerRunKey);

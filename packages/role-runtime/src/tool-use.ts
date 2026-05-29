@@ -881,11 +881,17 @@ async function executeSessionsSpawn(
     return gate.blocked;
   }
   const approvalProgress = gate?.progress ?? [];
+  const label = requiredString(input.call.input.label);
   const packet = {
     ...input.packet,
     taskPrompt: task,
     preferredWorkerKinds: [agentId],
     continuityMode: "fresh" as const,
+    workerSession: {
+      parentSessionKey: input.activation.runState.runKey,
+      toolCallId: input.call.id,
+      ...(label ? { label } : {}),
+    },
   };
   const workerActivation = scopeWorkerActivationToToolCall(input.activation, input.call.id);
   const timeoutMs = resolveToolTimeoutMs(input.call.input.timeout_seconds, agentId, maxSessionToolTimeoutMs);
@@ -1198,13 +1204,16 @@ async function executeSessionsList(
     .filter((record) => record.context?.threadId === callerThreadId)
     .filter((record) => !agentId || record.state.workerType === agentId)
     .filter((record) => kinds.length === 0 || kinds.includes(record.state.workerType))
-    .filter((record) => !parentSessionKey || matchesParentSessionKey(record.context?.parentSpanId, parentSessionKey))
+    .filter((record) => !parentSessionKey || matchesParentSessionKey(record.context, parentSessionKey))
     .filter((record) => activeAfter === null || record.state.updatedAt >= activeAfter)
     .slice(0, limit)
     .map((record) => ({
       session_key: record.workerRunKey,
       agent_id: record.state.workerType,
       status: record.state.status,
+      label: record.context?.label ?? null,
+      parent_session_key: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
+      tool_call_id: record.context?.toolCallId ?? null,
       created_at: record.state.createdAt,
       last_active_at: record.state.updatedAt,
       current_task_id: record.state.currentTaskId ?? null,
@@ -1851,6 +1860,14 @@ function boundedProgress(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 }
 
-function matchesParentSessionKey(parentSpanId: string | undefined, parentSessionKey: string): boolean {
+function matchesParentSessionKey(
+  recordContext: { parentSpanId?: string; parentSessionKey?: string } | undefined,
+  parentSessionKey: string
+): boolean {
+  const explicit = recordContext?.parentSessionKey;
+  if (explicit) {
+    return explicit === parentSessionKey || `role:${explicit}` === parentSessionKey;
+  }
+  const parentSpanId = recordContext?.parentSpanId;
   return parentSpanId === parentSessionKey || parentSpanId === `role:${parentSessionKey}`;
 }

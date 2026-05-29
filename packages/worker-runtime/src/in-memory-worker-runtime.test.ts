@@ -35,9 +35,24 @@ test("in-memory worker runtime marks null worker results as done", async () => {
     now: () => 123,
   });
 
-  const input = buildWorkerInvocationInput();
+  const baseInput = buildWorkerInvocationInput();
+  const input = {
+    ...baseInput,
+    packet: {
+      ...baseInput.packet,
+      workerSession: {
+        parentSessionKey: "role:operator:thread:1",
+        toolCallId: "call-browser",
+        label: "Dashboard check",
+      },
+    },
+  };
   const spawned = await runtime.spawn(input);
   assert.ok(spawned);
+  const listed = await runtime.listSessions();
+  assert.equal(listed[0]?.context?.parentSessionKey, "role:operator:thread:1");
+  assert.equal(listed[0]?.context?.toolCallId, "call-browser");
+  assert.equal(listed[0]?.context?.label, "Dashboard check");
   const result = await runtime.send({
     workerRunKey: spawned.workerRunKey,
     activation: input.activation,
