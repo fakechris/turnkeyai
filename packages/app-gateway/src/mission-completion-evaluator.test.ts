@@ -131,6 +131,103 @@ describe("MissionCompletionEvaluator", () => {
     }
   });
 
+  it("classifies failed lead tool turns with timeout evidence as timeout", () => {
+    const timedOut = {
+      ...message("a-timeout", "assistant", 100),
+      roleId: "role-lead",
+      name: "Lead",
+      toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "explore" } }],
+      toolStatus: "failed" as const,
+      toolProgress: [
+        {
+          toolCallId: "call-1",
+          toolName: "sessions_spawn",
+          phase: "failed" as const,
+          summary: "sessions_spawn timed out after 0.001s",
+          ts: 101,
+        },
+      ],
+    };
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [timedOut],
+      roleRuns: [idleRun],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "stalled_tool_turn");
+      assert.deepEqual(decision.patch, { status: "blocked", blockers: 1 });
+      assert.equal(decision.recovery?.kind, "stalled_tool_turn");
+      assert.equal(decision.recovery?.status, "timeout");
+    }
+  });
+
+  it("keeps non-timeout failed lead tool turns classified as failed", () => {
+    const failed = {
+      ...message("a-failed", "assistant", 100),
+      roleId: "role-lead",
+      name: "Lead",
+      toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "explore" } }],
+      toolStatus: "failed" as const,
+      toolProgress: [
+        {
+          toolCallId: "call-1",
+          toolName: "sessions_spawn",
+          phase: "failed" as const,
+          summary: "worker handler unavailable",
+          ts: 101,
+        },
+      ],
+    };
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [failed],
+      roleRuns: [idleRun],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.recovery?.kind, "stalled_tool_turn");
+      assert.equal(decision.recovery?.status, "failed");
+    }
+  });
+
+  it("blocks cancelled lead tool turns when no role run is active", () => {
+    const cancelled = {
+      ...message("a-cancelled", "assistant", 100),
+      roleId: "role-lead",
+      name: "Lead",
+      toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+      toolStatus: "cancelled" as const,
+    };
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [cancelled],
+      roleRuns: [idleRun],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "stalled_tool_turn");
+      assert.equal(decision.recovery?.kind, "stalled_tool_turn");
+      assert.equal(decision.recovery?.status, "cancelled");
+    }
+  });
+
+  it("does not block unresolved lead tool turns while a role run is active", () => {
+    const stalled = {
+      ...message("a-tool-active", "assistant", 100),
+      roleId: "role-lead",
+      name: "Lead",
+      toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+      toolStatus: "pending" as const,
+    };
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [stalled],
+      roleRuns: [{ ...idleRun, status: "waiting_worker" }],
+    });
+    assert.deepEqual(decision, { action: "none", reason: "active_role_run" });
+  });
+
   it("blocks skipped lead tool turn when no final answer follows", () => {
     const skipped = {
       ...message("a-skipped", "assistant", 100),

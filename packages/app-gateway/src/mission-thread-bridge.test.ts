@@ -638,6 +638,69 @@ describe("MissionThreadBridge", () => {
     assert.equal(stalled?.runtime?.toolStatus, "completed");
   });
 
+  it("records timeout recovery status for failed tool turns with timeout evidence", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"] };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+          toolCalls: [
+            { id: "call-1", name: "sessions_spawn", arguments: { agent_id: "explore" } },
+          ],
+          toolProgress: [
+            {
+              toolCallId: "call-1",
+              toolName: "sessions_spawn",
+              phase: "failed",
+              summary: "sessions_spawn timed out after 0.001s.",
+              ts: 201,
+            },
+          ],
+          toolStatus: "failed",
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.blockers, 1);
+    const stalled = activity.events.find((event) => event.runtime?.eventType === "mission.stalled_no_final_answer");
+    assert.equal(stalled?.kind, "recovery");
+    assert.equal(stalled?.runtime?.toolStatus, "timeout");
+    assert.deepEqual(stalled?.tags, ["mission_stalled", "timeout"]);
+  });
+
   it("appends only new messages on incremental tick", async () => {
     counter = 0;
     const activity = memActivityStore();
