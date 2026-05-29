@@ -38,7 +38,14 @@ export function ApprovalsPage() {
           </div>
         </div>
         <div className="right">
-          <button type="button" className="btn"><Icon name="shield" size={13} /> Policy rules</button>
+          <button
+            type="button"
+            className="btn"
+            disabled
+            title="Policy editing is not available in the Control Center yet."
+          >
+            <Icon name="shield" size={13} /> Policy rules
+          </button>
         </div>
       </div>
 
@@ -180,7 +187,9 @@ function ApprovalRowView({
             <button type="button" className="btn danger" onClick={onDeny} disabled={busy}>
               <Icon name="x" size={12} /> Deny
             </button>
-            <button type="button" className="btn ghost">View details ↗</button>
+            <button type="button" className="btn ghost" onClick={onOpenMission}>
+              View details ↗
+            </button>
           </>
         ) : (
           <>
@@ -190,7 +199,9 @@ function ApprovalRowView({
             >
               {decision === "approved" ? "✓ approved" : "✕ denied"} · just now
             </span>
-            <button type="button" className="btn ghost">View timeline ↗</button>
+            <button type="button" className="btn ghost" onClick={onOpenMission}>
+              View timeline ↗
+            </button>
           </>
         )}
       </div>

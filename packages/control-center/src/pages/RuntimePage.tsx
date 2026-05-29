@@ -112,7 +112,14 @@ export function RuntimePage() {
           >
             <Icon name="diagnose" size={13} /> Export diagnostics
           </button>
-          <button type="button" className="btn"><Icon name="play" size={13} /> Open replay</button>
+          <button
+            type="button"
+            className="btn"
+            disabled
+            title="Open a mission to inspect replay. A global replay index is not available yet."
+          >
+            <Icon name="play" size={13} /> Open replay
+          </button>
         </div>
       </div>
 
