@@ -35,11 +35,14 @@ import type {
 } from "@turnkeyai/core-types/mission";
 import type {
   Clock,
-  RoleRunState,
   RoleRunStore,
   TeamMessage,
   TeamMessageStore,
 } from "@turnkeyai/core-types/team";
+import {
+  evaluateMissionCompletion,
+  type MissionCompletionRecovery,
+} from "./mission-completion-evaluator";
 
 export interface MissionThreadBridgeOptions {
   // `findByThreadId` is no longer needed at this layer (we resolve
@@ -188,34 +191,17 @@ export function createMissionThreadBridge(
     threadId: string,
     messages: TeamMessage[]
   ): Promise<void> {
-    if (!isCompletableMission(mission)) return;
-    const incompleteFinal = findIncompleteLeadFinalAnswer(mission, messages);
-    if (incompleteFinal) {
-      const activeRoleRun = await hasActiveRoleRun(threadId);
-      if (activeRoleRun) return;
-      await updateMissionLifecycle(mission, {
-        status: "blocked",
-        blockers: Math.max(mission.blockers, 1),
-      });
-      await appendMissionIncompleteFinalEvent(mission.id, threadId, incompleteFinal);
-      return;
-    }
-    if (hasFinalLeadAssistantMessage(mission, messages)) {
-      await updateMissionLifecycle(mission, {
-        status: "done",
-        progress: 1,
-      });
-      return;
-    }
-    const stalled = findStalledLeadToolTurn(mission, messages);
-    if (!stalled) return;
-    const activeRoleRun = await hasActiveRoleRun(threadId);
-    if (activeRoleRun) return;
-    await updateMissionLifecycle(mission, {
-      status: "blocked",
-      blockers: Math.max(mission.blockers, 1),
+    const roleRuns = await listRoleRuns(threadId);
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages,
+      roleRuns,
     });
-    await appendMissionStalledEvent(mission.id, threadId, stalled);
+    if (decision.action !== "update") return;
+    await updateMissionLifecycle(mission, decision.patch);
+    if (decision.recovery) {
+      await appendMissionRecoveryEvent(mission.id, threadId, decision.recovery);
+    }
   }
 
   async function updateMissionLifecycle(
@@ -224,7 +210,7 @@ export function createMissionThreadBridge(
   ): Promise<void> {
     try {
       const latest = (await options.missionStore.get(mission.id)) ?? mission;
-      if (!isCompletableMission(latest)) return;
+      if (latest.status === "done" || latest.status === "archived" || latest.status === "draft") return;
       await options.missionStore.putRaw({
         ...latest,
         ...patch,
@@ -237,24 +223,35 @@ export function createMissionThreadBridge(
     }
   }
 
-  async function hasActiveRoleRun(threadId: string): Promise<boolean> {
-    if (!options.roleRunStore) return true;
+  async function listRoleRuns(threadId: string) {
+    if (!options.roleRunStore) return "unknown" as const;
     try {
-      const runs = await options.roleRunStore.listByThread(threadId);
-      return runs.some(isActiveRoleRun);
+      return await options.roleRunStore.listByThread(threadId);
     } catch (error) {
       logger.warn("role run list failed for mission lifecycle reconciliation", {
         threadId,
         error: errorMessage(error),
       });
-      return true;
+      return "unknown" as const;
     }
+  }
+
+  async function appendMissionRecoveryEvent(
+    missionId: string,
+    threadId: string,
+    recovery: MissionCompletionRecovery
+  ): Promise<void> {
+    if (recovery.kind === "incomplete_final_answer") {
+      await appendMissionIncompleteFinalEvent(missionId, threadId, recovery);
+      return;
+    }
+    await appendMissionStalledEvent(missionId, threadId, recovery);
   }
 
   async function appendMissionStalledEvent(
     missionId: string,
     threadId: string,
-    stalled: StalledLeadToolTurn
+    stalled: Extract<MissionCompletionRecovery, { kind: "stalled_tool_turn" }>
   ): Promise<void> {
     try {
       await options.activityStore.append({
@@ -285,7 +282,7 @@ export function createMissionThreadBridge(
   async function appendMissionIncompleteFinalEvent(
     missionId: string,
     threadId: string,
-    incomplete: IncompleteLeadFinalAnswer
+    incomplete: Extract<MissionCompletionRecovery, { kind: "incomplete_final_answer" }>
   ): Promise<void> {
     try {
       const runtime: Record<string, string> = {
@@ -381,129 +378,9 @@ export function createMissionThreadBridge(
   return { tickAll, tickMission, start };
 }
 
-function isCompletableMission(mission: Mission): boolean {
-  return (
-    (mission.status === "working" || mission.status === "planning") &&
-    mission.pendingApprovals === 0 &&
-    mission.blockers === 0
-  );
-}
-
-function hasFinalLeadAssistantMessage(
-  mission: Mission,
-  messages: TeamMessage[]
-): boolean {
-  const latest = findLatestLeadAnswerCandidate(mission, messages);
-  return Boolean(latest && !isIncompleteLeadFinalAnswer(latest));
-}
-
-function isLeadAssistantMessage(mission: Mission, message: TeamMessage): boolean {
-  if (message.source?.route === "lead-role") return true;
-  const primaryAgent = mission.agents[0];
-  if (primaryAgent && message.roleId === primaryAgent) return true;
-  if (message.roleId === "role-lead") return true;
-  return message.name.toLowerCase() === "lead";
-}
-
-interface IncompleteLeadFinalAnswer {
-  message: TeamMessage;
-  reason: "max_tokens" | "truncated_markdown";
-}
-
-function findIncompleteLeadFinalAnswer(
-  mission: Mission,
-  messages: TeamMessage[]
-): IncompleteLeadFinalAnswer | null {
-  const latest = findLatestLeadAnswerCandidate(mission, messages);
-  return latest ? isIncompleteLeadFinalAnswer(latest) : null;
-}
-
-function findLatestLeadAnswerCandidate(
-  mission: Mission,
-  messages: TeamMessage[]
-): TeamMessage | null {
-  const candidates = messages
-    .filter((message) => {
-      if (message.role !== "assistant") return false;
-      const content = message.content.trim();
-      if (content.length === 0) return false;
-      if (!isLeadAssistantMessage(mission, message)) return false;
-      if (message.toolStatus === "pending") return false;
-      // The prompt contract uses @{role-id} as an explicit handoff. A
-      // lead turn that delegates is not a final answer and must not close
-      // the mission card while downstream work is still expected.
-      if (/@\{[^}]+\}/.test(content)) return false;
-      return true;
-    })
-    .sort((a, b) => a.createdAt - b.createdAt);
-  return candidates.at(-1) ?? null;
-}
-
-function isIncompleteLeadFinalAnswer(message: TeamMessage): IncompleteLeadFinalAnswer | null {
-  const stopReason = readStringMetadata(message.metadata, "stopReason");
-  if (isMaxTokensStopReason(stopReason)) {
-    return { message, reason: "max_tokens" };
-  }
-  if (looksLikeTruncatedMarkdown(message.content)) {
-    return { message, reason: "truncated_markdown" };
-  }
-  return null;
-}
-
 function readStringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = metadata?.[key];
   return typeof value === "string" ? value : undefined;
-}
-
-function isMaxTokensStopReason(stopReason: string | undefined): boolean {
-  if (!stopReason) return false;
-  return /^(max_tokens|length|finish_reason_length)$/i.test(stopReason);
-}
-
-function looksLikeTruncatedMarkdown(content: string): boolean {
-  const trimmed = content.trimEnd();
-  if (!trimmed) return false;
-  const fenceCount = (trimmed.match(/```/g) ?? []).length;
-  if (fenceCount % 2 === 1) return true;
-  const lastLfIndex = trimmed.lastIndexOf("\n");
-  const lastNonEmpty = trimmed.slice(Math.max(0, lastLfIndex + 1));
-  const pipeCount = (lastNonEmpty.match(/\|/g) ?? []).length;
-  if (lastNonEmpty.trimStart().startsWith("|") && pipeCount < 2) return true;
-  return /(\*\*|__|\[)$/.test(lastNonEmpty.trim());
-}
-
-interface StalledLeadToolTurn {
-  message: TeamMessage;
-  status: "pending" | "failed" | "cancelled";
-}
-
-function findStalledLeadToolTurn(
-  mission: Mission,
-  messages: TeamMessage[]
-): StalledLeadToolTurn | null {
-  const leadMessages = messages
-    .filter((message) => message.role === "assistant" && isLeadAssistantMessage(mission, message))
-    .sort((a, b) => a.createdAt - b.createdAt);
-  const latest = leadMessages.at(-1);
-  if (!latest) return null;
-  if (
-    latest.toolStatus !== "pending" &&
-    latest.toolStatus !== "failed" &&
-    latest.toolStatus !== "cancelled"
-  ) {
-    return null;
-  }
-  if (!latest.toolCalls || latest.toolCalls.length === 0) return null;
-  return { message: latest, status: latest.toolStatus };
-}
-
-function isActiveRoleRun(run: RoleRunState): boolean {
-  return (
-    run.status === "queued" ||
-    run.status === "running" ||
-    run.status === "waiting_worker" ||
-    run.status === "resuming"
-  );
 }
 
 interface ExpandMessageInput {

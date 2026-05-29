@@ -3,6 +3,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ApprovalRequestStore,
+  Mission,
   MissionStore,
 } from "@turnkeyai/core-types/mission";
 import type {
@@ -23,7 +24,7 @@ import type {
 } from "@turnkeyai/role-runtime/tool-permission-service";
 
 interface MissionToolPermissionServiceOptions {
-  missionStore: MissionStore;
+  missionStore: MissionStore & { putRaw(mission: Mission): Promise<void> };
   approvalStore: ApprovalRequestStore;
   activityStore: ActivityEventStore;
   permissionCacheStore: PermissionCacheStore;
@@ -70,6 +71,11 @@ export function createMissionToolPermissionService(
         cacheKey,
       });
       if (existingPending) {
+        await syncMissionApprovalState({
+          missionStore: options.missionStore,
+          approvalStore: options.approvalStore,
+          missionId: mission.id,
+        });
         return {
           status: "pending",
           approvalId: existingPending.id,
@@ -120,6 +126,11 @@ export function createMissionToolPermissionService(
         },
       };
       await options.approvalStore.put(approval);
+      await syncMissionApprovalState({
+        missionStore: options.missionStore,
+        approvalStore: options.approvalStore,
+        missionId: mission.id,
+      });
       await options.activityStore.append({
         id: options.newEventId(),
         missionId: mission.id,
@@ -261,6 +272,7 @@ export function createMissionToolPermissionService(
 
 export async function recordApprovalDecision(input: {
   approvalStore: ApprovalRequestStore & { putDecision(decision: ApprovalDecision): Promise<void> };
+  missionStore?: MissionStore & { putRaw(mission: Mission): Promise<void> };
   activityStore: ActivityEventStore;
   clock: Clock;
   newEventId(): string;
@@ -286,6 +298,13 @@ export async function recordApprovalDecision(input: {
     ...(input.reason ? { reason: input.reason } : {}),
   };
   await input.approvalStore.putDecision(decision);
+  if (input.missionStore) {
+    await syncMissionApprovalState({
+      missionStore: input.missionStore,
+      approvalStore: input.approvalStore,
+      missionId: approval.missionId,
+    });
+  }
   await input.activityStore.append({
     id: input.newEventId(),
     missionId: approval.missionId,
@@ -302,6 +321,34 @@ export async function recordApprovalDecision(input: {
     },
   });
   return { approval, decision };
+}
+
+async function syncMissionApprovalState(input: {
+  missionStore: MissionStore & { putRaw(mission: Mission): Promise<void> };
+  approvalStore: ApprovalRequestStore;
+  missionId: string;
+}): Promise<void> {
+  const { missionStore, approvalStore, missionId } = input;
+  const mission = await missionStore.get(missionId);
+  if (!mission || mission.status === "done" || mission.status === "archived") return;
+  const [approvals, decisions] = await Promise.all([
+    approvalStore.listByMission(missionId),
+    approvalStore.listDecisions(),
+  ]);
+  const decidedIds = new Set(decisions.map((decision) => decision.approvalId));
+  const pendingApprovals = approvals.filter(
+    (approval) => !decidedIds.has(approval.id)
+  ).length;
+  await missionStore.putRaw({
+    ...mission,
+    pendingApprovals,
+    status:
+      pendingApprovals > 0
+        ? "needs_approval"
+        : mission.blockers > 0
+        ? "blocked"
+        : "working",
+  });
 }
 
 function decisionToResult(approval: ApprovalRequest, decision: ApprovalDecision): ToolPermissionDecisionResult {
