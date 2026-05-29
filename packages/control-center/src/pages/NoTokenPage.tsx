@@ -30,22 +30,26 @@ export function NoTokenPage() {
 
       <div className="card">
         <div className="card-bd" style={{ padding: 20 }}>
-          <p style={{ marginTop: 0 }}>The recommended way to launch is:</p>
-          <pre
-            className="mono"
-            style={{
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--r-md)",
-              padding: 14,
-              margin: "8px 0",
-              fontSize: 13,
-            }}
-          >
-            turnkeyai app
-          </pre>
+          <p style={{ marginTop: 0 }}>Open Mission Control through one of these entry points:</p>
+          <div className="launch-command-list" aria-label="Mission Control launch commands">
+            <LaunchCommand
+              label="Installed CLI"
+              command="turnkeyai app"
+              note="Use this after installing or linking the TurnkeyAI CLI."
+            />
+            <LaunchCommand
+              label="No install"
+              command="npx @turnkeyai/cli app"
+              note="Use this from any shell when the turnkeyai command is not on PATH."
+            />
+            <LaunchCommand
+              label="Source checkout"
+              command="npm run app -- --no-open"
+              note="Use this from the repository root; it prints the tokenized URL."
+            />
+          </div>
           <p>
-            That command starts the daemon if needed and opens this page with the token already
+            These commands start the daemon if needed and open this page with the token already
             attached to the URL fragment.
           </p>
           <p>If you already have a token, paste it below — it's kept only in this browser tab.</p>
@@ -77,6 +81,26 @@ export function NoTokenPage() {
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function LaunchCommand({
+  label,
+  command,
+  note,
+}: {
+  label: string;
+  command: string;
+  note: string;
+}) {
+  return (
+    <div className="launch-command">
+      <div className="launch-command-head">
+        <span className="label">{label}</span>
+        <code>{command}</code>
+      </div>
+      <div className="muted">{note}</div>
     </div>
   );
 }
