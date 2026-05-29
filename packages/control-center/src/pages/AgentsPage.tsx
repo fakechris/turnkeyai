@@ -3,10 +3,17 @@
 import { useAgents } from "../api/useMissionData";
 import { Icon } from "../components/Icon";
 import { AgentAvatar, StatusTag } from "../components/atoms";
+import { useAppState } from "../state/AppState";
+import type { Route } from "../state/types";
 
 export function AgentsPage() {
   const agentsRemote = useAgents([]);
   const agents = agentsRemote.value;
+  const { setRoute } = useAppState();
+  const openRoute = (route: Route) => {
+    setRoute(route);
+    window.location.hash = `#/${route}`;
+  };
 
   return (
     <div className="page">
@@ -18,8 +25,12 @@ export function AgentsPage() {
           </div>
         </div>
         <div className="right">
-          <button type="button" className="btn"><Icon name="key" size={13} /> Manage tokens</button>
-          <button type="button" className="btn primary"><Icon name="plus" size={13} /> Connect agent</button>
+          <button type="button" className="btn" onClick={() => openRoute("settings")}>
+            <Icon name="key" size={13} /> Manage tokens
+          </button>
+          <button type="button" className="btn primary" onClick={() => openRoute("agent-connect")}>
+            <Icon name="plus" size={13} /> Connect agent
+          </button>
         </div>
       </div>
       {agents.length === 0 ? (
