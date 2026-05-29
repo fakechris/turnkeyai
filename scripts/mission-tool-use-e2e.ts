@@ -23,7 +23,8 @@ type MissionE2eScenario =
   | "approval"
   | "browser-dynamic"
   | "browser-dashboard"
-  | "timeout-recovery";
+  | "timeout-recovery"
+  | "realistic-brief";
 
 const MISSION_E2E_SCENARIOS = [
   "basic",
@@ -34,6 +35,7 @@ const MISSION_E2E_SCENARIOS = [
   "browser-dynamic",
   "browser-dashboard",
   "timeout-recovery",
+  "realistic-brief",
 ] as const satisfies readonly MissionE2eScenario[];
 
 interface Mission {
@@ -100,6 +102,7 @@ const DYNAMIC_BROWSER_FINAL_MARKER = "TURNKEYAI_MISSION_DYNAMIC_BROWSER_OK";
 const DASHBOARD_TRIAGE_MARKER = "TURNKEYAI_DASHBOARD_TRIAGE_OK";
 const DASHBOARD_TRIAGE_FINAL_MARKER = "TURNKEYAI_MISSION_DASHBOARD_TRIAGE_OK";
 const TIMEOUT_FINAL_MARKER = "TURNKEYAI_MISSION_TIMEOUT_OK";
+const REALISTIC_BRIEF_FINAL_MARKER = "TURNKEYAI_MISSION_REALISTIC_BRIEF_OK";
 
 interface FixtureServer {
   server: Server;
@@ -123,6 +126,7 @@ interface ScenarioSpec {
   evidenceLinePatterns?: Array<{ label: string; pattern: RegExp }>;
   forbiddenPatterns?: Array<{ label: string; pattern: RegExp }>;
   allowLabeledEvidenceWithoutBullets?: boolean;
+  allowAtLeastBullets?: boolean;
   minBytes?: number;
   maxBytes?: number;
   expectedSpawnCalls: number;
@@ -878,6 +882,64 @@ async function createMission(input: {
 }
 
 function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer): ScenarioSpec {
+  if (scenario === "realistic-brief") {
+    return {
+      scenario,
+      title: "Mission route realistic operator brief E2E",
+      finalMarker: REALISTIC_BRIEF_FINAL_MARKER,
+      evidenceMarkers: [ALPHA_MARKER, BETA_MARKER, DASHBOARD_TRIAGE_MARKER],
+      answerTerms: [
+        "Alpha",
+        "Beta",
+        "$19 per seat",
+        "$29 per workspace",
+        "Queue depth",
+        "SLA breaches",
+        "Incident Commander",
+        "recommend",
+        "residual risk",
+      ],
+      answerPatterns: [
+        { label: "actionable recommendation", pattern: /recommend|choose|prefer|better fit|suits|fits|prioritiz/i },
+        { label: "browser-rendered dashboard evidence", pattern: /browser|JavaScript|client-rendered|rendered DOM|dynamic dashboard/i },
+        { label: "source-bounded evidence", pattern: /local fixture|source-bounded|verified sources|source coverage|local sources/i },
+        { label: "queue depth value", pattern: /queue depth\s*:?\s*11/i },
+        { label: "SLA breach value", pattern: /SLA breaches\s*:?\s*3/i },
+      ],
+      forbiddenPatterns: [
+        { label: "unsupported adoption claim", pattern: /\b(millions of users|large community|market share|widely adopted|customers)\b/i },
+        { label: "unsupported external incident claim", pattern: /\b(real outage|production outage|customer impact confirmed)\b/i },
+        { label: "unsupported pricing claim", pattern: /\bfree plan|enterprise pricing|starts at \$\d+\b/i },
+        { label: "unresolved placeholder", pattern: /\b(TBD|to be confirmed|needs confirmation|待确认|估算)\b/i },
+      ],
+      minBytes: 700,
+      maxBytes: 2_200,
+      expectedSpawnCalls: 3,
+      expectedSendCalls: 0,
+      expectedToolResults: 3,
+      expectedSpawnedSessions: 3,
+      expectedContinuedSessions: 0,
+      minEvidenceEvents: 3,
+      expectedBullets: 5,
+      allowAtLeastBullets: true,
+      desc: [
+        "Prepare an operator-ready brief for a product lead deciding how to allocate next week's agent workbench effort.",
+        "Use the available session tools. Do not answer from memory.",
+        "Gather evidence from three independent child sessions before finalizing:",
+        `- Vendor Alpha: use an explore session to fetch ${fixture.alphaUrl} and extract marker ${ALPHA_MARKER}, price, strength, and risk.`,
+        `- Vendor Beta: use an explore session to fetch ${fixture.betaUrl} and extract marker ${BETA_MARKER}, price, strength, and risk.`,
+        `- Ops dashboard: use a browser session, not direct fetch, to open ${fixture.dashboardUrl}; inspect the JavaScript-rendered dashboard and extract marker ${DASHBOARD_TRIAGE_MARKER}, Queue depth: 11, SLA breaches: 3, escalation threshold, and Recommended owner.`,
+        "Do not finalize until all three child session tool results have returned and all three markers are present in tool evidence.",
+        "Write a concise final brief for a busy operator. It should include source coverage, a recommendation, the current dashboard action, and residual risk.",
+        "Every source coverage, recommendation, dashboard action, and residual-risk item in the final answer must be a Markdown bullet.",
+        `The recommendation bullet must start with "- recommendation: ${REALISTIC_BRIEF_FINAL_MARKER}" and state the decision.`,
+        "Do not include source URLs in the final answer; cite source names and markers instead.",
+        "Use plain section labels or plain Markdown headings only; do not wrap section labels in ** or __.",
+        "Do not use tables, links, code fences, or bold/italic markup.",
+        "Do not claim market adoption, real outages, or external pricing beyond the local fixture evidence.",
+      ].join("\n"),
+    };
+  }
   if (scenario === "timeout-recovery") {
     return {
       scenario,
@@ -892,6 +954,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       expectedContinuedSessions: 0,
       minEvidenceEvents: 1,
       expectedBullets: 3,
+      minBytes: 120,
       desc: [
         "Run the mission route timeout recovery E2E.",
         "Use the available session tool instead of answering from memory.",
@@ -900,7 +963,8 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         `The explore sub-agent task must fetch ${fixture.slowUrl} and report the page title plus marker ${FIXTURE_MARKER}.`,
         "The local fixture is intentionally too slow; do not call sessions_send, sessions_history, sessions_list, or any fallback session after the timeout result.",
         `Final answer must include ${TIMEOUT_FINAL_MARKER}, timed out, verification did not complete, continue, and the exact words residual risk.`,
-        `Use plain Markdown with heading \`Timeout result\` and exactly three bullets: timeout boundary, attempted verification, residual risk. The first bullet must start with "- timeout boundary: ${TIMEOUT_FINAL_MARKER} -". The third bullet must include the literal word continue.`,
+        `Use plain Markdown with the exact heading "Timeout result" with no #, **, or __ markup, followed by exactly three bullets: timeout boundary, attempted verification, residual risk. The first bullet must start with "- timeout boundary: ${TIMEOUT_FINAL_MARKER} - timed out". The third bullet must include the literal word continue.`,
+        "In the attempted verification bullet, name the slow fixture but do not include the fixture URL.",
         "Do not add any paragraph, summary, or note after the three bullets.",
         "Do not claim the fixture marker was verified unless it appears in the tool result.",
         "Do not use tables, links, code fences, or bold/italic markup.",
@@ -1684,8 +1748,10 @@ function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bullets: n
   if (spec.maxBytes !== undefined && bytes > spec.maxBytes) {
     failures.push(`final answer is too long: ${bytes} > ${spec.maxBytes} bytes`);
   }
-  if (bullets !== spec.expectedBullets && !(bullets === 0 && hasLabeledEvidenceShape)) {
-    failures.push(`final answer must include exactly ${spec.expectedBullets} Markdown bullets`);
+  const hasExpectedBulletCount = spec.allowAtLeastBullets === true ? bullets >= spec.expectedBullets : bullets === spec.expectedBullets;
+  if (!hasExpectedBulletCount && !(bullets === 0 && hasLabeledEvidenceShape)) {
+    const qualifier = spec.allowAtLeastBullets === true ? "at least" : "exactly";
+    failures.push(`final answer must include ${qualifier} ${spec.expectedBullets} Markdown bullets`);
   }
   if (!content.includes(spec.finalMarker)) failures.push(`missing ${spec.finalMarker}`);
   for (const marker of spec.evidenceMarkers) {
