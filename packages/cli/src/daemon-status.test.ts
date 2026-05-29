@@ -27,6 +27,43 @@ describe("daemon status", () => {
         );
         return;
       }
+      if (req.url === "/diagnostics") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            readiness: {
+              status: "warn",
+              checks: [
+                {
+                  label: "Model catalog",
+                  status: "warn",
+                  detail: "One configured model is missing its API key.",
+                  action: "Set OPENAI_API_KEY.",
+                },
+              ],
+            },
+          })
+        );
+        return;
+      }
+      if (req.url === "/models") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            defaultSelection: {
+              ok: true,
+              chainId: "lead_reasoning",
+              primaryModelId: "minimax-m2",
+              fallbackModelIds: ["gpt-5"],
+            },
+            models: [
+              { id: "minimax-m2", configured: true, apiKeyEnv: "MINIMAX_API_KEY" },
+              { id: "gpt-5", configured: false, apiKeyEnv: "OPENAI_API_KEY" },
+            ],
+          })
+        );
+        return;
+      }
       res.writeHead(404);
       res.end();
     });
@@ -49,6 +86,11 @@ describe("daemon status", () => {
       assert.match(result.stdout, /api auth:\s+ok/);
       assert.match(result.stdout, /transport:\s+local \(local-automation\)/);
       assert.match(result.stdout, /sessions:\s+2/);
+      assert.match(result.stdout, /setup:\s+warn/);
+      assert.match(result.stdout, /check:\s+Model catalog \[warn\] - One configured model is missing its API key\./);
+      assert.match(result.stdout, /action: Set OPENAI_API_KEY\./);
+      assert.match(result.stdout, /models:\s+lead_reasoning: minimax-m2 -> gpt-5/);
+      assert.match(result.stdout, /model keys:\s+primary ok, 1 fallback key\(s\) missing/);
       assert.equal(bridgeAuthHeader, "Bearer read-token");
     } finally {
       server.close();
