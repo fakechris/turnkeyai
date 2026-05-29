@@ -11,14 +11,16 @@ TurnkeyAI 的本地优先 Agent Runtime CLI。
 npx @turnkeyai/cli app
 ```
 
-That's the recommended product entry point — five pages: Setup, Bridge,
-Tabs, Agent Connect, Diagnostics. The dashboard is a React + Vite + TS
-app shipped inside the CLI tarball; daemon serves it as static assets at
-`/app`. Built from `@turnkeyai/control-center` workspace.
+That's the recommended product entry point: Mission Control. The dashboard is
+a React + Vite + TS app shipped inside the CLI tarball; daemon serves it as
+static assets at `/app`. Built from `@turnkeyai/control-center` workspace.
+
+Current routes: `missions`, `approvals`, `agents`, `context`,
+`agent-connect`, `runtime`, and `settings`.
 
 ```bash
 # Open straight to a specific page
-npx @turnkeyai/cli app --route diagnostics
+npx @turnkeyai/cli app --route runtime
 
 # Print the URL instead of launching a browser (CI / SSH / headless)
 npx @turnkeyai/cli app --no-open
@@ -63,7 +65,7 @@ npx @turnkeyai/cli bridge install-extension
 # Print /bridge/status (json)
 npx @turnkeyai/cli bridge status
 
-# Write Kimi-shaped agent skill + OpenAPI schema to ~/.turnkeyai/skills/
+# Write an agent skill + OpenAPI schema to ~/.turnkeyai/skills/
 npx @turnkeyai/cli bridge install-skill
 ```
 
