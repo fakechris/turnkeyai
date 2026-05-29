@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import path from "node:path";
 
@@ -215,6 +216,74 @@ function hasFlag(args: string[], name: string): boolean {
   return args.includes(name);
 }
 
+function readOption(args: string[], name: string): string | null {
+  const idx = args.findIndex((arg) => arg === name);
+  if (idx >= 0) {
+    const value = args[idx + 1];
+    return value && !value.startsWith("--") ? value : null;
+  }
+  const prefix = `${name}=`;
+  const match = args.find((arg) => arg.startsWith(prefix));
+  return match ? match.slice(prefix.length) : null;
+}
+
+export function buildAppLauncherScript(): string {
+  return [
+    "#!/usr/bin/env sh",
+    "set -eu",
+    "",
+    "if command -v turnkeyai >/dev/null 2>&1; then",
+    '  exec turnkeyai app "$@"',
+    "fi",
+    "",
+    "if command -v npx >/dev/null 2>&1; then",
+    '  exec npx @turnkeyai/cli app "$@"',
+    "fi",
+    "",
+    'echo "TurnkeyAI launcher could not find turnkeyai or npx on PATH." >&2',
+    'echo "Install with: npm install -g @turnkeyai/cli" >&2',
+    "exit 127",
+    "",
+  ].join("\n");
+}
+
+export function resolveDefaultAppLauncherPath(input: {
+  homeDir: string;
+  platformName: NodeJS.Platform;
+  desktopExists: boolean;
+}): string {
+  if (input.platformName === "darwin" && input.desktopExists) {
+    return path.join(input.homeDir, "Desktop", "TurnkeyAI Mission Control.command");
+  }
+  const fileName =
+    input.platformName === "darwin"
+      ? "TurnkeyAI Mission Control.command"
+      : "turnkeyai-mission-control.sh";
+  return path.join(input.homeDir, ".turnkeyai", fileName);
+}
+
+async function runInstallLauncherCommand(args: string[]): Promise<void> {
+  if (hasFlag(args, "--help") || hasFlag(args, "-h")) {
+    runInstallLauncherHelp(0);
+  }
+  const explicitPath = readOption(args, "--path");
+  const home = homedir();
+  const launcherPath =
+    explicitPath && explicitPath.trim().length > 0
+      ? path.resolve(explicitPath)
+      : resolveDefaultAppLauncherPath({
+          homeDir: home,
+          platformName: platform(),
+          desktopExists: existsSync(path.join(home, "Desktop")),
+        });
+
+  await mkdir(path.dirname(launcherPath), { recursive: true });
+  await writeFile(launcherPath, buildAppLauncherScript(), { mode: 0o755 });
+  await chmod(launcherPath, 0o755);
+  console.log(`installed TurnkeyAI Mission Control launcher: ${launcherPath}`);
+  console.log("open it from Finder, or run it directly to start the local app.");
+}
+
 /**
  * `turnkeyai app` — the canonical product entry point.
  *
@@ -228,6 +297,10 @@ function hasFlag(args: string[], name: string): boolean {
  * who explicitly want to manage the daemon themselves.
  */
 export async function runAppCommand(args: string[]): Promise<void> {
+  if (args[0] === "install-launcher") {
+    return runInstallLauncherCommand(args.slice(1));
+  }
+
   if (hasFlag(args, "--help") || hasFlag(args, "-h") || args[0] === "help") {
     runAppHelp(0);
   }
@@ -322,6 +395,7 @@ export function runAppHelp(exitCode: number): never {
     "",
     "Usage:",
     "  turnkeyai app [--route <name>] [--no-open] [--no-start]",
+    "  turnkeyai app install-launcher [--path <file>]",
     "",
     "Auto-starts the daemon if it is not already running, then opens the local",
     "Mission Control in your default browser with the daemon token preloaded.",
@@ -346,6 +420,24 @@ export function runAppHelp(exitCode: number): never {
     "  TURNKEYAI_DAEMON_ADMIN_TOKEN     (only chosen if no operator token is set)",
     "  TURNKEYAI_DAEMON_READ_TOKEN      (last resort; Agent Connect downgrades)",
     "  ~/.turnkeyai/config.json:token   (single-token fallback)",
+  ];
+  (exitCode === 0 ? console.log : console.error)(lines.join("\n"));
+  process.exit(exitCode);
+}
+
+export function runInstallLauncherHelp(exitCode: number): never {
+  const lines = [
+    "TurnkeyAI Mission Control launcher installer",
+    "",
+    "Usage:",
+    "  turnkeyai app install-launcher [--path <file>]",
+    "",
+    "Installs a local double-click launcher that runs `turnkeyai app`.",
+    "On macOS, the default location is the Desktop when it exists; otherwise",
+    "the launcher is written under ~/.turnkeyai.",
+    "",
+    "Options:",
+    "  --path <file>      Write the launcher to an explicit path",
   ];
   (exitCode === 0 ? console.log : console.error)(lines.join("\n"));
   process.exit(exitCode);

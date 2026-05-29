@@ -154,6 +154,7 @@ Control Center 现在是 Mission Control 工作台：First Run、Missions、Appr
 ```bash
 npm install -g @turnkeyai/cli
 turnkeyai app                         # 推荐入口
+turnkeyai app install-launcher        # 安装可双击的本地启动器
 turnkeyai app --route onboarding      # 直接打开 first-run 页面
 turnkeyai app --no-open               # 只打印 URL（CI / SSH / headless 适用）
 turnkeyai app --no-start              # 要求 daemon 已运行，禁用 auto-start

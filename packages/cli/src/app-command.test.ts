@@ -2,8 +2,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildAppLauncherScript,
   buildDashboardUrl,
   parseAppRoute,
+  resolveDefaultAppLauncherPath,
   resolveAppToken,
 } from "./app-command";
 
@@ -142,6 +144,49 @@ describe("app-command", () => {
 
     it("ignores --route when the next arg is missing", () => {
       assert.equal(parseAppRoute(["--route"]), "missions");
+    });
+  });
+
+  describe("local app launcher", () => {
+    it("builds a portable launcher that prefers the installed turnkeyai command", () => {
+      const script = buildAppLauncherScript();
+      assert.match(script, /^#!\/usr\/bin\/env sh/);
+      assert.match(script, /command -v turnkeyai/);
+      assert.match(script, /exec turnkeyai app "\$@"/);
+      assert.match(script, /exec npx @turnkeyai\/cli app "\$@"/);
+    });
+
+    it("defaults to a macOS Desktop launcher when Desktop exists", () => {
+      assert.equal(
+        resolveDefaultAppLauncherPath({
+          homeDir: "/Users/alice",
+          platformName: "darwin",
+          desktopExists: true,
+        }),
+        "/Users/alice/Desktop/TurnkeyAI Mission Control.command"
+      );
+    });
+
+    it("falls back under ~/.turnkeyai when no Desktop exists", () => {
+      assert.equal(
+        resolveDefaultAppLauncherPath({
+          homeDir: "/Users/alice",
+          platformName: "darwin",
+          desktopExists: false,
+        }),
+        "/Users/alice/.turnkeyai/TurnkeyAI Mission Control.command"
+      );
+    });
+
+    it("uses a shell launcher outside macOS", () => {
+      assert.equal(
+        resolveDefaultAppLauncherPath({
+          homeDir: "/home/alice",
+          platformName: "linux",
+          desktopExists: true,
+        }),
+        "/home/alice/.turnkeyai/turnkeyai-mission-control.sh"
+      );
     });
   });
 });

@@ -24,6 +24,7 @@ For a global install:
 ```bash
 npm install -g @turnkeyai/cli
 turnkeyai app
+turnkeyai app install-launcher
 turnkeyai daemon status
 ```
 
@@ -46,6 +47,16 @@ npm run doctor
 
 `npm run app -- --no-open` prints the authenticated Control Center URL. Use
 that URL directly in a browser for SSH/headless environments.
+
+After one successful CLI launch, install the double-click launcher:
+
+```bash
+turnkeyai app install-launcher
+```
+
+On macOS, this writes `TurnkeyAI Mission Control.command` to the Desktop when
+the Desktop folder exists; otherwise it writes under `~/.turnkeyai`. Use
+`--path <file>` to choose a different location.
 
 ## Daemon Lifecycle
 
