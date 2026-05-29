@@ -47,6 +47,7 @@ import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
+import { canUseOperatorActions, OPERATOR_ACTION_SCOPE_HINT } from "../state/scopeAccess";
 import { formatDurationMs, groupTimelineForReplay, type TimelineReplayItem, type ToolProcessItem } from "../state/toolReplay";
 
 type TraceFilter = "all" | "agent" | "tools" | "approvals" | "recovery" | "evidence";
@@ -140,7 +141,8 @@ function UnlinkedMissionView({ mission }: { mission: Mission }) {
 }
 
 function LiveMissionView({ mission }: { mission: Mission }) {
-  const { setRoute } = useAppState();
+  const { state, setRoute } = useAppState();
+  const canUseMissionActions = canUseOperatorActions(state.scope);
   const timeline = useTimeline(mission.id, []);
   const metrics = useMissionMetrics(mission.id, null);
   const workerSessions = useWorkerSessions(mission.threadId, []);
@@ -210,7 +212,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
 
   const onSend = useCallback(async () => {
     const content = pending.trim();
-    if (!content || submitting) return;
+    if (!canUseMissionActions || !content || submitting) return;
     setSubmitting(true);
     setError(null);
     setAcceptedNotice(null);
@@ -224,11 +226,11 @@ function LiveMissionView({ mission }: { mission: Mission }) {
     } finally {
       setSubmitting(false);
     }
-  }, [pending, submitting, send, mission.id, refetchMissionRuntime]);
+  }, [canUseMissionActions, pending, submitting, send, mission.id, refetchMissionRuntime]);
 
   const onContinueSession = useCallback(
     async (session: WorkerSessionRecord) => {
-      if (sessionActionKey) return;
+      if (!canUseMissionActions || sessionActionKey) return;
       setSessionActionKey(session.workerRunKey);
       setError(null);
       setAcceptedNotice(null);
@@ -248,12 +250,12 @@ function LiveMissionView({ mission }: { mission: Mission }) {
         setSessionActionKey(null);
       }
     },
-    [mission.id, send, sessionActionKey, refetchMissionRuntime]
+    [canUseMissionActions, mission.id, send, sessionActionKey, refetchMissionRuntime]
   );
 
   const onCancelRoleRun = useCallback(
     async (run: RoleRunState) => {
-      if (roleRunActionKey) return;
+      if (!canUseMissionActions || roleRunActionKey) return;
       setRoleRunActionKey(run.runKey);
       setError(null);
       setAcceptedNotice(null);
@@ -270,12 +272,12 @@ function LiveMissionView({ mission }: { mission: Mission }) {
         setRoleRunActionKey(null);
       }
     },
-    [cancelRoleRun, roleRunActionKey, refetchMissionRuntime]
+    [canUseMissionActions, cancelRoleRun, roleRunActionKey, refetchMissionRuntime]
   );
 
   const onRecoveryRunAction = useCallback(
     async (run: RecoveryRun, action: Exclude<RecoveryRunAction, "dispatch">) => {
-      if (recoveryActionKey) return;
+      if (!canUseMissionActions || recoveryActionKey) return;
       const actionKey = `${run.recoveryRunId}:${action}`;
       setRecoveryActionKey(actionKey);
       setError(null);
@@ -294,12 +296,12 @@ function LiveMissionView({ mission }: { mission: Mission }) {
         setRecoveryActionKey(null);
       }
     },
-    [executeRecoveryRunAction, recoveryActionKey, refetchMissionRuntime]
+    [canUseMissionActions, executeRecoveryRunAction, recoveryActionKey, refetchMissionRuntime]
   );
 
   const onCancelSession = useCallback(
     async (session: WorkerSessionRecord) => {
-      if (sessionActionKey) return;
+      if (!canUseMissionActions || sessionActionKey) return;
       setSessionActionKey(session.workerRunKey);
       setError(null);
       setAcceptedNotice(null);
@@ -316,7 +318,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
         setSessionActionKey(null);
       }
     },
-    [cancelWorkerSession, sessionActionKey, refetchMissionRuntime]
+    [canUseMissionActions, cancelWorkerSession, sessionActionKey, refetchMissionRuntime]
   );
 
   return (
@@ -354,6 +356,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             isLive={roleRuns.isLive}
             error={roleRuns.error}
             actionKey={roleRunActionKey}
+            canAct={canUseMissionActions}
             onCancel={onCancelRoleRun}
           />
           <MissionMetricsCard metrics={metrics.value} isLive={metrics.isLive} error={metrics.error} />
@@ -367,6 +370,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             isLive={recoveryRuns.isLive}
             error={recoveryRuns.error}
             actionKey={recoveryActionKey}
+            canAct={canUseMissionActions}
             onAction={onRecoveryRunAction}
           />
           <BrowserContinuityCard
@@ -381,6 +385,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             isLive={workerSessions.isLive}
             error={workerSessions.error}
             actionKey={sessionActionKey}
+            canAct={canUseMissionActions}
             onContinue={onContinueSession}
             onCancel={onCancelSession}
           />
@@ -453,6 +458,7 @@ function LiveMissionView({ mission }: { mission: Mission }) {
                         process={item}
                         workerSessions={workerSessions.value}
                         actionKey={sessionActionKey}
+                        canAct={canUseMissionActions}
                         onContinue={onContinueSession}
                         onCancel={onCancelSession}
                       />
@@ -497,14 +503,16 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             }}
             placeholder="Follow up with the team… (⌘↩ to send)"
             rows={2}
-            disabled={submitting}
+            disabled={submitting || !canUseMissionActions}
+            title={canUseMissionActions ? undefined : OPERATOR_ACTION_SCOPE_HINT}
             className="mission-follow-up-input"
           />
           <button
             type="button"
             className="btn primary"
-            disabled={submitting || pending.trim().length === 0}
+            disabled={submitting || pending.trim().length === 0 || !canUseMissionActions}
             onClick={onSend}
+            title={canUseMissionActions ? undefined : OPERATOR_ACTION_SCOPE_HINT}
           >
             <Icon name="send" size={13} /> {submitting ? "Sending…" : "Send"}
           </button>
@@ -631,12 +639,14 @@ function MissionRecoveryCasesCard({
   isLive,
   error,
   actionKey,
+  canAct,
   onAction,
 }: {
   response: { totalRuns: number; runs: RecoveryRun[] };
   isLive: boolean;
   error: string | null;
   actionKey: string | null;
+  canAct: boolean;
   onAction: (run: RecoveryRun, action: Exclude<RecoveryRunAction, "dispatch">) => void;
 }) {
   const runs = response.runs;
@@ -659,6 +669,11 @@ function MissionRecoveryCasesCard({
           {response.totalRuns > runs.length && <span>{response.totalRuns} total</span>}
         </div>
       </div>
+      {!canAct && runs.some((run) => listOperatorRecoveryActions(run.status).length > 0) && (
+        <div className="subagent-session-error" role="note">
+          Recovery actions require an operator or admin token.
+        </div>
+      )}
       {error && (
         <div className="subagent-session-error" role="alert">
           {error}
@@ -675,6 +690,7 @@ function MissionRecoveryCasesCard({
               key={run.recoveryRunId}
               run={run}
               actionKey={actionKey}
+              canAct={canAct}
               onAction={onAction}
             />
           ))}
@@ -687,10 +703,12 @@ function MissionRecoveryCasesCard({
 function MissionRecoveryCaseRow({
   run,
   actionKey,
+  canAct,
   onAction,
 }: {
   run: RecoveryRun;
   actionKey: string | null;
+  canAct: boolean;
   onAction: (run: RecoveryRun, action: Exclude<RecoveryRunAction, "dispatch">) => void;
 }) {
   const tone = recoveryRunTone(run);
@@ -739,13 +757,15 @@ function MissionRecoveryCaseRow({
             const key = `${run.recoveryRunId}:${action}`;
             const busy = actionKey === key;
             const blocked = actionKey !== null && !busy;
+            const disabled = !canAct || busy || blocked;
             return (
               <button
                 key={action}
                 type="button"
                 className={`btn ${action === "approve" || action === "retry" || action === "resume" ? "primary" : "ghost"}`}
-                disabled={busy || blocked}
+                disabled={disabled}
                 onClick={() => onAction(run, action)}
+                title={canAct ? undefined : OPERATOR_ACTION_SCOPE_HINT}
               >
                 {busy ? "Requesting…" : recoveryActionLabel(action)}
               </button>
@@ -1392,12 +1412,14 @@ function ActiveRoleRunsCard({
   isLive,
   error,
   actionKey,
+  canAct,
   onCancel,
 }: {
   runs: RoleRunState[];
   isLive: boolean;
   error: string | null;
   actionKey: string | null;
+  canAct: boolean;
   onCancel: (run: RoleRunState) => void;
 }) {
   const visibleRuns = runs.filter((run) => !["done", "failed", "idle"].includes(run.status));
@@ -1433,6 +1455,7 @@ function ActiveRoleRunsCard({
               run={run}
               busy={actionKey === run.runKey}
               blocked={actionKey !== null && actionKey !== run.runKey}
+              canAct={canAct}
               onCancel={() => onCancel(run)}
             />
           ))}
@@ -1446,11 +1469,13 @@ function RoleRunRow({
   run,
   busy,
   blocked,
+  canAct,
   onCancel,
 }: {
   run: RoleRunState;
   busy: boolean;
   blocked: boolean;
+  canAct: boolean;
   onCancel: () => void;
 }) {
   const cancellable = isCancellableRoleRun(run);
@@ -1474,9 +1499,15 @@ function RoleRunRow({
       <button
         type="button"
         className="btn ghost"
-        disabled={!cancellable || busy || blocked}
+        disabled={!canAct || !cancellable || busy || blocked}
         onClick={onCancel}
-        title={cancellable ? "Cancel this active role run" : "Only currently running role generations can be cancelled"}
+        title={
+          !canAct
+            ? OPERATOR_ACTION_SCOPE_HINT
+            : cancellable
+              ? "Cancel this active role run"
+              : "Only currently running role generations can be cancelled"
+        }
       >
         {busy ? "Cancelling…" : "Cancel run"}
       </button>
@@ -1493,6 +1524,7 @@ function SubAgentSessionsCard({
   isLive,
   error,
   actionKey,
+  canAct,
   onContinue,
   onCancel,
 }: {
@@ -1500,6 +1532,7 @@ function SubAgentSessionsCard({
   isLive: boolean;
   error: string | null;
   actionKey: string | null;
+  canAct: boolean;
   onContinue: (session: WorkerSessionRecord) => void;
   onCancel: (session: WorkerSessionRecord) => void;
 }) {
@@ -1535,6 +1568,7 @@ function SubAgentSessionsCard({
               session={session}
               busy={actionKey === session.workerRunKey}
               blocked={actionKey !== null && actionKey !== session.workerRunKey}
+              canAct={canAct}
               onContinue={() => onContinue(session)}
               onCancel={() => onCancel(session)}
             />
@@ -1549,12 +1583,14 @@ function SubAgentSessionRow({
   session,
   busy,
   blocked,
+  canAct,
   onContinue,
   onCancel,
 }: {
   session: WorkerSessionRecord;
   busy: boolean;
   blocked: boolean;
+  canAct: boolean;
   onContinue: () => void;
   onCancel: () => void;
 }) {
@@ -1579,10 +1615,22 @@ function SubAgentSessionRow({
       <div className="subagent-session-body">
         <div className="subagent-session-summary">{summary}</div>
         <div className="subagent-session-actions">
-          <button type="button" className="btn" disabled={busy || blocked} onClick={onContinue}>
+          <button
+            type="button"
+            className="btn"
+            disabled={!canAct || busy || blocked}
+            onClick={onContinue}
+            title={canAct ? undefined : OPERATOR_ACTION_SCOPE_HINT}
+          >
             <Icon name="send" size={13} /> {busy ? "Sending…" : "Continue"}
           </button>
-          <button type="button" className="btn ghost" disabled={busy || blocked || terminal} onClick={onCancel}>
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={!canAct || busy || blocked || terminal}
+            onClick={onCancel}
+            title={canAct ? undefined : OPERATOR_ACTION_SCOPE_HINT}
+          >
             {busy ? "Cancelling…" : "Cancel"}
           </button>
         </div>
@@ -1691,12 +1739,14 @@ function ToolProcessRow({
   process,
   workerSessions,
   actionKey,
+  canAct,
   onContinue,
   onCancel,
 }: {
   process: ToolProcessItem;
   workerSessions: WorkerSessionRecord[];
   actionKey: string | null;
+  canAct: boolean;
   onContinue: (session: WorkerSessionRecord) => void;
   onCancel: (session: WorkerSessionRecord) => void;
 }) {
@@ -1758,14 +1808,21 @@ function ToolProcessRow({
                   <span className="mono">{session.state.workerType}</span>
                   <span>{session.context?.label?.trim() || session.workerRunKey}</span>
                   <span>{session.state.status.replace("_", " ")}</span>
-                  <button type="button" className="btn" disabled={busy || blocked} onClick={() => onContinue(session)}>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!canAct || busy || blocked}
+                    onClick={() => onContinue(session)}
+                    title={canAct ? undefined : OPERATOR_ACTION_SCOPE_HINT}
+                  >
                     <Icon name="send" size={13} /> {busy ? "Sending..." : "Continue session"}
                   </button>
                   <button
                     type="button"
                     className="btn ghost"
-                    disabled={busy || blocked || terminal}
+                    disabled={!canAct || busy || blocked || terminal}
                     onClick={() => onCancel(session)}
+                    title={canAct ? undefined : OPERATOR_ACTION_SCOPE_HINT}
                   >
                     {busy ? "Cancelling..." : "Cancel session"}
                   </button>

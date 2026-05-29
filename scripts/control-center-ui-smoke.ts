@@ -135,6 +135,58 @@ try {
     );
     await operatorRuntimePage.close();
 
+    const readMissionPage = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+    await readMissionPage.addInitScript(() => {
+      sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-read-token");
+      sessionStorage.setItem("turnkeyai.controlCenter.scope", "read");
+    });
+    await readMissionPage.goto(`http://127.0.0.1:${port}/app#/mission/${encodeURIComponent(missionId)}`, {
+      waitUntil: "networkidle",
+    });
+    await readMissionPage.waitForSelector(".mission-recovery-card");
+    assert(
+      await readMissionPage.locator(".mission-recovery-card", { hasText: "operator or admin token" }).isVisible(),
+      "read-scope mission replay should explain that recovery actions need operator scope"
+    );
+    assert(
+      await readMissionPage.getByRole("button", { name: "Approve recovery" }).isDisabled(),
+      "read-scope mission replay should disable recovery approvals"
+    );
+    assert(
+      await readMissionPage.getByLabel("Follow-up message to mission team").isDisabled(),
+      "read-scope mission replay should disable follow-up messages"
+    );
+    await readMissionPage.getByRole("button", { name: "Show trace" }).click();
+    await readMissionPage.waitForSelector(".tool-process-session-action-row");
+    assert(
+      await readMissionPage.getByRole("button", { name: /Continue session/ }).isDisabled(),
+      "read-scope mission replay should disable sub-agent continuation"
+    );
+    await readMissionPage.close();
+
+    const readApprovalsPage = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+    await readApprovalsPage.addInitScript(() => {
+      sessionStorage.setItem("turnkeyai.controlCenter.token", "ui-smoke-read-token");
+      sessionStorage.setItem("turnkeyai.controlCenter.scope", "read");
+    });
+    await readApprovalsPage.goto(`http://127.0.0.1:${port}/app#/approvals`, {
+      waitUntil: "networkidle",
+    });
+    await readApprovalsPage.waitForSelector("text=Approvals");
+    assert(
+      await readApprovalsPage.locator("text=Approval decisions require an operator or admin token.").isVisible(),
+      "read-scope approvals page should explain decision scope"
+    );
+    assert(
+      await readApprovalsPage.getByRole("button", { name: "Approve" }).isDisabled(),
+      "read-scope approvals page should disable approval decisions"
+    );
+    assert(
+      await readApprovalsPage.getByRole("button", { name: "Deny" }).isDisabled(),
+      "read-scope approvals page should disable denial decisions"
+    );
+    await readApprovalsPage.close();
+
     const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
     page.on("console", (message) => {
       if (message.type() === "error") {
@@ -252,6 +304,7 @@ try {
       await page.locator(".mission-recovery-card", { hasText: "browser-ui" }).isVisible(),
       "recovery cases should show browser session continuity"
     );
+    assert(postedRecoveryActions.length === 0, "read-scope smoke checks should not POST recovery actions");
     await page.getByRole("button", { name: "Approve recovery" }).click();
     await page.waitForSelector("[role='status']");
     assert(
@@ -1183,6 +1236,22 @@ function agentsFixture() {
 
 function approvalsFixture() {
   return [
+    {
+      id: "appr.browser.navigate",
+      approvalId: "appr.browser.navigate",
+      missionId,
+      missionTitle: "UI smoke mission",
+      agent: "role-browser",
+      action: "browser.navigate",
+      title: "Navigate browser tab",
+      affects: ["ctx.browser.session.browser-ui"],
+      risk: "Would change the active browser tab.",
+      severity: "medium",
+      requestedAt: "2026-05-29 12:00",
+      requestedAtMs: 1_779_984_002_500,
+      requestedAgo: "now",
+      policyHint: "Operator approval required before changing the active browser tab.",
+    },
     {
       id: "appr.browser.submit",
       approvalId: "appr.browser.submit",

@@ -7,6 +7,7 @@ import { useAgents, useApprovals, useContextSources, useDecideApproval } from ".
 import { CtxIcon, Icon } from "../components/Icon";
 import { AgentAvatar } from "../components/atoms";
 import { useAppState } from "../state/AppState";
+import { canUseOperatorActions, OPERATOR_ACTION_SCOPE_HINT } from "../state/scopeAccess";
 
 export function ApprovalsPage() {
   const { state, decideApproval, openMission } = useAppState();
@@ -16,6 +17,7 @@ export function ApprovalsPage() {
   const contextRemote = useContextSources([]);
   const submitDecision = useDecideApproval();
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null);
+  const canDecideApprovals = canUseOperatorActions(state.scope);
   const approvals = approvalsRemote.value;
   const agents = agentsRemote.value;
   const contextSources = contextRemote.value;
@@ -74,6 +76,13 @@ export function ApprovalsPage() {
           </div>
         </div>
       )}
+      {!canDecideApprovals && allPending.length > 0 && (
+        <div className="card" role="note" style={{ padding: 12, marginBottom: 12 }}>
+          <div className="muted" style={{ fontSize: 11.5 }}>
+            Approval decisions require an operator or admin token.
+          </div>
+        </div>
+      )}
 
       {list.map((ap) => {
         // coderabbit K3.5: prefer local session state if present
@@ -88,6 +97,7 @@ export function ApprovalsPage() {
             : undefined;
         const effective = localDecision ?? daemonDecision;
         const decide = async (decision: "approved" | "denied") => {
+          if (!canDecideApprovals) return;
           setBusyApprovalId(ap.id);
           try {
             await submitDecision({ approvalId: ap.id, decision });
@@ -105,6 +115,7 @@ export function ApprovalsPage() {
             agents={agents}
             contextSources={contextSources}
             busy={busyApprovalId === ap.id}
+            canDecide={canDecideApprovals}
             onApprove={() => void decide("approved")}
             onDeny={() => void decide("denied")}
             onOpenMission={() => openMission(ap.missionId)}
@@ -124,6 +135,7 @@ function ApprovalRowView({
   onDeny,
   onOpenMission,
   busy,
+  canDecide,
 }: {
   approval: ApprovalRow;
   decision: "approved" | "denied" | undefined;
@@ -133,6 +145,7 @@ function ApprovalRowView({
   onDeny: () => void;
   onOpenMission: () => void;
   busy: boolean;
+  canDecide: boolean;
 }) {
   const agent = agents.find((a) => a.id === approval.agent);
   return (
@@ -181,10 +194,22 @@ function ApprovalRowView({
       <div className="deciders">
         {!decision ? (
           <>
-            <button type="button" className="btn success" onClick={onApprove} disabled={busy}>
+            <button
+              type="button"
+              className="btn success"
+              onClick={onApprove}
+              disabled={busy || !canDecide}
+              title={canDecide ? undefined : OPERATOR_ACTION_SCOPE_HINT}
+            >
               <Icon name="check" size={12} /> Approve
             </button>
-            <button type="button" className="btn danger" onClick={onDeny} disabled={busy}>
+            <button
+              type="button"
+              className="btn danger"
+              onClick={onDeny}
+              disabled={busy || !canDecide}
+              title={canDecide ? undefined : OPERATOR_ACTION_SCOPE_HINT}
+            >
               <Icon name="x" size={12} /> Deny
             </button>
             <button type="button" className="btn ghost" onClick={onOpenMission}>
