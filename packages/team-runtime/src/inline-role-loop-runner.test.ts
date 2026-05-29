@@ -208,6 +208,185 @@ test("inline role loop runner persists worker bindings returned by the role runt
   assert.deepEqual(runState.workerSessions, { browser: "worker-run-1" });
 });
 
+test("inline role loop runner closes the active handoff when a role reaches its iteration limit", async () => {
+  const runKey = "role:role-lead:thread:thread-limit";
+  const handoff: HandoffEnvelope = {
+    taskId: "task-limit",
+    flowId: "flow-limit",
+    sourceMessageId: "msg-user",
+    targetRoleId: "role-lead",
+    activationType: "mention",
+    threadId: "thread-limit",
+    payload: normalizeRelayPayload({
+      threadId: "thread-limit",
+      relayBrief: "Continue the task.",
+      recentMessages: [],
+      dispatchPolicy: {
+        allowParallel: false,
+        allowReenter: true,
+        sourceFlowMode: "serial",
+      },
+    }),
+    createdAt: 1,
+  };
+
+  const runState: RoleRunState = {
+    runKey,
+    threadId: "thread-limit",
+    roleId: "role-lead",
+    mode: "group",
+    status: "queued",
+    iterationCount: 2,
+    maxIterations: 2,
+    inbox: [handoff],
+    lastActiveAt: 1,
+  };
+
+  const flow: FlowLedger = {
+    flowId: "flow-limit",
+    threadId: "thread-limit",
+    rootMessageId: "msg-user",
+    mode: "serial",
+    status: "running",
+    currentStageIndex: 0,
+    activeRoleIds: ["role-lead"],
+    completedRoleIds: [],
+    failedRoleIds: [],
+    hopCount: 0,
+    maxHops: 5,
+    edges: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const thread: TeamThread = {
+    threadId: "thread-limit",
+    teamId: "team-limit",
+    teamName: "Demo",
+    leadRoleId: "role-lead",
+    roles: [{ roleId: "role-lead", name: "Lead", seat: "lead", runtime: "local" }],
+    participantLinks: [],
+    metadataVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const failures: Array<{ handoff: HandoffEnvelope; error: RuntimeError }> = [];
+  let acked = false;
+  let roleRuntimeCalled = false;
+
+  const runner = new InlineRoleLoopRunner({
+    roleRunStore: {
+      async get(key) {
+        return key === runKey ? runState : null;
+      },
+      async put(next) {
+        Object.assign(runState, next);
+      },
+      async delete() {},
+      async listByThread() {
+        return [runState];
+      },
+    },
+    flowLedgerStore: {
+      async get(flowId) {
+        return flowId === flow.flowId ? flow : null;
+      },
+      async put() {},
+      async listByThread() {
+        return [flow];
+      },
+    },
+    teamThreadStore: {
+      async get(threadId) {
+        return threadId === thread.threadId ? thread : null;
+      },
+      async list() {
+        return [thread];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore: {
+      async append() {},
+      async list() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    } as TeamMessageStore,
+    roleRunCoordinator: {
+      async getOrCreate() {
+        return runState;
+      },
+      async enqueue(_, nextHandoff) {
+        runState.inbox.push(nextHandoff);
+        return runState;
+      },
+      async dequeue() {
+        return runState.inbox.shift() ?? null;
+      },
+      async ack() {
+        acked = true;
+      },
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus(_, status) {
+        runState.status = status;
+      },
+      async incrementIteration() {
+        runState.iterationCount += 1;
+        return runState.iterationCount;
+      },
+      async fail(_, error) {
+        runState.status = "failed";
+        if (!error.retryable) {
+          runState.lastUserTouchAt = Date.now();
+        }
+      },
+      async finish() {
+        runState.status = "done";
+      },
+    },
+    roleRuntime: {
+      async runActivation() {
+        roleRuntimeCalled = true;
+        return { status: "ok" };
+      },
+    },
+    onHandoffAck: async () => {
+      acked = true;
+    },
+    onRoleReply: async () => {
+      throw new Error("not used");
+    },
+    onRoleFailure: async (input) => {
+      failures.push({
+        handoff: input.handoff,
+        error: input.error,
+      });
+    },
+  });
+
+  await runner.ensureRunning(runKey);
+
+  assert.equal(roleRuntimeCalled, false);
+  assert.equal(acked, false);
+  assert.equal(runState.status, "failed");
+  assert.equal(runState.inbox.length, 0);
+  assert.equal(failures.length, 1);
+  const failure = failures[0];
+  assert.equal(failure?.handoff.taskId, "task-limit");
+  assert.equal(failure?.error.code, "RUN_ITERATION_LIMIT");
+  assert.match(failure?.error.message ?? "", /continue/i);
+});
+
 test("inline role loop runner emits runtime progress for worker-waiting transitions", async () => {
   const runKey = "role:role-operator:thread:thread-2";
   const handoff: HandoffEnvelope = {

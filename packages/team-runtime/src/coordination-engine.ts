@@ -567,6 +567,7 @@ export class CoordinationEngine {
     intent: RoleOutcomeIntent,
     error: RuntimeError
   ): Promise<void> {
+    await this.ensureMessagePersisted(intent.message);
     await this.markHandoffResponded(flow.flowId, intent.handoff.taskId);
     await this.markRoleFailed(flow.flowId, intent.roleId);
     await this.markHandoffClosed(flow.flowId, intent.handoff.taskId);
@@ -1061,13 +1062,14 @@ export class CoordinationEngine {
 
   private buildFailureNotice(thread: TeamThread, roleId: RoleId, error: RuntimeError): TeamMessage {
     const now = this.deps.clock.now();
+    const isIterationLimit = error.code === "RUN_ITERATION_LIMIT";
     return {
       id: this.deps.idGenerator.messageId(),
       threadId: thread.threadId,
       role: "system",
       roleId,
       name: "system",
-      content: `Role ${roleId} failed: ${error.message}`,
+      content: isIterationLimit ? error.message : `Role ${roleId} failed: ${error.message}`,
       createdAt: now,
       updatedAt: now,
       source: {
@@ -1080,6 +1082,12 @@ export class CoordinationEngine {
       metadata: {
         code: error.code,
         retryable: error.retryable,
+        ...(isIterationLimit
+          ? {
+              status: "paused",
+              continuationAvailable: true,
+            }
+          : {}),
       },
     };
   }
