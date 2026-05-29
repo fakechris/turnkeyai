@@ -220,6 +220,7 @@ export async function handleMissionRoutes(input: {
     try {
       const result = await recordApprovalDecision({
         approvalStore: deps.approvalStore,
+        missionStore: deps.missionStore,
         activityStore: deps.activityStore,
         clock: deps.clock,
         newEventId: () => `ev.${approvalId}.${deps.clock.now()}`,

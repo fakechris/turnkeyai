@@ -342,7 +342,7 @@ describe("MissionThreadBridge", () => {
     assert.equal(incomplete?.runtime?.reason, "truncated_markdown");
   });
 
-  it("does not complete missions that still have approvals or blockers", async () => {
+  it("promotes missions with pending approvals to needs_approval instead of completing", async () => {
     counter = 0;
     const mission: Mission = {
       ...baseMission,
@@ -374,7 +374,7 @@ describe("MissionThreadBridge", () => {
 
     await bridge.tickMission("msn.1");
     const updated = await missionStore.get("msn.1");
-    assert.equal(updated?.status, "working");
+    assert.equal(updated?.status, "needs_approval");
     assert.equal(updated?.pendingApprovals, 1);
   });
 
