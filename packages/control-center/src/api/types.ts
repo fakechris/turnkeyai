@@ -260,7 +260,7 @@ export type ValidationOpsClosedLoopStatus =
 export type ValidationOpsBaselineStatus = "fresh-passing" | "fresh-failing" | "stale" | "missing";
 
 export interface ValidationOpsReadinessGate {
-  gateId: "phase1-e2e-profile" | "release-readiness" | "transport-soak" | "soak-series";
+  gateId: "phase1-e2e-profile" | "real-llm-acceptance" | "release-readiness" | "transport-soak" | "soak-series";
   title: string;
   status: ValidationOpsStatus;
   summary: string;
@@ -271,7 +271,13 @@ export interface ValidationOpsReadinessGate {
 
 export interface ValidationOpsRunRecord {
   runId: string;
-  runType: "release-readiness" | "validation-profile" | "soak-series" | "transport-soak" | "phase1-baseline";
+  runType:
+    | "release-readiness"
+    | "validation-profile"
+    | "soak-series"
+    | "transport-soak"
+    | "phase1-baseline"
+    | "real-llm-acceptance";
   title: string;
   status: "passed" | "failed";
   completedAt: number;

@@ -38,8 +38,11 @@ function createResponse() {
   };
 }
 
-function createDeps(overrides: Partial<ValidationRouteDeps> = {}): ValidationRouteDeps {
-  const records: ValidationOpsRunRecord[] = [];
+function createDeps(
+  overrides: Partial<ValidationRouteDeps> = {},
+  initialRecords: ValidationOpsRunRecord[] = []
+): ValidationRouteDeps {
+  const records: ValidationOpsRunRecord[] = [...initialRecords];
   return {
     validationOpsRunStore: {
       async get() {
@@ -95,6 +98,32 @@ function createDeps(overrides: Partial<ValidationRouteDeps> = {}): ValidationRou
       };
     },
     ...overrides,
+  };
+}
+
+function passingRealLlmAcceptanceRecord(completedAt = 1_000): ValidationOpsRunRecord {
+  return {
+    runId: "real-llm-acceptance-run-1",
+    runType: "real-llm-acceptance",
+    title: "Real LLM acceptance",
+    status: "passed",
+    startedAt: completedAt - 100,
+    completedAt,
+    durationMs: 100,
+    issueCount: 0,
+    selectors: ["tooluse:basic", "mission:comparison", "browser-tooluse"],
+    closedLoop: {
+      closedLoopStatus: "completed",
+      totalCases: 2,
+      completedCases: 2,
+      actionableCases: 0,
+      silentFailureCases: 0,
+      ambiguousFailureCases: 0,
+      closedLoopCases: 2,
+      closedLoopRate: 1,
+      rerunCommand: "npm run acceptance:real -- --model-catalog models.local.json",
+    },
+    issues: [],
   };
 }
 
@@ -158,12 +187,15 @@ test("validation routes run the phase1-e2e profile through validation, soak, and
     }),
     res: response.res,
     url: new URL("http://127.0.0.1/validation-profiles/run"),
-    deps: createDeps({
-      async runBrowserTransportSoakViaCli(options) {
-        transportCalls.push(options);
-        return createDeps().runBrowserTransportSoakViaCli(options);
+    deps: createDeps(
+      {
+        async runBrowserTransportSoakViaCli(options) {
+          transportCalls.push(options);
+          return createDeps().runBrowserTransportSoakViaCli(options);
+        },
       },
-    }),
+      [passingRealLlmAcceptanceRecord()]
+    ),
   });
 
   assert.equal(response.res.statusCode, 200);
@@ -225,12 +257,15 @@ test("validation routes run phase1 readiness through all exit gates and records 
     }),
     res: response.res,
     url: new URL("http://127.0.0.1/phase1-readiness/run"),
-    deps: createDeps({
-      async runBrowserTransportSoakViaCli(options) {
-        transportCalls.push(options);
-        return createDeps().runBrowserTransportSoakViaCli(options);
+    deps: createDeps(
+      {
+        async runBrowserTransportSoakViaCli(options) {
+          transportCalls.push(options);
+          return createDeps().runBrowserTransportSoakViaCli(options);
+        },
       },
-    }),
+      [passingRealLlmAcceptanceRecord()]
+    ),
   });
 
   assert.equal(response.res.statusCode, 200);
@@ -240,7 +275,7 @@ test("validation routes run phase1 readiness through all exit gates and records 
     ["validation-profile", "transport-soak", "release-readiness", "soak-series"]
   );
   assert.equal(response.json.validationOps.readiness.status, "passed");
-  assert.equal(response.json.validationOps.readiness.passedGates, 4);
+  assert.equal(response.json.validationOps.readiness.passedGates, 5);
   assert.equal(response.json.northStar.closedLoopStatus, "completed");
   assert.equal(response.json.northStar.closedLoopRate, 1);
   assert.equal(response.json.nextCommand, "validation-ops");
@@ -285,12 +320,15 @@ test("validation routes run phase1 baseline and expose fresh baseline status in 
     }),
     res: response.res,
     url: new URL("http://127.0.0.1/phase1-baseline/run"),
-    deps: createDeps({
-      async runBrowserTransportSoakViaCli(options) {
-        transportCalls.push(options);
-        return createDeps().runBrowserTransportSoakViaCli(options);
+    deps: createDeps(
+      {
+        async runBrowserTransportSoakViaCli(options) {
+          transportCalls.push(options);
+          return createDeps().runBrowserTransportSoakViaCli(options);
+        },
       },
-    }),
+      [passingRealLlmAcceptanceRecord()]
+    ),
   });
 
   assert.equal(response.res.statusCode, 200);
@@ -329,36 +367,39 @@ test("validation routes count trailing clean baseline runs from the latest run",
     }),
     res: response.res,
     url: new URL("http://127.0.0.1/phase1-baseline/run"),
-    deps: createDeps({
-      async runBrowserTransportSoakViaCli(options) {
-        if (options?.verifyReconnect && options?.verifyWorkflowLog) {
-          readinessTransportCallCount += 1;
-          if (readinessTransportCallCount === 1) {
-            return {
-              status: "failed",
-              cycles: options.cycles ?? 1,
-              targets: options.targets ?? ["relay"],
-              totalCycles: options.cycles ?? 1,
-              passedCycles: 0,
-              failedCycles: options.cycles ?? 1,
-              totalTargetRuns: (options.targets ?? ["relay"]).length,
-              failedTargetRuns: (options.targets ?? ["relay"]).length,
-              durationMs: 10,
-              cycleResults: [],
-              targetAggregates: (options.targets ?? ["relay"]).map((target) => ({
-                target,
+    deps: createDeps(
+      {
+        async runBrowserTransportSoakViaCli(options) {
+          if (options?.verifyReconnect && options?.verifyWorkflowLog) {
+            readinessTransportCallCount += 1;
+            if (readinessTransportCallCount === 1) {
+              return {
+                status: "failed",
                 cycles: options.cycles ?? 1,
+                targets: options.targets ?? ["relay"],
+                totalCycles: options.cycles ?? 1,
                 passedCycles: 0,
                 failedCycles: options.cycles ?? 1,
-                failureBuckets: [{ bucket: "transport", count: options.cycles ?? 1 }],
-                acceptanceChecks: [{ checkId: "network-controls", passed: 0, failed: options.cycles ?? 1, skipped: 0 }],
-              })),
-            } as any;
+                totalTargetRuns: (options.targets ?? ["relay"]).length,
+                failedTargetRuns: (options.targets ?? ["relay"]).length,
+                durationMs: 10,
+                cycleResults: [],
+                targetAggregates: (options.targets ?? ["relay"]).map((target) => ({
+                  target,
+                  cycles: options.cycles ?? 1,
+                  passedCycles: 0,
+                  failedCycles: options.cycles ?? 1,
+                  failureBuckets: [{ bucket: "transport", count: options.cycles ?? 1 }],
+                  acceptanceChecks: [{ checkId: "network-controls", passed: 0, failed: options.cycles ?? 1, skipped: 0 }],
+                })),
+              } as any;
+            }
           }
-        }
-        return createDeps().runBrowserTransportSoakViaCli(options);
+          return createDeps().runBrowserTransportSoakViaCli(options);
+        },
       },
-    }),
+      [passingRealLlmAcceptanceRecord()]
+    ),
   });
 
   assert.equal(response.res.statusCode, 200);

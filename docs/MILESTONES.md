@@ -49,7 +49,7 @@
 - runtime hard-points parity 的五个 pack 已全部进主干
 - `Runtime Observability v1.x` 已覆盖 flow / replay / recovery / live role/worker/browser
 - bounded regression、browser soak、runtime/operator acceptance 已覆盖 browser / recovery / context / parallel / governance / runtime 主线
-- validation-ops 已能汇总 Phase 1 readiness gates：phase1-e2e profile、release-readiness、relay/direct-cdp transport soak、acceptance/realworld/soak series
+- validation-ops 已能汇总 Phase 1 readiness gates：phase1-e2e profile、真实 LLM acceptance、release-readiness、relay/direct-cdp transport soak、acceptance/realworld/soak series
 - real-world runbook 已接入 north-star closed-loop 指标：completed / actionable 计入闭环，silent_failure / ambiguous_failure 作为 Phase 1 收尾阻断信号
 - 当前判断：进入同场景 end-to-end 验收、failure injection 和 real-world validation，不直接切入 `Phase 2`
 

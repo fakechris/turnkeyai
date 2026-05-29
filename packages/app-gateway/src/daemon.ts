@@ -26,6 +26,7 @@ import type {
   RuntimeSummaryReport,
   ScheduledTaskRecord,
   SummaryBuilder,
+  ValidationOpsRunType,
   WorkerSessionState,
 } from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
@@ -860,9 +861,7 @@ function createIdGenerator(): IdGenerator {
   };
 }
 
-function createValidationOpsRunId(
-  kind: "release-readiness" | "validation-profile" | "soak-series" | "transport-soak" | "phase1-baseline"
-): string {
+function createValidationOpsRunId(kind: ValidationOpsRunType): string {
   return `validation-ops:${kind}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 }
 

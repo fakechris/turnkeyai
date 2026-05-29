@@ -219,6 +219,59 @@ export function buildValidationOpsRecordFromPhase1Baseline(input: {
   };
 }
 
+export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
+  runId: string;
+  startedAt: number;
+  completedAt: number;
+  status: "passed" | "failed";
+  tooluseScenarios: string[];
+  missionScenarios: string[];
+  browserTooluseEnabled: boolean;
+  error?: string;
+}): ValidationOpsRunRecord {
+  const totalCases = input.tooluseScenarios.length + input.missionScenarios.length;
+  const commandHint = "npm run acceptance:real -- --model-catalog models.local.json";
+  const issues = input.status === "failed"
+    ? [
+        buildValidationOpsIssue({
+          issueId: `${input.runId}:real-llm-acceptance`,
+          kind: "real-llm-gate",
+          scope: "real-llm-acceptance",
+          summary: input.error ? `Real LLM acceptance failed: ${input.error}` : "Real LLM acceptance failed.",
+          commandHint,
+        }),
+      ]
+    : [];
+
+  return {
+    runId: input.runId,
+    runType: "real-llm-acceptance",
+    title: "Real LLM acceptance",
+    status: input.status,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt,
+    durationMs: input.completedAt - input.startedAt,
+    issueCount: issues.length,
+    selectors: [
+      ...input.tooluseScenarios.map((scenario) => `tooluse:${scenario}`),
+      ...input.missionScenarios.map((scenario) => `mission:${scenario}`),
+      input.browserTooluseEnabled ? "browser-tooluse" : "browser-tooluse-skipped",
+    ],
+    closedLoop: buildClosedLoopMetric({
+      closedLoopStatus: input.status === "passed" ? "completed" : "actionable",
+      rerunCommand: commandHint,
+      totalCases,
+      ...(input.status === "passed"
+        ? {}
+        : {
+            manualGateReason: input.error ?? "Real LLM acceptance failed; inspect the failing scenario output.",
+            failureBucket: "llm",
+          }),
+    }),
+    issues,
+  };
+}
+
 function buildValidationProfileIssueCommandHint(
   result: ValidationProfileRunResult,
   issue: ValidationProfileIssue
@@ -320,6 +373,13 @@ function buildPhase1ReadinessReport(records: ValidationOpsRunRecord[]): Validati
         record.runType === "validation-profile" && record.profileId === "phase1-e2e"
       ),
       missingSummary: "No phase1-e2e validation profile run has been recorded.",
+    }),
+    buildReadinessGate({
+      gateId: "real-llm-acceptance",
+      title: "Real LLM acceptance",
+      commandHint: "npm run acceptance:real -- --model-catalog models.local.json",
+      record: findLatestRecord(records, (record) => record.runType === "real-llm-acceptance"),
+      missingSummary: "No real LLM acceptance run has been recorded.",
     }),
     buildReadinessGate({
       gateId: "release-readiness",
@@ -492,7 +552,7 @@ function findLatestRecord(
 
 function buildValidationOpsIssue(input: {
   issueId: string;
-  kind: ValidationProfileIssue["kind"] | "release-check" | "soak-suite" | "transport-target" | "baseline-run";
+  kind: ValidationOpsIssueRecord["kind"];
   scope: string;
   summary: string;
   commandHint: string;
@@ -529,6 +589,9 @@ function deriveValidationOpsBucket(
   if (kind === "baseline-run") {
     return "baseline";
   }
+  if (kind === "real-llm-gate") {
+    return "llm";
+  }
 
   const suiteId = scope.split(":")[0];
   switch (suiteId) {
@@ -561,6 +624,9 @@ function deriveValidationIssueSeverity(
   if (kind === "baseline-run") {
     return "critical";
   }
+  if (kind === "real-llm-gate") {
+    return "critical";
+  }
   return bucket === "operator" || bucket === "browser" ? "critical" : "warning";
 }
 
@@ -574,6 +640,8 @@ function deriveValidationRecommendedAction(kind: ValidationOpsIssueRecord["kind"
       return "rerun-transport-soak";
     case "baseline-run":
       return "rerun-baseline";
+    case "real-llm-gate":
+      return "rerun-real-acceptance";
     case "validation-item":
     default:
       return "rerun-profile";
