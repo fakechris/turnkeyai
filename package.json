@@ -22,7 +22,7 @@
     "tooluse:e2e": "tsx scripts/tool-use-e2e.ts",
     "tooluse:e2e:real-matrix": "tsx scripts/tool-use-e2e.ts --real-llm-matrix",
     "mission:e2e": "tsx scripts/mission-tool-use-e2e.ts",
-    "mission:e2e:matrix": "tsx scripts/mission-tool-use-e2e.ts --matrix-scenarios basic,comparison,followup,cancel,approval",
+    "mission:e2e:matrix": "tsx scripts/mission-tool-use-e2e.ts --matrix-scenarios basic,comparison,followup,cancel,approval,browser-dynamic",
     "control-center:smoke": "tsx scripts/control-center-ui-smoke.ts",
     "pack:cli": "npm pack --workspace @turnkeyai/cli --dry-run",
     "release:verify": "tsx scripts/release-readiness.ts",
