@@ -33,6 +33,10 @@ export interface DiagnosticsRouteDeps {
   processStartedAtMs: number;
   /** Transport descriptor (mode + label) from the active browser bridge. */
   transport: { mode: string; label: string };
+  /** Direct-CDP endpoint when configured. Used only for readiness hints. */
+  directCdpEndpoint?: string | null;
+  /** Whether a relay endpoint was configured at daemon startup. */
+  relayEndpointConfigured?: boolean;
   /** Auth mode reported by daemon-auth. */
   authMode: "disabled" | "token" | "token-layered";
   /**
@@ -48,6 +52,16 @@ export interface DiagnosticsRouteDeps {
     relayPeerCount: number;
     relayTargetCount: number;
   }>;
+}
+
+export type DiagnosticsReadinessStatus = "ok" | "warn" | "error";
+
+export interface DiagnosticsReadinessCheck {
+  id: string;
+  label: string;
+  status: DiagnosticsReadinessStatus;
+  detail: string;
+  action?: string;
 }
 
 const DEFAULT_LOG_LIMIT = 200;
@@ -90,6 +104,7 @@ async function handleDiagnosticsSnapshot(
   }
 
   const logFileStat = await stat(deps.logFile).catch(() => null);
+  const readiness = await buildReadinessChecks(deps, logFileStat);
 
   const snapshot = {
     daemon: {
@@ -120,6 +135,10 @@ async function handleDiagnosticsSnapshot(
       platform: process.platform,
       arch: process.arch,
     },
+    readiness: {
+      status: summarizeReadiness(readiness),
+      checks: readiness,
+    },
   };
 
   if (req.method === "HEAD") {
@@ -130,6 +149,229 @@ async function handleDiagnosticsSnapshot(
   }
   sendJson(res, 200, snapshot);
   return true;
+}
+
+async function buildReadinessChecks(
+  deps: DiagnosticsRouteDeps,
+  logFileStat: Awaited<ReturnType<typeof stat>> | null
+): Promise<DiagnosticsReadinessCheck[]> {
+  const checks: DiagnosticsReadinessCheck[] = [
+    {
+      id: "daemon",
+      label: "Daemon",
+      status: "ok",
+      detail: `Listening on port ${deps.port}.`,
+    },
+    buildAuthReadiness(deps.authMode),
+    await buildModelCatalogReadiness(deps.modelCatalogPath),
+    buildBrowserTransportReadiness(deps),
+    await buildLogFileReadiness(deps.logFile, logFileStat),
+  ];
+  return checks;
+}
+
+function buildAuthReadiness(authMode: DiagnosticsRouteDeps["authMode"]): DiagnosticsReadinessCheck {
+  if (authMode === "disabled") {
+    return {
+      id: "auth",
+      label: "Control Center auth",
+      status: "warn",
+      detail: "Daemon auth is disabled.",
+      action: "Enable token auth before using this daemon beyond local development.",
+    };
+  }
+  return {
+    id: "auth",
+    label: "Control Center auth",
+    status: "ok",
+    detail: `${authMode} auth is active.`,
+    action: "Open through turnkeyai app, npx @turnkeyai/cli app, or npm run app -- --no-open so the token is injected.",
+  };
+}
+
+async function buildModelCatalogReadiness(modelCatalogPath: string | null): Promise<DiagnosticsReadinessCheck> {
+  if (!modelCatalogPath) {
+    return {
+      id: "model_catalog",
+      label: "Model catalog",
+      status: "warn",
+      detail: "No model catalog is configured, so live LLM runs fall back to deterministic local behavior.",
+      action: "Configure a model catalog before production task runs.",
+    };
+  }
+  const catalogStat = await stat(modelCatalogPath).catch(() => null);
+  if (!catalogStat) {
+    return {
+      id: "model_catalog",
+      label: "Model catalog",
+      status: "error",
+      detail: `Configured model catalog is not readable: ${modelCatalogPath}.`,
+      action: "Fix the path or regenerate the model catalog.",
+    };
+  }
+  if (!catalogStat.isFile()) {
+    return {
+      id: "model_catalog",
+      label: "Model catalog",
+      status: "error",
+      detail: `Configured model catalog is not a file: ${modelCatalogPath}.`,
+      action: "Point the daemon at a JSON model catalog file.",
+    };
+  }
+  const readError = await checkFileReadable(modelCatalogPath);
+  if (readError) {
+    return {
+      id: "model_catalog",
+      label: "Model catalog",
+      status: "error",
+      detail: `Configured model catalog cannot be read: ${readError}.`,
+      action: "Fix file permissions or regenerate the model catalog.",
+    };
+  }
+  return {
+    id: "model_catalog",
+    label: "Model catalog",
+    status: "ok",
+    detail: `Using ${modelCatalogPath}.`,
+  };
+}
+
+function buildBrowserTransportReadiness(deps: DiagnosticsRouteDeps): DiagnosticsReadinessCheck {
+  if (deps.transport.mode === "direct-cdp") {
+    if (deps.directCdpEndpoint?.trim()) {
+      return {
+        id: "browser_transport",
+        label: "Browser transport",
+        status: "ok",
+        detail: `Direct CDP endpoint configured: ${sanitizeCdpEndpointForDiagnostics(deps.directCdpEndpoint)}.`,
+      };
+    }
+    return {
+      id: "browser_transport",
+      label: "Browser transport",
+      status: "warn",
+      detail: "Direct CDP transport is active but no endpoint is visible in diagnostics.",
+      action: "Check TURNKEYAI_BROWSER_CDP_ENDPOINT if expert-lane browser work fails.",
+    };
+  }
+
+  if (deps.transport.mode === "relay") {
+    const check: DiagnosticsReadinessCheck = {
+      id: "browser_transport",
+      label: "Browser transport",
+      status: deps.relayEndpointConfigured ? "ok" : "warn",
+      detail: deps.relayEndpointConfigured
+        ? `Relay transport configured: ${deps.transport.label}.`
+        : "Relay transport is active without a configured relay endpoint.",
+    };
+    if (!deps.relayEndpointConfigured) {
+      check.action = "Set relay configuration or switch to local/direct-CDP transport.";
+    }
+    return {
+      ...check,
+    };
+  }
+
+  return {
+    id: "browser_transport",
+    label: "Browser transport",
+    status: "ok",
+    detail: `${deps.transport.label} is active.`,
+  };
+}
+
+function buildLogFileReadiness(
+  logFile: string,
+  logFileStat: Awaited<ReturnType<typeof stat>> | null
+): Promise<DiagnosticsReadinessCheck> {
+  if (!logFileStat) {
+    return Promise.resolve({
+      id: "log_file",
+      label: "Daemon log",
+      status: "warn",
+      detail: `Log file is not readable yet: ${logFile}.`,
+      action: "This is normal for foreground dev runs until the daemon emits logs.",
+    });
+  }
+  return checkFileReadable(logFile).then((readError) => {
+    if (readError) {
+      return {
+        id: "log_file",
+        label: "Daemon log",
+        status: "error",
+        detail: `Log file exists but cannot be read: ${readError}.`,
+        action: "Fix daemon log permissions or restart the daemon with a writable runtime root.",
+      };
+    }
+    return {
+      id: "log_file",
+      label: "Daemon log",
+      status: "ok",
+      detail: `${Math.round(Number(logFileStat.size) / 1024)} KiB at ${logFile}.`,
+    };
+  });
+}
+
+async function checkFileReadable(filePath: string): Promise<string | null> {
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(filePath, "r");
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+function summarizeReadiness(checks: readonly DiagnosticsReadinessCheck[]): DiagnosticsReadinessStatus {
+  if (checks.some((check) => check.status === "error")) return "error";
+  if (checks.some((check) => check.status === "warn")) return "warn";
+  return "ok";
+}
+
+export function sanitizeCdpEndpointForDiagnostics(endpoint: string): string {
+  const trimmed = endpoint.trim();
+  if (!trimmed) return "(empty)";
+  const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+  try {
+    const url = new URL(hasProtocol ? trimmed : `http://${trimmed}`);
+    if (url.username) url.username = "redacted";
+    if (url.password) url.password = "redacted";
+    url.pathname = url.pathname
+      .split("/")
+      .map((segment) => (shouldRedactEndpointPathSegment(segment) ? "redacted" : segment))
+      .join("/");
+    if (url.search) url.search = "?redacted";
+    url.hash = "";
+    const sanitized = url.toString();
+    return hasProtocol ? sanitized : sanitized.replace(/^http:\/\//, "");
+  } catch {
+    return "[invalid endpoint redacted]";
+  }
+}
+
+function shouldRedactEndpointPathSegment(segment: string): boolean {
+  if (!segment) return false;
+  const decoded = safeDecodeURIComponent(segment);
+  if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(decoded)) {
+    return true;
+  }
+  if (/^[a-f0-9]{24,}$/i.test(decoded)) {
+    return true;
+  }
+  if (/^[A-Za-z0-9._~+=-]{16,}$/.test(decoded)) {
+    return true;
+  }
+  return false;
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 async function handleDiagnosticsLogs(

@@ -520,6 +520,8 @@ const server = http.createServer(async (req, res) => {
             mode: browserBridge.transportMode,
             label: browserBridge.transportLabel,
           },
+          directCdpEndpoint: DIRECT_CDP_ENDPOINT,
+          relayEndpointConfigured: RELAY_ENDPOINT_CONFIGURED,
           authMode: DAEMON_AUTH.authMode,
           // Tokens the daemon was configured with — passed in so the log
           // redactor can strip literal occurrences before serving log

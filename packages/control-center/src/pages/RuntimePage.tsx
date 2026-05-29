@@ -1,15 +1,8 @@
 // Runtime — operator surface for bridge / transport / sessions /
 // diagnostics / logs.
 //
-// K1 mixes real and mock data:
-//   - Metrics tile derives from /diagnostics + /bridge/status (real)
-//   - Daemon log tail comes from /diagnostics/logs?limit=200 (real)
-//   - Browser sessions table uses the mock (the daemon's listSessions
-//     returns the right shape but isn't exposed at a stable read route
-//     yet — coming in K2's Mission Data Model)
-//   - Recovery cases use the mock (no real `/recovery-runs` enumeration
-//     for the dashboard yet)
-// Each mock-fed section is annotated below.
+// Live operator diagnostics. Sections without a stable read endpoint still
+// render as explicitly-labeled placeholders rather than fixture data.
 
 import { useState } from "react";
 
@@ -117,6 +110,7 @@ export function RuntimePage() {
       <div className="runtime-grid">
         <div>
           <MetricTiles live={live} />
+          <SetupHealthCard diagnostics={live.diagnostics} reachable={live.reachable} />
           <BrowserSessionsCard />
           <DaemonLogCard logs={live.logs} reachable={live.reachable} />
         </div>
@@ -185,6 +179,71 @@ function buildLiveTiles(live: Live): Array<{ l: string; v: string; d: string }> 
       d: s?.relay.lastHeartbeatAgeMs != null ? `hb ${Math.round(s.relay.lastHeartbeatAgeMs / 1000)}s ago` : "no relay",
     },
   ];
+}
+
+function SetupHealthCard({
+  diagnostics,
+  reachable,
+}: {
+  diagnostics: DiagnosticsSnapshot | null;
+  reachable: boolean;
+}) {
+  const readiness = diagnostics?.readiness;
+  const checks = readiness?.checks ?? [];
+  const title = setupHealthTitle(readiness?.status, reachable);
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="card-hd">
+        <Icon name="diagnose" size={13} />
+        <h3>Setup health</h3>
+        <span className={`tag ${readinessStatusTone(readiness?.status)}`} style={{ marginLeft: "auto" }}>
+          {title}
+        </span>
+      </div>
+      {checks.length > 0 ? (
+        <div style={{ display: "grid" }}>
+          {checks.map((check) => (
+            <div
+              key={check.id}
+              className="runtime-health-row"
+              data-status={check.status}
+            >
+              <span className={`status-dot ${readinessDotClass(check.status)}`} />
+              <div style={{ minWidth: 0 }}>
+                <div className="runtime-health-label">{check.label}</div>
+                <div className="runtime-health-detail">{check.detail}</div>
+                {check.action ? <div className="runtime-health-action">{check.action}</div> : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="muted" style={{ padding: 14, fontSize: 12 }}>
+          {reachable ? "Waiting for readiness checks…" : "Connect to the daemon to see setup health."}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function setupHealthTitle(status: "ok" | "warn" | "error" | undefined, reachable: boolean): string {
+  if (status === "error") return "Action needed";
+  if (status === "warn") return "Needs attention";
+  if (status === "ok") return "Ready";
+  return reachable ? "Checking" : "Offline";
+}
+
+function readinessStatusTone(status: "ok" | "warn" | "error" | undefined): string {
+  if (status === "error") return "danger";
+  if (status === "warn") return "warning";
+  if (status === "ok") return "success";
+  return "info";
+}
+
+function readinessDotClass(status: "ok" | "warn" | "error"): string {
+  if (status === "error") return "blocked";
+  if (status === "warn") return "needs_approval";
+  return "working";
 }
 
 function formatUptimeShort(ms: number): string {

@@ -9,6 +9,7 @@ import { Readable } from "node:stream";
 import {
   handleDiagnosticsRoutes,
   redactLogLine,
+  sanitizeCdpEndpointForDiagnostics,
   tailFile,
   type DiagnosticsRouteDeps,
 } from "./diagnostics-routes";
@@ -143,6 +144,110 @@ describe("diagnostics-routes", () => {
         relayPeerCount: 0,
         relayTargetCount: 0,
       });
+    });
+
+    it("reports model catalog readiness as warn when no catalog is configured", async () => {
+      const { res, getJson } = createResponse();
+      await handleDiagnosticsRoutes({
+        req: createRequest({ method: "GET", url: "/diagnostics" }),
+        res,
+        url: new URL("http://127.0.0.1/diagnostics"),
+        deps: makeDeps({ modelCatalogPath: null }),
+      });
+      const body = getJson() as {
+        readiness: { status: string; checks: Array<{ id: string; status: string; action?: string }> };
+      };
+      const catalog = body.readiness.checks.find((check) => check.id === "model_catalog");
+      assert.equal(body.readiness.status, "warn");
+      assert.equal(catalog?.status, "warn");
+      assert.match(catalog?.action ?? "", /Configure a model catalog/);
+    });
+
+    it("reports model catalog readiness as error when the configured file is missing", async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "tk-diag-missing-models-"));
+      const missingFile = path.join(dir, "models.json");
+      try {
+        const { res, getJson } = createResponse();
+        await handleDiagnosticsRoutes({
+          req: createRequest({ method: "GET", url: "/diagnostics" }),
+          res,
+          url: new URL("http://127.0.0.1/diagnostics"),
+          deps: makeDeps({ modelCatalogPath: missingFile }),
+        });
+        const body = getJson() as {
+          readiness: { status: string; checks: Array<{ id: string; status: string; detail: string }> };
+        };
+        const catalog = body.readiness.checks.find((check) => check.id === "model_catalog");
+        assert.equal(body.readiness.status, "error");
+        assert.equal(catalog?.status, "error");
+        assert.match(catalog?.detail ?? "", /not readable/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("reports model catalog readiness as ok when the configured file exists", async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "tk-diag-models-"));
+      const file = path.join(dir, "models.json");
+      writeFileSync(file, JSON.stringify({ models: [] }));
+      try {
+        const { res, getJson } = createResponse();
+        await handleDiagnosticsRoutes({
+          req: createRequest({ method: "GET", url: "/diagnostics" }),
+          res,
+          url: new URL("http://127.0.0.1/diagnostics"),
+          deps: makeDeps({ modelCatalogPath: file, logFile: file }),
+        });
+        const body = getJson() as {
+          readiness: { status: string; checks: Array<{ id: string; status: string }> };
+        };
+        const catalog = body.readiness.checks.find((check) => check.id === "model_catalog");
+        assert.equal(body.readiness.status, "ok");
+        assert.equal(catalog?.status, "ok");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("surfaces direct-CDP endpoint readiness hints without leaking tokens", async () => {
+      const { res, getJson } = createResponse();
+      await handleDiagnosticsRoutes({
+        req: createRequest({ method: "GET", url: "/diagnostics" }),
+        res,
+        url: new URL("http://127.0.0.1/diagnostics"),
+        deps: makeDeps({
+          transport: { mode: "direct-cdp", label: "direct-cdp" },
+          directCdpEndpoint: "http://127.0.0.1:9222",
+        }),
+      });
+      const body = getJson() as {
+        readiness: { checks: Array<{ id: string; status: string; detail: string }> };
+      };
+      const transport = body.readiness.checks.find((check) => check.id === "browser_transport");
+      assert.equal(transport?.status, "ok");
+      assert.match(transport?.detail ?? "", /127\.0\.0\.1:9222/);
+    });
+
+    it("redacts sensitive direct-CDP endpoint query and path tokens in readiness hints", async () => {
+      const { res, getJson, getBody } = createResponse();
+      await handleDiagnosticsRoutes({
+        req: createRequest({ method: "GET", url: "/diagnostics" }),
+        res,
+        url: new URL("http://127.0.0.1/diagnostics"),
+        deps: makeDeps({
+          transport: { mode: "direct-cdp", label: "direct-cdp" },
+          directCdpEndpoint:
+            "wss://browser.example.com/devtools/browser/123e4567-e89b-12d3-a456-426614174000?token=secret-session-token",
+        }),
+      });
+      const body = getJson() as {
+        readiness: { checks: Array<{ id: string; status: string; detail: string }> };
+      };
+      const transport = body.readiness.checks.find((check) => check.id === "browser_transport");
+      assert.equal(transport?.status, "ok");
+      assert.match(transport?.detail ?? "", /wss:\/\/browser\.example\.com\/devtools\/browser\/redacted\?redacted/);
+      assert.ok(!getBody().includes("secret-session-token"), "diagnostics must not expose CDP query tokens");
+      assert.ok(!getBody().includes("123e4567-e89b-12d3-a456-426614174000"), "diagnostics must not expose CDP session ids");
     });
 
     it("supports HEAD with no body", async () => {
@@ -429,6 +534,23 @@ describe("diagnostics-routes", () => {
       } finally {
         log.cleanup();
       }
+    });
+  });
+
+  describe("sanitizeCdpEndpointForDiagnostics", () => {
+    it("preserves plain host endpoints", () => {
+      assert.equal(sanitizeCdpEndpointForDiagnostics("127.0.0.1:9222"), "127.0.0.1:9222/");
+    });
+
+    it("redacts userinfo, long path tokens, query strings, and fragments", () => {
+      const sanitized = sanitizeCdpEndpointForDiagnostics(
+        "https://user:pass@browser.example.com/session/abcdef1234567890abcdef1234567890?api_key=secret#frag"
+      );
+      assert.equal(sanitized, "https://redacted:redacted@browser.example.com/session/redacted?redacted");
+    });
+
+    it("does not echo malformed endpoint text", () => {
+      assert.equal(sanitizeCdpEndpointForDiagnostics("http://[bad endpoint"), "[invalid endpoint redacted]");
     });
   });
 
