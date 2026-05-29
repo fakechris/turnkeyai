@@ -648,6 +648,113 @@ a { color: inherit; text-decoration: none; }
   background: var(--surface);
   overflow: hidden;
 }
+.mission-evidence-card {
+  padding: 0;
+  margin-bottom: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.mission-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+.mission-evidence-column {
+  min-width: 0;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  overflow: hidden;
+}
+.mission-evidence-column-head {
+  min-height: 34px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-faint);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.mission-evidence-column-head .mono {
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 400;
+}
+.mission-evidence-list {
+  display: grid;
+  gap: 0;
+}
+.mission-evidence-line,
+.mission-evidence-empty {
+  min-height: 52px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-faint);
+}
+.mission-evidence-line:first-child,
+.mission-evidence-empty:first-child {
+  border-top: 0;
+}
+.mission-evidence-empty {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.mission-evidence-line {
+  display: grid;
+  gap: 5px;
+}
+.mission-evidence-line-main,
+.mission-evidence-line-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mission-evidence-line-main {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.mission-evidence-line-main > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mission-evidence-line-meta {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+.mission-evidence-line-meta > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mission-evidence-kind {
+  flex-shrink: 0;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.mission-evidence-line[data-status="pending"] .mission-evidence-line-meta span:last-child {
+  color: var(--warning);
+}
+.mission-evidence-line[data-status="approved"] .mission-evidence-line-meta span:last-child {
+  color: var(--success);
+}
+.mission-evidence-line[data-status="denied"] .mission-evidence-line-meta span:last-child {
+  color: var(--danger);
+}
+@media (max-width: 980px) {
+  .mission-evidence-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .mission-quality-pill {
   border: 1px solid var(--border-faint);
   border-radius: var(--r-sm);
