@@ -27,6 +27,7 @@ interface MissionScenarioReportShape {
       waiting?: unknown;
       stale?: unknown;
     };
+    qualityChecks?: unknown;
     evidenceEvents?: unknown;
     recoveryEvents?: unknown;
   };
@@ -66,6 +67,10 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       livenessActive: 0,
       livenessWaiting: 0,
       livenessStale: 0,
+      qualityCheckWarnings: 0,
+      qualityCheckFailures: 0,
+      sourceCoverageWarnings: 0,
+      sourceCoverageFailures: 0,
       evidenceEvents: 0,
       recoveryEvents: 0,
     };
@@ -96,6 +101,15 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       summary.livenessActive += readNumber(scenario.metrics?.liveness?.active);
       summary.livenessWaiting += readNumber(scenario.metrics?.liveness?.waiting);
       summary.livenessStale += readNumber(scenario.metrics?.liveness?.stale);
+      const qualityChecks = readQualityChecks(scenario.metrics?.qualityChecks);
+      summary.qualityCheckWarnings += qualityChecks.filter((check) => check.status === "warn").length;
+      summary.qualityCheckFailures += qualityChecks.filter((check) => check.status === "fail").length;
+      summary.sourceCoverageWarnings += qualityChecks.filter(
+        (check) => check.name === "source_coverage" && check.status === "warn"
+      ).length;
+      summary.sourceCoverageFailures += qualityChecks.filter(
+        (check) => check.name === "source_coverage" && check.status === "fail"
+      ).length;
       summary.evidenceEvents += readNumber(scenario.metrics?.evidenceEvents);
       summary.recoveryEvents += readNumber(scenario.metrics?.recoveryEvents);
       return summary;
@@ -119,6 +133,10 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       livenessActive: 0,
       livenessWaiting: 0,
       livenessStale: 0,
+      qualityCheckWarnings: 0,
+      qualityCheckFailures: 0,
+      sourceCoverageWarnings: 0,
+      sourceCoverageFailures: 0,
       evidenceEvents: 0,
       recoveryEvents: 0,
     }
@@ -135,4 +153,20 @@ function isMissionScenarioReportShape(value: unknown): value is MissionScenarioR
 
 function readNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function readQualityChecks(value: unknown): Array<{ name: string; status: string }> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (typeof item !== "object" || item === null) {
+      return [];
+    }
+    const candidate = item as { name?: unknown; status?: unknown };
+    if (typeof candidate.name !== "string" || typeof candidate.status !== "string") {
+      return [];
+    }
+    return [{ name: candidate.name, status: candidate.status }];
+  });
 }

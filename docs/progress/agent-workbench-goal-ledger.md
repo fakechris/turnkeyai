@@ -1905,3 +1905,49 @@ Regression Risk:
 - Risk: source labels that are too verbose or unstable could cause false
   attention warnings. The implementation limits matching to visible labels and
   keeps the result as `needs_attention`, not a hard `blocked` failure.
+
+## 2026-05-31 02:41 CST - Acceptance Quality Breakdown
+
+Direction: unknown
+
+Execution Kernel:
+- No agent, tool-use, worker, browser, approval, or mission completion
+  semantics changed.
+- Mission E2E reports now preserve mission quality-check names/status/details
+  from `/missions/:id/metrics`, so the real acceptance artifact carries the
+  same structured quality categories a user sees in Mission Detail.
+
+Result Quality:
+- Real acceptance summaries now aggregate total quality-check warnings,
+  quality-check failures, and source-coverage warnings/failures. This makes a
+  weak complex-task run diagnosable by failure class instead of only scenario
+  pass/fail count.
+- This checkpoint is still `unknown`: the change improves evidence reporting,
+  but the next convergence claim requires a focused real multi-source mission
+  run that exercises the source-coverage signal.
+
+Workbench UX:
+- Runtime Release acceptance rows now include quality check warn/fail counts
+  and source-coverage warn/fail counts next to scenario, liveness, tools, and
+  evidence totals.
+- The operator can see whether a real acceptance failure is about source
+  coverage without opening the JSON artifact first.
+
+Browser Reliability:
+- Browser runtime behavior did not change.
+- Browser-backed source coverage is more auditable when browser evidence
+  labels flow from mission metrics into real acceptance summaries.
+
+Acceptance Evidence:
+- Required local gates: mission report unit coverage, real acceptance summary
+  aggregation tests, validation-ops shape tests, Runtime UI smoke, typecheck,
+  build, full tests, and `git diff --check`.
+- No real LLM/browser acceptance ran at this checkpoint. The next required real
+  gate remains a multi-source mission where source coverage appears in both
+  Mission metrics and Runtime acceptance summary.
+
+Regression Risk:
+- The artifact shape is additive: older mission reports without
+  `qualityChecks` aggregate zero warning/failure counts.
+- Risk is limited to consumers that assume exact mission-report field sets;
+  typed Control Center and validation-ops tests cover the known consumers.

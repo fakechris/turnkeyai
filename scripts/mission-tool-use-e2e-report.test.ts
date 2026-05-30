@@ -43,6 +43,10 @@ describe("mission tool-use e2e report", () => {
           waiting: 0,
           stale: 0,
         },
+        qualityChecks: [
+          { name: "final_answer", status: "pass", detail: "Lead final answer is present." },
+          { name: "source_coverage", status: "pass", detail: "Final answer covers both source labels." },
+        ],
         evidenceEvents: 2,
         recoveryEvents: 0,
       },
@@ -136,6 +140,10 @@ function fakeResult(): MissionScenarioResult {
       qualityGate: {
         status: "passed",
         evidenceEvents: 2,
+        checks: [
+          { name: "final_answer", status: "pass", detail: "Lead final answer is present." },
+          { name: "source_coverage", status: "pass", detail: "Final answer covers both source labels." },
+        ],
       },
     },
     final: {

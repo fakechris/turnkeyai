@@ -686,6 +686,14 @@ try {
       "release acceptance should surface real mission quality failure count"
     );
     assert(
+      await page.locator(".card", { hasText: "checks warn/fail 1/0" }).isVisible(),
+      "release acceptance should surface real mission quality-check warning count"
+    );
+    assert(
+      await page.locator(".card", { hasText: "source coverage 1/0" }).isVisible(),
+      "release acceptance should surface real mission source-coverage warning count"
+    );
+    assert(
       await page.locator(".card", { hasText: "liveness 0/0/0" }).isVisible(),
       "release acceptance should surface real mission liveness summary"
     );
@@ -1953,6 +1961,10 @@ function validationOpsFixture() {
             livenessActive: 0,
             livenessWaiting: 0,
             livenessStale: 0,
+            qualityCheckWarnings: 1,
+            qualityCheckFailures: 0,
+            sourceCoverageWarnings: 1,
+            sourceCoverageFailures: 0,
             evidenceEvents: 9,
             recoveryEvents: 0,
           },
