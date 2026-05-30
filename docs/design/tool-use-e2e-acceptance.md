@@ -132,6 +132,14 @@ browser-dynamic scenario:
 npm run acceptance:real -- --model-catalog models.local.json --skip-browser-tooluse
 ```
 
+For focused quality-signal validation after a reporting or Mission metrics
+change, skip the tool-use leg and run only the mission scenarios that exercise
+the signal. This still records validation-ops and the mission JSON artifact:
+
+```bash
+npm run acceptance:real -- --skip-tooluse --mission-scenarios comparison,realistic-brief --model-catalog models.local.json --scenario-timeout-ms 300000
+```
+
 ## Mission Route Path
 
 Run:

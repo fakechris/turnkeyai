@@ -1951,3 +1951,50 @@ Regression Risk:
   `qualityChecks` aggregate zero warning/failure counts.
 - Risk is limited to consumers that assume exact mission-report field sets;
   typed Control Center and validation-ops tests cover the known consumers.
+
+## 2026-05-31 02:50 CST - Focused Real Acceptance Mission Mode
+
+Direction: unknown
+
+Execution Kernel:
+- No agent, tool-use, worker, browser, approval, or mission completion
+  semantics changed.
+- `acceptance:real` now supports `--skip-tooluse`, allowing a focused
+  mission-only real acceptance run for quality-signal validation while leaving
+  the default full release gate unchanged.
+
+Result Quality:
+- This reduces the cost of validating source coverage and multi-source final
+  answer behavior after Mission metrics or reporting changes.
+- This checkpoint is still `unknown` until the focused real acceptance command
+  is actually run against a model and, when required, browser-backed mission
+  scenarios.
+
+Workbench UX:
+- Runtime and validation-ops can now receive a smaller, targeted real
+  acceptance record for mission-only gates instead of waiting for the full
+  tool-use + mission matrix.
+- The documented focused commands make it clearer which real scenario proves a
+  quality-signal change.
+
+Browser Reliability:
+- Browser runtime behavior did not change.
+- Browser-focused validation can now run `browser-dashboard` or
+  `realistic-brief` through `acceptance:real --skip-tooluse`, keeping browser
+  evidence in the mission artifact without forcing the provider-native browser
+  tool-use leg.
+
+Acceptance Evidence:
+- Required local gates: argument/plan unit tests, typecheck, build, relevant
+  docs, ledger check, full tests, and `git diff --check`.
+- No real LLM/browser acceptance ran at this checkpoint. Next required real
+  gate: `npm run acceptance:real -- --skip-tooluse --mission-scenarios
+  comparison,realistic-brief --model-catalog models.local.json
+  --scenario-timeout-ms 300000`.
+
+Regression Risk:
+- Default `acceptance:real` behavior is unchanged: without `--skip-tooluse`,
+  the tool-use matrix still runs before the mission matrix.
+- Validation-ops records for mission-only runs intentionally contain zero
+  tool-use scenarios and `browserTooluseEnabled=false`, so release dashboards
+  can distinguish focused gates from the full browser-inclusive release gate.

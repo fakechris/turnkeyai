@@ -138,6 +138,13 @@ npm run mission:e2e:matrix -- --model-catalog models.local.json --scenario-timeo
 npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 240000 --cdp-timeout-ms 45000
 ```
 
+For a focused browser/context quality gate after Mission metrics or acceptance
+reporting changes, use a mission-only real acceptance run:
+
+```bash
+npm run acceptance:real -- --skip-tooluse --mission-scenarios browser-dashboard,realistic-brief --model-catalog models.local.json --scenario-timeout-ms 300000
+```
+
 The `browser-dynamic` and `browser-dashboard` mission scenarios are the key
 user-facing gates for browser-as-context-source behavior. Direct-CDP smoke is
 the transport gate for expert-lane reliability.
