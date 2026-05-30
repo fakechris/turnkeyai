@@ -141,15 +141,19 @@ interface FetchJsonResult {
   error?: string;
 }
 
-async function fetchJson(url: string, token: string | null): Promise<FetchJsonResult> {
+async function fetchJson(url: string, token: string | null, timeoutMs = 1500): Promise<FetchJsonResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const headers: Record<string, string> = {};
     if (token) headers.authorization = `Bearer ${token}`;
-    const response = await fetch(url, { headers });
+    const response = await fetch(url, { headers, signal: controller.signal });
     if (!response.ok) return { ok: false, statusCode: response.status };
     return { ok: true, statusCode: response.status, json: await response.json() };
   } catch (error) {
     return { ok: false, error: errorMessage(error) };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
