@@ -7,7 +7,8 @@
 
 ## 1. Personas
 
-本项目当前面向 4 类用户。前 3 类是已支持的；第 4 类是未来目标，仍是非目标。
+本项目当前面向 4 类用户。前 3 类是 runtime / operator / external-agent
+入口；第 4 类是当前正在产品化的用户入口。
 
 ### 1.1 Runtime 开发者（项目自己）
 
@@ -28,11 +29,12 @@
 - 通过 daemon HTTP `bridge/*` 把浏览器当工具用
 - 不感知 daemon 内部的 team/role/worker 分层；只面对一组稳定的 `command / advanced / expert / batch` 工具
 
-### 1.4 桌面终端用户（**当前阶段非目标**）
+### 1.4 Mission Control 终端用户（当前 web workbench）
 
-- 期望：通过 Electron GUI 完成日常协作
-- 现状：未开始（README 与 VISION 都明确这一点）
-- 不应为这类用户提前冻结对外契约
+- 期望：通过友好的本地工作台创建任务、观察多 agent 协同、审批高风险动作、查看证据和最终结果
+- 当前入口：`turnkeyai app` / 双击 Mission Control launcher / daemon-served Control Center
+- 当前能力：First Run、Missions、Mission Detail、Approvals、Agents、Context、Agent Connect、Runtime、Settings
+- 边界：这是 daemon-served web workbench，不是 native Electron/Tauri shell；native desktop shell 仍是后续产品包装，不应提前冻结更多 OS 桌面能力契约
 
 ## 2. Capability Map
 
@@ -98,6 +100,13 @@
 - scenario-parity acceptance
 - `phase1-readiness` / `phase1-baseline`
 - `validation-ops` 把上面所有结果聚成 operator-facing 读数
+
+### 2.9 Mission Control local app entry
+- `turnkeyai app` 自动启动 daemon 并打开带 token 的 Mission Control URL
+- `turnkeyai app install-launcher` 安装可双击的本地 launcher
+- `turnkeyai daemon service install|status|uninstall` 提供 macOS LaunchAgent 持久 daemon 管理
+- Control Center no-token 页面提供 launcher、service、status 和 source-checkout fallback
+- `turnkeyai doctor` 检查 runtime、auth、model readiness、daemon readiness、relay extension，以及 macOS daemon service 状态
 
 ## 3. User Stories
 
@@ -252,7 +261,7 @@
 
 ## 5. Non-goals（当前阶段明确不做）
 
-1. Electron 桌面 shell 与对应业务 UI
+1. Native Electron/Tauri shell；当前只承诺 daemon-served Mission Control web workbench
 2. 多节点 / 跨机器 daemon 集群
 3. 通用 subagent runtime v2 / durable execution kernel
 4. 任意插件系统（worker / role / transport 都仍是有限 union）

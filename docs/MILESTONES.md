@@ -26,7 +26,7 @@
 | D | Browser Runtime v2 | 已完成 | bridge / relay / direct-cdp 长链 soak 继续 |
 | E | Context / Memory Runtime v2 | 已完成 | 高压预算与真实任务验收继续 |
 | F | QC / Replay Runtime | 已完成 | recovery / operator 可读性收尾 |
-| G | Desktop Product Shell | 未开始 | 未开始 |
+| G | Mission Control Product Shell | 已开始 | daemon-served web workbench 可用；native Electron/Tauri shell 未开始 |
 
 ## 分期策略
 
@@ -206,21 +206,30 @@
 - operator/runtime 主入口的长期值班易用性继续打磨
 - prompt / model / policy 对比与 compiler 级工作放到第二期
 
-## G. Desktop Product Shell
+## G. Mission Control Product Shell
 
-状态：未开始
+状态：已开始
 
-计划：
+已完成：
 
-- Electron shell
-- team/chat 界面
-- trace / replay 面板
-- browser session 面板
-- permission / screenshot / artifact surface
+- daemon-served React/Vite Mission Control shell
+- `turnkeyai app` 作为推荐本地入口，负责 auto-start daemon 并注入 token
+- 双击 launcher 安装与 source-checkout launcher fallback
+- macOS daemon LaunchAgent service install/status/uninstall
+- First Run、Missions、Mission Detail、Approvals、Agents、Context、Agent Connect、Runtime、Settings
+- Mission Detail 展示 tool trace、sub-agent sessions、browser continuity、context/evidence、recovery cases、final answer 和 follow-up
+- Runtime 页面展示 release acceptance、diagnostics、mission health、logs/reconcile 等 operator 入口
+- no-token 页面提供 launcher、service、status 与 source-checkout fallback
+
+仍未开始：
+
+- native Electron/Tauri shell
+- OS 桌面级控制面
+- 独立 native packaging / auto-update / menu tray
 
 ## 下一阶段重点
 
-当前不建议直接进入桌面壳，也不建议立刻切 Phase 2 kernel，而建议继续推进下面几条验证主轴：
+当前不建议直接进入 native 桌面壳，也不建议立刻切 Phase 2 kernel，而建议继续推进下面几条验证主轴：
 
 1. North-star closed-loop rate 作为 Phase 1 入口指标
 2. Browser bridge / relay / direct-cdp 长链真实任务验证
