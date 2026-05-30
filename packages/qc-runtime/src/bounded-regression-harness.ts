@@ -5549,6 +5549,259 @@ const BUILT_IN_CASES: RegressionCase[] = [
     },
   },
   {
+    caseId: "browser-continuity-hot-detach-reclaim-cold-reopen",
+    title: "Browser continuity survives hot attach, detach, reclaim, and cold reopen",
+    area: "browser",
+    summary:
+      "A long browser chain that starts with hot reuse, loses the target, fails a reconnect because the lease moved, and then cold-reopens should collapse into one recovered case.",
+    run() {
+      const records = [
+        {
+          replayId: "task-long-0:worker:worker:browser:task:task-long-0",
+          layer: "worker",
+          status: "completed",
+          recordedAt: 5,
+          threadId: "thread-1",
+          taskId: "task-long-0",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "browser hot attached to the existing target for the first step",
+          metadata: {
+            payload: {
+              sessionId: "browser-session-long",
+              targetId: "target-long-main",
+              transportMode: "direct-cdp",
+              transportLabel: "direct-cdp",
+              resumeMode: "hot",
+              targetResolution: "attach",
+            },
+          },
+        },
+        {
+          replayId: "task-long-1:worker:worker:browser:task:task-long-1",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 15,
+          threadId: "thread-1",
+          taskId: "task-long-1",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "browser target detached after hot reuse during the long chain",
+          failure: {
+            category: "stale_session",
+            layer: "worker",
+            retryable: true,
+            message: "target detached after hot attach",
+            recommendedAction: "resume",
+          },
+          metadata: {
+            payload: {
+              sessionId: "browser-session-long",
+              targetId: "target-long-main",
+              transportMode: "direct-cdp",
+              transportLabel: "direct-cdp",
+              resumeMode: "warm",
+              targetResolution: "reconnect",
+            },
+          },
+        },
+        {
+          replayId: "task-long-2:scheduled",
+          layer: "scheduled",
+          status: "completed",
+          recordedAt: 20,
+          threadId: "thread-1",
+          taskId: "task-long-2",
+          roleId: "role-operator",
+          summary: "detached-target reconnect attempt dispatched",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-long-1",
+              attemptId: "recovery:task-long-1:attempt:1",
+              dispatchReplayId: "task-long-2:scheduled",
+            },
+          },
+        },
+        {
+          replayId: "task-long-2:worker:worker:browser:task:task-long-2",
+          layer: "worker",
+          status: "failed",
+          recordedAt: 30,
+          threadId: "thread-1",
+          taskId: "task-long-2",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "warm reconnect was blocked after the lease moved to another worker",
+          failure: {
+            category: "stale_session",
+            layer: "worker",
+            retryable: true,
+            message: "lease holder changed before reconnect could attach",
+            recommendedAction: "fallback",
+          },
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-long-1",
+              attemptId: "recovery:task-long-1:attempt:1",
+              dispatchReplayId: "task-long-2:scheduled",
+            },
+            payload: {
+              sessionId: "browser-session-long",
+              targetId: "target-long-main",
+              transportMode: "direct-cdp",
+              transportLabel: "direct-cdp",
+              resumeMode: "warm",
+              targetResolution: "reconnect",
+            },
+          },
+        },
+        {
+          replayId: "task-long-3:scheduled",
+          layer: "scheduled",
+          status: "completed",
+          recordedAt: 35,
+          threadId: "thread-1",
+          taskId: "task-long-3",
+          roleId: "role-operator",
+          summary: "lease reclaim cold-reopen fallback dispatched",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-long-1",
+              attemptId: "recovery:task-long-1:attempt:2",
+              dispatchReplayId: "task-long-3:scheduled",
+            },
+          },
+        },
+        {
+          replayId: "task-long-3:worker:worker:browser:task:task-long-3",
+          layer: "worker",
+          status: "completed",
+          recordedAt: 50,
+          threadId: "thread-1",
+          taskId: "task-long-3",
+          roleId: "role-operator",
+          workerType: "browser",
+          summary: "cold reopen reclaimed continuity and completed the browser chain",
+          metadata: {
+            recoveryContext: {
+              parentGroupId: "task-long-1",
+              attemptId: "recovery:task-long-1:attempt:2",
+              dispatchReplayId: "task-long-3:scheduled",
+            },
+            payload: {
+              sessionId: "browser-session-long",
+              targetId: "target-long-reopen",
+              transportMode: "direct-cdp",
+              transportLabel: "direct-cdp",
+              resumeMode: "cold",
+              targetResolution: "reopen",
+            },
+          },
+        },
+      ] satisfies ReplayRecord[];
+
+      const existingRuns: RecoveryRun[] = [
+        {
+          recoveryRunId: buildRecoveryRunId("task-long-1"),
+          threadId: "thread-1",
+          sourceGroupId: "task-long-1",
+          taskId: "task-long-1",
+          roleId: "role-operator",
+          targetLayer: "worker",
+          targetWorker: "browser",
+          latestStatus: "failed",
+          status: "fallback_running",
+          nextAction: "fallback_transport",
+          autoDispatchReady: true,
+          requiresManualIntervention: false,
+          latestSummary: "lease reclaim cold-reopen fallback dispatched",
+          currentAttemptId: "recovery:task-long-1:attempt:2",
+          attempts: [
+            {
+              attemptId: "recovery:task-long-1:attempt:1",
+              action: "resume",
+              requestedAt: 20,
+              updatedAt: 30,
+              status: "failed",
+              nextAction: "fallback_transport",
+              summary: "lease holder changed before reconnect could attach",
+              completedAt: 30,
+              dispatchedTaskId: "task-long-2",
+              targetLayer: "worker",
+              targetWorker: "browser",
+              failure: {
+                category: "stale_session",
+                layer: "worker",
+                retryable: true,
+                message: "lease holder changed before reconnect could attach",
+                recommendedAction: "fallback",
+              },
+            },
+            {
+              attemptId: "recovery:task-long-1:attempt:2",
+              action: "fallback",
+              requestedAt: 35,
+              updatedAt: 36,
+              status: "fallback_running",
+              nextAction: "fallback_transport",
+              summary: "lease reclaim cold-reopen fallback dispatched",
+              dispatchedTaskId: "task-long-3",
+              targetLayer: "worker",
+              targetWorker: "browser",
+            },
+          ],
+          createdAt: 20,
+          updatedAt: 36,
+        },
+      ];
+
+      const recoveryRuns = buildRecoveryRuns(records, existingRuns, 100);
+      const run = recoveryRuns.find((entry) => entry.sourceGroupId === "task-long-1");
+      const bundle = buildReplayIncidentBundle(records, "task-long-1");
+      const replayConsole = buildReplayConsoleReport(records, 10);
+      const resolvedBundles = replayConsole.latestResolvedBundles.filter((entry) => entry.groupId === "task-long-1");
+      const operatorSummary = buildOperatorSummaryReport({
+        flows: [],
+        permissionRecords: [],
+        events: [],
+        replays: records,
+        recoveryRuns,
+      });
+      const resolvedByKey = Object.fromEntries(
+        (operatorSummary.attentionOverview?.resolvedRecentCases ?? []).map((entry) => [entry.caseKey, entry])
+      );
+      const details = [
+        `run=${run?.status ?? "-"}`,
+        `attempt1=${run?.attempts[0]?.status ?? "-"}`,
+        `attempt2=${run?.attempts[1]?.browserOutcome ?? "-"}`,
+        `open=${replayConsole.openIncidents}`,
+        `resolved=${resolvedBundles.length}`,
+        `followUpClosed=${bundle?.followUpSummary?.closedGroups ?? "-"}`,
+        `state=${bundle?.browserContinuity?.state ?? "-"}`,
+        `resolution=${bundle?.browserContinuity?.targetResolution ?? "-"}`,
+        `target=${bundle?.browserContinuity?.targetId ?? "-"}`,
+        `activeCases=${operatorSummary.attentionOverview?.activeCases?.length ?? 0}`,
+      ];
+      const passed =
+        run?.status === "recovered" &&
+        run?.attempts[0]?.status === "failed" &&
+        run?.attempts[1]?.browserOutcome === "cold_reopen" &&
+        replayConsole.browserContinuityCounts.stable === 1 &&
+        replayConsole.openIncidents === 0 &&
+        resolvedBundles.length === 1 &&
+        bundle?.recoveryWorkflow?.status === "recovered" &&
+        bundle?.followUpSummary?.closedGroups === 1 &&
+        bundle?.followUpSummary?.browserContinuityCounts.recovered === 1 &&
+        bundle?.browserContinuity?.state === "recovered" &&
+        bundle?.browserContinuity?.targetResolution === "reopen" &&
+        bundle?.browserContinuity?.targetId === "target-long-reopen" &&
+        (operatorSummary.attentionOverview?.activeCases?.length ?? 0) === 0 &&
+        resolvedByKey["incident:task-long-1"]?.browserContinuityState === "recovered" &&
+        resolvedByKey["incident:task-long-1"]?.browserTransportLabel === "direct-cdp";
+      return buildResult(this, Boolean(passed), details);
+    },
+  },
+  {
     caseId: "browser-transport-real-world-e2e-keeps-replay-operator-aligned",
     title: "Browser transport real-world E2E keeps replay and operator aligned",
     area: "browser",

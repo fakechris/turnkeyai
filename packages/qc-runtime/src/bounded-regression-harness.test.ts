@@ -50,6 +50,7 @@ test("bounded regression harness lists built-in cases", () => {
   assert.ok(cases.some((item) => item.caseId === "parallel-follow-up-summary-closes-after-recovery"));
   assert.ok(cases.some((item) => item.caseId === "recovery-bundle-closes-after-approved-fallback"));
   assert.ok(cases.some((item) => item.caseId === "browser-ownership-reclaim-keeps-single-recovered-case"));
+  assert.ok(cases.some((item) => item.caseId === "browser-continuity-hot-detach-reclaim-cold-reopen"));
   assert.ok(cases.some((item) => item.caseId === "context-evidence-heavy-keeps-pending-work"));
   assert.ok(cases.some((item) => item.caseId === "context-reentry-preserves-active-tasks-and-open-questions"));
   assert.ok(cases.some((item) => item.caseId === "context-continuity-keeps-decisions-and-constraints-under-budget"));
@@ -85,6 +86,12 @@ test("bounded regression harness can run the browser continuity case directly", 
 
 test("bounded regression harness can run replay console browser continuity counts", () => {
   const result = runBoundedRegressionSuite(["replay-console-browser-continuity-counts"]);
+  assert.equal(result.totalCases, 1);
+  assert.equal(result.results[0]?.status, "passed");
+});
+
+test("bounded regression harness can run the browser continuity long-chain case", () => {
+  const result = runBoundedRegressionSuite(["browser-continuity-hot-detach-reclaim-cold-reopen"]);
   assert.equal(result.totalCases, 1);
   assert.equal(result.results[0]?.status, "passed");
 });
@@ -180,8 +187,9 @@ test("bounded regression harness can run scenario-parity governance and parallel
     "parallel-governed-merge-waits-for-approval",
     "parallel-governed-merge-closes-after-readback",
     "browser-ownership-reclaim-keeps-single-recovered-case",
+    "browser-continuity-hot-detach-reclaim-cold-reopen",
   ]);
-  assert.equal(result.totalCases, 11);
+  assert.equal(result.totalCases, 12);
   assert.equal(result.failedCases, 0);
 });
 
