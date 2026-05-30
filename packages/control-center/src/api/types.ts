@@ -375,6 +375,34 @@ export interface ValidationOpsRunRecord {
   durationMs: number;
   issueCount: number;
   artifactPath?: string;
+  realAcceptance?: {
+    tooluseScenarios: string[];
+    missionScenarios: string[];
+    browserTooluseEnabled: boolean;
+    totalCases: number;
+    missionReport?: {
+      status: "passed" | "failed";
+      scenarioCount: number;
+      passedScenarios: number;
+      failedScenarios: number;
+      qualityFailures: number;
+      toolRequested: number;
+      toolResults: number;
+      toolFailed: number;
+      toolCancelled: number;
+      toolTimeouts: number;
+      sessionsSpawned: number;
+      sessionsContinued: number;
+      approvalsRequested: number;
+      approvalsDecided: number;
+      approvalsApplied: number;
+      livenessActive: number;
+      livenessWaiting: number;
+      livenessStale: number;
+      evidenceEvents: number;
+      recoveryEvents: number;
+    };
+  };
 }
 
 export interface ValidationOpsReport {

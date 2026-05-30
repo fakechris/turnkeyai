@@ -674,6 +674,18 @@ try {
       "release acceptance should surface the latest real acceptance mission artifact path"
     );
     assert(
+      await page.locator(".card", { hasText: "mission report: 4/4 mission scenarios" }).isVisible(),
+      "release acceptance should surface real mission scenario summary"
+    );
+    assert(
+      await page.locator(".card", { hasText: "quality failures 0" }).isVisible(),
+      "release acceptance should surface real mission quality failure count"
+    );
+    assert(
+      await page.locator(".card", { hasText: "liveness 0/0/0" }).isVisible(),
+      "release acceptance should surface real mission liveness summary"
+    );
+    assert(
       await page.locator(".card", { hasText: "validation-ops" }).isVisible(),
       "release acceptance should show the next validation command"
     );
@@ -1908,6 +1920,34 @@ function validationOpsFixture() {
         durationMs: 88_000,
         issueCount: 0,
         artifactPath: "validation-artifacts/real-llm-acceptance/mission-e2e-ui.json",
+        realAcceptance: {
+          tooluseScenarios: ["basic", "approval", "followup", "timeout", "complex"],
+          missionScenarios: ["basic", "comparison", "browser-dashboard", "realistic-brief"],
+          browserTooluseEnabled: true,
+          totalCases: 9,
+          missionReport: {
+            status: "passed",
+            scenarioCount: 4,
+            passedScenarios: 4,
+            failedScenarios: 0,
+            qualityFailures: 0,
+            toolRequested: 7,
+            toolResults: 7,
+            toolFailed: 0,
+            toolCancelled: 0,
+            toolTimeouts: 0,
+            sessionsSpawned: 5,
+            sessionsContinued: 1,
+            approvalsRequested: 0,
+            approvalsDecided: 0,
+            approvalsApplied: 0,
+            livenessActive: 0,
+            livenessWaiting: 0,
+            livenessStale: 0,
+            evidenceEvents: 9,
+            recoveryEvents: 0,
+          },
+        },
       },
     ],
     activeIssues: [],

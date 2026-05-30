@@ -1810,3 +1810,47 @@ Regression Risk:
 - This is not a real LLM/browser E2E stage; it is a workbench recovery-control
   slice. The next runtime/result-quality change still needs focused real
   mission acceptance.
+
+## 2026-05-31 02:21 CST - Real Acceptance Summary Enters Runtime
+
+Direction: converging
+
+Execution Kernel:
+- No agent, tool-use, session, browser, approval, or completion semantics
+  changed.
+- The real acceptance gate now records a structured mission-report summary in
+  validation ops when the mission JSON artifact is available.
+
+Result Quality:
+- Final-answer synthesis did not change.
+- Operators can now see acceptance quality signals without opening the JSON
+  artifact: mission scenario pass count, quality-failure count, liveness,
+  tool result coverage, and evidence count.
+
+Workbench UX:
+- Runtime Release acceptance rows now show the mission-report summary for real
+  LLM acceptance runs, next to the artifact path and run status.
+- This keeps acceptance evidence visible inside the product entry rather than
+  making users infer quality from a file path alone.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- Browser-backed acceptance scenarios are easier to audit because the same
+  Runtime row exposes liveness and tool coverage from the mission report.
+
+Acceptance Evidence:
+- Focused unit tests for the mission-report summarizer and validation-ops
+  record shape are required for this slice.
+- Control Center smoke is the user-visible gate because it verifies the Runtime
+  card renders scenario count, quality failures, and liveness from the
+  structured record.
+- No real LLM/browser acceptance ran for this observability-only slice; the
+  next runtime/result-quality change still requires focused real mission
+  acceptance.
+
+Regression Risk:
+- The main risk is accepting malformed artifact JSON. The summarizer is
+  defensive and returns no summary for unrelated artifacts or unreadable JSON,
+  preserving the existing artifact-path-only behavior.
+- The validation-ops record shape is additive. Older records without
+  `realAcceptance` continue to render normally.

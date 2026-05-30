@@ -350,6 +350,69 @@ test("validation ops inspection preserves real LLM acceptance artifact path", ()
   assert.equal(record.artifactPath, ".turnkeyai/data/validation-artifacts/real-llm-acceptance/report.json");
 });
 
+test("validation ops inspection preserves real LLM mission report summary", () => {
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-pass",
+    startedAt: 10,
+    completedAt: 30,
+    status: "passed",
+    tooluseScenarios: ["basic", "complex"],
+    missionScenarios: ["realistic-brief", "browser-dashboard"],
+    browserTooluseEnabled: true,
+    missionReport: {
+      status: "passed",
+      scenarioCount: 2,
+      passedScenarios: 2,
+      failedScenarios: 0,
+      qualityFailures: 0,
+      toolRequested: 4,
+      toolResults: 4,
+      toolFailed: 0,
+      toolCancelled: 0,
+      toolTimeouts: 0,
+      sessionsSpawned: 3,
+      sessionsContinued: 1,
+      approvalsRequested: 0,
+      approvalsDecided: 0,
+      approvalsApplied: 0,
+      livenessActive: 0,
+      livenessWaiting: 0,
+      livenessStale: 0,
+      evidenceEvents: 5,
+      recoveryEvents: 0,
+    },
+  });
+
+  assert.deepEqual(record.realAcceptance, {
+    tooluseScenarios: ["basic", "complex"],
+    missionScenarios: ["realistic-brief", "browser-dashboard"],
+    browserTooluseEnabled: true,
+    totalCases: 4,
+    missionReport: {
+      status: "passed",
+      scenarioCount: 2,
+      passedScenarios: 2,
+      failedScenarios: 0,
+      qualityFailures: 0,
+      toolRequested: 4,
+      toolResults: 4,
+      toolFailed: 0,
+      toolCancelled: 0,
+      toolTimeouts: 0,
+      sessionsSpawned: 3,
+      sessionsContinued: 1,
+      approvalsRequested: 0,
+      approvalsDecided: 0,
+      approvalsApplied: 0,
+      livenessActive: 0,
+      livenessWaiting: 0,
+      livenessStale: 0,
+      evidenceEvents: 5,
+      recoveryEvents: 0,
+    },
+  });
+});
+
 test("validation ops inspection surfaces fresh and stale baseline status", () => {
   const baselineRecord = buildValidationOpsRecordFromPhase1Baseline({
     runId: "baseline-1",
