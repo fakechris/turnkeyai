@@ -481,6 +481,35 @@ export function useCancelWorkerSession(): (input: {
   );
 }
 
+export function useCancelToolCalls(): (input: {
+  messageId: string;
+  threadId?: string | null;
+  toolCallIds?: string[];
+  reason?: string;
+}) => Promise<{
+  cancelled: boolean;
+  messageId: string;
+  threadId: string;
+  toolCallIds: string[];
+}> {
+  const client = useApiClient();
+  return useCallback(
+    async (input) =>
+      client.post<{
+        cancelled: boolean;
+        messageId: string;
+        threadId: string;
+        toolCallIds: string[];
+      }>("/message/cancel-tools", {
+        messageId: input.messageId,
+        ...(input.threadId ? { threadId: input.threadId } : {}),
+        ...(input.toolCallIds ? { toolCallIds: input.toolCallIds } : {}),
+        reason: input.reason ?? "operator cancelled active tool calls from Mission replay",
+      }),
+    [client]
+  );
+}
+
 export function useRecoveryRuns(
   threadId: string | null | undefined,
   fallback: RecoveryRunsResponse,

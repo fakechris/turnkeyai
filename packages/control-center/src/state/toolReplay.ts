@@ -19,6 +19,11 @@ export type ToolProcessItem = {
   status: "running" | "completed" | "failed";
 };
 
+export type CancellableToolCalls = {
+  messageId: string;
+  toolCallIds: string[];
+};
+
 type ToolProcessGroup = {
   actor: string;
   toolEvents: ActivityEvent[];
@@ -225,6 +230,47 @@ export function formatDurationMs(startMs: number, endMs: number): string {
   return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
+export function getCancellableToolCallsForProcess(process: ToolProcessItem): CancellableToolCalls | null {
+  if (process.status !== "running") {
+    return null;
+  }
+  const resultIds = new Set<string>();
+  for (const event of process.toolEvents) {
+    if (event.runtime?.toolPhase !== "result") {
+      continue;
+    }
+    const toolCallId = event.runtime.toolCallId?.trim();
+    if (toolCallId) {
+      resultIds.add(toolCallId);
+    }
+  }
+
+  const messageIds = new Set<string>();
+  const activeCallIds: string[] = [];
+  const seenCallIds = new Set<string>();
+  for (const event of process.toolEvents) {
+    if (event.runtime?.toolPhase !== "call" || event.runtime.admission === "skipped") {
+      continue;
+    }
+    const messageId = event.runtime.messageId?.trim();
+    const toolCallId = event.runtime.toolCallId?.trim();
+    if (!messageId || !toolCallId || resultIds.has(toolCallId) || seenCallIds.has(toolCallId)) {
+      continue;
+    }
+    messageIds.add(messageId);
+    activeCallIds.push(toolCallId);
+    seenCallIds.add(toolCallId);
+  }
+
+  if (messageIds.size !== 1 || activeCallIds.length === 0) {
+    return null;
+  }
+  return {
+    messageId: [...messageIds][0]!,
+    toolCallIds: activeCallIds,
+  };
+}
+
 function deriveToolProcessStatus(
   toolEvents: ActivityEvent[],
   processEvents: ActivityEvent[],
@@ -233,7 +279,23 @@ function deriveToolProcessStatus(
   if (toolEvents.some(isFailureEvent) || processEvents.some(isFailureEvent)) {
     return "failed";
   }
-  if (finalThought || toolEvents.some((event) => event.runtime?.toolPhase === "result")) {
+  if (finalThought) {
+    return "completed";
+  }
+  const callIds = toolEvents
+    .filter((event) => event.runtime?.toolPhase === "call" && event.runtime.admission !== "skipped")
+    .map((event) => event.runtime?.toolCallId?.trim())
+    .filter((toolCallId): toolCallId is string => Boolean(toolCallId));
+  const resultIds = new Set(
+    toolEvents
+      .filter((event) => event.runtime?.toolPhase === "result")
+      .map((event) => event.runtime?.toolCallId?.trim())
+      .filter((toolCallId): toolCallId is string => Boolean(toolCallId))
+  );
+  if (callIds.length > 0) {
+    return callIds.every((toolCallId) => resultIds.has(toolCallId)) ? "completed" : "running";
+  }
+  if (toolEvents.some((event) => event.runtime?.toolPhase === "result")) {
     return "completed";
   }
   return "running";

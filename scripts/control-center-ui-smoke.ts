@@ -48,6 +48,7 @@ const postedContextSources: unknown[] = [];
 const postedRecoveryActions: string[] = [];
 const postedMissionReconciles: string[] = [];
 const postedMissionArchives: string[] = [];
+const postedToolCancellations: unknown[] = [];
 const savedModelCatalogContents: string[] = [];
 let onboardingState = onboardingStateFixture();
 const browserConsoleErrors: string[] = [];
@@ -344,11 +345,11 @@ try {
       "mission progress should summarize current mission status"
     );
     assert(
-      await page.locator(".mission-progress-card", { hasText: "thought · role-lead" }).isVisible(),
+      await page.locator(".mission-progress-card", { hasText: "tool · role-lead" }).isVisible(),
       "mission progress should show the latest replay event"
     );
     assert(
-      await page.locator(".mission-progress-card", { hasText: "sessions_spawn · result" }).isVisible(),
+      await page.locator(".mission-progress-card", { hasText: "sessions_send · call" }).isVisible(),
       "mission progress should show the latest tool step"
     );
     assert(await page.locator(".thinking-card").count() === 1, "expected exactly one work trace card");
@@ -448,6 +449,25 @@ try {
     assert(
       await page.locator(".tool-process-answer-link", { hasText: "Final answer appears below this trace." }).isVisible(),
       "tool process should point to the final answer below, not duplicate it inside the trace"
+    );
+    const activeProcessRow = page.locator(".tool-process", { hasText: "active tools" }).first();
+    assert(
+      await activeProcessRow.getByRole("button", { name: /Cancel tool calls/ }).isVisible(),
+      "running tool process should expose message-level tool cancellation"
+    );
+    await activeProcessRow.getByRole("button", { name: /Cancel tool calls/ }).click();
+    await page.waitForSelector("[role='status']");
+    assert(
+      await page.locator("[role='status']", { hasText: "Tool cancellation requested for 1 call" }).isVisible(),
+      "tool cancellation should show accepted operator feedback"
+    );
+    assert(
+      postedToolCancellations.some((body) => JSON.stringify(body).includes('"messageId":"msg.ui.active"')),
+      "tool cancellation should POST the assistant message id"
+    );
+    assert(
+      postedToolCancellations.some((body) => JSON.stringify(body).includes('"call-active"')),
+      "tool cancellation should POST the active tool call id"
     );
     const processRow = page.locator(".tool-process").first();
     assert(
@@ -1077,6 +1097,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     res.end(JSON.stringify({ accepted: true }));
     return;
   }
+  if (method === "POST" && url.pathname === "/message/cancel-tools") {
+    const body = await readJsonBody(req);
+    postedToolCancellations.push(body);
+    json(res, {
+      cancelled: true,
+      messageId: String((body as { messageId?: unknown }).messageId ?? ""),
+      threadId: String((body as { threadId?: unknown }).threadId ?? threadId),
+      toolCallIds: Array.isArray((body as { toolCallIds?: unknown }).toolCallIds)
+        ? (body as { toolCallIds: unknown[] }).toolCallIds
+        : ["call-active"],
+    });
+    return;
+  }
 
   res.writeHead(404, { "content-type": "application/json" });
   res.end(JSON.stringify({ error: `not found: ${method} ${url.pathname}` }));
@@ -1209,6 +1242,15 @@ function timelineFixture() {
     tool("ev.tool.progress", 2_700, "progress", "sessions_spawn", "call-browser", "Browser worker opened context."),
     tool("ev.tool.result", 4_300, "result", "sessions_spawn", "call-browser", "Returned 3 evidence bullets."),
     event("ev.final", "thought", 5_200, "role-lead", finalAnswer, { route: "lead-role" }),
+    tool(
+      "ev.tool.active-call",
+      6_000,
+      "call",
+      "sessions_send",
+      "call-active",
+      "Continue browser worker with updated instructions.",
+      { messageId: "msg.ui.active", round: "1" }
+    ),
   ];
 }
 
@@ -2079,15 +2121,16 @@ function tool(
   phase: "call" | "progress" | "result",
   toolName: string,
   toolCallId: string,
-  text: string
+  text: string,
+  options: { messageId?: string; round?: string } = {}
 ) {
   return event(id, "tool", tMs, "role-lead", text, {
     route: "lead-role",
     toolPhase: phase,
     toolName,
     toolCallId,
-    messageId: "msg.ui.1",
-    round: "1",
+    messageId: options.messageId ?? "msg.ui.1",
+    round: options.round ?? "1",
     ...(phase === "call" ? { callInput: JSON.stringify({ workerType: "browser" }) } : {}),
     ...(phase === "progress" ? { progressDetail: "context opened" } : {}),
     ...(phase === "result"
