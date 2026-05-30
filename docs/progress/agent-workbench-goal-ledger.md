@@ -1298,3 +1298,44 @@ Regression Risk:
   lifecycle change did not break a realistic mission route, but broader
   browser/approval/follow-up scenarios still need the full release gate before
   claiming production readiness.
+
+## 2026-05-31 00:41 CST - Real Follow-Up Reuses Existing Session
+
+Direction: converging
+
+Execution Kernel:
+- A real mission follow-up completed through the mission route with one initial
+  `sessions_spawn` and one continuation `sessions_send`.
+- The follow-up scenario required the lead to reuse the prior `session_key` and
+  forbade `sessions_spawn`, `sessions_history`, and `sessions_list` during the
+  continuation phase.
+
+Result Quality:
+- The mission quality gate passed.
+- The final answer matched the expected compact evidence shape with 3 bullets,
+  included the fixture marker, named `sessions_send`, and stated residual risk.
+
+Workbench UX:
+- The mission reached `done` after a user follow-up instead of remaining stuck
+  in an in-flight state.
+- Timeline metrics showed the continuation as user-visible tool activity:
+  4 tool events, 2 evidence events, and no residual liveness.
+
+Browser Reliability:
+- This scenario used an explore worker rather than browser control.
+- It validates the session-continuity contract that browser follow-ups depend
+  on: reuse the existing child session instead of spawning a duplicate session.
+
+Acceptance Evidence:
+- `npm run mission:e2e -- --scenario followup --model-catalog models.local.json --scenario-timeout-ms 300000 --json /tmp/turnkeyai-mission-e2e-followup-20260531.json`:
+  passed.
+- Mission id: `msn.mpskkrng.1`.
+- Metrics: tools `2/2`, sessions `1/1`, approvals `0/0/0`, liveness `0/0/0`,
+  evidence events `2`.
+- Final answer: 319 bytes, 3 bullets.
+- JSON artifact: `/tmp/turnkeyai-mission-e2e-followup-20260531.json`.
+
+Regression Risk:
+- This proves hot session continuation for a real follow-up. It does not prove
+  browser hot/warm/cold resume or restart recovery; those still require the
+  browser-focused acceptance path before production readiness is claimed.
