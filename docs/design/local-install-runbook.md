@@ -19,6 +19,16 @@ The command starts the daemon if needed, waits for `/health`, opens
 `http://127.0.0.1:4100/app`, and includes the daemon token in the URL fragment
 so the Control Center can authenticate without a manual paste.
 
+From a source checkout on macOS, the lowest-friction first entry is the bundled
+launcher:
+
+```text
+launchers/TurnkeyAI Mission Control.command
+```
+
+Open it from Finder. It uses the current checkout first, then falls back to an
+installed `turnkeyai app`, then `npx @turnkeyai/cli app`.
+
 For a global install:
 
 ```bash

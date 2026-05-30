@@ -99,6 +99,10 @@ try {
       "no-token page should include the no-install launcher"
     );
     assert(
+      await noTokenPage.locator("text=launchers/TurnkeyAI Mission Control.command").isVisible(),
+      "no-token page should include the bundled source-checkout launcher"
+    );
+    assert(
       await noTokenPage.locator("text=npm run app:install-launcher").isVisible(),
       "no-token page should include the source-checkout launcher installer"
     );
