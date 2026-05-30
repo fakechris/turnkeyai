@@ -896,7 +896,16 @@ async function assertRawFixtureOmits(input: {
   url: string;
   forbidden: string[];
 }): Promise<void> {
-  const response = await fetch(input.url);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  let response: Response;
+  try {
+    response = await fetch(input.url, { signal: controller.signal });
+  } catch (error) {
+    throw new Error(`${input.label} raw fixture fetch failed before mission E2E starts: ${errorMessage(error)}`);
+  } finally {
+    clearTimeout(timeout);
+  }
   assert.equal(response.ok, true, `${input.label} raw fixture should be readable before mission E2E starts`);
   const html = await response.text();
   for (const term of input.forbidden) {
