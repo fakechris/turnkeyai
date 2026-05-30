@@ -8,10 +8,13 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 
+import { DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS } from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
+
 interface MissionToolUseE2eOptions {
   modelCatalogPath?: string;
   scenarioTimeoutMs: number;
   scenario: MissionE2eScenario;
+  matrix: boolean;
   matrixScenarios?: MissionE2eScenario[];
 }
 
@@ -26,17 +29,7 @@ type MissionE2eScenario =
   | "timeout-recovery"
   | "realistic-brief";
 
-const MISSION_E2E_SCENARIOS = [
-  "basic",
-  "comparison",
-  "followup",
-  "cancel",
-  "approval",
-  "browser-dynamic",
-  "browser-dashboard",
-  "timeout-recovery",
-  "realistic-brief",
-] as const satisfies readonly MissionE2eScenario[];
+const MISSION_E2E_SCENARIOS = DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS satisfies readonly MissionE2eScenario[];
 
 interface Mission {
   id: string;
@@ -168,6 +161,7 @@ function parseOptions(args: string[]): MissionToolUseE2eOptions {
   const options: MissionToolUseE2eOptions = {
     scenarioTimeoutMs: 180_000,
     scenario: "basic",
+    matrix: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -177,6 +171,10 @@ function parseOptions(args: string[]): MissionToolUseE2eOptions {
     if (arg === "--list-scenarios") {
       console.log(MISSION_E2E_SCENARIOS.join("\n"));
       process.exit(0);
+    }
+    if (arg === "--matrix") {
+      options.matrix = true;
+      continue;
     }
     if (arg === "--model-catalog") {
       const value = args[index + 1];
@@ -250,6 +248,7 @@ function printHelp(exitCode: number): never {
     "",
     "Options:",
     "  --scenario <name>              Run one scenario. Default: basic",
+    "  --matrix                       Run the default real-LLM mission acceptance matrix",
     "  --matrix-scenarios <a,b,...>   Run a comma-separated scenario matrix",
     "  --scenario-timeout-ms <ms>     Per-scenario timeout. Default: 180000",
     "  --model-catalog <path>         Model catalog path. Also reads TURNKEYAI_MODEL_CATALOG, models.local.json, models.json",
@@ -283,7 +282,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
   try {
     const baseUrl = `http://127.0.0.1:${port}`;
     await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: 20_000 });
-    const scenarios = options.matrixScenarios ?? [options.scenario];
+    const scenarios = options.matrixScenarios ?? (options.matrix ? [...MISSION_E2E_SCENARIOS] : [options.scenario]);
     const results = [];
     for (const scenario of scenarios) {
       try {
