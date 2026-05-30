@@ -35,6 +35,21 @@ Direction values:
 - `unknown`: insufficient evidence; run acceptance or inspect production traces
   before claiming progress.
 
+Evidence gates:
+
+- Runtime, tool-use, session, browser, or mission-completion changes require at
+  least one focused mission E2E or browser E2E before a checkpoint can be marked
+  `converging`.
+- Workbench UX changes require a user-visible smoke check or screenshot-backed
+  manual observation that covers the changed path before the checkpoint can be
+  marked `converging`.
+- Docs-only or governance-only changes default to `unknown` unless they close a
+  previously recorded methodology block.
+- Unit tests, PR review, CI, LOC reduction, and test-count growth can support a
+  checkpoint but cannot by themselves justify `converging`.
+- If a checkpoint says "no real acceptance ran", it must also state which real
+  scenario is the next required acceptance gate.
+
 Checkpoint template:
 
 ```md
@@ -67,6 +82,34 @@ Acceptance Evidence:
 Regression Risk:
 - What could this change break?
 - Which tests or checks cover it, and which gaps remain?
+```
+
+Daily review template:
+
+```md
+## YYYY-MM-DD HH:mm TZ - 24-Hour Goal Review
+
+Direction: converging | oscillating | blocked | unknown
+
+Repeated Issue Classes:
+- execution loops or stuck work:
+- weak or unsupported final answers:
+- browser/session/transport instability:
+- UI state mismatch or missing recovery action:
+- acceptance environment drift:
+
+E2E Trend:
+- Which real scenarios improved, regressed, or stayed unchanged?
+- Are users closer to stable complex-task delivery, or are we only adding
+  local patches?
+
+Decision:
+- Continue feature PRs | pause feature PRs and start methodology review
+
+Methodology Review Trigger:
+- Triggered? yes | no
+- If yes, write the root cause hypothesis and the E2E scenario that must
+  improve before feature work resumes.
 ```
 
 ## 2026-05-30 17:55 CST - Post-Acceptance Product Entry And Recovery Visibility
@@ -393,3 +436,40 @@ At least once per day while this goal is active:
    - why previous fixes did not converge
    - what architecture or harness change will prevent another local patch loop
    - which real E2E scenario must improve before resuming feature work
+
+## 2026-05-30 19:30 CST - G0 Ledger Guardrails Tightened
+
+Direction: unknown
+
+Execution Kernel:
+- No agent, tool, session, browser, or mission execution semantics changed in
+  this checkpoint.
+- The ledger now makes runtime-facing evidence gates explicit so future kernel
+  work cannot be called converging on unit tests or PR count alone.
+
+Result Quality:
+- No final-answer behavior changed.
+- The ledger now requires result-quality claims to be backed by focused mission
+  E2E evidence or explicitly marked as residual risk.
+
+Workbench UX:
+- No user-facing page changed.
+- The ledger now requires workbench UX changes to carry a user-visible smoke
+  check or screenshot-backed manual observation before they are called
+  converging.
+
+Browser Reliability:
+- No browser transport, profile, bridge, or CDP behavior changed.
+- Browser reliability claims now require browser E2E or focused smoke evidence
+  when the changed slice touches browser/session behavior.
+
+Acceptance Evidence:
+- Documentation-only checkpoint. No real LLM/browser E2E was run.
+- Next required acceptance gate for runtime/result-quality work remains a
+  focused mission E2E for the changed scenario, followed by the broader real
+  acceptance matrix before claiming the workbench goal is complete.
+
+Regression Risk:
+- Low product risk because this is governance documentation only.
+- Process risk is stricter: future checkpoints may be marked `unknown` more
+  often when real acceptance is missing, which is intentional for this goal.
