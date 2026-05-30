@@ -694,13 +694,16 @@ Browser Reliability:
 Acceptance Evidence:
 - Static verification passed:
   `npx tsx --test packages/cli/src/cli-help.test.ts packages/cli/src/daemon-commands.test.ts`
-  (17 passing),
+  (18 passing),
   `npm run typecheck`,
   `npm run build --workspace @turnkeyai/cli`,
-  `npm test -- --runInBand` (1205 passing),
+  `npm test -- --runInBand` (1206 passing),
   `npm run build`,
   `npm run release:verify` (9/9 checks passed),
   `git diff --check`.
+- Review caught a real restart race: `kickstart -k` can return before the old
+  daemon stops, so a naive health check may hit the old process. The command now
+  waits for the pre-restart PID to change or exit before accepting health.
 - After merge, run real local lifecycle acceptance before calling the local
   entry path fully converged:
   `turnkeyai daemon service restart`,
@@ -711,6 +714,6 @@ Regression Risk:
 - Risk is limited to the macOS service namespace. A bad restart implementation
   could leave the local daemon stopped or healthy on a different config than
   the UI expects.
-- Focused help/artifact tests cover the exposed command surface; real local
-  service acceptance is required before this checkpoint can be considered
-  converging.
+- Focused help/artifact tests cover the exposed command surface and the
+  pre-restart PID guard. Real local service acceptance is required before this
+  checkpoint can be considered converging.
