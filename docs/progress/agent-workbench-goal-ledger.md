@@ -1378,3 +1378,79 @@ Regression Risk:
 - This proves one browser-backed mission scenario. It does not replace the full
   real acceptance matrix, and it does not by itself prove browser reconnect or
   hot/warm/cold resume under profile/CDP failure.
+
+## 2026-05-31 00:53 CST - Full Real Acceptance Gate Rerun
+
+Direction: converging
+
+Execution Kernel:
+- The full real acceptance gate completed across provider-native tool-use,
+  browser-backed tool-use, direct-CDP smoke, and the mission route matrix.
+- A previous full run failed during the `complex` tool-use scenario because the
+  final answer missed the required target marker. A focused rerun of the same
+  `complex` scenario passed before the full gate was rerun, which points to
+  final-answer contract stability as the residual risk rather than a persistent
+  browser/CDP outage.
+
+Result Quality:
+- The mission matrix produced `done` missions for all 12 scenarios and passed
+  quality gates for normal success scenarios.
+- The `cancel` and `timeout-recovery` scenarios intentionally reported blocked
+  quality states while still ending with clean mission status and no residual
+  liveness, which matches the acceptance contract for those degraded paths.
+- Product-level brief scenarios still need continued substance review, but this
+  run proves the current real-LLM harness can complete broad multi-tool work
+  without stuck `creating` or `working` states.
+
+Workbench UX:
+- The generated mission JSON artifact gives the workbench and Release
+  acceptance card a concrete evidence file for operator inspection.
+- The mission matrix still emits no useful intermediate progress for several
+  minutes while running. That is an observability gap for long acceptance and
+  long user missions; it should not be mistaken for runtime failure, but it is
+  still poor operator feedback.
+
+Browser Reliability:
+- Browser-backed tool-use `complex` passed with two spawned sessions and
+  browser child transcript persistence.
+- Direct-CDP smoke passed in the same top-level gate, covering action parity,
+  raw-CDP target attach, OOPIF/shadow probing, coordinate input, popup target,
+  multi-target continuity, network controls, artifact safety, download, and
+  upload paths.
+- Browser-dashboard and browser-dynamic mission scenarios both completed with
+  zero failed, cancelled, timeout, recovery, or residual liveness entries.
+
+Acceptance Evidence:
+- Focused rerun:
+  `npm run tooluse:e2e -- --real-llm --scenario complex --with-browser --model-catalog models.local.json --scenario-timeout-ms 300000 --cdp-timeout-ms 45000`:
+  passed; final marker `TURNKEYAI_COMPLEX_E2E_OK`, tool calls
+  `sessions_spawn,sessions_spawn`, final bytes `649`, bullets `3`, spawned
+  sessions `2`, child transcript messages `18`.
+- Full gate:
+  `npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 300000 --cdp-timeout-ms 45000 --data-dir /tmp/turnkeyai-real-acceptance-20260531-full-rerun`:
+  passed in `375180` ms.
+- Validation-ops run id:
+  `validation-ops:real-llm-acceptance:2026-05-30T16-47-26-921Z:o4qakz`.
+- Mission JSON artifact:
+  `/tmp/turnkeyai-real-acceptance-20260531-full-rerun/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T16-47-26-921Z%3Ao4qakz-mission-e2e.json`.
+- Tool-use matrix passed: `basic`, `approval`, `followup`, `timeout`,
+  `complex`.
+- Mission matrix passed: `basic`, `comparison`, `followup`, `cancel`,
+  `approval`, `browser-dynamic`, `browser-dashboard`, `timeout-recovery`,
+  `memory-recall`, `task-tracking`, `product-workbench-brief`,
+  `realistic-brief`.
+- Representative mission ids: `msn.mpsl4vgn.1` basic, `msn.mpsl57wa.2`
+  comparison, `msn.mpsl5nfo.3` followup, `msn.mpsl74n7.6` browser-dynamic,
+  `msn.mpsl7kxj.7` browser-dashboard, `msn.mpsl9ybk.11`
+  product-workbench-brief, `msn.mpslamd5.12` realistic-brief.
+
+Regression Risk:
+- The earlier failed full run means complex final-answer formatting still has
+  some stochastic risk. If this failure class repeats in the next 24-hour
+  window, pause feature PRs and start methodology review around output
+  contracts and harness determinism rather than adding another local patch.
+- The full gate took more than six minutes and had sparse mission-matrix
+  terminal progress. Runtime and acceptance observability are still behind the
+  execution kernel.
+- This checkpoint proves the current broad gate can pass once; it is not yet a
+  statistical soak of repeated real-LLM runs.
