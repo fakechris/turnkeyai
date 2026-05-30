@@ -170,6 +170,12 @@ describe("diagnostics-routes", () => {
             needsApproval: 1,
             withBlockers: 0,
             snapshotErrorCount: 0,
+            duration: {
+              longestActiveMs: 42_000,
+              longestActiveMissionId: "msn.1",
+              longestActiveMissionTitle: "Research dashboard",
+              oldestActiveCreatedAtMs: 1_700_000_000_000,
+            },
             latestMission: {
               id: "msn.1",
               title: "Research dashboard",
@@ -211,17 +217,19 @@ describe("diagnostics-routes", () => {
                 toolTimeouts: 0,
                 recoveryEvents: 0,
                 staleRuntimeSubjects: 0,
+                wallClockMs: 12_000,
               },
             ],
           }),
         }),
       });
       const body = getJson() as {
-        missionHealth: { active: number; needsApproval: number };
+        missionHealth: { active: number; needsApproval: number; duration: { longestActiveMs: number } };
         readiness: { status: string; checks: Array<{ id: string; status: string; detail: string }> };
       };
       assert.equal(body.missionHealth.active, 2);
       assert.equal(body.missionHealth.needsApproval, 1);
+      assert.equal(body.missionHealth.duration.longestActiveMs, 42_000);
       const missionRuntime = body.readiness.checks.find((check) => check.id === "mission_runtime");
       assert.equal(missionRuntime?.status, "warn");
       assert.match(missionRuntime?.detail ?? "", /waiting for operator approval/);

@@ -70,6 +70,9 @@ Use product-level budgets rather than tiny tool-round caps.
 Long-running missions should remain observable through mission metrics:
 wall-clock duration, requested/results/executed/skipped tools, spawned and
 continued sessions, failures, timeouts, cancellations, and quality-gate state.
+Diagnostics should also aggregate the longest active mission duration so
+operators can tell whether "working" is fresh progress or a long-running span
+that needs inspection.
 
 ## Browser Environment Hygiene
 

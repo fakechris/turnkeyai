@@ -32,6 +32,12 @@ export interface DiagnosticsMissionHealthSnapshot {
   needsApproval: number;
   withBlockers: number;
   snapshotErrorCount: number;
+  duration: {
+    longestActiveMs: number;
+    longestActiveMissionId?: string;
+    longestActiveMissionTitle?: string;
+    oldestActiveCreatedAtMs?: number;
+  };
   latestMission?: {
     id: string;
     title: string;
@@ -72,6 +78,7 @@ export interface DiagnosticsMissionHealthSnapshot {
     toolTimeouts: number;
     recoveryEvents: number;
     staleRuntimeSubjects: number;
+    wallClockMs: number;
     lastProgressAtMs?: number;
   }>;
 }
@@ -153,6 +160,7 @@ export async function buildDiagnosticsMissionHealthSnapshot(
         toolTimeouts: snapshot.tool.timeouts,
         recoveryEvents: snapshot.recovery.events,
         staleRuntimeSubjects: snapshot.liveness.stale,
+        wallClockMs: snapshot.wallClockMs,
         ...(snapshot.liveness.lastProgressAtMs !== undefined
           ? { lastProgressAtMs: snapshot.liveness.lastProgressAtMs }
           : {}),
@@ -162,6 +170,7 @@ export async function buildDiagnosticsMissionHealthSnapshot(
 
   attentionMissions.sort((left, right) => attentionRank(right) - attentionRank(left));
   const latestMission = missions[0];
+  const longestActive = longestActiveMission(missions, input.nowMs);
   return {
     total: missions.length,
     inspected: inspectedMissions.length,
@@ -173,6 +182,16 @@ export async function buildDiagnosticsMissionHealthSnapshot(
       mission.status !== "archived" && (mission.blockers > 0 || mission.status === "blocked")
     ).length,
     snapshotErrorCount,
+    duration: {
+      longestActiveMs: longestActive ? Math.max(0, input.nowMs - longestActive.createdAtMs) : 0,
+      ...(longestActive
+        ? {
+            longestActiveMissionId: longestActive.id,
+            longestActiveMissionTitle: longestActive.title,
+            oldestActiveCreatedAtMs: longestActive.createdAtMs,
+          }
+        : {}),
+    },
     ...(latestMission
       ? {
           latestMission: {
@@ -215,6 +234,20 @@ function chooseMissionsToInspect(missions: Mission[], limit: number): Mission[] 
     chosen.set(mission.id, mission);
   }
   return [...chosen.values()].slice(0, boundedLimit);
+}
+
+function longestActiveMission(missions: Mission[], nowMs: number): Mission | null {
+  let chosen: Mission | null = null;
+  let chosenAge = -1;
+  for (const mission of missions) {
+    if (!ACTIVE_STATUSES.has(mission.status)) continue;
+    const age = Math.max(0, nowMs - mission.createdAtMs);
+    if (age > chosenAge || (age === chosenAge && mission.id.localeCompare(chosen?.id ?? "") > 0)) {
+      chosen = mission;
+      chosenAge = age;
+    }
+  }
+  return chosen;
 }
 
 function qualityKey(status: MissionObservabilitySnapshot["qualityGate"]["status"]): keyof DiagnosticsMissionHealthSnapshot["qualityGate"] {

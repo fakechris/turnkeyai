@@ -138,6 +138,7 @@ Runtime is the operator page. It should answer:
 - Are model keys ready?
 - Is browser transport healthy?
 - Are missions stuck, stale, blocked, or weakly completed?
+- Which active mission has been running the longest?
 - Are release/acceptance gates fresh and passing?
 - Where are logs?
 

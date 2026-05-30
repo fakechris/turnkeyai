@@ -258,7 +258,7 @@ function buildLiveTiles(live: Live): Array<{ l: string; v: string; d: string }> 
       l: "Mission health",
       v: missionHealth ? `${missionHealth.active} active` : "—",
       d: missionHealth
-        ? `${missionAttention} need attention, ${missionHealth.needsApproval} approval`
+        ? `${missionAttention} need attention, longest ${formatDurationCompact(missionHealth.duration.longestActiveMs)}`
         : "diagnostics pending",
     },
     {
@@ -349,7 +349,13 @@ function MissionHealthCard({
             </div>
             <div className="runtime-health-action">
               inspected {health.inspected} · sessions spawned {health.sessions.spawned} · stale runtime {health.liveness.stale}
+              {" · "}longest active {formatDurationCompact(health.duration.longestActiveMs)}
             </div>
+            {health.duration.longestActiveMissionTitle ? (
+              <div className="runtime-health-action">
+                oldest active: {health.duration.longestActiveMissionTitle}
+              </div>
+            ) : null}
             {reconcileNotice ? (
               <div className="runtime-health-action" role="status">
                 {reconcileNotice}
@@ -376,6 +382,7 @@ function MissionHealthCard({
                     </div>
                     <div className="runtime-health-action">
                       stale {mission.staleRuntimeSubjects} · failed {mission.toolFailures} · timeouts {mission.toolTimeouts}
+                      {" · "}running {formatDurationCompact(mission.wallClockMs)}
                       {mission.lastProgressAtMs ? ` · last progress ${formatRelativeAge(mission.lastProgressAtMs)}` : ""}
                     </div>
                   </div>
@@ -502,6 +509,19 @@ function formatUptimeShort(ms: number): string {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function formatDurationCompact(ms: number): string {
+  const safeMs = Math.max(0, Math.round(ms));
+  if (safeMs < 1_000) return `${safeMs}ms`;
+  const totalSeconds = Math.floor(safeMs / 1_000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainderMinutes = minutes % 60;
+  return remainderMinutes > 0 ? `${hours}h ${remainderMinutes}m` : `${hours}h`;
 }
 
 function formatRelativeAge(timestamp: number): string {
