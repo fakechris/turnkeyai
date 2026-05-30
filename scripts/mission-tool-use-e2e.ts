@@ -9,6 +9,8 @@ import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 
 import { DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS } from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
+import type { ThreadMemoryRecord } from "@turnkeyai/core-types/team";
+import { FileThreadMemoryStore } from "@turnkeyai/team-store/context/file-thread-memory-store";
 
 interface MissionToolUseE2eOptions {
   modelCatalogPath?: string;
@@ -27,6 +29,7 @@ type MissionE2eScenario =
   | "browser-dynamic"
   | "browser-dashboard"
   | "timeout-recovery"
+  | "memory-recall"
   | "realistic-brief";
 
 const MISSION_E2E_SCENARIOS = DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS satisfies readonly MissionE2eScenario[];
@@ -95,6 +98,9 @@ const DYNAMIC_BROWSER_FINAL_MARKER = "TURNKEYAI_MISSION_DYNAMIC_BROWSER_OK";
 const DASHBOARD_TRIAGE_MARKER = "TURNKEYAI_DASHBOARD_TRIAGE_OK";
 const DASHBOARD_TRIAGE_FINAL_MARKER = "TURNKEYAI_MISSION_DASHBOARD_TRIAGE_OK";
 const TIMEOUT_FINAL_MARKER = "TURNKEYAI_MISSION_TIMEOUT_OK";
+const MEMORY_SETUP_MARKER = "TURNKEYAI_MISSION_MEMORY_SETUP_OK";
+const MEMORY_SOURCE_MARKER = "TURNKEYAI_MEMORY_RECALL_SOURCE_OK";
+const MEMORY_RECALL_FINAL_MARKER = "TURNKEYAI_MISSION_MEMORY_RECALL_OK";
 const REALISTIC_BRIEF_FINAL_MARKER = "TURNKEYAI_MISSION_REALISTIC_BRIEF_OK";
 
 interface FixtureServer {
@@ -292,6 +298,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
             baseUrl,
             token,
             fixture,
+            runtimeRoot,
             scenario,
             timeoutMs: options.scenarioTimeoutMs,
           })
@@ -319,6 +326,7 @@ async function runMissionScenario(input: {
   baseUrl: string;
   token: string;
   fixture: FixtureServer;
+  runtimeRoot: string;
   scenario: MissionE2eScenario;
   timeoutMs: number;
 }): Promise<MissionScenarioResult> {
@@ -333,6 +341,9 @@ async function runMissionScenario(input: {
   }
   if (input.scenario === "timeout-recovery") {
     return runMissionTimeoutScenario(input);
+  }
+  if (input.scenario === "memory-recall") {
+    return runMissionMemoryRecallScenario(input);
   }
   const spec = buildScenarioSpec(input.scenario, input.fixture);
   const mission = await createMission({
@@ -622,6 +633,72 @@ async function runMissionTimeoutScenario(input: {
     `mission timeout final answer quality failures: ${quality.failures.join("; ")}\n${final.text}`
   );
   return { scenario: "timeout-recovery", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function runMissionMemoryRecallScenario(input: {
+  baseUrl: string;
+  token: string;
+  runtimeRoot: string;
+  fixture: FixtureServer;
+  scenario: MissionE2eScenario;
+  timeoutMs: number;
+}): Promise<MissionScenarioResult> {
+  const setupSpec = buildMemoryRecallSetupSpec();
+  const finalSpec = buildScenarioSpec("memory-recall", input.fixture);
+  const mission = await createMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec: setupSpec,
+  });
+  assert.ok(mission.threadId, "memory recall E2E requires a linked team thread");
+
+  await waitForMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    finalMarker: setupSpec.finalMarker,
+    timeoutMs: input.timeoutMs,
+    failFastDoneWithoutMarker: true,
+  });
+
+  await seedMemoryRecallFixture({
+    runtimeRoot: input.runtimeRoot,
+    threadId: mission.threadId,
+  });
+
+  await requestJson<{ accepted: boolean; missionId: string }>({
+    method: "POST",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+    token: input.token,
+    body: {
+      content: finalSpec.desc,
+    },
+  });
+
+  const result = await waitForMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    finalMarker: finalSpec.finalMarker,
+    timeoutMs: input.timeoutMs,
+  });
+  assertMissionMemoryRecallTimeline(result.timeline, finalSpec);
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  assertMissionMetrics(metrics, finalSpec);
+  const final = findFinalEvent(result.timeline, finalSpec.finalMarker);
+  assert.ok(final, "mission timeline must include a memory recall final assistant answer");
+  const quality = evaluateFinalQuality(final.text, finalSpec);
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `mission memory recall final answer quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "memory-recall", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
 function printScenarioResult(result: MissionScenarioResult): void {
@@ -936,7 +1013,97 @@ async function createMission(input: {
   });
 }
 
+function buildMemoryRecallSetupSpec(): ScenarioSpec {
+  return {
+    scenario: "memory-recall",
+    title: "Mission route durable memory recall setup",
+    finalMarker: MEMORY_SETUP_MARKER,
+    evidenceMarkers: [],
+    answerTerms: ["setup"],
+    expectedSpawnCalls: 0,
+    expectedSendCalls: 0,
+    expectedToolResults: 0,
+    expectedSpawnedSessions: 0,
+    expectedContinuedSessions: 0,
+    minEvidenceEvents: 0,
+    expectedBullets: 1,
+    minBytes: 40,
+    desc: [
+      "Prepare a follow-up-only durable memory recall acceptance test.",
+      `Do not use tools. Reply with one Markdown bullet containing ${MEMORY_SETUP_MARKER} and the word setup.`,
+      "Do not use tables, links, code fences, or bold/italic markup.",
+    ].join("\n"),
+  };
+}
+
+async function seedMemoryRecallFixture(input: { runtimeRoot: string; threadId: string }): Promise<void> {
+  const store = new FileThreadMemoryStore({
+    rootDir: path.join(input.runtimeRoot, "data", "context", "thread-memory"),
+  });
+  const record: ThreadMemoryRecord = {
+    threadId: input.threadId,
+    updatedAt: Date.now(),
+    preferences: ["For memory recall acceptance, prefer source-backed launch briefs over unstated assumptions."],
+    constraints: ["When asked about Helios-47, use the durable memory launch window exactly as written."],
+    longTermNotes: [
+      `Memory recall fixture: ${MEMORY_SOURCE_MARKER}. Helios-47 launch window is Tuesday 09:30. Owner is Release Captain.`,
+    ],
+  };
+  await store.put(record);
+}
+
 function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer): ScenarioSpec {
+  if (scenario === "memory-recall") {
+    return {
+      scenario,
+      title: "Mission route durable memory recall E2E",
+      finalMarker: MEMORY_RECALL_FINAL_MARKER,
+      evidenceMarkers: [MEMORY_SOURCE_MARKER],
+      answerTerms: ["memory_search", "memory_get", "Helios-47", "Tuesday 09:30", "Release Captain", "residual risk"],
+      answerPatterns: [
+        { label: "memory-search tool reference", pattern: /memory_search/i },
+        { label: "memory-get tool reference", pattern: /memory_get/i },
+      ],
+      evidenceLinePatterns: [
+        {
+          label: "recalled memory line",
+          pattern: /^\s*[-*+]\s+recalled memory\s*:.*TURNKEYAI_MISSION_MEMORY_RECALL_OK.*TURNKEYAI_MEMORY_RECALL_SOURCE_OK.*memory_get/im,
+        },
+        {
+          label: "launch plan line",
+          pattern: /^\s*[-*+]\s+launch plan\s*:.*Helios-47.*Tuesday 09:30.*Release Captain/im,
+        },
+        { label: "residual risk line", pattern: /^\s*[-*+]\s+residual risk\s*:/im },
+      ],
+      forbiddenPatterns: [
+        { label: "session delegation", pattern: /\bsessions_(?:spawn|send|list|history)\b/i },
+        { label: "internal source URL", pattern: /https?:\/\//i },
+      ],
+      expectedSpawnCalls: 0,
+      expectedSendCalls: 0,
+      expectedToolResults: 2,
+      expectedSpawnedSessions: 0,
+      expectedContinuedSessions: 0,
+      minEvidenceEvents: 2,
+      expectedBullets: 3,
+      minBytes: 220,
+      maxBytes: 1_000,
+      desc: [
+        "Continue this mission by proving durable memory recall through native memory tools.",
+        "Call memory_search exactly once with a query for the Helios-47 launch window, owner, and recall marker.",
+        "Then call memory_get exactly once using the best memory_id returned by memory_search before writing the final answer.",
+        "Do not call sessions_spawn, sessions_send, sessions_history, sessions_list, browser tools, permission tools, or task tools.",
+        `Final answer may include ${MEMORY_RECALL_FINAL_MARKER} exactly once, only inside the first bullet. It must also include ${MEMORY_SOURCE_MARKER}, Helios-47, Tuesday 09:30, Release Captain, memory_search, memory_get, and the exact words residual risk.`,
+        "Use this exact final answer shape after memory_get returns:",
+        "## Memory evidence",
+        `- recalled memory: ${MEMORY_RECALL_FINAL_MARKER}; ${MEMORY_SOURCE_MARKER} was retrieved through memory_search followed by memory_get.`,
+        "- launch plan: Helios-47 launch window is Tuesday 09:30; owner is Release Captain.",
+        "- residual risk: this validates local durable thread memory only, not an external source.",
+        "Do not create a separate bullet, heading, or paragraph for the final success marker.",
+        "Do not use tables, links, code fences, or bold/italic markup.",
+      ].join("\n"),
+    };
+  }
   if (scenario === "realistic-brief") {
     return {
       scenario,
@@ -1554,6 +1721,28 @@ function assertFollowupReusedSession(timeline: ActivityEvent[], expectedSessionK
   assert.equal(parsed.session_key, expectedSessionKey, "sessions_send must reuse the phase-one session_key");
 }
 
+function assertMissionMemoryRecallTimeline(timeline: ActivityEvent[], spec: ScenarioSpec): void {
+  assert.ok(timeline.length > 0, "memory recall timeline must not be empty");
+  const finalIndex = timeline.findIndex((event) => event.kind === "thought" && event.text.includes(spec.finalMarker));
+  const searchCallIndexes = findToolPhaseIndexes(timeline, "memory_search", "call");
+  const searchResultIndexes = findToolPhaseIndexes(timeline, "memory_search", "result");
+  const getCallIndexes = findToolPhaseIndexes(timeline, "memory_get", "call");
+  const getResultIndexes = findToolPhaseIndexes(timeline, "memory_get", "result");
+  assert.equal(searchCallIndexes.length, 1, "memory recall E2E must call memory_search exactly once");
+  assert.equal(searchResultIndexes.length, 1, "memory recall E2E must receive one memory_search result");
+  assert.equal(getCallIndexes.length, 1, "memory recall E2E must call memory_get exactly once");
+  assert.equal(getResultIndexes.length, 1, "memory recall E2E must receive one memory_get result");
+  assert.equal(findToolPhaseIndexes(timeline, "sessions_spawn", "call").length, 0, "memory recall must not spawn sessions");
+  assert.equal(findToolPhaseIndexes(timeline, "sessions_send", "call").length, 0, "memory recall must not continue sessions");
+  assert.ok(searchResultIndexes[0]! > searchCallIndexes[0]!, "memory_search result must follow the call");
+  assert.ok(getCallIndexes[0]! > searchResultIndexes[0]!, "memory_get call must follow memory_search result");
+  assert.ok(getResultIndexes[0]! > getCallIndexes[0]!, "memory_get result must follow the call");
+  assert.ok(finalIndex > getResultIndexes[0]!, "final answer must follow memory_get result");
+  const memoryGetResult = String(timeline[getResultIndexes[0]!]!.runtime?.["resultContent"] ?? timeline[getResultIndexes[0]!]!.text);
+  assert.match(memoryGetResult, new RegExp(MEMORY_SOURCE_MARKER), "memory_get result must include the seeded memory source marker");
+  assert.match(memoryGetResult, /Helios-47/, "memory_get result must include the seeded project codename");
+}
+
 async function waitForToolCallEvent(input: {
   baseUrl: string;
   token: string;
@@ -1759,7 +1948,7 @@ async function waitForMissionMetricsSettled(input: {
 
 function findToolPhaseIndexes(
   timeline: ActivityEvent[],
-  toolName: "sessions_spawn" | "sessions_send",
+  toolName: string,
   phase: "call" | "progress" | "result"
 ): number[] {
   return timeline.flatMap((event, index) =>

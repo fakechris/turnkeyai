@@ -22,6 +22,7 @@ export const DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS = [
   "browser-dynamic",
   "browser-dashboard",
   "timeout-recovery",
+  "memory-recall",
   "realistic-brief",
 ] as const;
 

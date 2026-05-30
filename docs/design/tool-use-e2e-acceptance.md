@@ -171,6 +171,7 @@ Mission scenarios:
 - `browser-dynamic`: one browser child session opens a JavaScript-rendered local dashboard fixture, extracts dynamic DOM evidence that is not present in raw server HTML, and completes with browser-specific evidence plus residual risk
 - `browser-dashboard`: one browser child session investigates a dynamic incident dashboard fixture, extracts status/severity/incident evidence from the rendered page, and produces a concise operational summary with source-bounded evidence
 - `timeout-recovery`: one explore child session is intentionally bounded with `timeout_seconds=0.001`, the worker session is interrupted into `resumable`, mission liveness settles to zero, and the lead produces a bounded final answer without spawning fallback tools
+- `memory-recall`: a follow-up seeds durable thread memory, then the lead must call `memory_search` and `memory_get` exactly once before producing a source-bounded final answer without delegating to session tools
 - `realistic-brief`: three independent child sessions gather two vendor fixture sources plus one browser-rendered operations dashboard, then the lead must produce an operator-ready brief with source coverage, recommendation, dashboard action, and residual risk without a fully templated final answer
 
 The script honors `--scenario-timeout-ms` with a default of `180000` ms. It
