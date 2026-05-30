@@ -5784,17 +5784,17 @@ const BUILT_IN_CASES: RegressionCase[] = [
       ];
       const passed =
         run?.status === "recovered" &&
-        run.attempts[0]?.status === "failed" &&
-        run.attempts[1]?.browserOutcome === "cold_reopen" &&
+        run?.attempts[0]?.status === "failed" &&
+        run?.attempts[1]?.browserOutcome === "cold_reopen" &&
         replayConsole.browserContinuityCounts.stable === 1 &&
         replayConsole.openIncidents === 0 &&
         resolvedBundles.length === 1 &&
         bundle?.recoveryWorkflow?.status === "recovered" &&
-        bundle.followUpSummary?.closedGroups === 1 &&
-        bundle.followUpSummary?.browserContinuityCounts.recovered === 1 &&
-        bundle.browserContinuity?.state === "recovered" &&
-        bundle.browserContinuity.targetResolution === "reopen" &&
-        bundle.browserContinuity.targetId === "target-long-reopen" &&
+        bundle?.followUpSummary?.closedGroups === 1 &&
+        bundle?.followUpSummary?.browserContinuityCounts.recovered === 1 &&
+        bundle?.browserContinuity?.state === "recovered" &&
+        bundle?.browserContinuity?.targetResolution === "reopen" &&
+        bundle?.browserContinuity?.targetId === "target-long-reopen" &&
         (operatorSummary.attentionOverview?.activeCases?.length ?? 0) === 0 &&
         resolvedByKey["incident:task-long-1"]?.browserContinuityState === "recovered" &&
         resolvedByKey["incident:task-long-1"]?.browserTransportLabel === "direct-cdp";
