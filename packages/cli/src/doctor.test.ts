@@ -19,7 +19,8 @@ describe("doctor", () => {
 
       assert.equal(result.code, 0);
       assert.match(result.stdout, /\[warn\] relay extension\s+not installed; only required when TURNKEYAI_BROWSER_TRANSPORT=relay/);
-      assert.match(result.stdout, /turnkeyai doctor: 1 warning\(s\), no failures/);
+      assert.match(result.stdout, /\[warn\] installed cli\s+turnkeyai command not on PATH/);
+      assert.match(result.stdout, /turnkeyai doctor: 2 warning\(s\), no failures/);
     } finally {
       server.close();
       await rm(home, { recursive: true, force: true });
@@ -57,7 +58,7 @@ describe("doctor", () => {
 
       assert.equal(result.code, 0);
       assert.match(result.stdout, /\[warn\] config\/auth\s+missing .*config\.json; using read token from env/);
-      assert.match(result.stdout, /turnkeyai doctor: 2 warning\(s\), no failures/);
+      assert.match(result.stdout, /turnkeyai doctor: 3 warning\(s\), no failures/);
     } finally {
       server.close();
       await rm(home, { recursive: true, force: true });
@@ -112,7 +113,7 @@ describe("doctor", () => {
       assert.equal(result.code, 1);
       assert.match(result.stdout, /\[warn\] readiness: Model catalog\s+No model catalog is configured\. next=Configure a model catalog/);
       assert.match(result.stdout, /\[fail\] readiness: Browser transport\s+Direct CDP endpoint is unreachable\./);
-      assert.match(result.stderr, /turnkeyai doctor: 1 check\(s\) failed, 2 warning\(s\)/);
+      assert.match(result.stderr, /turnkeyai doctor: 1 check\(s\) failed, 3 warning\(s\)/);
     } finally {
       server.close();
       await rm(home, { recursive: true, force: true });
@@ -144,7 +145,7 @@ describe("doctor", () => {
 
       assert.equal(result.code, 1);
       assert.match(result.stdout, /\[fail\] model readiness\s+primary minimax-m2 missing key MINIMAX_API_KEY/);
-      assert.match(result.stderr, /turnkeyai doctor: 1 check\(s\) failed, 1 warning\(s\)/);
+      assert.match(result.stderr, /turnkeyai doctor: 1 check\(s\) failed, 2 warning\(s\)/);
     } finally {
       server.close();
       await rm(home, { recursive: true, force: true });
@@ -176,7 +177,7 @@ describe("doctor", () => {
 
       assert.equal(result.code, 0);
       assert.match(result.stdout, /\[warn\] model readiness\s+lead_reasoning: minimax-m2 ready, 1 fallback key\(s\) missing/);
-      assert.match(result.stdout, /turnkeyai doctor: 2 warning\(s\), no failures/);
+      assert.match(result.stdout, /turnkeyai doctor: 3 warning\(s\), no failures/);
     } finally {
       server.close();
       await rm(home, { recursive: true, force: true });
@@ -287,7 +288,12 @@ function runCli(
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--import", "tsx", "packages/cli/src/cli.ts", ...args], {
       cwd: process.cwd(),
-      env: { ...process.env, ...env },
+      env: {
+        ...process.env,
+        PATH: path.dirname(process.execPath),
+        TURNKEYAI_DOCTOR_CLI_COMMAND: "turnkeyai-doctor-test-missing",
+        ...env,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     const timeout = setTimeout(() => {
