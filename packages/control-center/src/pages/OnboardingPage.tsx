@@ -397,7 +397,7 @@ function modelReadiness(models: ModelsReport | null): ReadinessItem {
   };
 }
 
-function bridgeReadiness(status: BridgeStatus | null): ReadinessItem {
+export function bridgeReadiness(status: BridgeStatus | null): ReadinessItem {
   if (!status) {
     return {
       id: "bridge",
@@ -407,15 +407,31 @@ function bridgeReadiness(status: BridgeStatus | null): ReadinessItem {
       action: "Open Agent Connect to inspect the command endpoint and available tools.",
     };
   }
+  const health = status.transport.health;
+  const healthLabel = health
+    ? health.healthy
+      ? "healthy"
+      : health.reason ?? "unhealthy"
+    : "health not reported";
+  const state: ReadinessState =
+    !status.ok || health?.healthy === false
+      ? "error"
+      : status.expertLane.available
+        ? "ok"
+        : "warn";
   return {
     id: "bridge",
     label: "Browser bridge route",
-    state: status.ok ? (status.expertLane.available ? "ok" : "warn") : "error",
-    detail: `${status.transport.mode} · ${status.transport.label} · ${status.sessions.count} session(s)`,
-    action: status.expertLane.available
+    state,
+    detail: `${status.transport.mode} · ${status.transport.label} · ${healthLabel} · ${status.sessions.count} session(s)`,
+    action: !status.ok
+      ? "Bridge route is not healthy; open Agent Connect for transport diagnostics."
+      : health?.healthy === false
+      ? "Transport needs attention before browser-backed missions."
+      : status.expertLane.available
       ? "Direct browser expert lane is available."
       : status.expertLane.reason ?? "Bridge is reachable; expert lane is not available on this transport.",
-    command: status.directCdp.endpoint ?? "/bridge/command",
+    command: status.directCdp.endpoint ?? "turnkeyai bridge status",
   };
 }
 
