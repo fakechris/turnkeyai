@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 
-import type { Mission } from "@turnkeyai/core-types/mission";
+import type { ActivityEvent, Mission } from "@turnkeyai/core-types/mission";
 import type { RuntimeProgressEvent, TeamMessage } from "@turnkeyai/core-types/team";
 
 import { composeMissionDeps } from "../composition/mission-deps";
@@ -61,6 +61,17 @@ function tmpDir(): { dir: string; cleanup: () => void } {
 }
 
 const clock = { now: () => 1_700_000_000_000 };
+
+function timelineEvent(id: string, missionId: string, tMs: number): ActivityEvent {
+  return {
+    id,
+    missionId,
+    tMs,
+    kind: "thought",
+    actor: "role-lead",
+    text: id,
+  };
+}
 
 describe("mission-routes", () => {
   it("GET /missions returns the list (empty after fresh init)", async () => {
@@ -196,6 +207,75 @@ describe("mission-routes", () => {
         deps,
       });
       assert.equal(getStatus(), 400);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it("GET /missions/:id/timeline supports cursor pages without changing the default array shape", async () => {
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      for (let i = 1; i <= 5; i++) {
+        await deps.activityStore.append(timelineEvent(`ev.${i}`, "msn.cursor", i));
+      }
+
+      const defaultShape = await runJson<ActivityEvent[]>(deps, "GET", "/missions/msn.cursor/timeline?limit=2");
+      assert.deepEqual(defaultShape.map((event) => event.id), ["ev.4", "ev.5"]);
+
+      const firstPage = await runJson<{
+        events: ActivityEvent[];
+        nextCursor: string | null;
+        hasMore: boolean;
+        limit: number;
+      }>(deps, "GET", "/missions/msn.cursor/timeline?page=true&limit=2");
+      assert.deepEqual(firstPage.events.map((event) => event.id), ["ev.4", "ev.5"]);
+      assert.equal(firstPage.hasMore, true);
+      assert.equal(firstPage.limit, 2);
+      assert.ok(firstPage.nextCursor);
+
+      const secondPage = await runJson<{
+        events: ActivityEvent[];
+        nextCursor: string | null;
+        hasMore: boolean;
+      }>(
+        deps,
+        "GET",
+        `/missions/msn.cursor/timeline?page=true&limit=2&cursor=${encodeURIComponent(firstPage.nextCursor!)}`
+      );
+      assert.deepEqual(secondPage.events.map((event) => event.id), ["ev.2", "ev.3"]);
+      assert.equal(secondPage.hasMore, true);
+
+      const thirdPage = await runJson<{
+        events: ActivityEvent[];
+        nextCursor: string | null;
+        hasMore: boolean;
+      }>(
+        deps,
+        "GET",
+        `/missions/msn.cursor/timeline?page=true&limit=2&cursor=${encodeURIComponent(secondPage.nextCursor!)}`
+      );
+      assert.deepEqual(thirdPage.events.map((event) => event.id), ["ev.1"]);
+      assert.equal(thirdPage.hasMore, false);
+      assert.equal(thirdPage.nextCursor, null);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it("GET /missions/:id/timeline rejects malformed cursors", async () => {
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      const { res, getStatus, getJson } = createResponse();
+      await handleMissionRoutes({
+        req: createRequest({ method: "GET", url: "/missions/msn.01/timeline?page=true&cursor=not-a-cursor" }),
+        res,
+        url: new URL("http://127.0.0.1/missions/msn.01/timeline?page=true&cursor=not-a-cursor"),
+        deps,
+      });
+      assert.equal(getStatus(), 400);
+      assert.deepEqual(getJson(), { error: "cursor must be a valid timeline cursor" });
     } finally {
       t.cleanup();
     }

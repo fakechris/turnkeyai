@@ -197,6 +197,7 @@ The implementation now includes:
 - Native memory tools plus prompt harness guidance for recall without fabrication.
 - Pre-compaction memory flush before request-envelope reduction writes durable carry-forward notes.
 - Mission-route level regression coverage for `POST /missions/:id/messages` → native tool call/progress/result → `GET /missions/:id/timeline`.
+- Cursor-page timeline reads for long Mission Detail replay (`/missions/:id/timeline?page=true&cursor=...`) while preserving the legacy array response for existing clients.
 
 ## 10. Remaining Hardening
 
@@ -204,7 +205,6 @@ This is not the final product surface. Remaining work is operational hardening:
 
 - Broaden browser-agent-only direct tool definitions (`browser.open`, `browser.snapshot`, `browser.act`, `browser.screenshot`, `browser.console`) without exposing them to the lead role by default.
 - Add more Mission Detail filters for long tool-heavy timelines.
-- Strengthen prompt-injection defenses around browser text evidence before it enters role prompts.
-- Add scale-oriented cursors for long mission timelines and long sub-session histories.
+- Add scale-oriented cursors for long sub-session histories.
 
 The key architectural decision is fixed: TurnkeyAI's core tool-use path is model-native and session-native, not prompt-only and not browser-bridge-only.
