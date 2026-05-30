@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type {
   ActivityEvent,
+  ActivityEventId,
   ActivityEventStore,
   MissionId,
 } from "@turnkeyai/core-types/mission";
@@ -31,7 +32,7 @@ export class FileActivityEventStore implements ActivityEventStore {
 
   async listByMission(
     missionId: MissionId,
-    options?: { limit?: number }
+    options?: { limit?: number; before?: { tMs: number; id: ActivityEventId } }
   ): Promise<ActivityEvent[]> {
     const file = this.missionFile(missionId);
     let raw: string;
@@ -51,11 +52,14 @@ export class FileActivityEventStore implements ActivityEventStore {
         // shouldn't block the dashboard from reading the rest.
       }
     }
-    events.sort((a, b) => a.tMs - b.tMs);
+    events.sort(compareActivityEvents);
+    const visible = options?.before
+      ? events.filter((event) => compareActivityEventToCursor(event, options.before!) < 0)
+      : events;
     if (typeof options?.limit === "number" && options.limit > 0) {
-      return events.slice(-options.limit);
+      return visible.slice(-options.limit);
     }
-    return events;
+    return visible;
   }
 
   async append(event: ActivityEvent): Promise<void> {
@@ -88,4 +92,15 @@ export class FileActivityEventStore implements ActivityEventStore {
   private missionFile(missionId: MissionId): string {
     return path.join(this.rootDir, `${encodeURIComponent(missionId)}.jsonl`);
   }
+}
+
+function compareActivityEvents(a: ActivityEvent, b: ActivityEvent): number {
+  return a.tMs - b.tMs || a.id.localeCompare(b.id);
+}
+
+function compareActivityEventToCursor(
+  event: ActivityEvent,
+  cursor: { tMs: number; id: ActivityEventId }
+): number {
+  return event.tMs - cursor.tMs || event.id.localeCompare(cursor.id);
 }

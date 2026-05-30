@@ -4,6 +4,7 @@
 //   GET  /missions/:id                      → Mission
 //   GET  /missions/:id/work-items           → WorkItem[]
 //   GET  /missions/:id/timeline?limit=N     → ActivityEvent[]
+//   GET  /missions/:id/timeline?page=true   → { events, nextCursor, hasMore }
 //   GET  /missions/:id/artifacts            → Artifact[]
 //   GET  /missions/:id/approvals            → ApprovalRequest[]
 //   GET  /missions/:id/metrics              → MissionObservabilitySnapshot
@@ -119,6 +120,9 @@ export interface MissionRouteDeps {
   };
   runtimeProgressStore?: Pick<RuntimeProgressStore, "listByThread">;
 }
+
+const DEFAULT_TIMELINE_LIMIT = 200;
+const MAX_TIMELINE_LIMIT = 500;
 
 export async function handleMissionRoutes(input: {
   req: http.IncomingMessage;
@@ -487,15 +491,41 @@ export async function handleMissionRoutes(input: {
       // treated null as "bad". Explicit handling here: missing param =
       // default 200, present-but-malformed = 400.
       const limitParam = url.searchParams.get("limit");
-      const limit = limitParam === null ? 200 : parsePositiveLimit(limitParam);
+      const parsedLimit = limitParam === null ? DEFAULT_TIMELINE_LIMIT : parsePositiveLimit(limitParam);
+      const limit = parsedLimit === null ? null : Math.min(parsedLimit, MAX_TIMELINE_LIMIT);
       if (limit === null) {
         sendJson(res, 400, { error: "limit must be a positive integer" });
+        return true;
+      }
+      const wantsPage = url.searchParams.get("page") === "true";
+      const cursorParam = url.searchParams.get("cursor");
+      const cursor = cursorParam ? decodeTimelineCursor(cursorParam) : null;
+      if (cursorParam && !cursor) {
+        sendJson(res, 400, { error: "cursor must be a valid timeline cursor" });
+        return true;
+      }
+      if (wantsPage) {
+        const rawEvents = await deps.activityStore.listByMission(id, {
+          limit: limit + 1,
+          ...(cursor ? { before: cursor } : {}),
+        });
+        const hasMore = rawEvents.length > limit;
+        const events = hasMore ? rawEvents.slice(1) : rawEvents;
+        sendJson(res, 200, {
+          events,
+          nextCursor: hasMore && events.length > 0 ? encodeTimelineCursor(events[0]!) : null,
+          hasMore,
+          limit,
+        });
         return true;
       }
       sendJson(
         res,
         200,
-        await deps.activityStore.listByMission(id, { limit })
+        await deps.activityStore.listByMission(id, {
+          limit,
+          ...(cursor ? { before: cursor } : {}),
+        })
       );
       return true;
     }
@@ -679,6 +709,32 @@ function readNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function encodeTimelineCursor(event: ActivityEvent): string {
+  return Buffer.from(JSON.stringify({ tMs: event.tMs, id: event.id }), "utf8").toString("base64url");
+}
+
+function decodeTimelineCursor(value: string): { tMs: number; id: string } | null {
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as unknown;
+    if (!decoded || typeof decoded !== "object") return null;
+    const record = decoded as Record<string, unknown>;
+    const tMs = record.tMs;
+    const id = record.id;
+    if (
+      typeof tMs !== "number" ||
+      !Number.isSafeInteger(tMs) ||
+      tMs < 0 ||
+      typeof id !== "string" ||
+      id.trim() === ""
+    ) {
+      return null;
+    }
+    return { tMs, id };
+  } catch {
+    return null;
+  }
 }
 
 function readApprovalDecision(value: unknown): "approved" | "denied" | null {

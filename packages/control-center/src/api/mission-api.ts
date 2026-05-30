@@ -195,6 +195,13 @@ export interface ActivityEvent {
   approvalId?: string;
 }
 
+export interface ActivityTimelinePage {
+  events: ActivityEvent[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  limit: number;
+}
+
 // ── Worker Sessions ───────────────────────────────────────────────────
 
 export type WorkerSessionStatus =

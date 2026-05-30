@@ -296,7 +296,10 @@ export interface WorkItemStore {
 }
 
 export interface ActivityEventStore {
-  listByMission(missionId: MissionId, options?: { limit?: number }): Promise<ActivityEvent[]>;
+  listByMission(
+    missionId: MissionId,
+    options?: { limit?: number; before?: { tMs: number; id: ActivityEventId } }
+  ): Promise<ActivityEvent[]>;
   append(event: ActivityEvent): Promise<void>;
 }
 

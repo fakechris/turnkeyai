@@ -19,6 +19,7 @@ import type { OnboardingState, RuntimeSummaryReport } from "./types";
 import { useApiClient } from "./useApiClient";
 import type {
   ActivityEvent,
+  ActivityTimelinePage,
   Agent,
   ApprovalRow,
   Artifact,
@@ -240,6 +241,21 @@ export function useTimeline(
     `/missions/${encodeURIComponent(missionId)}/timeline?limit=${limit}`,
     fallback,
     { dependsOn: [missionId, limit], pollIntervalMs }
+  );
+}
+
+export function useTimelinePage(
+  missionId: string,
+  fallback: ActivityTimelinePage,
+  options: { limit?: number; cursor?: string | null; pollIntervalMs?: number } = {}
+): RemoteData<ActivityTimelinePage> {
+  const limit = options.limit ?? 200;
+  const cursor = options.cursor ? `&cursor=${encodeURIComponent(options.cursor)}` : "";
+  const pollIntervalMs = options.pollIntervalMs ?? 0;
+  return useRemote<ActivityTimelinePage>(
+    `/missions/${encodeURIComponent(missionId)}/timeline?page=true&limit=${limit}${cursor}`,
+    fallback,
+    { dependsOn: [missionId, limit, options.cursor ?? null], pollIntervalMs }
   );
 }
 

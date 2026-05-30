@@ -196,17 +196,18 @@ describe("FileActivityEventStore", () => {
     text: id,
   });
 
-  it("append then listByMission preserves order by tMs", async () => {
+  it("append then listByMission preserves order by tMs and id", async () => {
     const t = tmp();
     try {
       const store = new FileActivityEventStore({ rootDir: t.dir });
       await store.append(e("c", "msn.x", 3, "tool"));
       await store.append(e("a", "msn.x", 1, "plan"));
       await store.append(e("b", "msn.x", 2, "thought"));
+      await store.append(e("b-2", "msn.x", 2, "thought"));
       const out = await store.listByMission("msn.x");
       assert.deepEqual(
         out.map((ev) => ev.id),
-        ["a", "b", "c"]
+        ["a", "b", "b-2", "c"]
       );
     } finally {
       t.cleanup();
@@ -222,6 +223,27 @@ describe("FileActivityEventStore", () => {
       assert.deepEqual(
         out.map((ev) => ev.id),
         ["e7", "e8", "e9"]
+      );
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it("before cursor returns the previous timeline page with stable tie-breaking", async () => {
+    const t = tmp();
+    try {
+      const store = new FileActivityEventStore({ rootDir: t.dir });
+      await store.append(e("e1", "msn.cursor", 1, "tool"));
+      await store.append(e("e2a", "msn.cursor", 2, "tool"));
+      await store.append(e("e2b", "msn.cursor", 2, "tool"));
+      await store.append(e("e3", "msn.cursor", 3, "tool"));
+      const out = await store.listByMission("msn.cursor", {
+        before: { tMs: 2, id: "e2b" },
+        limit: 2,
+      });
+      assert.deepEqual(
+        out.map((ev) => ev.id),
+        ["e1", "e2a"]
       );
     } finally {
       t.cleanup();
