@@ -102,6 +102,43 @@ test("buildDiagnosticsMissionHealthSnapshot keeps diagnostics alive when one mis
   assert.equal(snapshot.byStatus.working, 1);
 });
 
+test("buildDiagnosticsMissionHealthSnapshot ignores archived missions for attention scans", async () => {
+  const missions = [
+    mission("msn.archived", "Archived blocked mission", "archived", 3_000, {
+      blockers: 2,
+      threadId: "thread.archived",
+    }),
+    mission("msn.done", "Completed", "done", 2_000),
+  ];
+  const activityReads: string[] = [];
+  const snapshot = await buildDiagnosticsMissionHealthSnapshot({
+    missionStore: { list: async () => missions },
+    activityStore: {
+      listByMission: async (id) => {
+        activityReads.push(id);
+        if (id === "msn.archived") {
+          return [
+            {
+              ...tool("ev.archived.fail", 3_500, "result", "sessions_spawn", "call.archived", "old timeout"),
+              missionId: "msn.archived",
+              emph: "danger" as const,
+            },
+          ];
+        }
+        return [event("ev.done.final", "thought", 2_500, "role-lead", "Final answer with residual risk.")];
+      },
+    },
+    runtimeProgressStore: { listByThread: async () => [] },
+    nowMs: 4_000,
+  });
+
+  assert.equal(snapshot.byStatus.archived, 1);
+  assert.equal(snapshot.withBlockers, 0);
+  assert.deepEqual(activityReads, ["msn.done"]);
+  assert.equal(snapshot.attentionMissions.some((item) => item.id === "msn.archived"), false);
+  assert.equal(snapshot.tool.failed, 0);
+});
+
 function mission(
   id: string,
   title: string,

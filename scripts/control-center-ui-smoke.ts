@@ -47,6 +47,7 @@ const postedMessages: unknown[] = [];
 const postedContextSources: unknown[] = [];
 const postedRecoveryActions: string[] = [];
 const postedMissionReconciles: string[] = [];
+const postedMissionArchives: string[] = [];
 const savedModelCatalogContents: string[] = [];
 let onboardingState = onboardingStateFixture();
 const browserConsoleErrors: string[] = [];
@@ -434,6 +435,13 @@ try {
 
     const screenshot = await page.screenshot({ fullPage: true });
     assert(screenshot.byteLength > 20_000, `expected non-trivial screenshot, got ${screenshot.byteLength} bytes`);
+
+    await page.getByRole("button", { name: "Archive" }).click();
+    await page.waitForFunction(() => window.location.hash === "#/missions");
+    assert(
+      postedMissionArchives.includes(missionId),
+      "mission detail archive should call the mission-scoped archive route"
+    );
 
     await page.goto(`http://127.0.0.1:${port}/app#/settings`, {
       waitUntil: "networkidle",
@@ -839,6 +847,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       scope: "mission",
       missionId,
       appended: 1,
+    });
+    return;
+  }
+  if (method === "POST" && url.pathname === `/missions/${missionId}/archive`) {
+    if (!hasOperatorAccess(req)) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized", requiredAccess: "operator" }));
+      return;
+    }
+    postedMissionArchives.push(missionId);
+    json(res, {
+      ...missionFixture(),
+      status: "archived",
     });
     return;
   }

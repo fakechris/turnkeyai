@@ -247,6 +247,7 @@ Acceptance Evidence:
 - `npm run typecheck`
 - `npm run build`
 - `git diff --check`
+- `npm run release:verify`: passed 9/9 packaged CLI checks.
 - Mission E2E:
   `npm run mission:e2e -- --scenario product-workbench-brief --scenario-timeout-ms 180000`
   passed with mission `msn.mps7uf76.1`, status `done`, quality gate `passed`,
@@ -520,3 +521,47 @@ Regression Risk:
   if the file no longer matches the exiting process. That is intentional and
   safer than deleting a new daemon's pid file; startup already detects stale pid
   files and cleans them when the port is free.
+
+## 2026-05-30 19:59 CST - Terminal Mission Archive Loop
+
+Direction: converging
+
+Execution Kernel:
+- No tool-use or sub-agent execution semantics changed.
+- Added an operator archive action for terminal missions only. Active missions
+  (`working`, `planning`, `needs_approval`) are rejected with a stable
+  `mission_active` conflict, so the cleanup path cannot hide still-running work.
+
+Result Quality:
+- Final-answer generation did not change.
+- Historical blocked or done missions can now be retired from active attention
+  after review, which keeps quality diagnostics focused on current failures
+  instead of repeatedly surfacing old E2E/test artifacts.
+
+Workbench UX:
+- Mission Detail now exposes a user-visible `Archive` action for terminal
+  missions. After archive, the Control Center returns to the mission list.
+- The Control Center smoke test exercises the archive click path against the
+  mocked API and verifies the route returns to `#/missions`.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- Diagnostics now excludes archived missions from mission-attention inspection,
+  so stale historical browser/tool failures do not permanently contaminate the
+  current browser reliability warning set.
+
+Acceptance Evidence:
+- `npm run control-center:smoke -- --allow-missing-browser`: passed.
+- `npx tsx --test packages/app-gateway/src/routes/mission-routes.test.ts packages/app-gateway/src/mission-health-diagnostics.test.ts packages/app-gateway/src/daemon-auth.test.ts`:
+  42 passing.
+- `npm test -- --runInBand`: 1202 passing.
+- `npm run typecheck`
+- `npm run build`
+- `git diff --check`
+
+Regression Risk:
+- Archive is a mutation route. The main risk is accidental cleanup of active
+  missions; route-level status checks and operator-scope auth cover that path.
+- Archived missions remain durable records. This only removes them from active
+  diagnostics attention, so terminal history is not deleted and can still be
+  inspected by direct store access or future archive-aware UI.

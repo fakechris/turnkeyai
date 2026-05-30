@@ -14,6 +14,7 @@
 //   POST /mission-context-sources           → register manual ContextSource
 //   POST /missions/reconcile                → force mission/thread mirror pass
 //   POST /missions/:id/reconcile            → force one mission/thread mirror pass
+//   POST /missions/:id/archive              → archive a terminal mission
 //   POST /missions/bootstrap-demo           → upsert design fixtures
 //
 // Read routes are `read` scoped (see daemon-auth.ts); mutation routes
@@ -592,6 +593,50 @@ export async function handleMissionRoutes(input: {
             missionId: mission.id,
             appended,
           },
+        };
+      },
+    });
+  }
+
+  const archiveMissionMatch = pathname.match(/^\/missions\/([^/]+)\/archive$/);
+  if (method === "POST" && archiveMissionMatch) {
+    let missionId: string;
+    try {
+      missionId = decodeURIComponent(archiveMissionMatch[1]!);
+    } catch {
+      sendJson(res, 400, { error: "invalid mission id encoding" });
+      return true;
+    }
+    const mission = await deps.missionStore.get(missionId);
+    if (!mission) {
+      sendJson(res, 404, { error: "mission not found" });
+      return true;
+    }
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: `missions:${mission.id}:archive`,
+      fingerprint: { missionId: mission.id },
+      execute: async () => {
+        if (mission.status === "working" || mission.status === "planning" || mission.status === "needs_approval") {
+          return {
+            statusCode: 409,
+            body: {
+              error: "mission is still active",
+              code: "mission_active",
+              status: mission.status,
+            },
+          };
+        }
+        const archived: Mission = {
+          ...mission,
+          status: "archived",
+        };
+        await deps.missionStore.putRaw(archived);
+        return {
+          statusCode: 200,
+          body: archived,
         };
       },
     });

@@ -820,3 +820,12 @@ export function useReconcileMission(): (missionId: string) => Promise<{ appended
     [client]
   );
 }
+
+export function useArchiveMission(): (missionId: string) => Promise<Mission> {
+  const client = useApiClient();
+  return useCallback(
+    (missionId: string) =>
+      client.post<Mission>(`/missions/${encodeURIComponent(missionId)}/archive`),
+    [client]
+  );
+}

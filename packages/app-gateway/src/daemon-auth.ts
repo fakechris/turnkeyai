@@ -202,7 +202,7 @@ export function resolveDaemonRequestAccess(
   }
   if (
     req.method === "POST" &&
-    /^\/missions\/[^/]+\/(?:messages|reconcile)$/.test(url.pathname)
+    /^\/missions\/[^/]+\/(?:messages|reconcile|archive)$/.test(url.pathname)
   ) {
     return "operator";
   }
