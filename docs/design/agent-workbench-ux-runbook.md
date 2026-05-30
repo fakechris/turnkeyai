@@ -52,7 +52,7 @@ fragment. A bare `/app` URL is expected to show the `Auth token required` page.
 Mission Detail must preserve this order:
 
 ```text
-context / recovery / sessions
+mission now / context / recovery / sessions
   -> work trace and tool process
   -> evidence
   -> final answer
@@ -62,6 +62,9 @@ context / recovery / sessions
 
 Rules:
 
+- A `Mission now` summary appears above runtime detail cards and shows the
+  current or latest state, latest replay event, latest tool step, role/session
+  activity, tool counts, and liveness.
 - Tool process appears before the final answer.
 - The trace is collapsed by default for completed work.
 - The collapsed trace still tells the user that the final answer appears below.

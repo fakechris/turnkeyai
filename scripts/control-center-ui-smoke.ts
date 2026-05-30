@@ -319,6 +319,7 @@ try {
     });
 
     await page.waitForSelector(".thinking-card");
+    await page.waitForSelector(".mission-progress-card");
     await page.waitForSelector(".context-continuity-card");
     await page.waitForSelector(".browser-continuity-card");
     await page.waitForSelector(".mission-recovery-card");
@@ -329,6 +330,19 @@ try {
     await page.waitForSelector(".final-answer-card .markdown-body code");
 
     assert(await page.locator(".final-answer-card").count() === 1, "expected exactly one final answer card");
+    assert(await page.locator(".mission-progress-card").count() === 1, "expected exactly one mission progress card");
+    assert(
+      await page.locator(".mission-progress-card", { hasText: "Done, needs attention" }).isVisible(),
+      "mission progress should summarize current mission status"
+    );
+    assert(
+      await page.locator(".mission-progress-card", { hasText: "thought · role-lead" }).isVisible(),
+      "mission progress should show the latest replay event"
+    );
+    assert(
+      await page.locator(".mission-progress-card", { hasText: "sessions_spawn · result" }).isVisible(),
+      "mission progress should show the latest tool step"
+    );
     assert(await page.locator(".thinking-card").count() === 1, "expected exactly one work trace card");
     assert(
       await page.locator(".mission-metrics-card", { hasText: "Needs attention" }).isVisible(),
@@ -406,6 +420,7 @@ try {
       await page.locator(".thinking-card-preview", { hasText: "Final answer remains below" }).isVisible(),
       "collapsed trace preview should tell the user the final answer remains below"
     );
+    await assertVerticalOrder(page, ".mission-progress-card", ".role-run-card", "mission progress should appear above runtime detail cards");
     await assertVerticalOrder(page, ".context-continuity-card", ".mission-recovery-card", "context continuity should appear before recovery cases");
     await assertVerticalOrder(page, ".mission-recovery-card", ".browser-continuity-card", "recovery cases should appear before browser continuity");
     await assertVerticalOrder(page, ".browser-continuity-card", ".worker-session-card", "browser continuity should appear before sub-agent sessions");
