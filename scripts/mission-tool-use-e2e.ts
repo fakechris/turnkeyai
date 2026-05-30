@@ -31,6 +31,7 @@ type MissionE2eScenario =
   | "timeout-recovery"
   | "memory-recall"
   | "task-tracking"
+  | "product-workbench-brief"
   | "realistic-brief";
 
 const MISSION_E2E_SCENARIOS = DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS satisfies readonly MissionE2eScenario[];
@@ -103,6 +104,10 @@ const MEMORY_SETUP_MARKER = "TURNKEYAI_MISSION_MEMORY_SETUP_OK";
 const MEMORY_SOURCE_MARKER = "TURNKEYAI_MEMORY_RECALL_SOURCE_OK";
 const MEMORY_RECALL_FINAL_MARKER = "TURNKEYAI_MISSION_MEMORY_RECALL_OK";
 const TASK_TRACKING_FINAL_MARKER = "TURNKEYAI_MISSION_TASK_TRACKING_OK";
+const PRODUCT_WORKBENCH_FINAL_MARKER = "TURNKEYAI_MISSION_PRODUCT_WORKBENCH_OK";
+const PRODUCT_ORCHESTRATION_MARKER = "TURNKEYAI_PRODUCT_ORCHESTRATION_OK";
+const PRODUCT_BRIDGE_MARKER = "TURNKEYAI_PRODUCT_BRIDGE_OK";
+const PRODUCT_WORKBENCH_SIGNAL_MARKER = "TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK";
 const REALISTIC_BRIEF_FINAL_MARKER = "TURNKEYAI_MISSION_REALISTIC_BRIEF_OK";
 
 interface FixtureServer {
@@ -114,6 +119,9 @@ interface FixtureServer {
   approvalUrl: string;
   dynamicUrl: string;
   dashboardUrl: string;
+  orchestrationUrl: string;
+  bridgeUrl: string;
+  productSignalsUrl: string;
 }
 
 interface ScenarioSpec {
@@ -989,6 +997,98 @@ async function startFixtureServer(): Promise<FixtureServer> {
 </html>`);
       return;
     }
+    if (pathname === "/product-orchestration") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head><title>Product Orchestration Evidence</title></head>
+  <body>
+    <main>
+      <h1>Agent workbench orchestration</h1>
+      <p id="marker">${PRODUCT_ORCHESTRATION_MARKER}</p>
+      <p>Primary user story: a product lead starts one mission, then specialist agents watch documents, browser state, and work items until a decision-ready brief is produced.</p>
+      <p>Strength: multi-agent decomposition with durable sub-session history and follow-up.</p>
+      <p>Gap: users need clearer entry points than a developer command line.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
+    if (pathname === "/product-bridge") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head><title>Bridge Capability Evidence</title></head>
+  <body>
+    <main>
+      <h1>Browser bridge capability surface</h1>
+      <p id="marker">${PRODUCT_BRIDGE_MARKER}</p>
+      <p>Controls: open pages, inspect rendered DOM, act on coordinates and forms after approval, collect screenshots, console output, and artifacts.</p>
+      <p>Boundary: browser work is a means for mission completion; the bridge does not control the desktop outside the browser.</p>
+      <p>Risk: command-line setup and provider configuration still block first-run adoption.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
+    if (pathname === "/product-signals") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head>
+    <title>Workbench Product Signals</title>
+    <script>
+      window.__turnkeyProductSignals = { status: "booting" };
+      const joinProductSignal = (...parts) => parts.join("");
+      const renderTurnkeyProductSignals = () => {
+        const root = document.getElementById("product-signal-root");
+        if (!root) {
+          window.__turnkeyProductSignals = { status: "missing-root" };
+          return;
+        }
+        const marker = joinProductSignal("TURNKEYAI_PRODUCT", "_WORKBENCH_SIGNAL", "_OK");
+        const stuckMissions = 4 + 2;
+        const weakAnswerRate = 18 + 6;
+        const nextAction = joinProductSignal(
+          "make Mission ",
+          "Control the default ",
+          "entry and gate ",
+          "release on real ",
+          "LLM scenario quality"
+        );
+        window.__turnkeyProductSignals = {
+          status: "ready",
+          marker,
+          stuckMissions,
+          weakAnswerRate,
+          nextAction,
+          source: "client-rendered product signal fixture"
+        };
+        root.innerHTML = [
+          "<h1>Workbench product signals</h1>",
+          "<p id='marker'>" + marker + "</p>",
+          "<p id='stuck-missions'>Stuck missions: " + stuckMissions + "</p>",
+          "<p id='weak-answer-rate'>Weak answer rate: " + weakAnswerRate + "%</p>",
+          "<p id='next-action'>Recommended next action: " + nextAction + "</p>",
+          "<p id='scope'>Residual risk: local product signal fixture only.</p>"
+        ].join("");
+      };
+      if (document.readyState === "loading") {
+        window.addEventListener("DOMContentLoaded", renderTurnkeyProductSignals, { once: true });
+      } else {
+        renderTurnkeyProductSignals();
+      }
+    </script>
+  </head>
+  <body>
+    <main id="product-signal-root">
+      <h1>Loading product signals</h1>
+      <p>Server HTML does not contain the product signal marker; browser JavaScript must render it.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
     res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     res.end("not found");
     return;
@@ -1003,6 +1103,9 @@ async function startFixtureServer(): Promise<FixtureServer> {
     approvalUrl: `http://127.0.0.1:${port}/approval-form`,
     dynamicUrl: `http://127.0.0.1:${port}/dynamic-dashboard`,
     dashboardUrl: `http://127.0.0.1:${port}/ops-dashboard`,
+    orchestrationUrl: `http://127.0.0.1:${port}/product-orchestration`,
+    bridgeUrl: `http://127.0.0.1:${port}/product-bridge`,
+    productSignalsUrl: `http://127.0.0.1:${port}/product-signals`,
   };
 }
 
@@ -1021,6 +1124,16 @@ async function assertRenderedFixtureEvidenceHidden(fixture: FixtureServer): Prom
       "SLA breaches: 3",
       "queue depth above 5 or SLA breaches above 0",
       "Incident Commander",
+    ],
+  });
+  await assertRawFixtureOmits({
+    label: "product workbench signal fixture",
+    url: fixture.productSignalsUrl,
+    forbidden: [
+      PRODUCT_WORKBENCH_SIGNAL_MARKER,
+      "Stuck missions: 6",
+      "Weak answer rate: 24%",
+      "make Mission Control the default entry",
     ],
   });
 }
@@ -1218,6 +1331,93 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "- tracked item: Verify Helios-47 rollout note is done with progress 1.",
         "- residual risk: this validates local mission task state only, not external project delivery.",
         "Do not create a separate bullet, heading, or paragraph for the final success marker.",
+        "Do not use tables, links, code fences, or bold/italic markup.",
+      ].join("\n"),
+    };
+  }
+  if (scenario === "product-workbench-brief") {
+    return {
+      scenario,
+      title: "Mission route product workbench brief E2E",
+      finalMarker: PRODUCT_WORKBENCH_FINAL_MARKER,
+      evidenceMarkers: [PRODUCT_ORCHESTRATION_MARKER, PRODUCT_BRIDGE_MARKER, PRODUCT_WORKBENCH_SIGNAL_MARKER],
+      answerTerms: [
+        "multi-agent",
+        "durable sub-session history",
+        "browser bridge",
+        "Mission Control",
+        "Stuck missions: 6",
+        "Weak answer rate: 24%",
+        "default entry",
+        "real LLM scenario quality",
+        "residual risk",
+      ],
+      answerPatterns: [
+        { label: "decision-grade recommendation", pattern: /recommend|prioritiz|default entry|ship/i },
+        { label: "browser-rendered product signal evidence", pattern: /browser|JavaScript|client-rendered|rendered DOM/i },
+        { label: "agent orchestration framing", pattern: /multi-agent|specialist agents|sub-session/i },
+      ],
+      evidenceLinePatterns: [
+        {
+          label: "orchestration evidence line",
+          pattern: /^\s*[-*+]\s+orchestration evidence\s*:.*TURNKEYAI_PRODUCT_ORCHESTRATION_OK.*multi-agent.*durable sub-session history/im,
+        },
+        {
+          label: "bridge evidence line",
+          pattern: /^\s*[-*+]\s+bridge evidence\s*:.*TURNKEYAI_PRODUCT_BRIDGE_OK.*browser bridge.*desktop outside the browser/im,
+        },
+        {
+          label: "browser signal evidence line",
+          pattern: /^\s*[-*+]\s+browser signal evidence\s*:.*TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK.*Stuck missions: 6.*Weak answer rate: 24%/im,
+        },
+        {
+          label: "recommendation line",
+          pattern: /^\s*[-*+]\s+recommendation\s*:.*TURNKEYAI_MISSION_PRODUCT_WORKBENCH_OK.*Mission Control.*default entry.*real LLM scenario quality/im,
+        },
+        { label: "next actions line", pattern: /^\s*[-*+]\s+next actions\s*:/im },
+        { label: "residual risk line", pattern: /^\s*[-*+]\s+residual risk\s*:/im },
+      ],
+      forbiddenPatterns: [
+        { label: "unsupported external adoption claim", pattern: /\b(millions of users|market share|widely adopted|customers)\b/i },
+        { label: "unsupported native shell claim", pattern: /\b(Electron is shipped|Tauri is shipped|native app is complete)\b/i },
+        { label: "unresolved placeholder", pattern: /\b(TBD|to be confirmed|needs confirmation|待确认|估算)\b/i },
+        { label: "internal source URL", pattern: /https?:\/\//i },
+      ],
+      minBytes: 900,
+      maxBytes: 2_400,
+      expectedSpawnCalls: 3,
+      expectedSendCalls: 0,
+      expectedToolResults: 3,
+      expectedSpawnedSessions: 3,
+      expectedContinuedSessions: 0,
+      minEvidenceEvents: 3,
+      expectedBullets: 6,
+      allowAtLeastBullets: true,
+      desc: [
+        "Prepare a decision-grade product brief for the next agent workbench release.",
+        "Use the available session tools. Do not answer from memory.",
+        "Gather evidence from three independent child sessions before finalizing:",
+        `- Orchestration: use an explore session to fetch ${fixture.orchestrationUrl} and extract marker ${PRODUCT_ORCHESTRATION_MARKER}, primary user story, strength, and gap.`,
+        `- Bridge capability: use an explore session to fetch ${fixture.bridgeUrl} and extract marker ${PRODUCT_BRIDGE_MARKER}, controls, boundary, and risk.`,
+        `- Product signals: use a browser session, not direct fetch, to open ${fixture.productSignalsUrl}; inspect the JavaScript-rendered dashboard and extract marker ${PRODUCT_WORKBENCH_SIGNAL_MARKER}, Stuck missions: 6, Weak answer rate: 24%, and the recommended next action.`,
+        "Do not finalize until all three child session tool results have returned and all three markers are present in tool evidence.",
+        "The final answer must be useful to a product lead. It must state what to build next, why, what not to over-emphasize, and what risk remains.",
+        "Do not frame browser control as the product itself; frame it as one capability inside a larger multi-agent workbench.",
+        "Do not claim a native Electron/Tauri shell is already shipped.",
+        "Do not infer market adoption, external outages, customer counts, or external pricing beyond the local fixture text.",
+        "Never write assume, assumed, estimate, probably, maybe, to be confirmed, or pending confirmation in the final answer.",
+        `The recommendation bullet must start with "- recommendation: ${PRODUCT_WORKBENCH_FINAL_MARKER}" and state the release decision.`,
+        "Use exactly this section skeleton for the final answer, with no preamble before it and no closing note after it:",
+        "evidence",
+        `- orchestration evidence: ${PRODUCT_ORCHESTRATION_MARKER}; include primary user story, multi-agent decomposition, durable sub-session history, and gap.`,
+        `- bridge evidence: ${PRODUCT_BRIDGE_MARKER}; include browser bridge controls, browser-only boundary, and first-run setup risk.`,
+        `- browser signal evidence: ${PRODUCT_WORKBENCH_SIGNAL_MARKER}; include Stuck missions: 6, Weak answer rate: 24%, and that the evidence came from browser-rendered JavaScript or client-rendered DOM.`,
+        "decision",
+        `- recommendation: ${PRODUCT_WORKBENCH_FINAL_MARKER} - make Mission Control the default entry and gate release on real LLM scenario quality before expanding native shell work.`,
+        "- next actions: list exactly three concrete build actions for onboarding, mission completion quality, and bridge/runtime diagnostics.",
+        "- residual risk: state what remains source-bounded to local fixtures and what still needs real-world validation.",
+        "Do not include source URLs in the final answer; cite source names and markers instead.",
+        "Use plain section labels or plain Markdown headings only; do not wrap section labels in ** or __.",
         "Do not use tables, links, code fences, or bold/italic markup.",
       ].join("\n"),
     };

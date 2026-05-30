@@ -173,6 +173,7 @@ Mission scenarios:
 - `timeout-recovery`: one explore child session is intentionally bounded with `timeout_seconds=0.001`, the worker session is interrupted into `resumable`, mission liveness settles to zero, and the lead produces a bounded final answer without spawning fallback tools
 - `memory-recall`: a follow-up seeds durable thread memory, then the lead must call `memory_search` and `memory_get` exactly once before producing a source-bounded final answer without delegating to session tools
 - `task-tracking`: the lead must call `tasks_list`, `tasks_create`, and `tasks_update` exactly once each, use the created work-item id for the update, and leave a product-visible mission task in `done` state
+- `product-workbench-brief`: three independent child sessions gather orchestration, bridge capability, and browser-rendered product-signal evidence, then the lead must produce a decision-grade product brief with concrete next actions, source-bounded claims, and no hedged placeholders
 - `realistic-brief`: three independent child sessions gather two vendor fixture sources plus one browser-rendered operations dashboard, then the lead must produce an operator-ready brief with source coverage, recommendation, dashboard action, and residual risk without a fully templated final answer
 
 The script honors `--scenario-timeout-ms` with a default of `180000` ms. It
@@ -195,8 +196,8 @@ Latest local acceptance on 2026-05-30:
 - `npm run tooluse:e2e:real-matrix -- --model-catalog models.local.json`
 - `npm run tooluse:e2e:real-matrix -- --with-browser --model-catalog models.local.json --cdp-timeout-ms 45000 --scenario-timeout-ms 240000`
 - `npm run mission:e2e:matrix -- --model-catalog models.local.json --scenario-timeout-ms 240000`
-- `npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 240000 --cdp-timeout-ms 45000 --data-dir /tmp/turnkeyai-real-acceptance-dashboard-quality-final`
+- `npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 300000 --cdp-timeout-ms 45000 --data-dir /tmp/turnkeyai-real-acceptance-20260530162834`
 
 The latest full gate recorded validation-ops run
-`validation-ops:real-llm-acceptance:2026-05-29T20-13-32-185Z:ru87jq` with
+`validation-ops:real-llm-acceptance:2026-05-30T08-28-34-523Z:tg62k7` with
 status `passed`.
