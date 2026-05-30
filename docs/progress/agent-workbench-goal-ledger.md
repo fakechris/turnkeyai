@@ -219,6 +219,52 @@ Regression Risk:
   the focused mission E2E gives useful evidence but does not replace the next
   full acceptance pass.
 
+## 2026-05-30 18:45 CST - Production Role Budget Aligned
+
+Direction: converging
+
+Execution Kernel:
+- The daemon's production outer role activation budget is now `128` instead of
+  `6`, aligned with the native tool loop budget and the final-step synthesis
+  guard.
+- The budget is exported as `DEFAULT_DAEMON_RUNTIME_LIMITS` and covered by a
+  regression test, rather than living as an untested inline daemon literal.
+
+Result Quality:
+- Complex missions now have enough outer role activations to continue across
+  sub-agent/tool work without prematurely hitting a 6-step ceiling.
+- The risk is longer-running weak work; the existing controls are final-step
+  synthesis, native tool wall-clock, worker timeouts, stale diagnostics, and
+  mission quality gates.
+
+Workbench UX:
+- Users should see fewer missions pause early with a continuation notice before
+  the agent has had enough turns to synthesize.
+- No visible page changed in this slice.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- Browser-backed tasks benefit indirectly because browser sub-agent evidence is
+  less likely to be cut off by the parent role's old 6-step budget.
+
+Acceptance Evidence:
+- `npm test -- --runInBand`: 1195 passing.
+- `npm run typecheck`
+- `npm run build`
+- `git diff --check`
+- Mission E2E:
+  `npm run mission:e2e -- --scenario product-workbench-brief --scenario-timeout-ms 180000`
+  passed with mission `msn.mps84hbo.1`, status `done`, quality gate `passed`,
+  tools `3/3`, sessions `3/0`, liveness `0/0/0`, evidence events `3`, final
+  answer `2373` bytes.
+
+Regression Risk:
+- Wider outer role budget can expose loops if prompt/tool governance regresses.
+  This is partially covered by the final-step synthesis guard, runtime liveness
+  diagnostics, and focused mission E2E quality gate.
+- A full real LLM/browser matrix was not rerun for this checkpoint; run it
+  before claiming the whole workbench goal has converged.
+
 ## 24-Hour Review Rule
 
 At least once per day while this goal is active:
