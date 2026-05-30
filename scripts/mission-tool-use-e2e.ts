@@ -270,6 +270,7 @@ function printHelp(exitCode: number): never {
 async function main(options: MissionToolUseE2eOptions): Promise<void> {
   const modelCatalogPath = resolveModelCatalogPath(options.modelCatalogPath);
   const fixture = await startFixtureServer();
+  await assertRenderedFixtureEvidenceHidden(fixture);
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-mission-e2e-"));
   const port = await allocatePort();
   const token = `mission-e2e-${Date.now()}`;
@@ -758,24 +759,28 @@ async function startFixtureServer(): Promise<FixtureServer> {
     <title>Dynamic Browser Fixture</title>
     <script>
       window.__turnkeyDynamicState = { status: "booting" };
+      const joinDynamicEvidence = (...parts) => parts.join("");
       const renderTurnkeyDynamicFixture = () => {
         const root = document.getElementById("dynamic-root");
         if (!root) {
           window.__turnkeyDynamicState = { status: "missing-root" };
           return;
         }
+        const marker = joinDynamicEvidence("TURNKEYAI_DYNAMIC", "_BROWSER", "_OK");
+        const activeUsers = 40 + 2;
+        const queueDepth = 3 + 4;
         window.__turnkeyDynamicState = {
           status: "ready",
-          marker: "${DYNAMIC_BROWSER_MARKER}",
-          activeUsers: 42,
-          queueDepth: 7,
+          marker,
+          activeUsers,
+          queueDepth,
           source: "client-rendered local fixture"
         };
         root.innerHTML = [
           "<h1>Dynamic operations dashboard</h1>",
-          "<p id='marker'>${DYNAMIC_BROWSER_MARKER}</p>",
-          "<p id='active-users'>Active users: 42</p>",
-          "<p id='queue-depth'>Queue depth: 7</p>",
+          "<p id='marker'>" + marker + "</p>",
+          "<p id='active-users'>Active users: " + activeUsers + "</p>",
+          "<p id='queue-depth'>Queue depth: " + queueDepth + "</p>",
           "<p id='risk'>Residual risk: local dynamic fixture only.</p>"
         ].join("");
       };
@@ -803,28 +808,34 @@ async function startFixtureServer(): Promise<FixtureServer> {
     <title>Operations Dashboard Fixture</title>
     <script>
       window.__turnkeyDashboardState = { status: "booting" };
+      const joinDashboardEvidence = (...parts) => parts.join("");
       const renderTurnkeyDashboardFixture = () => {
         const root = document.getElementById("dashboard-root");
         if (!root) {
           window.__turnkeyDashboardState = { status: "missing-root" };
           return;
         }
+        const marker = joinDashboardEvidence("TURNKEYAI_DASHBOARD", "_TRIAGE", "_OK");
+        const queueDepth = 8 + 3;
+        const slaBreaches = 1 + 2;
+        const escalationThreshold = joinDashboardEvidence("queue depth above ", "5", " or SLA breaches above ", "0");
+        const recommendedOwner = joinDashboardEvidence("Incident", " Commander");
         window.__turnkeyDashboardState = {
           status: "ready",
-          marker: "${DASHBOARD_TRIAGE_MARKER}",
-          queueDepth: 11,
-          slaBreaches: 3,
-          escalationThreshold: "queue depth above 5 or SLA breaches above 0",
-          recommendedOwner: "Incident Commander",
+          marker,
+          queueDepth,
+          slaBreaches,
+          escalationThreshold,
+          recommendedOwner,
           source: "client-rendered local dashboard fixture"
         };
         root.innerHTML = [
           "<h1>Operations dashboard</h1>",
-          "<p id='marker'>${DASHBOARD_TRIAGE_MARKER}</p>",
-          "<p id='queue-depth'>Queue depth: 11</p>",
-          "<p id='sla-breaches'>SLA breaches: 3</p>",
-          "<p id='escalation-threshold'>Escalation threshold: queue depth above 5 or SLA breaches above 0 pages the on-call.</p>",
-          "<p id='recommended-owner'>Recommended owner: Incident Commander</p>",
+          "<p id='marker'>" + marker + "</p>",
+          "<p id='queue-depth'>Queue depth: " + queueDepth + "</p>",
+          "<p id='sla-breaches'>SLA breaches: " + slaBreaches + "</p>",
+          "<p id='escalation-threshold'>Escalation threshold: " + escalationThreshold + " pages the on-call.</p>",
+          "<p id='recommended-owner'>Recommended owner: " + recommendedOwner + "</p>",
           "<p id='scope'>Residual risk: local dynamic dashboard fixture only.</p>"
         ].join("");
       };
@@ -859,6 +870,42 @@ async function startFixtureServer(): Promise<FixtureServer> {
     dynamicUrl: `http://127.0.0.1:${port}/dynamic-dashboard`,
     dashboardUrl: `http://127.0.0.1:${port}/ops-dashboard`,
   };
+}
+
+async function assertRenderedFixtureEvidenceHidden(fixture: FixtureServer): Promise<void> {
+  await assertRawFixtureOmits({
+    label: "dynamic browser fixture",
+    url: fixture.dynamicUrl,
+    forbidden: [DYNAMIC_BROWSER_MARKER, "Active users: 42", "Queue depth: 7"],
+  });
+  await assertRawFixtureOmits({
+    label: "browser dashboard fixture",
+    url: fixture.dashboardUrl,
+    forbidden: [
+      DASHBOARD_TRIAGE_MARKER,
+      "Queue depth: 11",
+      "SLA breaches: 3",
+      "queue depth above 5 or SLA breaches above 0",
+      "Incident Commander",
+    ],
+  });
+}
+
+async function assertRawFixtureOmits(input: {
+  label: string;
+  url: string;
+  forbidden: string[];
+}): Promise<void> {
+  const response = await fetch(input.url);
+  assert.equal(response.ok, true, `${input.label} raw fixture should be readable before mission E2E starts`);
+  const html = await response.text();
+  for (const term of input.forbidden) {
+    assert.equal(
+      html.includes(term),
+      false,
+      `${input.label} leaked browser-only evidence in raw server HTML: ${term}`
+    );
+  }
 }
 
 async function createMission(input: {
