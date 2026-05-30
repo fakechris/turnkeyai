@@ -293,11 +293,11 @@ try {
       "mission health should surface the quality gate status"
     );
     assert(
-      await page.locator(".mission-quality-action-panel", { hasText: "Final answer does not explicitly name residual risk." }).isVisible(),
+      await page.locator(".mission-quality-action-panel", { hasText: "Final answer is too brief for tool-backed work." }).isVisible(),
       "mission health should show the actionable quality-gate detail"
     );
     assert(
-      await page.locator(".mission-quality-action-panel", { hasText: "Ask a follow-up to name residual risk" }).isVisible(),
+      await page.locator(".mission-quality-action-panel", { hasText: "Ask a follow-up for a fuller answer" }).isVisible(),
       "mission health should suggest a concrete follow-up action"
     );
     assert(await page.locator(".context-continuity-card").count() === 1, "expected one context continuity card");
@@ -1102,7 +1102,8 @@ function metricsFixture() {
       checks: [
         { name: "final_answer", status: "pass", detail: "Final answer event exists." },
         { name: "evidence", status: "pass", detail: "Evidence event exists." },
-        { name: "residual_risk", status: "warn", detail: "Final answer does not explicitly name residual risk." },
+        { name: "residual_risk", status: "pass", detail: "Final answer names residual risk." },
+        { name: "answer_substance", status: "warn", detail: "Final answer is too brief for tool-backed work." },
       ],
     },
   };
