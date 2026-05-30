@@ -236,10 +236,6 @@ export function buildAppLauncherScript(options: AppLauncherScriptOptions = {}): 
     "#!/usr/bin/env sh",
     "set -eu",
     "",
-    "if command -v turnkeyai >/dev/null 2>&1; then",
-    '  exec turnkeyai app "$@"',
-    "fi",
-    "",
   ];
   if (options.sourceCheckoutDir) {
     const quotedCheckout = shellQuote(options.sourceCheckoutDir);
@@ -251,6 +247,10 @@ export function buildAppLauncherScript(options: AppLauncherScriptOptions = {}): 
     );
   }
   lines.push(
+    "if command -v turnkeyai >/dev/null 2>&1; then",
+    '  exec turnkeyai app "$@"',
+    "fi",
+    "",
     "if command -v npx >/dev/null 2>&1; then",
     '  exec npx @turnkeyai/cli app "$@"',
     "fi",

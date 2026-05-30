@@ -160,11 +160,15 @@ describe("app-command", () => {
       assert.match(script, /exec npx @turnkeyai\/cli app "\$@"/);
     });
 
-    it("can pin the launcher to a source checkout before falling back to npx", () => {
+    it("can pin the launcher to a source checkout before installed fallbacks", () => {
       const script = buildAppLauncherScript({ sourceCheckoutDir: "/Users/alice/Turnkey AI" });
       assert.match(script, /exec turnkeyai app "\$@"/);
       assert.match(script, /npm --prefix '\/Users\/alice\/Turnkey AI' run app -- "\$@"/);
       assert.match(script, /exec npx @turnkeyai\/cli app "\$@"/);
+      assert.ok(
+        script.indexOf("exec npm --prefix") < script.indexOf("exec turnkeyai app"),
+        "source-pinned launchers should not be shadowed by an older global CLI"
+      );
     });
 
     it("recognizes a TurnkeyAI source checkout", async () => {
