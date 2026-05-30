@@ -4,6 +4,16 @@ This ledger tracks whether TurnkeyAI is converging toward a production-grade
 agent workbench for stable complex-task delivery. It is intentionally not a PR
 counter or test-count scoreboard.
 
+G0 operating contract:
+
+- Objective: track whether TurnkeyAI is actually converging toward a
+  production-grade agent workbench for stable complex-task delivery.
+- This ledger is the source of truth for goal progress while the workbench
+  stabilization goal is active.
+- Progress is judged by real acceptance, user-visible behavior, and reduction
+  of repeated failure classes. PR count, LOC movement, and test count are
+  supporting facts only; they are never sufficient evidence by themselves.
+
 Update cadence:
 
 - Add a checkpoint every 2-4 hours while actively working this goal.
@@ -11,6 +21,8 @@ Update cadence:
 - Every 24 hours, review the last day of checkpoints. If the same issue class
   keeps receiving local fixes without better real E2E outcomes, pause feature
   PRs and switch to methodology review.
+- Do not mark a stage as converging unless the checkpoint can answer: "is
+  stable complex-task delivery closer than it was at the previous checkpoint?"
 
 Direction values:
 
@@ -107,6 +119,55 @@ Regression Risk:
 - Mission Detail reconcile risk is UI wiring only, but it touches a crowded
   workbench page. It needs Control Center smoke, typecheck, build, full tests,
   and PR review before merge.
+
+## 2026-05-30 18:23 CST - Mission Reconcile Visibility Landed
+
+Direction: converging
+
+Execution Kernel:
+- No new execution semantics changed in this slice. The kernel still depends on
+  the existing native tool-use, sub-session, continuation, and mission
+  reconciliation machinery.
+- The relevant improvement is operational closure: a user-visible mission can
+  now trigger the same mission-scoped reconcile action that previously required
+  leaving the mission context.
+
+Result Quality:
+- Final answer quality was not directly improved by this doc/UI slice.
+- Quality risk remains centered on long complex prompts: the runtime needs
+  periodic real LLM acceptance that checks substance, evidence, and completion,
+  not only that a mission reaches `done`.
+
+Workbench UX:
+- Mission Detail now exposes a mission-scoped Reconcile action in the health
+  panel. This reduces the gap between "mission looks stuck or stale" and "user
+  has a local recovery action available."
+- Onboarding now surfaces bridge transport health before browser-backed work
+  starts, making an unavailable bridge/CDP path visible earlier.
+
+Browser Reliability:
+- No browser transport behavior changed in this checkpoint.
+- Browser health is more visible, but reliability still depends on the existing
+  bridge health checks, CDP smoke, and real browser acceptance runs.
+
+Acceptance Evidence:
+- PR #249 merged into `main` as `410f4b7 Add mission reconcile visibility ledger`.
+- Verified before merge:
+  `npm run typecheck`,
+  `npm run build`,
+  `npm run control-center:smoke`,
+  `npm test -- --runInBand`,
+  `git diff --check`.
+- CI was green before merge. No fresh real LLM acceptance was run for this
+  checkpoint, so complex-task quality remains a residual risk until the next
+  real acceptance pass.
+
+Regression Risk:
+- Risk is mostly UI wiring and route invocation: the mission page now calls an
+  existing reconcile endpoint and refreshes mission/runtime state afterward.
+- Covered by Control Center smoke plus the full test suite. Remaining gap: no
+  real browser/LLM acceptance was rerun after this purely visibility-focused
+  slice.
 
 ## 24-Hour Review Rule
 
