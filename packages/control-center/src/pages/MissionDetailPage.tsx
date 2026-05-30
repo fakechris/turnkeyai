@@ -1399,6 +1399,15 @@ function missionQualityAction(
   if (visibleChecks.some((check) => check.name === "evidence_backed")) {
     return "Ask a follow-up that gathers source evidence before synthesis.";
   }
+  if (visibleChecks.some((check) => check.name === "evidence_usage")) {
+    return "Ask a follow-up to tie each claim to the captured evidence.";
+  }
+  if (visibleChecks.some((check) => check.name === "answer_substance")) {
+    return "Ask a follow-up for a fuller answer with concrete findings and next steps.";
+  }
+  if (visibleChecks.some((check) => check.name === "unsupported_uncertainty")) {
+    return "Ask a follow-up to replace placeholders with verified facts or explicit residual risk.";
+  }
   if (visibleChecks.some((check) => check.name === "residual_risk")) {
     return "Ask a follow-up to name residual risk or unverified scope.";
   }
