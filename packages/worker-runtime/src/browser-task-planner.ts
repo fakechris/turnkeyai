@@ -169,7 +169,7 @@ function extractUrl(content: string): string | null {
     return null;
   }
 
-  const sanitized = raw.replace(/["'`,;。，“”‘’]+$/g, "");
+  const sanitized = raw.replace(/["'`,;:.!?。，“”‘’！？：]+$/g, "");
   try {
     const url = new URL(sanitized);
     if (url.protocol !== "http:" && url.protocol !== "https:") {
