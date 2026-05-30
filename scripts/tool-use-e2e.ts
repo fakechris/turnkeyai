@@ -39,6 +39,10 @@ import { createWorkerSessionToolExecutor } from "@turnkeyai/role-runtime/tool-us
 import { LLMSubAgentWorkerHandler } from "@turnkeyai/role-runtime/sub-agent-worker-handler";
 import type { RolePromptPacket } from "@turnkeyai/role-runtime/prompt-policy";
 import { InMemoryWorkerRuntime } from "@turnkeyai/worker-runtime/in-memory-worker-runtime";
+import {
+  DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS,
+} from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
 
 interface ToolUseE2eOptions {
   withBrowser: boolean;
@@ -54,6 +58,11 @@ interface ToolUseE2eOptions {
 }
 
 type ToolUseScenario = "basic" | "complex" | "acceptance" | "followup" | "timeout" | "approval";
+
+const DEFAULT_TOOLUSE_BROWSER_MATRIX_SCENARIOS: readonly ToolUseScenario[] =
+  DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS;
+const DEFAULT_TOOLUSE_NON_BROWSER_MATRIX_SCENARIOS: readonly ToolUseScenario[] =
+  DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS;
 
 interface RealToolUseE2eResult {
   mode: "llm-only" | "llm-browser";
@@ -273,7 +282,9 @@ async function runRealLlmToolUseE2eMatrix(options: ToolUseE2eOptions): Promise<R
 }
 
 function defaultRealLlmMatrixScenarios(withBrowser: boolean): ToolUseScenario[] {
-  return withBrowser ? ["basic", "approval", "followup", "timeout", "complex"] : ["basic", "approval", "followup", "timeout"];
+  return [
+    ...(withBrowser ? DEFAULT_TOOLUSE_BROWSER_MATRIX_SCENARIOS : DEFAULT_TOOLUSE_NON_BROWSER_MATRIX_SCENARIOS),
+  ];
 }
 
 async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<RealToolUseE2eResult> {
