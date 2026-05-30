@@ -16,6 +16,8 @@ interface AppRuntimeConfig {
   token?: string | null;
 }
 
+type FetchLike = typeof fetch;
+
 /**
  * The auth scope the resolved token most-likely grants. The dashboard uses
  * this to decide whether to show actionable mutation snippets (Agent
@@ -107,6 +109,49 @@ export function resolveAppToken(env: NodeJS.ProcessEnv, configToken: string | nu
     return { token: configToken, scope: "unknown", source: "config" };
   }
   return null;
+}
+
+export async function inferAppTokenScope(
+  baseUrl: string,
+  token: string,
+  fetchImpl: FetchLike = fetch
+): Promise<AppTokenScope> {
+  const probes: Array<{ scope: Exclude<AppTokenScope, "unknown">; method: "GET" | "HEAD"; pathname: string }> = [
+    { scope: "admin", method: "HEAD", pathname: "/daemon/config/model-catalog" },
+    { scope: "operator", method: "GET", pathname: "/browser-sessions" },
+    { scope: "read", method: "GET", pathname: "/bridge/status" },
+  ];
+  for (const probe of probes) {
+    if (await probeTokenAccess(baseUrl, token, probe.method, probe.pathname, fetchImpl)) {
+      return probe.scope;
+    }
+  }
+  return "unknown";
+}
+
+async function probeTokenAccess(
+  baseUrl: string,
+  token: string,
+  method: "GET" | "HEAD",
+  pathname: string,
+  fetchImpl: FetchLike
+): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+  try {
+    const response = await fetchImpl(`${baseUrl}${pathname}`, {
+      method,
+      headers: { authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    const ok = response.ok;
+    await response.arrayBuffer().catch(() => {});
+    return ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function resolveDaemonToken(paths: AppRuntimePaths): ResolvedAppToken | null {
@@ -410,9 +455,11 @@ export async function runAppCommand(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const dashboardUrl = buildDashboardUrl(baseUrl, resolved.token, resolved.scope, route);
-  console.log(`opening ${baseUrl}/app (route: ${route}, scope: ${resolved.scope})`);
-  if (resolved.scope === "read") {
+  const inferredScope =
+    resolved.scope === "unknown" ? await inferAppTokenScope(baseUrl, resolved.token) : resolved.scope;
+  const dashboardUrl = buildDashboardUrl(baseUrl, resolved.token, inferredScope, route);
+  console.log(`opening ${baseUrl}/app (route: ${route}, scope: ${inferredScope})`);
+  if (inferredScope === "read") {
     // PR I gap 2: read-only token in the dashboard means Agent Connect
     // can render a snippet that 401s. Warn at the CLI so the user knows
     // the dashboard will show a downgraded panel.

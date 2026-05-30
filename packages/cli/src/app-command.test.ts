@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   buildAppLauncherScript,
   buildDashboardUrl,
+  inferAppTokenScope,
   parseAppRoute,
   resolveDefaultAppLauncherPath,
   resolveAppToken,
@@ -101,6 +102,44 @@ describe("app-command", () => {
     it("omits token + scope when null but still includes route", () => {
       const url = buildDashboardUrl("http://127.0.0.1:4100", null, null, "runtime");
       assert.equal(url, "http://127.0.0.1:4100/app#route=runtime");
+    });
+  });
+
+  describe("inferAppTokenScope", () => {
+    it("detects admin scope before weaker scopes", async () => {
+      const requests: string[] = [];
+      const scope = await inferAppTokenScope("http://127.0.0.1:4100", "token", async (url, init) => {
+        requests.push(`${String(init?.method ?? "GET")} ${String(url)}`);
+        return new Response(null, { status: 200 });
+      });
+
+      assert.equal(scope, "admin");
+      assert.deepEqual(requests, ["HEAD http://127.0.0.1:4100/daemon/config/model-catalog"]);
+    });
+
+    it("falls through to operator and read probes", async () => {
+      const requests: string[] = [];
+      const scope = await inferAppTokenScope("http://127.0.0.1:4100", "token", async (url, init) => {
+        requests.push(`${String(init?.method ?? "GET")} ${String(url)}`);
+        if (String(url).endsWith("/browser-sessions")) {
+          return new Response("[]", { status: 200 });
+        }
+        return new Response("unauthorized", { status: 401 });
+      });
+
+      assert.equal(scope, "operator");
+      assert.deepEqual(requests, [
+        "HEAD http://127.0.0.1:4100/daemon/config/model-catalog",
+        "GET http://127.0.0.1:4100/browser-sessions",
+      ]);
+    });
+
+    it("returns unknown when scope probes are rejected or unavailable", async () => {
+      const scope = await inferAppTokenScope("http://127.0.0.1:4100", "token", async () => {
+        return new Response("unauthorized", { status: 401 });
+      });
+
+      assert.equal(scope, "unknown");
     });
   });
 
