@@ -197,9 +197,12 @@ export function resolveDaemonRequestAccess(
   if (req.method === "POST" && url.pathname === "/missions") {
     return "operator";
   }
+  if (req.method === "POST" && url.pathname === "/missions/reconcile") {
+    return "operator";
+  }
   if (
     req.method === "POST" &&
-    /^\/missions\/[^/]+\/messages$/.test(url.pathname)
+    /^\/missions\/[^/]+\/(?:messages|reconcile)$/.test(url.pathname)
   ) {
     return "operator";
   }

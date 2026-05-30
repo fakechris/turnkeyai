@@ -12,6 +12,8 @@
 //   GET  /mission-agents                    → Agent[]
 //   GET  /mission-context-sources           → ContextSource[]
 //   POST /mission-context-sources           → register manual ContextSource
+//   POST /missions/reconcile                → force mission/thread mirror pass
+//   POST /missions/:id/reconcile            → force one mission/thread mirror pass
 //   POST /missions/bootstrap-demo           → upsert design fixtures
 //
 // Read routes are `read` scoped (see daemon-auth.ts); mutation routes
@@ -526,6 +528,73 @@ export async function handleMissionRoutes(input: {
       contextSources: fixtures.contextSources.length,
     });
     return true;
+  }
+
+  if (method === "POST" && pathname === "/missions/reconcile") {
+    const threadBridge = deps.orchestrator?.threadBridge;
+    if (!threadBridge || typeof threadBridge.tickAll !== "function") {
+      sendJson(res, 501, { error: "mission reconcile not configured" });
+      return true;
+    }
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "missions:reconcile",
+      fingerprint: { scope: "all" },
+      execute: async () => {
+        const missions = await threadBridge.tickAll();
+        return {
+          statusCode: 200,
+          body: {
+            ok: true,
+            scope: "all",
+            missions,
+            appended: missions.reduce((sum, mission) => sum + mission.appended, 0),
+          },
+        };
+      },
+    });
+  }
+
+  const reconcileMissionMatch = pathname.match(/^\/missions\/([^/]+)\/reconcile$/);
+  if (method === "POST" && reconcileMissionMatch) {
+    const threadBridge = deps.orchestrator?.threadBridge;
+    if (!threadBridge || typeof threadBridge.tickMission !== "function") {
+      sendJson(res, 501, { error: "mission reconcile not configured" });
+      return true;
+    }
+    let missionId: string;
+    try {
+      missionId = decodeURIComponent(reconcileMissionMatch[1]!);
+    } catch {
+      sendJson(res, 400, { error: "invalid mission id encoding" });
+      return true;
+    }
+    const mission = await deps.missionStore.get(missionId);
+    if (!mission) {
+      sendJson(res, 404, { error: "mission not found" });
+      return true;
+    }
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: `missions:${mission.id}:reconcile`,
+      fingerprint: { missionId: mission.id },
+      execute: async () => {
+        const appended = await threadBridge.tickMission(mission.id);
+        return {
+          statusCode: 200,
+          body: {
+            ok: true,
+            scope: "mission",
+            missionId: mission.id,
+            appended,
+          },
+        };
+      },
+    });
   }
 
   // /missions/:id and friends — parse the id from the path.

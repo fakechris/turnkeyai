@@ -46,6 +46,7 @@ const postedMissions: unknown[] = [];
 const postedMessages: unknown[] = [];
 const postedContextSources: unknown[] = [];
 const postedRecoveryActions: string[] = [];
+const postedMissionReconciles: string[] = [];
 const savedModelCatalogContents: string[] = [];
 let onboardingState = onboardingStateFixture();
 const browserConsoleErrors: string[] = [];
@@ -136,6 +137,12 @@ try {
       await operatorRuntimePage.locator(".card", { hasText: "Dashboard comparison mission" }).isVisible(),
       "operator runtime should surface mission health attention rows"
     );
+    await operatorRuntimePage.getByRole("button", { name: "Reconcile" }).click();
+    await operatorRuntimePage.waitForSelector("text=Reconciled 1 linked mission");
+    assert(
+      JSON.stringify(postedMissionReconciles) === JSON.stringify(["all"]),
+      "operator runtime should call mission reconcile"
+    );
     assert(
       await operatorRuntimePage.locator(".card", { hasText: "Release acceptance" }).isVisible(),
       "operator runtime should still render the release acceptance card"
@@ -205,6 +212,7 @@ try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
     page.on("console", (message) => {
       if (message.type() === "error") {
+        if (isIgnorableConsoleError(message.text())) return;
         const location = message.location();
         const source = location.url ? ` ${location.url}:${location.lineNumber}` : "";
         browserConsoleErrors.push(`browser-console-error:${source} ${message.text()}`);
@@ -463,10 +471,12 @@ try {
       await page.locator('input[value^="http://127.0.0.1:"][value$="/bridge/command"]').count() > 0,
       "agent connect should show the local bridge command endpoint"
     );
+    await page.waitForSelector("text=sessions_spawn · worker-session");
     assert(
       await page.locator("text=sessions_spawn · worker-session").isVisible(),
       "agent connect should show live native tool capabilities"
     );
+    await page.waitForSelector("text=browser: browser");
     assert(
       await page.locator("text=browser: browser").isVisible(),
       "agent connect should show live transport preferences"
@@ -586,6 +596,7 @@ try {
     const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
     mobilePage.on("console", (message) => {
       if (message.type() === "error") {
+        if (isIgnorableConsoleError(message.text())) return;
         const location = message.location();
         const source = location.url ? ` ${location.url}:${location.lineNumber}` : "";
         browserConsoleErrors.push(`mobile-browser-console-error:${source} ${message.text()}`);
@@ -774,6 +785,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (method === "POST" && url.pathname === "/missions") {
     postedMissions.push(await readJsonBody(req));
     json(res, missionFixture());
+    return;
+  }
+  if (method === "POST" && url.pathname === "/missions/reconcile") {
+    if (!hasOperatorAccess(req)) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized", requiredAccess: "operator" }));
+      return;
+    }
+    postedMissionReconciles.push("all");
+    json(res, {
+      ok: true,
+      scope: "all",
+      missions: [{ missionId, appended: 2 }],
+      appended: 2,
+    });
     return;
   }
   if (method === "GET" && url.pathname === `/missions/${missionId}`) {
@@ -1974,6 +2000,10 @@ function assert(condition: boolean, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function isIgnorableConsoleError(text: string): boolean {
+  return text.includes("fonts.gstatic.com/") && text.includes("Failed to load resource:");
 }
 
 async function resolveChromePath(explicitPath?: string): Promise<string> {
