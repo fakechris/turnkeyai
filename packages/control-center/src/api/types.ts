@@ -367,6 +367,7 @@ export interface ValidationOpsRunRecord {
   completedAt: number;
   durationMs: number;
   issueCount: number;
+  artifactPath?: string;
 }
 
 export interface ValidationOpsReport {
