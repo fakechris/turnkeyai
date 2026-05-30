@@ -909,6 +909,10 @@ describe("mission-routes", () => {
         const updated = await waitForMissionStatus(deps, created.id, "blocked");
         assert.equal(updated.title, "operator renamed while startup was pending");
         assert.equal(updated.blockers, 4);
+        await waitUntil("mission start failure event", async () => {
+          const timeline = await deps.activityStore.listByMission(created.id, { limit: 10 });
+          return timeline.some((event) => event.runtime?.eventType === "mission.start_failed");
+        });
         const timeline = await deps.activityStore.listByMission(created.id, { limit: 10 });
         const failureEvent = timeline.find((event) => event.runtime?.eventType === "mission.start_failed");
         assert.equal(failureEvent?.text, "mission.start_failed");
