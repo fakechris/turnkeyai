@@ -198,13 +198,13 @@ The implementation now includes:
 - Pre-compaction memory flush before request-envelope reduction writes durable carry-forward notes.
 - Mission-route level regression coverage for `POST /missions/:id/messages` → native tool call/progress/result → `GET /missions/:id/timeline`.
 - Cursor-page timeline reads for long Mission Detail replay (`/missions/:id/timeline?page=true&cursor=...`) while preserving the legacy array response for existing clients.
+- Browser sub-agent private tools (`browser_open`, `browser_snapshot`, `browser_act`, `browser_scroll`, `browser_console`, `browser_screenshot`) exposed only inside the browser sub-agent loop, not to the lead role by default.
+- Mission Detail trace filtering and older-page loading so long tool-heavy timelines can be inspected without hiding the final answer.
 
 ## 10. Remaining Hardening
 
 This is not the final product surface. Remaining work is operational hardening:
 
-- Broaden browser-agent-only direct tool definitions (`browser.open`, `browser.snapshot`, `browser.act`, `browser.screenshot`, `browser.console`) without exposing them to the lead role by default.
-- Add more Mission Detail filters for long tool-heavy timelines.
-- Add scale-oriented cursors for long sub-session histories.
+- Add cursor-token pagination for very long sub-session histories if offset/tail-based `sessions_history` becomes too slow or too expensive for production transcripts.
 
 The key architectural decision is fixed: TurnkeyAI's core tool-use path is model-native and session-native, not prompt-only and not browser-bridge-only.
