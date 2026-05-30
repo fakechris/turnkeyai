@@ -265,6 +265,66 @@ Regression Risk:
 - A full real LLM/browser matrix was not rerun for this checkpoint; run it
   before claiming the whole workbench goal has converged.
 
+## 2026-05-30 18:55 CST - Research Worker Timeout Budget Aligned
+
+Direction: converging
+
+Execution Kernel:
+- Explore and finance sub-agent sessions now default to an 8-minute timeout
+  budget, matching the tool instructions that tell the lead role these workers
+  can take up to 480 seconds for focused research or data lookup.
+- Browser remains at 18 minutes and general workers remain at 3 minutes; this
+  slice only widens the worker kinds whose prompt contract already promised the
+  longer research budget.
+- The normal tool-use prompt harness now also carries the same final-answer
+  shape discipline as the final-synthesis repair path: exact skeletons get no
+  status preamble and requested bullets stay compact.
+
+Result Quality:
+- Research workers are less likely to be cut off at 3 minutes and forced into
+  thin timeout summaries before they have gathered enough evidence.
+- This does not remove the need for quality gates; it removes one runtime/prompt
+  mismatch that could make otherwise reasonable work look weak.
+- The first mission E2E run exposed a real quality miss: the answer had the
+  right evidence but was too long (`2524 > 2400` bytes) because the model added
+  a status preamble and verbose bullets. The fix tightened the harness instead
+  of relaxing the acceptance gate.
+
+Workbench UX:
+- Users should see fewer premature timeout artifacts for explore/finance-backed
+  missions.
+- No visible page changed in this slice.
+
+Browser Reliability:
+- Browser timeout and transport behavior did not change.
+- Browser work is unaffected except when the parent mission also uses explore or
+  finance workers for supporting evidence.
+
+Acceptance Evidence:
+- `npm test -- --runInBand`: 1196 passing.
+- `npm run typecheck`
+- `npm run build`
+- `git diff --check`
+- `npx tsx --test packages/role-runtime/src/tool-use.test.ts`: 36 passing.
+- `npx tsx --test packages/role-runtime/src/tool-capability-registry.test.ts packages/role-runtime/src/llm-response-generator.test.ts packages/role-runtime/src/tool-use.test.ts`: 67 passing.
+- New regression coverage exercises the real `sessions_spawn` executor with fake
+  timers and verifies absent `timeout_seconds` produces `480` seconds for both
+  `explore` and `finance`.
+- Mission E2E:
+  `npm run mission:e2e -- --scenario product-workbench-brief --scenario-timeout-ms 180000`
+  passed with mission `msn.mps8n64b.1`, status `done`, quality gate `passed`,
+  tools `3/3`, sessions `3/0`, liveness `0/0/0`, evidence events `3`, final
+  answer `2007` bytes and `6` bullets.
+
+Regression Risk:
+- Longer default research workers can occupy concurrency slots longer. Existing
+  guardrails still cap per-parent and global active sessions, allow explicit
+  `timeout_seconds`, and retain hard timeout recovery.
+- The prompt harness change is broad for exact-skeleton final answers, so the
+  main risk is over-compression. The product brief E2E and existing prompt
+  tests cover the intended behavior; broader real-scenario matrix coverage is
+  still needed before claiming the overall workbench goal complete.
+
 ## 24-Hour Review Rule
 
 At least once per day while this goal is active:

@@ -1098,6 +1098,8 @@ function finalSynthesisFormatContract(): string[] {
     "If a success marker or required phrase is assigned to a bullet, place it in that bullet only; do not move it into a paragraph, heading, preamble, or closing note.",
     "When links are forbidden, do not include Markdown links or bare http:// / https:// URLs, even if tool results contain internal fetch URLs.",
     "Do not write a preamble before a requested final shape.",
+    "Do not write status preambles such as 'All tool calls returned' or 'Producing the final answer'.",
+    "For exact-skeleton answers, keep each requested bullet compact, usually one sentence, while preserving required markers, facts, and residual risk.",
     "Do not collapse requested bullets into a paragraph. Do not add extra sections, summaries, notes, or prose after an exact requested shape.",
   ];
 }

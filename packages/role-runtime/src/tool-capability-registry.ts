@@ -433,6 +433,8 @@ function renderGeneralToolUsageSection(): string {
     "- For research or comparison tasks, maintain an evidence ledger: source URL/name, source type, exact fact verified, and remaining uncertainty.",
     "- Do not turn homepage or marketing copy into unsupported claims about user scale, community feedback, code quality, or update frequency. If a metric is not verified from credible sources, write not verified.",
     "- A final answer must be structurally complete. If the answer would be cut off, produce a shorter complete answer with a source ledger and explicitly mark missing details.",
+    "- When the user/task specifies an exact final answer skeleton, output only that skeleton. Do not add status preambles like 'All tool calls returned' or 'Producing the final answer'.",
+    "- For exact-skeleton answers, keep each requested bullet compact, usually one sentence, while preserving required markers, facts, and residual risk.",
   ].join("\n");
 }
 
