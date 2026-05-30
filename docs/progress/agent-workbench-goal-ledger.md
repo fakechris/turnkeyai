@@ -974,3 +974,46 @@ Regression Risk:
 - If terminal mission usage exposes poor follow-up quality later, that should be
   counted as a runtime/result-quality issue and must go through real mission
   E2E rather than another UI-only pass.
+
+## 2026-05-30 22:56 CST - Ledger Structure Gate
+
+Direction: converging
+
+Execution Kernel:
+- No mission, role, tool-use, worker, browser, approval, or completion
+  semantics changed.
+- Added an automated ledger validator so progress accounting is checked by a
+  command instead of relying only on manual review.
+
+Result Quality:
+- No answer synthesis or quality-gate logic changed.
+- The validator makes it harder to claim progress without recording acceptance
+  evidence and regression risk for the checkpoint.
+
+Workbench UX:
+- No Control Center or TUI user flow changed.
+- Product-management visibility improved because `npm run ledger:check` now
+  verifies that dated checkpoints keep the required G0 structure.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- Browser-related claims in future checkpoints must still be recorded in the
+  Browser Reliability section for the ledger check to pass.
+
+Acceptance Evidence:
+- `npm run ledger:check`: passed, 17 checkpoint(s).
+- `npx tsx --test scripts/agent-workbench-ledger-check.test.ts`: 3 passed.
+- `npm run typecheck`: passed.
+- `npm test -- --runInBand`: 1220 passed.
+- `npm run build`: passed.
+- `git diff --check`: passed.
+- Real LLM E2E was not rerun because this checkpoint changes progress
+  governance only, not runtime or result behavior.
+
+Regression Risk:
+- The gate intentionally validates structure, not truth. It cannot prove that a
+  checkpoint's evidence is strong enough; reviewers still need to inspect
+  commands, mission IDs, screenshots, and runtime behavior.
+- Adding script tests to the root `npm test` command broadens the default test
+  surface; the immediate risk is low because the new script test is fast and
+  self-contained.
