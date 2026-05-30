@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ActivityEvent } from "../api/mission-api";
-import { formatDurationMs, groupTimelineForReplay } from "./toolReplay";
+import { formatDurationMs, getCancellableToolCallsForProcess, groupTimelineForReplay } from "./toolReplay";
 
 test("groupTimelineForReplay collapses tool chain plus final thought into one process item", () => {
   const events: ActivityEvent[] = [
@@ -335,6 +335,74 @@ test("groupTimelineForReplay completes skipped-only process without danger empha
     throw new Error("expected tool-process");
   }
   assert.equal(grouped[0].status, "completed");
+});
+
+test("getCancellableToolCallsForProcess returns active calls without results", () => {
+  const grouped = groupTimelineForReplay([
+    toolWithMessage("call-1", 1_000, "role-lead", "call", "sessions_spawn", "call-a", "Tool call A", "msg-1", "1"),
+    toolWithMessage("call-2", 1_100, "role-lead", "call", "sessions_spawn", "call-b", "Tool call B", "msg-1", "1"),
+    toolWithMessage("result-2", 1_500, "role-lead", "result", "sessions_spawn", "call-b", "Returned B", "msg-1", "1"),
+  ]);
+
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0]?.kind, "tool-process");
+  if (grouped[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+
+  assert.deepEqual(getCancellableToolCallsForProcess(grouped[0]), {
+    messageId: "msg-1",
+    toolCallIds: ["call-a"],
+  });
+});
+
+test("getCancellableToolCallsForProcess ignores completed, skipped, and ambiguous message groups", () => {
+  const completed = groupTimelineForReplay([
+    toolWithMessage("call-1", 1_000, "role-lead", "call", "sessions_spawn", "call-a", "Tool call", "msg-1", "1"),
+    toolWithMessage("result-1", 1_500, "role-lead", "result", "sessions_spawn", "call-a", "Returned", "msg-1", "1"),
+  ]);
+  assert.equal(completed[0]?.kind, "tool-process");
+  if (completed[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.equal(getCancellableToolCallsForProcess(completed[0]), null);
+
+  const skipped = groupTimelineForReplay([
+    toolWithAdmission(
+      "call-skipped",
+      1_000,
+      "role-lead",
+      "call",
+      "sessions_spawn",
+      "call-skipped",
+      "Skipped call",
+      "msg-1",
+      "1",
+      "skipped"
+    ),
+  ]);
+  assert.equal(skipped[0]?.kind, "tool-process");
+  if (skipped[0]?.kind !== "tool-process") {
+    throw new Error("expected tool-process");
+  }
+  assert.equal(getCancellableToolCallsForProcess(skipped[0]), null);
+
+  assert.equal(
+    getCancellableToolCallsForProcess({
+      kind: "tool-process",
+      id: "tool-process:ambiguous",
+      actor: "role-lead",
+      startMs: 1_000,
+      endMs: 1_100,
+      status: "running",
+      toolEvents: [
+        toolWithMessage("call-a", 1_000, "role-lead", "call", "sessions_spawn", "call-a", "Tool call A", "msg-1", "1"),
+        toolWithMessage("call-b", 1_100, "role-lead", "call", "sessions_spawn", "call-b", "Tool call B", "msg-2", "1"),
+      ],
+      processEvents: [],
+    }),
+    null
+  );
 });
 
 test("formatDurationMs normalizes rounded second rollover into minutes", () => {

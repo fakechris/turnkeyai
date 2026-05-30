@@ -68,6 +68,10 @@ Rules:
 - Tool process appears before the final answer.
 - The trace is collapsed by default for completed work.
 - The collapsed trace still tells the user that the final answer appears below.
+- A running tool process with an assistant `messageId` and one or more tool
+  calls that have no result exposes `Cancel tool calls`. This must invoke the
+  message-level cancellation route, not only cancel a child session, so the
+  durable message stream receives cancelled tool results.
 - Markdown final answers render headings, lists, tables, and code without
   overlap on desktop or mobile.
 - Mobile tables scroll inside their wrapper instead of widening the page.

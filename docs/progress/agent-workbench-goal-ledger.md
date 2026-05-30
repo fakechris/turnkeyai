@@ -1763,3 +1763,50 @@ Regression Risk:
 - Process risk is intentional: future checkpoints should be harder to mark
   `converging` unless they carry real acceptance evidence or a clear evidence
   gap.
+
+## 2026-05-31 02:02 CST - Work Trace Tool Cancellation
+
+Direction: converging
+
+Execution Kernel:
+- No new runtime execution route was added; this slice wires the existing
+  message-level `/message/cancel-tools` contract into Mission replay.
+- Replay status now keeps a multi-call tool process `running` until every
+  non-skipped call has a matching result, preventing one completed tool result
+  from hiding another still-active call in the same assistant message round.
+
+Result Quality:
+- Final-answer synthesis did not change.
+- The workbench can now stop an active tool call from the trace before a weak
+  or stale result is accepted, which improves recovery control rather than
+  answer substance directly.
+
+Workbench UX:
+- Expanded Work trace rows now expose `Cancel tool calls` when the process has
+  cancellable active calls with durable `messageId` and `toolCallId` metadata.
+- The control is distinct from child-session cancellation: it targets the
+  assistant message's pending tool calls so cancelled tool results can enter
+  the durable message stream.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- Browser-backed missions benefit when a browser/session tool call is still
+  pending: users can cancel the active call from the mission trace instead of
+  waiting for a stale browser operation to resolve.
+
+Acceptance Evidence:
+- `npx tsx --test packages/control-center/src/state/toolReplay.test.ts`:
+  passed, 13 tests.
+- `npm run build:control-center`: passed.
+- `npm run typecheck`: passed.
+- Control Center smoke is the required user-visible gate for this slice because
+  it verifies the button, the route POST, and the accepted status message.
+
+Regression Risk:
+- The main behavior risk is replay classification: multi-call processes now
+  remain running until all non-skipped calls have results. Existing replay tests
+  plus new cancellable-call tests cover completed, skipped, failed, and
+  active-call paths.
+- This is not a real LLM/browser E2E stage; it is a workbench recovery-control
+  slice. The next runtime/result-quality change still needs focused real
+  mission acceptance.

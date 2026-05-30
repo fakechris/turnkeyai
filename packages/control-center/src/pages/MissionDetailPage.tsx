@@ -26,6 +26,7 @@ import type {
   WorkerSessionRecord,
 } from "../api/mission-api";
 import {
+  useCancelToolCalls,
   useCancelRoleRun,
   useCancelWorkerSession,
   useArchiveMission,
@@ -50,7 +51,13 @@ import { Markdown } from "../components/Markdown";
 import { StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
 import { canUseOperatorActions, OPERATOR_ACTION_SCOPE_HINT } from "../state/scopeAccess";
-import { formatDurationMs, groupTimelineForReplay, type TimelineReplayItem, type ToolProcessItem } from "../state/toolReplay";
+import {
+  formatDurationMs,
+  getCancellableToolCallsForProcess,
+  groupTimelineForReplay,
+  type TimelineReplayItem,
+  type ToolProcessItem,
+} from "../state/toolReplay";
 import { buildMissionProgressNow, type MissionProgressNow } from "../state/missionProgress";
 
 type TraceFilter = "all" | "agent" | "tools" | "approvals" | "recovery" | "evidence";
@@ -221,6 +228,7 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
   const contextSources = useContextSources([]);
   const approvals = useApprovals([]);
   const send = useSendMissionMessage();
+  const cancelToolCalls = useCancelToolCalls();
   const cancelRoleRun = useCancelRoleRun();
   const cancelWorkerSession = useCancelWorkerSession();
   const executeRecoveryRunAction = useRecoveryRunAction();
@@ -230,6 +238,7 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
   const [reconcilingMission, setReconcilingMission] = useState(false);
   const [roleRunActionKey, setRoleRunActionKey] = useState<string | null>(null);
   const [sessionActionKey, setSessionActionKey] = useState<string | null>(null);
+  const [toolCallActionKey, setToolCallActionKey] = useState<string | null>(null);
   const [recoveryActionKey, setRecoveryActionKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [acceptedNotice, setAcceptedNotice] = useState<string | null>(null);
@@ -371,6 +380,35 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
       }
     },
     [canUseMissionActions, cancelRoleRun, roleRunActionKey, refetchMissionRuntime]
+  );
+
+  const onCancelToolCalls = useCallback(
+    async (process: ToolProcessItem) => {
+      const cancellable = getCancellableToolCallsForProcess(process);
+      if (!canUseMissionActions || toolCallActionKey || !cancellable) return;
+      setToolCallActionKey(process.id);
+      setError(null);
+      setAcceptedNotice(null);
+      try {
+        const result = await cancelToolCalls({
+          messageId: cancellable.messageId,
+          threadId: mission.threadId,
+          toolCallIds: cancellable.toolCallIds,
+          reason: "operator cancelled active tool calls from Mission replay",
+        });
+        setAcceptedNotice(
+          result.cancelled
+            ? `Tool cancellation requested for ${result.toolCallIds.length} call${result.toolCallIds.length === 1 ? "" : "s"}.`
+            : "No active tool calls remained to cancel."
+        );
+        refetchMissionRuntime();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setToolCallActionKey(null);
+      }
+    },
+    [cancelToolCalls, canUseMissionActions, mission.threadId, refetchMissionRuntime, toolCallActionKey]
   );
 
   const onRecoveryRunAction = useCallback(
@@ -578,9 +616,11 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
                         process={item}
                         workerSessions={workerSessions.value}
                         actionKey={sessionActionKey}
+                        toolCallActionKey={toolCallActionKey}
                         canAct={canUseMissionActions}
                         onContinue={onContinueSession}
                         onCancel={onCancelSession}
+                        onCancelToolCalls={onCancelToolCalls}
                       />
                     )
                   )
@@ -1938,16 +1978,20 @@ function ToolProcessRow({
   process,
   workerSessions,
   actionKey,
+  toolCallActionKey,
   canAct,
   onContinue,
   onCancel,
+  onCancelToolCalls,
 }: {
   process: ToolProcessItem;
   workerSessions: WorkerSessionRecord[];
   actionKey: string | null;
+  toolCallActionKey: string | null;
   canAct: boolean;
   onContinue: (session: WorkerSessionRecord) => void;
   onCancel: (session: WorkerSessionRecord) => void;
+  onCancelToolCalls: (process: ToolProcessItem) => void;
 }) {
   const toolNames = [...new Set(process.toolEvents.map((event) => event.runtime?.toolName).filter(Boolean))];
   const statusLabel =
@@ -1971,6 +2015,9 @@ function ToolProcessRow({
     () => findWorkerSessionsForProcess(process, workerSessions),
     [process, workerSessions]
   );
+  const cancellableToolCalls = getCancellableToolCallsForProcess(process);
+  const toolCancelBusy = toolCallActionKey === process.id;
+  const toolCancelBlocked = toolCallActionKey !== null && toolCallActionKey !== process.id;
 
   return (
     <div className="tl-event tool-process" data-kind="tool">
@@ -1995,6 +2042,27 @@ function ToolProcessRow({
         </div>
         {process.finalThought && (
           <div className="tool-process-answer-link">Final answer appears below this trace.</div>
+        )}
+        {cancellableToolCalls && (
+          <div className="tool-process-session-actions">
+            <div className="tool-process-session-action-row tool-process-tool-action-row">
+              <span className="mono">active tools</span>
+              <span>
+                {cancellableToolCalls.toolCallIds.length} call
+                {cancellableToolCalls.toolCallIds.length === 1 ? "" : "s"} still awaiting result
+              </span>
+              <span className="mono">{cancellableToolCalls.messageId}</span>
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={!canAct || toolCancelBusy || toolCancelBlocked}
+                onClick={() => onCancelToolCalls(process)}
+                title={canAct ? undefined : OPERATOR_ACTION_SCOPE_HINT}
+              >
+                <Icon name="x" size={13} /> {toolCancelBusy ? "Cancelling..." : "Cancel tool calls"}
+              </button>
+            </div>
+          </div>
         )}
         {processSessions.length > 0 && (
           <div className="tool-process-session-actions">

@@ -117,6 +117,10 @@ Timeout behavior is evidence-driven:
   already executed.
 - `/message/cancel-tools` must append cancelled tool-result messages for active
   tool calls and notify registered worker cancellation handlers.
+- Mission replay derives cancellable work from tool-call events that have a
+  `messageId` and `toolCallId` but no matching result event. It must not expose
+  message-level cancellation for completed, skipped, or ambiguous-message
+  process groups.
 
 ## Mission Replay Contract
 
@@ -166,4 +170,3 @@ git diff --check
 Real LLM/browser gates are not required for every UI-only text change, but they
 are required before claiming runtime, browser, mission completion, or release
 readiness changes are production-grade.
-
