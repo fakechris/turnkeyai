@@ -10,7 +10,7 @@ describe("cli help", () => {
     const result = await runCliHelp(["--help"]);
     assert.equal(result.code, 0);
     assert.match(result.stdout, /turnkeyai app \[--route onboarding\|missions\|approvals\|agents\|context\|agent-connect\|runtime\|settings\]/);
-    assert.match(result.stdout, /turnkeyai daemon service install\|uninstall\|status/);
+    assert.match(result.stdout, /turnkeyai daemon service install\|restart\|uninstall\|status/);
     assert.match(result.stdout, /turnkeyai app install-launcher \[--path <file>\]/);
     assert.match(result.stdout, /npx @turnkeyai\/cli app/);
     assert.match(result.stdout, /npx @turnkeyai\/cli daemon status/);
@@ -62,6 +62,7 @@ describe("cli help", () => {
     assert.equal(result.code, 0);
     assert.match(result.stdout, /TurnkeyAI daemon service/);
     assert.match(result.stdout, /turnkeyai daemon service install \[--no-start\] \[--capture-env\]/);
+    assert.match(result.stdout, /turnkeyai daemon service restart/);
     assert.match(result.stdout, /--capture-env writes known provider API keys/);
     assert.match(result.stdout, /~\/\.turnkeyai\/daemon\.env/);
   });

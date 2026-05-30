@@ -8,6 +8,7 @@ import {
   buildDaemonServiceScript,
   buildMacLaunchAgentPlist,
   collectDaemonServiceCapturedEnv,
+  hasRestartedDaemonProcess,
   isTransientLaunchctlBootstrapError,
   mergeDaemonEnvContent,
   resolveDaemonLaunchCommand,
@@ -174,5 +175,13 @@ describe("daemon service artifacts", () => {
       true
     );
     assert.equal(isTransientLaunchctlBootstrapError(new Error("service already loaded")), false);
+  });
+
+  it("does not treat a live pre-restart daemon pid as a completed restart", () => {
+    assert.equal(hasRestartedDaemonProcess(null, null, false), true);
+    assert.equal(hasRestartedDaemonProcess(123, 123, true), false);
+    assert.equal(hasRestartedDaemonProcess(123, 456, true), true);
+    assert.equal(hasRestartedDaemonProcess(123, 123, false), true);
+    assert.equal(hasRestartedDaemonProcess(123, null, false), true);
   });
 });
