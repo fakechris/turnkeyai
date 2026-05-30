@@ -602,6 +602,14 @@ try {
       await page.locator(".card", { hasText: "Real LLM acceptance" }).isVisible(),
       "release acceptance should show the real LLM gate"
     );
+    const artifactPath = page
+      .locator(".card", { hasText: "Release acceptance" })
+      .locator("text=validation-artifacts/real-llm-acceptance/mission-e2e-ui.json");
+    await artifactPath.waitFor({ state: "visible" });
+    assert(
+      await artifactPath.isVisible(),
+      "release acceptance should surface the latest real acceptance mission artifact path"
+    );
     assert(
       await page.locator(".card", { hasText: "validation-ops" }).isVisible(),
       "release acceptance should show the next validation command"
@@ -1794,6 +1802,7 @@ function validationOpsFixture() {
         completedAt: completedAt - 2_000,
         durationMs: 88_000,
         issueCount: 0,
+        artifactPath: "validation-artifacts/real-llm-acceptance/mission-e2e-ui.json",
       },
     ],
     activeIssues: [],

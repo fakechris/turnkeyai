@@ -2460,6 +2460,7 @@ a { color: inherit; text-decoration: none; }
 }
 .runtime-health-detail { color: var(--text-muted); }
 .runtime-health-action { color: var(--warning); }
+.runtime-artifact-path { word-break: break-all; }
 
 .log-row {
   display: grid;

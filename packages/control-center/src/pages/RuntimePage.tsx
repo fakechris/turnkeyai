@@ -715,6 +715,11 @@ function ValidationOpsCard({
                     <div className="runtime-health-detail">
                       {run.runType} · {run.issueCount} issue(s) · {formatRelativeAge(run.completedAt)}
                     </div>
+                    {run.artifactPath ? (
+                      <div className="runtime-health-action runtime-artifact-path">
+                        artifact: <span className="mono">{run.artifactPath}</span>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ))}

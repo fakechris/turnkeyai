@@ -1162,3 +1162,50 @@ Regression Risk:
   record the failed run without a mission artifact, which is the correct signal.
 - The smoke harness change deliberately tightens waits around visible UI state;
   it does not weaken the read-scope recovery assertions.
+
+## 2026-05-30 23:59 CST - Runtime Shows Acceptance Artifact
+
+Direction: converging
+
+Execution Kernel:
+- No mission/tool/runtime execution semantics changed.
+- The validation-ops run type used by Control Center now includes optional
+  artifact path metadata, matching the real-acceptance record emitted by the
+  top-level gate.
+
+Result Quality:
+- No answer synthesis changed.
+- Result-quality evidence is more visible to operators because the Runtime
+  release card can now show where the mission E2E JSON summary lives for the
+  latest real-LLM acceptance run.
+
+Workbench UX:
+- Runtime → Release acceptance now surfaces `artifact: <path>` for validation
+  runs that carry an artifact, including the real acceptance mission report.
+- The Control Center smoke fixture asserts the path is visible in the release
+  acceptance card, closing the user-visible half of the previous checkpoint.
+
+Browser Reliability:
+- Browser runtime behavior did not change.
+- The visible artifact path helps browser-backed mission acceptance evidence
+  remain inspectable after the gate, but does not itself prove a new browser
+  run.
+
+Acceptance Evidence:
+- `npm run build --workspace @turnkeyai/control-center`: passed.
+- `npm run control-center:smoke`: passed.
+- `npm run ledger:check`: passed.
+- `npm run typecheck`: passed.
+- `npm test -- --runInBand`: passed.
+- `npm run build`: passed.
+- `git diff --check`: passed.
+- The smoke fixture includes
+  `validation-artifacts/real-llm-acceptance/mission-e2e-ui.json` on the latest
+  `real-llm-acceptance` run and verifies it is rendered in Runtime.
+
+Regression Risk:
+- This is a display-only change. If an artifact path points to a file no longer
+  present on disk, Runtime will still show the recorded path; actual file
+  download/open support remains a separate product feature.
+- The path is shown as plain text rather than a link to avoid inventing a file
+  serving route in this slice.
