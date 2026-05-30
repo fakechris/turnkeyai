@@ -325,6 +325,57 @@ Regression Risk:
   tests cover the intended behavior; broader real-scenario matrix coverage is
   still needed before claiming the overall workbench goal complete.
 
+## 2026-05-30 19:07 CST - Final-Shape Quality Gate Tightened
+
+Direction: converging
+
+Execution Kernel:
+- No runtime execution behavior changed in this slice.
+- The mission E2E final-answer evaluator now treats status preambles such as
+  "all child sessions returned" or "producing the final answer" as quality
+  failures when they appear before the requested answer shape.
+
+Result Quality:
+- This pins the failure mode observed in the previous checkpoint: the agent can
+  gather the right evidence but still degrade product quality by adding process
+  narration above the requested answer.
+- Plain section labels such as `evidence` remain valid; the gate only rejects
+  status narration that belongs in the thought process, not in the final answer.
+
+Workbench UX:
+- Users should see cleaner final answers in the Mission Detail view, with
+  process traces staying in the timeline instead of leaking into the answer.
+
+Browser Reliability:
+- No browser behavior changed.
+
+Acceptance Evidence:
+- `npm test -- --runInBand`: 1199 passing.
+- `npm run typecheck`
+- `npm run build`
+- `git diff --check`
+- `npx tsx --test packages/app-gateway/src/mission-tool-use-e2e-quality.test.ts`:
+  3 passing.
+- `npx tsx --test packages/app-gateway/src/routes/mission-routes.test.ts packages/app-gateway/src/mission-tool-use-e2e-quality.test.ts`:
+  32 passing.
+- Mission E2E:
+  `npm run mission:e2e -- --scenario product-workbench-brief --scenario-timeout-ms 180000`
+  passed with mission `msn.mps8y6yq.1`, status `done`, quality gate `passed`,
+  tools `3/3`, sessions `3/0`, liveness `0/0/0`, evidence events `3`, final
+  answer `1949` bytes and `6` bullets.
+
+Regression Risk:
+- The check is intentionally narrow and only examines the first non-empty line.
+  The main risk is rejecting a user-requested heading that looks like a status
+  preamble; existing scenario prompts do not request such headings.
+- Exporting the quality evaluator made the E2E script part of typecheck and
+  exposed two stale script types; both were tightened. A flaky mission-route
+  test assumption was also corrected to wait for the asynchronous failure event
+  after blocked status.
+- Review caught a ReDoS risk in the first implementation of the status-preamble
+  matcher; the regex was replaced with normalized string checks and simple
+  anchored patterns, with a long-line regression test.
+
 ## 24-Hour Review Rule
 
 At least once per day while this goal is active:

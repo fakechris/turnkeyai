@@ -1,10 +1,11 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import type { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 
@@ -20,7 +21,9 @@ interface MissionToolUseE2eOptions {
   matrixScenarios?: MissionE2eScenario[];
 }
 
-type MissionE2eScenario =
+type DaemonChildProcess = ChildProcessByStdio<null, Readable, Readable>;
+
+export type MissionE2eScenario =
   | "basic"
   | "comparison"
   | "followup"
@@ -82,6 +85,7 @@ interface MissionObservabilitySnapshot {
   qualityGate: {
     status: string;
     evidenceEvents: number;
+    checks?: Record<string, unknown>;
   };
 }
 
@@ -124,7 +128,7 @@ interface FixtureServer {
   productSignalsUrl: string;
 }
 
-interface ScenarioSpec {
+export interface ScenarioSpec {
   scenario: MissionE2eScenario;
   title: string;
   desc: string;
@@ -2375,7 +2379,7 @@ function findFinalEvent(timeline: ActivityEvent[], finalMarker: string): Activit
   return timeline.find((event) => event.kind === "thought" && event.text.includes(finalMarker)) ?? null;
 }
 
-function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bullets: number; failures: string[] } {
+export function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bullets: number; failures: string[] } {
   const failures: string[] = [];
   const bytes = Buffer.byteLength(content, "utf8");
   const bullets = (content.match(/^\s*[-*+]\s+\S/gm) ?? []).length;
@@ -2414,6 +2418,10 @@ function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bullets: n
   if (/\*\*|__/.test(content)) failures.push("final answer must not use bold markup");
   if (/\[[^\]]+\]\([^)]+\)|https?:\/\//i.test(content)) failures.push("final answer must not include links");
   const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const firstLine = lines[0] ?? "";
+  if (isStatusPreambleLine(firstLine)) {
+    failures.push("final answer must not start with a status preamble");
+  }
   const finalMarkerLines = lines.filter((line) => line.includes(spec.finalMarker));
   if (finalMarkerLines.length !== 1 || !/^\s*[-*+]\s+/.test(finalMarkerLines[0] ?? "")) {
     failures.push("final success marker must appear exactly once inside an evidence bullet");
@@ -2424,12 +2432,33 @@ function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bullets: n
   return { bullets, failures };
 }
 
+function isStatusPreambleLine(line: string): boolean {
+  const normalized = line.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!normalized || /^(?:[-*+]\s+|#{1,6}\s+)/.test(normalized)) {
+    return false;
+  }
+  if (normalized.startsWith("final answer:")) {
+    return true;
+  }
+  if (
+    normalized.startsWith("all ") &&
+    /\b(?:child\s+)?sessions?\b/.test(normalized) &&
+    /\b(?:returned|complete|completed|confirmed)\b/.test(normalized)
+  ) {
+    return true;
+  }
+  if (/^all tool calls?\b/.test(normalized) && /\b(?:returned|complete|completed)\b/.test(normalized)) {
+    return true;
+  }
+  return /^(?:i am |i'm |i )?(?:now )?(?:producing|preparing|writing) the final answer\b/.test(normalized);
+}
+
 function startDaemon(input: {
   runtimeRoot: string;
   port: number;
   token: string;
   modelCatalogPath: string;
-}): { child: ChildProcessWithoutNullStreams; output: () => string } {
+}): { child: DaemonChildProcess; output: () => string } {
   let output = "";
   const child = spawn("npm", ["run", "daemon"], {
     cwd: process.cwd(),
@@ -2458,7 +2487,7 @@ function startDaemon(input: {
 
 async function waitForDaemonHealth(input: {
   baseUrl: string;
-  daemon: { child: ChildProcessWithoutNullStreams; output: () => string };
+  daemon: { child: DaemonChildProcess; output: () => string };
   timeoutMs: number;
 }): Promise<void> {
   let exited: { code: number | null; signal: NodeJS.Signals | null } | null = null;
@@ -2554,7 +2583,7 @@ async function closeServer(server: Server | net.Server): Promise<void> {
   });
 }
 
-async function stopDaemon(child: ChildProcessWithoutNullStreams): Promise<void> {
+async function stopDaemon(child: DaemonChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill("SIGTERM");
   const stopped = await Promise.race([
