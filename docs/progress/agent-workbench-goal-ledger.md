@@ -719,3 +719,46 @@ Regression Risk:
 - Focused help/artifact tests cover the exposed command surface and the
   pre-restart PID guard. Real local service acceptance covered the installed
   LaunchAgent path on this workstation.
+
+## 2026-05-30 21:23 CST - No-Token Service Restart Guidance
+
+Direction: converging
+
+Execution Kernel:
+- No mission, role, tool-use, worker, browser, or completion semantics changed.
+- This checkpoint closes a product-entry wiring gap: the daemon service restart
+  command was available in the CLI but not visible on the no-token recovery
+  page users see when they open Mission Control without launcher-injected auth.
+
+Result Quality:
+- Final-answer quality did not change.
+- The improvement is acceptance hygiene: users and operators have a visible
+  restart path after local config/model/browser changes, reducing false
+  negatives caused by stale daemon state before evaluating complex missions.
+
+Workbench UX:
+- The `Auth token required` page now includes a `Reload service config` command
+  for `turnkeyai daemon service restart`.
+- The same page also explains that persistent daemon commands keep the service
+  alive across logins and reload service-only configuration.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- Restart guidance can clear stale local browser/daemon config after an
+  operator changes `daemon.env`, model catalogs, or browser settings, but it is
+  not a browser recovery policy by itself.
+
+Acceptance Evidence:
+- `npm run build:control-center`: passed.
+- First smoke attempt with implicit browser resolution hung before launching a
+  browser process. Re-ran with an explicit Chrome executable to remove
+  environment ambiguity.
+- `npm run control-center:smoke -- --browser-path "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`:
+  passed, including desktop and mobile mission detail screenshots.
+
+Regression Risk:
+- Risk is localized to the no-token page copy and smoke assertion. The page now
+  contains the restart command in both a command card and explanatory note, so
+  smoke uses a card-scoped locator to avoid false strict-mode failures.
+- Remaining gap: this does not prove complex-task quality; the next runtime or
+  result-quality change still requires real LLM acceptance.
