@@ -436,7 +436,21 @@ function LiveMissionView({ mission }: { mission: Mission }) {
                       <span className="mono">{traceFilterCounts[filter.id]}</span>
                     </button>
                   ))}
+                  <span className="spacer" />
+                  <button
+                    type="button"
+                    className="trace-filter-chip"
+                    disabled={!timeline.hasMore || timeline.isLoadingOlder}
+                    onClick={timeline.loadOlder}
+                  >
+                    <span>{timeline.isLoadingOlder ? "Loading older" : "Load older"}</span>
+                  </button>
                 </div>
+                {timeline.olderError && (
+                  <div className="inline-error">
+                    {timeline.olderError}
+                  </div>
+                )}
                 <div id="thinking-record-timeline" className="timeline">
                 {timeline.value.length === 0 ? (
                   <div className="muted" style={{ padding: 28, textAlign: "center", fontSize: 11.5 }}>

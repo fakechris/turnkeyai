@@ -46,6 +46,13 @@ export interface RemoteData<T> {
   refetch: () => void;
 }
 
+export interface TimelineRemoteData extends RemoteData<ActivityEvent[]> {
+  hasMore: boolean;
+  isLoadingOlder: boolean;
+  olderError: string | null;
+  loadOlder: () => void;
+}
+
 function useRemote<T>(
   pathname: string,
   fallback: T,
@@ -231,17 +238,122 @@ export function useTimeline(
   missionId: string,
   fallback: ActivityEvent[],
   options: { limit?: number; pollIntervalMs?: number } = {}
-): RemoteData<ActivityEvent[]> {
+): TimelineRemoteData {
+  const client = useApiClient();
   const limit = options.limit ?? 200;
-  // K3.5: default to 2s polling so new assistant/tool replies show up
-  // in the timeline without forcing the user to refresh. Caller can
-  // disable by passing pollIntervalMs: 0.
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
-  return useRemote<ActivityEvent[]>(
-    `/missions/${encodeURIComponent(missionId)}/timeline?limit=${limit}`,
-    fallback,
-    { dependsOn: [missionId, limit], pollIntervalMs }
-  );
+  const [value, setValue] = useState<ActivityEvent[]>(fallback);
+  const [isLive, setIsLive] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [olderError, setOlderError] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [refetchEpoch, setRefetchEpoch] = useState(0);
+  const [olderEpoch, setOlderEpoch] = useState(0);
+  const loadedOlderRef = useRef(false);
+  const nextCursorRef = useRef<string | null>(null);
+  const fallbackRef = useRef(fallback);
+  fallbackRef.current = fallback;
+
+  const refetch = useCallback(() => setRefetchEpoch((epoch) => epoch + 1), []);
+  const loadOlder = useCallback(() => {
+    if (!nextCursorRef.current || isLoadingOlder) return;
+    setOlderEpoch((epoch) => epoch + 1);
+  }, [isLoadingOlder]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadedOlderRef.current = false;
+    nextCursorRef.current = null;
+    setValue(fallbackRef.current);
+    setIsLive(false);
+    setError(null);
+    setOlderError(null);
+    setNextCursor(null);
+    setIsLoadingOlder(false);
+
+    const pathname = `/missions/${encodeURIComponent(missionId)}/timeline?page=true&limit=${limit}`;
+
+    async function fetchLatest() {
+      try {
+        const page = normalizeTimelinePage(await client.get<ActivityTimelinePage | ActivityEvent[]>(pathname), limit);
+        if (cancelled) return;
+        setValue((current) => mergeTimelineEvents(loadedOlderRef.current ? current : [], page.events));
+        setIsLive(true);
+        setError(null);
+        if (!loadedOlderRef.current) {
+          nextCursorRef.current = page.nextCursor;
+          setNextCursor(page.nextCursor);
+        } else if (!nextCursorRef.current && page.nextCursor === null) {
+          setNextCursor(null);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setValue((current) => (current.length > 0 ? current : fallbackRef.current));
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    void fetchLatest();
+    if (pollIntervalMs <= 0) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    let timer: number | undefined;
+    const tick = async () => {
+      await fetchLatest();
+      if (!cancelled) {
+        timer = window.setTimeout(tick, pollIntervalMs);
+      }
+    };
+    timer = window.setTimeout(tick, pollIntervalMs);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, missionId, limit, pollIntervalMs, refetchEpoch]);
+
+  useEffect(() => {
+    const cursor = nextCursorRef.current;
+    if (olderEpoch === 0 || !cursor) return;
+    let cancelled = false;
+    setIsLoadingOlder(true);
+    setOlderError(null);
+    const pathname = `/missions/${encodeURIComponent(missionId)}/timeline?page=true&limit=${limit}&cursor=${encodeURIComponent(cursor)}`;
+    void client
+      .get<ActivityTimelinePage | ActivityEvent[]>(pathname)
+      .then((response) => {
+        if (cancelled) return;
+        const page = normalizeTimelinePage(response, limit);
+        loadedOlderRef.current = true;
+        nextCursorRef.current = page.nextCursor;
+        setNextCursor(page.nextCursor);
+        setValue((current) => mergeTimelineEvents(current, page.events));
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setOlderError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingOlder(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, missionId, limit, olderEpoch]);
+
+  return {
+    value,
+    isLive,
+    error,
+    refetch,
+    hasMore: Boolean(nextCursor),
+    isLoadingOlder,
+    olderError,
+    loadOlder,
+  };
 }
 
 export function useTimelinePage(
@@ -257,6 +369,25 @@ export function useTimelinePage(
     fallback,
     { dependsOn: [missionId, limit, options.cursor ?? null], pollIntervalMs }
   );
+}
+
+function mergeTimelineEvents(current: ActivityEvent[], incoming: ActivityEvent[]): ActivityEvent[] {
+  const byId = new Map<string, ActivityEvent>();
+  for (const event of current) byId.set(event.id, event);
+  for (const event of incoming) byId.set(event.id, event);
+  return [...byId.values()].sort((a, b) => a.tMs - b.tMs || a.id.localeCompare(b.id));
+}
+
+function normalizeTimelinePage(response: ActivityTimelinePage | ActivityEvent[], limit: number): ActivityTimelinePage {
+  if (Array.isArray(response)) {
+    return {
+      events: response,
+      nextCursor: null,
+      hasMore: false,
+      limit,
+    };
+  }
+  return response;
 }
 
 export function useMissionMetrics(
