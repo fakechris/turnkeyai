@@ -34,6 +34,10 @@ Update cadence:
 - Every 24 hours, review the last day of checkpoints. If the same issue class
   keeps receiving local fixes without better real E2E outcomes, pause feature
   PRs and switch to methodology review.
+- `npm run ledger:check` treats dated `24-Hour Goal Review` entries as first
+  class ledger records. Once the dated ledger span reaches 24 hours, the check
+  rejects any dated ledger window that goes more than 24 hours without a dated
+  24-hour review.
 - Do not mark a stage as converging unless the checkpoint can answer: "is
   stable complex-task delivery closer than it was at the previous checkpoint?"
 
@@ -48,6 +52,8 @@ Update cadence:
 - The methodology-review note must name the root-cause hypothesis, why the
   previous fixes failed to converge, and the real scenario that must improve
   before feature work resumes.
+- The dated 24-hour review must include: Repeated Issue Classes, E2E Trend,
+  Decision, and Methodology Review Trigger.
 
 Direction values:
 
@@ -2528,3 +2534,49 @@ Regression Risk:
 - 24-hour methodology check: if approval duplication, source-label drift, or
   answer-shape regex drift recurs again, pause feature PRs and review the
   shared permission/session/evidence contract before adding workbench features.
+
+## 2026-05-31 06:48 CST - G0 Daily Brake Enforcement
+
+Direction: unknown
+
+Execution Kernel:
+- No execution-kernel, tool-use, session, browser, approval, or mission
+  completion behavior changed.
+- The progress ledger checker now treats dated 24-hour reviews as first-class
+  records and enforces a recent dated review once the ledger spans at least 24
+  hours. This makes the G0 methodology brake checkable instead of purely
+  procedural.
+
+Result Quality:
+- Final-answer synthesis did not change in this checkpoint.
+- The governance improvement reduces the chance of calling repeated local
+  answer-quality fixes "progress" without a real E2E trend review.
+
+Workbench UX:
+- No user-facing workbench page changed.
+- Product-management visibility improves because the ledger can now show when
+  feature work must pause for methodology review instead of continuing through
+  repeated weak outcomes.
+
+Browser Reliability:
+- Browser transport, profile, CDP, and session behavior did not change.
+- The daily review gate explicitly keeps browser/session/transport instability
+  as a repeated-issue class that must be reviewed against real acceptance
+  evidence.
+
+Acceptance Evidence:
+- `npx tsx --test scripts/agent-workbench-ledger-check.test.ts`: 5 passed.
+- `npm run ledger:check`: passed, 46 checkpoint(s), before this checkpoint was
+  appended.
+- `npm run typecheck`: passed.
+- No real LLM/browser acceptance ran because this is governance-only. The next
+  runtime/browser behavior change still requires focused real acceptance before
+  claiming convergence.
+
+Regression Risk:
+- Main risk is false-positive governance friction after the ledger crosses a
+  24-hour span. The checker requires dated `24-Hour Goal Review` entries often
+  enough that no dated ledger window runs more than 24 hours without review; it
+  does not block shorter active windows.
+- The rule intentionally does not decide whether feature work continues. It
+  only forces the dated review entry that must make that decision.
