@@ -169,7 +169,9 @@ export async function buildDiagnosticsMissionHealthSnapshot(
     active: missions.filter((mission) => ACTIVE_STATUSES.has(mission.status)).length,
     terminal: missions.filter((mission) => mission.status === "done" || mission.status === "blocked").length,
     needsApproval: missions.filter((mission) => mission.status === "needs_approval" || mission.pendingApprovals > 0).length,
-    withBlockers: missions.filter((mission) => mission.blockers > 0 || mission.status === "blocked").length,
+    withBlockers: missions.filter((mission) =>
+      mission.status !== "archived" && (mission.blockers > 0 || mission.status === "blocked")
+    ).length,
     snapshotErrorCount,
     ...(latestMission
       ? {
@@ -202,12 +204,14 @@ function chooseMissionsToInspect(missions: Mission[], limit: number): Mission[] 
   const chosen = new Map<string, Mission>();
   const boundedLimit = Math.max(1, limit);
   for (const mission of missions) {
+    if (mission.status === "archived") continue;
     if (ACTIVE_STATUSES.has(mission.status) || mission.status === "blocked" || mission.pendingApprovals > 0 || mission.blockers > 0) {
       chosen.set(mission.id, mission);
     }
   }
   for (const mission of missions) {
     if (chosen.size >= boundedLimit) break;
+    if (mission.status === "archived") continue;
     chosen.set(mission.id, mission);
   }
   return [...chosen.values()].slice(0, boundedLimit);
@@ -219,6 +223,7 @@ function qualityKey(status: MissionObservabilitySnapshot["qualityGate"]["status"
 }
 
 function shouldSurfaceMissionAttention(mission: Mission, snapshot: MissionObservabilitySnapshot): boolean {
+  if (mission.status === "archived") return false;
   if (mission.status === "needs_approval" || mission.pendingApprovals > 0) return true;
   if (mission.status === "blocked" || mission.blockers > 0) return true;
   if (snapshot.qualityGate.status === "blocked" || snapshot.qualityGate.status === "needs_attention") return true;

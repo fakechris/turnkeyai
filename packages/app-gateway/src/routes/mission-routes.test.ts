@@ -1288,6 +1288,78 @@ describe("mission-routes", () => {
       }
     });
 
+    it("POST /missions/:id/archive archives terminal missions and rejects active missions", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        await deps.missionStore.putRaw({
+          id: "msn.done",
+          shortId: "MSN-DONE",
+          title: "done mission",
+          desc: "",
+          status: "done",
+          mode: "custom",
+          modeLabel: "Custom",
+          owner: "operator",
+          ownerLabel: "Operator",
+          createdAt: new Date(clock.now()).toISOString(),
+          createdAtMs: clock.now(),
+          agents: ["role-lead"],
+          progress: 1,
+          pendingApprovals: 0,
+          blockers: 0,
+          contextSummary: [],
+          threadId: "thread-done",
+        });
+        await deps.missionStore.putRaw({
+          id: "msn.working",
+          shortId: "MSN-WORK",
+          title: "working mission",
+          desc: "",
+          status: "working",
+          mode: "custom",
+          modeLabel: "Custom",
+          owner: "operator",
+          ownerLabel: "Operator",
+          createdAt: new Date(clock.now()).toISOString(),
+          createdAtMs: clock.now(),
+          agents: ["role-lead"],
+          progress: 0.5,
+          pendingApprovals: 0,
+          blockers: 0,
+          contextSummary: [],
+          threadId: "thread-working",
+        });
+
+        const archivedResponse = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({ method: "POST", url: "/missions/msn.done/archive" }),
+          res: archivedResponse.res,
+          url: new URL("http://127.0.0.1/missions/msn.done/archive"),
+          deps,
+        });
+        assert.equal(archivedResponse.getStatus(), 200);
+        assert.equal((archivedResponse.getJson() as Mission).status, "archived");
+        assert.equal((await deps.missionStore.get("msn.done"))?.status, "archived");
+
+        const activeResponse = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({ method: "POST", url: "/missions/msn.working/archive" }),
+          res: activeResponse.res,
+          url: new URL("http://127.0.0.1/missions/msn.working/archive"),
+          deps,
+        });
+        assert.equal(activeResponse.getStatus(), 409);
+        assert.deepEqual(activeResponse.getJson(), {
+          error: "mission is still active",
+          code: "mission_active",
+          status: "working",
+        });
+      } finally {
+        t.cleanup();
+      }
+    });
+
     it("POST /missions/:id/messages accepts follow-up before the agent turn finishes", async () => {
       const t = tmpDir();
       try {

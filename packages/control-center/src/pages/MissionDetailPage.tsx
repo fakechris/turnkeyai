@@ -28,6 +28,7 @@ import type {
 import {
   useCancelRoleRun,
   useCancelWorkerSession,
+  useArchiveMission,
   useApprovals,
   useArtifacts,
   useContextSources,
@@ -63,17 +64,39 @@ const TRACE_FILTERS: Array<{ id: TraceFilter; label: string }> = [
 ];
 
 export function MissionDetailPage({ missionId }: { missionId: string }) {
-  const { setRoute } = useAppState();
+  const { state, setRoute } = useAppState();
   const missions = useMissions([]);
+  const archiveMission = useArchiveMission();
   const listMission = missions.value.find((m) => m.id === missionId) ?? null;
   const missionDetail = useMission(missionId, listMission, { pollIntervalMs: 2000 });
   const mission = missionDetail.value ?? listMission;
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
   const refetchMissions = missions.refetch;
   const refetchMissionDetail = missionDetail.refetch;
   const onMissionUpdated = useCallback(() => {
     refetchMissionDetail();
     refetchMissions();
   }, [refetchMissionDetail, refetchMissions]);
+  const canArchiveMission =
+    mission !== null &&
+    canUseOperatorActions(state.scope) &&
+    (mission.status === "done" || mission.status === "blocked");
+  const onArchiveMission = useCallback(async () => {
+    if (!mission || !canArchiveMission || archiving) return;
+    setArchiving(true);
+    setArchiveError(null);
+    try {
+      await archiveMission(mission.id);
+      refetchMissions();
+      setRoute("missions");
+      window.location.hash = "#/missions";
+    } catch (err) {
+      setArchiveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setArchiving(false);
+    }
+  }, [archiveMission, archiving, canArchiveMission, mission, refetchMissions, setRoute]);
 
   if (!mission && !missions.isLive && !missionDetail.isLive) {
     return (
@@ -99,7 +122,14 @@ export function MissionDetailPage({ missionId }: { missionId: string }) {
 
   return (
     <>
-      <MissionBar mission={mission} onBack={() => setRoute("missions")} />
+      <MissionBar
+        mission={mission}
+        onBack={() => setRoute("missions")}
+        canArchive={canArchiveMission}
+        archiving={archiving}
+        archiveError={archiveError}
+        onArchive={onArchiveMission}
+      />
       {mission.threadId ? (
         <LiveMissionView mission={mission} onMissionUpdated={onMissionUpdated} />
       ) : (
@@ -109,7 +139,21 @@ export function MissionDetailPage({ missionId }: { missionId: string }) {
   );
 }
 
-function MissionBar({ mission, onBack }: { mission: Mission; onBack: () => void }) {
+function MissionBar({
+  mission,
+  onBack,
+  canArchive,
+  archiving,
+  archiveError,
+  onArchive,
+}: {
+  mission: Mission;
+  onBack: () => void;
+  canArchive: boolean;
+  archiving: boolean;
+  archiveError: string | null;
+  onArchive: () => void;
+}) {
   return (
     <div className="mission-bar">
       <button type="button" className="btn ghost" onClick={onBack} style={{ padding: "2px 6px" }}>
@@ -119,6 +163,22 @@ function MissionBar({ mission, onBack }: { mission: Mission; onBack: () => void 
       <h2 style={{ marginLeft: 4 }}>{mission.title}</h2>
       <StatusTag status={mission.status} />
       <div className="meta">created {mission.createdAt} · {mission.modeLabel}</div>
+      <div className="right">
+        {archiveError && (
+          <span role="alert" className="mono" style={{ fontSize: 10.5, color: "var(--danger)" }}>
+            {archiveError}
+          </span>
+        )}
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={!canArchive || archiving}
+          onClick={onArchive}
+          title={canArchive ? "Archive this terminal mission" : "Only done or blocked missions can be archived"}
+        >
+          {archiving ? "Archiving..." : "Archive"}
+        </button>
+      </div>
     </div>
   );
 }
