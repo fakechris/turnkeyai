@@ -841,7 +841,7 @@ function shutdownDaemon(signal: NodeJS.Signals | "exit"): void {
   stopMissionThreadBridge();
   const closeTimeout = setTimeout(() => {
     console.error("daemon shutdown timed out, exiting");
-    removePidFile(RUNTIME_PATHS);
+    removePidFile(RUNTIME_PATHS, process.pid);
     process.exit(1);
   }, 10_000);
   closeTimeout.unref();
@@ -850,7 +850,7 @@ function shutdownDaemon(signal: NodeJS.Signals | "exit"): void {
     if (closeError) {
       console.error(`daemon shutdown error: ${closeError.message}`);
     }
-    removePidFile(RUNTIME_PATHS);
+    removePidFile(RUNTIME_PATHS, process.pid);
     process.exit(0);
   });
 }

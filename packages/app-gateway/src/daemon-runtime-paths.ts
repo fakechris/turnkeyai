@@ -162,11 +162,15 @@ export function writePidFile(paths: DaemonRuntimePaths, pid: number): void {
   writeFileSync(paths.pidFile, String(pid), { mode: 0o600 });
 }
 
-export function removePidFile(paths: DaemonRuntimePaths): void {
+export function removePidFile(paths: DaemonRuntimePaths, expectedPid?: number): void {
   try {
-    if (existsSync(paths.pidFile)) {
-      unlinkSync(paths.pidFile);
+    if (!existsSync(paths.pidFile)) {
+      return;
     }
+    if (expectedPid !== undefined && readPidFile(paths) !== expectedPid) {
+      return;
+    }
+    unlinkSync(paths.pidFile);
   } catch {
     // best-effort cleanup
   }
