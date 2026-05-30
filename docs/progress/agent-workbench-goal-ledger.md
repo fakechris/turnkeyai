@@ -1066,3 +1066,47 @@ Regression Risk:
 - The report intentionally omits the final-answer body to keep artifacts small
   and avoid leaking bulky or sensitive mission output; reviewers still need the
   raw mission logs when debugging content quality.
+
+## 2026-05-30 23:25 CST - Real Mission E2E Evidence Artifact
+
+Direction: converging
+
+Execution Kernel:
+- No runtime code changed after the JSON report PR landed.
+- A fresh real-LLM mission route run exercised the existing lead tool-use loop
+  with three child sessions and completed without active, waiting, or stale
+  runtime work left behind.
+
+Result Quality:
+- The realistic brief scenario completed with quality gate `passed`, zero
+  quality failures, six final-answer bullets, and 1320 final-answer bytes.
+- This is a stronger progress signal than test count alone because it proves a
+  product-level mission produced a bounded, evidence-backed result through the
+  user-facing mission route.
+
+Workbench UX:
+- No Control Center or TUI UI changed.
+- The user-visible improvement is evidence handling: the same mission result
+  can now be reviewed from the terminal output and from a compact JSON artifact
+  without scraping logs.
+
+Browser Reliability:
+- This scenario included one browser-rendered operations dashboard source
+  through the mission tool-use path.
+- Browser-related liveness settled to zero, with no failed, cancelled, timeout,
+  or recovery events in the generated report.
+
+Acceptance Evidence:
+- `npm run mission:e2e -- --scenario realistic-brief --model-catalog models.local.json --scenario-timeout-ms 300000 --json /tmp/turnkeyai-mission-e2e-realistic-brief-20260530-2319.json`:
+  passed.
+- Mission id: `msn.mpsi4l79.1`.
+- JSON report status: `passed`; duration: `28733` ms.
+- Metrics: tools `3/3`, sessions `3/0`, approvals `0/0/0`, liveness `0/0/0`,
+  evidence events `3`, recovery events `0`.
+
+Regression Risk:
+- This is one real scenario, not the full matrix. It proves the JSON artifact
+  path and a representative complex mission still work, but it does not replace
+  the full `acceptance:real` gate before high-risk runtime changes.
+- The artifact omits final-answer text by design, so content debugging still
+  requires mission logs or the Control Center mission view.
