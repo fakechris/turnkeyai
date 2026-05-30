@@ -585,6 +585,10 @@ try {
       "onboarding should show browser bridge readiness"
     );
     assert(
+      await page.locator(".onboarding-readiness-card", { hasText: "local-automation · healthy" }).isVisible(),
+      "onboarding should show browser bridge transport health"
+    );
+    assert(
       await page.locator(".onboarding-readiness-card", { hasText: "Real acceptance gate" }).isVisible(),
       "onboarding should show real acceptance readiness"
     );
