@@ -48,6 +48,10 @@ npm run doctor
 `npm run app -- --no-open` prints the authenticated Control Center URL. Use
 that URL directly in a browser for SSH/headless environments.
 
+`npm run doctor` includes an installed-CLI readiness check. If it reports that
+`turnkeyai` is not on `PATH`, either run `npm run install:local-cli`, keep using
+the source-checkout commands, or launch through `npx @turnkeyai/cli app`.
+
 After one successful CLI launch, install the double-click launcher:
 
 ```bash
@@ -150,7 +154,7 @@ model keys, failed real-LLM validation runs, and browser transport warnings.
 
 | Symptom | Check |
 | --- | --- |
-| `turnkeyai: command not found` | Run `npm run install:local-cli`, or use `npm run app -- --no-open` from the checkout. |
+| `turnkeyai: command not found` | Run `npm run doctor`, then `npm run install:local-cli`; or use `npm run app -- --no-open` / `npx @turnkeyai/cli app`. |
 | `Auth token required` | Reopen through `turnkeyai app`; do not manually type the bare `/app` URL. |
 | Control Center stuck creating a mission | Check `turnkeyai daemon status`, Runtime readiness, and `turnkeyai daemon logs --follow`. |
 | Browser work fails immediately | Check `turnkeyai bridge status`, Chrome profile ownership, and `TURNKEYAI_BROWSER_TRANSPORT`. |
