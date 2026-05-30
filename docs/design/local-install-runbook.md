@@ -94,6 +94,36 @@ turnkeyai daemon stop
 Use `TURNKEYAI_HOME`, `TURNKEYAI_DATA_DIR`, or `TURNKEYAI_DAEMON_PORT` to
 isolate local experiments.
 
+### macOS Service Mode
+
+For a persistent local daemon that survives terminal windows, install the
+LaunchAgent service:
+
+```bash
+turnkeyai daemon service install
+turnkeyai daemon service status
+```
+
+This writes:
+
+| Path | Purpose |
+| --- | --- |
+| `~/Library/LaunchAgents/com.turnkeyai.daemon.plist` | macOS LaunchAgent definition |
+| `~/.turnkeyai/bin/daemon-service.sh` | wrapper that starts the packaged or source daemon |
+| `~/.turnkeyai/daemon.env` | optional service-only environment file |
+
+LaunchAgents do not inherit most shell startup environment. Put model keys,
+browser transport settings, or CDP endpoints that the daemon needs into
+`~/.turnkeyai/daemon.env` when they are not already available to the GUI
+session. The file is created as `0600` and is sourced by the wrapper before the
+daemon starts.
+
+To remove the service while preserving local data and `daemon.env`:
+
+```bash
+turnkeyai daemon service uninstall
+```
+
 ## Auth Token Required
 
 If the browser shows `Auth token required`, do not open a bare

@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { openSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,6 +19,13 @@ interface DaemonRuntimePaths {
   configFile: string;
   extensionsDir: string;
   skillsDir: string;
+}
+
+interface DaemonServicePaths {
+  label: string;
+  launchAgentFile: string;
+  wrapperFile: string;
+  envFile: string;
 }
 
 interface DaemonRuntimeConfig {
@@ -39,6 +47,16 @@ function getRuntimePaths(): DaemonRuntimePaths {
     configFile: path.join(rootDir, "config.json"),
     extensionsDir: path.join(rootDir, "extensions"),
     skillsDir: path.join(rootDir, "skills"),
+  };
+}
+
+function getDaemonServicePaths(paths = getRuntimePaths()): DaemonServicePaths {
+  const label = "com.turnkeyai.daemon";
+  return {
+    label,
+    launchAgentFile: path.join(homedir(), "Library", "LaunchAgents", `${label}.plist`),
+    wrapperFile: path.join(paths.rootDir, "bin", "daemon-service.sh"),
+    envFile: path.join(paths.rootDir, "daemon.env"),
   };
 }
 
@@ -180,6 +198,104 @@ export function resolveDaemonLaunchCommand(currentDir = path.dirname(fileURLToPa
   }
 
   return { executable: process.execPath, args: [packagedEntry] };
+}
+
+export function resolveDaemonWorkingDirectory(launch: DaemonLaunchCommand, fallbackDir: string): string {
+  const entry = launch.args.find((arg) => arg.endsWith("/daemon.ts") || arg.endsWith("\\daemon.ts") || arg.endsWith("/daemon.js") || arg.endsWith("\\daemon.js"));
+  if (!entry) return fallbackDir;
+  const normalized = entry.split(path.sep).join("/");
+  const sourceMarker = "/packages/app-gateway/src/daemon.ts";
+  if (normalized.endsWith(sourceMarker)) {
+    return entry.slice(0, entry.length - sourceMarker.length);
+  }
+  return path.dirname(entry);
+}
+
+export interface MacLaunchAgentPlistInput {
+  label: string;
+  wrapperFile: string;
+  workingDirectory: string;
+  stdoutPath: string;
+  stderrPath: string;
+  environment?: Record<string, string | undefined>;
+}
+
+export function buildMacLaunchAgentPlist(input: MacLaunchAgentPlistInput): string {
+  const environment = Object.entries(input.environment ?? {}).filter(([, value]) => typeof value === "string" && value.length > 0);
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"',
+    '  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    "  <key>Label</key>",
+    `  <string>${escapeXml(input.label)}</string>`,
+    "  <key>ProgramArguments</key>",
+    "  <array>",
+    `    <string>${escapeXml(input.wrapperFile)}</string>`,
+    "  </array>",
+    "  <key>WorkingDirectory</key>",
+    `  <string>${escapeXml(input.workingDirectory)}</string>`,
+    ...(environment.length > 0
+      ? [
+          "  <key>EnvironmentVariables</key>",
+          "  <dict>",
+          ...environment.flatMap(([key, value]) => [
+            `    <key>${escapeXml(key)}</key>`,
+            `    <string>${escapeXml(value ?? "")}</string>`,
+          ]),
+          "  </dict>",
+        ]
+      : []),
+    "  <key>StandardOutPath</key>",
+    `  <string>${escapeXml(input.stdoutPath)}</string>`,
+    "  <key>StandardErrorPath</key>",
+    `  <string>${escapeXml(input.stderrPath)}</string>`,
+    "  <key>RunAtLoad</key>",
+    "  <true/>",
+    "  <key>KeepAlive</key>",
+    "  <true/>",
+    "</dict>",
+    "</plist>",
+    "",
+  ].join("\n");
+}
+
+export interface DaemonServiceScriptInput {
+  launch: DaemonLaunchCommand;
+  envFile: string;
+}
+
+export function buildDaemonServiceScript(input: DaemonServiceScriptInput): string {
+  const command = [input.launch.executable, ...input.launch.args].map(shellQuote).join(" ");
+  return [
+    "#!/usr/bin/env sh",
+    "set -eu",
+    "",
+    `ENV_FILE=${shellQuote(input.envFile)}`,
+    'if [ -f "$ENV_FILE" ]; then',
+    "  set -a",
+    '  . "$ENV_FILE"',
+    "  set +a",
+    "fi",
+    "",
+    `exec ${command}`,
+    "",
+  ].join("\n");
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
 }
 
 /**
@@ -537,6 +653,189 @@ export async function runDaemonLogs(args: string[]): Promise<void> {
   child.on("exit", (code) => process.exit(code ?? 0));
 }
 
+async function runLaunchctl(args: string[], options: { allowFailure?: boolean } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("launchctl", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const exitCode = code ?? 0;
+      if (exitCode !== 0 && !options.allowFailure) {
+        reject(new Error(stderr.trim() || stdout.trim() || `launchctl ${args.join(" ")} failed with exit code ${exitCode}`));
+        return;
+      }
+      resolve({ code: exitCode, stdout, stderr });
+    });
+  });
+}
+
+function launchctlServiceName(label: string): string {
+  return `gui/${process.getuid?.() ?? 501}/${label}`;
+}
+
+function currentServiceEnvironment(paths: DaemonRuntimePaths): Record<string, string | undefined> {
+  return {
+    TURNKEYAI_HOME: paths.rootDir,
+    TURNKEYAI_MODEL_CATALOG: process.env.TURNKEYAI_MODEL_CATALOG,
+    TURNKEYAI_DAEMON_PORT: process.env.TURNKEYAI_DAEMON_PORT,
+    TURNKEYAI_DATA_DIR: process.env.TURNKEYAI_DATA_DIR,
+    TURNKEYAI_BROWSER_TRANSPORT: process.env.TURNKEYAI_BROWSER_TRANSPORT,
+    TURNKEYAI_BROWSER_CDP_ENDPOINT: process.env.TURNKEYAI_BROWSER_CDP_ENDPOINT,
+    LLM_MODEL_NAME: process.env.LLM_MODEL_NAME,
+  };
+}
+
+function buildDaemonEnvTemplate(): string {
+  return [
+    "# TurnkeyAI daemon service environment.",
+    "# This file is loaded by ~/.turnkeyai/bin/daemon-service.sh before the daemon starts.",
+    "# Put local model/browser secrets here if they are not available to macOS LaunchAgents.",
+    "# Keep this file mode 0600.",
+    "",
+    "# Example:",
+    "# OPENAI_API_KEY=sk-...",
+    "# ANTHROPIC_API_KEY=sk-ant-...",
+    "# TURNKEYAI_BROWSER_TRANSPORT=local",
+    "# TURNKEYAI_BROWSER_CDP_ENDPOINT=http://127.0.0.1:9222",
+    "",
+  ].join("\n");
+}
+
+async function ensureDaemonEnvFile(paths: DaemonServicePaths): Promise<void> {
+  if (!existsSync(paths.envFile)) {
+    await writeFile(paths.envFile, buildDaemonEnvTemplate(), { mode: 0o600 });
+  }
+  await chmod(paths.envFile, 0o600);
+}
+
+export async function runDaemonServiceInstall(args: string[]): Promise<void> {
+  if (platform() !== "darwin") {
+    console.error("daemon service install currently supports macOS LaunchAgent only.");
+    process.exit(1);
+  }
+  const noStart = args.includes("--no-start");
+  const paths = getRuntimePaths();
+  const service = getDaemonServicePaths(paths);
+  const launch = resolveDaemonLaunchCommand();
+  await mkdir(path.dirname(service.wrapperFile), { recursive: true });
+  await mkdir(path.dirname(service.launchAgentFile), { recursive: true });
+  await mkdir(paths.logsDir, { recursive: true });
+  await ensureDaemonEnvFile(service);
+  await writeFile(service.wrapperFile, buildDaemonServiceScript({ launch, envFile: service.envFile }), { mode: 0o700 });
+  await chmod(service.wrapperFile, 0o700);
+  await writeFile(
+    service.launchAgentFile,
+    buildMacLaunchAgentPlist({
+      label: service.label,
+      wrapperFile: service.wrapperFile,
+      workingDirectory: resolveDaemonWorkingDirectory(launch, process.cwd()),
+      stdoutPath: paths.logFile,
+      stderrPath: paths.logFile,
+      environment: currentServiceEnvironment(paths),
+    }),
+    { mode: 0o644 }
+  );
+
+  const serviceName = launchctlServiceName(service.label);
+  if (!noStart) {
+    await runLaunchctl(["bootout", serviceName], { allowFailure: true });
+    await runLaunchctl(["bootstrap", `gui/${process.getuid?.() ?? 501}`, service.launchAgentFile]);
+    await runLaunchctl(["enable", serviceName], { allowFailure: true });
+    await runLaunchctl(["kickstart", "-k", serviceName], { allowFailure: true });
+  }
+
+  console.log(`daemon service installed: ${service.launchAgentFile}`);
+  console.log(`wrapper: ${service.wrapperFile}`);
+  console.log(`env:     ${service.envFile}`);
+  if (noStart) {
+    console.log("start:   launchctl bootstrap " + `gui/${process.getuid?.() ?? 501} ${service.launchAgentFile}`);
+  } else {
+    console.log(`status:  turnkeyai daemon service status`);
+  }
+}
+
+export async function runDaemonServiceUninstall(_args: string[]): Promise<void> {
+  if (platform() !== "darwin") {
+    console.error("daemon service uninstall currently supports macOS LaunchAgent only.");
+    process.exit(1);
+  }
+  const service = getDaemonServicePaths();
+  await runLaunchctl(["bootout", launchctlServiceName(service.label)], { allowFailure: true });
+  await rm(service.launchAgentFile, { force: true });
+  console.log(`daemon service uninstalled: ${service.launchAgentFile}`);
+  console.log(`kept env file: ${service.envFile}`);
+}
+
+export async function runDaemonServiceStatus(_args: string[]): Promise<void> {
+  if (platform() !== "darwin") {
+    console.error("daemon service status currently supports macOS LaunchAgent only.");
+    process.exit(1);
+  }
+  const service = getDaemonServicePaths();
+  console.log(`service: ${service.label}`);
+  console.log(`plist:   ${existsSync(service.launchAgentFile) ? service.launchAgentFile : "(not installed)"}`);
+  console.log(`wrapper: ${existsSync(service.wrapperFile) ? service.wrapperFile : "(missing)"}`);
+  console.log(`env:     ${existsSync(service.envFile) ? service.envFile : "(missing)"}`);
+  const result = await runLaunchctl(["print", launchctlServiceName(service.label)], { allowFailure: true });
+  if (result.code === 0) {
+    const state = result.stdout.match(/\bstate = ([^\n]+)/)?.[1]?.trim();
+    const pid = result.stdout.match(/\bpid = ([0-9]+)/)?.[1]?.trim();
+    console.log(`launchd: ${state ?? "loaded"}${pid ? ` (pid ${pid})` : ""}`);
+  } else {
+    console.log("launchd: not loaded");
+    process.exit(1);
+  }
+}
+
+export function runDaemonServiceHelp(exitCode: number): never {
+  const lines = [
+    "TurnkeyAI daemon service",
+    "",
+    "Usage:",
+    "  turnkeyai daemon service install [--no-start]",
+    "  turnkeyai daemon service uninstall",
+    "  turnkeyai daemon service status",
+    "",
+    "macOS files:",
+    "  ~/Library/LaunchAgents/com.turnkeyai.daemon.plist",
+    "  ~/.turnkeyai/bin/daemon-service.sh",
+    "  ~/.turnkeyai/daemon.env",
+    "",
+    "Notes:",
+    "  daemon.env is loaded before the daemon starts; put model/browser env vars there for persistent service runs.",
+  ];
+  (exitCode === 0 ? console.log : console.error)(lines.join("\n"));
+  process.exit(exitCode);
+}
+
+export async function runDaemonServiceNamespace(args: string[]): Promise<void> {
+  const sub = args[0];
+  const rest = args.slice(1);
+  if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+    runDaemonServiceHelp(0);
+  }
+  switch (sub) {
+    case "install":
+      return runDaemonServiceInstall(rest);
+    case "uninstall":
+      return runDaemonServiceUninstall(rest);
+    case "status":
+      return runDaemonServiceStatus(rest);
+    default:
+      console.error(`unknown daemon service subcommand: ${sub}`);
+      runDaemonServiceHelp(1);
+  }
+}
+
 export function runDaemonHelp(exitCode: number): never {
   const lines = [
     "TurnkeyAI Daemon",
@@ -547,6 +846,7 @@ export function runDaemonHelp(exitCode: number): never {
     "  turnkeyai daemon restart",
     "  turnkeyai daemon status",
     "  turnkeyai daemon logs [--follow]",
+    "  turnkeyai daemon service install|uninstall|status",
     "  turnkeyai daemon                  (alias for start --foreground; legacy)",
     "",
     "Files:",
@@ -554,6 +854,7 @@ export function runDaemonHelp(exitCode: number): never {
     "  ~/.turnkeyai/data/                Daemon data dir (override with TURNKEYAI_DATA_DIR)",
     "  ~/.turnkeyai/logs/daemon.log      Detached daemon log",
     "  ~/.turnkeyai/daemon.pid           PID file",
+    "  ~/.turnkeyai/daemon.env           Environment loaded by macOS service",
     "",
     "Environment:",
     "  TURNKEYAI_HOME                    Override ~/.turnkeyai root",
@@ -587,6 +888,8 @@ export async function runDaemonNamespace(args: string[]): Promise<void> {
       return runDaemonStatus(rest);
     case "logs":
       return runDaemonLogs(rest);
+    case "service":
+      return runDaemonServiceNamespace(rest);
     default: {
       const looksLikeFlag = sub.startsWith("-");
       if (looksLikeFlag) {

@@ -183,6 +183,9 @@ turnkeyai daemon start      # detached; logs to ~/.turnkeyai/logs/daemon.log
 turnkeyai daemon status
 turnkeyai daemon logs -f
 turnkeyai daemon stop
+turnkeyai daemon service install   # macOS LaunchAgent; persistent local daemon
+turnkeyai daemon service status
+turnkeyai daemon service uninstall
 turnkeyai bridge install-extension
 turnkeyai bridge status
 turnkeyai bridge install-skill
@@ -207,6 +210,7 @@ http://127.0.0.1:4100
 | `~/.turnkeyai/data/` | 默认数据目录（被 `TURNKEYAI_DATA_DIR` 覆盖） |
 | `~/.turnkeyai/logs/daemon.log` | 后台 daemon 日志 |
 | `~/.turnkeyai/daemon.pid` | 后台 daemon 的 PID 文件 |
+| `~/.turnkeyai/daemon.env` | macOS service 启动前加载的模型/浏览器环境变量 |
 | `~/.turnkeyai/extensions/relay/` | 解压后的 relay 扩展（`bridge install-extension` 写入） |
 | `~/.turnkeyai/skills/` | 自动生成的 agent skill 文档 |
 
