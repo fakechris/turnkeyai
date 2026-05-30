@@ -1,7 +1,7 @@
 # Tool Runtime Completion Plan
 
 > Status: completion checkpoints implemented; keep this file as the release-gate checklist
-> Updated: 2026-05-22
+> Updated: 2026-05-30
 
 This plan closes the remaining gap between TurnkeyAI's native tool-use runtime and a production-grade user task runtime. The end state is not "tools exist"; it is that a user can ask a mission-level question, the lead can delegate to specialist sub-agents, browser work can execute safely through a controlled tool surface, the UI can replay the work in order, and release gates can prove the whole chain works.
 
@@ -95,11 +95,17 @@ Acceptance:
 - A real LLM prompt can complete a browser-backed research task without manual UI probing.
 - Failure output points to the broken layer: provider, tool schema, worker routing, browser transport, permission, replay, or final synthesis.
 
-Status: implemented. Latest local acceptance on 2026-05-22:
+Status: implemented. Latest local acceptance on 2026-05-30:
 
 - `npm run tooluse:e2e`
 - `npm run tooluse:e2e -- --real-llm --model-catalog models.local.json`
 - `npm run tooluse:e2e -- --real-llm --with-browser --model-catalog models.local.json --cdp-timeout-ms 45000`
+- `npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 240000 --cdp-timeout-ms 45000`
+- `npm run mission:e2e -- --scenario realistic-brief --model-catalog models.local.json --scenario-timeout-ms 240000`
+
+The latest `realistic-brief` run completed mission `msn.mprrfz6j.1` with
+status `done`, 3/3 tool executions, 3 evidence signals, and a passing mission
+quality gate.
 
 ### 4. Browser Profile And Session Stability
 
