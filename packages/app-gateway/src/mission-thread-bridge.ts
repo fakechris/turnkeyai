@@ -150,11 +150,22 @@ export function createMissionThreadBridge(
     // parallelize; this cuts a tick that has N new events from
     // O(N * file-flush-latency) to ~one file-flush worth of latency.
     const toAppend: ActivityEvent[] = [];
-    for (const message of messages) {
+    const consumedMessageIds = new Set<string>();
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index]!;
+      if (consumedMessageIds.has(message.id)) continue;
+      const splitToolResults =
+        isNativeSplitToolEnvelope(message)
+          ? collectNativeSplitToolResults(messages, index, message)
+          : new Map<string, TeamMessage>();
+      for (const resultMessage of splitToolResults.values()) {
+        consumedMessageIds.add(resultMessage.id);
+      }
       const expanded = expandMessage({
         missionId: mission.id,
         message,
         newEventId: options.newEventId,
+        splitToolResults,
       });
       for (const event of expanded) {
         const sourceId = event.runtime?.activitySourceId;
@@ -387,6 +398,7 @@ interface ExpandMessageInput {
   missionId: string;
   message: TeamMessage;
   newEventId: () => string;
+  splitToolResults?: Map<string, TeamMessage>;
 }
 
 /**
@@ -445,9 +457,10 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
   }
 
   const events: ActivityEvent[] = [];
+  const splitToolResults = input.splitToolResults ?? new Map<string, TeamMessage>();
   const toolUse =
     extractNativeToolUseTrace(message, {
-      includeResults: !isNativeSplitToolEnvelope(message),
+      includeResults: !isNativeSplitToolEnvelope(message) || splitToolResults.size === 0,
     }) ?? extractToolUseTrace(message.metadata);
   if (toolUse && toolUse.rounds.length > 0) {
     // The final answer is timestamped at message.createdAt. Push the
@@ -458,12 +471,28 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
     // in practice 8 rounds × 2 events ≪ a single second, so the math
     // works out to sub-second offsets.
     const totalSubEvents = toolUse.rounds.reduce(
-      (sum, round) => sum + round.calls.length + round.progress.length + round.results.length,
+      (sum, round) =>
+        sum +
+        round.calls.length +
+        round.progress.length +
+        round.results.length +
+        round.calls.filter((call) => splitToolResults.has(call.id)).length,
       0
     );
     let stepIndex = 0;
     for (const round of toolUse.rounds) {
       const resultsByCallId = new Map(round.results.map((result) => [result.toolCallId, result]));
+      const emittedResultCallIds = new Set<string>();
+      const progressByCallId = new Map<string, typeof round.progress>();
+      const emittedProgress = new Set<(typeof round.progress)[number]>();
+      for (const progress of round.progress) {
+        const existing = progressByCallId.get(progress.toolCallId) ?? [];
+        existing.push(progress);
+        progressByCallId.set(progress.toolCallId, existing);
+      }
+      for (const entries of progressByCallId.values()) {
+        entries.sort((left, right) => left.ts - right.ts);
+      }
       const skippedProgressCallIds = new Set(
         round.progress
           .filter((progress) => progress.detail?.["admission"] === "skipped")
@@ -471,6 +500,7 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
       );
       for (const call of round.calls) {
         const matchingResult = resultsByCallId.get(call.id);
+        const splitResultMessage = splitToolResults.get(call.id);
         const skippedByAdmission = matchingResult?.skipped === true || skippedProgressCallIds.has(call.id);
         events.push(
           buildToolCallEvent({
@@ -482,8 +512,46 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
           })
         );
         stepIndex += 1;
+        for (const progress of progressByCallId.get(call.id) ?? []) {
+          events.push(
+            buildToolProgressEvent({
+              ...input,
+              tMs: tMsForStep(message.createdAt, stepIndex, totalSubEvents),
+              progress,
+              roundNumber: round.round,
+              progressOrdinal: stepIndex,
+            })
+          );
+          emittedProgress.add(progress);
+          stepIndex += 1;
+        }
+        if (matchingResult) {
+          events.push(
+            buildToolResultEvent({
+              ...input,
+              tMs: tMsForStep(message.createdAt, stepIndex, totalSubEvents),
+              result: matchingResult,
+              roundNumber: round.round,
+              callName: call.name,
+            })
+          );
+          emittedResultCallIds.add(matchingResult.toolCallId);
+          stepIndex += 1;
+        } else if (splitResultMessage) {
+          events.push(
+            buildSplitToolResultEvent({
+              ...input,
+              message: splitResultMessage,
+              tMs: tMsForStep(message.createdAt, stepIndex, totalSubEvents),
+              call,
+              roundNumber: round.round,
+            })
+          );
+          stepIndex += 1;
+        }
       }
       for (const progress of round.progress) {
+        if (emittedProgress.has(progress)) continue;
         events.push(
           buildToolProgressEvent({
             ...input,
@@ -496,9 +564,8 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
         stepIndex += 1;
       }
       for (const result of round.results) {
-        const matchingCall = round.calls.find(
-          (call) => call.id === result.toolCallId
-        );
+        if (emittedResultCallIds.has(result.toolCallId)) continue;
+        const matchingCall = round.calls.find((call) => call.id === result.toolCallId);
         events.push(
           buildToolResultEvent({
             ...input,
@@ -677,6 +744,26 @@ function isNativeSplitToolEnvelope(message: TeamMessage): boolean {
   return isRecord(message.metadata) && message.metadata.nativeToolUse === true;
 }
 
+function collectNativeSplitToolResults(
+  messages: TeamMessage[],
+  assistantIndex: number,
+  assistantMessage: TeamMessage
+): Map<string, TeamMessage> {
+  const remaining = new Set((assistantMessage.toolCalls ?? []).map((call) => call.id));
+  const results = new Map<string, TeamMessage>();
+  if (remaining.size === 0) return results;
+  for (let index = assistantIndex + 1; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    if (message.role !== "tool") break;
+    const toolCallId = message.toolCallId;
+    if (!toolCallId || !remaining.has(toolCallId)) continue;
+    results.set(toolCallId, message);
+    remaining.delete(toolCallId);
+    if (remaining.size === 0) break;
+  }
+  return results;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -801,6 +888,15 @@ interface BuildToolProgressEventInput {
   progressOrdinal: number;
 }
 
+interface BuildSplitToolResultEventInput {
+  missionId: string;
+  message: TeamMessage;
+  newEventId: () => string;
+  tMs: number;
+  call: { id: string; name: string; input: Record<string, unknown> };
+  roundNumber: number;
+}
+
 function buildToolProgressEvent(input: BuildToolProgressEventInput): ActivityEvent {
   const actor = resolveActor(input.message);
   const sourceId = `${input.message.id}:tool-progress:${input.progress.toolCallId}:${input.progressOrdinal}`;
@@ -838,6 +934,59 @@ function buildToolProgressEvent(input: BuildToolProgressEventInput): ActivityEve
     input.progress.detail?.["admission"] !== "skipped" &&
     (input.progress.phase === "failed" || input.progress.phase === "cancelled")
   ) {
+    event.emph = "danger";
+  }
+  return event;
+}
+
+function buildSplitToolResultEvent(input: BuildSplitToolResultEventInput): ActivityEvent {
+  const actor = resolveActor(input.message);
+  const toolName = input.message.name || input.call.name;
+  const toolCallId = input.message.toolCallId ?? input.call.id;
+  const admission = readStringMetadata(input.message.metadata, "admission");
+  const contentBytes = Buffer.byteLength(input.message.content, "utf8");
+  const failed = input.message.toolStatus === "failed" || input.message.toolStatus === "cancelled";
+  const trimmed = input.message.content.trim();
+  const head = sliceForDisplay(trimmed, ACTIVITY_EVENT_TEXT_CAP);
+  const sizeLabel = formatBytes(contentBytes);
+  const text =
+    admission === "skipped"
+      ? trimmed
+        ? `Tool ${toolName} skipped by runtime budget: ${head}`
+        : `Tool ${toolName} skipped by runtime budget.`
+      : failed
+        ? trimmed
+          ? `Tool ${toolName} failed: ${head}`
+          : `Tool ${toolName} failed (${sizeLabel}).`
+        : trimmed
+          ? `Tool ${toolName} returned (${sizeLabel}):\n${head}`
+          : `Tool ${toolName} returned (${sizeLabel}).`;
+  const sourceId = `${input.message.id}:tool`;
+  const runtime: Record<string, string> = {
+    threadId: input.message.threadId,
+    messageId: input.message.id,
+    teamRole: input.message.role,
+    activitySourceId: sourceId,
+    toolName,
+    toolCallId,
+    toolPhase: "result",
+    resultContent: input.message.content,
+    round: String(input.roundNumber),
+    contentBytes: String(contentBytes),
+    ...(admission ? { admission } : {}),
+  };
+  if (input.message.source?.route) runtime.route = input.message.source.route;
+  const event: ActivityEvent = {
+    id: input.newEventId(),
+    missionId: input.missionId,
+    tMs: input.tMs,
+    kind: "tool",
+    actor,
+    text,
+    tags: ["thread", "tool-result", toolName],
+    runtime,
+  };
+  if (admission !== "skipped" && failed) {
     event.emph = "danger";
   }
   return event;

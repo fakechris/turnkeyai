@@ -628,7 +628,7 @@ function buildRealLlmScenarioPacket(input: {
     : input.approvalScenario
     ? [
         `Final answer must include ${input.targetMarker}.`,
-        "Use Markdown with a heading `Evidence` and at least three bullets: permission.query, permission.result, permission.applied, browser worker result, residual risk.",
+        "Use Markdown with a heading `Evidence` and these exact bullet labels: permission.query, permission.result, permission.applied, browser.form.submit, residual risk.",
         "Mention browser.form.submit and state the action was not executed before permission.applied.",
       ].join("\n")
     : input.multiSourceScenario

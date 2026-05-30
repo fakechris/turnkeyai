@@ -956,6 +956,133 @@ describe("MissionThreadBridge", () => {
     assert.equal(ordered[2]!.runtime?.toolCallId, "c-native");
   });
 
+  it("interleaves same-round dependent tool calls with their results on the timeline", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const message: TeamMessage = {
+      ...baseMessage("a-native-memory", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Memory answer.",
+      toolCalls: [
+        {
+          id: "c-search",
+          name: "memory_search",
+          arguments: { query: "Helios-47" },
+        },
+        {
+          id: "c-get",
+          name: "memory_get",
+          arguments: { memory_id: "thread-1:note:1" },
+        },
+      ],
+      toolProgress: [
+        {
+          toolCallId: "c-search",
+          toolName: "memory_search",
+          phase: "completed",
+          summary: "Memory search returned 1 hit.",
+          ts: 4_800,
+        },
+        {
+          toolCallId: "c-get",
+          toolName: "memory_get",
+          phase: "completed",
+          summary: "Read memory thread-1:note:1.",
+          ts: 4_900,
+        },
+      ],
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([message]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const ordered = [...activity.events].sort((a, b) => a.tMs - b.tMs);
+    assert.deepEqual(
+      ordered.map((event) => ({
+        toolName: event.runtime?.toolName ?? null,
+        phase: event.runtime?.toolPhase ?? null,
+      })),
+      [
+        { toolName: "memory_search", phase: "call" },
+        { toolName: "memory_search", phase: "result" },
+        { toolName: "memory_get", phase: "call" },
+        { toolName: "memory_get", phase: "result" },
+        { toolName: null, phase: null },
+      ]
+    );
+  });
+
+  it("interleaves native split tool result messages with their assistant tool calls", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const assistant: TeamMessage = {
+      ...baseMessage("a-native-tasks", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Task tracking complete.",
+      metadata: { nativeToolUse: true },
+      toolCalls: [
+        {
+          id: "c-list",
+          name: "tasks_list",
+          arguments: { status: "open" },
+        },
+        {
+          id: "c-create",
+          name: "tasks_create",
+          arguments: { title: "Follow up with support" },
+        },
+      ],
+    };
+    const listResult: TeamMessage = {
+      ...baseMessage("tool-list", "tool", 5_100),
+      name: "tasks_list",
+      content: '{"tasks":[]}',
+      toolCallId: "c-list",
+      toolStatus: "completed",
+    };
+    const createResult: TeamMessage = {
+      ...baseMessage("tool-create", "tool", 5_200),
+      name: "tasks_create",
+      content: '{"task":{"id":"tsk.1","title":"Follow up with support"}}',
+      toolCallId: "c-create",
+      toolStatus: "completed",
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([assistant, listResult, createResult]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const ordered = [...activity.events].sort((a, b) => a.tMs - b.tMs);
+    assert.deepEqual(
+      ordered.map((event) => ({
+        messageId: event.runtime?.messageId ?? null,
+        toolName: event.runtime?.toolName ?? null,
+        phase: event.runtime?.toolPhase ?? null,
+      })),
+      [
+        { messageId: "a-native-tasks", toolName: "tasks_list", phase: "call" },
+        { messageId: "tool-list", toolName: "tasks_list", phase: "result" },
+        { messageId: "a-native-tasks", toolName: "tasks_create", phase: "call" },
+        { messageId: "tool-create", toolName: "tasks_create", phase: "result" },
+        { messageId: "a-native-tasks", toolName: null, phase: null },
+      ]
+    );
+    assert.equal(ordered.length, 5);
+    assert.equal(ordered[1]!.runtime?.resultContent, '{"tasks":[]}');
+    assert.match(ordered[3]!.text, /Follow up with support/);
+  });
+
   it("marks split native budget-skipped tool calls from progress admission", async () => {
     counter = 0;
     const activity = memActivityStore();

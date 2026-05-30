@@ -424,6 +424,92 @@ test("llm role response generator runs native tool-use loop and feeds tool resul
   assert.ok(progressEvents.some((event) => event.summary.includes("sessions_spawn completed")));
 });
 
+test("llm role response generator serializes order-dependent tool batches", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "I need durable memory.",
+        toolCalls: [
+          {
+            id: "toolu-search",
+            name: "memory_search",
+            input: { query: "Helios-47" },
+          },
+          {
+            id: "toolu-get",
+            name: "memory_get",
+            input: { memory_id: "thread-1:note:1" },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "Memory recalled.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executionOrder: string[] = [];
+  let activeTools = 0;
+  let maxActiveTools = 0;
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "memory_search",
+          description: "Search memory",
+          inputSchema: { type: "object", properties: { query: { type: "string" } } },
+        },
+        {
+          name: "memory_get",
+          description: "Read memory",
+          inputSchema: { type: "object", properties: { memory_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      activeTools += 1;
+      maxActiveTools = Math.max(maxActiveTools, activeTools);
+      executionOrder.push(input.call.name);
+      await Promise.resolve();
+      activeTools -= 1;
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({ ok: true, tool: input.call.name }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 4, maxParallelToolCalls: 5 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Memory recalled.");
+  assert.deepEqual(executionOrder, ["memory_search", "memory_get"]);
+  assert.equal(maxActiveTools, 1);
+  const toolResultIds = gatewayInputs[1]?.messages
+    .filter((message) => message.role === "tool")
+    .map((message) => message.toolCallId);
+  assert.deepEqual(toolResultIds, ["toolu-search", "toolu-get"]);
+});
+
 test("llm role response generator disables native tools when packet requests no tool use", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   let executeCalled = false;
