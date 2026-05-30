@@ -130,6 +130,17 @@ describe("daemon-runtime-paths", () => {
     assert.equal(readPidFile(paths), null);
   });
 
+  it("only removes a pid file for the expected owner when requested", () => {
+    const paths = getDaemonRuntimePaths();
+    writePidFile(paths, 22222);
+
+    removePidFile(paths, 11111);
+    assert.equal(readPidFile(paths), 22222);
+
+    removePidFile(paths, 22222);
+    assert.equal(readPidFile(paths), null);
+  });
+
   it("detects live and dead pids", () => {
     assert.equal(isProcessAlive(process.pid), true);
     assert.equal(isProcessAlive(2_000_000_000), false);

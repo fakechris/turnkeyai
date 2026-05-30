@@ -473,3 +473,50 @@ Regression Risk:
 - Low product risk because this is governance documentation only.
 - Process risk is stricter: future checkpoints may be marked `unknown` more
   often when real acceptance is missing, which is intentional for this goal.
+
+## 2026-05-30 19:38 CST - Local Daemon PID Ownership Guard
+
+Direction: converging
+
+Execution Kernel:
+- No mission/tool execution semantics changed.
+- Daemon shutdown now removes `~/.turnkeyai/daemon.pid` only when the file still
+  points at the current process. This prevents a terminating daemon from
+  deleting the pid file written by a freshly restarted daemon.
+
+Result Quality:
+- Final-answer behavior did not change.
+- This supports result delivery indirectly by improving local runtime
+  diagnosability: `turnkeyai daemon status` can show the running process instead
+  of claiming `pid: (none)` while `/health` is actually reachable.
+
+Workbench UX:
+- Local entry verification improved. `turnkeyai doctor` confirms the CLI is on
+  PATH, launchd service is loaded, daemon health is ok, model readiness is ok,
+  and browser runtime is healthy.
+- The remaining local warning is historical mission-runtime attention, not a
+  startup/auth/token failure.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- `turnkeyai doctor` reported local browser runtime healthy across recent
+  sessions, with relay extension still optional unless relay transport is used.
+
+Acceptance Evidence:
+- `turnkeyai doctor`: passed with no failures; warnings were mission-runtime
+  attention and optional relay-extension absence.
+- `npx tsx --test packages/app-gateway/src/daemon-runtime-paths.test.ts`: 10
+  passing.
+- `npm test -- --runInBand`: 1200 passing.
+- `npm run typecheck`
+- `npm run build`
+- `git diff --check`
+- `npm run release:verify`: passed 9/9 checks, including packaged CLI build,
+  packaged Control Center assets, bin help smoke, and publish dry run.
+- Focused regression test added for PID ownership cleanup.
+
+Regression Risk:
+- Risk is concentrated in shutdown cleanup: stale pid files might be left behind
+  if the file no longer matches the exiting process. That is intentional and
+  safer than deleting a new daemon's pid file; startup already detects stale pid
+  files and cleans them when the port is free.
