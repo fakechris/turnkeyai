@@ -1,6 +1,7 @@
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
+import type { ActivityEvent, Mission } from "@turnkeyai/core-types/mission";
 import type {
   FlowConsoleReport,
   FlowLedger,
@@ -44,6 +45,13 @@ import {
   resolveTuiToken,
   type ResolvedTuiToken,
 } from "./tui-auth";
+import {
+  buildMissionCreatePayload,
+  formatMissionDetail,
+  formatMissionList,
+  parseMissionSendArgs,
+  type TuiMissionMetrics,
+} from "./mission-tui";
 
 const baseUrl = process.env.TURNKEYAI_DAEMON_URL ?? "http://127.0.0.1:4100";
 const authToken = resolveTuiToken();
@@ -54,11 +62,13 @@ if (wantsProcessHelp(process.argv.slice(2))) {
 
 const rl = readline.createInterface({ input, output });
 let currentThreadId: string | null = null;
+let currentMissionId: string | null = null;
 
 printBanner();
 
 while (true) {
-  const prompt = currentThreadId ? `turnkeyai:${currentThreadId}> ` : "turnkeyai> ";
+  const contextLabel = currentMissionId ?? currentThreadId;
+  const prompt = contextLabel ? `turnkeyai:${contextLabel}> ` : "turnkeyai> ";
   let line: string;
   try {
     line = (await rl.question(prompt)).trim();
@@ -99,13 +109,75 @@ while (true) {
       continue;
     }
 
+    if (command === "missions") {
+      const limit = Number(args || "20");
+      printLines(formatMissionList((await getJson("/missions")) as Mission[], limit));
+      continue;
+    }
+
+    if (command === "mission") {
+      if (!args) {
+        console.log("usage: mission <missionId>");
+        continue;
+      }
+      await printMissionCommand(args);
+      continue;
+    }
+
+    if (command === "mission-use") {
+      if (!args) {
+        console.log("usage: mission-use <missionId>");
+        continue;
+      }
+      const mission = (await getJson(`/missions/${encodeURIComponent(args)}`)) as Mission;
+      currentMissionId = mission.id;
+      currentThreadId = mission.threadId ?? currentThreadId;
+      console.log(`current mission set to ${currentMissionId}`);
+      if (mission.threadId) {
+        console.log(`current thread set to ${mission.threadId}`);
+      }
+      continue;
+    }
+
+    if (command === "mission-new") {
+      const payload = buildMissionCreatePayload(args);
+      if (!payload) {
+        console.log("usage: mission-new <title> :: <prompt>");
+        console.log("   or: mission-new <prompt>");
+        continue;
+      }
+      const mission = (await postJson("/missions", payload)) as Mission;
+      currentMissionId = mission.id;
+      currentThreadId = mission.threadId ?? currentThreadId;
+      console.log(`created mission ${mission.shortId} (${mission.id})`);
+      if (mission.threadId) {
+        console.log(`linked thread ${mission.threadId}`);
+      }
+      console.log(`run: mission ${mission.id}`);
+      continue;
+    }
+
+    if (command === "mission-send") {
+      const parsed = parseMissionSendArgs(args, currentMissionId);
+      if (!parsed) {
+        console.log("usage: mission-send <missionId> <message>");
+        console.log("   or: mission-use <missionId>, then mission-send <message>");
+        continue;
+      }
+      await postJson(`/missions/${encodeURIComponent(parsed.missionId)}/messages`, { content: parsed.content });
+      currentMissionId = parsed.missionId;
+      console.log(`accepted follow-up for ${parsed.missionId}`);
+      console.log(`run: mission ${parsed.missionId}`);
+      continue;
+    }
+
     if (command === "models") {
       printJson(await getJson("/models"));
       continue;
     }
 
     if (command === "current") {
-      printJson({ currentThreadId });
+      printJson({ currentThreadId, currentMissionId });
       continue;
     }
 
@@ -722,6 +794,11 @@ function printHelp(): void {
   console.log("  health               check daemon health");
   console.log("  bootstrap [variant]  create a demo team thread");
   console.log("  threads              list threads");
+  console.log("  missions [limit]     list missions with status, progress, and linked thread");
+  console.log("  mission <missionId>  show mission health, latest answer, and recent timeline");
+  console.log("  mission-use <missionId> set current mission");
+  console.log("  mission-new <title> :: <prompt> create and start a mission");
+  console.log("  mission-send [missionId] <message> send a mission follow-up");
   console.log("  models               list configured models");
   console.log("  current              show current thread");
   console.log("  use <threadId>       set current thread");
@@ -826,6 +903,18 @@ async function postJson(pathname: string, body: unknown): Promise<any> {
   return parseJsonResponse(response);
 }
 
+async function printMissionCommand(missionId: string): Promise<void> {
+  const encoded = encodeURIComponent(missionId);
+  const [mission, metrics, timeline] = await Promise.all([
+    getJson(`/missions/${encoded}`) as Promise<Mission>,
+    getJson(`/missions/${encoded}/metrics`) as Promise<TuiMissionMetrics>,
+    getJson(`/missions/${encoded}/timeline?limit=20`) as Promise<ActivityEvent[]>,
+  ]);
+  currentMissionId = mission.id;
+  currentThreadId = mission.threadId ?? currentThreadId;
+  printLines(formatMissionDetail({ mission, metrics, timeline }));
+}
+
 async function handleRelayPeersCommand(): Promise<void> {
   printRelayPeers(
     (await getJson("/relay/peers")) as Array<{
@@ -886,6 +975,12 @@ function formatHttpError(
 
 function printJson(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
+}
+
+function printLines(lines: string[]): void {
+  for (const line of lines) {
+    console.log(line);
+  }
 }
 
 function printRelayPeers(
