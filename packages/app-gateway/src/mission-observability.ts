@@ -88,6 +88,7 @@ export function buildMissionObservabilitySnapshot(input: {
   const checks = buildQualityChecks({
     mission: input.mission,
     finalAnswer,
+    toolRequests: toolCalls.length,
     evidenceEvents,
     failureEvents: recoveryEvents.length + toolFailures.length,
     staleRuntimeSubjects: liveness.stale,
@@ -133,6 +134,7 @@ export function buildMissionObservabilitySnapshot(input: {
 function buildQualityChecks(input: {
   mission: Mission;
   finalAnswer: ActivityEvent | null;
+  toolRequests: number;
   evidenceEvents: number;
   failureEvents: number;
   staleRuntimeSubjects: number;
@@ -161,6 +163,41 @@ function buildQualityChecks(input: {
           ? "Final answer names residual risk or unverified scope."
           : "Final answer does not explicitly name residual risk."
         : "Waiting for the final answer.",
+    },
+    {
+      name: "answer_substance",
+      status: !input.finalAnswer
+        ? "pending"
+        : input.toolRequests > 0 && substantiveLength(finalText) < 220
+          ? "warn"
+          : "pass",
+      detail: !input.finalAnswer
+        ? "Waiting for the final answer."
+        : input.toolRequests > 0 && substantiveLength(finalText) < 220
+          ? "Final answer is too brief for tool-backed work."
+          : "Final answer has enough substance for the observed work.",
+    },
+    {
+      name: "evidence_usage",
+      status: !input.finalAnswer
+        ? "pending"
+        : input.toolRequests > 0 && input.evidenceEvents > 0 && !mentionsEvidenceUse(finalText)
+          ? "warn"
+          : "pass",
+      detail: !input.finalAnswer
+        ? "Waiting for the final answer."
+        : input.toolRequests > 0 && input.evidenceEvents > 0 && !mentionsEvidenceUse(finalText)
+          ? "Final answer does not explicitly connect its claims to gathered evidence."
+          : "Final answer connects claims to available evidence or did not require tool evidence.",
+    },
+    {
+      name: "unsupported_uncertainty",
+      status: !input.finalAnswer ? "pending" : mentionsUnsupportedUncertainty(finalText) ? "warn" : "pass",
+      detail: !input.finalAnswer
+        ? "Waiting for the final answer."
+        : mentionsUnsupportedUncertainty(finalText)
+          ? "Final answer contains unresolved placeholder or unsupported uncertainty language."
+          : "Final answer does not contain unresolved placeholder language.",
     },
     {
       name: "runtime_liveness",
@@ -332,4 +369,20 @@ function isApprovalDecisionEvent(event: ActivityEvent): boolean {
 
 function mentionsResidualRisk(text: string): boolean {
   return /\b(residual risk|risk|not verified|unverified|limitation|unknown)\b|风险|未验证|待确认/i.test(text);
+}
+
+function mentionsEvidenceUse(text: string): boolean {
+  return /\b(source|evidence|verified|observed|browser|tool result|local fixture|fixture|citation|proof|confirmed|based on|according to)\b|来源|证据|已验证|观察|基于|根据/i.test(
+    text
+  );
+}
+
+function mentionsUnsupportedUncertainty(text: string): boolean {
+  return /\b(tbd|to be confirmed|needs confirmation|pending confirmation|placeholder|estimate only|rough estimate|待确认|估算|占位|暂无法确认)\b/i.test(
+    text
+  );
+}
+
+function substantiveLength(text: string): number {
+  return text.replace(/\s+/g, " ").trim().length;
 }
