@@ -185,6 +185,7 @@ turnkeyai daemon logs -f
 turnkeyai daemon stop
 turnkeyai daemon service install   # macOS LaunchAgent; persistent local daemon
 turnkeyai daemon service status
+turnkeyai daemon service uninstall
 turnkeyai bridge install-extension
 turnkeyai bridge status
 turnkeyai bridge install-skill

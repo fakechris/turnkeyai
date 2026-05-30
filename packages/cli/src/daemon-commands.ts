@@ -711,8 +711,9 @@ function buildDaemonEnvTemplate(): string {
 }
 
 async function ensureDaemonEnvFile(paths: DaemonServicePaths): Promise<void> {
-  if (existsSync(paths.envFile)) return;
-  await writeFile(paths.envFile, buildDaemonEnvTemplate(), { mode: 0o600 });
+  if (!existsSync(paths.envFile)) {
+    await writeFile(paths.envFile, buildDaemonEnvTemplate(), { mode: 0o600 });
+  }
   await chmod(paths.envFile, 0o600);
 }
 
@@ -791,6 +792,7 @@ export async function runDaemonServiceStatus(_args: string[]): Promise<void> {
     console.log(`launchd: ${state ?? "loaded"}${pid ? ` (pid ${pid})` : ""}`);
   } else {
     console.log("launchd: not loaded");
+    process.exit(1);
   }
 }
 
