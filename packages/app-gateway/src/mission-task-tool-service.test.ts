@@ -59,6 +59,17 @@ test("mission task tool service creates, lists, updates, and records timeline ev
     assert.equal(created.task.status, "working");
     assert.deepEqual(created.task.context_refs, ["ctx.browser.1"]);
 
+    const duplicate = await service.create({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      title: "  verify   browser evidence ",
+      status: "planning",
+    }) as { task: { id: string; n: number; status: string }; deduped?: boolean };
+    assert.equal(duplicate.deduped, true);
+    assert.equal(duplicate.task.id, "wi.task-1");
+    assert.equal(duplicate.task.n, 1);
+    assert.equal(duplicate.task.status, "working");
+
     const listed = await service.list({
       threadId: "thread-1",
       roleId: "role-lead",
@@ -83,6 +94,67 @@ test("mission task tool service creates, lists, updates, and records timeline ev
     assert.equal(events.length, 2);
     assert.deepEqual(events.map((event) => event.runtime?.eventType), ["task.update", "task.update"]);
     assert.deepEqual(events.map((event) => event.runtime?.workItemId), ["wi.task-1", "wi.task-1"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mission task tool service serializes concurrent duplicate creates", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "tk-mission-task-tools-concurrent-"));
+  try {
+    let now = 1_700_000_000_000;
+    let taskSeq = 0;
+    let msgSeq = 0;
+    const missionDeps = composeMissionDeps({
+      dataDir: dir,
+      clock: { now: () => now++ },
+    });
+    await missionDeps.missionStore.putRaw({
+      id: "msn.1",
+      shortId: "MSN-0001",
+      title: "Research launch plan",
+      desc: "",
+      status: "working",
+      mode: "research",
+      modeLabel: "Research",
+      owner: "you",
+      ownerLabel: "You",
+      createdAt: new Date(now).toISOString(),
+      createdAtMs: now,
+      agents: ["role-lead"],
+      progress: 0,
+      pendingApprovals: 0,
+      blockers: 0,
+      contextSummary: [],
+      threadId: "thread-1",
+    });
+    const service = createMissionTaskToolService({
+      missionStore: missionDeps.missionStore,
+      workItemStore: missionDeps.workItemStore,
+      activityStore: missionDeps.activityStore,
+      clock: { now: () => now++ },
+      idGenerator: {
+        taskId: () => `task-${++taskSeq}`,
+        messageId: () => `ev.${++msgSeq}`,
+      },
+    });
+
+    const [first, second] = (await Promise.all([
+      service.create({ threadId: "thread-1", roleId: "role-lead", title: "Verify browser evidence" }),
+      service.create({ threadId: "thread-1", roleId: "role-lead", title: "verify   browser evidence" }),
+    ])) as [
+      { task: { id: string; n: number }; deduped?: boolean },
+      { task: { id: string; n: number }; deduped?: boolean },
+    ];
+
+    assert.equal(first.task.id, "wi.task-1");
+    assert.equal(second.task.id, "wi.task-1");
+    assert.equal([first.deduped, second.deduped].filter(Boolean).length, 1);
+    const listed = await service.list({ threadId: "thread-1", roleId: "role-lead" }) as { total: number; tasks: Array<{ id: string }> };
+    assert.equal(listed.total, 1);
+    assert.equal(listed.tasks[0]?.id, "wi.task-1");
+    const events = await missionDeps.activityStore.listByMission("msn.1");
+    assert.equal(events.length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

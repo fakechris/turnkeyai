@@ -88,6 +88,10 @@ test("mission tool permission service files, resolves, and applies approval deci
     const applied = await service.apply({ threadId: "thread-1", approvalId: query.approvalId! });
     assert.equal(applied.status, "applied");
     assert.equal(applied.cacheKey, "thread-1:browser:mutate:approval");
+    const appliedAgain = await service.apply({ threadId: "thread-1", approvalId: query.approvalId! });
+    assert.equal(appliedAgain.status, "applied");
+    assert.equal(appliedAgain.cacheKey, "thread-1:browser:mutate:approval");
+    assert.match(appliedAgain.message, /already applied/i);
     const cached = await permissionCacheStore.get("thread-1:browser:mutate:approval");
     assert.equal(cached?.decision, "granted");
     const resumedMission = await missionDeps.missionStore.get("msn.1");
@@ -97,7 +101,11 @@ test("mission tool permission service files, resolves, and applies approval deci
     const events = await missionDeps.activityStore.listByMission("msn.1");
     assert.ok(events.some((event) => event.runtime?.eventType === "permission.query"));
     assert.ok(events.some((event) => event.runtime?.eventType === "permission.result"));
-    assert.ok(events.some((event) => event.runtime?.eventType === "permission.applied"));
+    assert.equal(
+      events.filter((event) => event.runtime?.eventType === "permission.applied").length,
+      1,
+      "re-applying the same approval must not duplicate operator timeline events"
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

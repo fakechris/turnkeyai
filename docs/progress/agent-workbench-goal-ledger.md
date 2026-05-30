@@ -2236,3 +2236,295 @@ Regression Risk:
 - Remaining acceptance gap: run the full release gate or a browser-focused gate
   that includes profile/CDP failure injection and provider-native browser
   tool-use before claiming broad browser reliability.
+
+## 2026-05-31 04:35 CST - Full Real Acceptance Gate
+
+Direction: converging
+
+Execution Kernel:
+- Full real acceptance now passes with provider-native tool-use, direct-CDP
+  smoke, and all mission scenarios enabled in one run.
+- The gate exposed and closed four runtime/contract gaps before passing:
+  follow-up source-label coverage, bounded durable-memory search variance,
+  idempotent mission task creation, and pseudo tool-call markup emitted as
+  assistant text after a normal tool round.
+- The runtime now repairs textual tool-call markup after a normal tool round by
+  forcing a tools-disabled final synthesis instead of letting XML-like markup
+  become the user-visible final answer.
+
+Result Quality:
+- The final passing matrix completed 12/12 mission scenarios. Ten scenarios
+  passed the normal quality gate; `cancel` and `timeout-recovery` completed with
+  expected blocked quality state because they intentionally exercise operator
+  cancellation and timeout recovery.
+- Multi-source scenarios now require explicit source labels in tool calls and
+  final answers: `comparison`, `followup`, `product-workbench-brief`, and
+  `realistic-brief`.
+- Mutation quality improved: repeated same-title `tasks_create` calls now return
+  the existing mission work item instead of persisting a duplicate.
+
+Workbench UX:
+- No UI surface changed in this checkpoint.
+- Mission Detail evidence is more trustworthy because tool-call progress,
+  source coverage, idempotent task state, and final-answer quality all survived
+  the same real acceptance run.
+
+Browser Reliability:
+- Direct-CDP smoke passed inside the full gate with target attach, OOPIF/shadow
+  probing, coordinate input, popup target attach, boundary marker, network
+  controls, upload/download, screenshots, and artifact checks.
+- Browser-backed mission scenarios passed:
+  `browser-dynamic`, `browser-dashboard`, `product-workbench-brief`, and
+  `realistic-brief`.
+- Remaining browser risk: this is still local fixture coverage, not a long soak
+  on external complex pages or profile-lock/failure-injection recovery.
+
+Acceptance Evidence:
+- Command:
+  `npm run acceptance:real -- --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --cdp-timeout-ms 45000`
+- Result: passed in 486474ms.
+- Validation run:
+  `validation-ops:real-llm-acceptance:2026-05-30T20-26-45-392Z:woavjt`
+- Artifact:
+  `/Users/chris/.turnkeyai/data/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T20-26-45-392Z%3Awoavjt-mission-e2e.json`
+- Mission results:
+  `basic` `msn.mpssz248.1` done/passed tools `1/1` sessions `1/0`;
+  `comparison` `msn.mpsszbg8.2` done/passed tools `2/2` sessions `2/0`;
+  `followup` `msn.mpsszqzr.3` done/passed tools `2/2` sessions `1/1`;
+  `cancel` `msn.mpst2gtk.4` done/blocked tools `1/1` sessions `1/0`;
+  `approval` `msn.mpst2ng3.5` done/passed tools `1/1` sessions `1/0`;
+  `browser-dynamic` `msn.mpst3b5o.6` done/passed tools `1/1`
+  sessions `1/0`; `browser-dashboard` `msn.mpst3ujy.7` done/passed
+  tools `1/1` sessions `1/0`; `timeout-recovery` `msn.mpst48j5.8`
+  done/blocked tools `1/1` sessions `1/0`; `memory-recall`
+  `msn.mpst5qu7.9` done/passed tools `2/2` sessions `0/0`;
+  `task-tracking` `msn.mpst5ym1.10` done/passed tools `3/3`
+  sessions `0/0`; `product-workbench-brief` `msn.mpst64tg.11`
+  done/passed tools `3/3` sessions `3/0`; `realistic-brief`
+  `msn.mpst6wqh.12` done/passed tools `3/3` sessions `3/0`.
+- Liveness was `0/0/0` for every mission at completion.
+
+Regression Risk:
+- Direction is converging, but not yet risk-free. The full gate required
+  several contract/runtime repairs during the same checkpoint, which means the
+  acceptance harness is still finding real integration gaps rather than merely
+  confirming stability.
+- 24-hour methodology check: continue feature work only while full real E2E
+  improves or remains green. If the next 24 hours show repeated fixes in the
+  same categories without a stable full-gate pass, pause feature PRs and move
+  into methodology review focused on prompt/runtime/tool protocol boundaries.
+
+## 2026-05-31 05:18 CST - Review Fix Full Gate
+
+Direction: converging
+
+Execution Kernel:
+- Review fixes closed two production-path gaps: concurrent duplicate
+  `tasks_create` now serializes check-and-put per mission, and
+  `sessions_send` now resumes the existing worker session instead of starting a
+  bare send that bypasses continuation transcript injection.
+- The `sessions_send` repair was validated against the real follow-up mission
+  failure mode: phase two reused the same child session and retained the phase
+  one fixture evidence.
+- Tool-call text repair naming was clarified without changing the public
+  protocol.
+
+Result Quality:
+- Full real acceptance passed after the review fixes. The follow-up scenario
+  stayed substantive instead of saying the first-round fixture marker was
+  unconfirmed.
+- The matrix completed 12/12 mission scenarios. `cancel` and
+  `timeout-recovery` remained intentionally blocked-quality scenarios with
+  clean completion and no active liveness residue.
+- Product/research brief scenarios still produced bounded multi-source results:
+  `product-workbench-brief` and `realistic-brief` each completed with three
+  session results and passed quality gates.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- User-visible mission timelines are safer because follow-up tool results now
+  reflect durable child-session continuity rather than a fresh context-free
+  continuation.
+
+Browser Reliability:
+- Direct-CDP smoke passed inside the same gate, including raw-CDP target
+  attach, OOPIF/shadow probing, coordinate input, popup target attach, network
+  controls, upload/download, screenshots, and artifact checks.
+- Browser-backed mission scenarios passed again: `browser-dynamic`,
+  `browser-dashboard`, `product-workbench-brief`, and `realistic-brief`.
+- Remaining browser risk is unchanged: this is fixture-backed validation, not
+  an external long soak or profile-lock recovery proof.
+
+Acceptance Evidence:
+- Command:
+  `npm run acceptance:real -- --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --cdp-timeout-ms 45000`
+- Result: passed in 414997ms.
+- Validation run:
+  `validation-ops:real-llm-acceptance:2026-05-30T21-11-39-679Z:me10xi`
+- Artifact:
+  `/Users/chris/.turnkeyai/data/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T21-11-39-679Z%3Ame10xi-mission-e2e.json`
+- Mission results:
+  `basic` `msn.mpsulf5x.1` done/passed tools `1/1` sessions `1/0`;
+  `comparison` `msn.mpsuloht.2` done/passed tools `2/2` sessions `2/0`;
+  `followup` `msn.mpsum752.3` done/passed tools `2/2` sessions `1/1`;
+  `cancel` `msn.mpsumrc2.4` done/blocked tools `1/1` sessions `1/0`;
+  `approval` `msn.mpsumxkf.5` done/passed tools `1/1` sessions `1/0`;
+  `browser-dynamic` `msn.mpsunjpk.6` done/passed tools `1/1`
+  sessions `1/0`; `browser-dashboard` `msn.mpsuo5fa.7` done/passed
+  tools `1/1` sessions `1/0`; `timeout-recovery` `msn.mpsuoo1d.8`
+  done/blocked tools `1/1` sessions `1/0`; `memory-recall`
+  `msn.mpsuq6cq.9` done/passed tools `2/2` sessions `0/0`;
+  `task-tracking` `msn.mpsuqdcu.10` done/passed tools `3/3`
+  sessions `0/0`; `product-workbench-brief` `msn.mpsuqjkq.11`
+  done/passed tools `3/3` sessions `3/0`; `realistic-brief`
+  `msn.mpsur8ei.12` done/passed tools `3/3` sessions `3/0`.
+- Liveness was `0/0/0` for every mission at completion.
+
+Regression Risk:
+- Direction remains converging because a review-found runtime bug produced a
+  real E2E failure first, then the focused fix passed both the targeted
+  follow-up scenario and the full gate.
+- 24-hour methodology check: do not count this as done by PR/test volume. Count
+  it as progress because the same user-facing failure class now has a concrete
+  runtime fix and a full real acceptance record. If follow-up/session-continuity
+  failures recur within the next day, pause feature work for methodology review
+  of worker-session continuation and transcript persistence.
+
+## 2026-05-31 05:50 CST - Strict Acceptance Gate
+
+Direction: converging
+
+Execution Kernel:
+- The final gate passed after tightening acceptance semantics rather than
+  relaxing them: source labels are now checked as exact call/result sets,
+  standalone follow-up rejects the literal returned session key, and
+  `sessions_send` continues through the runtime resume path with transcript
+  context.
+- Multi-source standalone tool-use now has a fixed final marker bullet, and
+  product/operator mission briefs require a fixed first section label with no
+  status preamble.
+
+Result Quality:
+- Full real acceptance passed with all strict output-shape gates active.
+- `followup` validated same-session continuation without raw session key
+  leakage. `realistic-brief` and `product-workbench-brief` produced operator
+  briefs without status preambles and with exact source coverage.
+- `cancel` and `timeout-recovery` still completed as expected blocked-quality
+  cases with no lingering liveness.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- Mission timelines and final answers are now more predictable for users:
+  evidence sources are exact, process/status preambles are rejected, and final
+  answers keep the result separate from tool execution mechanics.
+
+Browser Reliability:
+- Direct-CDP smoke passed in the same gate.
+- Browser-backed scenarios passed: standalone `complex`, mission
+  `browser-dynamic`, `browser-dashboard`, `product-workbench-brief`, and
+  `realistic-brief`.
+- Remaining risk is still external-page soak/profile-lock coverage, not local
+  fixture execution.
+
+Acceptance Evidence:
+- Command:
+  `npm run acceptance:real -- --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --cdp-timeout-ms 45000`
+- Result: passed in 358314ms.
+- Validation run:
+  `validation-ops:real-llm-acceptance:2026-05-30T21-44-11-363Z:nikrb5`
+- Artifact:
+  `/Users/chris/.turnkeyai/data/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T21-44-11-363Z%3Anikrb5-mission-e2e.json`
+- Mission results:
+  `basic` `msn.mpsvqo3b.1` done/passed tools `1/1` sessions `1/0`;
+  `comparison` `msn.mpsvqzri.2` done/passed tools `2/2` sessions `2/0`;
+  `followup` `msn.mpsvrdra.3` done/passed tools `2/2` sessions `1/1`;
+  `cancel` `msn.mpsvrwek.4` done/blocked tools `1/1` sessions `1/0`;
+  `approval` `msn.mpsvs1ut.5` done/passed tools `1/1` sessions `1/0`;
+  `browser-dynamic` `msn.mpsvshhx.6` done/passed tools `1/1`
+  sessions `1/0`; `browser-dashboard` `msn.mpsvsxsi.7` done/passed
+  tools `1/1` sessions `1/0`; `timeout-recovery` `msn.mpsvtcjr.8`
+  done/blocked tools `1/1` sessions `1/0`; `memory-recall`
+  `msn.mpsvuwen.9` done/passed tools `2/2` sessions `0/0`;
+  `task-tracking` `msn.mpsvv5q9.10` done/passed tools `3/3`
+  sessions `0/0`; `product-workbench-brief` `msn.mpsvvb65.11`
+  done/passed tools `3/3` sessions `3/0`; `realistic-brief`
+  `msn.mpsvvuki.12` done/passed tools `3/3` sessions `3/0`.
+- Liveness was `0/0/0` for every mission.
+
+Regression Risk:
+- Direction is converging, but the repeated strict-gate failures during this
+  checkpoint show the system is still sensitive to prompt/output contract
+  drift. The fix direction is now explicit contracts plus hard quality gates,
+  not lowering budgets or allowing weak answers.
+- 24-hour methodology check: if another round produces failures in the same
+  categories of missing markers, source drift, status preambles, or session-key
+  leakage, pause feature PRs and review the shared answer-shape harness before
+  adding new capabilities.
+
+## 2026-05-31 06:38 CST - Review-Fix Acceptance Reclose
+
+Direction: converging
+
+Execution Kernel:
+- Review-found runtime issues were fixed at the execution boundary:
+  worker-session context survives `send()`, final synthesis fails closed when a
+  repaired response still emits pseudo tool-call markup, permission apply is
+  idempotent, and `sessions_send` result envelopes now use the current
+  follow-up label/tool-call id.
+- The fixes are architectural rather than cosmetic: they close duplicate
+  approval application, source-label continuity, and unsafe final-repair gaps
+  that appeared only under real LLM ordering variance.
+
+Result Quality:
+- The full real gate passed after tightening prompts/gates for follow-up,
+  timeout recovery, and product brief source coverage.
+- Product and realistic briefs still require three source-backed sessions and
+  exact evidence labels; timeout/cancel remain bounded blocked-quality cases
+  instead of weak success answers.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- User-visible mission timelines are more reliable because source labels now
+  survive follow-up results, duplicate approval events are suppressed, and final
+  answers are kept out of pseudo tool-call markup when the model misbehaves.
+
+Browser Reliability:
+- Direct-CDP smoke passed in the full acceptance run.
+- Browser-backed mission scenarios passed: `browser-dynamic`,
+  `browser-dashboard`, `product-workbench-brief`, and `realistic-brief`.
+
+Acceptance Evidence:
+- Command:
+  `npm run acceptance:real -- --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --cdp-timeout-ms 45000`
+- Result: passed in 416055ms.
+- Validation run:
+  `validation-ops:real-llm-acceptance:2026-05-30T22-31-29-943Z:hta22f`
+- Artifact:
+  `/Users/chris/.turnkeyai/data/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T22-31-29-943Z%3Ahta22f-mission-e2e.json`
+- Mission results:
+  `basic` `msn.mpsxfey0.1` done/passed tools `1/1` sessions `1/0`;
+  `comparison` `msn.mpsxfp21.2` done/passed tools `2/2` sessions `2/0`;
+  `followup` `msn.mpsxg65l.3` done/passed tools `2/2` sessions `1/1`;
+  `cancel` `msn.mpsxh3ju.4` done/blocked tools `1/1` sessions `1/0`;
+  `approval` `msn.mpsxh8mb.5` done/passed tools `1/1` sessions `1/0`;
+  `browser-dynamic` `msn.mpsxhure.6` done/passed tools `1/1`
+  sessions `1/0`; `browser-dashboard` `msn.mpsxio8c.7` done/passed
+  tools `1/1` sessions `1/0`; `timeout-recovery` `msn.mpsxjdu4.8`
+  done/blocked tools `1/1` sessions `1/0`; `memory-recall`
+  `msn.mpsxkw5x.9` done/passed tools `2/2` sessions `0/0`;
+  `task-tracking` `msn.mpsxl4pn.10` done/passed tools `3/3`
+  sessions `0/0`; `product-workbench-brief` `msn.mpsxlawy.11`
+  done/passed tools `3/3` sessions `3/0`; `realistic-brief`
+  `msn.mpsxlvun.12` done/passed tools `3/3` sessions `3/0`.
+- Liveness was `0/0/0` for every mission.
+
+Regression Risk:
+- Direction is converging because the same run exposed review-fix misses first,
+  then passed after fixing runtime contracts and prompt/gate alignment.
+- 24-hour methodology check: if approval duplication, source-label drift, or
+  answer-shape regex drift recurs again, pause feature PRs and review the
+  shared permission/session/evidence contract before adding workbench features.

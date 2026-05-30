@@ -12,6 +12,7 @@ import type {
   TaskToolService,
   TaskToolUpdateInput,
 } from "@turnkeyai/role-runtime/task-tool-service";
+import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 
 interface MissionTaskToolServiceOptions {
   missionStore: MissionStore;
@@ -22,6 +23,7 @@ interface MissionTaskToolServiceOptions {
 }
 
 export function createMissionTaskToolService(options: MissionTaskToolServiceOptions): TaskToolService {
+  const createMutex = new KeyedAsyncMutex<string>();
   return {
     async list(input: TaskToolListInput) {
       const mission = await resolveMission(options.missionStore, input);
@@ -40,26 +42,36 @@ export function createMissionTaskToolService(options: MissionTaskToolServiceOpti
 
     async create(input: TaskToolCreateInput) {
       const mission = await resolveMission(options.missionStore, input);
-      const existing = await options.workItemStore.listByMission(mission.id);
-      const now = options.clock.now();
-      const item: WorkItem = {
-        id: `wi.${options.idGenerator.taskId()}`,
-        missionId: mission.id,
-        n: nextWorkItemNumber(existing),
-        title: input.title,
-        agent: input.agentId ?? input.roleId,
-        status: input.status ?? "planning",
-        started: new Date(now).toISOString(),
-        duration: "00:00:00",
-        contextRefs: input.contextRefs ?? [],
-        output: input.output ?? "",
-      };
-      await options.workItemStore.put(item);
-      await appendTaskEvent(options, mission, input.roleId, `Created work item · <b>${item.title}</b>`, item);
-      return {
-        mission_id: mission.id,
-        task: serializeWorkItem(item),
-      };
+      return createMutex.run(mission.id, async () => {
+        const existing = await options.workItemStore.listByMission(mission.id);
+        const duplicate = existing.find((item) => normalizeWorkItemTitle(item.title) === normalizeWorkItemTitle(input.title));
+        if (duplicate) {
+          return {
+            mission_id: mission.id,
+            task: serializeWorkItem(duplicate),
+            deduped: true,
+          };
+        }
+        const now = options.clock.now();
+        const item: WorkItem = {
+          id: `wi.${options.idGenerator.taskId()}`,
+          missionId: mission.id,
+          n: nextWorkItemNumber(existing),
+          title: input.title,
+          agent: input.agentId ?? input.roleId,
+          status: input.status ?? "planning",
+          started: new Date(now).toISOString(),
+          duration: "00:00:00",
+          contextRefs: input.contextRefs ?? [],
+          output: input.output ?? "",
+        };
+        await options.workItemStore.put(item);
+        await appendTaskEvent(options, mission, input.roleId, `Created work item · <b>${item.title}</b>`, item);
+        return {
+          mission_id: mission.id,
+          task: serializeWorkItem(item),
+        };
+      });
     },
 
     async update(input: TaskToolUpdateInput) {
@@ -105,6 +117,14 @@ async function resolveMission(
 
 function nextWorkItemNumber(items: WorkItem[]): number {
   return items.reduce((max, item) => Math.max(max, item.n), 0) + 1;
+}
+
+function normalizeWorkItemTitle(title: string): string {
+  return title
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 async function appendTaskEvent(

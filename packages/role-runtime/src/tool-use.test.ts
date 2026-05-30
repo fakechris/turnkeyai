@@ -1462,6 +1462,9 @@ test("sessions_send interrupts a follow-up worker call on timeout", async () => 
       };
     },
     async send() {
+      throw new Error("sessions_send should resume the existing session instead of starting a bare send");
+    },
+    async resume() {
       await new Promise(() => undefined);
       return null;
     },
@@ -1544,6 +1547,9 @@ test("sessions_send timeout does not treat worker errors as usable evidence", as
       };
     },
     async send() {
+      throw new Error("sessions_send should resume the existing session instead of starting a bare send");
+    },
+    async resume() {
       await new Promise(() => undefined);
       return null;
     },
@@ -1587,6 +1593,81 @@ test("sessions_send timeout does not treat worker errors as usable evidence", as
   assert.equal(body.status, "timeout");
   assert.equal(body.evidence_available, false);
   assert.equal(body.evidence_summary, undefined);
+});
+
+test("sessions_send uses the current follow-up label in its session result envelope", async () => {
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:existing",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+            label: "Original source",
+            toolCallId: "call-original",
+          },
+          state: {
+            workerRunKey: "worker:explore:existing",
+            workerType: "explore",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:existing",
+        workerType: "explore",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async resume() {
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Continuation evidence gathered.",
+        payload: { step: "continued" },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-follow-up",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:existing",
+        message: "Continue the existing research task with fresh evidence.",
+        label: "Follow-up source",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { label: string; tool_call_id: string; result: string };
+  assert.equal(result.isError, undefined);
+  assert.equal(body.label, "Follow-up source");
+  assert.equal(body.tool_call_id, "call-follow-up");
+  assert.equal(body.result, "Continuation evidence gathered.");
 });
 
 test("sessions_send reuses a completed session for summary-only follow-ups", async () => {
@@ -1751,7 +1832,7 @@ test("sessions_send reuses a completed session for Chinese evidence extraction f
 });
 
 test("sessions_send does not reuse a completed session for mixed action follow-ups", async () => {
-  let sendCalled = false;
+  let resumeCalled = false;
   const lastResult = {
     workerType: "explore" as const,
     status: "completed" as const,
@@ -1797,7 +1878,10 @@ test("sessions_send does not reuse a completed session for mixed action follow-u
       };
     },
     async send() {
-      sendCalled = true;
+      throw new Error("sessions_send should resume the existing session instead of starting a bare send");
+    },
+    async resume() {
+      resumeCalled = true;
       return {
         workerType: "explore" as const,
         status: "completed" as const,
@@ -1830,7 +1914,7 @@ test("sessions_send does not reuse a completed session for mixed action follow-u
   });
 
   const body = JSON.parse(result.content) as { cached?: boolean; result: string };
-  assert.equal(sendCalled, true);
+  assert.equal(resumeCalled, true);
   assert.equal(body.cached, undefined);
   assert.equal(body.result, "Follow-up action executed.");
 });

@@ -265,6 +265,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
     session.activeAbortController = abortController;
     const preExecutionState = session.state;
     session.context = {
+      ...(session.context ?? {}),
       threadId: input.activation.thread.threadId,
       flowId: input.activation.flow.flowId,
       taskId: input.activation.handoff.taskId,
@@ -399,6 +400,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         workerRunKey: input.workerRunKey,
         activation: input.activation,
         packet: buildResumePacket(input.packet, session.state),
+        ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
       });
     }
 

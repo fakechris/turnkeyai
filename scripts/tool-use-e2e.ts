@@ -420,7 +420,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<RealToo
       quality = evaluateAnswerQuality({
         scenario: options.scenario,
         answer: reply.content,
-        gate: followupQualityGate(targetMarker),
+        gate: followupQualityGate(targetMarker, sessions.map((session) => session.workerRunKey)),
         toolCallNames,
         spawnedSessionCount: sessions.length,
       });
@@ -548,13 +548,14 @@ function buildRealLlmScenarioPacket(input: {
     "You are running a release-gate E2E. Use the available session tool instead of answering from memory.",
     input.followupScenario
       ? [
-          "You must verify same-session follow-up behavior:",
-          "1. Call sessions_spawn with agent_id=explore exactly once for phase 1.",
-          "2. Read the returned session_key from that partial result.",
-          "3. Call sessions_send exactly once on that same session_key using the requested continuation message.",
-          "4. Do not spawn a second session for the continuation.",
-          "5. Finalize only after sessions_send returns TURNKEYAI_FOLLOWUP_E2E_OK.",
-        ].join("\n")
+        "You must verify same-session follow-up behavior:",
+        "1. Call sessions_spawn with agent_id=explore exactly once for phase 1.",
+        "2. Read the returned session_key from that partial result.",
+        "3. Call sessions_send exactly once on that same session_key using the requested continuation message.",
+        "4. Do not spawn a second session for the continuation.",
+        "5. Finalize only after sessions_send returns TURNKEYAI_FOLLOWUP_E2E_OK.",
+        "6. Do not copy the raw session_key into the final answer; state that the same session was reused instead.",
+      ].join("\n")
       : input.timeoutScenario
       ? [
           "You must verify bounded timeout recovery:",
@@ -589,7 +590,9 @@ function buildRealLlmScenarioPacket(input: {
         "Run the same-session follow-up E2E.",
         "Phase 1: ask the explore sub-agent for the phase-one checkpoint.",
         "Phase 2: continue the same sub-agent session with sessions_send using the continuation instruction from phase 1.",
-        `Final answer must include ${input.targetMarker}, the reused session_key, and a short note that no duplicate session was spawned.`,
+        `Final answer must include ${input.targetMarker} and a short note that no duplicate session was spawned.`,
+        "Use the exact final answer shape from the output contract; do not rename, capitalize, or decorate the bullet labels.",
+        "Do not include the raw session_key in the final answer.",
       ].join("\n")
     : input.timeoutScenario
     ? [
@@ -616,8 +619,13 @@ function buildRealLlmScenarioPacket(input: {
   const outputContract = input.followupScenario
     ? [
         `Final answer must include ${input.targetMarker}.`,
-        "Use Markdown with a heading `Evidence` and at least three bullets: phase-one partial result, follow-up result, residual risk.",
-        "Mention the reused session_key and state that the continuation used sessions_send rather than a duplicate sessions_spawn.",
+        "Use exactly this Markdown shape; keep the three bullet labels byte-for-byte as written:",
+        "## Evidence",
+        "- phase-one evidence: cite TURNKEYAI_FOLLOWUP_PHASE_ONE from the original sessions_spawn result.",
+        "- follow-up evidence: cite TURNKEYAI_FOLLOWUP_E2E_OK from sessions_send on the same session.",
+        "- residual risk: state what this local deterministic fixture does not prove.",
+        "State that the continuation used sessions_send on the same session rather than a duplicate sessions_spawn.",
+        "Do not include the raw session_key.",
       ].join("\n")
     : input.timeoutScenario
     ? [
@@ -636,7 +644,12 @@ function buildRealLlmScenarioPacket(input: {
     : input.multiSourceScenario
     ? [
         `Final answer must include ${input.targetMarker}.`,
-        "Use Markdown with a heading `Evidence` and at least three bullets: explore evidence, browser evidence, residual risk.",
+        "Use exactly this Markdown shape:",
+        "## Evidence",
+        `- explore evidence: cite TURNKEYAI_COMPLEX_EXPLORE_OK from the explore session.`,
+        `- browser evidence: cite TURNKEYAI_COMPLEX_BROWSER_OK from the browser session.`,
+        `- final marker: ${input.targetMarker}; state that both source sessions were used.`,
+        "- residual risk: state what the deterministic fixture does not prove.",
         "Do not include the success marker unless both sub-agent results were used.",
       ].join("\n")
     : `Final answer must include ${input.targetMarker} and must mention the session tool evidence.`;
@@ -712,6 +725,9 @@ interface AnswerQualityGate {
   maxSpawnedSessions?: number;
   requiredPatterns?: Array<{ label: string; pattern: RegExp }>;
   forbiddenPatterns?: Array<{ label: string; pattern: RegExp }>;
+  forbiddenLiterals?: Array<{ label: string; value: string }>;
+  requiredExactLines?: string[];
+  requiredBulletLabels?: string[];
   requiredToolNames?: string[];
 }
 
@@ -741,14 +757,14 @@ function multiSourceQualityGate(targetMarker: string): AnswerQualityGate {
     minEvidenceSources: 2,
     maxSpawnedSessions: 4,
     requiredToolNames: ["sessions_spawn"],
+    requiredExactLines: ["## Evidence"],
+    requiredBulletLabels: ["explore evidence", "browser evidence", "final marker", "residual risk"],
     requiredPatterns: [
       { label: "target success marker", pattern: new RegExp(escapeRegExp(targetMarker)) },
       { label: "explore evidence marker", pattern: /TURNKEYAI_COMPLEX_EXPLORE_OK/ },
       { label: "browser evidence marker", pattern: /TURNKEYAI_COMPLEX_BROWSER_OK/ },
-      { label: "evidence heading", pattern: /Evidence/i },
       { label: "explore source label", pattern: /deterministic e2e worker/i },
       { label: "browser evidence text", pattern: /complex browser evidence/i },
-      { label: "residual risk", pattern: /residual risk/i },
     ],
     forbiddenPatterns: [
       { label: "unsupported user-scale claim", pattern: /\b(millions of users|large community|widely adopted)\b/i },
@@ -757,24 +773,27 @@ function multiSourceQualityGate(targetMarker: string): AnswerQualityGate {
   };
 }
 
-function followupQualityGate(targetMarker: string): AnswerQualityGate {
+function followupQualityGate(targetMarker: string, forbiddenSessionKeys: string[] = []): AnswerQualityGate {
   return {
     minBytes: 180,
     minBullets: 3,
     minEvidenceSources: 2,
     maxSpawnedSessions: 1,
     requiredToolNames: ["sessions_spawn", "sessions_send"],
+    requiredExactLines: ["## Evidence"],
+    requiredBulletLabels: ["phase-one evidence", "follow-up evidence", "residual risk"],
     requiredPatterns: [
       { label: "target success marker", pattern: new RegExp(escapeRegExp(targetMarker)) },
       { label: "evidence heading", pattern: /Evidence/i },
       { label: "phase-one marker", pattern: /TURNKEYAI_FOLLOWUP_PHASE_ONE/ },
       { label: "same-session continuation", pattern: /sessions_send|same session|reused session|follow-up/i },
-      { label: "session key", pattern: /session[_ -]?key/i },
       { label: "residual risk", pattern: /residual risk/i },
     ],
     forbiddenPatterns: [
       { label: "duplicate-session claim", pattern: /\b(spawned a second session|duplicate session was used)\b/i },
+      { label: "raw session key leak", pattern: /\bworker:(?:explore|browser|finance|general):[^\s`'",)]+|\bTASK-\d+[^`'",\s]*call_/i },
     ],
+    forbiddenLiterals: forbiddenSessionKeys.map((value) => ({ label: "literal session key leak", value })),
   };
 }
 
@@ -854,6 +873,21 @@ function evaluateAnswerQuality(input: {
       failures.push(`forbidden unsupported claim: ${forbidden.label}`);
     }
   }
+  for (const forbidden of input.gate.forbiddenLiterals ?? []) {
+    if (forbidden.value && input.answer.includes(forbidden.value)) {
+      failures.push(`forbidden literal: ${forbidden.label}`);
+    }
+  }
+  for (const line of input.gate.requiredExactLines ?? []) {
+    if (!hasExactLine(input.answer, line)) {
+      failures.push(`missing exact line: ${line}`);
+    }
+  }
+  for (const label of input.gate.requiredBulletLabels ?? []) {
+    if (!hasExactBulletLabel(input.answer, label)) {
+      failures.push(`missing exact bullet label: ${label}`);
+    }
+  }
   if (mentionsToolFallbackAnswer(input.answer)) {
     failures.push("final answer falls back to model knowledge after tool/search/browser unavailable");
   }
@@ -869,6 +903,14 @@ function evaluateAnswerQuality(input: {
     evidenceSourceCount,
     failures,
   };
+}
+
+function hasExactBulletLabel(answer: string, label: string): boolean {
+  return answer.split(/\r?\n/).some((line) => line.startsWith(`- ${label}:`));
+}
+
+function hasExactLine(answer: string, expected: string): boolean {
+  return answer.split(/\r?\n/).some((line) => line.trim() === expected);
 }
 
 function assertAnswerQuality(report: AnswerQualityReport): void {
@@ -1038,6 +1080,50 @@ function runMockAcceptanceQualitySuiteE2e(): {
   assert.ok(
     fallbackReport.failures.includes("final answer falls back to model knowledge after tool/search/browser unavailable"),
     "tool-use quality gate must reject tool-unavailable fallback answers"
+  );
+  const malformedFollowupReport = evaluateAnswerQuality({
+    scenario: "follow_up_resume",
+    answer: [
+      "## Evidence",
+      "- Phase-one evidence: TURNKEYAI_FOLLOWUP_PHASE_ONE from the original result.",
+      "- follow up evidence: TURNKEYAI_FOLLOWUP_E2E_OK from sessions_send.",
+      "- residual risk: local fixture only.",
+      "worker:explore:task:TASK-1:call_abc",
+    ].join("\n"),
+    gate: followupQualityGate("TURNKEYAI_FOLLOWUP_E2E_OK", ["worker:explore:task:TASK-1:call_abc"]),
+  });
+  assert.ok(
+    malformedFollowupReport.failures.includes("missing exact bullet label: phase-one evidence"),
+    "tool-use quality gate must reject renamed follow-up bullet labels"
+  );
+  assert.ok(
+    malformedFollowupReport.failures.includes("missing exact bullet label: follow-up evidence"),
+    "tool-use quality gate must reject punctuation-changed follow-up bullet labels"
+  );
+  assert.ok(
+    malformedFollowupReport.failures.includes("forbidden literal: literal session key leak"),
+    "tool-use quality gate must reject the actual leaked session key"
+  );
+  const malformedMultiSourceReport = evaluateAnswerQuality({
+    scenario: "complex",
+    answer: [
+      "# Evidence",
+      "- exploration evidence: TURNKEYAI_COMPLEX_EXPLORE_OK from deterministic e2e worker.",
+      "- browser evidence: TURNKEYAI_COMPLEX_BROWSER_OK from complex browser evidence.",
+      "- final marker: TURNKEYAI_COMPLEX_E2E_OK.",
+      "- residual risk: local fixture only.",
+    ].join("\n"),
+    gate: multiSourceQualityGate("TURNKEYAI_COMPLEX_E2E_OK"),
+    toolCallNames: ["sessions_spawn"],
+    spawnedSessionCount: 2,
+  });
+  assert.ok(
+    malformedMultiSourceReport.failures.includes("missing exact line: ## Evidence"),
+    "multi-source quality gate must reject renamed evidence headings"
+  );
+  assert.ok(
+    malformedMultiSourceReport.failures.includes("missing exact bullet label: explore evidence"),
+    "multi-source quality gate must reject renamed source bullet labels"
   );
   return {
     scenarios: cases.map((item) => item.name),
@@ -1326,6 +1412,7 @@ function buildRealBrowserWorkerRuntime(input: {
 
 function buildApprovalToolPermissionService(permissionEvents: string[]): ToolPermissionService {
   const pendingApprovals = new Map<string, { action: string; cacheKey: string }>();
+  const appliedApprovalIds = new Set<string>();
   const appliedCacheKeys = new Set<string>();
   const appliedActions = new Set<string>();
   return {
@@ -1383,9 +1470,18 @@ function buildApprovalToolPermissionService(permissionEvents: string[]): ToolPer
       };
     },
     async apply(input) {
-      permissionEvents.push(`applied:${input.approvalId}`);
       const pending = pendingApprovals.get(input.approvalId);
       const cacheKey = pending?.cacheKey ?? "thread-tool-e2e:browser:mutate:approval:browser.form.submit";
+      if (appliedApprovalIds.has(input.approvalId) || appliedCacheKeys.has(cacheKey)) {
+        return {
+          status: "applied",
+          approvalId: input.approvalId,
+          cacheKey,
+          message: "Already applied.",
+        };
+      }
+      permissionEvents.push(`applied:${input.approvalId}`);
+      appliedApprovalIds.add(input.approvalId);
       appliedCacheKeys.add(cacheKey);
       appliedActions.add(pending?.action ?? "browser.form.submit");
       return {
