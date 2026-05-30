@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,6 +5,7 @@ import { runAppCommand } from "./app-command";
 import { runBridgeNamespace } from "./bridge";
 import { runDaemonNamespace } from "./daemon-commands";
 import { runDoctor } from "./doctor";
+import { spawnLegacyEntry } from "./legacy-entry";
 
 type CliCommand = "daemon" | "tui" | "doctor" | "bridge" | "app";
 
@@ -44,32 +44,10 @@ async function runCommand(command: CliCommand, commandArgs: string[]): Promise<v
     case "doctor":
       return runDoctor(commandArgs);
     case "tui":
-      return spawnLegacyEntry("tui", commandArgs);
+      return spawnLegacyEntry("tui", commandArgs, path.dirname(fileURLToPath(import.meta.url)));
     case "app":
       return runAppCommand(commandArgs);
   }
-}
-
-async function spawnLegacyEntry(entryName: string, entryArgs: string[]): Promise<void> {
-  const currentDir = path.dirname(fileURLToPath(import.meta.url));
-  const entryPath = path.join(currentDir, `${entryName}.js`);
-  const child = spawn(process.execPath, [entryPath, ...entryArgs], {
-    stdio: "inherit",
-    env: process.env,
-  });
-
-  child.on("error", (error) => {
-    console.error(`Failed to start ${entryName}:`, error);
-    process.exit(1);
-  });
-
-  child.on("exit", (code, signal) => {
-    if (signal) {
-      process.kill(process.pid, signal);
-      return;
-    }
-    process.exit(code ?? 0);
-  });
 }
 
 function printHelp(exitCode: number): never {
