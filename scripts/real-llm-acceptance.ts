@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS,
@@ -13,17 +14,34 @@ import { summarizeMissionE2eReportForValidationOps } from "@turnkeyai/qc-runtime
 import { buildValidationOpsRecordFromRealLlmAcceptance } from "@turnkeyai/qc-runtime/validation-ops-inspection";
 import { FileValidationOpsRunStore } from "@turnkeyai/team-store/ops/file-validation-ops-run-store";
 
-interface RealAcceptanceOptions {
+export interface RealAcceptanceOptions {
   modelCatalogPath?: string;
   dataDir?: string;
   missionJsonPath?: string;
   cdpTimeoutMs: number;
   scenarioTimeoutMs: number;
+  skipTooluse: boolean;
   skipBrowserTooluse: boolean;
   recordValidationOps: boolean;
   writeMissionJson: boolean;
   tooluseScenarios?: string;
   missionScenarios?: string;
+}
+
+export interface RealAcceptanceCommandStep {
+  label: string;
+  args: string[];
+}
+
+export interface RealAcceptancePlan {
+  runId: string;
+  startedAt: number;
+  missionJsonPath: string | null;
+  tooluseScenarios: string[];
+  missionScenarios: string[];
+  browserTooluseEnabled: boolean;
+  validationOpsDataDir: string | null;
+  steps: RealAcceptanceCommandStep[];
 }
 
 interface RuntimeConfig {
@@ -34,47 +52,44 @@ const DEFAULT_TOOLUSE_BROWSER_SCENARIOS = joinRealAcceptanceScenarios(DEFAULT_RE
 const DEFAULT_TOOLUSE_NON_BROWSER_SCENARIOS = joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS);
 const DEFAULT_MISSION_SCENARIOS = joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS);
 
-const options = parseArgs(process.argv.slice(2));
-const startedAt = Date.now();
-const runId = buildRealAcceptanceRunId(startedAt);
-const missionJsonPath = resolveMissionJsonPath(options, runId);
-console.log("real acceptance starting");
-console.log(`browser-tooluse: ${options.skipBrowserTooluse ? "skipped" : "enabled"}`);
-console.log(`tooluse-scenarios: ${resolveTooluseScenarios(options)}`);
-console.log(`mission-scenarios: ${options.missionScenarios ?? DEFAULT_MISSION_SCENARIOS}`);
-console.log(`validation-ops-record: ${options.recordValidationOps ? resolveValidationOpsDataDir(options) : "disabled"}`);
-console.log(`mission-json-report: ${missionJsonPath ?? "disabled"}`);
+export async function runRealAcceptanceCli(args: string[]): Promise<void> {
+  const options = parseRealAcceptanceArgs(args);
+  const plan = buildRealAcceptancePlan(options, { startedAt: Date.now() });
+  console.log("real acceptance starting");
+  console.log(`tooluse: ${options.skipTooluse ? "skipped" : "enabled"}`);
+  console.log(`browser-tooluse: ${plan.browserTooluseEnabled ? "enabled" : "skipped"}`);
+  console.log(`tooluse-scenarios: ${plan.tooluseScenarios.length > 0 ? plan.tooluseScenarios.join(",") : "skipped"}`);
+  console.log(`mission-scenarios: ${plan.missionScenarios.join(",")}`);
+  console.log(`validation-ops-record: ${plan.validationOpsDataDir ?? "disabled"}`);
+  console.log(`mission-json-report: ${plan.missionJsonPath ?? "disabled"}`);
 
-try {
-  await runCommand("tool-use real matrix", buildTooluseArgs(options));
-  ensureMissionJsonParentDirectory(missionJsonPath);
-  await runCommand("mission real matrix", buildMissionArgs(options, missionJsonPath));
-  const completedAt = Date.now();
-  await recordValidationOps(options, {
-    runId,
-    startedAt,
-    completedAt,
-    status: "passed",
-    missionJsonPath,
-  });
-  console.log(`real acceptance passed in ${completedAt - startedAt}ms`);
-} catch (error) {
-  const completedAt = Date.now();
-  await recordValidationOps(options, {
-    runId,
-    startedAt,
-    completedAt,
-    status: "failed",
-    error: errorMessage(error),
-    missionJsonPath,
-  });
-  throw error;
+  try {
+    ensureMissionJsonParentDirectory(plan.missionJsonPath);
+    for (const step of plan.steps) {
+      await runCommand(step.label, step.args);
+    }
+    const completedAt = Date.now();
+    await recordValidationOps(options, plan, {
+      completedAt,
+      status: "passed",
+    });
+    console.log(`real acceptance passed in ${completedAt - plan.startedAt}ms`);
+  } catch (error) {
+    const completedAt = Date.now();
+    await recordValidationOps(options, plan, {
+      completedAt,
+      status: "failed",
+      error: errorMessage(error),
+    });
+    throw error;
+  }
 }
 
-function parseArgs(args: string[]): RealAcceptanceOptions {
+export function parseRealAcceptanceArgs(args: string[]): RealAcceptanceOptions {
   const options: RealAcceptanceOptions = {
     cdpTimeoutMs: 45_000,
     scenarioTimeoutMs: 240_000,
+    skipTooluse: false,
     skipBrowserTooluse: false,
     recordValidationOps: true,
     writeMissionJson: true,
@@ -117,6 +132,10 @@ function parseArgs(args: string[]): RealAcceptanceOptions {
       index += 1;
       continue;
     }
+    if (arg === "--skip-tooluse") {
+      options.skipTooluse = true;
+      continue;
+    }
     if (arg === "--skip-browser-tooluse") {
       options.skipBrowserTooluse = true;
       continue;
@@ -132,10 +151,34 @@ function parseArgs(args: string[]): RealAcceptanceOptions {
     }
     throw new Error(`unknown argument: ${arg}`);
   }
+  if (options.skipTooluse && options.tooluseScenarios) {
+    throw new Error("--tooluse-scenarios cannot be combined with --skip-tooluse");
+  }
   return options;
 }
 
-function buildTooluseArgs(options: RealAcceptanceOptions): string[] {
+export function buildRealAcceptancePlan(
+  options: RealAcceptanceOptions,
+  input: { startedAt: number; runId?: string }
+): RealAcceptancePlan {
+  const runId = input.runId ?? buildRealAcceptanceRunId(input.startedAt);
+  const missionJsonPath = resolveMissionJsonPath(options, runId);
+  return {
+    runId,
+    startedAt: input.startedAt,
+    missionJsonPath,
+    tooluseScenarios: options.skipTooluse ? [] : splitScenarios(resolveTooluseScenarios(options)),
+    missionScenarios: splitScenarios(options.missionScenarios ?? DEFAULT_MISSION_SCENARIOS),
+    browserTooluseEnabled: !options.skipTooluse && !options.skipBrowserTooluse,
+    validationOpsDataDir: options.recordValidationOps ? resolveValidationOpsDataDir(options) : null,
+    steps: [
+      ...(options.skipTooluse ? [] : [{ label: "tool-use real matrix", args: buildTooluseArgs(options) }]),
+      { label: "mission real matrix", args: buildMissionArgs(options, missionJsonPath) },
+    ],
+  };
+}
+
+export function buildTooluseArgs(options: RealAcceptanceOptions): string[] {
   const args = [
     "run",
     "tooluse:e2e:real-matrix",
@@ -154,13 +197,13 @@ function buildTooluseArgs(options: RealAcceptanceOptions): string[] {
   return args;
 }
 
-function resolveTooluseScenarios(options: RealAcceptanceOptions): string {
+export function resolveTooluseScenarios(options: RealAcceptanceOptions): string {
   return options.tooluseScenarios ?? (
     options.skipBrowserTooluse ? DEFAULT_TOOLUSE_NON_BROWSER_SCENARIOS : DEFAULT_TOOLUSE_BROWSER_SCENARIOS
   );
 }
 
-function buildMissionArgs(options: RealAcceptanceOptions, missionJsonPath: string | null): string[] {
+export function buildMissionArgs(options: RealAcceptanceOptions, missionJsonPath: string | null): string[] {
   const args = [
     "run",
     "mission:e2e",
@@ -231,32 +274,30 @@ function runCommand(label: string, args: string[]): Promise<void> {
 
 async function recordValidationOps(
   options: RealAcceptanceOptions,
+  plan: RealAcceptancePlan,
   result: {
-    runId: string;
-    startedAt: number;
     completedAt: number;
     status: "passed" | "failed";
     error?: string;
-    missionJsonPath: string | null;
   }
 ): Promise<void> {
   if (!options.recordValidationOps) return;
-  const dataDir = resolveValidationOpsDataDir(options);
+  const dataDir = plan.validationOpsDataDir ?? resolveValidationOpsDataDir(options);
   const store = new FileValidationOpsRunStore({ rootDir: path.join(dataDir, "validation-ops-runs") });
-  const missionReport = result.missionJsonPath && existsSync(result.missionJsonPath)
-    ? summarizeMissionJson(result.missionJsonPath)
+  const missionReport = plan.missionJsonPath && existsSync(plan.missionJsonPath)
+    ? summarizeMissionJson(plan.missionJsonPath)
     : null;
   const record = buildValidationOpsRecordFromRealLlmAcceptance({
-    runId: result.runId,
-    startedAt: result.startedAt,
+    runId: plan.runId,
+    startedAt: plan.startedAt,
     completedAt: result.completedAt,
     status: result.status,
-    tooluseScenarios: splitScenarios(resolveTooluseScenarios(options)),
-    missionScenarios: splitScenarios(options.missionScenarios ?? DEFAULT_MISSION_SCENARIOS),
-    browserTooluseEnabled: !options.skipBrowserTooluse,
-    ...(result.missionJsonPath && existsSync(result.missionJsonPath)
+    tooluseScenarios: plan.tooluseScenarios,
+    missionScenarios: plan.missionScenarios,
+    browserTooluseEnabled: plan.browserTooluseEnabled,
+    ...(plan.missionJsonPath && existsSync(plan.missionJsonPath)
       ? {
-          artifactPath: path.relative(process.cwd(), result.missionJsonPath),
+          artifactPath: path.relative(process.cwd(), plan.missionJsonPath),
           ...(missionReport ? { missionReport } : {}),
         }
       : {}),
@@ -326,4 +367,14 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error.trim()) return error.trim();
   return "unknown error";
+}
+
+function isDirectExecution(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  return path.resolve(entry) === fileURLToPath(import.meta.url);
+}
+
+if (isDirectExecution()) {
+  await runRealAcceptanceCli(process.argv.slice(2));
 }
