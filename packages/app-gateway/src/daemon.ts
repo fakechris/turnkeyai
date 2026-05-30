@@ -78,6 +78,7 @@ import { createMissionThreadBridge } from "./mission-thread-bridge";
 import { createMissionTaskToolService } from "./mission-task-tool-service";
 import { createMissionToolPermissionService } from "./tool-permission-service";
 import { buildBrowserRuntimeHealthSnapshot } from "./browser-runtime-health";
+import { buildDiagnosticsMissionHealthSnapshot } from "./mission-health-diagnostics";
 
 import {
   parsePositiveInteger,
@@ -587,6 +588,13 @@ const server = http.createServer(async (req, res) => {
             };
           },
           browserHealthSnapshot: async () => buildBrowserHealthSnapshot(await listBrowserSessionsForDiagnostics()),
+          missionHealthSnapshot: async () =>
+            buildDiagnosticsMissionHealthSnapshot({
+              missionStore: missionDeps.missionStore,
+              activityStore: missionDeps.activityStore,
+              runtimeProgressStore,
+              nowMs: clock.now(),
+            }),
         },
       })
     ) {

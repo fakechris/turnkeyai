@@ -130,6 +130,11 @@ try {
       waitUntil: "networkidle",
     });
     await operatorRuntimePage.waitForSelector("text=Runtime attention");
+    await operatorRuntimePage.waitForSelector("text=Mission health");
+    assert(
+      await operatorRuntimePage.locator(".card", { hasText: "Dashboard comparison mission" }).isVisible(),
+      "operator runtime should surface mission health attention rows"
+    );
     assert(
       await operatorRuntimePage.locator(".card", { hasText: "Release acceptance" }).isVisible(),
       "operator runtime should still render the release acceptance card"
@@ -496,6 +501,7 @@ try {
       waitUntil: "networkidle",
     });
     await page.waitForSelector("text=Runtime attention");
+    await page.waitForSelector("text=Mission health");
     const openReplay = page.getByRole("button", { name: /Open replay/ });
     assert(!(await openReplay.isDisabled()), "runtime replay action should open a mission-linked trace");
     assert(
@@ -1062,6 +1068,68 @@ function diagnosticsFixture() {
       sessionCount: 1,
       relayPeerCount: 0,
       relayTargetCount: 0,
+    },
+    missionHealth: {
+      total: 3,
+      inspected: 3,
+      byStatus: {
+        draft: 0,
+        planning: 0,
+        working: 1,
+        needs_approval: 1,
+        blocked: 0,
+        done: 1,
+        archived: 0,
+      },
+      active: 2,
+      terminal: 1,
+      needsApproval: 1,
+      withBlockers: 0,
+      snapshotErrorCount: 0,
+      latestMission: {
+        id: missionId,
+        title: "Dashboard comparison mission",
+        status: "working",
+        createdAtMs: Date.now(),
+      },
+      qualityGate: {
+        running: 1,
+        passed: 1,
+        needsAttention: 0,
+        blocked: 0,
+      },
+      tool: {
+        requested: 4,
+        executed: 3,
+        failed: 0,
+        cancelled: 0,
+        timeouts: 0,
+      },
+      sessions: {
+        spawned: 2,
+        continued: 1,
+      },
+      liveness: {
+        active: 1,
+        waiting: 1,
+        stale: 0,
+      },
+      recoveryEvents: 0,
+      attentionMissions: [
+        {
+          id: missionId,
+          title: "Dashboard comparison mission",
+          status: "needs_approval",
+          qualityGateStatus: "running",
+          pendingApprovals: 1,
+          blockers: 0,
+          toolFailures: 0,
+          toolTimeouts: 0,
+          recoveryEvents: 0,
+          staleRuntimeSubjects: 0,
+          lastProgressAtMs: Date.now() - 20_000,
+        },
+      ],
     },
     node: {
       version: process.versions.node,
