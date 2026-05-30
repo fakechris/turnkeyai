@@ -404,6 +404,7 @@ const browserContextSourceProvider = createBrowserContextSourceProvider({
 const missionThreadBridge = createMissionThreadBridge({
   missionStore: missionDeps.missionStore,
   roleRunStore,
+  workerSessionStore,
   teamMessageStore,
   activityStore: missionDeps.activityStore,
   newEventId: () => idGenerator.messageId(),

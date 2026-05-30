@@ -1,5 +1,9 @@
 import type { Mission } from "@turnkeyai/core-types/mission";
-import type { RoleRunState, TeamMessage } from "@turnkeyai/core-types/team";
+import type {
+  RoleRunState,
+  TeamMessage,
+  WorkerSessionRecord,
+} from "@turnkeyai/core-types/team";
 
 export type MissionCompletionReason =
   | "terminal"
@@ -10,7 +14,7 @@ export type MissionCompletionReason =
   | "incomplete_final_answer"
   | "skipped_tool_turn"
   | "stalled_tool_turn"
-  | "active_role_run"
+  | "active_execution"
   | "awaiting_work";
 
 export type MissionCompletionDecision =
@@ -41,6 +45,7 @@ export function evaluateMissionCompletion(input: {
   mission: Mission;
   messages: TeamMessage[];
   roleRuns?: RoleRunState[] | "unknown";
+  workerSessions?: WorkerSessionRecord[] | "unknown" | undefined;
 }): MissionCompletionDecision {
   const { mission, messages } = input;
   if (mission.status === "done" || mission.status === "archived" || mission.status === "draft") {
@@ -71,8 +76,8 @@ export function evaluateMissionCompletion(input: {
 
   const incompleteFinal = findIncompleteLeadFinalAnswer(mission, messages);
   if (incompleteFinal) {
-    if (hasActiveRoleRun(input.roleRuns)) {
-      return { action: "none", reason: "active_role_run" };
+    if (hasActiveExecution(input.roleRuns, input.workerSessions)) {
+      return { action: "none", reason: "active_execution" };
     }
     return {
       action: "update",
@@ -92,8 +97,8 @@ export function evaluateMissionCompletion(input: {
 
   const skipped = findSkippedLeadToolTurn(mission, messages);
   if (skipped) {
-    if (hasActiveRoleRun(input.roleRuns)) {
-      return { action: "none", reason: "active_role_run" };
+    if (hasActiveExecution(input.roleRuns, input.workerSessions)) {
+      return { action: "none", reason: "active_execution" };
     }
     return {
       action: "update",
@@ -105,8 +110,8 @@ export function evaluateMissionCompletion(input: {
 
   const completed = findCompletedLeadToolTurnWithoutFinal(mission, messages);
   if (completed) {
-    if (hasActiveRoleRun(input.roleRuns)) {
-      return { action: "none", reason: "active_role_run" };
+    if (hasActiveExecution(input.roleRuns, input.workerSessions)) {
+      return { action: "none", reason: "active_execution" };
     }
     return {
       action: "update",
@@ -118,8 +123,8 @@ export function evaluateMissionCompletion(input: {
 
   const stalled = findStalledLeadToolTurn(mission, messages);
   if (stalled) {
-    if (hasActiveRoleRun(input.roleRuns)) {
-      return { action: "none", reason: "active_role_run" };
+    if (hasActiveExecution(input.roleRuns, input.workerSessions)) {
+      return { action: "none", reason: "active_execution" };
     }
     return {
       action: "update",
@@ -139,9 +144,22 @@ export function evaluateMissionCompletion(input: {
   return { action: "none", reason: "awaiting_work" };
 }
 
+function hasActiveExecution(
+  roleRuns: RoleRunState[] | "unknown" | undefined,
+  workerSessions: WorkerSessionRecord[] | "unknown" | undefined
+): boolean {
+  return hasActiveRoleRun(roleRuns) || hasActiveWorkerSession(workerSessions);
+}
+
 function hasActiveRoleRun(roleRuns: RoleRunState[] | "unknown" | undefined): boolean {
   if (roleRuns === undefined || roleRuns === "unknown") return true;
   return roleRuns.some(isActiveRoleRun);
+}
+
+function hasActiveWorkerSession(workerSessions: WorkerSessionRecord[] | "unknown" | undefined): boolean {
+  if (workerSessions === undefined) return false;
+  if (workerSessions === "unknown") return true;
+  return workerSessions.some(isActiveWorkerSession);
 }
 
 function hasFinalLeadAssistantMessage(
@@ -337,5 +355,14 @@ function isActiveRoleRun(run: RoleRunState): boolean {
     run.status === "running" ||
     run.status === "waiting_worker" ||
     run.status === "resuming"
+  );
+}
+
+function isActiveWorkerSession(session: WorkerSessionRecord): boolean {
+  return (
+    session.state.status === "running" ||
+    session.state.status === "waiting_input" ||
+    session.state.status === "waiting_external" ||
+    session.state.status === "resumable"
   );
 }
