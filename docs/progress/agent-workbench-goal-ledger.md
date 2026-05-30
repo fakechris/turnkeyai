@@ -613,3 +613,50 @@ Regression Risk:
 - The default label changed from `All` to `Current`; users who need old runs now
   make an explicit archived-filter choice instead of seeing stale runs mixed
   into the normal work queue.
+
+## 2026-05-30 20:37 CST - App Launcher Infers Token Scope
+
+Direction: converging
+
+Execution Kernel:
+- No mission/tool/worker/browser execution semantics changed.
+- `turnkeyai app` now probes the healthy daemon before opening the Control
+  Center when its configured token source is legacy/unknown. It classifies the
+  token with safe read-only checks in admin → operator → read order.
+
+Result Quality:
+- Final-answer behavior did not change.
+- This supports result delivery indirectly by reducing launch confusion:
+  users no longer enter the workbench with a stale-looking `scope=unknown`
+  when the local single-token daemon actually grants admin access.
+
+Workbench UX:
+- Local app launch now prints and injects the inferred scope. On the current
+  local daemon, `npm run app -- --no-open` opens with `scope=admin`.
+- Agent Connect, Settings, Runtime, and other scope-gated UI can render the
+  right affordances immediately instead of displaying "checking" for a healthy
+  local install.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- The operator-scope probe uses `GET /browser-sessions`, so it also validates
+  that the launcher token can reach the browser-session inspection surface
+  before the UI relies on it.
+
+Acceptance Evidence:
+- `npx tsx --test packages/cli/src/app-command.test.ts packages/cli/src/daemon-token.test.ts`:
+  35 passing.
+- `npm run typecheck`
+- `npm run build --workspace @turnkeyai/cli`
+- `npm run app -- --no-open`: printed `scope=admin` for the local daemon URL.
+- `npm test -- --runInBand`: 1205 passing.
+- `npm run build`
+- `git diff --check`
+- `npm run release:verify`: passed 9/9 packaged CLI checks.
+
+Regression Risk:
+- Scope probing is best-effort and falls back to `unknown` when the daemon
+  rejects or cannot answer the probes, preserving the prior behavior.
+- The probes are non-mutating (`HEAD /daemon/config/model-catalog`,
+  `GET /browser-sessions`, `GET /bridge/status`) and run only after the daemon
+  health check passes.
