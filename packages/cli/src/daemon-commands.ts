@@ -688,17 +688,27 @@ function delay(ms: number): Promise<void> {
 }
 
 async function bootstrapLaunchAgent(domain: string, launchAgentFile: string): Promise<void> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
     try {
       await runLaunchctl(["bootstrap", domain, launchAgentFile]);
       return;
     } catch (error) {
-      if (!isTransientLaunchctlBootstrapError(error) || attempt === 3) {
+      if (!isTransientLaunchctlBootstrapError(error) || attempt === 5) {
         throw error;
       }
-      await delay(250 * (attempt + 1));
+      await delay(Math.min(500 * 2 ** attempt, 4_000));
     }
   }
+}
+
+async function waitForLaunchAgentUnloaded(serviceName: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const result = await runLaunchctl(["print", serviceName], { allowFailure: true });
+    if (result.code !== 0) return;
+    await delay(250);
+  }
+  throw new Error(`launchctl bootout did not unload ${serviceName} within 10s`);
 }
 
 function launchctlServiceName(label: string): string {
@@ -772,6 +782,7 @@ export async function runDaemonServiceInstall(args: string[]): Promise<void> {
   if (!noStart) {
     const domain = `gui/${process.getuid?.() ?? 501}`;
     await runLaunchctl(["bootout", serviceName], { allowFailure: true });
+    await waitForLaunchAgentUnloaded(serviceName);
     await bootstrapLaunchAgent(domain, service.launchAgentFile);
     await runLaunchctl(["enable", serviceName], { allowFailure: true });
     await runLaunchctl(["kickstart", "-k", serviceName], { allowFailure: true });
