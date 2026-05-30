@@ -12,6 +12,7 @@ import type {
   TeamThreadStore,
   RunKey,
 } from "@turnkeyai/core-types/team";
+import { normalizeRelayPayload } from "@turnkeyai/core-types/team";
 
 interface InlineRoleLoopRunnerOptions {
   roleRunStore: RoleRunStore;
@@ -97,11 +98,12 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
 
         if (current.iterationCount >= current.maxIterations) {
           const handoff = await this.roleRunCoordinator.dequeue(runKey);
-          const error = buildRoleRunIterationLimitError(current);
-          await this.roleRunCoordinator.fail(runKey, error);
           if (!handoff) {
+            await this.roleRunCoordinator.setStatus(runKey, "idle");
             return;
           }
+          const error = buildRoleRunIterationLimitError(current);
+          await this.roleRunCoordinator.fail(runKey, error);
 
           const flow = await this.flowLedgerStore.get(handoff.flowId);
           const thread = await this.teamThreadStore.get(handoff.threadId);
@@ -169,12 +171,13 @@ export class InlineRoleLoopRunner implements RoleLoopRunner {
           flowId: flow.flowId,
           taskId: handoff.taskId,
         });
+        const activationHandoff = buildFinalIterationHandoff(refreshedRun, handoff);
         const result = await this.roleRuntime
           .runActivation({
             runState: refreshedRun,
             thread,
             flow,
-            handoff,
+            handoff: activationHandoff,
           }, {
             signal: controller.signal,
           })
@@ -381,5 +384,30 @@ function buildRoleRunIterationLimitError(runState: RoleRunState): RuntimeError {
     code: "RUN_ITERATION_LIMIT",
     message: `Role ${runState.roleId} paused after reaching its ${runState.maxIterations}-step budget. Send a follow-up such as "continue" to resume from the latest state.`,
     retryable: false,
+  };
+}
+
+function buildFinalIterationHandoff(runState: RoleRunState, handoff: HandoffEnvelope): HandoffEnvelope {
+  if (runState.iterationCount < runState.maxIterations) {
+    return handoff;
+  }
+  const currentBrief = handoff.payload.intent?.relayBrief ?? "";
+  const finalizationNudge = [
+    "Step budget notice:",
+    "This is the final allowed activation before the role pauses.",
+    "Synthesize a useful answer from evidence already gathered.",
+    "Only start new tool or worker work if it is strictly required to avoid an unsafe or misleading answer.",
+    "If coverage is incomplete, state the residual risk and what a follow-up should continue.",
+  ].join("\n");
+  return {
+    ...handoff,
+    payload: normalizeRelayPayload({
+      ...handoff.payload,
+      intent: {
+        relayBrief: [currentBrief, finalizationNudge].filter((part) => part.trim().length > 0).join("\n\n"),
+        recentMessages: handoff.payload.intent?.recentMessages ?? [],
+        ...(handoff.payload.intent?.instructions ? { instructions: handoff.payload.intent.instructions } : {}),
+      },
+    }),
   };
 }

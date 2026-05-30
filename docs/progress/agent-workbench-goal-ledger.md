@@ -169,6 +169,56 @@ Regression Risk:
   real browser/LLM acceptance was rerun after this purely visibility-focused
   slice.
 
+## 2026-05-30 18:38 CST - Final-Step Role Synthesis Guard
+
+Direction: converging
+
+Execution Kernel:
+- Inline role loops now distinguish "step budget reached with queued work" from
+  "step budget reached after all queued work was already completed." The former
+  still pauses with a continuation message; the latter returns the role run to
+  idle instead of incorrectly marking it failed.
+- The final allowed activation receives a task-brief nudge to synthesize from
+  gathered evidence, avoid unnecessary new worker/tool work, state residual
+  risk, and leave a useful continuation path.
+
+Result Quality:
+- This reduces the chance that a complex run spends its final allowed step on
+  more exploration and then pauses without a useful answer.
+- It does not claim to solve weak synthesis by itself; answer quality still
+  depends on the mission quality gate and real prompt acceptance.
+
+Workbench UX:
+- Users should see fewer false failed/blocked states after a role has already
+  produced its final answer on the last permitted step.
+- The user-visible continuation behavior remains intact when there is still
+  queued work after the budget is exhausted.
+
+Browser Reliability:
+- No browser transport behavior changed.
+- Browser-backed missions benefit indirectly because the lead role is nudged to
+  synthesize existing browser/sub-agent evidence before budget exhaustion.
+
+Acceptance Evidence:
+- `npm test -- --runInBand`: 1194 passing.
+- `npm run typecheck`
+- `npm run build`
+- `git diff --check`
+- Mission E2E:
+  `npm run mission:e2e -- --scenario product-workbench-brief --scenario-timeout-ms 180000`
+  passed with mission `msn.mps7uf76.1`, status `done`, quality gate `passed`,
+  tools `3/3`, sessions `3/0`, liveness `0/0/0`, evidence events `3`, final
+  answer `2229` bytes.
+
+Regression Risk:
+- Risk is concentrated in role-loop lifecycle semantics. Existing iteration
+  limit behavior is preserved when a handoff is still queued; a new regression
+  test pins the previously missing "final answer on last allowed activation"
+  path.
+- Real LLM/browser acceptance matrix was not rerun in full for this checkpoint;
+  the focused mission E2E gives useful evidence but does not replace the next
+  full acceptance pass.
+
 ## 24-Hour Review Rule
 
 At least once per day while this goal is active:
