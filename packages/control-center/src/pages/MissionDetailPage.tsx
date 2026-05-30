@@ -1492,6 +1492,11 @@ function MissionMetricsCard({
             <MetricTile label="events" value={String(metrics.timelineEventCount)} />
             <MetricTile label="tool calls" value={`${metrics.tool.requested}/${metrics.tool.results}`} />
             <MetricTile label="sessions" value={`${metrics.sessions.spawned} spawned · ${metrics.sessions.continued} continued`} />
+            <MetricTile
+              label="profile fallback"
+              value={String(metrics.browser.profileFallbacks)}
+              tone={metrics.browser.profileFallbacks > 0 ? "warn" : undefined}
+            />
             <MetricTile label="skipped" value={String(metrics.tool.skipped)} tone={metrics.tool.skipped > 0 ? "warn" : undefined} />
             <MetricTile label="timeouts" value={String(metrics.tool.timeouts)} tone={metrics.tool.timeouts > 0 ? "warn" : undefined} />
             <MetricTile label="failed" value={String(metrics.tool.failed)} tone={metrics.tool.failed > 0 ? "danger" : undefined} />
@@ -1617,6 +1622,9 @@ function missionQualityAction(
   }
   if (visibleChecks.some((check) => check.name === "tool_fallback_answer")) {
     return "Continue with a narrower tool-backed request or inspect tool availability before accepting the answer.";
+  }
+  if (visibleChecks.some((check) => check.name === "browser_profile_fallback")) {
+    return "Inspect browser setup, close the conflicting profile if login state matters, then continue from captured evidence.";
   }
   if (visibleChecks.some((check) => check.name === "answer_substance")) {
     return "Ask a follow-up for a fuller answer with concrete findings and next steps.";

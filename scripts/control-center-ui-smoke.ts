@@ -358,6 +358,14 @@ try {
       "mission health should surface the quality gate status"
     );
     assert(
+      await page.locator(".mission-metric-tile", { hasText: "profile fallback" }).isVisible(),
+      "mission health should show browser profile fallback count"
+    );
+    assert(
+      await page.locator(".mission-quality-action-panel", { hasText: "persistent profile was locked" }).isVisible(),
+      "mission health should show browser profile fallback detail"
+    );
+    assert(
       await page.locator(".mission-quality-action-panel", { hasText: "Final answer is too brief for tool-backed work." }).isVisible(),
       "mission health should show the actionable quality-gate detail"
     );
@@ -1298,6 +1306,13 @@ function metricsFixture() {
       spawned: 1,
       continued: 0,
     },
+    browser: {
+      profileFallbacks: 1,
+      latestProfileFallback: {
+        sessionId: "browser-session-profile-fallback-ui",
+        fallbackDir: ".daemon-data/browser/_runtime-fallback/browser-session-profile-fallback-ui/123",
+      },
+    },
     approvals: {
       requested: 1,
       applied: 1,
@@ -1331,6 +1346,12 @@ function metricsFixture() {
           name: "tool_fallback_answer",
           status: "warn",
           detail: "Final answer says a required tool or search path was unavailable and falls back to model knowledge.",
+        },
+        {
+          name: "browser_profile_fallback",
+          status: "warn",
+          detail:
+            "Browser used an isolated runtime profile 1 time because the persistent profile was locked. Latest session browser-session-profile-fallback-ui.",
         },
       ],
     },

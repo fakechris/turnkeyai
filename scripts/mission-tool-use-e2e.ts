@@ -70,6 +70,13 @@ interface MissionObservabilitySnapshot {
     spawned: number;
     continued: number;
   };
+  browser?: {
+    profileFallbacks?: number;
+    latestProfileFallback?: {
+      sessionId?: string;
+      fallbackDir?: string;
+    };
+  };
   approvals: {
     requested: number;
     applied: number;

@@ -117,6 +117,9 @@ function metrics(
       spawned: 1,
       continued: 0,
     },
+    browser: {
+      profileFallbacks: 0,
+    },
     approvals: {
       requested: 0,
       applied: 0,

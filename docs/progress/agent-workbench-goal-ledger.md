@@ -2580,3 +2580,54 @@ Regression Risk:
   does not block shorter active windows.
 - The rule intentionally does not decide whether feature work continues. It
   only forces the dated review entry that must make that decision.
+
+## 2026-05-31 07:13 CST - Mission Browser Fallback Visibility
+
+Direction: converging
+
+Execution Kernel:
+- Browser execution semantics did not change. The existing profile-lock
+  behavior still falls back to an isolated runtime profile instead of failing
+  the browser task.
+- Mission observability now detects browser tool results that report
+  `profile_locked` fallback and exposes the count plus latest session/fallback
+  detail in mission metrics.
+
+Result Quality:
+- Final-answer synthesis did not change.
+- Result-quality visibility improved because a browser-backed answer can now be
+  marked `needs_attention` when it succeeded through a degraded browser profile
+  path. The user can distinguish useful evidence from a fully healthy browser
+  run.
+
+Workbench UX:
+- Mission Detail now shows a `profile fallback` metric tile and an attention
+  detail when a mission's browser work used an isolated runtime profile.
+- This closes part of the gap where profile-lock recovery was visible only in
+  global diagnostics, not at the mission a user is trying to judge.
+
+Browser Reliability:
+- No new browser recovery path was added in this checkpoint.
+- The reliability signal is stronger: profile-lock fallback is tied to the
+  specific mission quality gate and can guide follow-up, retry, or setup
+  cleanup from the mission page.
+
+Acceptance Evidence:
+- `npx tsx --test packages/app-gateway/src/mission-observability.test.ts
+  packages/app-gateway/src/routes/mission-routes.test.ts`: 48 passed.
+- `npm run typecheck`: passed.
+- `npm run build:control-center`: passed.
+- `npm run control-center:smoke -- --allow-missing-browser`: passed with
+  desktop and mobile screenshots.
+- `npm run ledger:check`: passed, 47 checkpoint(s), before this checkpoint was
+  appended.
+- No real LLM/browser acceptance ran because this changes mission visibility,
+  not browser execution. The next browser-runtime behavior change still needs
+  focused real browser/LLM acceptance.
+
+Regression Risk:
+- Main API risk is adding a `browser` field to mission metrics; current
+  Control Center types and mission route coverage were updated.
+- Detection depends on the browser worker's existing profile-fallback summary
+  text. If the worker summary wording changes, the mission-level warning could
+  disappear; the new observability regression test pins the current contract.

@@ -20,6 +20,13 @@ export interface MissionObservabilitySnapshot {
     spawned: number;
     continued: number;
   };
+  browser: {
+    profileFallbacks: number;
+    latestProfileFallback?: {
+      sessionId?: string;
+      fallbackDir?: string;
+    };
+  };
   approvals: {
     requested: number;
     applied: number;
@@ -82,6 +89,7 @@ export function buildMissionObservabilitySnapshot(input: {
   const finalAnswer = latestFinalAnswer(input.mission, events);
   const evidenceEvents = countEvidenceEvents(events);
   const sourceLabels = collectEvidenceSourceLabels(events);
+  const browserProfileFallbacks = collectBrowserProfileFallbacks(events);
   const recoveryEvents = events.filter((event) => event.kind === "recovery");
   const liveness = summarizeRuntimeLiveness(input.progressEvents ?? [], input.nowMs, {
     ...(terminal && finalAnswer ? { terminalLivenessCutoffMs: finalAnswer.tMs + 1_000 } : {}),
@@ -92,6 +100,7 @@ export function buildMissionObservabilitySnapshot(input: {
     toolRequests: toolCalls.length,
     evidenceEvents,
     sourceLabels,
+    browserProfileFallbacks,
     failureEvents: recoveryEvents.length + toolFailures.length,
     staleRuntimeSubjects: liveness.stale,
   });
@@ -114,6 +123,17 @@ export function buildMissionObservabilitySnapshot(input: {
     sessions: {
       spawned: sessionSpawnCalls.size,
       continued: sessionSendCalls.size,
+    },
+    browser: {
+      profileFallbacks: browserProfileFallbacks.length,
+      ...(browserProfileFallbacks[0]
+        ? {
+            latestProfileFallback: {
+              ...(browserProfileFallbacks[0].sessionId ? { sessionId: browserProfileFallbacks[0].sessionId } : {}),
+              ...(browserProfileFallbacks[0].fallbackDir ? { fallbackDir: browserProfileFallbacks[0].fallbackDir } : {}),
+            },
+          }
+        : {}),
     },
     approvals: {
       requested: approvalEvents.filter((event) => /requested approval|permission\.query/i.test(eventTextBlob(event))).length,
@@ -139,6 +159,7 @@ function buildQualityChecks(input: {
   toolRequests: number;
   evidenceEvents: number;
   sourceLabels: string[];
+  browserProfileFallbacks: BrowserProfileFallbackObservation[];
   failureEvents: number;
   staleRuntimeSubjects: number;
 }): MissionObservabilitySnapshot["qualityGate"]["checks"] {
@@ -227,6 +248,14 @@ function buildQualityChecks(input: {
         : mentionsToolFallbackAnswer(finalText)
           ? "Final answer says a required tool or search path was unavailable and falls back to model knowledge."
           : "Final answer does not claim a tool/search fallback.",
+    },
+    {
+      name: "browser_profile_fallback",
+      status: input.browserProfileFallbacks.length > 0 ? "warn" : "pass",
+      detail:
+        input.browserProfileFallbacks.length > 0
+          ? browserProfileFallbackDetail(input.browserProfileFallbacks)
+          : "Browser work did not report a persistent-profile fallback.",
     },
     {
       name: "runtime_liveness",
@@ -399,6 +428,54 @@ function finalAnswerCoversSources(text: string, sourceLabels: string[]): boolean
 function missingCoveredSources(text: string, sourceLabels: string[]): string[] {
   const normalizedText = normalizeSourceLabel(text);
   return sourceLabels.filter((label) => !normalizedText.includes(normalizeSourceLabel(label)));
+}
+
+interface BrowserProfileFallbackObservation {
+  sessionId?: string;
+  fallbackDir?: string;
+}
+
+function collectBrowserProfileFallbacks(events: ActivityEvent[]): BrowserProfileFallbackObservation[] {
+  const observations: BrowserProfileFallbackObservation[] = [];
+  for (const event of events) {
+    if (!/\bProfile fallback:\s*profile_locked\b/i.test(eventTextBlob(event))) {
+      continue;
+    }
+    observations.push(parseBrowserProfileFallback(event));
+  }
+  return observations;
+}
+
+function parseBrowserProfileFallback(event: ActivityEvent): BrowserProfileFallbackObservation {
+  const text = String(event.runtime?.resultContent ?? event.text ?? "");
+  const sessionId = text.match(/\bcompleted session\s+([^\s.]+)/i)?.[1] ?? text.match(/\bsession\s+([^\s.]+)/i)?.[1];
+  const fallbackLine = text
+    .split(/\r?\n/)
+    .find((line) => /\bProfile fallback:\s*profile_locked\b/i.test(line))
+    ?.trim();
+  const fallbackDir =
+    fallbackLine?.match(/\bused\s+(.+?)\.?$/i)?.[1]?.trim().replace(/\.$/, "") ??
+    fallbackLine?.match(/\bprofile_locked\s*\((.+?)\)\.?$/i)?.[1]?.trim();
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(fallbackDir ? { fallbackDir } : {}),
+  };
+}
+
+function browserProfileFallbackDetail(observations: BrowserProfileFallbackObservation[]): string {
+  const latest = observations[0];
+  const count = observations.length;
+  const countText = `Browser used an isolated runtime profile ${count} time(s) because the persistent profile was locked.`;
+  if (latest?.sessionId && latest.fallbackDir) {
+    return `${countText} Latest session ${latest.sessionId}; fallback dir: ${latest.fallbackDir}.`;
+  }
+  if (latest?.sessionId) {
+    return `${countText} Latest session ${latest.sessionId}.`;
+  }
+  if (latest?.fallbackDir) {
+    return `${countText} Latest fallback dir: ${latest.fallbackDir}.`;
+  }
+  return countText;
 }
 
 function normalizeSourceLabel(value: string | undefined): string {
