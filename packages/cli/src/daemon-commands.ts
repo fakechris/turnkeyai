@@ -708,6 +708,7 @@ async function waitForLaunchAgentUnloaded(serviceName: string): Promise<void> {
     if (result.code !== 0) return;
     await delay(250);
   }
+  throw new Error(`launchctl bootout did not unload ${serviceName} within 10s`);
 }
 
 function launchctlServiceName(label: string): string {
