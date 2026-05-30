@@ -227,6 +227,7 @@ export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
   tooluseScenarios: string[];
   missionScenarios: string[];
   browserTooluseEnabled: boolean;
+  artifactPath?: string;
   error?: string;
 }): ValidationOpsRunRecord {
   const totalCases = input.tooluseScenarios.length + input.missionScenarios.length;
@@ -252,6 +253,7 @@ export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
     completedAt: input.completedAt,
     durationMs: input.completedAt - input.startedAt,
     issueCount: issues.length,
+    ...(input.artifactPath ? { artifactPath: input.artifactPath } : {}),
     selectors: [
       ...input.tooluseScenarios.map((scenario) => `tooluse:${scenario}`),
       ...input.missionScenarios.map((scenario) => `mission:${scenario}`),

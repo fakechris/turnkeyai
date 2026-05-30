@@ -335,6 +335,21 @@ test("validation ops inspection records failed real LLM acceptance as actionable
   assert.equal(report.closedLoop.totalCases, 2);
 });
 
+test("validation ops inspection preserves real LLM acceptance artifact path", () => {
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-pass",
+    startedAt: 10,
+    completedAt: 30,
+    status: "passed",
+    tooluseScenarios: ["basic"],
+    missionScenarios: ["realistic-brief"],
+    browserTooluseEnabled: true,
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/report.json",
+  });
+
+  assert.equal(record.artifactPath, ".turnkeyai/data/validation-artifacts/real-llm-acceptance/report.json");
+});
+
 test("validation ops inspection surfaces fresh and stale baseline status", () => {
   const baselineRecord = buildValidationOpsRecordFromPhase1Baseline({
     runId: "baseline-1",
