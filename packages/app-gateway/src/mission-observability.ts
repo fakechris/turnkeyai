@@ -81,6 +81,7 @@ export function buildMissionObservabilitySnapshot(input: {
   const approvalEvents = events.filter((event) => event.kind === "approval");
   const finalAnswer = latestFinalAnswer(input.mission, events);
   const evidenceEvents = countEvidenceEvents(events);
+  const sourceLabels = collectEvidenceSourceLabels(events);
   const recoveryEvents = events.filter((event) => event.kind === "recovery");
   const liveness = summarizeRuntimeLiveness(input.progressEvents ?? [], input.nowMs, {
     ...(terminal && finalAnswer ? { terminalLivenessCutoffMs: finalAnswer.tMs + 1_000 } : {}),
@@ -90,6 +91,7 @@ export function buildMissionObservabilitySnapshot(input: {
     finalAnswer,
     toolRequests: toolCalls.length,
     evidenceEvents,
+    sourceLabels,
     failureEvents: recoveryEvents.length + toolFailures.length,
     staleRuntimeSubjects: liveness.stale,
   });
@@ -136,6 +138,7 @@ function buildQualityChecks(input: {
   finalAnswer: ActivityEvent | null;
   toolRequests: number;
   evidenceEvents: number;
+  sourceLabels: string[];
   failureEvents: number;
   staleRuntimeSubjects: number;
 }): MissionObservabilitySnapshot["qualityGate"]["checks"] {
@@ -154,6 +157,23 @@ function buildQualityChecks(input: {
         input.evidenceEvents > 0
           ? `${input.evidenceEvents} evidence-bearing event(s) are attached to the mission.`
           : "No tool/browser/doc/artifact evidence event is visible yet.",
+    },
+    {
+      name: "source_coverage",
+      status: !input.finalAnswer
+        ? "pending"
+        : input.sourceLabels.length < 2
+          ? "pass"
+          : finalAnswerCoversSources(finalText, input.sourceLabels)
+            ? "pass"
+            : "warn",
+      detail: !input.finalAnswer
+        ? "Waiting for the final answer."
+        : input.sourceLabels.length < 2
+          ? "No multi-source coverage requirement was visible in mission evidence."
+          : finalAnswerCoversSources(finalText, input.sourceLabels)
+            ? `Final answer covers ${input.sourceLabels.length}/${input.sourceLabels.length} visible source label(s).`
+            : `Final answer does not cover every visible source label: ${missingCoveredSources(finalText, input.sourceLabels).join(", ")}.`,
     },
     {
       name: "residual_risk",
@@ -351,6 +371,43 @@ function countEvidenceEvents(events: ActivityEvent[]): number {
     if (event.runtime?.toolPhase !== "result") return false;
     return event.runtime.admission !== "skipped";
   }).length;
+}
+
+function collectEvidenceSourceLabels(events: ActivityEvent[]): string[] {
+  const labels = new Map<string, string>();
+  for (const event of events) {
+    for (const evidence of event.evidence ?? []) {
+      addSourceLabel(labels, evidence.label);
+    }
+    addSourceLabel(labels, event.runtime?.sourceLabel);
+    addSourceLabel(labels, event.runtime?.sourceName);
+    addSourceLabel(labels, event.runtime?.sourceTitle);
+  }
+  return [...labels.values()];
+}
+
+function addSourceLabel(labels: Map<string, string>, value: string | undefined): void {
+  const normalized = normalizeSourceLabel(value);
+  if (!normalized) return;
+  labels.set(normalized, value!.trim());
+}
+
+function finalAnswerCoversSources(text: string, sourceLabels: string[]): boolean {
+  return missingCoveredSources(text, sourceLabels).length === 0;
+}
+
+function missingCoveredSources(text: string, sourceLabels: string[]): string[] {
+  const normalizedText = normalizeSourceLabel(text);
+  return sourceLabels.filter((label) => !normalizedText.includes(normalizeSourceLabel(label)));
+}
+
+function normalizeSourceLabel(value: string | undefined): string {
+  return (value ?? "")
+    .normalize("NFKC")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function distinctRuntimeValues(events: ActivityEvent[], key: string): Set<string> {

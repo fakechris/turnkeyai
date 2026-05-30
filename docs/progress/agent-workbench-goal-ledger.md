@@ -1854,3 +1854,54 @@ Regression Risk:
   preserving the existing artifact-path-only behavior.
 - The validation-ops record shape is additive. Older records without
   `realAcceptance` continue to render normally.
+
+## 2026-05-31 02:32 CST - Source Coverage Quality Gate
+
+Direction: unknown
+
+Execution Kernel:
+- No agent, tool-use, worker, browser, approval, or completion semantics
+  changed.
+- Mission observability now turns visible evidence source labels into a
+  structured `source_coverage` quality check. A completed multi-source mission
+  can now surface `needs_attention` when the final answer omits one of the
+  gathered source labels.
+
+Result Quality:
+- This moves the quality gate closer to the complex-task acceptance target:
+  final answers should not merely mention evidence in general; they should
+  cover the specific visible sources used during the run.
+- This checkpoint is not marked converging because no real LLM/browser
+  acceptance ran after the new check. The next real scenario should prove that
+  a multi-source answer either covers all gathered sources or is visibly marked
+  for attention.
+
+Workbench UX:
+- Mission Detail already renders quality-gate checks, and the Control Center
+  smoke fixture now asserts that the source-coverage warning is user-visible in
+  the mission quality action panel.
+- A user inspecting a weak final answer can now see whether the issue is
+  missing source coverage rather than only "answer too short" or generic
+  evidence usage.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- Browser-backed multi-source missions benefit when browser evidence has a
+  source label, because omitted browser source coverage becomes visible as a
+  quality warning.
+
+Acceptance Evidence:
+- Focused unit coverage is required for multi-source pass/warn behavior in
+  mission observability.
+- Control Center smoke is required to verify the user-visible warning path.
+- No real LLM/browser acceptance ran for this checkpoint; next required gate is
+  a focused real multi-source mission scenario that checks source coverage in
+  the final answer and Runtime/Mission metrics.
+
+Regression Risk:
+- The check only activates as a warning when at least two visible source labels
+  are attached to mission evidence. Single-source or unlabeled evidence keeps
+  the previous behavior.
+- Risk: source labels that are too verbose or unstable could cause false
+  attention warnings. The implementation limits matching to visible labels and
+  keeps the result as `needs_attention`, not a hard `blocked` failure.

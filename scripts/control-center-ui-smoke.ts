@@ -362,6 +362,10 @@ try {
       "mission health should show the actionable quality-gate detail"
     );
     assert(
+      await page.locator(".mission-quality-action-panel", { hasText: "Final answer does not cover every visible source label" }).isVisible(),
+      "mission health should show the source coverage quality detail"
+    );
+    assert(
       await page.locator(".mission-quality-action-panel", { hasText: "Continue with a narrower tool-backed request" }).isVisible(),
       "mission health should suggest a concrete follow-up action"
     );
@@ -1308,6 +1312,11 @@ function metricsFixture() {
       checks: [
         { name: "final_answer", status: "pass", detail: "Final answer event exists." },
         { name: "evidence", status: "pass", detail: "Evidence event exists." },
+        {
+          name: "source_coverage",
+          status: "warn",
+          detail: "Final answer does not cover every visible source label: Browser evidence.",
+        },
         { name: "residual_risk", status: "pass", detail: "Final answer names residual risk." },
         { name: "answer_substance", status: "warn", detail: "Final answer is too brief for tool-backed work." },
         {
