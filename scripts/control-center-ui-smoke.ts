@@ -425,6 +425,12 @@ try {
       JSON.stringify(postedMessages[1]).includes("Please tighten the result"),
       "follow-up POST should include textarea content"
     );
+    await page.locator(".mission-quality-action-panel").getByRole("button", { name: /Reconcile/ }).click();
+    await page.waitForSelector("text=Mission reconciled");
+    assert(
+      postedMissionReconciles.includes(missionId),
+      "mission detail reconcile should call the mission-scoped reconcile route"
+    );
 
     const screenshot = await page.screenshot({ fullPage: true });
     assert(screenshot.byteLength > 20_000, `expected non-trivial screenshot, got ${screenshot.byteLength} bytes`);
@@ -433,10 +439,9 @@ try {
       waitUntil: "networkidle",
     });
     await page.waitForSelector("text=LLM models");
-    assert(
-      await page.locator('input[value="/tmp/turnkeyai-ui-smoke-models.json"]').count() > 0,
-      "settings should show the live model catalog path"
-    );
+    await page.waitForSelector('input[value="/tmp/turnkeyai-ui-smoke-models.json"]', {
+      timeout: 30_000,
+    });
     assert(
       await page.locator('input[value="OPENAI_API_KEY"]').isVisible(),
       "settings should show the live model key env"
@@ -820,6 +825,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (method === "GET" && url.pathname === `/missions/${missionId}`) {
     json(res, missionFixture());
+    return;
+  }
+  if (method === "POST" && url.pathname === `/missions/${missionId}/reconcile`) {
+    if (!hasOperatorAccess(req)) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized", requiredAccess: "operator" }));
+      return;
+    }
+    postedMissionReconciles.push(missionId);
+    json(res, {
+      ok: true,
+      scope: "mission",
+      missionId,
+      appended: 1,
+    });
     return;
   }
   if (method === "GET" && url.pathname === `/missions/${missionId}/timeline`) {
