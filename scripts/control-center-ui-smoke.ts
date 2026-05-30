@@ -121,6 +121,14 @@ try {
       await noTokenPage.locator("text=npm run daemon:status").isVisible(),
       "no-token page should include the source-checkout daemon status fallback"
     );
+    assert(
+      await noTokenPage.locator("text=turnkeyai daemon service install").isVisible(),
+      "no-token page should include the persistent daemon service installer"
+    );
+    assert(
+      await noTokenPage.locator("text=turnkeyai daemon service status").isVisible(),
+      "no-token page should include the persistent daemon service status command"
+    );
     await noTokenPage.close();
 
     const operatorRuntimePage = await browser.newPage({ viewport: { width: 1100, height: 760 } });

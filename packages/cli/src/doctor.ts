@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import path from "node:path";
 
 import { resolveDaemonCliToken } from "./daemon-token";
@@ -10,6 +10,18 @@ interface CheckResult {
   name: string;
   status: "ok" | "warn" | "fail";
   detail: string;
+}
+
+export interface DaemonServiceProbe {
+  platformName: NodeJS.Platform;
+  launchAgentFile: string;
+  wrapperFile: string;
+  envFile: string;
+  launchctlStatus?: {
+    code: number | null;
+    stdout: string;
+    stderr: string;
+  };
 }
 
 interface ProbeResult {
@@ -172,6 +184,62 @@ function checkInstalledCliCommand(): CheckResult {
     status: "warn",
     detail: "turnkeyai command not on PATH; use npm run app, npm run daemon:status, npx @turnkeyai/cli app, or npm run install:local-cli",
   };
+}
+
+export function evaluateDaemonServiceProbe(input: DaemonServiceProbe): CheckResult | null {
+  if (input.platformName !== "darwin") return null;
+  const missing: string[] = [];
+  if (!existsSync(input.launchAgentFile)) missing.push("plist");
+  if (!existsSync(input.wrapperFile)) missing.push("wrapper");
+  if (!existsSync(input.envFile)) missing.push("env");
+  if (missing.length > 0) {
+    return {
+      name: "daemon service",
+      status: "warn",
+      detail: `not installed (${missing.join(", ")} missing); run 'turnkeyai daemon service install' for persistent startup`,
+    };
+  }
+  const status = input.launchctlStatus;
+  if (status?.code === 0) {
+    const state = status.stdout.match(/\bstate = ([^\n]+)/)?.[1]?.trim();
+    const pid = status.stdout.match(/\bpid = ([0-9]+)/)?.[1]?.trim();
+    return {
+      name: "daemon service",
+      status: "ok",
+      detail: `launchd loaded${state ? ` (${state})` : ""}${pid ? ` pid ${pid}` : ""}`,
+    };
+  }
+  return {
+    name: "daemon service",
+    status: "warn",
+    detail: "installed but not loaded; run 'turnkeyai daemon service install' to bootstrap it",
+  };
+}
+
+function checkDaemonService(paths: ReturnType<typeof getRuntimePaths>): CheckResult | null {
+  if (process.env.TURNKEYAI_DOCTOR_SKIP_SERVICE_CHECK === "1") return null;
+  const label = "com.turnkeyai.daemon";
+  const result = platform() === "darwin"
+    ? spawnSync("launchctl", ["print", `gui/${process.getuid?.() ?? 501}/${label}`], {
+        encoding: "utf8",
+        timeout: 1500,
+      })
+    : undefined;
+  return evaluateDaemonServiceProbe({
+    platformName: platform(),
+    launchAgentFile: path.join(homedir(), "Library", "LaunchAgents", `${label}.plist`),
+    wrapperFile: path.join(paths.rootDir, "bin", "daemon-service.sh"),
+    envFile: path.join(paths.rootDir, "daemon.env"),
+    ...(result
+      ? {
+          launchctlStatus: {
+            code: result.status,
+            stdout: result.stdout ?? "",
+            stderr: result.stderr ?? "",
+          },
+        }
+      : {}),
+  });
 }
 
 function checkRuntimeDir(paths: ReturnType<typeof getRuntimePaths>): CheckResult {
@@ -510,6 +578,8 @@ export async function runDoctor(args: string[]): Promise<void> {
   const checks: CheckResult[] = [];
   checks.push(checkNodeVersion());
   checks.push(checkInstalledCliCommand());
+  const serviceCheck = checkDaemonService(paths);
+  if (serviceCheck) checks.push(serviceCheck);
   checks.push(checkRuntimeDir(paths));
   checks.push(checkConfig(paths));
   const healthCheck = await checkDaemonHealth(paths);
@@ -555,6 +625,7 @@ function printDoctorHelp(exitCode: number): never {
     "Checks:",
     "  node version and local runtime directory",
     "  installed turnkeyai command availability",
+    "  macOS daemon LaunchAgent persistence when available",
     "  daemon config, port, health, and API auth",
     "  model provider readiness from /models",
     "  daemon readiness from /diagnostics when reachable",
