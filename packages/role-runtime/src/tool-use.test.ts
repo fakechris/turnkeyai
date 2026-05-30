@@ -1910,6 +1910,7 @@ test("permission tools request, observe, and apply operator approval", async () 
   assert.equal(query.isError, undefined);
   assert.equal(query.progress?.[0]?.detail?.eventType, "permission.query");
   assert.match(query.content, /"status": "pending"/);
+  assert.match(query.content, /"event_type": "permission\.query"/);
 
   const result = await executor.execute({
     call: {
@@ -1923,6 +1924,7 @@ test("permission tools request, observe, and apply operator approval", async () 
   assert.equal(result.isError, undefined);
   assert.equal(result.progress?.[0]?.detail?.eventType, "permission.result");
   assert.match(result.content, /"status": "approved"/);
+  assert.match(result.content, /"event_type": "permission\.result"/);
 
   const applied = await executor.execute({
     call: {
@@ -1935,6 +1937,7 @@ test("permission tools request, observe, and apply operator approval", async () 
   });
   assert.equal(applied.isError, undefined);
   assert.equal(applied.progress?.[0]?.detail?.eventType, "permission.applied");
+  assert.match(applied.content, /"event_type": "permission\.applied"/);
   assert.deepEqual(calls, [
     "request:browser.form.submit",
     "result:ap.thread-1.call-permission",

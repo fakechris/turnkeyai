@@ -563,9 +563,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const results: RoleToolExecutionResult[] = [];
     const executableCalls = input.toolCalls.slice(0, maxToolCallsPerRound);
     const rejectedCalls = input.toolCalls.slice(maxToolCallsPerRound);
-    for (let index = 0; index < executableCalls.length; index += maxParallelToolCalls) {
+    const effectiveMaxParallelToolCalls = shouldSerializeToolBatch(executableCalls) ? 1 : maxParallelToolCalls;
+    for (let index = 0; index < executableCalls.length; index += effectiveMaxParallelToolCalls) {
       throwIfAborted(input.signal);
-      const chunk = executableCalls.slice(index, index + maxParallelToolCalls);
+      const chunk = executableCalls.slice(index, index + effectiveMaxParallelToolCalls);
       const chunkResults = await Promise.all(
         chunk.map(async (call) => {
           throwIfAborted(input.signal);
@@ -869,6 +870,21 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       });
     }
   }
+}
+
+const ORDER_DEPENDENT_TOOL_NAMES = new Set([
+  "memory_search",
+  "memory_get",
+  "permission_query",
+  "permission_result",
+  "permission_applied",
+  "tasks_list",
+  "tasks_create",
+  "tasks_update",
+]);
+
+function shouldSerializeToolBatch(toolCalls: LLMToolCall[]): boolean {
+  return toolCalls.length > 1 && toolCalls.some((call) => ORDER_DEPENDENT_TOOL_NAMES.has(call.name));
 }
 
 interface ReductionEnvelopeSnapshot {

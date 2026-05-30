@@ -414,7 +414,7 @@ async function executePermissionQuery(
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
-    content: JSON.stringify(result, null, 2),
+    content: JSON.stringify(withPermissionEventType("permission.query", result), null, 2),
     progress: [
       {
         phase: "progress",
@@ -455,7 +455,7 @@ async function executePermissionResult(
     toolCallId: input.call.id,
     toolName: input.call.name,
     ...(result.status === "denied" ? { isError: true } : {}),
-    content: JSON.stringify(result, null, 2),
+    content: JSON.stringify(withPermissionEventType("permission.result", result), null, 2),
     progress: [
       {
         phase: "progress",
@@ -491,7 +491,7 @@ async function executePermissionApplied(
     toolCallId: input.call.id,
     toolName: input.call.name,
     ...(result.status !== "applied" ? { isError: true } : {}),
-    content: JSON.stringify(result, null, 2),
+    content: JSON.stringify(withPermissionEventType("permission.applied", result), null, 2),
     progress: [
       {
         phase: result.status === "applied" ? "completed" : "failed",
@@ -507,6 +507,10 @@ async function executePermissionApplied(
     ],
     raw: result,
   };
+}
+
+function withPermissionEventType<T extends object>(eventType: string, result: T): T & { event_type: string } {
+  return { event_type: eventType, ...result };
 }
 
 interface BrowserSideEffectGateOutcome {

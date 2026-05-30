@@ -1214,7 +1214,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         `Final answer may include ${TASK_TRACKING_FINAL_MARKER} exactly once, only inside the first bullet. It must also include tasks_list, tasks_create, tasks_update, Verify Helios-47 rollout note, done, progress 1, and the exact words residual risk.`,
         "Use this exact final answer shape after tasks_update returns:",
         "## Task tracking",
-        `- task lifecycle: ${TASK_TRACKING_FINAL_MARKER}; tasks_list checked existing work, tasks_create created the item, and tasks_update completed it.`,
+        `- task lifecycle: ${TASK_TRACKING_FINAL_MARKER}; tool result evidence shows tasks_list checked existing work, tasks_create created the item, and tasks_update completed it.`,
         "- tracked item: Verify Helios-47 rollout note is done with progress 1.",
         "- residual risk: this validates local mission task state only, not external project delivery.",
         "Do not create a separate bullet, heading, or paragraph for the final success marker.",
@@ -1274,6 +1274,8 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "Every source coverage, recommendation, dashboard action, and residual-risk item in the final answer must be a Markdown bullet.",
         "The Vendor Alpha source coverage bullet must include the exact price $19 per seat.",
         "The Vendor Beta source coverage bullet must include the exact price $29 per workspace.",
+        "Do not infer currency, billing cadence, adoption, outages, or availability beyond the local fixture text.",
+        "Never write assume, assumed, estimate, probably, maybe, to be confirmed, or pending confirmation in the final answer.",
         `The recommendation bullet must start with "- recommendation: ${REALISTIC_BRIEF_FINAL_MARKER}" and state the decision.`,
         "Use exactly this section skeleton for the final answer, with no preamble before it and no closing note after it:",
         "source coverage",
@@ -1285,7 +1287,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "current dashboard action",
         "- action: state what the operator should do now based on queue depth and SLA breaches.",
         "residual risk",
-        "- residual risk: state what remains unverified or source-bounded.",
+        "- residual risk: state what remains source-bounded to the local fixtures, including pricing recurrence and external availability.",
         "Do not include source URLs in the final answer; cite source names and markers instead.",
         "Use plain section labels or plain Markdown headings only; do not wrap section labels in ** or __.",
         "Do not use tables, links, code fences, or bold/italic markup.",
@@ -2123,7 +2125,11 @@ function assertMissionMetrics(metrics: MissionObservabilitySnapshot, spec: Scena
   assert.equal(metrics.liveness.active, 0, "completed mission must not retain active runtime subjects");
   assert.equal(metrics.liveness.waiting, 0, "completed mission must not retain waiting runtime subjects");
   assert.equal(metrics.liveness.stale, 0, "mission metrics must not report stale runtime subjects");
-  assert.equal(metrics.qualityGate.status, "passed", "mission metrics quality gate must pass");
+  assert.equal(
+    metrics.qualityGate.status,
+    "passed",
+    `mission metrics quality gate must pass: ${JSON.stringify(metrics.qualityGate.checks)}`
+  );
   assert.ok(metrics.qualityGate.evidenceEvents >= spec.minEvidenceEvents, "mission metrics must count evidence-bearing events");
 }
 
