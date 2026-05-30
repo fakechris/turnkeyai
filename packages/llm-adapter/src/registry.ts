@@ -35,6 +35,10 @@ export class ModelRegistry {
     return catalog.modelChains.filter((item) => item.enabled !== false);
   }
 
+  clearCache(): void {
+    this.loadedCatalog = null;
+  }
+
   async describeSelection(input: { modelId?: string; modelChainId?: string }): Promise<{
     chainId?: string;
     primary: ModelConfigEntry;
