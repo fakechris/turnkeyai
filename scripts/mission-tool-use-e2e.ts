@@ -30,6 +30,7 @@ type MissionE2eScenario =
   | "browser-dashboard"
   | "timeout-recovery"
   | "memory-recall"
+  | "task-tracking"
   | "realistic-brief";
 
 const MISSION_E2E_SCENARIOS = DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS satisfies readonly MissionE2eScenario[];
@@ -101,6 +102,7 @@ const TIMEOUT_FINAL_MARKER = "TURNKEYAI_MISSION_TIMEOUT_OK";
 const MEMORY_SETUP_MARKER = "TURNKEYAI_MISSION_MEMORY_SETUP_OK";
 const MEMORY_SOURCE_MARKER = "TURNKEYAI_MEMORY_RECALL_SOURCE_OK";
 const MEMORY_RECALL_FINAL_MARKER = "TURNKEYAI_MISSION_MEMORY_RECALL_OK";
+const TASK_TRACKING_FINAL_MARKER = "TURNKEYAI_MISSION_TASK_TRACKING_OK";
 const REALISTIC_BRIEF_FINAL_MARKER = "TURNKEYAI_MISSION_REALISTIC_BRIEF_OK";
 
 interface FixtureServer {
@@ -344,6 +346,9 @@ async function runMissionScenario(input: {
   }
   if (input.scenario === "memory-recall") {
     return runMissionMemoryRecallScenario(input);
+  }
+  if (input.scenario === "task-tracking") {
+    return runMissionTaskTrackingScenario(input);
   }
   const spec = buildScenarioSpec(input.scenario, input.fixture);
   const mission = await createMission({
@@ -699,6 +704,58 @@ async function runMissionMemoryRecallScenario(input: {
     `mission memory recall final answer quality failures: ${quality.failures.join("; ")}\n${final.text}`
   );
   return { scenario: "memory-recall", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function runMissionTaskTrackingScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  scenario: MissionE2eScenario;
+  timeoutMs: number;
+}): Promise<MissionScenarioResult> {
+  const spec = buildScenarioSpec("task-tracking", input.fixture);
+  const mission = await createMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "task tracking E2E requires a linked team thread");
+
+  const result = await waitForMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    finalMarker: spec.finalMarker,
+    timeoutMs: input.timeoutMs,
+    failFastDoneWithoutMarker: true,
+  });
+  assertMissionTaskTrackingTimeline(result.timeline, spec);
+  const workItems = await requestJson<Array<{ id: string; title: string; status: string; progress?: number; output?: string }>>({
+    method: "GET",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/work-items`,
+    token: input.token,
+  });
+  const tracked = workItems.find((item) => item.title === "Verify Helios-47 rollout note");
+  assert.ok(tracked, "task tracking E2E must create the expected work item");
+  assert.equal(tracked.status, "done", "task tracking E2E must update the created work item to done");
+  assert.equal(tracked.progress, 1, "task tracking E2E must update the created work item progress to 1");
+  assert.match(tracked.output ?? "", /Task tracking acceptance complete/i);
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  assertMissionMetrics(metrics, spec);
+  const final = findFinalEvent(result.timeline, spec.finalMarker);
+  assert.ok(final, "mission timeline must include a task tracking final assistant answer");
+  const quality = evaluateFinalQuality(final.text, spec);
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `mission task tracking final answer quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "task-tracking", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
 function printScenarioResult(result: MissionScenarioResult): void {
@@ -1099,6 +1156,67 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         `- recalled memory: ${MEMORY_RECALL_FINAL_MARKER}; ${MEMORY_SOURCE_MARKER} was retrieved through memory_search followed by memory_get.`,
         "- launch plan: Helios-47 launch window is Tuesday 09:30; owner is Release Captain.",
         "- residual risk: this validates local durable thread memory only, not an external source.",
+        "Do not create a separate bullet, heading, or paragraph for the final success marker.",
+        "Do not use tables, links, code fences, or bold/italic markup.",
+      ].join("\n"),
+    };
+  }
+  if (scenario === "task-tracking") {
+    return {
+      scenario,
+      title: "Mission route task tracking E2E",
+      finalMarker: TASK_TRACKING_FINAL_MARKER,
+      evidenceMarkers: [],
+      answerTerms: [
+        "tasks_list",
+        "tasks_create",
+        "tasks_update",
+        "Verify Helios-47 rollout note",
+        "done",
+        "residual risk",
+      ],
+      answerPatterns: [
+        { label: "task-list reference", pattern: /tasks_list/i },
+        { label: "task-create reference", pattern: /tasks_create/i },
+        { label: "task-update reference", pattern: /tasks_update/i },
+      ],
+      evidenceLinePatterns: [
+        {
+          label: "task lifecycle line",
+          pattern: /^\s*[-*+]\s+task lifecycle\s*:.*TURNKEYAI_MISSION_TASK_TRACKING_OK.*tasks_list.*tasks_create.*tasks_update/im,
+        },
+        {
+          label: "tracked item line",
+          pattern: /^\s*[-*+]\s+tracked item\s*:.*Verify Helios-47 rollout note.*done.*progress 1/im,
+        },
+        { label: "residual risk line", pattern: /^\s*[-*+]\s+residual risk\s*:/im },
+      ],
+      forbiddenPatterns: [
+        { label: "session delegation", pattern: /\bsessions_(?:spawn|send|list|history)\b/i },
+        { label: "internal source URL", pattern: /https?:\/\//i },
+      ],
+      expectedSpawnCalls: 0,
+      expectedSendCalls: 0,
+      expectedToolResults: 3,
+      expectedSpawnedSessions: 0,
+      expectedContinuedSessions: 0,
+      minEvidenceEvents: 3,
+      expectedBullets: 3,
+      minBytes: 240,
+      maxBytes: 1_100,
+      desc: [
+        "Run the mission route task tracking E2E.",
+        "Use mission task tools to prove the agent can keep product-visible work state current.",
+        "Call tasks_list exactly once first with limit 10.",
+        "Then call tasks_create exactly once with title \"Verify Helios-47 rollout note\", status \"working\", and output \"Task tracking acceptance started\".",
+        "Then call tasks_update exactly once using the work_item_id returned by tasks_create. Set status \"done\", progress 1, and output \"Task tracking acceptance complete\".",
+        "Do not call sessions_spawn, sessions_send, sessions_history, sessions_list, browser tools, permission tools, or memory tools.",
+        `Final answer may include ${TASK_TRACKING_FINAL_MARKER} exactly once, only inside the first bullet. It must also include tasks_list, tasks_create, tasks_update, Verify Helios-47 rollout note, done, progress 1, and the exact words residual risk.`,
+        "Use this exact final answer shape after tasks_update returns:",
+        "## Task tracking",
+        `- task lifecycle: ${TASK_TRACKING_FINAL_MARKER}; tasks_list checked existing work, tasks_create created the item, and tasks_update completed it.`,
+        "- tracked item: Verify Helios-47 rollout note is done with progress 1.",
+        "- residual risk: this validates local mission task state only, not external project delivery.",
         "Do not create a separate bullet, heading, or paragraph for the final success marker.",
         "Do not use tables, links, code fences, or bold/italic markup.",
       ].join("\n"),
@@ -1741,6 +1859,43 @@ function assertMissionMemoryRecallTimeline(timeline: ActivityEvent[], spec: Scen
   const memoryGetResult = String(timeline[getResultIndexes[0]!]!.runtime?.["resultContent"] ?? timeline[getResultIndexes[0]!]!.text);
   assert.match(memoryGetResult, new RegExp(MEMORY_SOURCE_MARKER), "memory_get result must include the seeded memory source marker");
   assert.match(memoryGetResult, /Helios-47/, "memory_get result must include the seeded project codename");
+}
+
+function assertMissionTaskTrackingTimeline(timeline: ActivityEvent[], spec: ScenarioSpec): void {
+  assert.ok(timeline.length > 0, "task tracking timeline must not be empty");
+  const finalIndex = timeline.findIndex((event) => event.kind === "thought" && event.text.includes(spec.finalMarker));
+  const listCallIndexes = findToolPhaseIndexes(timeline, "tasks_list", "call");
+  const listResultIndexes = findToolPhaseIndexes(timeline, "tasks_list", "result");
+  const createCallIndexes = findToolPhaseIndexes(timeline, "tasks_create", "call");
+  const createResultIndexes = findToolPhaseIndexes(timeline, "tasks_create", "result");
+  const updateCallIndexes = findToolPhaseIndexes(timeline, "tasks_update", "call");
+  const updateResultIndexes = findToolPhaseIndexes(timeline, "tasks_update", "result");
+  assert.equal(listCallIndexes.length, 1, "task tracking E2E must call tasks_list exactly once");
+  assert.equal(listResultIndexes.length, 1, "task tracking E2E must receive one tasks_list result");
+  assert.equal(createCallIndexes.length, 1, "task tracking E2E must call tasks_create exactly once");
+  assert.equal(createResultIndexes.length, 1, "task tracking E2E must receive one tasks_create result");
+  assert.equal(updateCallIndexes.length, 1, "task tracking E2E must call tasks_update exactly once");
+  assert.equal(updateResultIndexes.length, 1, "task tracking E2E must receive one tasks_update result");
+  assert.equal(findToolPhaseIndexes(timeline, "sessions_spawn", "call").length, 0, "task tracking must not spawn sessions");
+  assert.equal(findToolPhaseIndexes(timeline, "sessions_send", "call").length, 0, "task tracking must not continue sessions");
+  assert.ok(listResultIndexes[0]! > listCallIndexes[0]!, "tasks_list result must follow the call");
+  assert.ok(createCallIndexes[0]! > listResultIndexes[0]!, "tasks_create call must follow tasks_list result");
+  assert.ok(createResultIndexes[0]! > createCallIndexes[0]!, "tasks_create result must follow the call");
+  assert.ok(updateCallIndexes[0]! > createResultIndexes[0]!, "tasks_update call must follow tasks_create result");
+  assert.ok(updateResultIndexes[0]! > updateCallIndexes[0]!, "tasks_update result must follow the call");
+  assert.ok(finalIndex > updateResultIndexes[0]!, "final answer must follow tasks_update result");
+
+  const createResult = String(timeline[createResultIndexes[0]!]!.runtime?.["resultContent"] ?? timeline[createResultIndexes[0]!]!.text);
+  const updateCallInput = String(timeline[updateCallIndexes[0]!]!.runtime?.["callInput"] ?? "");
+  const updateResult = String(timeline[updateResultIndexes[0]!]!.runtime?.["resultContent"] ?? timeline[updateResultIndexes[0]!]!.text);
+  const createBody = JSON.parse(createResult) as { task?: { id?: string; title?: string } };
+  const updateInput = JSON.parse(updateCallInput) as { work_item_id?: string; status?: string; progress?: number };
+  assert.ok(createBody.task?.id, "tasks_create result must expose a task id");
+  assert.equal(updateInput.work_item_id, createBody.task.id, "tasks_update must use the id returned by tasks_create");
+  assert.equal(updateInput.status, "done", "tasks_update call must set status done");
+  assert.equal(updateInput.progress, 1, "tasks_update call must set progress 1");
+  assert.match(updateResult, /Verify Helios-47 rollout note/, "tasks_update result must include the tracked item title");
+  assert.match(updateResult, /"status": "done"/, "tasks_update result must include done status");
 }
 
 async function waitForToolCallEvent(input: {
