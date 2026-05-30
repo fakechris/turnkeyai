@@ -1589,6 +1589,77 @@ test("llm role response generator repairs textual tool-call markup during final 
   );
 });
 
+test("llm role response generator repairs textual tool-call markup after a normal tool round", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-search", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Compare two sources.",
+      });
+    }
+    if (gatewayInputs.length === 2) {
+      return {
+        text: '<minimax:tool_call><invoke name="sessions_spawn"><parameter name="agent_id">explore</parameter></invoke></minimax:tool_call>',
+        modelId: "minimax-test",
+        providerId: "minimax",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.equal(input.tools, undefined);
+    return {
+      text: "Final answer from existing tool evidence only.",
+      modelId: "minimax-test",
+      providerId: "minimax",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: "tool evidence is complete",
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Final answer from existing tool evidence only.");
+  assert.equal(gatewayInputs.length, 3);
+  assert.ok(
+    gatewayInputs[2]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes("pseudo tool-call markup without a native tool call")
+    )
+  );
+});
+
 test("llm role response generator caps parallel tool execution fan-out", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const releaseById = new Map<string, () => void>();

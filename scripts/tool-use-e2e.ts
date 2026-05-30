@@ -548,13 +548,14 @@ function buildRealLlmScenarioPacket(input: {
     "You are running a release-gate E2E. Use the available session tool instead of answering from memory.",
     input.followupScenario
       ? [
-          "You must verify same-session follow-up behavior:",
-          "1. Call sessions_spawn with agent_id=explore exactly once for phase 1.",
-          "2. Read the returned session_key from that partial result.",
-          "3. Call sessions_send exactly once on that same session_key using the requested continuation message.",
-          "4. Do not spawn a second session for the continuation.",
-          "5. Finalize only after sessions_send returns TURNKEYAI_FOLLOWUP_E2E_OK.",
-        ].join("\n")
+        "You must verify same-session follow-up behavior:",
+        "1. Call sessions_spawn with agent_id=explore exactly once for phase 1.",
+        "2. Read the returned session_key from that partial result.",
+        "3. Call sessions_send exactly once on that same session_key using the requested continuation message.",
+        "4. Do not spawn a second session for the continuation.",
+        "5. Finalize only after sessions_send returns TURNKEYAI_FOLLOWUP_E2E_OK.",
+        "6. Do not copy the raw session_key into the final answer; state that the same session was reused instead.",
+      ].join("\n")
       : input.timeoutScenario
       ? [
           "You must verify bounded timeout recovery:",
@@ -589,7 +590,8 @@ function buildRealLlmScenarioPacket(input: {
         "Run the same-session follow-up E2E.",
         "Phase 1: ask the explore sub-agent for the phase-one checkpoint.",
         "Phase 2: continue the same sub-agent session with sessions_send using the continuation instruction from phase 1.",
-        `Final answer must include ${input.targetMarker}, the reused session_key, and a short note that no duplicate session was spawned.`,
+        `Final answer must include ${input.targetMarker} and a short note that no duplicate session was spawned.`,
+        "Do not include the raw session_key in the final answer.",
       ].join("\n")
     : input.timeoutScenario
     ? [
@@ -616,8 +618,11 @@ function buildRealLlmScenarioPacket(input: {
   const outputContract = input.followupScenario
     ? [
         `Final answer must include ${input.targetMarker}.`,
-        "Use Markdown with a heading `Evidence` and at least three bullets: phase-one partial result, follow-up result, residual risk.",
-        "Mention the reused session_key and state that the continuation used sessions_send rather than a duplicate sessions_spawn.",
+        "Use Markdown with a heading `Evidence` and at least three bullets named exactly: phase-one evidence, follow-up evidence, residual risk.",
+        "- phase-one evidence: cite TURNKEYAI_FOLLOWUP_PHASE_ONE from the original sessions_spawn result.",
+        "- follow-up evidence: cite TURNKEYAI_FOLLOWUP_E2E_OK from sessions_send on the same session.",
+        "State that the continuation used sessions_send on the same session rather than a duplicate sessions_spawn.",
+        "Do not include the raw session_key.",
       ].join("\n")
     : input.timeoutScenario
     ? [
@@ -769,11 +774,11 @@ function followupQualityGate(targetMarker: string): AnswerQualityGate {
       { label: "evidence heading", pattern: /Evidence/i },
       { label: "phase-one marker", pattern: /TURNKEYAI_FOLLOWUP_PHASE_ONE/ },
       { label: "same-session continuation", pattern: /sessions_send|same session|reused session|follow-up/i },
-      { label: "session key", pattern: /session[_ -]?key/i },
       { label: "residual risk", pattern: /residual risk/i },
     ],
     forbiddenPatterns: [
       { label: "duplicate-session claim", pattern: /\b(spawned a second session|duplicate session was used)\b/i },
+      { label: "raw session key leak", pattern: /\bworker:(?:explore|browser|finance|general):[^\s`'",)]+/i },
     ],
   };
 }

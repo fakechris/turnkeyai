@@ -2236,3 +2236,81 @@ Regression Risk:
 - Remaining acceptance gap: run the full release gate or a browser-focused gate
   that includes profile/CDP failure injection and provider-native browser
   tool-use before claiming broad browser reliability.
+
+## 2026-05-31 04:35 CST - Full Real Acceptance Gate
+
+Direction: converging
+
+Execution Kernel:
+- Full real acceptance now passes with provider-native tool-use, direct-CDP
+  smoke, and all mission scenarios enabled in one run.
+- The gate exposed and closed four runtime/contract gaps before passing:
+  follow-up source-label coverage, bounded durable-memory search variance,
+  idempotent mission task creation, and pseudo tool-call markup emitted as
+  assistant text after a normal tool round.
+- The runtime now repairs textual tool-call markup after a normal tool round by
+  forcing a tools-disabled final synthesis instead of letting XML-like markup
+  become the user-visible final answer.
+
+Result Quality:
+- The final passing matrix completed 12/12 mission scenarios. Ten scenarios
+  passed the normal quality gate; `cancel` and `timeout-recovery` completed with
+  expected blocked quality state because they intentionally exercise operator
+  cancellation and timeout recovery.
+- Multi-source scenarios now require explicit source labels in tool calls and
+  final answers: `comparison`, `followup`, `product-workbench-brief`, and
+  `realistic-brief`.
+- Mutation quality improved: repeated same-title `tasks_create` calls now return
+  the existing mission work item instead of persisting a duplicate.
+
+Workbench UX:
+- No UI surface changed in this checkpoint.
+- Mission Detail evidence is more trustworthy because tool-call progress,
+  source coverage, idempotent task state, and final-answer quality all survived
+  the same real acceptance run.
+
+Browser Reliability:
+- Direct-CDP smoke passed inside the full gate with target attach, OOPIF/shadow
+  probing, coordinate input, popup target attach, boundary marker, network
+  controls, upload/download, screenshots, and artifact checks.
+- Browser-backed mission scenarios passed:
+  `browser-dynamic`, `browser-dashboard`, `product-workbench-brief`, and
+  `realistic-brief`.
+- Remaining browser risk: this is still local fixture coverage, not a long soak
+  on external complex pages or profile-lock/failure-injection recovery.
+
+Acceptance Evidence:
+- Command:
+  `npm run acceptance:real -- --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --cdp-timeout-ms 45000`
+- Result: passed in 486474ms.
+- Validation run:
+  `validation-ops:real-llm-acceptance:2026-05-30T20-26-45-392Z:woavjt`
+- Artifact:
+  `/Users/chris/.turnkeyai/data/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T20-26-45-392Z%3Awoavjt-mission-e2e.json`
+- Mission results:
+  `basic` `msn.mpssz248.1` done/passed tools `1/1` sessions `1/0`;
+  `comparison` `msn.mpsszbg8.2` done/passed tools `2/2` sessions `2/0`;
+  `followup` `msn.mpsszqzr.3` done/passed tools `2/2` sessions `1/1`;
+  `cancel` `msn.mpst2gtk.4` done/blocked tools `1/1` sessions `1/0`;
+  `approval` `msn.mpst2ng3.5` done/passed tools `1/1` sessions `1/0`;
+  `browser-dynamic` `msn.mpst3b5o.6` done/passed tools `1/1`
+  sessions `1/0`; `browser-dashboard` `msn.mpst3ujy.7` done/passed
+  tools `1/1` sessions `1/0`; `timeout-recovery` `msn.mpst48j5.8`
+  done/blocked tools `1/1` sessions `1/0`; `memory-recall`
+  `msn.mpst5qu7.9` done/passed tools `2/2` sessions `0/0`;
+  `task-tracking` `msn.mpst5ym1.10` done/passed tools `3/3`
+  sessions `0/0`; `product-workbench-brief` `msn.mpst64tg.11`
+  done/passed tools `3/3` sessions `3/0`; `realistic-brief`
+  `msn.mpst6wqh.12` done/passed tools `3/3` sessions `3/0`.
+- Liveness was `0/0/0` for every mission at completion.
+
+Regression Risk:
+- Direction is converging, but not yet risk-free. The full gate required
+  several contract/runtime repairs during the same checkpoint, which means the
+  acceptance harness is still finding real integration gaps rather than merely
+  confirming stability.
+- 24-hour methodology check: continue feature work only while full real E2E
+  improves or remains green. If the next 24 hours show repeated fixes in the
+  same categories without a stable full-gate pass, pause feature PRs and move
+  into methodology review focused on prompt/runtime/tool protocol boundaries.

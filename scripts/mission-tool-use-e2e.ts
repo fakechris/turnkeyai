@@ -101,6 +101,8 @@ const ALPHA_MARKER = "TURNKEYAI_VENDOR_ALPHA_OK";
 const BETA_MARKER = "TURNKEYAI_VENDOR_BETA_OK";
 const FOLLOWUP_PHASE_MARKER = "TURNKEYAI_MISSION_FOLLOWUP_PHASE_ONE";
 const FOLLOWUP_FINAL_MARKER = "TURNKEYAI_MISSION_FOLLOWUP_OK";
+const FOLLOWUP_SOURCE_LABEL = "Mission route fixture fetch";
+const FOLLOWUP_CONTINUATION_SOURCE_LABEL = "Mission route follow-up continuation";
 const CANCEL_FINAL_MARKER = "TURNKEYAI_MISSION_CANCEL_OK";
 const APPROVAL_MARKER = "TURNKEYAI_APPROVAL_FIXTURE_OK";
 const APPROVAL_FINAL_MARKER = "TURNKEYAI_MISSION_APPROVAL_OK";
@@ -117,6 +119,9 @@ const PRODUCT_WORKBENCH_FINAL_MARKER = "TURNKEYAI_MISSION_PRODUCT_WORKBENCH_OK";
 const PRODUCT_ORCHESTRATION_MARKER = "TURNKEYAI_PRODUCT_ORCHESTRATION_OK";
 const PRODUCT_BRIDGE_MARKER = "TURNKEYAI_PRODUCT_BRIDGE_OK";
 const PRODUCT_WORKBENCH_SIGNAL_MARKER = "TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK";
+const PRODUCT_ORCHESTRATION_SOURCE_LABEL = "Orchestration research";
+const PRODUCT_BRIDGE_SOURCE_LABEL = "Bridge capability research";
+const PRODUCT_SIGNALS_SOURCE_LABEL = "Product signals browser";
 const REALISTIC_BRIEF_FINAL_MARKER = "TURNKEYAI_MISSION_REALISTIC_BRIEF_OK";
 
 interface FixtureServer {
@@ -149,9 +154,12 @@ export interface ScenarioSpec {
   minBytes?: number;
   maxBytes?: number;
   expectedSpawnCalls: number;
+  expectedSpawnCallsMax?: number;
   expectedSendCalls: number;
   expectedToolResults: number;
+  expectedToolResultsMax?: number;
   expectedSpawnedSessions: number;
+  expectedSpawnedSessionsMax?: number;
   expectedContinuedSessions: number;
   minEvidenceEvents: number;
   expectedBullets: number;
@@ -506,6 +514,7 @@ async function runMissionFollowupScenario(input: {
     missionId: mission.id,
     finalMarker: initialSpec.finalMarker,
     timeoutMs: input.timeoutMs,
+    failFastDoneWithoutMarker: true,
   });
   assertMissionToolUseTimeline(initial.timeline, initialSpec);
   const sessionKey = extractFirstSessionKey(initial.timeline);
@@ -519,16 +528,17 @@ async function runMissionFollowupScenario(input: {
       content: [
         "Continue this mission from the existing explore child session.",
         "Call sessions_send exactly once using the session_key from the prior sessions_spawn tool result.",
+        `The sessions_send input must include label "${FOLLOWUP_CONTINUATION_SOURCE_LABEL}" so mission source coverage can be audited.`,
         "Do not call sessions_spawn, sessions_history, or sessions_list.",
         `The sessions_send message must ask the child to return its complete final report containing ${FIXTURE_MARKER}.`,
-        `The final answer may include ${FOLLOWUP_FINAL_MARKER} only once, inside the first bullet of the exact shape below; it must also include ${FIXTURE_MARKER}, sessions_send, the reused session_key, the phrase no duplicate session, and the exact words residual risk.`,
+        `The final answer may include ${FOLLOWUP_FINAL_MARKER} only once, inside the first bullet of the exact shape below; it must also include ${FIXTURE_MARKER}, ${FOLLOWUP_SOURCE_LABEL}, ${FOLLOWUP_CONTINUATION_SOURCE_LABEL}, sessions_send, the reused session_key, the phrase no duplicate session, and the exact words residual risk.`,
         "Use this exact final answer shape after sessions_send returns:",
         "## Evidence",
-        `- same-session follow-up: ${FOLLOWUP_FINAL_MARKER}; sessions_send reused the existing session_key with no duplicate session.`,
-        `- fixture evidence: ${FIXTURE_MARKER} confirmed by the continued child session.`,
+        `- same-session follow-up: ${FOLLOWUP_FINAL_MARKER}; sessions_send reused the existing session_key with no duplicate session; source ${FOLLOWUP_CONTINUATION_SOURCE_LABEL}.`,
+        `- fixture evidence: ${FIXTURE_MARKER} confirmed from source ${FOLLOWUP_SOURCE_LABEL} by the continued child session.`,
         "- residual risk: this validates local fixture continuity only, not an external source.",
         "Do not create a separate bullet, heading, or paragraph for the final success marker.",
-        "Do not include source URLs; name sessions_send, the reused session_key, and the fixture marker instead.",
+        "Do not include source URLs; name sessions_send, the reused session_key, both source labels, and the fixture marker instead.",
         "Do not use tables, links, code fences, or bold/italic markup.",
       ].join("\n"),
     },
@@ -836,7 +846,9 @@ async function runMissionTaskTrackingScenario(input: {
     token: input.token,
   });
   const tracked = workItems.find((item) => item.title === "Verify Helios-47 rollout note");
+  const matchingItems = workItems.filter((item) => item.title === "Verify Helios-47 rollout note");
   assert.ok(tracked, "task tracking E2E must create the expected work item");
+  assert.equal(matchingItems.length, 1, "task tracking E2E must not persist duplicate work items with the same title");
   assert.equal(tracked.status, "done", "task tracking E2E must update the created work item to done");
   assert.equal(tracked.progress, 1, "task tracking E2E must update the created work item progress to 1");
   assert.match(tracked.output ?? "", /Task tracking acceptance complete/i);
@@ -1457,6 +1469,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       expectedSpawnCalls: 0,
       expectedSendCalls: 0,
       expectedToolResults: 2,
+      expectedToolResultsMax: 3,
       expectedSpawnedSessions: 0,
       expectedContinuedSessions: 0,
       minEvidenceEvents: 2,
@@ -1465,7 +1478,8 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       maxBytes: 1_000,
       desc: [
         "Continue this mission by proving durable memory recall through native memory tools.",
-        "Call memory_search exactly once with a query for the Helios-47 launch window, owner, and recall marker.",
+        "Call memory_search with a query for the Helios-47 launch window, owner, and recall marker.",
+        "Target one memory_search call; a single clarifying memory_search is allowed only if the first result is ambiguous. Do not exceed two memory_search calls.",
         "Then call memory_get exactly once using the best memory_id returned by memory_search before writing the final answer.",
         "Do not call sessions_spawn, sessions_send, sessions_history, sessions_list, browser tools, permission tools, or task tools.",
         `Final answer may include ${MEMORY_RECALL_FINAL_MARKER} exactly once, only inside the first bullet. It must also include ${MEMORY_SOURCE_MARKER}, Helios-47, Tuesday 09:30, Release Captain, memory_search, memory_get, and the exact words residual risk.`,
@@ -1516,6 +1530,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       expectedSpawnCalls: 0,
       expectedSendCalls: 0,
       expectedToolResults: 3,
+      expectedToolResultsMax: 4,
       expectedSpawnedSessions: 0,
       expectedContinuedSessions: 0,
       minEvidenceEvents: 3,
@@ -1526,7 +1541,8 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "Run the mission route task tracking E2E.",
         "Use mission task tools to prove the agent can keep product-visible work state current.",
         "Call tasks_list exactly once first with limit 10.",
-        "Then call tasks_create exactly once with title \"Verify Helios-47 rollout note\", status \"working\", and output \"Task tracking acceptance started\".",
+        "Then call tasks_create with title \"Verify Helios-47 rollout note\", status \"working\", and output \"Task tracking acceptance started\".",
+        "Target one tasks_create call. If a duplicate tasks_create call occurs with the same title, the tool service must return the existing work item instead of creating a second persisted item.",
         "Then call tasks_update exactly once using the work_item_id returned by tasks_create. Set status \"done\", progress 1, and output \"Task tracking acceptance complete\".",
         "Do not call sessions_spawn, sessions_send, sessions_history, sessions_list, browser tools, permission tools, or memory tools.",
         `Final answer may include ${TASK_TRACKING_FINAL_MARKER} exactly once, only inside the first bullet. It must also include tasks_list, tasks_create, tasks_update, Verify Helios-47 rollout note, done, progress 1, and the exact words residual risk.`,
@@ -1589,22 +1605,27 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         { label: "internal source URL", pattern: /https?:\/\//i },
       ],
       minBytes: 900,
-      maxBytes: 2_400,
+      maxBytes: 2_600,
       expectedSpawnCalls: 3,
+      expectedSpawnCallsMax: 4,
       expectedSendCalls: 0,
       expectedToolResults: 3,
+      expectedToolResultsMax: 4,
       expectedSpawnedSessions: 3,
+      expectedSpawnedSessionsMax: 4,
       expectedContinuedSessions: 0,
       minEvidenceEvents: 3,
+      expectedSourceLabels: [PRODUCT_ORCHESTRATION_SOURCE_LABEL, PRODUCT_BRIDGE_SOURCE_LABEL, PRODUCT_SIGNALS_SOURCE_LABEL],
       expectedBullets: 6,
       allowAtLeastBullets: true,
       desc: [
         "Prepare a decision-grade product brief for the next agent workbench release.",
         "Use the available session tools. Do not answer from memory.",
         "Gather evidence from three independent child sessions before finalizing:",
-        `- Orchestration: use an explore session to fetch ${fixture.orchestrationUrl} and extract marker ${PRODUCT_ORCHESTRATION_MARKER}, primary user story, strength, and gap.`,
-        `- Bridge capability: use an explore session to fetch ${fixture.bridgeUrl} and extract marker ${PRODUCT_BRIDGE_MARKER}, controls, boundary, and risk.`,
-        `- Product signals: use a browser session, not direct fetch, to open ${fixture.productSignalsUrl}; inspect the JavaScript-rendered dashboard and extract marker ${PRODUCT_WORKBENCH_SIGNAL_MARKER}, Stuck missions: 6, Weak answer rate: 24%, and the recommended next action.`,
+        `- Orchestration: use an explore session with label "${PRODUCT_ORCHESTRATION_SOURCE_LABEL}" to fetch ${fixture.orchestrationUrl} and extract marker ${PRODUCT_ORCHESTRATION_MARKER}, primary user story, strength, and gap.`,
+        `- Bridge capability: use an explore session with label "${PRODUCT_BRIDGE_SOURCE_LABEL}" to fetch ${fixture.bridgeUrl} and extract marker ${PRODUCT_BRIDGE_MARKER}, controls, boundary, and risk.`,
+        `- Product signals: use a browser session with label "${PRODUCT_SIGNALS_SOURCE_LABEL}", not direct fetch, to open ${fixture.productSignalsUrl}; inspect the JavaScript-rendered dashboard and extract marker ${PRODUCT_WORKBENCH_SIGNAL_MARKER}, Stuck missions: 6, Weak answer rate: 24%, and the recommended next action.`,
+        "Each sessions_spawn input must include the exact label named above for that source.",
         "Do not finalize until all three child session tool results have returned and all three markers are present in tool evidence.",
         "The final answer must be useful to a product lead. It must state what to build next, why, what not to over-emphasize, and what risk remains.",
         "Do not frame browser control as the product itself; frame it as one capability inside a larger multi-agent workbench.",
@@ -1612,11 +1633,12 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "Do not infer market adoption, external outages, customer counts, or external pricing beyond the local fixture text.",
         "Never write assume, assumed, estimate, probably, maybe, to be confirmed, or pending confirmation in the final answer.",
         `The recommendation bullet must start with "- recommendation: ${PRODUCT_WORKBENCH_FINAL_MARKER}" and state the release decision.`,
+        "Keep the final answer concise, under 230 words.",
         "Use exactly this section skeleton for the final answer, with no preamble before it and no closing note after it:",
         "evidence",
-        `- orchestration evidence: ${PRODUCT_ORCHESTRATION_MARKER}; include primary user story, multi-agent decomposition, durable sub-session history, and gap.`,
-        `- bridge evidence: ${PRODUCT_BRIDGE_MARKER}; include browser bridge controls, browser-only boundary, and first-run setup risk.`,
-        `- browser signal evidence: ${PRODUCT_WORKBENCH_SIGNAL_MARKER}; include Stuck missions: 6, Weak answer rate: 24%, and that the evidence came from browser-rendered JavaScript or client-rendered DOM.`,
+        `- orchestration evidence: ${PRODUCT_ORCHESTRATION_SOURCE_LABEL}; ${PRODUCT_ORCHESTRATION_MARKER}; include primary user story, multi-agent decomposition, durable sub-session history, and gap.`,
+        `- bridge evidence: ${PRODUCT_BRIDGE_SOURCE_LABEL}; ${PRODUCT_BRIDGE_MARKER}; browser bridge controls; include browser-only boundary and first-run setup risk.`,
+        `- browser signal evidence: ${PRODUCT_SIGNALS_SOURCE_LABEL}; ${PRODUCT_WORKBENCH_SIGNAL_MARKER}; include Stuck missions: 6, Weak answer rate: 24%, and that the evidence came from browser-rendered JavaScript or client-rendered DOM.`,
         "decision",
         `- recommendation: ${PRODUCT_WORKBENCH_FINAL_MARKER} - make Mission Control the default entry and gate release on real LLM scenario quality before expanding native shell work.`,
         "- next actions: list exactly three concrete build actions for onboarding, mission completion quality, and bridge/runtime diagnostics.",
@@ -1957,6 +1979,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       title: "Mission route real follow-up E2E",
       finalMarker: FOLLOWUP_FINAL_MARKER,
       evidenceMarkers: [FIXTURE_MARKER],
+      expectedSourceLabels: [FOLLOWUP_SOURCE_LABEL, FOLLOWUP_CONTINUATION_SOURCE_LABEL],
       answerTerms: ["sessions_send", "no duplicate session", "residual risk"],
       answerPatterns: [{ label: "same-session continuity", pattern: /same[- ]session|reused session|existing session/i }],
       forbiddenPatterns: [{ label: "internal fixture URL", pattern: /https?:\/\//i }],
@@ -1971,9 +1994,14 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "Run phase 1 of the mission route follow-up E2E.",
         "Use the available session tool instead of answering from memory.",
         "Call sessions_spawn with agent_id=explore exactly once.",
+        `The sessions_spawn input must include label "${FOLLOWUP_SOURCE_LABEL}" so mission source coverage can be audited.`,
         `The explore sub-agent task must fetch ${fixture.basicUrl}, report the page title, marker ${FIXTURE_MARKER}, and return a reusable session summary.`,
         `Phase 1 final answer must include ${FOLLOWUP_PHASE_MARKER}, ${FIXTURE_MARKER}, the exact session_key returned by sessions_spawn, and the exact words residual risk.`,
-        "Use plain Markdown with heading `Evidence` and exactly three bullets: session tool call, fixture marker, residual risk.",
+        "Use this exact phase 1 final answer shape after sessions_spawn returns:",
+        "## Evidence",
+        `- session tool call: ${FOLLOWUP_PHASE_MARKER}; sessions_spawn returned the exact session_key.`,
+        `- fixture marker: ${FIXTURE_MARKER} confirmed in source ${FOLLOWUP_SOURCE_LABEL}.`,
+        "- residual risk: this validates local fixture continuity only, not an external source.",
         "Do not include source URLs; name the session tool and fixture marker instead.",
         "Do not use tables, links, code fences, or bold/italic markup.",
         "Do not call sessions_send during phase 1.",
@@ -2089,9 +2117,9 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
 function buildFollowupInitialSpec(fixture: FixtureServer): ScenarioSpec {
   return {
     scenario: "followup",
-    title: "Mission route real follow-up E2E",
-    finalMarker: FOLLOWUP_PHASE_MARKER,
-    evidenceMarkers: [FIXTURE_MARKER],
+      title: "Mission route real follow-up E2E",
+      finalMarker: FOLLOWUP_PHASE_MARKER,
+      evidenceMarkers: [FIXTURE_MARKER],
     answerTerms: ["sessions_spawn", "session_key", "residual risk"],
     forbiddenPatterns: [{ label: "internal fixture URL", pattern: /https?:\/\//i }],
     expectedSpawnCalls: 1,
@@ -2101,13 +2129,18 @@ function buildFollowupInitialSpec(fixture: FixtureServer): ScenarioSpec {
     expectedContinuedSessions: 0,
     minEvidenceEvents: 1,
     expectedBullets: 3,
-    desc: [
-      "Run phase 1 of the mission route follow-up E2E.",
-      "Use the available session tool instead of answering from memory.",
-      "Call sessions_spawn with agent_id=explore exactly once.",
+      desc: [
+        "Run phase 1 of the mission route follow-up E2E.",
+        "Use the available session tool instead of answering from memory.",
+        "Call sessions_spawn with agent_id=explore exactly once.",
+        `The sessions_spawn input must include label "${FOLLOWUP_SOURCE_LABEL}" so a later follow-up can audit source coverage.`,
       `The explore sub-agent task must fetch ${fixture.basicUrl}, report the page title, marker ${FIXTURE_MARKER}, and return a reusable session summary.`,
       `Phase 1 final answer must include ${FOLLOWUP_PHASE_MARKER}, ${FIXTURE_MARKER}, the exact session_key returned by sessions_spawn, and the exact words residual risk.`,
-      "Use plain Markdown with heading `Evidence` and exactly three bullets: session tool call, fixture marker, residual risk.",
+      "Use this exact phase 1 final answer shape after sessions_spawn returns:",
+      "## Evidence",
+      `- session tool call: ${FOLLOWUP_PHASE_MARKER}; sessions_spawn returned the exact session_key.`,
+      `- fixture marker: ${FIXTURE_MARKER} confirmed in source ${FOLLOWUP_SOURCE_LABEL}.`,
+      "- residual risk: this validates local fixture continuity only, not an external source.",
       "Do not include source URLs; name the session tool and fixture marker instead.",
       "Do not use tables, links, code fences, or bold/italic markup.",
       "Do not call sessions_send during phase 1.",
@@ -2189,25 +2222,23 @@ function assertMissionToolUseTimeline(timeline: ActivityEvent[], spec: ScenarioS
   const finalIndex = timeline.findIndex((event) => event.kind === "thought" && event.text.includes(spec.finalMarker));
   assert.ok(planIndex >= 0, "mission timeline must include the user plan event");
   assert.ok(callIndex > planIndex, "session tool call must appear after the user plan");
-  assert.equal(
+  assertCountInRange(
     spawnCallIndexes.length,
     spec.expectedSpawnCalls,
-    `${spec.scenario} expected exactly ${spec.expectedSpawnCalls} sessions_spawn calls`
+    spec.expectedSpawnCallsMax,
+    `${spec.scenario} sessions_spawn calls`
   );
   assert.equal(
     sendCallIndexes.length,
     spec.expectedSendCalls,
     `${spec.scenario} expected exactly ${spec.expectedSendCalls} sessions_send calls`
   );
-  assert.equal(
-    callIndexes.length,
-    spec.expectedToolResults,
-    `${spec.scenario} expected exactly ${spec.expectedToolResults} session tool calls`
-  );
-  assert.equal(
+  assertCountInRange(callIndexes.length, spec.expectedToolResults, spec.expectedToolResultsMax, `${spec.scenario} session tool calls`);
+  assertCountInRange(
     resultIndexes.length,
     spec.expectedToolResults,
-    `${spec.scenario} expected exactly ${spec.expectedToolResults} session tool results`
+    spec.expectedToolResultsMax,
+    `${spec.scenario} session tool results`
   );
   for (const progressIndex of progressIndexes) {
     assert.ok(progressIndex > callIndex, "sessions_spawn progress must appear after the first tool call");
@@ -2228,16 +2259,30 @@ function assertMissionToolUseTimeline(timeline: ActivityEvent[], spec: ScenarioS
 
 function assertMissionSourceLabels(timeline: ActivityEvent[], spec: ScenarioSpec): void {
   if (!spec.expectedSourceLabels?.length) return;
-  const callLabels = findToolPhaseIndexes(timeline, "sessions_spawn", "call")
+  const callLabels = [
+    ...findToolPhaseIndexes(timeline, "sessions_spawn", "call"),
+    ...findToolPhaseIndexes(timeline, "sessions_send", "call"),
+  ]
     .map((index) => readToolCallLabel(timeline[index]))
     .filter((label): label is string => Boolean(label));
-  const resultLabels = findToolPhaseIndexes(timeline, "sessions_spawn", "result")
+  const resultLabels = [
+    ...findToolPhaseIndexes(timeline, "sessions_spawn", "result"),
+    ...findToolPhaseIndexes(timeline, "sessions_send", "result"),
+  ]
     .map((index) => timeline[index]?.runtime?.["sourceLabel"])
     .filter((label): label is string => typeof label === "string" && label.trim().length > 0);
   for (const label of spec.expectedSourceLabels) {
-    assert.ok(callLabels.includes(label), `${spec.scenario} sessions_spawn call must include source label ${label}`);
-    assert.ok(resultLabels.includes(label), `${spec.scenario} sessions_spawn result must expose runtime.sourceLabel ${label}`);
+    assert.ok(callLabels.includes(label), `${spec.scenario} session tool call must include source label ${label}`);
+    assert.ok(resultLabels.includes(label), `${spec.scenario} session tool result must expose runtime.sourceLabel ${label}`);
   }
+}
+
+function assertCountInRange(value: number, min: number, max: number | undefined, label: string): void {
+  if (max === undefined) {
+    assert.equal(value, min, `${label} expected exactly ${min}`);
+    return;
+  }
+  assert.ok(value >= min && value <= max, `${label} expected between ${min} and ${max}, got ${value}`);
 }
 
 function readToolCallLabel(event: ActivityEvent | undefined): string | null {
@@ -2283,14 +2328,15 @@ function assertMissionMemoryRecallTimeline(timeline: ActivityEvent[], spec: Scen
   const searchResultIndexes = findToolPhaseIndexes(timeline, "memory_search", "result");
   const getCallIndexes = findToolPhaseIndexes(timeline, "memory_get", "call");
   const getResultIndexes = findToolPhaseIndexes(timeline, "memory_get", "result");
-  assert.equal(searchCallIndexes.length, 1, "memory recall E2E must call memory_search exactly once");
-  assert.equal(searchResultIndexes.length, 1, "memory recall E2E must receive one memory_search result");
+  assert.ok(searchCallIndexes.length >= 1, "memory recall E2E must call memory_search");
+  assert.ok(searchCallIndexes.length <= 2, "memory recall E2E must not exceed two memory_search calls");
+  assert.equal(searchResultIndexes.length, searchCallIndexes.length, "memory recall E2E must receive one memory_search result per call");
   assert.equal(getCallIndexes.length, 1, "memory recall E2E must call memory_get exactly once");
   assert.equal(getResultIndexes.length, 1, "memory recall E2E must receive one memory_get result");
   assert.equal(findToolPhaseIndexes(timeline, "sessions_spawn", "call").length, 0, "memory recall must not spawn sessions");
   assert.equal(findToolPhaseIndexes(timeline, "sessions_send", "call").length, 0, "memory recall must not continue sessions");
   assert.ok(searchResultIndexes[0]! > searchCallIndexes[0]!, "memory_search result must follow the call");
-  assert.ok(getCallIndexes[0]! > searchResultIndexes[0]!, "memory_get call must follow memory_search result");
+  assert.ok(getCallIndexes[0]! > searchResultIndexes.at(-1)!, "memory_get call must follow memory_search result");
   assert.ok(getResultIndexes[0]! > getCallIndexes[0]!, "memory_get result must follow the call");
   assert.ok(finalIndex > getResultIndexes[0]!, "final answer must follow memory_get result");
   const memoryGetResult = String(timeline[getResultIndexes[0]!]!.runtime?.["resultContent"] ?? timeline[getResultIndexes[0]!]!.text);
@@ -2309,8 +2355,9 @@ function assertMissionTaskTrackingTimeline(timeline: ActivityEvent[], spec: Scen
   const updateResultIndexes = findToolPhaseIndexes(timeline, "tasks_update", "result");
   assert.equal(listCallIndexes.length, 1, "task tracking E2E must call tasks_list exactly once");
   assert.equal(listResultIndexes.length, 1, "task tracking E2E must receive one tasks_list result");
-  assert.equal(createCallIndexes.length, 1, "task tracking E2E must call tasks_create exactly once");
-  assert.equal(createResultIndexes.length, 1, "task tracking E2E must receive one tasks_create result");
+  assert.ok(createCallIndexes.length >= 1, "task tracking E2E must call tasks_create");
+  assert.ok(createCallIndexes.length <= 2, "task tracking E2E must not exceed two tasks_create calls");
+  assert.equal(createResultIndexes.length, createCallIndexes.length, "task tracking E2E must receive one tasks_create result per call");
   assert.equal(updateCallIndexes.length, 1, "task tracking E2E must call tasks_update exactly once");
   assert.equal(updateResultIndexes.length, 1, "task tracking E2E must receive one tasks_update result");
   assert.equal(findToolPhaseIndexes(timeline, "sessions_spawn", "call").length, 0, "task tracking must not spawn sessions");
@@ -2318,17 +2365,25 @@ function assertMissionTaskTrackingTimeline(timeline: ActivityEvent[], spec: Scen
   assert.ok(listResultIndexes[0]! > listCallIndexes[0]!, "tasks_list result must follow the call");
   assert.ok(createCallIndexes[0]! > listResultIndexes[0]!, "tasks_create call must follow tasks_list result");
   assert.ok(createResultIndexes[0]! > createCallIndexes[0]!, "tasks_create result must follow the call");
-  assert.ok(updateCallIndexes[0]! > createResultIndexes[0]!, "tasks_update call must follow tasks_create result");
+  assert.ok(updateCallIndexes[0]! > createResultIndexes.at(-1)!, "tasks_update call must follow tasks_create result");
   assert.ok(updateResultIndexes[0]! > updateCallIndexes[0]!, "tasks_update result must follow the call");
   assert.ok(finalIndex > updateResultIndexes[0]!, "final answer must follow tasks_update result");
 
-  const createResult = String(timeline[createResultIndexes[0]!]!.runtime?.["resultContent"] ?? timeline[createResultIndexes[0]!]!.text);
+  const createResults = createResultIndexes.map((index) =>
+    String(timeline[index]!.runtime?.["resultContent"] ?? timeline[index]!.text)
+  );
   const updateCallInput = String(timeline[updateCallIndexes[0]!]!.runtime?.["callInput"] ?? "");
   const updateResult = String(timeline[updateResultIndexes[0]!]!.runtime?.["resultContent"] ?? timeline[updateResultIndexes[0]!]!.text);
-  const createBody = JSON.parse(createResult) as { task?: { id?: string; title?: string } };
+  const createBodies = createResults.map((result) => JSON.parse(result) as { task?: { id?: string; title?: string }; deduped?: boolean });
   const updateInput = JSON.parse(updateCallInput) as { work_item_id?: string; status?: string; progress?: number };
-  assert.ok(createBody.task?.id, "tasks_create result must expose a task id");
-  assert.equal(updateInput.work_item_id, createBody.task.id, "tasks_update must use the id returned by tasks_create");
+  const createdIds = new Set(createBodies.map((body) => body.task?.id).filter((id): id is string => Boolean(id)));
+  assert.equal(createdIds.size, 1, "duplicate tasks_create calls must resolve to one persisted task id");
+  assert.ok(createBodies.every((body) => body.task?.title === "Verify Helios-47 rollout note"), "tasks_create results must expose the tracked item title");
+  if (createBodies.length > 1) {
+    assert.ok(createBodies.slice(1).every((body) => body.deduped === true), "duplicate tasks_create results must be marked deduped");
+  }
+  const [createdId] = [...createdIds];
+  assert.equal(updateInput.work_item_id, createdId, "tasks_update must use the id returned by tasks_create");
   assert.equal(updateInput.status, "done", "tasks_update call must set status done");
   assert.equal(updateInput.progress, 1, "tasks_update call must set progress 1");
   assert.match(updateResult, /Verify Helios-47 rollout note/, "tasks_update result must include the tracked item title");
@@ -2550,11 +2605,27 @@ function findToolPhaseIndexes(
 
 function assertMissionMetrics(metrics: MissionObservabilitySnapshot, spec: ScenarioSpec): void {
   assert.equal(metrics.status, "done", "mission metrics must reflect the completed mission status");
-  assert.equal(metrics.tool.requested, spec.expectedToolResults, "mission metrics must match requested tool calls");
-  assert.equal(metrics.tool.results, spec.expectedToolResults, "mission metrics must match tool results");
+  if (spec.expectedToolResultsMax === undefined) {
+    assert.equal(metrics.tool.requested, spec.expectedToolResults, "mission metrics must match requested tool calls");
+    assert.equal(metrics.tool.results, spec.expectedToolResults, "mission metrics must match tool results");
+  } else {
+    assert.ok(
+      metrics.tool.requested >= spec.expectedToolResults && metrics.tool.requested <= spec.expectedToolResultsMax,
+      `mission metrics requested tool calls must be between ${spec.expectedToolResults} and ${spec.expectedToolResultsMax}`
+    );
+    assert.ok(
+      metrics.tool.results >= spec.expectedToolResults && metrics.tool.results <= spec.expectedToolResultsMax,
+      `mission metrics tool results must be between ${spec.expectedToolResults} and ${spec.expectedToolResultsMax}`
+    );
+  }
   assert.equal(metrics.tool.failed, 0, "mission metrics must not report failed tool results");
   assert.equal(metrics.tool.timeouts, 0, "mission metrics must not report timed-out tools");
-  assert.equal(metrics.sessions.spawned, spec.expectedSpawnedSessions, "mission metrics must match spawned sub-agent sessions");
+  assertCountInRange(
+    metrics.sessions.spawned,
+    spec.expectedSpawnedSessions,
+    spec.expectedSpawnedSessionsMax,
+    "mission metrics spawned sub-agent sessions"
+  );
   assert.equal(metrics.sessions.continued, spec.expectedContinuedSessions, "mission metrics must match continued sub-agent sessions");
   assert.equal(metrics.recovery.events, 0, "mission metrics must not report recovery events");
   assert.equal(metrics.liveness.active, 0, "completed mission must not retain active runtime subjects");

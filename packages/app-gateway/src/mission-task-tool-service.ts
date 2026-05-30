@@ -41,6 +41,14 @@ export function createMissionTaskToolService(options: MissionTaskToolServiceOpti
     async create(input: TaskToolCreateInput) {
       const mission = await resolveMission(options.missionStore, input);
       const existing = await options.workItemStore.listByMission(mission.id);
+      const duplicate = existing.find((item) => normalizeWorkItemTitle(item.title) === normalizeWorkItemTitle(input.title));
+      if (duplicate) {
+        return {
+          mission_id: mission.id,
+          task: serializeWorkItem(duplicate),
+          deduped: true,
+        };
+      }
       const now = options.clock.now();
       const item: WorkItem = {
         id: `wi.${options.idGenerator.taskId()}`,
@@ -105,6 +113,14 @@ async function resolveMission(
 
 function nextWorkItemNumber(items: WorkItem[]): number {
   return items.reduce((max, item) => Math.max(max, item.n), 0) + 1;
+}
+
+function normalizeWorkItemTitle(title: string): string {
+  return title
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 async function appendTaskEvent(

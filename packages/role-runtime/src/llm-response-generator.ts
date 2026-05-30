@@ -127,6 +127,38 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
 
       const toolCalls = result.toolCalls ?? [];
+      if (activeToolLoop && toolCalls.length === 0 && containsTextualToolCallAttempt(result)) {
+        throwIfAborted(input.signal);
+        const generated = await this.generateFinalAfterToolRoundLimit({
+          activation: input.activation,
+          packet: input.packet,
+          selection,
+          baseGatewayInput: initialGatewayInput,
+          messages: [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.text,
+            },
+          ],
+          maxRounds: activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS,
+          reasonLines: [
+            "The previous assistant response attempted to emit XML, JSON, or pseudo tool-call markup without a native tool call.",
+            "Tools are not available through text markup. Do not call more tools.",
+            "Produce only the final user-facing answer from the evidence already present in the conversation.",
+          ],
+        });
+        throwIfAborted(input.signal);
+        result = generated.result;
+        if (generated.reduction) {
+          reduction = generated.reduction;
+          reductionSnapshot = generated.reductionSnapshot;
+        }
+        if (generated.memoryFlush) {
+          memoryFlushes.push(generated.memoryFlush);
+        }
+        break;
+      }
       if (!activeToolLoop || toolCalls.length === 0) {
         break;
       }

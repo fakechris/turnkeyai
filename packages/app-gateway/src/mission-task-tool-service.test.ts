@@ -59,6 +59,17 @@ test("mission task tool service creates, lists, updates, and records timeline ev
     assert.equal(created.task.status, "working");
     assert.deepEqual(created.task.context_refs, ["ctx.browser.1"]);
 
+    const duplicate = await service.create({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      title: "  verify   browser evidence ",
+      status: "planning",
+    }) as { task: { id: string; n: number; status: string }; deduped?: boolean };
+    assert.equal(duplicate.deduped, true);
+    assert.equal(duplicate.task.id, "wi.task-1");
+    assert.equal(duplicate.task.n, 1);
+    assert.equal(duplicate.task.status, "working");
+
     const listed = await service.list({
       threadId: "thread-1",
       roleId: "role-lead",
