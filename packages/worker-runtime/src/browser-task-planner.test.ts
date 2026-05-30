@@ -129,6 +129,24 @@ test("browser task planner strips trailing punctuation from URLs", () => {
   }
 });
 
+test("browser task planner strips prose periods from repository URLs", () => {
+  const planner = new DefaultBrowserTaskPlanner();
+  const input = buildTestInvocationInput({
+    handoff: {
+      payload: {
+        instructions: "Open https://github.com/multica-ai/multica. Summarize the project.",
+      },
+    },
+  });
+
+  const request = planner.buildRequest(input);
+  assert.ok(request);
+  assert.equal(request.actions[0]?.kind, "open");
+  if (request.actions[0]?.kind === "open") {
+    assert.equal(request.actions[0].url, "https://github.com/multica-ai/multica");
+  }
+});
+
 test("browser task planner reuses the previous browser session when available", () => {
   const planner = new DefaultBrowserTaskPlanner();
   const input = buildTestInvocationInput({
