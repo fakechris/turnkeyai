@@ -6,7 +6,7 @@
 // available to operators as a one-shot "show me what populated looks
 // like" button, but it's not the default render path.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import type { Mission } from "../api/mission-api";
 import { useApprovals, useBootstrapDemo, useMissions } from "../api/useMissionData";
@@ -17,14 +17,14 @@ import { canUseOperatorActions, OPERATOR_ACTION_SCOPE_HINT } from "../state/scop
 import { type MissionStatus } from "../state/types";
 
 interface Filter {
-  id: "all" | MissionStatus;
+  id: "current" | MissionStatus;
   label: string;
   count: number;
 }
 
 export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
   const { state, setRoute, openMission } = useAppState();
-  const [filter, setFilter] = useState<Filter["id"]>("all");
+  const [filter, setFilter] = useState<Filter["id"]>("current");
   // Live missions from /missions. No mock fallback — the page renders
   // an empty-state CTA when the daemon hasn't received any missions yet.
   const missions = useMissions([]);
@@ -33,16 +33,20 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
   const [bootstrapStatus, setBootstrapStatus] = useState<"idle" | "loading" | "error">("idle");
 
   const missionList = missions.value;
+  const missionSummary = useMemo(() => summarizeMissions(missionList), [missionList]);
+  const { byStatus, currentMissions } = missionSummary;
   const filters: Filter[] = [
-    { id: "all", label: "All", count: missionList.length },
-    { id: "working", label: "Working", count: countBy(missionList, "working") },
-    { id: "needs_approval", label: "Needs approval", count: countBy(missionList, "needs_approval") },
-    { id: "blocked", label: "Blocked", count: countBy(missionList, "blocked") },
-    { id: "done", label: "Done", count: countBy(missionList, "done") },
-    { id: "draft", label: "Draft", count: countBy(missionList, "draft") },
+    { id: "current", label: "Current", count: currentMissions.length },
+    { id: "working", label: "Working", count: byStatus.working.length },
+    { id: "needs_approval", label: "Needs approval", count: byStatus.needs_approval.length },
+    { id: "blocked", label: "Blocked", count: byStatus.blocked.length },
+    { id: "done", label: "Done", count: byStatus.done.length },
+    { id: "draft", label: "Draft", count: byStatus.draft.length },
+    { id: "archived", label: "Archived", count: byStatus.archived.length },
   ];
 
-  const list = filter === "all" ? missionList : missionList.filter((m) => m.status === filter);
+  const list = filter === "current" ? currentMissions : byStatus[filter];
+  const activeFilterLabel = filters.find((f) => f.id === filter)?.label ?? filter;
   const pendingTotal = approvals.value.filter((a) => !a.decision).length;
 
   // Show a "Load demo missions" button when the daemon is reachable but
@@ -144,11 +148,11 @@ export function MissionsPage({ onNewMission }: { onNewMission: () => void }) {
           style={{ marginTop: 16, padding: 24, textAlign: "center" }}
         >
           <div className="muted" style={{ fontSize: 12.5 }}>
-            No missions match the “{filter}” filter.{" "}
+            No missions match the “{activeFilterLabel}” filter.{" "}
             <button
               type="button"
               className="btn ghost"
-              onClick={() => setFilter("all")}
+              onClick={() => setFilter("current")}
               style={{ padding: "2px 8px", fontSize: 12 }}
             >
               Clear filter
@@ -284,6 +288,25 @@ function MissionCard({ mission, onOpen }: { mission: Mission; onOpen: () => void
   );
 }
 
-function countBy(missions: Mission[], status: MissionStatus): number {
-  return missions.filter((m) => m.status === status).length;
+function summarizeMissions(missions: Mission[]): {
+  currentMissions: Mission[];
+  byStatus: Record<MissionStatus, Mission[]>;
+} {
+  const byStatus: Record<MissionStatus, Mission[]> = {
+    draft: [],
+    planning: [],
+    working: [],
+    needs_approval: [],
+    blocked: [],
+    done: [],
+    archived: [],
+  };
+  const currentMissions: Mission[] = [];
+  for (const mission of missions) {
+    byStatus[mission.status].push(mission);
+    if (mission.status !== "archived") {
+      currentMissions.push(mission);
+    }
+  }
+  return { currentMissions, byStatus };
 }

@@ -565,3 +565,51 @@ Regression Risk:
 - Archived missions remain durable records. This only removes them from active
   diagnostics attention, so terminal history is not deleted and can still be
   inspected by direct store access or future archive-aware UI.
+
+## 2026-05-30 20:22 CST - Archived Missions Leave The Default Workbench
+
+Direction: converging
+
+Execution Kernel:
+- No mission, role, tool, worker, browser, or permission execution semantics
+  changed.
+- The archive action from the previous checkpoint is now reflected in the
+  primary mission list: archived missions are removed from the default
+  `Current` view and remain available through an explicit `Archived` filter.
+
+Result Quality:
+- Final-answer generation did not change.
+- This reduces operator noise after reviewing poor or historical runs. The
+  result-quality signal remains visible in diagnostics until a mission is
+  intentionally archived; after that it no longer competes with current work.
+
+Workbench UX:
+- Missions now default to current, non-archived work instead of showing every
+  durable historical record.
+- The `Archived` filter is explicit and count-backed, so cleanup does not
+  become silent deletion.
+- The Control Center smoke test now verifies both behaviors: archived missions
+  are hidden by default and visible when the operator chooses the archived
+  filter.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- The smoke fixture also caught a thread-to-mission mapping risk: archived test
+  data must not reuse the same `threadId` as the active runtime attention
+  mission, because runtime replay uses thread mapping to open mission traces.
+
+Acceptance Evidence:
+- `npm run control-center:smoke -- --allow-missing-browser`: passed.
+- `npm run build:control-center`
+- `npm run typecheck`
+- `npm run build`
+- `npm test -- --runInBand`: 1202 passing.
+- `git diff --check`
+- `npm run release:verify`: passed 9/9 packaged CLI checks.
+
+Regression Risk:
+- Risk is isolated to client-side filtering. The daemon still returns archived
+  missions from `/missions`, so no API consumer loses durable history.
+- The default label changed from `All` to `Current`; users who need old runs now
+  make an explicit archived-filter choice instead of seeing stale runs mixed
+  into the normal work queue.
