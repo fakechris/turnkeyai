@@ -36,6 +36,9 @@ test("native tool capability registry drives schemas and prompt harness from the
   assert.match(harness, /Do not append guessed categories/);
   assert.match(harness, /emit at most five session tool calls total/);
   assert.match(harness, /exactly two focused calls/);
+  assert.match(harness, /exact final answer skeleton/);
+  assert.match(harness, /Do not add status preambles/);
+  assert.match(harness, /keep each requested bullet compact/);
   assert.doesNotMatch(harness, /coder:/);
 });
 

@@ -1198,6 +1198,89 @@ test("sessions_spawn applies a default timeout when timeout_seconds is absent", 
   assert.match(body.evidence_summary, /source snippets/);
 });
 
+test("sessions_spawn defaults explore and finance sessions to the research timeout budget", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const capturedTimeouts: Array<{ agentId: string; timeoutSeconds: number }> = [];
+
+  for (const agentId of ["explore", "finance"] as const) {
+    let sendStarted!: () => void;
+    const sendStartedPromise = new Promise<void>((resolve) => {
+      sendStarted = resolve;
+    });
+    const workerRunKey = `worker:${agentId}:default-timeout`;
+    const workerRuntime = {
+      async spawn() {
+        return { workerType: agentId, workerRunKey };
+      },
+      async send() {
+        sendStarted();
+        await new Promise(() => undefined);
+        return null;
+      },
+      async interrupt() {
+        return {
+          workerRunKey,
+          workerType: agentId,
+          status: "resumable",
+          createdAt: 1,
+          updatedAt: 2,
+        };
+      },
+      async getState() {
+        return {
+          workerRunKey,
+          workerType: agentId,
+          status: "resumable",
+          createdAt: 1,
+          updatedAt: 2,
+        };
+      },
+    } as unknown as WorkerRuntime;
+    const executor = createWorkerSessionToolExecutor({
+      workerRuntime,
+      availableWorkerKinds: [agentId],
+      hardTimeoutGraceMs: 0,
+    });
+
+    const executePromise = executor.execute({
+      call: {
+        id: `call-${agentId}-default-timeout`,
+        name: "sessions_spawn",
+        input: {
+          agent_id: agentId,
+          task: `Research a slow ${agentId} source without an explicit timeout.`,
+        },
+      },
+      activation: buildActivation(),
+      packet: {
+        roleId: "role-lead",
+        roleName: "Lead",
+        seat: "lead",
+        systemPrompt: "Lead.",
+        taskPrompt: "Research a slow source.",
+        outputContract: "Return result.",
+        suggestedMentions: [],
+      },
+    });
+
+    await sendStartedPromise;
+    t.mock.timers.tick(480_000);
+    await Promise.resolve();
+    t.mock.timers.tick(0);
+    await Promise.resolve();
+    const result = await executePromise;
+    const body = JSON.parse(result.content) as { status: string; timeout_seconds: number };
+    assert.equal(result.isError, true);
+    assert.equal(body.status, "timeout");
+    capturedTimeouts.push({ agentId, timeoutSeconds: body.timeout_seconds });
+  }
+
+  assert.deepEqual(capturedTimeouts, [
+    { agentId: "explore", timeoutSeconds: 480 },
+    { agentId: "finance", timeoutSeconds: 480 },
+  ]);
+});
+
 test("sessions_spawn waits through the soft timeout grace for the active worker result", async () => {
   let interruptCalled = false;
   const workerRuntime = {
