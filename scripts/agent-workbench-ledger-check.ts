@@ -17,6 +17,16 @@ const REQUIRED_DAILY_REVIEW_SECTIONS = [
   "Decision",
   "Methodology Review Trigger",
 ] as const;
+const REQUIRED_POLICY_HEADINGS = [
+  "G0 operating contract:",
+  "Required checkpoint fields:",
+  "Update cadence:",
+  "24-hour methodology brake:",
+  "Direction values:",
+  "Evidence gates:",
+  "G0 acceptance rules:",
+  "Convergence review rule:",
+] as const;
 const DAILY_REVIEW_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export interface LedgerValidationIssue {
@@ -41,6 +51,15 @@ export function validateAgentWorkbenchLedger(content: string): LedgerValidationR
   const checkpoints = datedBlocks.filter((block) => block.kind === "checkpoint");
   const dailyReviews = datedBlocks.filter((block) => block.kind === "daily-review");
   const issues: LedgerValidationIssue[] = [];
+
+  for (const heading of REQUIRED_POLICY_HEADINGS) {
+    if (!content.includes(heading)) {
+      issues.push({
+        checkpoint: "ledger",
+        message: `missing G0 policy section ${heading}`,
+      });
+    }
+  }
 
   if (datedBlocks.length === 0) {
     issues.push({

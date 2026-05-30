@@ -3,11 +3,43 @@ import assert from "node:assert/strict";
 
 import { validateAgentWorkbenchLedger } from "./agent-workbench-ledger-check";
 
-describe("agent workbench ledger check", () => {
-  it("accepts dated checkpoints with direction and all required sections", () => {
-    const result = validateAgentWorkbenchLedger(`
+const POLICY_CONTRACT = `
+G0 operating contract:
+text
+
+Required checkpoint fields:
+text
+
+Update cadence:
+text
+
+24-hour methodology brake:
+text
+
+Direction values:
+text
+
+Evidence gates:
+text
+
+G0 acceptance rules:
+text
+
+Convergence review rule:
+text
+`;
+
+function ledger(body: string): string {
+  return `
 # G0
 
+${POLICY_CONTRACT}
+${body}`;
+}
+
+describe("agent workbench ledger check", () => {
+  it("accepts dated checkpoints with direction and all required sections", () => {
+    const result = validateAgentWorkbenchLedger(ledger(`
 ## YYYY-MM-DD HH:mm TZ - Template
 
 Direction: converging | oscillating | blocked | unknown
@@ -37,16 +69,57 @@ Acceptance Evidence:
 
 Regression Risk:
 - formatting risk only
-`);
+`));
 
     assert.equal(result.checkpoints, 1);
     assert.deepEqual(result.issues, []);
   });
 
-  it("rejects invalid directions and missing required sections", () => {
+  it("requires the top-level G0 policy contract", () => {
     const result = validateAgentWorkbenchLedger(`
 # G0
 
+## 2026-05-30 22:36 CST - Missing Policy
+
+Direction: unknown
+
+Execution Kernel:
+- no runtime change
+
+Result Quality:
+- no answer synthesis change
+
+Workbench UX:
+- no UI change
+
+Browser Reliability:
+- no transport change
+
+Acceptance Evidence:
+- no real acceptance ran
+
+Regression Risk:
+- governance risk only
+`);
+
+    assert.equal(result.checkpoints, 1);
+    assert.deepEqual(
+      result.issues.map((issue) => issue.message),
+      [
+        "missing G0 policy section G0 operating contract:",
+        "missing G0 policy section Required checkpoint fields:",
+        "missing G0 policy section Update cadence:",
+        "missing G0 policy section 24-hour methodology brake:",
+        "missing G0 policy section Direction values:",
+        "missing G0 policy section Evidence gates:",
+        "missing G0 policy section G0 acceptance rules:",
+        "missing G0 policy section Convergence review rule:",
+      ]
+    );
+  });
+
+  it("rejects invalid directions and missing required sections", () => {
+    const result = validateAgentWorkbenchLedger(ledger(`
 ## 2026-05-30 22:36 CST - Bad Checkpoint
 
 Direction: drifting
@@ -56,7 +129,7 @@ Execution Kernel:
 
 Result Quality:
 - unknown
-`);
+`));
 
     assert.equal(result.checkpoints, 1);
     assert.deepEqual(
@@ -72,9 +145,7 @@ Result Quality:
   });
 
   it("rejects empty required sections", () => {
-    const result = validateAgentWorkbenchLedger(`
-# G0
-
+    const result = validateAgentWorkbenchLedger(ledger(`
 ## 2026-05-30 22:36 CST - Empty Evidence
 
 Direction: unknown
@@ -95,7 +166,7 @@ Acceptance Evidence:
 
 Regression Risk:
 - formatting risk only
-`);
+`));
 
     assert.equal(result.checkpoints, 1);
     assert.deepEqual(result.issues, [
@@ -107,9 +178,7 @@ Regression Risk:
   });
 
   it("requires a dated 24-hour review once checkpoints span at least one day", () => {
-    const result = validateAgentWorkbenchLedger(`
-# G0
-
+    const result = validateAgentWorkbenchLedger(ledger(`
 ## 2026-05-30 09:00 CST - First Checkpoint
 
 Direction: converging
@@ -153,7 +222,7 @@ Acceptance Evidence:
 
 Regression Risk:
 - governance risk only
-`);
+`));
 
     assert.equal(result.checkpoints, 2);
     assert.deepEqual(result.issues, [
@@ -165,9 +234,7 @@ Regression Risk:
   });
 
   it("rejects stale 24-hour reviews that leave an earlier unreviewed window", () => {
-    const result = validateAgentWorkbenchLedger(`
-# G0
-
+    const result = validateAgentWorkbenchLedger(ledger(`
 ## 2026-05-30 09:00 CST - First Checkpoint
 
 Direction: converging
@@ -227,7 +294,7 @@ Acceptance Evidence:
 
 Regression Risk:
 - governance risk only
-`);
+`));
 
     assert.deepEqual(result.issues, [
       {
@@ -238,9 +305,7 @@ Regression Risk:
   });
 
   it("accepts a dated 24-hour review with the required review sections", () => {
-    const result = validateAgentWorkbenchLedger(`
-# G0
-
+    const result = validateAgentWorkbenchLedger(ledger(`
 ## 2026-05-30 09:00 CST - First Checkpoint
 
 Direction: converging
@@ -304,7 +369,7 @@ Acceptance Evidence:
 
 Regression Risk:
 - governance risk only
-`);
+`));
 
     assert.equal(result.checkpoints, 3);
     assert.deepEqual(result.issues, []);
