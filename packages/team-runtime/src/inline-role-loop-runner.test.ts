@@ -13,7 +13,7 @@ import type {
   TeamThread,
   TeamThreadStore,
 } from "@turnkeyai/core-types/team";
-import { normalizeRelayPayload } from "@turnkeyai/core-types/team";
+import { getRelayBrief, normalizeRelayPayload } from "@turnkeyai/core-types/team";
 
 import { InlineRoleLoopRunner } from "./inline-role-loop-runner";
 
@@ -206,6 +206,179 @@ test("inline role loop runner persists worker bindings returned by the role runt
 
   assert.deepEqual(boundSessions, [{ workerType: "browser", workerRunKey: "worker-run-1" }]);
   assert.deepEqual(runState.workerSessions, { browser: "worker-run-1" });
+});
+
+test("inline role loop runner nudges final allowed activation to synthesize before pausing", async () => {
+  const runKey = "role:role-lead:thread:thread-final-nudge";
+  const handoff: HandoffEnvelope = {
+    taskId: "task-final-nudge",
+    flowId: "flow-final-nudge",
+    sourceMessageId: "msg-user",
+    targetRoleId: "role-lead",
+    activationType: "mention",
+    threadId: "thread-final-nudge",
+    payload: normalizeRelayPayload({
+      threadId: "thread-final-nudge",
+      relayBrief: "Compare the evidence and answer.",
+      recentMessages: [],
+      dispatchPolicy: {
+        allowParallel: false,
+        allowReenter: true,
+        sourceFlowMode: "serial",
+      },
+    }),
+    createdAt: 1,
+  };
+
+  const runState: RoleRunState = {
+    runKey,
+    threadId: "thread-final-nudge",
+    roleId: "role-lead",
+    mode: "group",
+    status: "queued",
+    iterationCount: 1,
+    maxIterations: 2,
+    inbox: [handoff],
+    lastActiveAt: 1,
+  };
+
+  let activationBrief = "";
+  const replies: string[] = [];
+  const runner = new InlineRoleLoopRunner({
+    roleRunStore: {
+      async get(key) {
+        return key === runKey ? runState : null;
+      },
+      async put(next) {
+        Object.assign(runState, next);
+      },
+      async delete() {},
+      async listByThread() {
+        return [runState];
+      },
+    },
+    flowLedgerStore: {
+      async get() {
+        return {
+          flowId: "flow-final-nudge",
+          threadId: "thread-final-nudge",
+          rootMessageId: "msg-user",
+          mode: "serial",
+          status: "running",
+          currentStageIndex: 0,
+          activeRoleIds: ["role-lead"],
+          completedRoleIds: [],
+          failedRoleIds: [],
+          hopCount: 0,
+          maxHops: 5,
+          edges: [],
+          createdAt: 1,
+          updatedAt: 1,
+        };
+      },
+      async put() {},
+      async listByThread() {
+        return [];
+      },
+    },
+    teamThreadStore: {
+      async get() {
+        return {
+          threadId: "thread-final-nudge",
+          teamId: "team-1",
+          teamName: "Demo",
+          leadRoleId: "role-lead",
+          roles: [{ roleId: "role-lead", name: "Lead", seat: "lead", runtime: "local" }],
+          participantLinks: [],
+          metadataVersion: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        };
+      },
+      async list() {
+        return [];
+      },
+      async create() {
+        throw new Error("not used");
+      },
+      async update() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    },
+    teamMessageStore: {
+      async append() {},
+      async list() {
+        return [];
+      },
+      async get() {
+        return null;
+      },
+    } as TeamMessageStore,
+    roleRunCoordinator: {
+      async getOrCreate() {
+        return runState;
+      },
+      async enqueue(_, nextHandoff) {
+        runState.inbox.push(nextHandoff);
+        return runState;
+      },
+      async dequeue() {
+        return runState.inbox.shift() ?? null;
+      },
+      async ack(_, taskId) {
+        runState.lastDequeuedTaskId = taskId;
+      },
+      async bindWorkerSession() {},
+      async clearWorkerSession() {},
+      async setStatus(_, status) {
+        runState.status = status;
+      },
+      async incrementIteration() {
+        runState.iterationCount += 1;
+        return runState.iterationCount;
+      },
+      async fail() {
+        runState.status = "failed";
+      },
+      async finish() {
+        runState.status = "done";
+      },
+    },
+    roleRuntime: {
+      async runActivation(input) {
+        activationBrief = getRelayBrief(input.handoff.payload);
+        return {
+          status: "ok",
+          message: {
+            id: "msg-final-nudge",
+            threadId: "thread-final-nudge",
+            role: "assistant",
+            roleId: "role-lead",
+            name: "Lead",
+            content: "Final answer with residual risk.",
+            createdAt: 2,
+            updatedAt: 2,
+          },
+        };
+      },
+    },
+    onHandoffAck: async () => {},
+    onRoleReply: async ({ message }) => {
+      replies.push(message.content);
+    },
+    onRoleFailure: async () => {
+      throw new Error("not used");
+    },
+  });
+
+  await runner.ensureRunning(runKey);
+
+  assert.match(activationBrief, /Compare the evidence and answer/);
+  assert.match(activationBrief, /final allowed activation/i);
+  assert.match(activationBrief, /residual risk/i);
+  assert.deepEqual(replies, ["Final answer with residual risk."]);
+  assert.equal(runState.status, "idle");
 });
 
 test("inline role loop runner closes the active handoff when a role reaches its iteration limit", async () => {
