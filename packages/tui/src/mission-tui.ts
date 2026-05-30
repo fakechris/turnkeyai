@@ -80,7 +80,7 @@ export function parseMissionNewArgs(args: string): { title: string; desc: string
 
 export function formatMissionList(missions: Mission[], limit = 20): string[] {
   const safeMissions = Array.isArray(missions) ? missions.filter(isMissionRecord) : [];
-  const sorted = [...safeMissions].sort((a, b) => b.createdAtMs - a.createdAtMs || b.id.localeCompare(a.id));
+  const sorted = [...safeMissions].sort((a, b) => b.createdAtMs - a.createdAtMs || a.id.localeCompare(b.id));
   const boundedLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 20;
   const visible = sorted.slice(0, boundedLimit);
   const lines = [`Missions: ${visible.length}${missions.length > visible.length ? ` of ${missions.length}` : ""}`];
