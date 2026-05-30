@@ -44,6 +44,7 @@ const threadId = "thr.ui-smoke.1";
 const requestedPaths: string[] = [];
 const postedMissions: unknown[] = [];
 const postedMessages: unknown[] = [];
+const postedContextSources: unknown[] = [];
 const postedRecoveryActions: string[] = [];
 let onboardingState = onboardingStateFixture();
 const browserConsoleErrors: string[] = [];
@@ -473,9 +474,22 @@ try {
       await page.getByRole("button", { name: /Policies/ }).isDisabled(),
       "context policies action should be disabled until policy editing exists"
     );
+    await page.getByRole("button", { name: /Attach source/ }).click();
+    await page.waitForSelector(".context-attach-card");
+    await page.locator(".context-attach-card select").selectOption("folder");
+    await page.locator(".context-attach-card input").nth(0).fill("UI smoke workspace");
+    await page.locator(".context-attach-card input").nth(1).fill("/tmp/turnkeyai-ui-smoke");
+    await page.getByRole("button", { name: /^Attach$/ }).click();
+    await page.waitForSelector("text=Context source attached.");
+    assert(postedContextSources.length === 1, "context attach should POST one source");
+    assert(JSON.stringify(postedContextSources[0]) === JSON.stringify({
+      kind: "folder",
+      title: "UI smoke workspace",
+      path: "/tmp/turnkeyai-ui-smoke",
+    }), "context attach should POST the selected source payload");
     assert(
-      await page.getByRole("button", { name: /Attach source/ }).isDisabled(),
-      "context attach action should be disabled until a mutation route exists"
+      await page.locator(".ctx-row", { hasText: "UI smoke workspace" }).isVisible(),
+      "attached context source should appear after refetch"
     );
 
     await page.goto(`http://127.0.0.1:${port}/app#/runtime`, {
@@ -825,6 +839,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     json(res, contextSourcesFixture());
     return;
   }
+  if (method === "POST" && url.pathname === "/mission-context-sources") {
+    const body = await readJsonBody(req);
+    postedContextSources.push(body);
+    res.writeHead(201, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      id: "ctx.folder.manual.ui-smoke",
+      kind: "folder",
+      title: String((body as { title?: unknown }).title ?? ""),
+      url: String((body as { path?: unknown; url?: unknown }).path ?? (body as { url?: unknown }).url ?? ""),
+      state: "attached",
+      lastUse: "",
+      lastUseAtMs: 1_779_984_004_300,
+    }));
+    return;
+  }
   if (method === "POST" && url.pathname === `/missions/${missionId}/messages`) {
     postedMessages.push(await readJsonBody(req));
     res.writeHead(202, { "content-type": "application/json" });
@@ -1172,6 +1201,15 @@ function artifactsFixture() {
 }
 
 function contextSourcesFixture() {
+  const created = postedContextSources.map((body, index) => ({
+    id: `ctx.folder.manual.ui-smoke.${index + 1}`,
+    kind: "folder",
+    title: String((body as { title?: unknown }).title ?? ""),
+    url: String((body as { path?: unknown; url?: unknown }).path ?? (body as { url?: unknown }).url ?? ""),
+    state: "attached",
+    lastUse: "",
+    lastUseAtMs: 1_779_984_004_300 + index,
+  }));
   return [
     {
       id: "ctx.browser.session.browser-ui",
@@ -1192,6 +1230,7 @@ function contextSourcesFixture() {
       state: "idle",
       lastUse: "1h ago",
     },
+    ...created,
   ];
 }
 

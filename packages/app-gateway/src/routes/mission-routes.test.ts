@@ -573,6 +573,142 @@ describe("mission-routes", () => {
     }
   });
 
+  it("POST /mission-context-sources registers a manual document source", async () => {
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      const { res, getStatus, getJson } = createResponse();
+      await handleMissionRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/mission-context-sources",
+          body: {
+            kind: "doc",
+            title: " Launch notes ",
+            path: " /Users/alice/work/launch.md ",
+            writer: "agent.doc",
+          },
+        }),
+        res,
+        url: new URL("http://127.0.0.1/mission-context-sources"),
+        deps,
+      });
+
+      assert.equal(getStatus(), 201);
+      const created = getJson() as { id: string; kind: string; title: string; url: string; state: string; writer: string };
+      assert.match(created.id, /^ctx\.doc\.manual\.\d+\.launch-notes$/);
+      assert.equal(created.kind, "doc");
+      assert.equal(created.title, "Launch notes");
+      assert.equal(created.url, "/Users/alice/work/launch.md");
+      assert.equal(created.state, "attached");
+      assert.equal(created.writer, "agent.doc");
+
+      const list = await deps.contextSourceRegistry.list();
+      assert.equal(list.length, 1);
+      assert.equal(list[0]?.id, created.id);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it("POST /mission-context-sources dedupes on Idempotency-Key", async () => {
+    const { createRouteIdempotencyStore } = await import("../idempotency-store");
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      const idempotencyStore = createRouteIdempotencyStore({ now: () => 1000 });
+      const request = {
+        kind: "folder",
+        title: "Workspace",
+        path: "/Users/alice/work",
+      };
+
+      const first = createResponse();
+      await handleMissionRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/mission-context-sources",
+          headers: { "idempotency-key": "ctx-1" },
+          body: request,
+        }),
+        res: first.res,
+        url: new URL("http://127.0.0.1/mission-context-sources"),
+        deps: { ...deps, idempotencyStore },
+      });
+      assert.equal(first.getStatus(), 201);
+
+      const replay = createResponse();
+      await handleMissionRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/mission-context-sources",
+          headers: { "idempotency-key": "ctx-1" },
+          body: request,
+        }),
+        res: replay.res,
+        url: new URL("http://127.0.0.1/mission-context-sources"),
+        deps: { ...deps, idempotencyStore },
+      });
+      assert.equal(replay.getStatus(), 201);
+      assert.deepEqual(replay.getJson(), first.getJson());
+
+      const list = await deps.contextSourceRegistry.list();
+      assert.equal(list.length, 1, "retry with same idempotency-key must not double-register");
+
+      const collide = createResponse();
+      await handleMissionRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/mission-context-sources",
+          headers: { "idempotency-key": "ctx-1" },
+          body: { ...request, path: "/Users/alice/other-work" },
+        }),
+        res: collide.res,
+        url: new URL("http://127.0.0.1/mission-context-sources"),
+        deps: { ...deps, idempotencyStore },
+      });
+      assert.equal(collide.getStatus(), 409);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it("POST /mission-context-sources validates manual context input", async () => {
+    const t = tmpDir();
+    try {
+      const deps = composeMissionDeps({ dataDir: t.dir, clock });
+      const invalidKind = createResponse();
+      await handleMissionRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/mission-context-sources",
+          body: { kind: "browser", title: "Live tab", url: "https://example.com" },
+        }),
+        res: invalidKind.res,
+        url: new URL("http://127.0.0.1/mission-context-sources"),
+        deps,
+      });
+      assert.equal(invalidKind.getStatus(), 400);
+      assert.deepEqual(invalidKind.getJson(), { error: "kind must be doc, folder, api, or desktop" });
+
+      const missingPath = createResponse();
+      await handleMissionRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/mission-context-sources",
+          body: { kind: "folder", title: "Workspace" },
+        }),
+        res: missingPath.res,
+        url: new URL("http://127.0.0.1/mission-context-sources"),
+        deps,
+      });
+      assert.equal(missingPath.getStatus(), 400);
+      assert.deepEqual(missingPath.getJson(), { error: "url or path is required" });
+    } finally {
+      t.cleanup();
+    }
+  });
+
   // PR K3.5 — mission lifecycle (create → run → follow-up).
   describe("POST /missions + /missions/:id/messages (K3.5)", () => {
     function buildOrchestrator() {

@@ -729,6 +729,26 @@ export function useContextSources(fallback: ContextSource[]): RemoteData<Context
   return useRemote<ContextSource[]>("/mission-context-sources", fallback);
 }
 
+export function useCreateContextSource(): (input: {
+  kind: ContextSource["kind"];
+  title: string;
+  url?: string;
+  path?: string;
+  state?: string;
+}) => Promise<ContextSource> {
+  const client = useApiClient();
+  return useCallback(
+    (input: {
+      kind: ContextSource["kind"];
+      title: string;
+      url?: string;
+      path?: string;
+      state?: string;
+    }) => client.post<ContextSource>("/mission-context-sources", input),
+    [client]
+  );
+}
+
 /**
  * Imperatively populate the daemon with the design's fixture missions.
  * Returns a stable function the caller can invoke from a button click.

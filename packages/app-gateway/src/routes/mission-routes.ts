@@ -1,4 +1,4 @@
-// Mission Control READ endpoints (PR K2).
+// Mission Control endpoints.
 //
 //   GET  /missions                          → Mission[]
 //   GET  /missions/:id                      → Mission
@@ -11,10 +11,12 @@
 //   GET  /approvals                         → ApprovalRequest[]  (global queue)
 //   GET  /mission-agents                    → Agent[]
 //   GET  /mission-context-sources           → ContextSource[]
+//   POST /mission-context-sources           → register manual ContextSource
 //   POST /missions/bootstrap-demo           → upsert design fixtures
 //
-// All routes are `read` scoped (see daemon-auth.ts) except
-// /missions/bootstrap-demo which is `operator` — it writes data.
+// Read routes are `read` scoped (see daemon-auth.ts); mutation routes
+// such as /mission-context-sources and /missions/bootstrap-demo are
+// `operator` scoped because they write data.
 //
 // Mission creation, mission follow-up messages, and approval decisions
 // are mutation routes; the remaining mission surfaces are read-mostly
@@ -28,6 +30,8 @@ import type {
   AgentRegistry,
   ApprovalRequestStore,
   ArtifactStore,
+  ContextKind,
+  ContextSource,
   ContextSourceRegistry,
   Mission,
   MissionId,
@@ -179,6 +183,60 @@ export async function handleMissionRoutes(input: {
     ];
     sendJson(res, 200, merged);
     return true;
+  }
+
+  if (method === "POST" && pathname === "/mission-context-sources") {
+    const bodyResult = await readJsonBodySafe<{
+      kind?: unknown;
+      title?: unknown;
+      url?: unknown;
+      path?: unknown;
+      state?: unknown;
+      writer?: unknown;
+    }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const kind = readManualContextKind(bodyResult.value.kind);
+    if (!kind) {
+      sendJson(res, 400, { error: "kind must be doc, folder, api, or desktop" });
+      return true;
+    }
+    const title = readNonEmptyString(bodyResult.value.title);
+    if (!title) {
+      sendJson(res, 400, { error: "title is required" });
+      return true;
+    }
+    const urlOrPath = readNonEmptyString(bodyResult.value.url) ?? readNonEmptyString(bodyResult.value.path);
+    if (!urlOrPath) {
+      sendJson(res, 400, { error: "url or path is required" });
+      return true;
+    }
+    const state = readNonEmptyString(bodyResult.value.state) ?? defaultContextSourceState(kind);
+    const writer = readNonEmptyString(bodyResult.value.writer);
+
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: "mission-context-sources:create",
+      fingerprint: { kind, title, url: urlOrPath, state, writer },
+      execute: async () => {
+        const existing = await deps.contextSourceRegistry.list();
+        const source = buildManualContextSource({
+          existing,
+          kind,
+          title,
+          url: urlOrPath,
+          state,
+          writer,
+          nowMs: deps.clock.now(),
+        });
+        await deps.contextSourceRegistry.replaceAll([...existing, source]);
+        return { statusCode: 201, body: source };
+      },
+    });
   }
 
   if (method === "GET" && pathname === "/approvals") {
@@ -701,6 +759,8 @@ const VALID_MODES = new Set([
   "custom",
 ]);
 
+const MANUAL_CONTEXT_KINDS = new Set<ContextKind>(["doc", "folder", "api", "desktop"]);
+
 function readString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
@@ -709,6 +769,54 @@ function readNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function readManualContextKind(value: unknown): ContextKind | null {
+  if (typeof value !== "string") return null;
+  return MANUAL_CONTEXT_KINDS.has(value as ContextKind) ? (value as ContextKind) : null;
+}
+
+function defaultContextSourceState(kind: ContextKind): string {
+  return kind === "api" ? "ready" : "attached";
+}
+
+function buildManualContextSource(input: {
+  existing: ContextSource[];
+  kind: ContextKind;
+  title: string;
+  url: string;
+  state: string;
+  writer: string | null;
+  nowMs: number;
+}): ContextSource {
+  const baseId = `ctx.${input.kind}.manual.${input.nowMs}.${slugifyContextSource(input.title)}`;
+  const taken = new Set(input.existing.map((source) => source.id));
+  let id = baseId;
+  let suffix = 2;
+  while (taken.has(id)) {
+    id = `${baseId}.${suffix}`;
+    suffix += 1;
+  }
+  return {
+    id,
+    kind: input.kind,
+    title: input.title,
+    url: input.url,
+    state: input.state,
+    lastUse: "",
+    lastUseAtMs: input.nowMs,
+    ...(input.writer ? { writer: input.writer } : {}),
+  };
+}
+
+function slugifyContextSource(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  return slug || "source";
 }
 
 function encodeTimelineCursor(event: ActivityEvent): string {
