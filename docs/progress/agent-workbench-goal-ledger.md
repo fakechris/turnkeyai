@@ -2180,3 +2180,59 @@ Regression Risk:
   cleaner than the underlying evidence. The next hardening step should consider
   worker-owned source labels for browser/explore outputs so the runtime can
   verify labels independently of the lead's call arguments.
+
+## 2026-05-31 03:31 CST - Browser-Backed Mission Acceptance
+
+Direction: converging
+
+Execution Kernel:
+- No runtime code changed in this checkpoint.
+- The current execution kernel completed two browser-backed mission scenarios
+  through real LLM tool-use, browser child sessions, durable tool results, and
+  mission completion reconciliation without stuck creating/working state.
+
+Result Quality:
+- Both browser-backed scenarios passed all mission quality checks:
+  final-answer presence, evidence-backed output, residual-risk wording, answer
+  substance, evidence usage, unsupported-uncertainty guard, tool-fallback guard,
+  runtime liveness, and failure-free status.
+- These scenarios are single-source browser evidence checks, so
+  `source_coverage` correctly had no multi-source requirement. Multi-source
+  source coverage was separately proven in the previous checkpoint.
+
+Workbench UX:
+- No visual UI changed.
+- Runtime validation-ops now has a focused real record for browser-backed
+  missions that can be inspected from Release acceptance surfaces.
+
+Browser Reliability:
+- Browser-backed mission evidence improved from unproven to locally validated
+  for two fixture classes:
+  browser-rendered dynamic DOM extraction and browser-rendered dashboard triage.
+- This is still not a full raw-CDP/browser reliability claim. It does not cover
+  profile-lock recovery, remote CDP endpoint outages, popup-heavy pages, or the
+  full release gate with provider-native browser tool-use enabled.
+
+Acceptance Evidence:
+- Command:
+  `npm run acceptance:real -- --skip-tooluse --mission-scenarios
+  browser-dynamic,browser-dashboard --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --cdp-timeout-ms 45000`
+- Result: passed in 64109ms.
+- Validation run:
+  `validation-ops:real-llm-acceptance:2026-05-30T19-29-44-010Z:bmhowp`
+- Artifact:
+  `/Users/chris/.turnkeyai/data/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T19-29-44-010Z%3Abmhowp-mission-e2e.json`
+- `browser-dynamic`: mission `msn.mpsqw07q.1`, status `done`,
+  quality `passed`, tools `1/1`, sessions `1/0`, liveness `0/0/0`,
+  evidence events `1`, final bytes `331`, final bullets `3`.
+- `browser-dashboard`: mission `msn.mpsqwrea.2`, status `done`,
+  quality `passed`, tools `1/1`, sessions `1/0`, liveness `0/0/0`,
+  evidence events `1`, final bytes `502`, final bullets `4`.
+
+Regression Risk:
+- This checkpoint is evidence-only. It reduces uncertainty about local
+  browser-backed mission delivery but does not reduce code-level risk by itself.
+- Remaining acceptance gap: run the full release gate or a browser-focused gate
+  that includes profile/CDP failure injection and provider-native browser
+  tool-use before claiming broad browser reliability.
