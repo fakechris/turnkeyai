@@ -154,6 +154,40 @@ describe("doctor", () => {
     }
   });
 
+  it("points launchd users at explicit env capture when the shell has the missing provider key", async () => {
+    const server = await startHealthServer({
+      models: {
+        defaultSelection: {
+          ok: true,
+          chainId: "lead_reasoning",
+          primaryModelId: "minimax-m2",
+          fallbackModelIds: [],
+        },
+        models: [
+          { id: "minimax-m2", configured: false, apiKeyEnv: "MINIMAX_API_KEY" },
+        ],
+      },
+    });
+    const home = await mkdtemp(path.join(tmpdir(), "turnkeyai-doctor-service-env-"));
+    try {
+      await writeConfig(home, { token: "test-token", port: server.port, transportMode: "local" });
+      const result = await runCli(["doctor"], {
+        TURNKEYAI_HOME: home,
+        TURNKEYAI_DAEMON_URL: `http://127.0.0.1:${server.port}`,
+        MINIMAX_API_KEY: "shell-key-present",
+      });
+
+      assert.equal(result.code, 1);
+      assert.match(result.stdout, /primary minimax-m2 missing key MINIMAX_API_KEY/);
+      if (process.platform === "darwin") {
+        assert.match(result.stdout, /turnkeyai daemon service install --capture-env/);
+      }
+    } finally {
+      server.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("warns when only fallback model provider keys are missing", async () => {
     const server = await startHealthServer({
       models: {

@@ -7,7 +7,9 @@ import assert from "node:assert/strict";
 import {
   buildDaemonServiceScript,
   buildMacLaunchAgentPlist,
+  collectDaemonServiceCapturedEnv,
   isTransientLaunchctlBootstrapError,
+  mergeDaemonEnvContent,
   resolveDaemonLaunchCommand,
   resolveDaemonWorkingDirectory,
 } from "./daemon-commands";
@@ -104,6 +106,40 @@ describe("daemon service artifacts", () => {
     assert.match(script, /ENV_FILE=\/Users\/alice\/\.turnkeyai\/daemon\.env/);
     assert.match(script, /\. "\$ENV_FILE"/);
     assert.match(script, /exec \/Users\/alice\/\.nvm\/versions\/node\/v24\.13\.0\/bin\/node --import tsx \/Users\/alice\/workspace\/turnkeyai\/packages\/app-gateway\/src\/daemon\.ts/);
+  });
+
+  it("captures only known non-empty provider env for explicit service installs", () => {
+    assert.deepEqual(
+      collectDaemonServiceCapturedEnv({
+        MINIMAX_API_KEY: " mini-key ",
+        OPENAI_API_KEY: "",
+        RANDOM_SECRET: "do-not-copy",
+      }),
+      { MINIMAX_API_KEY: "mini-key" }
+    );
+  });
+
+  it("merges captured provider env into daemon.env without duplicating active keys", () => {
+    const merged = mergeDaemonEnvContent(
+      [
+        "# TurnkeyAI daemon service environment.",
+        "MINIMAX_API_KEY='old'",
+        "export OPENAI_API_KEY='old-openai'",
+        "# ANTHROPIC_API_KEY=example",
+        "",
+      ].join("\n"),
+      {
+        MINIMAX_API_KEY: "new'mini",
+        OPENAI_API_KEY: "new-openai",
+      }
+    );
+
+    assert.doesNotMatch(merged, /MINIMAX_API_KEY='old'/);
+    assert.doesNotMatch(merged, /export OPENAI_API_KEY='old-openai'/);
+    assert.match(merged, /# ANTHROPIC_API_KEY=example/);
+    assert.match(merged, /# Captured by `turnkeyai daemon service install --capture-env`\./);
+    assert.match(merged, /MINIMAX_API_KEY='new'\\''mini'/);
+    assert.match(merged, /OPENAI_API_KEY='new-openai'/);
   });
 
   it("resolves source-checkout working directory from daemon.ts", () => {

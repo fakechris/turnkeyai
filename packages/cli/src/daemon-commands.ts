@@ -727,6 +727,64 @@ function currentServiceEnvironment(paths: DaemonRuntimePaths): Record<string, st
   };
 }
 
+const DAEMON_ENV_CAPTURE_KEYS = [
+  "MINIMAX_API_KEY",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "MISTRAL_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "OPENROUTER_API_KEY",
+  "XAI_API_KEY",
+  "GROQ_API_KEY",
+  "TOGETHER_API_KEY",
+  "FIREWORKS_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "AZURE_OPENAI_ENDPOINT",
+] as const;
+
+export function collectDaemonServiceCapturedEnv(
+  env: NodeJS.ProcessEnv = process.env
+): Record<string, string> {
+  const captured: Record<string, string> = {};
+  for (const key of DAEMON_ENV_CAPTURE_KEYS) {
+    const value = env[key]?.trim();
+    if (value) captured[key] = value;
+  }
+  return captured;
+}
+
+export function mergeDaemonEnvContent(
+  existingContent: string,
+  captured: Record<string, string>
+): string {
+  const entries = Object.entries(captured)
+    .filter(([, value]) => value.trim())
+    .sort(([left], [right]) => left.localeCompare(right));
+  if (entries.length === 0) return existingContent;
+  const keys = new Set(entries.map(([key]) => key));
+  const lines = existingContent.split(/\r?\n/);
+  const filtered = lines.filter((line) => {
+    const match = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)=/);
+    return !match || !keys.has(match[1] ?? "");
+  });
+  while (filtered.length > 0 && filtered[filtered.length - 1] === "") {
+    filtered.pop();
+  }
+  return [
+    ...filtered,
+    "",
+    "# Captured by `turnkeyai daemon service install --capture-env`.",
+    ...entries.map(([key, value]) => `${key}=${quoteShValue(value)}`),
+    "",
+  ].join("\n");
+}
+
+function quoteShValue(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 function buildDaemonEnvTemplate(): string {
   return [
     "# TurnkeyAI daemon service environment.",
@@ -735,6 +793,7 @@ function buildDaemonEnvTemplate(): string {
     "# Keep this file mode 0600.",
     "",
     "# Example:",
+    "# MINIMAX_API_KEY=...",
     "# OPENAI_API_KEY=sk-...",
     "# ANTHROPIC_API_KEY=sk-ant-...",
     "# TURNKEYAI_BROWSER_TRANSPORT=local",
@@ -743,9 +802,14 @@ function buildDaemonEnvTemplate(): string {
   ].join("\n");
 }
 
-async function ensureDaemonEnvFile(paths: DaemonServicePaths): Promise<void> {
-  if (!existsSync(paths.envFile)) {
-    await writeFile(paths.envFile, buildDaemonEnvTemplate(), { mode: 0o600 });
+async function ensureDaemonEnvFile(paths: DaemonServicePaths, input: { captureEnv: boolean }): Promise<void> {
+  const exists = existsSync(paths.envFile);
+  const content = exists ? readFileSync(paths.envFile, "utf8") : buildDaemonEnvTemplate();
+  const nextContent = input.captureEnv
+    ? mergeDaemonEnvContent(content, collectDaemonServiceCapturedEnv())
+    : content;
+  if (!exists || nextContent !== content) {
+    await writeFile(paths.envFile, nextContent, { mode: 0o600 });
   }
   await chmod(paths.envFile, 0o600);
 }
@@ -756,13 +820,14 @@ export async function runDaemonServiceInstall(args: string[]): Promise<void> {
     process.exit(1);
   }
   const noStart = args.includes("--no-start");
+  const captureEnv = args.includes("--capture-env");
   const paths = getRuntimePaths();
   const service = getDaemonServicePaths(paths);
   const launch = resolveDaemonLaunchCommand();
   await mkdir(path.dirname(service.wrapperFile), { recursive: true });
   await mkdir(path.dirname(service.launchAgentFile), { recursive: true });
   await mkdir(paths.logsDir, { recursive: true });
-  await ensureDaemonEnvFile(service);
+  await ensureDaemonEnvFile(service, { captureEnv });
   await writeFile(service.wrapperFile, buildDaemonServiceScript({ launch, envFile: service.envFile }), { mode: 0o700 });
   await chmod(service.wrapperFile, 0o700);
   await writeFile(
@@ -791,6 +856,14 @@ export async function runDaemonServiceInstall(args: string[]): Promise<void> {
   console.log(`daemon service installed: ${service.launchAgentFile}`);
   console.log(`wrapper: ${service.wrapperFile}`);
   console.log(`env:     ${service.envFile}`);
+  if (captureEnv) {
+    const captured = Object.keys(collectDaemonServiceCapturedEnv());
+    console.log(
+      captured.length > 0
+        ? `captured env: ${captured.join(", ")}`
+        : "captured env: none (no known provider keys were set in this shell)"
+    );
+  }
   if (noStart) {
     console.log("start:   launchctl bootstrap " + `gui/${process.getuid?.() ?? 501} ${service.launchAgentFile}`);
   } else {
@@ -836,7 +909,7 @@ export function runDaemonServiceHelp(exitCode: number): never {
     "TurnkeyAI daemon service",
     "",
     "Usage:",
-    "  turnkeyai daemon service install [--no-start]",
+    "  turnkeyai daemon service install [--no-start] [--capture-env]",
     "  turnkeyai daemon service uninstall",
     "  turnkeyai daemon service status",
     "",
@@ -847,6 +920,7 @@ export function runDaemonServiceHelp(exitCode: number): never {
     "",
     "Notes:",
     "  daemon.env is loaded before the daemon starts; put model/browser env vars there for persistent service runs.",
+    "  --capture-env writes known provider API keys from the current shell into daemon.env (0600).",
   ];
   (exitCode === 0 ? console.log : console.error)(lines.join("\n"));
   process.exit(exitCode);
