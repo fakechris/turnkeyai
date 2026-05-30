@@ -11,7 +11,17 @@ test("buildMissionObservabilitySnapshot summarizes mission tool/session quality 
     event("user-1", "plan", 1_000, "user", "Compare products."),
     tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
     tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
-    event("final-1", "thought", 5_000, "role-lead", "Final answer with residual risk and evidence-backed summary."),
+    event(
+      "final-1",
+      "thought",
+      5_000,
+      "role-lead",
+      [
+        "Final answer based on verified source evidence from the tool result.",
+        "The comparison is evidence-backed, the observed claim is confirmed by the gathered result, and the residual risk is limited to any source updates after this run.",
+        "No unsupported future pricing or adoption claim is included.",
+      ].join(" ")
+    ),
   ];
 
   const snapshot = buildMissionObservabilitySnapshot({ mission, events, nowMs: 6_000 });
@@ -100,7 +110,13 @@ test("buildMissionObservabilitySnapshot lets terminal task progress dominate lat
     nowMs: 20_000,
     events: [
       tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
-      event("final-1", "thought", 5_000, "role-lead", "Final answer with residual risk."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Final answer based on source evidence, with residual risk noted for unverified follow-up scope."
+      ),
     ],
     progressEvents: [
       progress("role:lead", "role_run", "started", "alive", 10_000, 15_000, "Lead started.", "task-1"),
@@ -223,7 +239,13 @@ test("buildMissionObservabilitySnapshot counts approval decisions without double
         tags: ["approved", "permission.applied"],
       },
       tool("result-1", 4_500, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
-      event("final-1", "thought", 5_000, "role-lead", "Final answer with residual risk."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Final answer based on source evidence, with residual risk noted for unverified follow-up scope."
+      ),
     ],
   });
 
@@ -233,6 +255,50 @@ test("buildMissionObservabilitySnapshot counts approval decisions without double
     applied: 1,
   });
   assert.equal(snapshot.qualityGate.status, "passed");
+});
+
+test("buildMissionObservabilitySnapshot flags weak tool-backed final answers", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
+      event("final-1", "thought", 5_000, "role-lead", "Probably useful. Details are TBD and need confirmation."),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "needs_attention");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "answer_substance")?.status, "warn");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "evidence_usage")?.status, "warn");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "unsupported_uncertainty")?.status, "warn");
+});
+
+test("buildMissionObservabilitySnapshot passes substantive evidence-backed final answers", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Based on the verified browser evidence and tool result, the task is complete.",
+          "The source evidence supports the main recommendation, the observed workflow completed, and the remaining residual risk is limited to any data that changed after the browser capture.",
+          "The answer distinguishes confirmed observations from unverified future changes.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "answer_substance")?.status, "pass");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "evidence_usage")?.status, "pass");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "unsupported_uncertainty")?.status, "pass");
 });
 
 function baseMission(overrides: Partial<Mission> = {}): Mission {
