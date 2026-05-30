@@ -297,6 +297,11 @@ export function buildSessionToolDefinitions(
         additionalProperties: false,
         properties: {
           session_key: { type: "string" },
+          cursor: {
+            type: "string",
+            description:
+              "Opaque cursor returned by a previous sessions_history call. Prefer this over offset for long transcripts.",
+          },
           offset: { type: "number", minimum: 0 },
           limit: { type: "number", minimum: 1 },
           include_tools: { type: "boolean" },

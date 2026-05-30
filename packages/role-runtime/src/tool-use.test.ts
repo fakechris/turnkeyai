@@ -26,13 +26,14 @@ test("sessions tool definitions only advertise registered worker kinds when prov
     properties?: { agent_id?: { enum?: string[] }; kinds?: { items?: { enum?: string[] } } };
   };
   const historySchema = history?.inputSchema as {
-    properties?: { tail?: { type?: string } };
+    properties?: { cursor?: { type?: string }; tail?: { type?: string } };
   };
   assert.deepEqual(spawnSchema.properties?.agent_id?.enum, ["browser", "explore", "finance"]);
   assert.equal(spawnSchema.properties?.timeout_seconds?.minimum, 0.001);
   assert.equal(spawnSchema.properties?.timeout_seconds?.maximum, 1800);
   assert.deepEqual(listSchema.properties?.agent_id?.enum, ["browser", "explore", "finance"]);
   assert.deepEqual(listSchema.properties?.kinds?.items?.enum, ["browser", "explore", "finance"]);
+  assert.equal(historySchema.properties?.cursor?.type, "string");
   assert.equal(historySchema.properties?.tail?.type, "boolean");
 });
 
@@ -2320,6 +2321,191 @@ test("sessions_history can read the latest entries with tail=true", async () => 
   assert.equal(body.has_more, false);
   assert.deepEqual(body.messages.map((message) => message.id), ["history-3"]);
   assert.equal(body.messages[0]?.content, "Final evidence ledger.");
+});
+
+test("sessions_history returns opaque cursors for long transcript pagination", async () => {
+  const history = Array.from({ length: 5 }, (_, index) => ({
+    id: `history-${index + 1}`,
+    role: "assistant" as const,
+    content: `Entry ${index + 1}.`,
+    createdAt: 100 + index,
+    taskId: "task-1",
+  }));
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:cursor",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+          },
+          state: {
+            workerRunKey: "worker:explore:cursor",
+            workerType: "explore",
+            status: "done",
+            createdAt: 90,
+            updatedAt: 120,
+            history,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:cursor",
+        workerType: "explore",
+        status: "done",
+        createdAt: 90,
+        updatedAt: 120,
+        history,
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime });
+  const packet: RolePromptPacket = {
+    roleId: "role-lead",
+    roleName: "Lead",
+    seat: "lead",
+    systemPrompt: "Lead.",
+    taskPrompt: "Read history.",
+    outputContract: "Return result.",
+    suggestedMentions: [],
+  };
+
+  const first = await executor.execute({
+    call: {
+      id: "call-history-1",
+      name: "sessions_history",
+      input: {
+        session_key: "worker:explore:cursor",
+        limit: 2,
+      },
+    },
+    activation: buildActivation(),
+    packet,
+  });
+  const firstBody = JSON.parse(first.content) as {
+    messages: Array<{ id: string }>;
+    has_more_after: boolean;
+    next_cursor: string | null;
+    has_more_before: boolean;
+    previous_cursor: string | null;
+  };
+  assert.deepEqual(firstBody.messages.map((message) => message.id), ["history-1", "history-2"]);
+  assert.equal(firstBody.has_more_after, true);
+  assert.ok(firstBody.next_cursor);
+  assert.equal(firstBody.has_more_before, false);
+  assert.equal(firstBody.previous_cursor, null);
+
+  const second = await executor.execute({
+    call: {
+      id: "call-history-2",
+      name: "sessions_history",
+      input: {
+        session_key: "worker:explore:cursor",
+        limit: 2,
+        cursor: firstBody.next_cursor,
+      },
+    },
+    activation: buildActivation(),
+    packet,
+  });
+  const secondBody = JSON.parse(second.content) as {
+    messages: Array<{ id: string }>;
+    offset: number;
+    has_more_after: boolean;
+    next_cursor: string | null;
+    has_more_before: boolean;
+    previous_cursor: string | null;
+  };
+  assert.deepEqual(secondBody.messages.map((message) => message.id), ["history-3", "history-4"]);
+  assert.equal(secondBody.offset, 2);
+  assert.equal(secondBody.has_more_after, true);
+  assert.ok(secondBody.next_cursor);
+  assert.equal(secondBody.has_more_before, true);
+  assert.ok(secondBody.previous_cursor);
+});
+
+test("sessions_history rejects malformed or cross-session cursors", async () => {
+  const history = [
+    {
+      id: "history-1",
+      role: "assistant" as const,
+      content: "Entry.",
+      createdAt: 100,
+      taskId: "task-1",
+    },
+  ];
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:cursor",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+          },
+          state: {
+            workerRunKey: "worker:explore:cursor",
+            workerType: "explore",
+            status: "done",
+            createdAt: 90,
+            updatedAt: 120,
+            history,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:cursor",
+        workerType: "explore",
+        status: "done",
+        createdAt: 90,
+        updatedAt: 120,
+        history,
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime });
+  const crossSessionCursor = Buffer.from(
+    JSON.stringify({ v: 1, session_key: "worker:explore:other", offset: 1 }),
+    "utf8"
+  ).toString("base64url");
+  const packet: RolePromptPacket = {
+    roleId: "role-lead",
+    roleName: "Lead",
+    seat: "lead",
+    systemPrompt: "Lead.",
+    taskPrompt: "Read history.",
+    outputContract: "Return result.",
+    suggestedMentions: [],
+  };
+
+  for (const cursor of ["not-a-cursor", crossSessionCursor]) {
+    const result = await executor.execute({
+      call: {
+        id: "call-history-bad-cursor",
+        name: "sessions_history",
+        input: {
+          session_key: "worker:explore:cursor",
+          limit: 2,
+          cursor,
+        },
+      },
+      activation: buildActivation(),
+      packet,
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content, /sessions_history cursor is invalid/);
+  }
 });
 
 test("sessions_history falls back to legacy lastResult when durable history is absent", async () => {

@@ -1275,14 +1275,21 @@ async function executeSessionsHistory(
   }
   const limit = positiveInteger(input.call.input.limit) ?? 50;
   const history = readWorkerSessionTranscript(sessionKey, state);
-  const tail = input.call.input.tail === true;
+  const decodedCursor = decodeSessionHistoryCursor(requiredString(input.call.input.cursor), sessionKey);
+  if (decodedCursor === "invalid") {
+    return errorResult(input.call, "sessions_history cursor is invalid");
+  }
+  const tail = decodedCursor === null && input.call.input.tail === true;
   const requestedOffset = nonNegativeInteger(input.call.input.offset);
   const offset = tail
     ? Math.max(history.length - limit, 0)
-    : requestedOffset ?? 0;
+    : decodedCursor?.offset ?? requestedOffset ?? 0;
   const messages = history
     .slice(offset, offset + limit)
     .map((entry) => serializeWorkerHistoryEntry(entry, input.call.input.include_tools === true));
+  const nextOffset = offset + messages.length;
+  const hasMore = nextOffset < history.length;
+  const hasMoreBefore = offset > 0;
   return {
     toolCallId: input.call.id,
     toolName: input.call.name,
@@ -1294,7 +1301,11 @@ async function executeSessionsHistory(
         offset,
         limit,
         tail,
-        has_more: offset + messages.length < history.length,
+        has_more: hasMore,
+        has_more_after: hasMore,
+        next_cursor: hasMore ? encodeSessionHistoryCursor(sessionKey, nextOffset) : null,
+        has_more_before: hasMoreBefore,
+        previous_cursor: hasMoreBefore ? encodeSessionHistoryCursor(sessionKey, Math.max(offset - limit, 0)) : null,
         messages,
       },
       null,
@@ -1792,6 +1803,28 @@ function isLlmSubAgentSession(state: WorkerSessionState | null): boolean {
 
 function isLlmSubAgentPayload(value: unknown): boolean {
   return isRecord(value) && value.mode === "llm_sub_agent";
+}
+
+function encodeSessionHistoryCursor(sessionKey: string, offset: number): string {
+  return Buffer.from(JSON.stringify({ v: 1, session_key: sessionKey, offset }), "utf8").toString("base64url");
+}
+
+function decodeSessionHistoryCursor(
+  value: string | null,
+  sessionKey: string
+): { offset: number } | "invalid" | null {
+  if (!value) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as unknown;
+    if (!isRecord(decoded)) return "invalid";
+    const offset = nonNegativeInteger(decoded.offset);
+    if (decoded.v !== 1 || decoded.session_key !== sessionKey || offset === null) {
+      return "invalid";
+    }
+    return { offset };
+  } catch {
+    return "invalid";
+  }
 }
 
 function requiredString(value: unknown): string | null {

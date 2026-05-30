@@ -200,11 +200,12 @@ The implementation now includes:
 - Cursor-page timeline reads for long Mission Detail replay (`/missions/:id/timeline?page=true&cursor=...`) while preserving the legacy array response for existing clients.
 - Browser sub-agent private tools (`browser_open`, `browser_snapshot`, `browser_act`, `browser_scroll`, `browser_console`, `browser_screenshot`) exposed only inside the browser sub-agent loop, not to the lead role by default.
 - Mission Detail trace filtering and older-page loading so long tool-heavy timelines can be inspected without hiding the final answer.
+- Cursor-token pagination for long `sessions_history` transcripts, with legacy `offset` / `tail` parameters preserved for existing callers.
 
 ## 10. Remaining Hardening
 
 This is not the final product surface. Remaining work is operational hardening:
 
-- Add cursor-token pagination for very long sub-session histories if offset/tail-based `sessions_history` becomes too slow or too expensive for production transcripts.
+- Add store-level streaming reads for very large worker transcript files if full session-state hydration becomes too expensive in production.
 
 The key architectural decision is fixed: TurnkeyAI's core tool-use path is model-native and session-native, not prompt-only and not browser-bridge-only.
