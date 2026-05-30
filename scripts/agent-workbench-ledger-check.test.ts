@@ -105,4 +105,208 @@ Regression Risk:
       },
     ]);
   });
+
+  it("requires a dated 24-hour review once checkpoints span at least one day", () => {
+    const result = validateAgentWorkbenchLedger(`
+# G0
+
+## 2026-05-30 09:00 CST - First Checkpoint
+
+Direction: converging
+
+Execution Kernel:
+- no runtime change
+
+Result Quality:
+- no answer synthesis change
+
+Workbench UX:
+- terminal entry improved
+
+Browser Reliability:
+- no transport change
+
+Acceptance Evidence:
+- focused checks passed
+
+Regression Risk:
+- formatting risk only
+
+## 2026-05-31 09:01 CST - Next Checkpoint
+
+Direction: unknown
+
+Execution Kernel:
+- no runtime change
+
+Result Quality:
+- no answer synthesis change
+
+Workbench UX:
+- no UI change
+
+Browser Reliability:
+- no transport change
+
+Acceptance Evidence:
+- no real acceptance ran
+
+Regression Risk:
+- governance risk only
+`);
+
+    assert.equal(result.checkpoints, 2);
+    assert.deepEqual(result.issues, [
+      {
+        checkpoint: "ledger",
+        message: "missing dated 24-Hour Goal Review within a 24-hour ledger window",
+      },
+    ]);
+  });
+
+  it("rejects stale 24-hour reviews that leave an earlier unreviewed window", () => {
+    const result = validateAgentWorkbenchLedger(`
+# G0
+
+## 2026-05-30 09:00 CST - First Checkpoint
+
+Direction: converging
+
+Execution Kernel:
+- no runtime change
+
+Result Quality:
+- no answer synthesis change
+
+Workbench UX:
+- terminal entry improved
+
+Browser Reliability:
+- no transport change
+
+Acceptance Evidence:
+- focused checks passed
+
+Regression Risk:
+- formatting risk only
+
+## 2026-05-31 09:30 CST - 24-Hour Goal Review
+
+Direction: oscillating
+
+Repeated Issue Classes:
+- execution loops or stuck work: repeated
+
+E2E Trend:
+- No better real outcome.
+
+Decision:
+- Pause feature PRs and start methodology review.
+
+Methodology Review Trigger:
+- Triggered? yes
+
+## 2026-05-31 09:31 CST - Next Checkpoint
+
+Direction: unknown
+
+Execution Kernel:
+- no runtime change
+
+Result Quality:
+- no answer synthesis change
+
+Workbench UX:
+- no UI change
+
+Browser Reliability:
+- no transport change
+
+Acceptance Evidence:
+- no real acceptance ran
+
+Regression Risk:
+- governance risk only
+`);
+
+    assert.deepEqual(result.issues, [
+      {
+        checkpoint: "ledger",
+        message: "missing dated 24-Hour Goal Review within a 24-hour ledger window",
+      },
+    ]);
+  });
+
+  it("accepts a dated 24-hour review with the required review sections", () => {
+    const result = validateAgentWorkbenchLedger(`
+# G0
+
+## 2026-05-30 09:00 CST - First Checkpoint
+
+Direction: converging
+
+Execution Kernel:
+- no runtime change
+
+Result Quality:
+- no answer synthesis change
+
+Workbench UX:
+- terminal entry improved
+
+Browser Reliability:
+- no transport change
+
+Acceptance Evidence:
+- focused checks passed
+
+Regression Risk:
+- formatting risk only
+
+## 2026-05-31 08:59 CST - 24-Hour Goal Review
+
+Direction: converging
+
+Repeated Issue Classes:
+- execution loops or stuck work: not repeated
+- weak or unsupported final answers: improved in real E2E
+- browser/session/transport instability: still watch
+- UI state mismatch or missing recovery action: no recurrence
+- acceptance environment drift: no recurrence
+
+E2E Trend:
+- Real mission acceptance remains green.
+
+Decision:
+- Continue feature PRs.
+
+Methodology Review Trigger:
+- Triggered? no
+
+## 2026-05-31 09:01 CST - Next Checkpoint
+
+Direction: unknown
+
+Execution Kernel:
+- no runtime change
+
+Result Quality:
+- no answer synthesis change
+
+Workbench UX:
+- no UI change
+
+Browser Reliability:
+- no transport change
+
+Acceptance Evidence:
+- no real acceptance ran
+
+Regression Risk:
+- governance risk only
+`);
+
+    assert.equal(result.checkpoints, 3);
+    assert.deepEqual(result.issues, []);
+  });
 });
