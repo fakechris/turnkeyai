@@ -16,6 +16,10 @@ test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and 
           sessions: { spawned: 2, continued: 1 },
           approvals: { requested: 1, decided: 1, applied: 1 },
           liveness: { active: 0, waiting: 0, stale: 0 },
+          qualityChecks: [
+            { name: "final_answer", status: "pass" },
+            { name: "source_coverage", status: "pass" },
+          ],
           evidenceEvents: 3,
           recoveryEvents: 0,
         },
@@ -29,6 +33,10 @@ test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and 
           sessions: { spawned: 1, continued: 0 },
           approvals: { requested: 0, decided: 0, applied: 0 },
           liveness: { active: 0, waiting: 1, stale: 1 },
+          qualityChecks: [
+            { name: "source_coverage", status: "warn" },
+            { name: "runtime_liveness", status: "fail" },
+          ],
           evidenceEvents: 1,
           recoveryEvents: 2,
         },
@@ -56,6 +64,10 @@ test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and 
     livenessActive: 0,
     livenessWaiting: 1,
     livenessStale: 1,
+    qualityCheckWarnings: 1,
+    qualityCheckFailures: 1,
+    sourceCoverageWarnings: 1,
+    sourceCoverageFailures: 0,
     evidenceEvents: 4,
     recoveryEvents: 2,
   });

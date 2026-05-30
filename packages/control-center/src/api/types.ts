@@ -399,6 +399,10 @@ export interface ValidationOpsRunRecord {
       livenessActive: number;
       livenessWaiting: number;
       livenessStale: number;
+      qualityCheckWarnings: number;
+      qualityCheckFailures: number;
+      sourceCoverageWarnings: number;
+      sourceCoverageFailures: number;
       evidenceEvents: number;
       recoveryEvents: number;
     };

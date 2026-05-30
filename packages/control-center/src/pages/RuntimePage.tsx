@@ -568,6 +568,8 @@ function formatRealAcceptanceMissionSummary(run: ValidationOpsReport["latestRuns
   return [
     `${missionReport.passedScenarios}/${missionReport.scenarioCount} mission scenarios`,
     `quality failures ${missionReport.qualityFailures}`,
+    `checks warn/fail ${missionReport.qualityCheckWarnings}/${missionReport.qualityCheckFailures}`,
+    `source coverage ${missionReport.sourceCoverageWarnings}/${missionReport.sourceCoverageFailures}`,
     `liveness ${missionReport.livenessActive}/${missionReport.livenessWaiting}/${missionReport.livenessStale}`,
     `tools ${missionReport.toolResults}/${missionReport.toolRequested}`,
     `evidence ${missionReport.evidenceEvents}`,

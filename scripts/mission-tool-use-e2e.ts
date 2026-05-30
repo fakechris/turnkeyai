@@ -86,7 +86,11 @@ interface MissionObservabilitySnapshot {
   qualityGate: {
     status: string;
     evidenceEvents: number;
-    checks?: Record<string, unknown>;
+    checks?: Array<{
+      name?: unknown;
+      status?: unknown;
+      detail?: unknown;
+    }>;
   };
 }
 
@@ -191,6 +195,11 @@ export interface MissionE2eScenarioReport {
       waiting: number;
       stale: number;
     };
+    qualityChecks: Array<{
+      name: string;
+      status: string;
+      detail: string;
+    }>;
     evidenceEvents: number;
     recoveryEvents: number;
   };
@@ -940,6 +949,7 @@ export function summarizeMissionScenarioResult(result: MissionScenarioResult): M
         waiting: result.metrics.liveness.waiting,
         stale: result.metrics.liveness.stale,
       },
+      qualityChecks: summarizeQualityChecks(result.metrics.qualityGate.checks),
       evidenceEvents: result.metrics.qualityGate.evidenceEvents,
       recoveryEvents: result.metrics.recovery.events,
     },
@@ -953,6 +963,26 @@ export function summarizeMissionScenarioResult(result: MissionScenarioResult): M
 
 function isPassingMissionScenarioReport(report: MissionE2eScenarioReport): boolean {
   return report.status === "done" && report.qualityGate === "passed" && report.final.qualityFailures.length === 0;
+}
+
+function summarizeQualityChecks(
+  checks: MissionObservabilitySnapshot["qualityGate"]["checks"] | undefined
+): MissionE2eScenarioReport["metrics"]["qualityChecks"] {
+  if (!Array.isArray(checks)) {
+    return [];
+  }
+  return checks.flatMap((check) => {
+    if (typeof check.name !== "string" || typeof check.status !== "string") {
+      return [];
+    }
+    return [
+      {
+        name: check.name,
+        status: check.status,
+        detail: typeof check.detail === "string" ? check.detail : "",
+      },
+    ];
+  });
 }
 
 function writeMissionE2eJsonReport(jsonPath: string, report: MissionE2eJsonReport): void {
