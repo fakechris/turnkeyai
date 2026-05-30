@@ -336,13 +336,13 @@ export async function handleBridgeRoutes(input: {
           return { statusCode: validation.statusCode, body: validation.body };
         }
         const context = buildContext(validation.missionId, validation.workItemId);
-        const before = await deps.transportControl!.getHealth();
+        const before = await safeGetTransportHealth(deps.transportControl!);
         try {
           const reconnect = await deps.transportControl!.reconnect({
             ...(parsed.browserSessionId ? { browserSessionId: parsed.browserSessionId } : {}),
             ...(parsed.reason ? { reason: parsed.reason } : {}),
           });
-          const after = await deps.transportControl!.getHealth();
+          const after = await safeGetTransportHealth(deps.transportControl!);
           return recordAndEnvelope({
             deps,
             response: {
@@ -361,7 +361,7 @@ export async function handleBridgeRoutes(input: {
                   reconnect,
                   healthBefore: before,
                   healthAfter: after,
-                  transport: { label: after.transportLabel },
+                  transport: { label: after?.transportLabel ?? before?.transportLabel ?? "unknown" },
                 },
               },
             },
@@ -411,6 +411,16 @@ function parseBridgeReconnectBody(
     ...(browserSessionId.value ? { browserSessionId: browserSessionId.value } : {}),
     ...(reason.value ? { reason: reason.value } : {}),
   };
+}
+
+async function safeGetTransportHealth(
+  transportControl: NonNullable<BridgeRouteDeps["transportControl"]>
+): Promise<BrowserTransportHealth | undefined> {
+  try {
+    return await transportControl.getHealth();
+  } catch {
+    return undefined;
+  }
 }
 
 function parseOptionalTrimmedString(
