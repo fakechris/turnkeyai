@@ -2614,6 +2614,60 @@ a { color: inherit; text-decoration: none; }
 }
 .settings-chain-line b { color: var(--text); font-weight: 600; }
 .settings-chain-line span { color: var(--text-muted); }
+.settings-health-list,
+.settings-command-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.settings-health-line {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 9px;
+  align-items: flex-start;
+  padding: 8px;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+}
+.settings-health-line b,
+.settings-health-line span,
+.settings-health-line em {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.settings-health-line b {
+  color: var(--text);
+  font-weight: 650;
+}
+.settings-health-line span {
+  color: var(--text-muted);
+}
+.settings-health-line em {
+  margin-top: 3px;
+  color: var(--warning);
+  font-style: normal;
+}
+.settings-health-line[data-status="ok"] em {
+  color: var(--text-faint);
+}
+.settings-command-list code {
+  display: block;
+  max-width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border-faint);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .settings-catalog-editor-main {
   display: grid;
   gap: 8px;

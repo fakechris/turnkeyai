@@ -520,6 +520,26 @@ try {
       "settings should show live daemon paths"
     );
     assert(
+      await page.locator(".card", { hasText: "Browser bridge" }).isVisible(),
+      "settings should expose browser bridge setup health"
+    );
+    assert(
+      await page.locator('input[value="local · local-automation"]').isVisible(),
+      "settings should show the live browser transport"
+    );
+    assert(
+      await page.locator('input[value="direct CDP not configured"]').isVisible(),
+      "settings should show the expert lane readiness reason"
+    );
+    assert(
+      await page.locator(".settings-health-list", { hasText: "Browser runtime" }).isVisible(),
+      "settings should show browser runtime readiness from diagnostics"
+    );
+    assert(
+      await page.locator(".settings-command-list", { hasText: "npm run cdp:smoke -- --timeout-ms 45000" }).isVisible(),
+      "settings should show the browser validation command"
+    );
+    assert(
       await page.getByLabel("Model catalog JSON").isVisible(),
       "settings should expose the admin model catalog editor"
     );
@@ -1347,6 +1367,19 @@ function diagnosticsFixture() {
           label: "Model catalog",
           status: "warn",
           detail: "One configured model is missing its API key.",
+        },
+        {
+          id: "browser_transport",
+          label: "Browser transport",
+          status: "ok",
+          detail: "local-automation is active.",
+        },
+        {
+          id: "browser_runtime",
+          label: "Browser runtime",
+          status: "warn",
+          detail: "Recent browser tasks used isolated runtime profiles 1 time; latest session browser-session-ui.",
+          action: "A persistent browser profile was locked. Close the conflicting browser profile or revoke/retry the session.",
         },
       ],
     },

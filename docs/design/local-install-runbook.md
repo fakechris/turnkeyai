@@ -212,6 +212,13 @@ Run:
 npm run cdp:smoke -- --timeout-ms 45000
 ```
 
+Control Center shows the same browser setup surface in Settings. Use it to
+check the active transport, direct-CDP expert lane availability, recent browser
+runtime warnings, and the exact local validation commands before starting a
+browser-backed mission. Runtime remains the operator page for live mission
+health and logs; Settings is where setup problems should be diagnosed before
+work begins.
+
 ## Model Readiness
 
 Real LLM acceptance needs a model catalog and provider key:

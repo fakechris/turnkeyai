@@ -50,6 +50,19 @@ Evidence gates:
 - If a checkpoint says "no real acceptance ran", it must also state which real
   scenario is the next required acceptance gate.
 
+Convergence review rule:
+
+- Every checkpoint must be able to answer one product question: did a real user
+  become more likely to receive a stable, useful complex-task result?
+- If the answer depends only on PR count, test count, refactor size, or review
+  volume, the direction is `unknown`, not `converging`.
+- If the same class of user-visible failure appears in two or more checkpoints
+  inside a 24-hour window, the next 24-hour review must explicitly decide
+  whether feature PRs continue or pause for methodology review.
+- Methodology review is mandatory when the same failure class receives repeated
+  local fixes but the next real E2E run does not improve completion, answer
+  quality, or user-visible recoverability.
+
 Checkpoint template:
 
 ```md
@@ -82,6 +95,11 @@ Acceptance Evidence:
 Regression Risk:
 - What could this change break?
 - Which tests or checks cover it, and which gaps remain?
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes | no
+- Evidence:
+- If no, next required gate:
 ```
 
 Daily review template:
@@ -1553,3 +1571,88 @@ Regression Risk:
   instantaneous state; that matches the current 2s polling model.
 - The card is not yet a streaming event feed. A future websocket or live event
   channel would be needed for sub-second updates.
+
+## 2026-05-31 01:24 CST - G0 Ledger Guardrail Supplement
+
+Direction: unknown
+
+Execution Kernel:
+- No agent, tool-use, session, browser, approval, or completion semantics
+  changed.
+- This checkpoint tightens the progress ledger contract so execution work is
+  judged by real acceptance and repeated-failure reduction instead of PR count
+  or test-count movement.
+
+Result Quality:
+- Final-answer quality did not change in this checkpoint.
+- The added convergence rule makes quality regressions harder to hide behind
+  local fixes: repeated weak answers inside a 24-hour window require an explicit
+  methodology-review decision unless the next real E2E improves.
+
+Workbench UX:
+- No user-facing workbench page changed.
+- The ledger now requires each checkpoint to answer whether stable complex-task
+  delivery is closer, and to name the next real gate when the answer is not
+  supported by acceptance evidence.
+
+Browser Reliability:
+- Browser transport and session behavior did not change.
+- Browser reliability claims still require browser E2E, CDP smoke, or
+  screenshot-backed operator evidence before a checkpoint can be marked
+  `converging`.
+
+Acceptance Evidence:
+- No real LLM or browser acceptance ran for this governance-only supplement.
+- Next required real gate remains the focused scenario for whatever runtime,
+  browser, or UX behavior changes next; broad runtime changes still require the
+  full `npm run acceptance:real` gate before claiming convergence.
+
+Regression Risk:
+- Risk is limited to ledger wording and future process interpretation.
+- `npm run ledger:check` covers required checkpoint shape; it does not prove
+  product convergence, by design.
+
+## 2026-05-31 01:31 CST - Settings Browser Setup Health
+
+Direction: converging
+
+Execution Kernel:
+- No agent, tool-use, session, browser, approval, or completion semantics
+  changed.
+- This slice keeps browser setup diagnosis outside the execution kernel and
+  surfaces existing `/bridge/status` plus diagnostics readiness in the
+  configuration page.
+
+Result Quality:
+- Final-answer quality did not change directly.
+- The user-visible setup path is stronger: browser-backed missions are less
+  likely to start with hidden transport, expert-lane, CDP endpoint, or profile
+  fallback problems.
+
+Workbench UX:
+- Settings now includes a Browser bridge section with transport, expert lane,
+  direct-CDP endpoint, operator readiness checks, and local validation commands.
+- This closes a product-entry gap: Runtime remains the live operator page, while
+  Settings now explains browser setup health before work begins.
+
+Browser Reliability:
+- Browser runtime behavior did not change.
+- Existing browser reliability signals are easier to act on because profile
+  fallback and recent browser failure warnings from diagnostics now appear next
+  to bridge configuration details.
+
+Acceptance Evidence:
+- `npm run build --workspace @turnkeyai/control-center`: passed.
+- `npx tsx --test packages/control-center/src/pages/OnboardingPage.test.ts scripts/agent-workbench-ledger-check.test.ts`:
+  passed, 4 tests.
+- `npm run control-center:smoke -- --allow-missing-browser`: passed.
+- Smoke assertions cover Settings browser bridge visibility, live transport,
+  expert-lane reason, browser runtime readiness, and the CDP smoke command.
+
+Regression Risk:
+- This is frontend/read-only wiring over existing endpoints. If `/bridge/status`
+  or `/diagnostics` is temporarily unavailable, Settings falls back to
+  checking/offline copy instead of blocking model catalog edits.
+- Remaining gap: this does not add admin-gated transport mutation controls.
+  Those should wait for daemon config routes and restart semantics rather than
+  being bolted onto the page.

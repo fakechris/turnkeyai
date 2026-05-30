@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 
-import type { DiagnosticsSnapshot, ModelCatalogConfigReport, ModelsReport } from "../api/types";
+import type { BridgeStatus, DiagnosticsSnapshot, ModelCatalogConfigReport, ModelsReport } from "../api/types";
 import { useApiClient } from "../api/useApiClient";
 import { Icon } from "../components/Icon";
 import { usePolling } from "../hooks/usePolling";
@@ -20,6 +20,7 @@ const POLL_MS = 5_000;
 
 interface SettingsLive {
   diagnostics: DiagnosticsSnapshot | null;
+  bridgeStatus: BridgeStatus | null;
   models: ModelsReport | null;
   modelCatalogConfig: ModelCatalogConfigReport | null;
   modelCatalogConfigError: string | null;
@@ -35,6 +36,7 @@ export function SettingsPage() {
   const [catalogSaving, setCatalogSaving] = useState(false);
   const [live, setLive] = useState<SettingsLive>({
     diagnostics: null,
+    bridgeStatus: null,
     models: null,
     modelCatalogConfig: null,
     modelCatalogConfigError: null,
@@ -42,12 +44,14 @@ export function SettingsPage() {
   });
 
   usePolling(async () => {
-    const [diagnosticsResult, modelsResult, modelCatalogConfigResult] = await Promise.allSettled([
+    const [diagnosticsResult, bridgeStatusResult, modelsResult, modelCatalogConfigResult] = await Promise.allSettled([
       client.get<DiagnosticsSnapshot>("/diagnostics"),
+      client.get<BridgeStatus>("/bridge/status"),
       client.get<ModelsReport>("/models"),
       client.getNoAuthReset<ModelCatalogConfigReport>("/daemon/config/model-catalog"),
     ]);
     const diagnostics = diagnosticsResult.status === "fulfilled" ? diagnosticsResult.value : null;
+    const bridgeStatus = bridgeStatusResult.status === "fulfilled" ? bridgeStatusResult.value : null;
     const models = modelsResult.status === "fulfilled" ? modelsResult.value : null;
     const modelCatalogConfig =
       modelCatalogConfigResult.status === "fulfilled" ? modelCatalogConfigResult.value : null;
@@ -58,10 +62,11 @@ export function SettingsPage() {
     }
     setLive({
       diagnostics,
+      bridgeStatus,
       models,
       modelCatalogConfig,
       modelCatalogConfigError,
-      reachable: diagnostics != null || models != null || modelCatalogConfig != null,
+      reachable: diagnostics != null || bridgeStatus != null || models != null || modelCatalogConfig != null,
     });
   }, POLL_MS);
 
@@ -169,6 +174,12 @@ export function SettingsPage() {
         </div>
       </div>
 
+      <BrowserBridgeSettings
+        diagnostics={live.diagnostics}
+        bridgeStatus={live.bridgeStatus}
+        reachable={live.reachable}
+      />
+
       <div className="card" style={{ marginTop: 16 }}>
         <div className="card-hd">
           <Icon name="shield" size={13} />
@@ -195,6 +206,100 @@ export function SettingsPage() {
           <PathRow label="Config file" value={live.diagnostics?.paths.configFile} />
           <PathRow label="Daemon log" value={live.diagnostics?.paths.logFile} />
           <PathRow label="Model catalog" value={live.diagnostics?.paths.modelCatalogPath ?? live.models?.modelCatalogPath ?? null} last />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BrowserBridgeSettings({
+  diagnostics,
+  bridgeStatus,
+  reachable,
+}: {
+  diagnostics: DiagnosticsSnapshot | null;
+  bridgeStatus: BridgeStatus | null;
+  reachable: boolean;
+}) {
+  const checks = (diagnostics?.readiness?.checks ?? []).filter((check) =>
+    check.id === "browser_transport" || check.id === "browser_runtime"
+  );
+  const health = bridgeStatus?.transport.health;
+  const healthText = health
+    ? health.healthy
+      ? "healthy"
+      : health.reason ?? "unhealthy"
+    : reachable
+      ? "not reported"
+      : "offline";
+  const expertText = bridgeStatus
+    ? bridgeStatus.expertLane.available
+      ? "available"
+      : bridgeStatus.expertLane.reason ?? "unavailable"
+    : "checking";
+  const transportTone = !bridgeStatus || bridgeStatus.ok ? (health?.healthy === false ? "warning" : "success") : "danger";
+  const expertTone = bridgeStatus?.expertLane.available ? "success" : "warning";
+  const endpoint = bridgeStatus?.directCdp.endpoint ?? "";
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="card-hd">
+        <Icon name="browser" size={13} />
+        <h3>Browser bridge</h3>
+        <span className={"tag " + transportTone} style={{ marginLeft: "auto" }}>
+          {healthText}
+        </span>
+      </div>
+      <div className="card-bd">
+        <div className="setting-row" style={{ paddingTop: 4 }}>
+          <div className="lbl"><b>Transport</b><span>browser work execution route</span></div>
+          <div>
+            <input
+              className="field"
+              value={bridgeStatus ? `${bridgeStatus.transport.mode} · ${bridgeStatus.transport.label}` : "checking"}
+              readOnly
+            />
+          </div>
+          <div><span className={"tag " + transportTone}>{bridgeStatus?.transport.mode ?? "pending"}</span></div>
+        </div>
+        <div className="setting-row">
+          <div className="lbl"><b>Expert lane</b><span>direct browser diagnostics and fallback controls</span></div>
+          <div><input className="field" value={expertText} readOnly /></div>
+          <div><span className={"tag " + expertTone}>{bridgeStatus?.expertLane.available ? "ready" : "attention"}</span></div>
+        </div>
+        <div className="setting-row">
+          <div className="lbl"><b>Direct CDP endpoint</b><span>required only for direct-CDP expert lane</span></div>
+          <div><input className="field mono" value={endpoint || "(not configured)"} readOnly /></div>
+          <div><span className={"tag " + (endpoint ? "success" : "warning")}>{endpoint ? "set" : "optional"}</span></div>
+        </div>
+        <div className="setting-row">
+          <div className="lbl"><b>Operator checks</b><span>transport and runtime issues from diagnostics</span></div>
+          <div className="settings-health-list">
+            {checks.length > 0 ? checks.map((check) => (
+              <div key={check.id} className="settings-health-line" data-status={check.status}>
+                <span className={`status-dot ${readinessDotClass(check.status)}`} />
+                <div>
+                  <b>{check.label}</b>
+                  <span>{check.detail}</span>
+                  {check.action ? <em>{check.action}</em> : null}
+                </div>
+              </div>
+            )) : (
+              <div className="muted" style={{ fontSize: 12 }}>
+                {reachable ? "Waiting for browser readiness checks." : "Connect to the daemon to inspect browser readiness."}
+              </div>
+            )}
+          </div>
+          <div><span className="tag info">{checks.length || 0} check(s)</span></div>
+        </div>
+        <div className="setting-row" style={{ borderBottom: 0 }}>
+          <div className="lbl"><b>Validation commands</b><span>run before trusting browser-backed missions</span></div>
+          <div className="settings-command-list">
+            <code>turnkeyai bridge status</code>
+            <code>turnkeyai bridge install-extension</code>
+            <code>npm run cdp:smoke -- --timeout-ms 45000</code>
+          </div>
+          <div><span className="tag info">local</span></div>
         </div>
       </div>
     </div>
@@ -339,6 +444,12 @@ function PathRow({ label, value, last }: { label: string; value?: string | null;
 function authTone(authMode: DiagnosticsSnapshot["daemon"]["authMode"] | undefined): string {
   if (!authMode) return "warning";
   return authMode === "disabled" ? "warning" : "success";
+}
+
+function readinessDotClass(status: "ok" | "warn" | "error"): string {
+  if (status === "error") return "blocked";
+  if (status === "warn") return "needs_approval";
+  return "done";
 }
 
 function readableSettingsError(error: unknown): string {
