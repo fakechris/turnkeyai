@@ -45,7 +45,7 @@ fragment. A bare `/app` URL is expected to show the `Auth token required` page.
 | Context | `#/context` | Browser, document, file, and manual context source management. |
 | Agent Connect | `#/agent-connect` | External agent endpoint/token setup and capability hints. |
 | Runtime | `#/runtime` | Daemon health, mission health, browser/runtime diagnostics, logs, and release acceptance state. |
-| Settings | `#/settings` | Model catalog, data paths, auth hints, and policy/config surfaces. |
+| Settings | `#/settings` | Model catalog, browser bridge setup health, data paths, auth hints, and policy/config surfaces. |
 
 ## Mission Detail Order
 
@@ -144,6 +144,23 @@ Runtime is the operator page. It should answer:
 The Reconcile action is safe operator tooling for forcing mission/thread mirror
 passes when historical data or background runs need cleanup.
 
+## Settings Page
+
+Settings is the configuration-oriented companion to Runtime. It should answer:
+
+- Which model chain will production missions use?
+- Is the browser bridge route configured and healthy?
+- Is the direct-CDP expert lane available, optional, or blocked by missing
+  endpoint setup?
+- Did recent browser work fall back because a persistent browser profile was
+  locked?
+- Which local validation commands should an operator run before trusting
+  browser-backed missions?
+
+Settings may show browser readiness from `/bridge/status` and
+`/diagnostics.readiness`, but it should not introduce transport mutation
+shortcuts until daemon-side admin-gated config routes exist.
+
 ## Smoke Coverage
 
 `npm run control-center:smoke -- --allow-missing-browser` verifies:
@@ -155,7 +172,8 @@ passes when historical data or background runs need cleanup.
 - markdown rendering
 - desktop and mobile non-overlap
 - quality-gate status, detail, and follow-up guidance
-- approvals, context attach, settings, runtime health, and reconcile action
+- approvals, context attach, settings model/browser health, runtime health, and
+  reconcile action
 
 Run this before merging Control Center UX changes. Add assertions when a new
 Workbench behavior becomes part of the product contract.
