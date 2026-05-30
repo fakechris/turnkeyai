@@ -444,6 +444,8 @@ npm run daemon
 - [Raw CDP Expert Lane Runbook](./docs/design/raw-cdp-expert-lane-runbook.md)
 - [Local Install And Control Center Runbook](./docs/design/local-install-runbook.md)
 - [Browser Sub-Agent Safety Runbook](./docs/design/browser-sub-agent-safety-runbook.md)
+- [Tool Runtime Protocol](./docs/design/tool-runtime-protocol.md)
+- [Agent Workbench UX Runbook](./docs/design/agent-workbench-ux-runbook.md)
 - [Tool-Use E2E Acceptance](./docs/design/tool-use-e2e-acceptance.md)
 - [Prompt Context Compression Design](./docs/design/prompt-context-compression-design.md)
 - [Model Catalog And Chain Config](./docs/design/model-catalog-and-chain-config.md)
