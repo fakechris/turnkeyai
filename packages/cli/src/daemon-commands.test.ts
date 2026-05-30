@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   buildDaemonServiceScript,
   buildMacLaunchAgentPlist,
+  isTransientLaunchctlBootstrapError,
   resolveDaemonLaunchCommand,
   resolveDaemonWorkingDirectory,
 } from "./daemon-commands";
@@ -129,5 +130,13 @@ describe("daemon service artifacts", () => {
       ),
       "/opt/turnkeyai/dist"
     );
+  });
+
+  it("classifies launchd bootstrap handoff errors as retryable", () => {
+    assert.equal(
+      isTransientLaunchctlBootstrapError(new Error("Bootstrap failed: 5: Input/output error")),
+      true
+    );
+    assert.equal(isTransientLaunchctlBootstrapError(new Error("service already loaded")), false);
   });
 });
