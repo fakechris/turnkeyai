@@ -142,6 +142,12 @@ Run the mission-level matrix:
 npm run mission:e2e:matrix -- --model-catalog models.local.json
 ```
 
+Write a structured acceptance evidence report:
+
+```bash
+npm run mission:e2e:matrix -- --model-catalog models.local.json --json /tmp/turnkeyai-mission-e2e-report.json
+```
+
 This starts an isolated local daemon, creates a mission through `POST /missions`,
 polls `GET /missions/:id` plus `GET /missions/:id/timeline`, and reads
 `GET /missions/:id/metrics` after completion. The mission prompt points the
@@ -182,6 +188,12 @@ The script honors `--scenario-timeout-ms` with a default of `180000` ms. It
 also sets `TURNKEYAI_MODEL_CATALOG` for the isolated daemon when
 `--model-catalog` is supplied.
 
+The optional JSON report records the scenario, mission id, status, thread id,
+timeline/tool event counts, tool/session/approval/liveness metrics, evidence
+and recovery event counts, final-answer byte and bullet counts, and quality
+failures. It intentionally omits the final-answer body so the artifact stays
+small and safe to attach to release notes or review comments.
+
 ## When To Run
 
 Run the mock path for every tool-runtime or provider-adapter PR. Run the real
@@ -198,6 +210,7 @@ Latest local acceptance on 2026-05-30:
 - `npm run tooluse:e2e:real-matrix -- --model-catalog models.local.json`
 - `npm run tooluse:e2e:real-matrix -- --with-browser --model-catalog models.local.json --cdp-timeout-ms 45000 --scenario-timeout-ms 240000`
 - `npm run mission:e2e:matrix -- --model-catalog models.local.json --scenario-timeout-ms 240000`
+- `npm run mission:e2e:matrix -- --model-catalog models.local.json --scenario-timeout-ms 240000 --json /tmp/turnkeyai-mission-e2e-report.json`
 - `npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 300000 --cdp-timeout-ms 45000 --data-dir /tmp/turnkeyai-real-acceptance-20260530162834`
 
 The latest full gate recorded validation-ops run
