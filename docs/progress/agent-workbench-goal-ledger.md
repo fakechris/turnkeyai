@@ -14,6 +14,19 @@ G0 operating contract:
   of repeated failure classes. PR count, LOC movement, and test count are
   supporting facts only; they are never sufficient evidence by themselves.
 
+Required checkpoint fields:
+
+- Every checkpoint must include the same six evidence areas:
+  Execution Kernel, Result Quality, Workbench UX, Browser Reliability,
+  Acceptance Evidence, and Regression Risk.
+- Every checkpoint must declare one direction:
+  `converging`, `oscillating`, `blocked`, or `unknown`.
+- The direction must be based on whether a real user is closer to receiving a
+  stable, useful complex-task result. A merged PR, larger test count, or larger
+  implementation diff is never enough by itself.
+- If real acceptance did not run, the checkpoint must say which acceptance gate
+  is required next before claiming convergence for that behavior.
+
 Update cadence:
 
 - Add a checkpoint every 2-4 hours while actively working this goal.
@@ -23,6 +36,18 @@ Update cadence:
   PRs and switch to methodology review.
 - Do not mark a stage as converging unless the checkpoint can answer: "is
   stable complex-task delivery closer than it was at the previous checkpoint?"
+
+24-hour methodology brake:
+
+- Once per 24-hour window, scan the ledger for repeated issue classes:
+  execution loops, weak final answers, browser/session instability, UI recovery
+  mismatch, and acceptance environment drift.
+- If the same class has repeated local fixes but no better real E2E outcome,
+  stop feature PRs and write a methodology-review note before coding the next
+  behavior change.
+- The methodology-review note must name the root-cause hypothesis, why the
+  previous fixes failed to converge, and the real scenario that must improve
+  before feature work resumes.
 
 Direction values:
 
@@ -1699,3 +1724,42 @@ Regression Risk:
 - The duration is based on mission creation time for active mission statuses,
   so it is a coarse operator signal, not proof that every second was spent in
   active tool execution.
+
+## 2026-05-31 01:51 CST - G0 Operating Contract Restated
+
+Direction: unknown
+
+Execution Kernel:
+- No agent, tool-use, session, browser, approval, or completion semantics
+  changed.
+- The G0 operating contract was restated near the top of this ledger so future
+  work treats progress accounting as a production-goal control, not a changelog.
+
+Result Quality:
+- Final-answer quality did not change.
+- The contract now explicitly says result-quality progress cannot be claimed
+  from PR count, test count, or implementation size without real acceptance
+  evidence or a named next acceptance gate.
+
+Workbench UX:
+- No user-facing page changed.
+- The ledger now makes the user-visible question explicit for every checkpoint:
+  is a real user closer to receiving a stable, useful complex-task result?
+
+Browser Reliability:
+- Browser transport, profile, session, and CDP behavior did not change.
+- Browser reliability claims remain gated on browser E2E, CDP smoke, or
+  screenshot-backed operator evidence when the changed slice touches browser
+  behavior.
+
+Acceptance Evidence:
+- Governance-only documentation change. No real LLM or browser E2E ran.
+- `npm run ledger:check` is the required verification for this supplement.
+- The next runtime, result-quality, or browser behavior change still requires a
+  focused real acceptance scenario before it can be marked `converging`.
+
+Regression Risk:
+- Product regression risk is low because this does not alter execution code.
+- Process risk is intentional: future checkpoints should be harder to mark
+  `converging` unless they carry real acceptance evidence or a clear evidence
+  gap.
