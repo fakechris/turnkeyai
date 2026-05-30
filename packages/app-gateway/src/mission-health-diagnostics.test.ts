@@ -77,6 +77,7 @@ test("buildDiagnosticsMissionHealthSnapshot aggregates mission quality, liveness
   assert.equal(snapshot.tool.failed, 1);
   assert.equal(snapshot.tool.timeouts, 1);
   assert.equal(snapshot.sessions.spawned, 1);
+  assert.equal(snapshot.browser.profileFallbacks, 0);
   assert.equal(snapshot.liveness.stale, 1);
   assert.equal(snapshot.snapshotErrorCount, 0);
   assert.equal(snapshot.attentionMissions[0]?.id, "msn.active");
@@ -141,6 +142,45 @@ test("buildDiagnosticsMissionHealthSnapshot ignores archived missions for attent
   assert.deepEqual(activityReads, ["msn.done"]);
   assert.equal(snapshot.attentionMissions.some((item) => item.id === "msn.archived"), false);
   assert.equal(snapshot.tool.failed, 0);
+});
+
+test("buildDiagnosticsMissionHealthSnapshot aggregates browser profile fallback attention", async () => {
+  const nowMs = 8_000;
+  const missions = [mission("msn.profile", "Browser fallback mission", "done", 1_000)];
+  const fallbackResult = tool(
+    "ev.profile.result",
+    4_000,
+    "result",
+    "sessions_spawn",
+    "call.profile",
+    [
+      "Browser worker completed session browser-session-profile-fallback.",
+      "Final URL: http://127.0.0.1/dashboard.",
+      "Profile fallback: profile_locked; persistent profile was unavailable, used .daemon-data/browser/_runtime-fallback/browser-session-profile-fallback/123.",
+    ].join("\n")
+  );
+  const snapshot = await buildDiagnosticsMissionHealthSnapshot({
+    missionStore: { list: async () => missions },
+    activityStore: {
+      listByMission: async () => [
+        tool("ev.profile.call", 2_000, "call", "sessions_spawn", "call.profile", "Calling sessions_spawn."),
+        {
+          ...fallbackResult,
+          runtime: {
+            ...fallbackResult.runtime,
+            resultContent: fallbackResult.text,
+          },
+        },
+        event("ev.profile.final", "thought", 5_000, "role-lead", "Final answer with browser evidence and residual risk."),
+      ],
+    },
+    nowMs,
+  });
+
+  assert.equal(snapshot.browser.profileFallbacks, 1);
+  assert.equal(snapshot.qualityGate.needsAttention, 1);
+  assert.equal(snapshot.attentionMissions[0]?.id, "msn.profile");
+  assert.equal(snapshot.attentionMissions[0]?.browserProfileFallbacks, 1);
 });
 
 function mission(

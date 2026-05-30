@@ -170,6 +170,9 @@ export interface DiagnosticsMissionHealthSnapshot {
     spawned: number;
     continued: number;
   };
+  browser: {
+    profileFallbacks: number;
+  };
   liveness: {
     active: number;
     waiting: number;
@@ -185,6 +188,7 @@ export interface DiagnosticsMissionHealthSnapshot {
     blockers: number;
     toolFailures: number;
     toolTimeouts: number;
+    browserProfileFallbacks: number;
     recoveryEvents: number;
     staleRuntimeSubjects: number;
     wallClockMs: number;

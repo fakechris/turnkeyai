@@ -2631,3 +2631,55 @@ Regression Risk:
 - Detection depends on the browser worker's existing profile-fallback summary
   text. If the worker summary wording changes, the mission-level warning could
   disappear; the new observability regression test pins the current contract.
+
+## 2026-05-31 07:23 CST - Runtime Browser Fallback Diagnostics
+
+Direction: converging
+
+Execution Kernel:
+- Browser execution semantics did not change. This checkpoint keeps the
+  profile-lock fallback behavior observational only and does not add new retry
+  or session-selection rules.
+- Diagnostics aggregation now carries browser profile-fallback counts from
+  mission health into the operator runtime view, so degraded browser execution
+  is visible above the single-mission page.
+
+Result Quality:
+- Final-answer synthesis did not change.
+- Result-quality review improves because missions that produced an answer
+  through a fallback browser profile now appear in the runtime attention list,
+  making weak browser evidence harder to miss during triage.
+
+Workbench UX:
+- Runtime diagnostics now show a `profile fallback` aggregate beside blocked,
+  poor, and timeout indicators.
+- Attention rows include per-mission fallback counts when present, connecting
+  a degraded browser environment to the mission that needs operator review.
+
+Browser Reliability:
+- No browser reliability behavior changed in this checkpoint.
+- The reliability signal is broader: profile-lock fallback was already visible
+  on Mission Detail, and now it is part of the operator-level diagnostics
+  snapshot used to scan active workbench health.
+
+Acceptance Evidence:
+- `npx tsx --test packages/app-gateway/src/mission-health-diagnostics.test.ts
+  packages/app-gateway/src/mission-observability.test.ts`: 21 passed.
+- `npx tsx --test packages/app-gateway/src/mission-health-diagnostics.test.ts
+  packages/app-gateway/src/routes/diagnostics-routes.test.ts`: 43 passed.
+- `npm run typecheck`: passed.
+- `npm run build:control-center`: passed before the final test-fixture-only
+  route patch.
+- `npm run control-center:smoke -- --allow-missing-browser`: passed with
+  desktop and mobile screenshots.
+- No real LLM/browser acceptance ran because this changes diagnostics
+  surfacing, not execution behavior. The next browser-runtime behavior change
+  still needs real browser/LLM acceptance evidence.
+
+Regression Risk:
+- Main compatibility risk is clients reading older diagnostics snapshots
+  without a `browser` section. The daemon route now emits the field and Control
+  Center types/smoke fixtures were updated together.
+- The signal still depends on mission observability detecting the browser
+  worker's profile-fallback summary. The previous mission-level test pins that
+  contract; this checkpoint adds aggregate diagnostics coverage.
