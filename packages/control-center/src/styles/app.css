@@ -653,6 +653,14 @@ a { color: inherit; text-decoration: none; }
   background: var(--surface-2);
   color: var(--text);
 }
+.trace-filter-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+.trace-filter-chip:disabled:hover {
+  background: var(--bg);
+  color: var(--text-muted);
+}
 .trace-filter-chip[data-active="true"] {
   border-color: var(--text-muted);
   background: var(--text);
@@ -661,6 +669,11 @@ a { color: inherit; text-decoration: none; }
 .trace-filter-chip .mono {
   font-size: 10px;
   opacity: 0.75;
+}
+.inline-error {
+  margin: 8px 14px 0;
+  color: var(--danger);
+  font-size: 11px;
 }
 .mission-metrics-card {
   padding: 0;
