@@ -399,6 +399,7 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
         workerRunKey: input.workerRunKey,
         activation: input.activation,
         packet: buildResumePacket(input.packet, session.state),
+        ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
       });
     }
 

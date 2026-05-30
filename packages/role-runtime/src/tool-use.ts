@@ -1080,6 +1080,7 @@ async function executeSessionsSend(
         activation: input.activation,
         packet,
         toolCallId: input.call.id,
+        resumeExisting: true,
       },
       timeoutMs,
       `sessions_send timed out after ${formatTimeoutSeconds(timeoutMs)}.`,
@@ -1665,13 +1666,23 @@ async function sendWorkerWithOptionalTimeout(
     activation: RoleActivationInput;
     packet: RolePromptPacket;
     toolCallId?: string;
+    resumeExisting?: boolean;
   },
   timeoutMs: number | null,
   timeoutReason: string,
   hardTimeoutGraceMs = DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS
 ): Promise<WorkerExecutionResult | null | typeof WORKER_TOOL_TIMEOUT> {
+  const executeWorker = (): Promise<WorkerExecutionResult | null> =>
+    input.resumeExisting
+      ? workerRuntime.resume({
+          workerRunKey: input.workerRunKey,
+          activation: input.activation,
+          packet: input.packet,
+          ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
+        })
+      : workerRuntime.send(input);
   if (timeoutMs === null) {
-    return workerRuntime.send(input);
+    return executeWorker();
   }
   const graceMs =
     typeof hardTimeoutGraceMs === "number" && Number.isFinite(hardTimeoutGraceMs) && hardTimeoutGraceMs >= 0
@@ -1680,7 +1691,7 @@ async function sendWorkerWithOptionalTimeout(
   let softTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let hardTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let hardTimeoutFired = false;
-  const sendPromise = workerRuntime.send(input);
+  const sendPromise = executeWorker();
   sendPromise.catch(() => {
     // The caller may already have received a timeout result while the
     // interrupted worker is still unwinding. Keep observing that original
@@ -1725,6 +1736,7 @@ async function runWorkerTimeoutSummaryPass(
     activation: RoleActivationInput;
     packet: RolePromptPacket;
     toolCallId?: string;
+    resumeExisting?: boolean;
   },
   timeoutReason: string,
   summaryGraceMs: number
@@ -1733,10 +1745,10 @@ async function runWorkerTimeoutSummaryPass(
   if (!isLlmSubAgentSession(state)) {
     return null;
   }
-  const timeoutSummaryPromise = workerRuntime.send({
-    ...input,
-    packet: buildTimeoutSummaryPacket(input.packet, timeoutReason),
-  });
+  const timeoutSummaryPacket = buildTimeoutSummaryPacket(input.packet, timeoutReason);
+  const timeoutSummaryPromise = input.resumeExisting
+    ? workerRuntime.resume({ ...input, packet: timeoutSummaryPacket })
+    : workerRuntime.send({ ...input, packet: timeoutSummaryPacket });
   return raceTimeoutSummary(timeoutSummaryPromise, summaryGraceMs);
 }
 

@@ -778,7 +778,7 @@ function followupQualityGate(targetMarker: string): AnswerQualityGate {
     ],
     forbiddenPatterns: [
       { label: "duplicate-session claim", pattern: /\b(spawned a second session|duplicate session was used)\b/i },
-      { label: "raw session key leak", pattern: /\bworker:(?:explore|browser|finance|general):[^\s`'",)]+/i },
+      { label: "raw session key leak", pattern: /\bworker:(?:explore|browser|finance|general):[^\s`'",)]+|\bTASK-\d+[^`'",\s]*call_/i },
     ],
   };
 }

@@ -2314,3 +2314,80 @@ Regression Risk:
   improves or remains green. If the next 24 hours show repeated fixes in the
   same categories without a stable full-gate pass, pause feature PRs and move
   into methodology review focused on prompt/runtime/tool protocol boundaries.
+
+## 2026-05-31 05:18 CST - Review Fix Full Gate
+
+Direction: converging
+
+Execution Kernel:
+- Review fixes closed two production-path gaps: concurrent duplicate
+  `tasks_create` now serializes check-and-put per mission, and
+  `sessions_send` now resumes the existing worker session instead of starting a
+  bare send that bypasses continuation transcript injection.
+- The `sessions_send` repair was validated against the real follow-up mission
+  failure mode: phase two reused the same child session and retained the phase
+  one fixture evidence.
+- Tool-call text repair naming was clarified without changing the public
+  protocol.
+
+Result Quality:
+- Full real acceptance passed after the review fixes. The follow-up scenario
+  stayed substantive instead of saying the first-round fixture marker was
+  unconfirmed.
+- The matrix completed 12/12 mission scenarios. `cancel` and
+  `timeout-recovery` remained intentionally blocked-quality scenarios with
+  clean completion and no active liveness residue.
+- Product/research brief scenarios still produced bounded multi-source results:
+  `product-workbench-brief` and `realistic-brief` each completed with three
+  session results and passed quality gates.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- User-visible mission timelines are safer because follow-up tool results now
+  reflect durable child-session continuity rather than a fresh context-free
+  continuation.
+
+Browser Reliability:
+- Direct-CDP smoke passed inside the same gate, including raw-CDP target
+  attach, OOPIF/shadow probing, coordinate input, popup target attach, network
+  controls, upload/download, screenshots, and artifact checks.
+- Browser-backed mission scenarios passed again: `browser-dynamic`,
+  `browser-dashboard`, `product-workbench-brief`, and `realistic-brief`.
+- Remaining browser risk is unchanged: this is fixture-backed validation, not
+  an external long soak or profile-lock recovery proof.
+
+Acceptance Evidence:
+- Command:
+  `npm run acceptance:real -- --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --cdp-timeout-ms 45000`
+- Result: passed in 414997ms.
+- Validation run:
+  `validation-ops:real-llm-acceptance:2026-05-30T21-11-39-679Z:me10xi`
+- Artifact:
+  `/Users/chris/.turnkeyai/data/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T21-11-39-679Z%3Ame10xi-mission-e2e.json`
+- Mission results:
+  `basic` `msn.mpsulf5x.1` done/passed tools `1/1` sessions `1/0`;
+  `comparison` `msn.mpsuloht.2` done/passed tools `2/2` sessions `2/0`;
+  `followup` `msn.mpsum752.3` done/passed tools `2/2` sessions `1/1`;
+  `cancel` `msn.mpsumrc2.4` done/blocked tools `1/1` sessions `1/0`;
+  `approval` `msn.mpsumxkf.5` done/passed tools `1/1` sessions `1/0`;
+  `browser-dynamic` `msn.mpsunjpk.6` done/passed tools `1/1`
+  sessions `1/0`; `browser-dashboard` `msn.mpsuo5fa.7` done/passed
+  tools `1/1` sessions `1/0`; `timeout-recovery` `msn.mpsuoo1d.8`
+  done/blocked tools `1/1` sessions `1/0`; `memory-recall`
+  `msn.mpsuq6cq.9` done/passed tools `2/2` sessions `0/0`;
+  `task-tracking` `msn.mpsuqdcu.10` done/passed tools `3/3`
+  sessions `0/0`; `product-workbench-brief` `msn.mpsuqjkq.11`
+  done/passed tools `3/3` sessions `3/0`; `realistic-brief`
+  `msn.mpsur8ei.12` done/passed tools `3/3` sessions `3/0`.
+- Liveness was `0/0/0` for every mission at completion.
+
+Regression Risk:
+- Direction remains converging because a review-found runtime bug produced a
+  real E2E failure first, then the focused fix passed both the targeted
+  follow-up scenario and the full gate.
+- 24-hour methodology check: do not count this as done by PR/test volume. Count
+  it as progress because the same user-facing failure class now has a concrete
+  runtime fix and a full real acceptance record. If follow-up/session-continuity
+  failures recur within the next day, pause feature work for methodology review
+  of worker-session continuation and transcript persistence.

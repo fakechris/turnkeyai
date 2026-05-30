@@ -125,6 +125,7 @@ export interface WorkerResumeInput {
   workerRunKey: RunKey;
   activation: RoleActivationInput;
   packet: RolePromptPacketLike;
+  toolCallId?: string;
 }
 
 export interface WorkerInterruptInput {

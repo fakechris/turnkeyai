@@ -1462,6 +1462,9 @@ test("sessions_send interrupts a follow-up worker call on timeout", async () => 
       };
     },
     async send() {
+      throw new Error("sessions_send should resume the existing session instead of starting a bare send");
+    },
+    async resume() {
       await new Promise(() => undefined);
       return null;
     },
@@ -1544,6 +1547,9 @@ test("sessions_send timeout does not treat worker errors as usable evidence", as
       };
     },
     async send() {
+      throw new Error("sessions_send should resume the existing session instead of starting a bare send");
+    },
+    async resume() {
       await new Promise(() => undefined);
       return null;
     },
@@ -1751,7 +1757,7 @@ test("sessions_send reuses a completed session for Chinese evidence extraction f
 });
 
 test("sessions_send does not reuse a completed session for mixed action follow-ups", async () => {
-  let sendCalled = false;
+  let resumeCalled = false;
   const lastResult = {
     workerType: "explore" as const,
     status: "completed" as const,
@@ -1797,7 +1803,10 @@ test("sessions_send does not reuse a completed session for mixed action follow-u
       };
     },
     async send() {
-      sendCalled = true;
+      throw new Error("sessions_send should resume the existing session instead of starting a bare send");
+    },
+    async resume() {
+      resumeCalled = true;
       return {
         workerType: "explore" as const,
         status: "completed" as const,
@@ -1830,7 +1839,7 @@ test("sessions_send does not reuse a completed session for mixed action follow-u
   });
 
   const body = JSON.parse(result.content) as { cached?: boolean; result: string };
-  assert.equal(sendCalled, true);
+  assert.equal(resumeCalled, true);
   assert.equal(body.cached, undefined);
   assert.equal(body.result, "Follow-up action executed.");
 });

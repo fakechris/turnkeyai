@@ -127,7 +127,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
 
       const toolCalls = result.toolCalls ?? [];
-      if (activeToolLoop && toolCalls.length === 0 && containsTextualToolCallAttempt(result)) {
+      if (activeToolLoop && toolCalls.length === 0 && containsAnyToolCallForm(result)) {
         throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
           activation: input.activation,
@@ -523,7 +523,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         },
       },
     });
-    if (!containsTextualToolCallAttempt(generated.result)) {
+    if (!containsAnyToolCallForm(generated.result)) {
       return generated;
     }
     const repairedMessages = prepareToolHistoryForGateway([
@@ -1046,7 +1046,7 @@ function findCompletedSubAgentFinal(results: RoleToolExecutionResult[]): { toolN
   return toolName && finalContents.length > 0 ? { toolName, finalContents } : null;
 }
 
-function containsTextualToolCallAttempt(result: GenerateTextResult): boolean {
+function containsAnyToolCallForm(result: GenerateTextResult): boolean {
   if ((result.toolCalls?.length ?? 0) > 0) {
     return true;
   }
