@@ -678,6 +678,32 @@ async function runLaunchctl(args: string[], options: { allowFailure?: boolean } 
   });
 }
 
+export function isTransientLaunchctlBootstrapError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Bootstrap failed: 5") || message.includes("Input/output error");
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function bootstrapLaunchAgent(domain: string, launchAgentFile: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      await runLaunchctl(["bootstrap", domain, launchAgentFile]);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isTransientLaunchctlBootstrapError(error) || attempt === 3) {
+        throw error;
+      }
+      await delay(250 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 function launchctlServiceName(label: string): string {
   return `gui/${process.getuid?.() ?? 501}/${label}`;
 }
@@ -747,8 +773,9 @@ export async function runDaemonServiceInstall(args: string[]): Promise<void> {
 
   const serviceName = launchctlServiceName(service.label);
   if (!noStart) {
+    const domain = `gui/${process.getuid?.() ?? 501}`;
     await runLaunchctl(["bootout", serviceName], { allowFailure: true });
-    await runLaunchctl(["bootstrap", `gui/${process.getuid?.() ?? 501}`, service.launchAgentFile]);
+    await bootstrapLaunchAgent(domain, service.launchAgentFile);
     await runLaunchctl(["enable", serviceName], { allowFailure: true });
     await runLaunchctl(["kickstart", "-k", serviceName], { allowFailure: true });
   }
