@@ -135,6 +135,57 @@ describe("daemon status", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it("bounds authenticated status probes so a half-open API cannot hang diagnostics", async () => {
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      if (req.url === "/health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (req.url === "/bridge/status") {
+        // Leave this request open. `daemon status` should abort its probe
+        // and still print the rest of the diagnostic surface.
+        return;
+      }
+      if (req.url === "/diagnostics") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ readiness: { status: "ok", checks: [] } }));
+        return;
+      }
+      if (req.url === "/models") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ defaultSelection: { ok: false, error: "no default selection" } }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const home = await mkdtemp(path.join(tmpdir(), "turnkeyai-cli-status-half-open-"));
+
+    try {
+      const startedAt = Date.now();
+      const result = await runCli(["daemon", "status"], {
+        TURNKEYAI_HOME: home,
+        TURNKEYAI_DAEMON_URL: `http://127.0.0.1:${address.port}`,
+        TURNKEYAI_DAEMON_READ_TOKEN: "read-token",
+      });
+
+      assert.equal(result.code, 0);
+      assert.ok(Date.now() - startedAt < 4500, "daemon status should not wait for the test harness timeout");
+      assert.match(result.stdout, /health:\s+ok/);
+      assert.match(result.stdout, /api auth:\s+\/bridge\/status unreachable:/);
+      assert.match(result.stdout, /setup:\s+ok/);
+      assert.match(result.stdout, /models:\s+attention \(no default selection\)/);
+    } finally {
+      server.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });
 
 function runCli(
