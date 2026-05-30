@@ -127,6 +127,13 @@ try {
       "no-token page should include the persistent daemon service installer"
     );
     assert(
+      await noTokenPage
+        .locator(".launch-command", { hasText: "Reload service config" })
+        .locator("code", { hasText: "turnkeyai daemon service restart" })
+        .isVisible(),
+      "no-token page should include the persistent daemon service restart command"
+    );
+    assert(
       await noTokenPage.locator("text=turnkeyai daemon service status").isVisible(),
       "no-token page should include the persistent daemon service status command"
     );
