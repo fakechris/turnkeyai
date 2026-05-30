@@ -200,6 +200,15 @@ function buildQualityChecks(input: {
           : "Final answer does not contain unresolved placeholder language.",
     },
     {
+      name: "tool_fallback_answer",
+      status: !input.finalAnswer ? "pending" : mentionsToolFallbackAnswer(finalText) ? "warn" : "pass",
+      detail: !input.finalAnswer
+        ? "Waiting for the final answer."
+        : mentionsToolFallbackAnswer(finalText)
+          ? "Final answer says a required tool or search path was unavailable and falls back to model knowledge."
+          : "Final answer does not claim a tool/search fallback.",
+    },
+    {
       name: "runtime_liveness",
       status: input.staleRuntimeSubjects === 0 ? "pass" : "fail",
       detail:
@@ -378,7 +387,24 @@ function mentionsEvidenceUse(text: string): boolean {
 }
 
 function mentionsUnsupportedUncertainty(text: string): boolean {
-  return /\b(tbd|to be confirmed|needs confirmation|pending confirmation|placeholder|estimate only|rough estimate|待确认|估算|占位|暂无法确认)\b/i.test(
+  return (
+    /\b(tbd|to be confirmed|needs confirmation|pending confirmation|placeholder|estimate only|rough estimate|temporarily unable|unable to confirm)\b/i.test(
+      text
+    ) || /(待确认|估算|占位|暂无法确认|暂时无法|无法确认|需要后续验证)/i.test(text)
+  );
+}
+
+function mentionsToolFallbackAnswer(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) return false;
+  const toolUnavailable =
+    /\b(?:search|browser|tool|retrieval|web)(?: (?:tool|path|access|result|results))?(?: (?:is|was|are|were))? (?:unavailable|not available|failed|not working|unable)\b/.test(
+      normalized
+    );
+  if (toolUnavailable) return true;
+  if (/\b(?:based on|using) (?:my )?(?:knowledge|training data)\b/.test(normalized)) return true;
+  if (/\bwithout (?:live|current|fresh) (?:search|browser|web|tool)\b/.test(normalized)) return true;
+  return /搜索工具.{0,12}(?:无法|不可用|没有返回)|(?:基于|根据)我的(?:知识库|知识|训练数据)|工具.{0,12}(?:不可用|无法返回|没有返回)/i.test(
     text
   );
 }

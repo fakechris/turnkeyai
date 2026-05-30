@@ -336,7 +336,7 @@ try {
       "mission health should show the actionable quality-gate detail"
     );
     assert(
-      await page.locator(".mission-quality-action-panel", { hasText: "Ask a follow-up for a fuller answer" }).isVisible(),
+      await page.locator(".mission-quality-action-panel", { hasText: "Continue with a narrower tool-backed request" }).isVisible(),
       "mission health should suggest a concrete follow-up action"
     );
     assert(await page.locator(".context-continuity-card").count() === 1, "expected one context continuity card");
@@ -1202,6 +1202,11 @@ function metricsFixture() {
         { name: "evidence", status: "pass", detail: "Evidence event exists." },
         { name: "residual_risk", status: "pass", detail: "Final answer names residual risk." },
         { name: "answer_substance", status: "warn", detail: "Final answer is too brief for tool-backed work." },
+        {
+          name: "tool_fallback_answer",
+          status: "warn",
+          detail: "Final answer says a required tool or search path was unavailable and falls back to model knowledge.",
+        },
       ],
     },
   };

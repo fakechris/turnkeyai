@@ -93,6 +93,7 @@ Current guidance:
 | `evidence_usage` | Ask a follow-up to tie each claim to captured evidence. |
 | `answer_substance` | Ask a follow-up for concrete findings and next steps. |
 | `unsupported_uncertainty` | Ask a follow-up to replace placeholders with verified facts or explicit residual risk. |
+| `tool_fallback_answer` | Continue with a narrower tool-backed request or inspect tool availability before accepting the answer. |
 | `residual_risk` | Ask a follow-up to name residual risk or unverified scope. |
 | `failure_free` / timeouts | Open the trace, use the tool result or recovery event, then continue with bounded scope. |
 | stale runtime | Inspect stale runs, then cancel or continue from the stored session. |
@@ -155,4 +156,3 @@ passes when historical data or background runs need cleanup.
 
 Run this before merging Control Center UX changes. Add assertions when a new
 Workbench behavior becomes part of the product contract.
-

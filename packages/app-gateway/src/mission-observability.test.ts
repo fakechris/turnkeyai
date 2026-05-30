@@ -274,6 +274,44 @@ test("buildMissionObservabilitySnapshot flags weak tool-backed final answers", (
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "unsupported_uncertainty")?.status, "warn");
 });
 
+test("buildMissionObservabilitySnapshot flags tool-unavailable fallback answers", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "我注意到搜索工具暂时无法返回结果。基于我的知识库，先给出一个概括，但需要后续验证。"
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "tool_fallback_answer")?.status, "warn");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "unsupported_uncertainty")?.status, "warn");
+});
+
+test("buildMissionObservabilitySnapshot handles long fallback phrasing without regex backtracking risk", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        `Search${" ".repeat(20_000)}tool${" ".repeat(20_000)}is${" ".repeat(20_000)}unavailable; using my knowledge instead.`
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "tool_fallback_answer")?.status, "warn");
+});
+
 test("buildMissionObservabilitySnapshot passes substantive evidence-backed final answers", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "done" }),
