@@ -2683,3 +2683,49 @@ Regression Risk:
 - The signal still depends on mission observability detecting the browser
   worker's profile-fallback summary. The previous mission-level test pins that
   contract; this checkpoint adds aggregate diagnostics coverage.
+
+## 2026-05-31 07:39 CST - G0 Policy Contract Check
+
+Direction: unknown
+
+Execution Kernel:
+- No execution-kernel, tool-use, session, browser, approval, or mission
+  completion behavior changed.
+- This checkpoint strengthens the goal ledger as a control surface: the
+  validator now checks that the top-level G0 operating contract, evidence
+  gates, direction values, update cadence, and methodology brake sections stay
+  present instead of only validating individual checkpoint shape.
+
+Result Quality:
+- Final-answer synthesis did not change.
+- Result-quality accounting is safer because the ledger contract itself is now
+  protected from accidental erosion; future checkpoints should continue to
+  judge quality by real acceptance and user-visible outcomes, not PR count or
+  test volume.
+
+Workbench UX:
+- No user-facing workbench UI changed.
+- Product-management UX improves at the governance layer: the file continues
+  to answer whether the production workbench goal is converging, oscillating,
+  blocked, or unknown across the required six evidence areas.
+
+Browser Reliability:
+- Browser runtime, profile, CDP, and bridge behavior did not change.
+- Browser reliability remains an evidence-gated claim. The next browser
+  behavior change still needs focused real browser/LLM acceptance or equivalent
+  operator-visible smoke evidence before a checkpoint can claim convergence.
+
+Acceptance Evidence:
+- Governance-only change. No real LLM/browser acceptance ran.
+- Required verification for this supplement:
+  `npx tsx --test scripts/agent-workbench-ledger-check.test.ts`,
+  `npm run ledger:check`, and `npm run typecheck`.
+- Next runtime/result/browser behavior slice still requires a focused real
+  scenario before it can claim `converging`.
+
+Regression Risk:
+- Main risk is over-tightening the checker and making isolated ledger fixtures
+  harder to test. The new unit coverage uses a shared policy-contract fixture
+  and a negative test that proves missing G0 policy sections fail explicitly.
+- Product regression risk is low because no runtime or Control Center code
+  changed.
