@@ -160,6 +160,8 @@ hosts in the explore worker. It verifies:
 - mission metrics include wall-clock duration, requested/result/executed/skipped tool counts, spawned/continued sessions, timeout/cancellation/failure counts, and evidence events
 - mission metrics quality gate reaches `passed` with no active/waiting/stale runtime, recovery, timeout, or failed-tool signal
 - the final answer includes the release marker, fixture marker, Markdown bullets, and residual risk
+- final-answer quality gates reject tool/search/browser-unavailable fallback
+  answers that rely on model knowledge instead of captured evidence
 
 Mission scenarios:
 

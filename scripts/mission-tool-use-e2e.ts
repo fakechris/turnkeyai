@@ -2429,7 +2429,25 @@ export function evaluateFinalQuality(content: string, spec: ScenarioSpec): { bul
   if (/\b(assume|assumes|assuming|assumed|estimate|estimated|estimates|estimating|guess|guessed|guesses|guessing|probably|probable|maybe|perhaps|approximately|approximate)\b/i.test(content)) {
     failures.push("final answer contains unsupported/hedged claim language");
   }
+  if (mentionsToolFallbackAnswer(content)) {
+    failures.push("final answer falls back to model knowledge after tool/search/browser unavailable");
+  }
   return { bullets, failures };
+}
+
+function mentionsToolFallbackAnswer(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) return false;
+  const toolUnavailable =
+    /\b(?:search|browser|tool|retrieval|web)(?: (?:tool|path|access|result|results))?(?: (?:is|was|are|were))? (?:unavailable|not available|failed|not working|unable)\b/.test(
+      normalized
+    );
+  if (toolUnavailable) return true;
+  if (/\b(?:based on|using) (?:my )?(?:knowledge|training data)\b/.test(normalized)) return true;
+  if (/\bwithout (?:live|current|fresh) (?:search|browser|web|tool)\b/.test(normalized)) return true;
+  return /搜索工具.{0,12}(?:无法|不可用|没有返回)|(?:基于|根据)我的(?:知识库|知识|训练数据)|工具.{0,12}(?:不可用|无法返回|没有返回)/i.test(
+    text
+  );
 }
 
 function isStatusPreambleLine(line: string): boolean {

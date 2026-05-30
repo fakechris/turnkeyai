@@ -55,3 +55,33 @@ test("mission E2E quality gate handles long first lines without regex backtracki
 
   assert.ok(quality.failures.includes("final answer must not start with a status preamble"));
 });
+
+test("mission E2E quality gate rejects tool-unavailable fallback answers", () => {
+  const quality = evaluateFinalQuality(
+    [
+      "evidence",
+      "- evidence: TURNKEYAI_FINAL_OK; TURNKEYAI_EVIDENCE_OK with residual risk stated.",
+      "- caveat: 搜索工具暂时无法返回结果，基于我的知识库给出结论。",
+    ].join("\n"),
+    { ...buildSpec(), expectedBullets: 2 }
+  );
+
+  assert.ok(
+    quality.failures.includes("final answer falls back to model knowledge after tool/search/browser unavailable")
+  );
+});
+
+test("mission E2E quality gate handles long fallback phrasing without regex backtracking", () => {
+  const quality = evaluateFinalQuality(
+    [
+      "evidence",
+      "- evidence: TURNKEYAI_FINAL_OK; TURNKEYAI_EVIDENCE_OK with residual risk stated.",
+      `- caveat: Search${" ".repeat(20_000)}tool${" ".repeat(20_000)}is${" ".repeat(20_000)}unavailable; using my knowledge instead.`,
+    ].join("\n"),
+    { ...buildSpec(), expectedBullets: 2 }
+  );
+
+  assert.ok(
+    quality.failures.includes("final answer falls back to model knowledge after tool/search/browser unavailable")
+  );
+});

@@ -872,3 +872,55 @@ Regression Risk:
 - False positives are limited to quality-gate attention, not mission execution
   failure. The real realistic-brief acceptance passing after the change is the
   guard against over-blocking normal evidence-backed work.
+
+## 2026-05-30 22:14 CST - Acceptance Gates Reject Tool Fallbacks
+
+Direction: converging
+
+Execution Kernel:
+- No runtime execution semantics changed.
+- The improvement is in the acceptance harness: both mission-level E2E final
+  quality and lower-level tool-use acceptance now reject final answers that
+  admit tool/search/browser unavailability and then fall back to model
+  knowledge.
+
+Result Quality:
+- This closes a governance gap from the previous checkpoint. The runtime
+  quality gate could already flag tool fallback answers, but the real E2E
+  verifier itself could still accept such an answer if required markers were
+  present.
+- The mission final-answer evaluator now rejects English and Chinese fallback
+  phrasing, including long-whitespace variants that could otherwise mask a weak
+  answer or stress regex matching.
+
+Workbench UX:
+- No Control Center UI changed in this checkpoint.
+- User-facing benefit is indirect but important: future real acceptance runs
+  are less likely to certify a mission whose UI would later show a weak
+  tool-fallback answer.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- The real LLM acceptance run still exercised the browser-rendered dashboard
+  source path and passed with local automation.
+
+Acceptance Evidence:
+- `npx tsx --test packages/app-gateway/src/mission-tool-use-e2e-quality.test.ts`:
+  5 passed.
+- `npm run tooluse:e2e`: passed, including the mock acceptance quality suite.
+- `npm run mission:e2e -- --scenario realistic-brief --model-catalog models.local.json --scenario-timeout-ms 300000`:
+  passed with mission `msn.mpsfkqqn.1`, status `done`, quality gate `passed`,
+  tools `3/3`, sessions `3/0`, liveness `0/0/0`, evidence `3`, final answer
+  `1248` bytes across `6` bullets.
+- `npm run typecheck`: passed.
+- `npm test -- --runInBand`: 1210 passed.
+- `npm run build`: passed.
+- `git diff --check`: passed.
+
+Regression Risk:
+- The new harness rule can reject answers that honestly report tool
+  unavailability. That is intentional for success-path E2E gates: a fallback
+  answer may be acceptable as a blocked/attention outcome, but it must not pass
+  as a successful complex-task delivery.
+- The realistic-brief real LLM pass protects against over-rejecting normal
+  evidence-backed answers.

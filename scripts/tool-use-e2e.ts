@@ -854,6 +854,9 @@ function evaluateAnswerQuality(input: {
       failures.push(`forbidden unsupported claim: ${forbidden.label}`);
     }
   }
+  if (mentionsToolFallbackAnswer(input.answer)) {
+    failures.push("final answer falls back to model knowledge after tool/search/browser unavailable");
+  }
   for (const requiredTool of input.gate.requiredToolNames ?? []) {
     if (!input.toolCallNames?.includes(requiredTool)) {
       failures.push(`required tool not used: ${requiredTool}`);
@@ -870,6 +873,21 @@ function evaluateAnswerQuality(input: {
 
 function assertAnswerQuality(report: AnswerQualityReport): void {
   assert.deepEqual(report.failures, [], `quality gate failed for ${report.scenario}: ${report.failures.join("; ")}`);
+}
+
+function mentionsToolFallbackAnswer(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) return false;
+  const toolUnavailable =
+    /\b(?:search|browser|tool|retrieval|web)(?: (?:tool|path|access|result|results))?(?: (?:is|was|are|were))? (?:unavailable|not available|failed|not working|unable)\b/.test(
+      normalized
+    );
+  if (toolUnavailable) return true;
+  if (/\b(?:based on|using) (?:my )?(?:knowledge|training data)\b/.test(normalized)) return true;
+  if (/\bwithout (?:live|current|fresh) (?:search|browser|web|tool)\b/.test(normalized)) return true;
+  return /搜索工具.{0,12}(?:无法|不可用|没有返回)|(?:基于|根据)我的(?:知识库|知识|训练数据)|工具.{0,12}(?:不可用|无法返回|没有返回)/i.test(
+    text
+  );
 }
 
 function countEvidenceSources(value: string): number {
@@ -1002,6 +1020,25 @@ function runMockAcceptanceQualitySuiteE2e(): {
     assertAnswerQuality(report);
     return report;
   });
+  const fallbackReport = evaluateAnswerQuality({
+    scenario: "comparison_research",
+    answer: [
+      "## Evidence",
+      "- Source: search tool unavailable, using my knowledge instead.",
+      "- Residual risk: TURNKEYAI fallback answer is not evidence-backed.",
+      "",
+      "Final: answer produced without usable tool evidence.",
+    ].join("\n"),
+    gate: {
+      minBytes: 1,
+      minBullets: 2,
+      minEvidenceSources: 1,
+    },
+  });
+  assert.ok(
+    fallbackReport.failures.includes("final answer falls back to model knowledge after tool/search/browser unavailable"),
+    "tool-use quality gate must reject tool-unavailable fallback answers"
+  );
   return {
     scenarios: cases.map((item) => item.name),
     totalFinalBytes: reports.reduce((sum, report) => sum + report.finalBytes, 0),
