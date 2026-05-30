@@ -1022,6 +1022,26 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       expectedContinuedSessions: 0,
       minEvidenceEvents: 1,
       expectedBullets: 3,
+      evidenceLinePatterns: [
+        {
+          label: "timeout boundary line",
+          pattern: /^\s*[-*+]\s+timeout boundary\s*:.*TURNKEYAI_MISSION_TIMEOUT_OK.*timed out/im,
+        },
+        {
+          label: "attempted verification line",
+          pattern: /^\s*[-*+]\s+attempted verification\s*:.*verification did not complete/im,
+        },
+        {
+          label: "residual risk line",
+          pattern: /^\s*[-*+]\s+residual risk\s*:.*continue/im,
+        },
+      ],
+      forbiddenPatterns: [
+        {
+          label: "timeout marker outside timeout boundary",
+          pattern: /^\s*[-*+]\s+(?!timeout boundary\s*:).*TURNKEYAI_MISSION_TIMEOUT_OK/im,
+        },
+      ],
       minBytes: 120,
       desc: [
         "Run the mission route timeout recovery E2E.",
@@ -1030,8 +1050,10 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "The sessions_spawn input must include timeout_seconds as the JSON number 0.001.",
         `The explore sub-agent task must fetch ${fixture.slowUrl} and report the page title plus marker ${FIXTURE_MARKER}.`,
         "The local fixture is intentionally too slow; do not call sessions_send, sessions_history, sessions_list, or any fallback session after the timeout result.",
-        `Final answer must include ${TIMEOUT_FINAL_MARKER}, timed out, verification did not complete, continue, and the exact words residual risk.`,
-        `Use plain Markdown with the exact heading "Timeout result" with no #, **, or __ markup, followed by exactly three bullets: timeout boundary, attempted verification, residual risk. The first bullet must start with "- timeout boundary: ${TIMEOUT_FINAL_MARKER} - timed out". The third bullet must include the literal word continue.`,
+        `Final answer must include ${TIMEOUT_FINAL_MARKER} exactly once, and only inside the first bullet. It must also include timed out, verification did not complete, continue, and the exact words residual risk.`,
+        `Use plain Markdown with the exact heading "Timeout result" with no #, **, or __ markup, followed by exactly three bullets: timeout boundary, attempted verification, residual risk. The first bullet must start with "- timeout boundary: ${TIMEOUT_FINAL_MARKER} - timed out".`,
+        `The attempted verification and residual risk bullets must not include ${TIMEOUT_FINAL_MARKER}.`,
+        "The third bullet must include the literal word continue without repeating the final success marker.",
         "In the attempted verification bullet, name the slow fixture but do not include the fixture URL.",
         "Do not add any paragraph, summary, or note after the three bullets.",
         "Do not claim the fixture marker was verified unless it appears in the tool result.",
