@@ -762,3 +762,52 @@ Regression Risk:
   smoke uses a card-scoped locator to avoid false strict-mode failures.
 - Remaining gap: this does not prove complex-task quality; the next runtime or
   result-quality change still requires real LLM acceptance.
+
+## 2026-05-30 21:44 CST - Focused Realistic-Brief Acceptance Refresh
+
+Direction: converging
+
+Execution Kernel:
+- No execution kernel code changed in this checkpoint.
+- The checkpoint closes the previous evidence gap by rerunning a realistic
+  multi-source mission through the real LLM path after the local entry and
+  no-token recovery UX changes.
+
+Result Quality:
+- The realistic-brief mission reached `done` and passed the structured quality
+  gate. The gate checks more than completion: source coverage, recommendation,
+  dashboard action, residual risk, unsupported-claim avoidance, and answer
+  substance.
+- This is positive evidence that the current tool/session/runtime path can
+  still synthesize a useful result after recent product-entry changes. It does
+  not prove all complex prompts are stable; it proves the current focused
+  benchmark is still converging.
+
+Workbench UX:
+- No UI code changed in this checkpoint.
+- The user-visible result path remains inspectable through the mission ID from
+  the E2E run, so future regressions can compare timeline/tool/result behavior
+  against a known passing mission.
+
+Browser Reliability:
+- The scenario exercised the browser-backed dashboard evidence path without a
+  CDP/profile failure in the isolated E2E daemon.
+- Relay-extension health remains optional for this local run because the
+  browser path used local automation.
+
+Acceptance Evidence:
+- `npm run mission:e2e -- --scenario realistic-brief --model-catalog models.local.json --scenario-timeout-ms 300000`:
+  passed.
+- Mission ID: `msn.mpseir1l.1`.
+- Reported metrics: mission status `done`, quality gate `passed`, tool events
+  `6`, tools `3/3`, sessions `3/0`, approvals `0/0/0`, liveness `0/0/0`,
+  evidence `3`, final answer `1195` bytes across `6` bullets.
+
+Regression Risk:
+- Risk remains that one focused scenario can miss long-tail failures in
+  follow-up, cancellation, approval, timeout recovery, or browser reconnect
+  behavior. The next runtime/result-quality PR should still run the broader
+  `acceptance:real` matrix before claiming production-level convergence.
+- This checkpoint supports continued feature/runtime work; it does not trigger
+  methodology review because the latest real E2E improved confidence rather
+  than repeating a previously stuck or weak-output failure.
