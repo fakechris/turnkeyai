@@ -236,6 +236,7 @@ function buildLiveTiles(live: Live): Array<{ l: string; v: string; d: string }> 
   const d = live.diagnostics;
   const s = live.status;
   const transport = d?.transport.mode ?? s?.transport.mode ?? "?";
+  const transportHealth = s?.transport.health;
   const sessionCount = d?.counters.sessionCount ?? s?.sessions.count ?? 0;
   const relayPeer = d?.counters.relayPeerCount ?? s?.relay.peerCount ?? 0;
   const relayTargets = d?.counters.relayTargetCount ?? s?.relay.targetCount ?? 0;
@@ -260,7 +261,13 @@ function buildLiveTiles(live: Live): Array<{ l: string; v: string; d: string }> 
         ? `${missionAttention} need attention, ${missionHealth.needsApproval} approval`
         : "diagnostics pending",
     },
-    { l: "Browser sessions", v: String(sessionCount), d: `transport: ${transport}` },
+    {
+      l: "Browser sessions",
+      v: String(sessionCount),
+      d: transportHealth
+        ? `${transport}: ${transportHealth.healthy ? "healthy" : transportHealth.reason ?? "unhealthy"}`
+        : `transport: ${transport}`,
+    },
     { l: "Runtime attention", v: String(runtime?.attentionCount ?? 0), d: `${runtime?.activeCount ?? 0} active` },
     {
       l: "Auth mode",
@@ -772,18 +779,28 @@ function TransportCard({ status }: { status: BridgeStatus | null }) {
   // with mock standby/idle lines below so the design's three-row layout
   // is preserved.
   const liveMode = status?.transport.mode;
+  const health = status?.transport.health;
+  const activeDot = health ? (health.healthy ? "done" : "needs_approval") : "working";
+  const transportLabel = status?.transport.label ?? "chrome.local · 9222";
+  const healthDetail = health
+    ? health.healthy
+      ? health.connected === false
+        ? "healthy · not connected yet"
+        : "healthy"
+      : health.reason ?? "unhealthy"
+    : null;
   return (
     <div className="card">
       <div className="card-hd"><h3>Transport</h3></div>
       <div style={{ padding: 14 }}>
         <div className="row" style={{ gap: 10 }}>
-          <span className="status-dot working" />
+          <span className={`status-dot ${activeDot}`} />
           <div style={{ flex: 1 }}>
             <div style={{ fontFamily: "var(--font-sans)", fontSize: 12.5, fontWeight: 500 }}>
               {liveMode ?? "direct-CDP available"}
             </div>
             <div className="muted mono" style={{ fontSize: 10.5 }}>
-              {status?.transport.label ?? "chrome.local · 9222"}
+              {transportLabel}{healthDetail ? ` · ${healthDetail}` : ""}
             </div>
           </div>
         </div>

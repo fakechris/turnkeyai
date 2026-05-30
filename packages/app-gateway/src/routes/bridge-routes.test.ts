@@ -74,6 +74,14 @@ describe("bridge-routes", () => {
       configFile: "/cfg/config.json",
       transportMode: "relay",
       transportLabel: "chrome-relay",
+      transportHealth: {
+        transportMode: "relay",
+        transportLabel: "chrome-relay",
+        healthy: true,
+        peerCount: 1,
+        activePeerCount: 1,
+        checkedAt: now,
+      },
       relay: {
         configured: true,
         peers: [
@@ -98,6 +106,8 @@ describe("bridge-routes", () => {
 
     assert.equal(status.transport.mode, "relay");
     assert.equal(status.transport.label, "chrome-relay");
+    assert.equal(status.transport.health?.healthy, true);
+    assert.equal(status.transport.health?.peerCount, 1);
     assert.equal(status.relay.configured, true);
     assert.equal(status.relay.peerCount, 1);
     assert.equal(status.relay.targetCount, 2);
@@ -597,6 +607,231 @@ describe("bridge-routes", () => {
       assert.equal(event.kind, "tool");
       assert.equal(event.missionId, "msn.1");
       assert.equal(event.runtime?.workItemId, "wi.1");
+    });
+
+    it("/bridge/reconnect calls transport reconnect and appends a mission event", async () => {
+      const activityStore = memActivityStore();
+      const calls: string[] = [];
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        transportControl: {
+          async getHealth() {
+            calls.push("health");
+            return {
+              transportMode: "direct-cdp",
+              transportLabel: "direct-cdp",
+              healthy: true,
+              connected: true,
+              endpoint: "http://127.0.0.1:9222",
+              checkedAt: 1_700_000_000_000 + calls.length,
+            };
+          },
+          async reconnect(input) {
+            calls.push(`reconnect:${input?.browserSessionId ?? ""}:${input?.reason ?? ""}`);
+            return {
+              transportMode: "direct-cdp",
+              ok: true,
+              invalidatedConnection: true,
+              reconnectedAt: 1_700_000_000_010,
+            };
+          },
+        },
+        missionContext: buildMissionDeps(activityStore),
+      };
+
+      const response = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/bridge/reconnect",
+          body: {
+            browserSessionId: " session-1 ",
+            reason: " operator recovery ",
+            missionId: "msn.1",
+            workItemId: "wi.1",
+          },
+        }),
+        res: response.res,
+        url: new URL("http://127.0.0.1/bridge/reconnect"),
+        deps,
+      });
+
+      assert.equal(response.getStatus(), 200);
+      assert.deepEqual(calls, ["health", "reconnect:session-1:operator recovery", "health"]);
+      const body = response.getJson() as {
+        ok: boolean;
+        result: {
+          reconnect: { ok: boolean; invalidatedConnection?: boolean };
+          healthBefore: { transportLabel: string };
+          healthAfter: { transportLabel: string };
+        };
+      };
+      assert.equal(body.ok, true);
+      assert.equal(body.result.reconnect.ok, true);
+      assert.equal(body.result.reconnect.invalidatedConnection, true);
+      assert.equal(body.result.healthBefore.transportLabel, "direct-cdp");
+      assert.equal(body.result.healthAfter.transportLabel, "direct-cdp");
+      assert.equal(activityStore.events.length, 1);
+      const event = activityStore.events[0]!;
+      assert.equal(event.kind, "tool");
+      assert.equal(event.text, "Browser bridge.reconnect completed.");
+      assert.equal(event.target, "ctx.browser.session.session-1");
+      assert.equal(event.runtime?.transport, "direct-cdp");
+      assert.equal(event.runtime?.workItemId, "wi.1");
+    });
+
+    it("/bridge/reconnect still reconnects when the preflight health probe fails", async () => {
+      const calls: string[] = [];
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        transportControl: {
+          async getHealth() {
+            calls.push("health");
+            if (calls.length === 1) throw new Error("health unavailable");
+            return {
+              transportMode: "direct-cdp",
+              transportLabel: "direct-cdp",
+              healthy: true,
+              connected: true,
+              checkedAt: 2,
+            };
+          },
+          async reconnect() {
+            calls.push("reconnect");
+            return {
+              transportMode: "direct-cdp",
+              ok: true,
+              invalidatedConnection: true,
+              reconnectedAt: 3,
+            };
+          },
+        },
+      };
+
+      const response = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({ method: "POST", url: "/bridge/reconnect", body: {} }),
+        res: response.res,
+        url: new URL("http://127.0.0.1/bridge/reconnect"),
+        deps,
+      });
+
+      assert.equal(response.getStatus(), 200);
+      assert.deepEqual(calls, ["health", "reconnect", "health"]);
+      const body = response.getJson() as {
+        ok: boolean;
+        result: { healthBefore?: unknown; healthAfter?: { transportLabel: string }; transport: { label: string } };
+      };
+      assert.equal(body.ok, true);
+      assert.equal(body.result.healthBefore, undefined);
+      assert.equal(body.result.healthAfter?.transportLabel, "direct-cdp");
+      assert.equal(body.result.transport.label, "direct-cdp");
+    });
+
+    it("/bridge/reconnect does not fail a successful reconnect when postflight health fails", async () => {
+      const calls: string[] = [];
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        transportControl: {
+          async getHealth() {
+            calls.push("health");
+            if (calls.length > 1) throw new Error("postflight health unavailable");
+            return {
+              transportMode: "relay",
+              transportLabel: "relay",
+              healthy: false,
+              reason: "peer missing",
+              checkedAt: 1,
+            };
+          },
+          async reconnect() {
+            calls.push("reconnect");
+            return {
+              transportMode: "relay",
+              ok: true,
+              invalidatedConnection: true,
+              reconnectedAt: 2,
+            };
+          },
+        },
+      };
+
+      const response = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({ method: "POST", url: "/bridge/reconnect", body: {} }),
+        res: response.res,
+        url: new URL("http://127.0.0.1/bridge/reconnect"),
+        deps,
+      });
+
+      assert.equal(response.getStatus(), 200);
+      assert.deepEqual(calls, ["health", "reconnect", "health"]);
+      const body = response.getJson() as {
+        ok: boolean;
+        result: { healthBefore?: { transportLabel: string }; healthAfter?: unknown; transport: { label: string } };
+      };
+      assert.equal(body.ok, true);
+      assert.equal(body.result.healthBefore?.transportLabel, "relay");
+      assert.equal(body.result.healthAfter, undefined);
+      assert.equal(body.result.transport.label, "relay");
+    });
+
+    it("/bridge/reconnect records transport reconnect failures as recovery events", async () => {
+      const activityStore = memActivityStore();
+      const deps: BridgeRouteDeps = {
+        getStatusInfo: async () => {
+          throw new Error("not used");
+        },
+        transportControl: {
+          async getHealth() {
+            return {
+              transportMode: "relay",
+              transportLabel: "relay",
+              healthy: false,
+              reason: "peer missing",
+              peerCount: 0,
+              activePeerCount: 0,
+              checkedAt: 10,
+            };
+          },
+          async reconnect() {
+            throw new Error("relay peer unavailable");
+          },
+        },
+        missionContext: buildMissionDeps(activityStore),
+      };
+
+      const response = createResponse();
+      await handleBridgeRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/bridge/reconnect",
+          body: {
+            browserSessionId: "session-1",
+            missionId: "msn.1",
+          },
+        }),
+        res: response.res,
+        url: new URL("http://127.0.0.1/bridge/reconnect"),
+        deps,
+      });
+
+      assert.equal(response.getStatus(), 503);
+      const body = response.getJson() as { code: string; error: string };
+      assert.equal(body.code, "transport_reconnect_failed");
+      assert.equal(body.error, "relay peer unavailable");
+      assert.equal(activityStore.events.length, 1);
+      const event = activityStore.events[0]!;
+      assert.equal(event.kind, "recovery");
+      assert.equal(event.emph, "danger");
+      assert.equal(event.runtime?.bucket, "transport_reconnect_failed");
+      assert.equal(event.target, "ctx.browser.session.session-1");
     });
 
     it("appends a recovery event on dispatcher failure", async () => {

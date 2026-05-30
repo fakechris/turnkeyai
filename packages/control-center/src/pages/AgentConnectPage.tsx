@@ -195,6 +195,13 @@ export function AgentConnectPage() {
               <div className="row" style={{ flexWrap: "wrap" }}>
                 <span className="tag">{live.bridge?.transport.label ?? "transport pending"}</span>
                 <span className="tag">{live.bridge?.transport.mode ?? "mode pending"}</span>
+                {live.bridge?.transport.health && (
+                  <span className={"tag " + (live.bridge.transport.health.healthy ? "success" : "warning")}>
+                    {live.bridge.transport.health.healthy
+                      ? "transport healthy"
+                      : live.bridge.transport.health.reason ?? "transport attention"}
+                  </span>
+                )}
                 <span className={"tag " + (live.bridge?.expertLane.available ? "success" : "warning")}>
                   {live.bridge?.expertLane.available ? "expert lane available" : "expert lane gated"}
                 </span>

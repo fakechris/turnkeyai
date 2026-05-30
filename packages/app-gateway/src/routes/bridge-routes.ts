@@ -2,7 +2,10 @@ import type http from "node:http";
 
 import type {
   BrowserRawCdpExpertLane,
+  BrowserTransportHealth,
   BrowserTransportMode,
+  BrowserTransportReconnectRequest,
+  BrowserTransportReconnectResult,
 } from "@turnkeyai/core-types/team";
 import type {
   RelayPeerRecord,
@@ -38,6 +41,7 @@ export interface BridgeStatusInfo {
   transport: {
     mode: BrowserTransportMode;
     label: string;
+    health?: BrowserTransportHealth;
   };
   relay: {
     configured: boolean;
@@ -78,6 +82,10 @@ export interface BridgeMissionRouteDeps {
 
 export interface BridgeRouteDeps {
   getStatusInfo(): Promise<BridgeStatusInfo>;
+  transportControl?: {
+    getHealth(): Promise<BrowserTransportHealth>;
+    reconnect(input?: BrowserTransportReconnectRequest): Promise<BrowserTransportReconnectResult>;
+  };
   commandDispatcher?: BridgeCommandDispatcher;
   advancedDispatcher?: BridgeCommandDispatcher;
   expertDispatcher?: {
@@ -119,6 +127,13 @@ interface BridgeBatchBody {
   sessionId?: unknown;
   threadId?: unknown;
   instructions?: unknown;
+  missionId?: unknown;
+  workItemId?: unknown;
+}
+
+interface BridgeReconnectBody {
+  browserSessionId?: unknown;
+  reason?: unknown;
   missionId?: unknown;
   workItemId?: unknown;
 }
@@ -278,7 +293,151 @@ export async function handleBridgeRoutes(input: {
     });
   }
 
+  if (req.method === "POST" && url.pathname === "/bridge/reconnect") {
+    if (!deps.transportControl) {
+      sendJson(res, 501, { error: "bridge transport reconnect is not configured" });
+      return true;
+    }
+    const bodyResult = await readJsonBodySafe<BridgeReconnectBody>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const body = bodyResult.value ?? {};
+    const parsed = parseBridgeReconnectBody(body);
+    if (!parsed.ok) {
+      sendJson(res, 400, { error: parsed.error });
+      return true;
+    }
+    const parsedMission = parseBridgeMissionContext({
+      missionId: body.missionId,
+      workItemId: body.workItemId,
+    });
+    const token = deps.resolveToken ? deps.resolveToken(req) : null;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: `bridge:reconnect:${deriveBridgePrincipal(token)}`,
+      fingerprint: {
+        browserSessionId: parsed.browserSessionId ?? null,
+        reason: parsed.reason ?? null,
+        mission: parsedMission.mission,
+        workItem: parsedMission.workItem,
+      },
+      execute: async () => {
+        const validation = deps.missionContext
+          ? await validateBridgeMissionContext({
+              context: parsedMission,
+              deps: deps.missionContext.validator,
+            })
+          : ({ ok: true as const, missionId: null, workItemId: null });
+        if (!validation.ok) {
+          return { statusCode: validation.statusCode, body: validation.body };
+        }
+        const context = buildContext(validation.missionId, validation.workItemId);
+        const before = await safeGetTransportHealth(deps.transportControl!);
+        try {
+          const reconnect = await deps.transportControl!.reconnect({
+            ...(parsed.browserSessionId ? { browserSessionId: parsed.browserSessionId } : {}),
+            ...(parsed.reason ? { reason: parsed.reason } : {}),
+          });
+          const after = await safeGetTransportHealth(deps.transportControl!);
+          return recordAndEnvelope({
+            deps,
+            response: {
+              status: reconnect.ok ? 200 : 503,
+              body: {
+                ok: reconnect.ok,
+                ...(reconnect.ok
+                  ? {}
+                  : {
+                      error: reconnect.reason ?? "transport reconnect failed",
+                      code: "transport_reconnect_failed",
+                    }),
+                tool: "bridge.reconnect",
+                sessionId: parsed.browserSessionId ?? null,
+                result: {
+                  reconnect,
+                  healthBefore: before,
+                  healthAfter: after,
+                  transport: { label: after?.transportLabel ?? before?.transportLabel ?? "unknown" },
+                },
+              },
+            },
+            context,
+            tool: "bridge.reconnect",
+            sessionId: parsed.browserSessionId ?? null,
+            replayed: false,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return recordAndEnvelope({
+            deps,
+            response: {
+              status: 503,
+              body: {
+                ok: false,
+                error: message,
+                code: "transport_reconnect_failed",
+                sessionId: parsed.browserSessionId ?? null,
+                result: { healthBefore: before },
+              },
+            },
+            context,
+            tool: "bridge.reconnect",
+            sessionId: parsed.browserSessionId ?? null,
+            replayed: false,
+          });
+        }
+      },
+    });
+  }
+
   return false;
+}
+
+function parseBridgeReconnectBody(
+  body: BridgeReconnectBody
+):
+  | { ok: true; browserSessionId?: string; reason?: string }
+  | { ok: false; error: string } {
+  const browserSessionId = parseOptionalTrimmedString(body.browserSessionId, "browserSessionId");
+  if (!browserSessionId.ok) return browserSessionId;
+  const reason = parseOptionalTrimmedString(body.reason, "reason");
+  if (!reason.ok) return reason;
+  return {
+    ok: true,
+    ...(browserSessionId.value ? { browserSessionId: browserSessionId.value } : {}),
+    ...(reason.value ? { reason: reason.value } : {}),
+  };
+}
+
+async function safeGetTransportHealth(
+  transportControl: NonNullable<BridgeRouteDeps["transportControl"]>
+): Promise<BrowserTransportHealth | undefined> {
+  try {
+    return await transportControl.getHealth();
+  } catch {
+    return undefined;
+  }
+}
+
+function parseOptionalTrimmedString(
+  value: unknown,
+  label: string
+): { ok: true; value?: string } | { ok: false; error: string } {
+  if (value === undefined || value === null) {
+    return { ok: true };
+  }
+  if (typeof value !== "string") {
+    return { ok: false, error: `${label} must be a string when provided` };
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { ok: false, error: `${label} must be non-empty when provided` };
+  }
+  return { ok: true, value: trimmed };
 }
 
 async function dispatchSingleTool(input: {
@@ -503,6 +662,7 @@ export interface BuildBridgeStatusInput {
   configFile: string;
   transportMode: BrowserTransportMode;
   transportLabel: string;
+  transportHealth?: BrowserTransportHealth;
   relay: {
     configured: boolean;
     peers: RelayPeerRecord[];
@@ -534,6 +694,7 @@ export function buildBridgeStatus(input: BuildBridgeStatusInput): BridgeStatusIn
     transport: {
       mode: input.transportMode,
       label: input.transportLabel,
+      ...(input.transportHealth ? { health: input.transportHealth } : {}),
     },
     relay: {
       configured: input.relay.configured,
