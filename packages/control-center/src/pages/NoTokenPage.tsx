@@ -43,6 +43,11 @@ export function NoTokenPage() {
               note="Use this after installing or linking the TurnkeyAI CLI."
             />
             <LaunchCommand
+              label="Link local CLI"
+              command="npm run install:local-cli"
+              note="Use this from the repository root if the turnkeyai command is not on PATH."
+            />
+            <LaunchCommand
               label="No install"
               command="npx @turnkeyai/cli app"
               note="Use this from any shell when the turnkeyai command is not on PATH."

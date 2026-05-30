@@ -103,6 +103,10 @@ try {
       "no-token page should include the source-checkout launcher installer"
     );
     assert(
+      await noTokenPage.locator("text=npm run install:local-cli").isVisible(),
+      "no-token page should include the local CLI linker"
+    );
+    assert(
       await noTokenPage.locator("text=npm run app -- --no-open").isVisible(),
       "no-token page should include the source-checkout launcher"
     );

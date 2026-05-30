@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
@@ -149,6 +150,27 @@ function checkNodeVersion(): CheckResult {
     name: "node version",
     status: major >= 24 ? "ok" : "fail",
     detail: `node ${process.versions.node} (need >= 24)`,
+  };
+}
+
+function checkInstalledCliCommand(): CheckResult {
+  const command = process.env.TURNKEYAI_DOCTOR_CLI_COMMAND?.trim() || "turnkeyai";
+  const result = spawnSync(command, ["--help"], {
+    env: process.env,
+    stdio: "ignore",
+    timeout: 1500,
+  });
+  if (result.status === 0) {
+    return {
+      name: "installed cli",
+      status: "ok",
+      detail: "turnkeyai command is on PATH",
+    };
+  }
+  return {
+    name: "installed cli",
+    status: "warn",
+    detail: "turnkeyai command not on PATH; use npm run app, npm run daemon:status, npx @turnkeyai/cli app, or npm run install:local-cli",
   };
 }
 
@@ -487,6 +509,7 @@ export async function runDoctor(args: string[]): Promise<void> {
   const transportMode = resolveTransportMode(paths);
   const checks: CheckResult[] = [];
   checks.push(checkNodeVersion());
+  checks.push(checkInstalledCliCommand());
   checks.push(checkRuntimeDir(paths));
   checks.push(checkConfig(paths));
   const healthCheck = await checkDaemonHealth(paths);
@@ -531,6 +554,7 @@ function printDoctorHelp(exitCode: number): never {
     "",
     "Checks:",
     "  node version and local runtime directory",
+    "  installed turnkeyai command availability",
     "  daemon config, port, health, and API auth",
     "  model provider readiness from /models",
     "  daemon readiness from /diagnostics when reachable",
