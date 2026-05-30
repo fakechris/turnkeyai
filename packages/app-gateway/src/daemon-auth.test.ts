@@ -86,6 +86,7 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "GET", pathname: "/approvals", expected: "read" },
     { method: "POST", pathname: "/approvals/ap.1/decision", expected: "operator" },
     { method: "GET", pathname: "/mission-agents", expected: "read" },
+    { method: "POST", pathname: "/mission-context-sources", expected: "operator" },
     { method: "GET", pathname: "/onboarding/state", expected: "read" },
     { method: "PUT", pathname: "/onboarding/state", expected: "operator" },
     { method: "POST", pathname: "/missions/bootstrap-demo", expected: "operator" },

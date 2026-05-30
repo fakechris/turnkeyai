@@ -1,10 +1,14 @@
 // Context Sources index — all sources grouped by kind (browser, doc,
-// folder, api, desktop). K3.5: live data from /mission-context-sources.
+// folder, api, desktop). Uses /mission-context-sources for read + attach.
+
+import { useState, type FormEvent } from "react";
 
 import type { ContextKind, ContextSource } from "../api/mission-api";
-import { useContextSources } from "../api/useMissionData";
+import { useContextSources, useCreateContextSource } from "../api/useMissionData";
 import { formatRelativeAgo } from "../util/format-time";
 import { CtxIcon, Icon } from "../components/Icon";
+import { useAppState } from "../state/AppState";
+import { canUseOperatorActions, OPERATOR_ACTION_SCOPE_HINT } from "../state/scopeAccess";
 
 interface Section {
   kind: ContextKind;
@@ -21,12 +25,49 @@ const SECTIONS: Section[] = [
 ];
 
 export function ContextSourcesPage() {
+  const { state } = useAppState();
+  const canAttachSource = canUseOperatorActions(state.scope);
   const sourcesRemote = useContextSources([]);
+  const createContextSource = useCreateContextSource();
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [kind, setKind] = useState<ContextKind>("doc");
+  const [title, setTitle] = useState("");
+  const [urlOrPath, setUrlOrPath] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const sources = sourcesRemote.value;
   const grouped: Partial<Record<ContextKind, ContextSource[]>> = {};
   for (const c of sources) {
     (grouped[c.kind] ||= []).push(c);
   }
+
+  const onAttach = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!canAttachSource || submitting) return;
+    const trimmedTitle = title.trim();
+    const trimmedUrl = urlOrPath.trim();
+    if (!trimmedTitle || !trimmedUrl) return;
+    setSubmitting(true);
+    setNotice(null);
+    setError(null);
+    try {
+      await createContextSource({
+        kind,
+        title: trimmedTitle,
+        ...(kind === "api" ? { url: trimmedUrl } : { path: trimmedUrl }),
+      });
+      setTitle("");
+      setUrlOrPath("");
+      setAttachOpen(false);
+      setNotice("Context source attached.");
+      sourcesRemote.refetch();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="page">
@@ -49,13 +90,75 @@ export function ContextSourcesPage() {
           <button
             type="button"
             className="btn primary"
-            disabled
-            title="Manual context attachment needs a daemon mutation route before this can be enabled."
+            disabled={!canAttachSource}
+            title={canAttachSource ? "Attach a document, folder, API, or desktop context source." : OPERATOR_ACTION_SCOPE_HINT}
+            onClick={() => {
+              setAttachOpen((value) => !value);
+              setNotice(null);
+              setError(null);
+            }}
           >
             <Icon name="plus" size={13} /> Attach source
           </button>
         </div>
       </div>
+
+      {notice && (
+        <div className="notice success" role="status">
+          {notice}
+        </div>
+      )}
+      {error && (
+        <div className="notice danger" role="alert">
+          {error}
+        </div>
+      )}
+      {!canAttachSource && (
+        <div className="notice" role="note">
+          Context source attachment requires an operator or admin token.
+        </div>
+      )}
+
+      {attachOpen && canAttachSource && (
+        <form className="card context-attach-card" onSubmit={onAttach}>
+          <div className="card-bd">
+            <div className="context-attach-grid">
+              <label>
+                <span>Kind</span>
+                <select className="field" value={kind} onChange={(event) => setKind(event.target.value as ContextKind)}>
+                  <option value="doc">Document</option>
+                  <option value="folder">Folder</option>
+                  <option value="api">API</option>
+                  <option value="desktop">Desktop</option>
+                </select>
+              </label>
+              <label>
+                <span>Title</span>
+                <input
+                  className="field"
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  placeholder="Launch notes"
+                  required
+                />
+              </label>
+              <label>
+                <span>{kind === "api" ? "URL" : "Path or identifier"}</span>
+                <input
+                  className="field"
+                  value={urlOrPath}
+                  onChange={(event) => setUrlOrPath(event.target.value)}
+                  placeholder={kind === "api" ? "https://api.example.com" : "/Users/me/project/notes.md"}
+                  required
+                />
+              </label>
+              <button type="submit" className="btn primary" disabled={submitting || !title.trim() || !urlOrPath.trim()}>
+                {submitting ? "Attaching…" : "Attach"}
+              </button>
+            </div>
+          </div>
+        </form>
+      )}
 
       {SECTIONS.map((s) => (
         <div key={s.kind} className="ctx-section" style={{ marginBottom: 22 }}>
