@@ -43,6 +43,19 @@ export interface TuiMissionMetrics {
   };
 }
 
+type TuiMissionMetricsInput = Partial<
+  Omit<TuiMissionMetrics, "tool" | "sessions" | "approvals" | "recovery" | "liveness" | "qualityGate">
+> & {
+  tool?: Partial<TuiMissionMetrics["tool"]>;
+  sessions?: Partial<TuiMissionMetrics["sessions"]>;
+  approvals?: Partial<TuiMissionMetrics["approvals"]>;
+  recovery?: Partial<TuiMissionMetrics["recovery"]>;
+  liveness?: Partial<TuiMissionMetrics["liveness"]>;
+  qualityGate?: Partial<Omit<TuiMissionMetrics["qualityGate"], "checks">> & {
+    checks?: TuiMissionMetrics["qualityGate"]["checks"];
+  };
+};
+
 export function parseMissionNewArgs(args: string): { title: string; desc: string } | null {
   const trimmed = args.trim();
   if (!trimmed) {
@@ -66,7 +79,8 @@ export function parseMissionNewArgs(args: string): { title: string; desc: string
 }
 
 export function formatMissionList(missions: Mission[], limit = 20): string[] {
-  const sorted = [...missions].sort((a, b) => b.createdAtMs - a.createdAtMs || b.id.localeCompare(a.id));
+  const safeMissions = Array.isArray(missions) ? missions.filter(isMissionRecord) : [];
+  const sorted = [...safeMissions].sort((a, b) => b.createdAtMs - a.createdAtMs || b.id.localeCompare(a.id));
   const boundedLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 20;
   const visible = sorted.slice(0, boundedLimit);
   const lines = [`Missions: ${visible.length}${missions.length > visible.length ? ` of ${missions.length}` : ""}`];
@@ -87,13 +101,16 @@ export function formatMissionList(missions: Mission[], limit = 20): string[] {
 
 export function formatMissionDetail(input: {
   mission: Mission;
-  metrics: TuiMissionMetrics;
+  metrics: TuiMissionMetricsInput;
   timeline: ActivityEvent[];
   timelineLimit?: number;
 }): string[] {
-  const { mission, metrics } = input;
+  const { mission } = input;
+  const metrics = normalizeMissionMetrics(input.metrics, mission);
   const timelineLimit = input.timelineLimit ?? 8;
-  const events = [...input.timeline].sort((a, b) => a.tMs - b.tMs || a.id.localeCompare(b.id));
+  const events = Array.isArray(input.timeline)
+    ? input.timeline.filter(isActivityEventRecord).sort((a, b) => a.tMs - b.tMs || a.id.localeCompare(b.id))
+    : [];
   const latestFinal = findLatestFinalAnswer(events);
   const checks = metrics.qualityGate.checks.filter((check) => check.status !== "pass");
   const recent = events.slice(-timelineLimit);
@@ -187,6 +204,49 @@ function findLatestFinalAnswer(events: ActivityEvent[]): ActivityEvent | null {
   return null;
 }
 
+function normalizeMissionMetrics(input: TuiMissionMetricsInput, mission: Mission): TuiMissionMetrics {
+  return {
+    missionId: asString(input.missionId, mission.id),
+    status: isMissionStatus(input.status) ? input.status : mission.status,
+    wallClockMs: asNonNegativeNumber(input.wallClockMs),
+    timelineEventCount: asNonNegativeNumber(input.timelineEventCount),
+    tool: {
+      requested: asNonNegativeNumber(input.tool?.requested),
+      results: asNonNegativeNumber(input.tool?.results),
+      executed: asNonNegativeNumber(input.tool?.executed),
+      skipped: asNonNegativeNumber(input.tool?.skipped),
+      failed: asNonNegativeNumber(input.tool?.failed),
+      cancelled: asNonNegativeNumber(input.tool?.cancelled),
+      timeouts: asNonNegativeNumber(input.tool?.timeouts),
+    },
+    sessions: {
+      spawned: asNonNegativeNumber(input.sessions?.spawned),
+      continued: asNonNegativeNumber(input.sessions?.continued),
+    },
+    approvals: {
+      requested: asNonNegativeNumber(input.approvals?.requested),
+      applied: asNonNegativeNumber(input.approvals?.applied),
+      decided: asNonNegativeNumber(input.approvals?.decided),
+    },
+    recovery: {
+      events: asNonNegativeNumber(input.recovery?.events),
+    },
+    liveness: {
+      active: asNonNegativeNumber(input.liveness?.active),
+      waiting: asNonNegativeNumber(input.liveness?.waiting),
+      stale: asNonNegativeNumber(input.liveness?.stale),
+    },
+    qualityGate: {
+      status: isQualityGateStatus(input.qualityGate?.status) ? input.qualityGate.status : "running",
+      ...(typeof input.qualityGate?.finalAnswerEventId === "string"
+        ? { finalAnswerEventId: input.qualityGate.finalAnswerEventId }
+        : {}),
+      evidenceEvents: asNonNegativeNumber(input.qualityGate?.evidenceEvents),
+      checks: Array.isArray(input.qualityGate?.checks) ? input.qualityGate.checks.filter(isQualityCheckRecord) : [],
+    },
+  };
+}
+
 function truncateOneLine(value: string, maxLength: number): string {
   const oneLine = value.replace(/\s+/g, " ").trim();
   if (oneLine.length <= maxLength) {
@@ -210,7 +270,15 @@ function formatDateTime(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) {
     return "-";
   }
-  return new Date(ms).toISOString();
+  try {
+    const date = new Date(ms);
+    if (!Number.isFinite(date.getTime())) {
+      return "-";
+    }
+    return date.toISOString();
+  } catch {
+    return "-";
+  }
 }
 
 function formatDuration(ms: number): string {
@@ -227,4 +295,64 @@ function formatDuration(ms: number): string {
     return `${seconds}s`;
   }
   return `${minutes}m ${seconds}s`;
+}
+
+function isMissionRecord(value: Mission): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof value.id === "string" &&
+    typeof value.shortId === "string" &&
+    typeof value.title === "string" &&
+    typeof value.status === "string" &&
+    typeof value.modeLabel === "string" &&
+    Number.isFinite(value.createdAtMs) &&
+    Number.isFinite(value.progress)
+  );
+}
+
+function isActivityEventRecord(value: ActivityEvent): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof value.id === "string" &&
+    typeof value.kind === "string" &&
+    typeof value.actor === "string" &&
+    typeof value.text === "string" &&
+    Number.isFinite(value.tMs)
+  );
+}
+
+function isQualityCheckRecord(value: TuiMissionMetrics["qualityGate"]["checks"][number]): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof value.name === "string" &&
+    typeof value.detail === "string" &&
+    (value.status === "pass" || value.status === "warn" || value.status === "fail" || value.status === "pending")
+  );
+}
+
+function asString(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function asNonNegativeNumber(value: unknown): number {
+  return Number.isFinite(value) && typeof value === "number" && value >= 0 ? value : 0;
+}
+
+function isMissionStatus(value: unknown): value is Mission["status"] {
+  return (
+    value === "draft" ||
+    value === "planning" ||
+    value === "working" ||
+    value === "needs_approval" ||
+    value === "blocked" ||
+    value === "done" ||
+    value === "archived"
+  );
+}
+
+function isQualityGateStatus(value: unknown): value is TuiMissionMetrics["qualityGate"]["status"] {
+  return value === "running" || value === "passed" || value === "needs_attention" || value === "blocked";
 }

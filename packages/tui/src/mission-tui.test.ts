@@ -65,6 +65,13 @@ describe("mission-tui", () => {
     assert.match(lines.join("\n"), /progress=75% thread=thread\.1/);
   });
 
+  it("formats malformed mission list payloads as empty instead of throwing", () => {
+    assert.deepEqual(formatMissionList({ not: "an array" } as unknown as Mission[]), [
+      "Missions: 0",
+      "  no missions found",
+    ]);
+  });
+
   it("formats mission detail with quality attention, final answer, and timeline ordering", () => {
     const lines = formatMissionDetail({
       mission: mission({ id: "msn.detail", shortId: "MSN-9", title: "Detail", progress: 1, status: "done" }),
@@ -90,6 +97,27 @@ describe("mission-tui", () => {
     assert.match(output, /tool_fallback_answer \[warn\]: answer fell back to model knowledge/);
     assert.match(output, /Latest final answer:\n  Final answer/);
     assert.match(output, /Recent timeline \(2 of 2\):\n- .* tool\/role-lead: tool call\n- .* thought\/role-lead: Final answer/);
+  });
+
+  it("formats malformed mission metrics and events with safe defaults", () => {
+    const lines = formatMissionDetail({
+      mission: mission({ id: "msn.safe", shortId: "MSN-S", title: "Safe", createdAtMs: Number.MAX_VALUE }),
+      metrics: {
+        wallClockMs: Number.NaN,
+        tool: { requested: -1 },
+        qualityGate: {
+          status: "not-real" as unknown as TuiMissionMetrics["qualityGate"]["status"],
+          checks: [{ name: "bad", status: "bad" as "pass", detail: "ignored" }],
+        },
+      },
+      timeline: [{ bad: true } as unknown as ActivityEvent],
+    });
+
+    const output = lines.join("\n");
+    assert.match(output, /quality=running/);
+    assert.match(output, /wallClock=0ms events=0 evidence=0/);
+    assert.match(output, /tools requested\/results\/executed\/failed\/timeouts=0\/0\/0\/0\/0/);
+    assert.match(output, /Recent timeline \(0 of 0\):\n  no timeline events/);
   });
 });
 

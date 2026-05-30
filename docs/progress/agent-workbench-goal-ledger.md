@@ -957,7 +957,7 @@ Browser Reliability:
   populate.
 
 Acceptance Evidence:
-- `npx tsx --test packages/tui/src/mission-tui.test.ts`: 5 passed.
+- `npx tsx --test packages/tui/src/mission-tui.test.ts`: 7 passed.
 - `npm run tui -- --help`: passed.
 - `npm run typecheck`: passed.
 - `npm test -- --runInBand`: 1215 passed.
