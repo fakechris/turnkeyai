@@ -75,6 +75,21 @@ Evidence gates:
 - If a checkpoint says "no real acceptance ran", it must also state which real
   scenario is the next required acceptance gate.
 
+G0 acceptance rules:
+
+- The ledger must not use PR count, test count, line count, or review-comment
+  count as the primary progress signal.
+- Every phase must answer whether stable complex-task delivery is closer for a
+  real user, using acceptance evidence and user-visible behavior as the primary
+  proof.
+- A 24-hour window that shows repeated local fixes for the same failure class
+  without better real E2E behavior is not allowed to continue as ordinary
+  feature work. It must switch to methodology review before the next feature PR.
+- Methodology review is required to inspect whether the current runtime model,
+  prompt harness, session semantics, browser isolation, or UX recovery model is
+  the root cause. The next implementation slice must be chosen from that root
+  cause, not from the nearest symptom.
+
 Convergence review rule:
 
 - Every checkpoint must be able to answer one product question: did a real user
@@ -1998,3 +2013,46 @@ Regression Risk:
 - Validation-ops records for mission-only runs intentionally contain zero
   tool-use scenarios and `browserTooluseEnabled=false`, so release dashboards
   can distinguish focused gates from the full browser-inclusive release gate.
+
+## 2026-05-31 02:58 CST - G0 Progress Ledger Hardening
+
+Direction: unknown
+
+Execution Kernel:
+- No execution-kernel, tool-use, session, browser, approval, or completion
+  semantics changed.
+- This checkpoint hardens the goal-accounting contract so future runtime work
+  cannot claim convergence from implementation volume alone.
+
+Result Quality:
+- Final-answer quality did not change in this checkpoint.
+- The ledger now explicitly requires every phase to answer whether a real user
+  is closer to receiving a stable, useful complex-task result, and requires a
+  methodology review when repeated local fixes do not improve real E2E behavior.
+
+Workbench UX:
+- No user-facing workbench UI changed.
+- The operational UX benefit is process-level: later checkpoints must report
+  user-visible state, recovery clarity, and acceptance evidence instead of only
+  PR/test movement.
+
+Browser Reliability:
+- Browser transport and session behavior did not change.
+- Browser reliability remains dependent on real focused acceptance for
+  browser-backed mission scenarios and profile/CDP health checks.
+
+Acceptance Evidence:
+- `npm run ledger:check`: passed, 38 checkpoint(s), before this checkpoint was
+  appended.
+- No real LLM/browser acceptance ran for this governance-only checkpoint. Next
+  required gate remains:
+  `npm run acceptance:real -- --skip-tooluse --mission-scenarios
+  comparison,realistic-brief --model-catalog models.local.json
+  --scenario-timeout-ms 300000`.
+
+Regression Risk:
+- Risk is limited to progress-reporting discipline. The ledger checker enforces
+  dated checkpoints with direction and required evidence sections.
+- The checker does not yet enforce the 24-hour methodology-brake decision in
+  code; for now that remains a documented operating rule. If the ledger starts
+  drifting, the next governance slice should make the 24-hour review enforceable.
