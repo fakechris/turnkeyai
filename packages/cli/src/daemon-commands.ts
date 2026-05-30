@@ -904,12 +904,45 @@ export async function runDaemonServiceStatus(_args: string[]): Promise<void> {
   }
 }
 
+export async function runDaemonServiceRestart(_args: string[]): Promise<void> {
+  if (platform() !== "darwin") {
+    console.error("daemon service restart currently supports macOS LaunchAgent only.");
+    process.exit(1);
+  }
+  const paths = getRuntimePaths();
+  const service = getDaemonServicePaths(paths);
+  if (!existsSync(service.launchAgentFile)) {
+    console.error(`daemon service is not installed: ${service.launchAgentFile}`);
+    console.error("install it with: turnkeyai daemon service install");
+    process.exit(1);
+  }
+
+  const serviceName = launchctlServiceName(service.label);
+  const domain = `gui/${process.getuid?.() ?? 501}`;
+  const loaded = await runLaunchctl(["print", serviceName], { allowFailure: true });
+  if (loaded.code !== 0) {
+    await bootstrapLaunchAgent(domain, service.launchAgentFile);
+  }
+  await runLaunchctl(["enable", serviceName], { allowFailure: true });
+  await runLaunchctl(["kickstart", "-k", serviceName]);
+
+  const baseUrl = resolveDaemonUrl(paths);
+  const healthy = await waitForHealth(baseUrl, 15_000);
+  if (!healthy) {
+    console.error(`daemon service restarted but health check did not pass at ${baseUrl}`);
+    process.exit(1);
+  }
+  console.log(`daemon service restarted: ${service.label}`);
+  console.log(`url: ${baseUrl}`);
+}
+
 export function runDaemonServiceHelp(exitCode: number): never {
   const lines = [
     "TurnkeyAI daemon service",
     "",
     "Usage:",
     "  turnkeyai daemon service install [--no-start] [--capture-env]",
+    "  turnkeyai daemon service restart",
     "  turnkeyai daemon service uninstall",
     "  turnkeyai daemon service status",
     "",
@@ -935,6 +968,8 @@ export async function runDaemonServiceNamespace(args: string[]): Promise<void> {
   switch (sub) {
     case "install":
       return runDaemonServiceInstall(rest);
+    case "restart":
+      return runDaemonServiceRestart(rest);
     case "uninstall":
       return runDaemonServiceUninstall(rest);
     case "status":
@@ -955,7 +990,7 @@ export function runDaemonHelp(exitCode: number): never {
     "  turnkeyai daemon restart",
     "  turnkeyai daemon status",
     "  turnkeyai daemon logs [--follow]",
-    "  turnkeyai daemon service install|uninstall|status",
+    "  turnkeyai daemon service install|restart|uninstall|status",
     "  turnkeyai daemon                  (alias for start --foreground; legacy)",
     "",
     "Files:",

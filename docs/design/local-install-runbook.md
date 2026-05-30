@@ -118,6 +118,14 @@ browser transport settings, or CDP endpoints that the daemon needs into
 session. The file is created as `0600` and is sourced by the wrapper before the
 daemon starts.
 
+To restart an installed service after changing `daemon.env`, model catalogs, or
+runtime configuration:
+
+```bash
+turnkeyai daemon service restart
+turnkeyai daemon service status
+```
+
 To remove the service while preserving local data and `daemon.env`:
 
 ```bash

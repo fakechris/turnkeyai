@@ -57,7 +57,7 @@ function printHelp(exitCode: number): never {
     "Usage:",
     "  turnkeyai daemon start [--foreground]",
     "  turnkeyai daemon stop | restart | status | logs [--follow]",
-    "  turnkeyai daemon service install|uninstall|status",
+    "  turnkeyai daemon service install|restart|uninstall|status",
     "  turnkeyai daemon                  Run daemon in foreground (legacy)",
     "  turnkeyai bridge install-extension | status | install-skill",
     "  turnkeyai app [--route onboarding|missions|approvals|agents|context|agent-connect|runtime|settings] [--no-open]",

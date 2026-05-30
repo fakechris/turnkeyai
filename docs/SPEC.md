@@ -104,7 +104,7 @@
 ### 2.9 Mission Control local app entry
 - `turnkeyai app` 自动启动 daemon 并打开带 token 的 Mission Control URL
 - `turnkeyai app install-launcher` 安装可双击的本地 launcher
-- `turnkeyai daemon service install|status|uninstall` 提供 macOS LaunchAgent 持久 daemon 管理
+- `turnkeyai daemon service install|restart|status|uninstall` 提供 macOS LaunchAgent 持久 daemon 管理
 - Control Center no-token 页面提供 launcher、service、status 和 source-checkout fallback
 - `turnkeyai doctor` 检查 runtime、auth、model readiness、daemon readiness、relay extension，以及 macOS daemon service 状态
 

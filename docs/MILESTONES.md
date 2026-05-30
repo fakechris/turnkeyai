@@ -215,7 +215,7 @@
 - daemon-served React/Vite Mission Control shell
 - `turnkeyai app` 作为推荐本地入口，负责 auto-start daemon 并注入 token
 - 双击 launcher 安装与 source-checkout launcher fallback
-- macOS daemon LaunchAgent service install/status/uninstall
+- macOS daemon LaunchAgent service install/restart/status/uninstall
 - First Run、Missions、Mission Detail、Approvals、Agents、Context、Agent Connect、Runtime、Settings
 - Mission Detail 展示 tool trace、sub-agent sessions、browser continuity、context/evidence、recovery cases、final answer 和 follow-up
 - Runtime 页面展示 release acceptance、diagnostics、mission health、logs/reconcile 等 operator 入口

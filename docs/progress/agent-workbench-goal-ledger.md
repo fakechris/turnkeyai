@@ -660,3 +660,57 @@ Regression Risk:
 - The probes are non-mutating (`HEAD /daemon/config/model-catalog`,
   `GET /browser-sessions`, `GET /bridge/status`) and run only after the daemon
   health check passes.
+
+## 2026-05-30 20:49 CST - Daemon Service Restart Entry
+
+Direction: unknown
+
+Execution Kernel:
+- No mission, role, tool-use, sub-agent, browser command, or result-synthesis
+  semantics changed in this checkpoint.
+- The change targets local lifecycle control: an installed macOS LaunchAgent
+  service can be restarted through the product CLI instead of requiring users
+  to know raw `launchctl` commands.
+
+Result Quality:
+- Final-answer substance did not change.
+- The expected quality impact is indirect: fewer stale daemon/config states
+  during local testing should reduce false negatives when evaluating complex
+  agent runs.
+
+Workbench UX:
+- The user-visible local entry surface becomes more complete:
+  `turnkeyai daemon service restart` sits beside install/status/uninstall and
+  gives operators a supported recovery command after editing local config.
+- This does not add a new Control Center UI recovery button; it closes a CLI
+  lifecycle gap discovered while testing the workbench locally.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- Restarting the daemon service can clear stale bridge/session process state,
+  but it is not a replacement for browser profile isolation, CDP attach
+  recovery, or real browser acceptance.
+
+Acceptance Evidence:
+- Static verification passed:
+  `npx tsx --test packages/cli/src/cli-help.test.ts packages/cli/src/daemon-commands.test.ts`
+  (17 passing),
+  `npm run typecheck`,
+  `npm run build --workspace @turnkeyai/cli`,
+  `npm test -- --runInBand` (1205 passing),
+  `npm run build`,
+  `npm run release:verify` (9/9 checks passed),
+  `git diff --check`.
+- After merge, run real local lifecycle acceptance before calling the local
+  entry path fully converged:
+  `turnkeyai daemon service restart`,
+  `turnkeyai daemon service status`,
+  `turnkeyai doctor`.
+
+Regression Risk:
+- Risk is limited to the macOS service namespace. A bad restart implementation
+  could leave the local daemon stopped or healthy on a different config than
+  the UI expects.
+- Focused help/artifact tests cover the exposed command surface; real local
+  service acceptance is required before this checkpoint can be considered
+  converging.
