@@ -91,7 +91,7 @@ try {
     });
     const noTokenPage = await browser.newPage({ viewport: { width: 1100, height: 760 } });
     await noTokenPage.goto(`http://127.0.0.1:${port}/app#/missions`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await noTokenPage.waitForSelector(".launch-command-list");
     assert(
@@ -145,7 +145,7 @@ try {
       sessionStorage.setItem("turnkeyai.controlCenter.scope", "operator");
     });
     await operatorRuntimePage.goto(`http://127.0.0.1:${port}/app#/runtime`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await operatorRuntimePage.waitForSelector("text=Runtime attention");
     await operatorRuntimePage.waitForSelector("text=Mission health");
@@ -185,9 +185,12 @@ try {
     await readMissionPage.goto(`http://127.0.0.1:${port}/app#/mission/${encodeURIComponent(missionId)}`, {
       waitUntil: "domcontentloaded",
     });
-    await readMissionPage.waitForSelector(".mission-recovery-card");
+    const readRecoveryCard = readMissionPage.locator(".mission-recovery-card", {
+      hasText: "operator or admin token",
+    });
+    await readRecoveryCard.waitFor({ state: "visible", timeout: 15_000 });
     assert(
-      await readMissionPage.locator(".mission-recovery-card", { hasText: "operator or admin token" }).isVisible(),
+      await readRecoveryCard.isVisible(),
       "read-scope mission replay should explain that recovery actions need operator scope"
     );
     assert(
@@ -212,7 +215,7 @@ try {
       sessionStorage.setItem("turnkeyai.controlCenter.scope", "read");
     });
     await readApprovalsPage.goto(`http://127.0.0.1:${port}/app#/approvals`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await readApprovalsPage.waitForSelector("text=Approvals");
     assert(
@@ -246,25 +249,25 @@ try {
       sessionStorage.setItem("turnkeyai.controlCenter.scope", "admin");
     });
     await page.goto(`http://127.0.0.1:${port}/app#/missions`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
 
     await page.goto(`http://127.0.0.1:${port}/app#/agents`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("text=Agents");
     await page.getByRole("button", { name: /Manage tokens/ }).click();
     await page.waitForSelector("text=Settings");
     assert(page.url().includes("#/settings"), "agents token action should route to settings");
     await page.goto(`http://127.0.0.1:${port}/app#/agents`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await page.getByRole("button", { name: /Connect agent/ }).click();
     await page.waitForSelector("text=Agent Connect");
     assert(page.url().includes("#/agent-connect"), "agents connect action should route to Agent Connect");
 
     await page.goto(`http://127.0.0.1:${port}/app#/missions`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     const currentMissionCard = page.locator(".mission-card", { hasText: "UI smoke mission" });
     const archivedMissionCard = page.locator(".mission-card", { hasText: "Archived UI smoke mission" });
@@ -312,7 +315,7 @@ try {
     );
 
     await page.goto(`http://127.0.0.1:${port}/app#/mission/${encodeURIComponent(missionId)}`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
 
     await page.waitForSelector(".thinking-card");
@@ -470,7 +473,7 @@ try {
     );
 
     await page.goto(`http://127.0.0.1:${port}/app#/settings`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("text=LLM models");
     await page.waitForSelector('input[value="/tmp/turnkeyai-ui-smoke-models.json"]', {
@@ -515,7 +518,7 @@ try {
     );
 
     await page.goto(`http://127.0.0.1:${port}/app#/agent-connect`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("text=Agent Connect");
     assert(
@@ -534,7 +537,7 @@ try {
     );
 
     await page.goto(`http://127.0.0.1:${port}/app#/approvals`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("text=Approvals");
     assert(
@@ -547,7 +550,7 @@ try {
     assert(page.url().includes(`#/mission/${missionId}`), "approval timeline action should open the mission");
 
     await page.goto(`http://127.0.0.1:${port}/app#/context`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("text=Context sources");
     assert(
@@ -573,7 +576,7 @@ try {
     );
 
     await page.goto(`http://127.0.0.1:${port}/app#/runtime`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("text=Runtime attention");
     await page.waitForSelector("text=Mission health");
@@ -608,7 +611,7 @@ try {
     assert(page.url().includes(`#/mission/${missionId}`), "runtime replay action should open the mission trace");
 
     await page.goto(`http://127.0.0.1:${port}/app#/onboarding`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await page.waitForSelector("text=First run");
     await page.waitForSelector("text=Production readiness");
@@ -666,7 +669,7 @@ try {
       sessionStorage.setItem("turnkeyai.controlCenter.scope", "operator");
     });
     await mobilePage.goto(`http://127.0.0.1:${port}/app#/mission/${encodeURIComponent(missionId)}`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await mobilePage.waitForSelector(".thinking-card");
     await mobilePage.waitForSelector(".final-answer-card .markdown-body h2");

@@ -1110,3 +1110,55 @@ Regression Risk:
   the full `acceptance:real` gate before high-risk runtime changes.
 - The artifact omits final-answer text by design, so content debugging still
   requires mission logs or the Control Center mission view.
+
+## 2026-05-30 23:33 CST - Release Gate Mission Artifact
+
+Direction: converging
+
+Execution Kernel:
+- The top-level `acceptance:real` gate now passes a mission JSON report path
+  into the mission route E2E step and uses one run id for the validation-ops
+  record plus the artifact filename.
+- Runtime mission/tool/browser semantics did not change; this checkpoint
+  strengthens the release evidence path around those semantics.
+
+Result Quality:
+- The reduced real gate completed `realistic-brief` with quality gate `passed`,
+  six final-answer bullets, 1334 final-answer bytes, and zero quality failures.
+- The validation artifact gives reviewers a stable way to compare answer
+  quality and mission liveness across release gates without relying on terminal
+  scrollback.
+
+Workbench UX:
+- Runtime → Release acceptance can now point at the mission evidence artifact
+  from the same validation-ops run record that marks the gate passed or failed.
+- Control Center smoke now waits for concrete rendered state instead of generic
+  network idle or an empty recovery-card shell, matching the app's polling
+  behavior and reducing false build failures around mission replay.
+
+Browser Reliability:
+- The mission scenario included the browser-rendered dashboard source through
+  the mission route path.
+- Browser/tool liveness settled to zero, with no failed, cancelled, timeout, or
+  recovery events in the generated mission report.
+
+Acceptance Evidence:
+- `npm run acceptance:real -- --skip-browser-tooluse --tooluse-scenarios basic --mission-scenarios realistic-brief --model-catalog models.local.json --scenario-timeout-ms 300000 --data-dir /tmp/turnkeyai-real-acceptance-artifact-20260530`:
+  passed.
+- Validation-ops run id:
+  `validation-ops:real-llm-acceptance:2026-05-30T15-32-54-122Z:s21qc9`.
+- Mission id: `msn.mpsifk1z.1`.
+- Mission JSON report status: `passed`; duration: `29728` ms.
+- Metrics: tools `3/3`, sessions `3/0`, approvals `0/0/0`, liveness `0/0/0`,
+  evidence events `3`, recovery events `0`.
+- `npm run control-center:smoke`: passed.
+
+Regression Risk:
+- The reduced gate intentionally skipped provider-native browser tool-use to
+  keep this implementation-slice verification bounded; the full browser gate is
+  still required before high-risk runtime/browser releases.
+- The artifact path is recorded only when the mission report file exists. If
+  the tool-use leg fails before mission E2E starts, validation-ops will still
+  record the failed run without a mission artifact, which is the correct signal.
+- The smoke harness change deliberately tightens waits around visible UI state;
+  it does not weaken the read-scope recovery assertions.

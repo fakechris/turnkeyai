@@ -73,9 +73,11 @@ matrix includes the realistic operator brief scenario, so the release gate
 covers multi-source evidence gathering, browser-rendered dashboard extraction,
 and final-answer delivery quality in one product-level run. On completion it
 records a `real-llm-acceptance` validation-ops run under the daemon data
-directory, so Runtime → Release acceptance can show whether the latest real LLM
-gate passed. Use the narrower commands below only while investigating a
-specific failure.
+directory and writes the mission E2E JSON report under
+`<dataDir>/validation-artifacts/real-llm-acceptance/`, so Runtime → Release
+acceptance can show whether the latest real LLM gate passed and where to find
+the compact mission evidence artifact. Use the narrower commands below only
+while investigating a specific failure.
 
 Run the default non-browser matrix:
 
@@ -119,6 +121,8 @@ By default the run is written to `<dataDir>/validation-ops-runs`, where
 `dataDir` is resolved from `--data-dir`, `TURNKEYAI_DATA_DIR`, config
 `dataDir`, or `~/.turnkeyai/data`. Use `--no-record-validation-ops` for an
 isolated experiment that should not affect the operator release gate.
+Use `--mission-json <path>` to override the mission report path, or
+`--no-mission-json` for a scratch run that should not write the artifact.
 
 For environments without Chrome/CDP, the combined gate can skip only the
 provider-native browser/direct-CDP leg while still running the mission route
