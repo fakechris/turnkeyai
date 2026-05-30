@@ -176,7 +176,7 @@ try {
       sessionStorage.setItem("turnkeyai.controlCenter.scope", "read");
     });
     await readMissionPage.goto(`http://127.0.0.1:${port}/app#/mission/${encodeURIComponent(missionId)}`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await readMissionPage.waitForSelector(".mission-recovery-card");
     assert(
@@ -259,6 +259,25 @@ try {
     await page.goto(`http://127.0.0.1:${port}/app#/missions`, {
       waitUntil: "networkidle",
     });
+    const currentMissionCard = page.locator(".mission-card", { hasText: "UI smoke mission" });
+    const archivedMissionCard = page.locator(".mission-card", { hasText: "Archived UI smoke mission" });
+    await currentMissionCard.waitFor({ state: "visible" });
+    assert(
+      await currentMissionCard.isVisible(),
+      "current missions should show non-archived mission cards by default"
+    );
+    assert(
+      (await archivedMissionCard.count()) === 0,
+      "archived missions should be hidden from the default Current filter"
+    );
+    await page.getByRole("button", { name: /Archived\s+1/ }).click();
+    await archivedMissionCard.waitFor({ state: "visible" });
+    assert(
+      await archivedMissionCard.isVisible(),
+      "Archived filter should expose archived missions explicitly"
+    );
+    await page.getByRole("button", { name: /Current\s+1/ }).click();
+    await currentMissionCard.waitFor({ state: "visible" });
     await page.getByRole("button", { name: /New mission/ }).first().click();
     await page.waitForSelector("text=Agent team");
     await page.locator("input").first().fill("Browser-backed competitor check");
@@ -578,6 +597,7 @@ try {
       "release acceptance should show the next validation command"
     );
     await openReplay.click();
+    await page.waitForFunction((id) => window.location.hash === `#/mission/${id}`, missionId);
     assert(page.url().includes(`#/mission/${missionId}`), "runtime replay action should open the mission trace");
 
     await page.goto(`http://127.0.0.1:${port}/app#/onboarding`, {
@@ -794,7 +814,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   if (method === "GET" && url.pathname === "/missions") {
-    json(res, [missionFixture()]);
+    json(res, [missionFixture(), archivedMissionFixture()]);
     return;
   }
   if (method === "GET" && url.pathname === "/onboarding/state") {
@@ -1063,6 +1083,20 @@ function missionFixture() {
     blockers: 0,
     contextSummary: ["browser evidence", "tool result"],
     threadId,
+  };
+}
+
+function archivedMissionFixture() {
+  return {
+    ...missionFixture(),
+    id: "msn.ui-smoke.archived",
+    shortId: "UI-X",
+    title: "Archived UI smoke mission",
+    status: "archived",
+    progress: 100,
+    pendingApprovals: 0,
+    blockers: 0,
+    threadId: "thread-ui-smoke-archived",
   };
 }
 
