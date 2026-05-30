@@ -2056,3 +2056,64 @@ Regression Risk:
 - The checker does not yet enforce the 24-hour methodology-brake decision in
   code; for now that remains a documented operating rule. If the ledger starts
   drifting, the next governance slice should make the 24-hour review enforceable.
+
+## 2026-05-31 03:09 CST - Focused Mission Real Acceptance Passed
+
+Direction: converging
+
+Execution Kernel:
+- No execution-kernel code changed in this checkpoint.
+- The focused mission-only real acceptance path exercised the current runtime
+  through two complex mission scenarios without stuck creating/working state,
+  unresolved tool calls, stale role spans, cancelled tools, failed tools, or
+  command timeouts.
+
+Result Quality:
+- Both final answers passed the mission quality gate, including final-answer
+  presence, evidence-backed output, residual-risk wording, answer substance,
+  evidence usage, unsupported-uncertainty checks, tool-fallback guard, runtime
+  liveness, and failure-free checks.
+- Caveat: the `source_coverage` check passed because no visible multi-source
+  coverage requirement was present in mission evidence. This run proves focused
+  mission completion and baseline quality, but it does not yet prove the newer
+  source-label coverage warning on a labeled multi-source evidence set.
+
+Workbench UX:
+- No workbench UI changed.
+- Runtime validation-ops now has a real focused acceptance record that can
+  appear in Release acceptance surfaces, making the quality evidence visible
+  from the product instead of only from command output.
+
+Browser Reliability:
+- This focused gate skipped the provider-native browser tool-use leg and did
+  not exercise live CDP/browser scenarios.
+- Browser reliability remains unproven for this checkpoint. The next
+  browser-relevant gate must include a browser-backed mission scenario or the
+  full release acceptance command with CDP enabled.
+
+Acceptance Evidence:
+- Command:
+  `npm run acceptance:real -- --skip-tooluse --mission-scenarios
+  comparison,realistic-brief --model-catalog models.local.json
+  --scenario-timeout-ms 300000`
+- Result: passed in 56147ms.
+- Validation run:
+  `validation-ops:real-llm-acceptance:2026-05-30T19-07-15-946Z:kgwibl`
+- Artifact:
+  `/Users/chris/.turnkeyai/data/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T19-07-15-946Z%3Akgwibl-mission-e2e.json`
+- `comparison`: mission `msn.mpsq341u.1`, status `done`,
+  quality `passed`, tools `2/2`, sessions `2/0`, liveness `0/0/0`,
+  evidence events `2`, final bytes `586`.
+- `realistic-brief`: mission `msn.mpsq3l5a.2`, status `done`,
+  quality `passed`, tools `3/3`, sessions `3/0`, liveness `0/0/0`,
+  evidence events `3`, final bytes `1426`.
+
+Regression Risk:
+- The real acceptance pass is strong evidence for mission completion and
+  baseline quality, but weaker evidence for source coverage because the artifact
+  did not include visible labeled multi-source coverage requirements.
+- The report records final-answer size and quality failures but intentionally
+  omits final-answer text. If answer-substance regressions continue to appear
+  in manual testing, the next acceptance-reporting slice should add a bounded
+  final-answer excerpt or operator-safe quality digest so reviewers can audit
+  usefulness without opening the live mission store.
