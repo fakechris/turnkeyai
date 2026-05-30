@@ -1339,3 +1339,42 @@ Regression Risk:
 - This proves hot session continuation for a real follow-up. It does not prove
   browser hot/warm/cold resume or restart recovery; those still require the
   browser-focused acceptance path before production readiness is claimed.
+
+## 2026-05-31 00:46 CST - Real Browser Dashboard Mission E2E
+
+Direction: converging
+
+Execution Kernel:
+- A real mission completed the browser-dashboard scenario through the mission
+  route and worker session runtime.
+- The run completed with one tool request, one tool result, one spawned
+  browser-backed session, and zero residual liveness.
+
+Result Quality:
+- The mission quality gate passed.
+- The final answer was 502 bytes and 4 bullets, with the dashboard evidence
+  marker represented in mission metrics.
+
+Workbench UX:
+- The mission reached `done`, so Mission Detail can present a completed
+  browser-backed result rather than a stuck working state.
+- The generated mission JSON report is available as an external acceptance
+  artifact for inspection.
+
+Browser Reliability:
+- This is a browser-dashboard mission path, not only a text research path.
+- Metrics reported no failed tools, cancelled tools, timeouts, approvals, or
+  lingering active/waiting/stale runtime entries.
+
+Acceptance Evidence:
+- `npm run mission:e2e -- --scenario browser-dashboard --model-catalog models.local.json --scenario-timeout-ms 300000 --json /tmp/turnkeyai-mission-e2e-browser-dashboard-20260531.json`:
+  passed.
+- Mission id: `msn.mpskqj0a.1`.
+- Metrics: tools `1/1`, sessions `1/0`, approvals `0/0/0`, liveness `0/0/0`,
+  evidence events `1`.
+- JSON artifact: `/tmp/turnkeyai-mission-e2e-browser-dashboard-20260531.json`.
+
+Regression Risk:
+- This proves one browser-backed mission scenario. It does not replace the full
+  real acceptance matrix, and it does not by itself prove browser reconnect or
+  hot/warm/cold resume under profile/CDP failure.
