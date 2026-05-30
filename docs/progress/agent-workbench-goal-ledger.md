@@ -811,3 +811,64 @@ Regression Risk:
 - This checkpoint supports continued feature/runtime work; it does not trigger
   methodology review because the latest real E2E improved confidence rather
   than repeating a previously stuck or weak-output failure.
+
+## 2026-05-30 21:58 CST - Tool-Fallback Quality Gate
+
+Direction: converging
+
+Execution Kernel:
+- No tool execution semantics changed. The runtime still allows the lead to
+  complete after tool-use, session, browser, approval, timeout, and recovery
+  outcomes settle.
+- Mission observability now treats final answers that say a required tool,
+  browser, search, retrieval, or web path was unavailable and then fall back to
+  model knowledge as a first-class quality signal instead of a normal finish.
+
+Result Quality:
+- Added the `tool_fallback_answer` quality check. A completed answer such as
+  "search tools are unavailable, based on my knowledge..." now becomes
+  operator-visible attention instead of blending into a weak final answer.
+- The existing unsupported-uncertainty detector now also catches Chinese
+  unavailable/needs-follow-up phrasing that previously slipped through.
+- A no-evidence fallback answer is blocked by the existing evidence check and
+  also carries the new fallback warning; evidence-backed realistic work still
+  passes.
+
+Workbench UX:
+- Mission Detail maps `tool_fallback_answer` to an explicit action: continue
+  with a narrower tool-backed request or inspect tool availability before
+  accepting the answer.
+- Control Center smoke now verifies the user-visible action text in the Mission
+  Health panel.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- The real acceptance run still exercised the browser-backed dashboard evidence
+  path without profile, attach, or CDP failure in the isolated daemon.
+
+Acceptance Evidence:
+- `npx tsx --test packages/app-gateway/src/mission-observability.test.ts`:
+  14 passed, including a long-whitespace fallback phrasing regression for the
+  review-identified ReDoS risk.
+- `npm run build:control-center`: passed.
+- `npm run control-center:smoke -- --browser-path "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`:
+  passed, screenshot bytes `120001`, mobile screenshot bytes `55054`.
+- `npm run typecheck`: passed.
+- `npm test -- --runInBand`: 1208 passed.
+- `npm run build`: passed.
+- `git diff --check`: passed.
+- Real LLM gate:
+  `npm run mission:e2e -- --scenario realistic-brief --model-catalog models.local.json --scenario-timeout-ms 300000`
+  passed with mission `msn.mpsf9tmo.1`, status `done`, quality gate `passed`,
+  tools `3/3`, sessions `3/0`, liveness `0/0/0`, evidence `3`, final answer
+  `1228` bytes across `6` bullets.
+
+Regression Risk:
+- Regex-based quality detection can still miss paraphrases, but the added check
+  covers the concrete weak-output class observed in local product testing
+  without changing tool execution. Review caught an overlapping-whitespace
+  regex risk; the detector now normalizes whitespace first and uses smaller
+  bounded checks.
+- False positives are limited to quality-gate attention, not mission execution
+  failure. The real realistic-brief acceptance passing after the change is the
+  guard against over-blocking normal evidence-backed work.
