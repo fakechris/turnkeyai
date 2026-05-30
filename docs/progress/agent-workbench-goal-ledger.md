@@ -1258,3 +1258,43 @@ Regression Risk:
 - Worker-session lookup failure is conservative and may delay a blocked status
   until a later reconciliation tick can read the store, but it avoids the worse
   failure mode of cutting off a live worker.
+
+## 2026-05-31 00:33 CST - Real Mission E2E After Active Worker Lifecycle
+
+Direction: converging
+
+Execution Kernel:
+- The post-merge runtime path completed a real mission after mission lifecycle
+  reconciliation started considering active worker sessions.
+- The run ended with no active, waiting, or stale liveness entries.
+
+Result Quality:
+- The mission quality gate passed with an evidence-backed final answer.
+- The final answer was 1471 bytes and 6 bullets, with 3 evidence events
+  captured in mission metrics.
+
+Workbench UX:
+- The mission reached `done`, which keeps the Mission UI and Runtime release
+  evidence path aligned with an actually completed user-facing result.
+- The generated JSON report can be used as an acceptance artifact for later
+  inspection.
+
+Browser Reliability:
+- The scenario used 3 spawned worker sessions and all 3 tool results completed.
+- No recovery events, failed tools, cancelled tools, timeouts, or residual
+  liveness entries were recorded.
+
+Acceptance Evidence:
+- `npm run mission:e2e -- --scenario realistic-brief --model-catalog models.local.json --scenario-timeout-ms 300000 --json /tmp/turnkeyai-mission-e2e-realistic-brief-after-active-worker-20260531.json`:
+  passed.
+- Mission id: `msn.mpskbcoy.1`.
+- Metrics: tools `3/3`, sessions `3/0`, approvals `0/0/0`, liveness `0/0/0`,
+  evidence events `3`, recovery events `0`.
+- JSON artifact:
+  `/tmp/turnkeyai-mission-e2e-realistic-brief-after-active-worker-20260531.json`.
+
+Regression Risk:
+- This is one real scenario, not the full matrix. It proves the active-worker
+  lifecycle change did not break a realistic mission route, but broader
+  browser/approval/follow-up scenarios still need the full release gate before
+  claiming production readiness.
