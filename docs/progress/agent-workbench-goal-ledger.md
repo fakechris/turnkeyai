@@ -960,7 +960,7 @@ Acceptance Evidence:
 - `npx tsx --test packages/tui/src/mission-tui.test.ts`: 7 passed.
 - `npm run tui -- --help`: passed.
 - `npm run typecheck`: passed.
-- `npm test -- --runInBand`: 1215 passed.
+- `npm test -- --runInBand`: 1217 passed.
 - `npm run build`: passed.
 - `git diff --check`: passed.
 - Real LLM E2E was not rerun for this checkpoint because execution semantics did
