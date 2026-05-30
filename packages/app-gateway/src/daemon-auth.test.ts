@@ -95,6 +95,8 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     // PR K3.5 — mission lifecycle writes.
     { method: "POST", pathname: "/missions", expected: "operator" },
     { method: "POST", pathname: "/missions/msn.01/messages", expected: "operator" },
+    { method: "POST", pathname: "/missions/reconcile", expected: "operator" },
+    { method: "POST", pathname: "/missions/msn.01/reconcile", expected: "operator" },
   ] as const;
 
   for (const entry of cases) {

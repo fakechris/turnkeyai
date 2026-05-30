@@ -1053,6 +1053,237 @@ describe("mission-routes", () => {
       }
     });
 
+    it("POST /missions/reconcile forces a mission/thread mirror pass", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        let tickAllCalls = 0;
+        const orchestrator = {
+          async spawnThread() {
+            throw new Error("unused");
+          },
+          async postUserMessage() {
+            throw new Error("unused");
+          },
+          threadBridge: {
+            async tickAll() {
+              tickAllCalls += 1;
+              return [
+                { missionId: "msn.1", appended: 2 },
+                { missionId: "msn.2", appended: 0 },
+              ];
+            },
+            async tickMission() {
+              throw new Error("unused");
+            },
+            start() {
+              return () => undefined;
+            },
+          },
+        };
+        const response = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({ method: "POST", url: "/missions/reconcile" }),
+          res: response.res,
+          url: new URL("http://127.0.0.1/missions/reconcile"),
+          deps: { ...deps, orchestrator },
+        });
+
+        assert.equal(response.getStatus(), 200);
+        assert.deepEqual(response.getJson(), {
+          ok: true,
+          scope: "all",
+          missions: [
+            { missionId: "msn.1", appended: 2 },
+            { missionId: "msn.2", appended: 0 },
+          ],
+          appended: 2,
+        });
+        assert.equal(tickAllCalls, 1);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("POST /missions/:id/reconcile forces one mission/thread mirror pass", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        await deps.missionStore.putRaw({
+          id: "msn.reconcile",
+          shortId: "MSN-R",
+          title: "needs reconcile",
+          desc: "",
+          status: "working",
+          mode: "custom",
+          modeLabel: "Custom",
+          owner: "operator",
+          ownerLabel: "Operator",
+          createdAt: new Date(clock.now()).toISOString(),
+          createdAtMs: clock.now(),
+          agents: ["role-lead"],
+          progress: 0.5,
+          pendingApprovals: 0,
+          blockers: 0,
+          contextSummary: [],
+          threadId: "thread-reconcile",
+        });
+        const ticked: string[] = [];
+        const orchestrator = {
+          async spawnThread() {
+            throw new Error("unused");
+          },
+          async postUserMessage() {
+            throw new Error("unused");
+          },
+          threadBridge: {
+            async tickAll() {
+              throw new Error("unused");
+            },
+            async tickMission(missionId: string) {
+              ticked.push(missionId);
+              return 3;
+            },
+            start() {
+              return () => undefined;
+            },
+          },
+        };
+        const response = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({ method: "POST", url: "/missions/msn.reconcile/reconcile" }),
+          res: response.res,
+          url: new URL("http://127.0.0.1/missions/msn.reconcile/reconcile"),
+          deps: { ...deps, orchestrator },
+        });
+
+        assert.equal(response.getStatus(), 200);
+        assert.deepEqual(response.getJson(), {
+          ok: true,
+          scope: "mission",
+          missionId: "msn.reconcile",
+          appended: 3,
+        });
+        assert.deepEqual(ticked, ["msn.reconcile"]);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("POST /missions/reconcile returns 501 when reconcile is not configured", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const response = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({ method: "POST", url: "/missions/reconcile" }),
+          res: response.res,
+          url: new URL("http://127.0.0.1/missions/reconcile"),
+          deps,
+        });
+
+        assert.equal(response.getStatus(), 501);
+        assert.deepEqual(response.getJson(), { error: "mission reconcile not configured" });
+
+        await deps.missionStore.putRaw({
+          id: "msn.no-tick",
+          shortId: "MSN-N",
+          title: "no tick",
+          desc: "",
+          status: "working",
+          mode: "custom",
+          modeLabel: "Custom",
+          owner: "operator",
+          ownerLabel: "Operator",
+          createdAt: new Date(clock.now()).toISOString(),
+          createdAtMs: clock.now(),
+          agents: ["role-lead"],
+          progress: 0,
+          pendingApprovals: 0,
+          blockers: 0,
+          contextSummary: [],
+          threadId: "thread-no-tick",
+        });
+        const missingTickMission = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({ method: "POST", url: "/missions/msn.no-tick/reconcile" }),
+          res: missingTickMission.res,
+          url: new URL("http://127.0.0.1/missions/msn.no-tick/reconcile"),
+          deps: {
+            ...deps,
+            orchestrator: {
+              async spawnThread() {
+                throw new Error("unused");
+              },
+              async postUserMessage() {
+                throw new Error("unused");
+              },
+              threadBridge: {
+                async tickAll() {
+                  return [];
+                },
+                start() {
+                  return () => undefined;
+                },
+              } as never,
+            },
+          },
+        });
+        assert.equal(missingTickMission.getStatus(), 501);
+        assert.deepEqual(missingTickMission.getJson(), { error: "mission reconcile not configured" });
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("POST /missions/:id/reconcile validates mission id and existence", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const orchestrator = {
+          async spawnThread() {
+            throw new Error("unused");
+          },
+          async postUserMessage() {
+            throw new Error("unused");
+          },
+          threadBridge: {
+            async tickAll() {
+              return [];
+            },
+            async tickMission() {
+              throw new Error("unused");
+            },
+            start() {
+              return () => undefined;
+            },
+          },
+        };
+
+        const malformed = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({ method: "POST", url: "/missions/%E0%A4%A/reconcile" }),
+          res: malformed.res,
+          url: new URL("http://127.0.0.1/missions/%E0%A4%A/reconcile"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(malformed.getStatus(), 400);
+        assert.deepEqual(malformed.getJson(), { error: "invalid mission id encoding" });
+
+        const missing = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({ method: "POST", url: "/missions/missing/reconcile" }),
+          res: missing.res,
+          url: new URL("http://127.0.0.1/missions/missing/reconcile"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(missing.getStatus(), 404);
+        assert.deepEqual(missing.getJson(), { error: "mission not found" });
+      } finally {
+        t.cleanup();
+      }
+    });
+
     it("POST /missions/:id/messages accepts follow-up before the agent turn finishes", async () => {
       const t = tmpDir();
       try {

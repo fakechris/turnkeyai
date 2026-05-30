@@ -39,6 +39,8 @@ interface Live {
 export function RuntimePage() {
   const client = useApiClient();
   const { state, setPill, setLastStatus, openMission } = useAppState();
+  const [missionReconciling, setMissionReconciling] = useState(false);
+  const [missionReconcileNotice, setMissionReconcileNotice] = useState<string | null>(null);
   const [live, setLive] = useState<Live>({
     diagnostics: null,
     status: null,
@@ -117,8 +119,25 @@ export function RuntimePage() {
       // anything wrong.
     });
   };
+  const reconcileMissions = async () => {
+    setMissionReconciling(true);
+    setMissionReconcileNotice(null);
+    try {
+      const result = await client.post<{ appended: number; missions: Array<{ missionId: string; appended: number }> }>(
+        "/missions/reconcile"
+      );
+      setMissionReconcileNotice(
+        `Reconciled ${result.missions.length} linked mission(s), appended ${result.appended} event(s).`
+      );
+    } catch (error) {
+      setMissionReconcileNotice(readableRuntimeError(error));
+    } finally {
+      setMissionReconciling(false);
+    }
+  };
   const bundleReady = live.diagnostics != null;
   const replayMissionId = findReplayMissionId(live.runtimeSummary, live.missions);
+  const canReconcileMissions = state.scope === "operator" || state.scope === "admin" || state.scope === "unknown";
 
   return (
     <div className="page">
@@ -160,7 +179,15 @@ export function RuntimePage() {
       <div className="runtime-grid">
         <div>
           <MetricTiles live={live} />
-          <MissionHealthCard diagnostics={live.diagnostics} reachable={live.reachable} onOpenMission={openMission} />
+          <MissionHealthCard
+            diagnostics={live.diagnostics}
+            reachable={live.reachable}
+            onOpenMission={openMission}
+            canReconcile={canReconcileMissions}
+            reconciling={missionReconciling}
+            reconcileNotice={missionReconcileNotice}
+            onReconcile={reconcileMissions}
+          />
           <SetupHealthCard diagnostics={live.diagnostics} reachable={live.reachable} />
           <BrowserSessionsCard sessions={live.workerSessions} reachable={live.reachable} />
           <DaemonLogCard logs={live.logs} reachable={live.reachable} />
@@ -261,10 +288,18 @@ function MissionHealthCard({
   diagnostics,
   reachable,
   onOpenMission,
+  canReconcile,
+  reconciling,
+  reconcileNotice,
+  onReconcile,
 }: {
   diagnostics: DiagnosticsSnapshot | null;
   reachable: boolean;
   onOpenMission: (missionId: string) => void;
+  canReconcile: boolean;
+  reconciling: boolean;
+  reconcileNotice: string | null;
+  onReconcile: () => void;
 }) {
   const health = diagnostics?.missionHealth;
   const attention = health?.attentionMissions ?? [];
@@ -281,7 +316,17 @@ function MissionHealthCard({
       <div className="card-hd">
         <Icon name="runtime" size={13} />
         <h3>Mission health</h3>
-        <span className={`tag ${hasAttention ? "warning" : health ? "success" : "info"}`} style={{ marginLeft: "auto" }}>
+        <button
+          type="button"
+          className="btn"
+          style={{ marginLeft: "auto" }}
+          disabled={!canReconcile || reconciling}
+          title={canReconcile ? "Force a mission/thread mirror pass" : "Operator token required"}
+          onClick={onReconcile}
+        >
+          {reconciling ? "Reconciling" : "Reconcile"}
+        </button>
+        <span className={`tag ${hasAttention ? "warning" : health ? "success" : "info"}`} style={{ marginLeft: 8 }}>
           {health ? `${health.total} missions` : reachable ? "checking" : "offline"}
         </span>
       </div>
@@ -298,6 +343,11 @@ function MissionHealthCard({
             <div className="runtime-health-action">
               inspected {health.inspected} · sessions spawned {health.sessions.spawned} · stale runtime {health.liveness.stale}
             </div>
+            {reconcileNotice ? (
+              <div className="runtime-health-action" role="status">
+                {reconcileNotice}
+              </div>
+            ) : null}
           </div>
           {attention.length > 0 ? (
             <div style={{ display: "grid" }}>
