@@ -34,6 +34,7 @@ import {
   useMission,
   useMissionMetrics,
   useMissions,
+  useReconcileMission,
   useRecoveryRunAction,
   useRecoveryRuns,
   useRoleRuns,
@@ -67,6 +68,12 @@ export function MissionDetailPage({ missionId }: { missionId: string }) {
   const listMission = missions.value.find((m) => m.id === missionId) ?? null;
   const missionDetail = useMission(missionId, listMission, { pollIntervalMs: 2000 });
   const mission = missionDetail.value ?? listMission;
+  const refetchMissions = missions.refetch;
+  const refetchMissionDetail = missionDetail.refetch;
+  const onMissionUpdated = useCallback(() => {
+    refetchMissionDetail();
+    refetchMissions();
+  }, [refetchMissionDetail, refetchMissions]);
 
   if (!mission && !missions.isLive && !missionDetail.isLive) {
     return (
@@ -94,7 +101,7 @@ export function MissionDetailPage({ missionId }: { missionId: string }) {
     <>
       <MissionBar mission={mission} onBack={() => setRoute("missions")} />
       {mission.threadId ? (
-        <LiveMissionView mission={mission} />
+        <LiveMissionView mission={mission} onMissionUpdated={onMissionUpdated} />
       ) : (
         <UnlinkedMissionView mission={mission} />
       )}
@@ -140,7 +147,7 @@ function UnlinkedMissionView({ mission }: { mission: Mission }) {
   );
 }
 
-function LiveMissionView({ mission }: { mission: Mission }) {
+function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMissionUpdated: () => void }) {
   const { state, setRoute } = useAppState();
   const canUseMissionActions = canUseOperatorActions(state.scope);
   const timeline = useTimeline(mission.id, []);
@@ -156,8 +163,10 @@ function LiveMissionView({ mission }: { mission: Mission }) {
   const cancelRoleRun = useCancelRoleRun();
   const cancelWorkerSession = useCancelWorkerSession();
   const executeRecoveryRunAction = useRecoveryRunAction();
+  const reconcileMission = useReconcileMission();
   const [pending, setPending] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [reconcilingMission, setReconcilingMission] = useState(false);
   const [roleRunActionKey, setRoleRunActionKey] = useState<string | null>(null);
   const [sessionActionKey, setSessionActionKey] = useState<string | null>(null);
   const [recoveryActionKey, setRecoveryActionKey] = useState<string | null>(null);
@@ -203,12 +212,29 @@ function LiveMissionView({ mission }: { mission: Mission }) {
   const { refetch: refetchRoleRuns } = roleRuns;
   const { refetch: refetchWorkerSessions } = workerSessions;
   const refetchMissionRuntime = useCallback(() => {
+    onMissionUpdated();
     refetchTimeline();
     refetchMetrics();
     refetchRecoveryRuns();
     refetchRoleRuns();
     refetchWorkerSessions();
-  }, [refetchMetrics, refetchRecoveryRuns, refetchRoleRuns, refetchTimeline, refetchWorkerSessions]);
+  }, [onMissionUpdated, refetchMetrics, refetchRecoveryRuns, refetchRoleRuns, refetchTimeline, refetchWorkerSessions]);
+
+  const onReconcileMission = useCallback(async () => {
+    if (!canUseMissionActions || reconcilingMission) return;
+    setReconcilingMission(true);
+    setError(null);
+    setAcceptedNotice(null);
+    try {
+      const result = await reconcileMission(mission.id);
+      setAcceptedNotice(`Mission reconciled. Appended ${result.appended} event(s).`);
+      refetchMissionRuntime();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReconcilingMission(false);
+    }
+  }, [canUseMissionActions, mission.id, reconcileMission, reconcilingMission, refetchMissionRuntime]);
 
   const onSend = useCallback(async () => {
     const content = pending.trim();
@@ -359,7 +385,14 @@ function LiveMissionView({ mission }: { mission: Mission }) {
             canAct={canUseMissionActions}
             onCancel={onCancelRoleRun}
           />
-          <MissionMetricsCard metrics={metrics.value} isLive={metrics.isLive} error={metrics.error} />
+          <MissionMetricsCard
+            metrics={metrics.value}
+            isLive={metrics.isLive}
+            error={metrics.error}
+            canAct={canUseMissionActions}
+            busy={reconcilingMission}
+            onReconcile={onReconcileMission}
+          />
           <ContextContinuityCard
             memory={sessionMemory.value}
             isLive={sessionMemory.isLive}
@@ -1250,10 +1283,16 @@ function MissionMetricsCard({
   metrics,
   isLive,
   error,
+  canAct,
+  busy,
+  onReconcile,
 }: {
   metrics: MissionObservabilitySnapshot | null;
   isLive: boolean;
   error: string | null;
+  canAct: boolean;
+  busy: boolean;
+  onReconcile: () => void;
 }) {
   const qualityLabel = metrics ? qualityStatusLabel(metrics.qualityGate.status) : isLive ? "No data" : "Loading";
   const qualityEmph =
@@ -1288,7 +1327,12 @@ function MissionMetricsCard({
         </div>
       ) : (
         <>
-          <MissionQualityActionPanel metrics={metrics} />
+          <MissionQualityActionPanel
+            metrics={metrics}
+            canAct={canAct}
+            busy={busy}
+            onReconcile={onReconcile}
+          />
           <div className="mission-metrics-grid">
             <MetricTile label="wall clock" value={formatDurationMs(0, metrics.wallClockMs)} />
             <MetricTile label="events" value={String(metrics.timelineEventCount)} />
@@ -1332,8 +1376,14 @@ function MissionMetricsCard({
 
 function MissionQualityActionPanel({
   metrics,
+  canAct,
+  busy,
+  onReconcile,
 }: {
   metrics: MissionObservabilitySnapshot;
+  canAct: boolean;
+  busy: boolean;
+  onReconcile: () => void;
 }) {
   const visibleChecks = metrics.qualityGate.checks.filter(
     (check) => check.status === "fail" || check.status === "warn"
@@ -1347,6 +1397,15 @@ function MissionQualityActionPanel({
       <div className="mission-quality-action-head">
         <span>{metrics.qualityGate.status === "running" ? "Still running" : "Attention points"}</span>
         <span>{action}</span>
+        <button
+          type="button"
+          className="btn"
+          disabled={!canAct || busy}
+          onClick={onReconcile}
+          title={canAct ? "Force a mission/thread mirror pass now." : OPERATOR_ACTION_SCOPE_HINT}
+        >
+          <Icon name="refresh" size={13} /> {busy ? "Reconciling…" : "Reconcile"}
+        </button>
       </div>
       {visibleChecks.length > 0 ? (
         <div className="mission-quality-action-list">

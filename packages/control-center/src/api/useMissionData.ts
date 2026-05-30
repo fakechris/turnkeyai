@@ -811,3 +811,12 @@ export function useSendMissionMessage(): (input: {
     [client]
   );
 }
+
+export function useReconcileMission(): (missionId: string) => Promise<{ appended: number }> {
+  const client = useApiClient();
+  return useCallback(
+    (missionId: string) =>
+      client.post<{ appended: number }>(`/missions/${encodeURIComponent(missionId)}/reconcile`),
+    [client]
+  );
+}
