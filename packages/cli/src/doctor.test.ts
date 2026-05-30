@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+
+import { evaluateDaemonServiceProbe } from "./doctor";
 
 describe("doctor", () => {
   it("warns, but does not fail, when relay extension is absent for local transport", async () => {
@@ -183,6 +185,65 @@ describe("doctor", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it("evaluates macOS daemon service artifacts and launchd status", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "turnkeyai-doctor-service-"));
+    try {
+      const launchAgentFile = path.join(home, "Library", "LaunchAgents", "com.turnkeyai.daemon.plist");
+      const wrapperFile = path.join(home, ".turnkeyai", "bin", "daemon-service.sh");
+      const envFile = path.join(home, ".turnkeyai", "daemon.env");
+
+      const missing = evaluateDaemonServiceProbe({
+        platformName: "darwin",
+        launchAgentFile,
+        wrapperFile,
+        envFile,
+      });
+      assert.equal(missing?.status, "warn");
+      assert.match(missing?.detail ?? "", /not installed/);
+      assert.match(missing?.detail ?? "", /turnkeyai daemon service install/);
+
+      await mkdir(path.dirname(launchAgentFile), { recursive: true });
+      await mkdir(path.dirname(wrapperFile), { recursive: true });
+      await writeFile(launchAgentFile, "plist", "utf8");
+      await writeFile(wrapperFile, "wrapper", "utf8");
+      await writeFile(envFile, "env", "utf8");
+
+      const unloaded = evaluateDaemonServiceProbe({
+        platformName: "darwin",
+        launchAgentFile,
+        wrapperFile,
+        envFile,
+        launchctlStatus: { code: 113, stdout: "", stderr: "Could not find service" },
+      });
+      assert.equal(unloaded?.status, "warn");
+      assert.match(unloaded?.detail ?? "", /installed but not loaded/);
+
+      const loaded = evaluateDaemonServiceProbe({
+        platformName: "darwin",
+        launchAgentFile,
+        wrapperFile,
+        envFile,
+        launchctlStatus: {
+          code: 0,
+          stdout: "state = running\npid = 12345\n",
+          stderr: "",
+        },
+      });
+      assert.equal(loaded?.status, "ok");
+      assert.match(loaded?.detail ?? "", /launchd loaded \(running\) pid 12345/);
+
+      const nonDarwin = evaluateDaemonServiceProbe({
+        platformName: "linux",
+        launchAgentFile,
+        wrapperFile,
+        envFile,
+      });
+      assert.equal(nonDarwin, null);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });
 
 async function startHealthServer(input: {
@@ -292,6 +353,7 @@ function runCli(
         ...process.env,
         PATH: path.dirname(process.execPath),
         TURNKEYAI_DOCTOR_CLI_COMMAND: "turnkeyai-doctor-test-missing",
+        TURNKEYAI_DOCTOR_SKIP_SERVICE_CHECK: "1",
         ...env,
       },
       stdio: ["ignore", "pipe", "pipe"],

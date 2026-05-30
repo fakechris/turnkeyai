@@ -48,6 +48,11 @@ export function NoTokenPage() {
               note="Use this after installing or linking the TurnkeyAI CLI."
             />
             <LaunchCommand
+              label="Persistent daemon"
+              command="turnkeyai daemon service install"
+              note="On macOS, install the local daemon as a LaunchAgent before opening Mission Control."
+            />
+            <LaunchCommand
               label="Link local CLI"
               command="npm run install:local-cli"
               note="Use this from the repository root if the turnkeyai command is not on PATH."
@@ -64,8 +69,9 @@ export function NoTokenPage() {
             />
           </div>
           <p>
-            These commands start the daemon if needed and open this page with the token already
-            attached to the URL fragment.
+            Launcher commands start the daemon if needed and open this page with the token already
+            attached to the URL fragment. The persistent daemon command keeps the local service
+            running across logins.
           </p>
           <p>If you already have a token, paste it below — it's kept only in this browser tab.</p>
           <form
@@ -93,6 +99,7 @@ export function NoTokenPage() {
           <p className="note">
             Token is read from <code>~/.turnkeyai/config.json</code> by the launcher.{" "}
             Check access with <code>turnkeyai daemon status</code>,{" "}
+            <code>turnkeyai daemon service status</code>,{" "}
             <code>npx @turnkeyai/cli daemon status</code>, or <code>npm run daemon:status</code>{" "}
             from a source checkout.
           </p>
