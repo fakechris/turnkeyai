@@ -1585,7 +1585,8 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         },
         {
           label: "bridge evidence line",
-          pattern: /^\s*[-*+]\s+bridge evidence\s*:.*TURNKEYAI_PRODUCT_BRIDGE_OK.*browser bridge.*desktop outside the browser/im,
+          pattern:
+            /^\s*[-*+]\s+bridge evidence\s*:.*(?:Bridge capability research|browser bridge).*TURNKEYAI_PRODUCT_BRIDGE_OK.*(?:browser bridge|controls).*(?:desktop outside the browser|browser-only scope)/im,
         },
         {
           label: "browser signal evidence line",
@@ -1632,6 +1633,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "Do not claim a native Electron/Tauri shell is already shipped.",
         "Do not infer market adoption, external outages, customer counts, or external pricing beyond the local fixture text.",
         "Never write assume, assumed, estimate, probably, maybe, to be confirmed, or pending confirmation in the final answer.",
+        "The bridge evidence bullet must keep the phrase browser bridge controls unless doing so would duplicate the source label awkwardly.",
         `The recommendation bullet must start with "- recommendation: ${PRODUCT_WORKBENCH_FINAL_MARKER}" and state the release decision.`,
         "Keep the final answer concise, under 230 words.",
         "Use exactly this section skeleton for the final answer, with no preamble before it and no closing note after it:",
@@ -1773,6 +1775,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         `Final answer must include ${TIMEOUT_FINAL_MARKER} exactly once, and only inside the first bullet. It must also include timed out, verification did not complete, continue, and the exact words residual risk.`,
         `Use plain Markdown with the exact heading "Timeout result" with no #, **, or __ markup, followed by exactly three bullets: timeout boundary, attempted verification, residual risk. The first bullet must start with "- timeout boundary: ${TIMEOUT_FINAL_MARKER} - timed out".`,
         `The attempted verification and residual risk bullets must not include ${TIMEOUT_FINAL_MARKER}.`,
+        "The attempted verification bullet must include the exact phrase verification did not complete.",
         "The third bullet must include the literal word continue without repeating the final success marker.",
         "In the attempted verification bullet, name the slow fixture but do not include the fixture URL.",
         "Do not add any paragraph, summary, or note after the three bullets.",

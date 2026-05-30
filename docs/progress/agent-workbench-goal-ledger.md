@@ -2463,3 +2463,68 @@ Regression Risk:
   categories of missing markers, source drift, status preambles, or session-key
   leakage, pause feature PRs and review the shared answer-shape harness before
   adding new capabilities.
+
+## 2026-05-31 06:38 CST - Review-Fix Acceptance Reclose
+
+Direction: converging
+
+Execution Kernel:
+- Review-found runtime issues were fixed at the execution boundary:
+  worker-session context survives `send()`, final synthesis fails closed when a
+  repaired response still emits pseudo tool-call markup, permission apply is
+  idempotent, and `sessions_send` result envelopes now use the current
+  follow-up label/tool-call id.
+- The fixes are architectural rather than cosmetic: they close duplicate
+  approval application, source-label continuity, and unsafe final-repair gaps
+  that appeared only under real LLM ordering variance.
+
+Result Quality:
+- The full real gate passed after tightening prompts/gates for follow-up,
+  timeout recovery, and product brief source coverage.
+- Product and realistic briefs still require three source-backed sessions and
+  exact evidence labels; timeout/cancel remain bounded blocked-quality cases
+  instead of weak success answers.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- User-visible mission timelines are more reliable because source labels now
+  survive follow-up results, duplicate approval events are suppressed, and final
+  answers are kept out of pseudo tool-call markup when the model misbehaves.
+
+Browser Reliability:
+- Direct-CDP smoke passed in the full acceptance run.
+- Browser-backed mission scenarios passed: `browser-dynamic`,
+  `browser-dashboard`, `product-workbench-brief`, and `realistic-brief`.
+
+Acceptance Evidence:
+- Command:
+  `npm run acceptance:real -- --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --cdp-timeout-ms 45000`
+- Result: passed in 416055ms.
+- Validation run:
+  `validation-ops:real-llm-acceptance:2026-05-30T22-31-29-943Z:hta22f`
+- Artifact:
+  `/Users/chris/.turnkeyai/data/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T22-31-29-943Z%3Ahta22f-mission-e2e.json`
+- Mission results:
+  `basic` `msn.mpsxfey0.1` done/passed tools `1/1` sessions `1/0`;
+  `comparison` `msn.mpsxfp21.2` done/passed tools `2/2` sessions `2/0`;
+  `followup` `msn.mpsxg65l.3` done/passed tools `2/2` sessions `1/1`;
+  `cancel` `msn.mpsxh3ju.4` done/blocked tools `1/1` sessions `1/0`;
+  `approval` `msn.mpsxh8mb.5` done/passed tools `1/1` sessions `1/0`;
+  `browser-dynamic` `msn.mpsxhure.6` done/passed tools `1/1`
+  sessions `1/0`; `browser-dashboard` `msn.mpsxio8c.7` done/passed
+  tools `1/1` sessions `1/0`; `timeout-recovery` `msn.mpsxjdu4.8`
+  done/blocked tools `1/1` sessions `1/0`; `memory-recall`
+  `msn.mpsxkw5x.9` done/passed tools `2/2` sessions `0/0`;
+  `task-tracking` `msn.mpsxl4pn.10` done/passed tools `3/3`
+  sessions `0/0`; `product-workbench-brief` `msn.mpsxlawy.11`
+  done/passed tools `3/3` sessions `3/0`; `realistic-brief`
+  `msn.mpsxlvun.12` done/passed tools `3/3` sessions `3/0`.
+- Liveness was `0/0/0` for every mission.
+
+Regression Risk:
+- Direction is converging because the same run exposed review-fix misses first,
+  then passed after fixing runtime contracts and prompt/gate alignment.
+- 24-hour methodology check: if approval duplication, source-label drift, or
+  answer-shape regex drift recurs again, pause feature PRs and review the
+  shared permission/session/evidence contract before adding workbench features.

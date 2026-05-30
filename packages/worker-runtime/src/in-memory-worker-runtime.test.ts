@@ -60,6 +60,10 @@ test("in-memory worker runtime marks null worker results as done", async () => {
   });
 
   assert.equal(result, null);
+  const listedAfterSend = await runtime.listSessions();
+  assert.equal(listedAfterSend[0]?.context?.parentSessionKey, "role:operator:thread:1");
+  assert.equal(listedAfterSend[0]?.context?.toolCallId, "call-browser");
+  assert.equal(listedAfterSend[0]?.context?.label, "Dashboard check");
   const state = await runtime.getState(spawned.workerRunKey);
   assert.equal(state?.status, "done");
 });

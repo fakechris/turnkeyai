@@ -726,6 +726,7 @@ interface AnswerQualityGate {
   requiredPatterns?: Array<{ label: string; pattern: RegExp }>;
   forbiddenPatterns?: Array<{ label: string; pattern: RegExp }>;
   forbiddenLiterals?: Array<{ label: string; value: string }>;
+  requiredExactLines?: string[];
   requiredBulletLabels?: string[];
   requiredToolNames?: string[];
 }
@@ -756,14 +757,14 @@ function multiSourceQualityGate(targetMarker: string): AnswerQualityGate {
     minEvidenceSources: 2,
     maxSpawnedSessions: 4,
     requiredToolNames: ["sessions_spawn"],
+    requiredExactLines: ["## Evidence"],
+    requiredBulletLabels: ["explore evidence", "browser evidence", "final marker", "residual risk"],
     requiredPatterns: [
       { label: "target success marker", pattern: new RegExp(escapeRegExp(targetMarker)) },
       { label: "explore evidence marker", pattern: /TURNKEYAI_COMPLEX_EXPLORE_OK/ },
       { label: "browser evidence marker", pattern: /TURNKEYAI_COMPLEX_BROWSER_OK/ },
-      { label: "evidence heading", pattern: /Evidence/i },
       { label: "explore source label", pattern: /deterministic e2e worker/i },
       { label: "browser evidence text", pattern: /complex browser evidence/i },
-      { label: "residual risk", pattern: /residual risk/i },
     ],
     forbiddenPatterns: [
       { label: "unsupported user-scale claim", pattern: /\b(millions of users|large community|widely adopted)\b/i },
@@ -779,6 +780,7 @@ function followupQualityGate(targetMarker: string, forbiddenSessionKeys: string[
     minEvidenceSources: 2,
     maxSpawnedSessions: 1,
     requiredToolNames: ["sessions_spawn", "sessions_send"],
+    requiredExactLines: ["## Evidence"],
     requiredBulletLabels: ["phase-one evidence", "follow-up evidence", "residual risk"],
     requiredPatterns: [
       { label: "target success marker", pattern: new RegExp(escapeRegExp(targetMarker)) },
@@ -876,6 +878,11 @@ function evaluateAnswerQuality(input: {
       failures.push(`forbidden literal: ${forbidden.label}`);
     }
   }
+  for (const line of input.gate.requiredExactLines ?? []) {
+    if (!hasExactLine(input.answer, line)) {
+      failures.push(`missing exact line: ${line}`);
+    }
+  }
   for (const label of input.gate.requiredBulletLabels ?? []) {
     if (!hasExactBulletLabel(input.answer, label)) {
       failures.push(`missing exact bullet label: ${label}`);
@@ -900,6 +907,10 @@ function evaluateAnswerQuality(input: {
 
 function hasExactBulletLabel(answer: string, label: string): boolean {
   return answer.split(/\r?\n/).some((line) => line.startsWith(`- ${label}:`));
+}
+
+function hasExactLine(answer: string, expected: string): boolean {
+  return answer.split(/\r?\n/).some((line) => line.trim() === expected);
 }
 
 function assertAnswerQuality(report: AnswerQualityReport): void {
@@ -1092,6 +1103,27 @@ function runMockAcceptanceQualitySuiteE2e(): {
   assert.ok(
     malformedFollowupReport.failures.includes("forbidden literal: literal session key leak"),
     "tool-use quality gate must reject the actual leaked session key"
+  );
+  const malformedMultiSourceReport = evaluateAnswerQuality({
+    scenario: "complex",
+    answer: [
+      "# Evidence",
+      "- exploration evidence: TURNKEYAI_COMPLEX_EXPLORE_OK from deterministic e2e worker.",
+      "- browser evidence: TURNKEYAI_COMPLEX_BROWSER_OK from complex browser evidence.",
+      "- final marker: TURNKEYAI_COMPLEX_E2E_OK.",
+      "- residual risk: local fixture only.",
+    ].join("\n"),
+    gate: multiSourceQualityGate("TURNKEYAI_COMPLEX_E2E_OK"),
+    toolCallNames: ["sessions_spawn"],
+    spawnedSessionCount: 2,
+  });
+  assert.ok(
+    malformedMultiSourceReport.failures.includes("missing exact line: ## Evidence"),
+    "multi-source quality gate must reject renamed evidence headings"
+  );
+  assert.ok(
+    malformedMultiSourceReport.failures.includes("missing exact bullet label: explore evidence"),
+    "multi-source quality gate must reject renamed source bullet labels"
   );
   return {
     scenarios: cases.map((item) => item.name),
@@ -1380,6 +1412,7 @@ function buildRealBrowserWorkerRuntime(input: {
 
 function buildApprovalToolPermissionService(permissionEvents: string[]): ToolPermissionService {
   const pendingApprovals = new Map<string, { action: string; cacheKey: string }>();
+  const appliedApprovalIds = new Set<string>();
   const appliedCacheKeys = new Set<string>();
   const appliedActions = new Set<string>();
   return {
@@ -1437,9 +1470,18 @@ function buildApprovalToolPermissionService(permissionEvents: string[]): ToolPer
       };
     },
     async apply(input) {
-      permissionEvents.push(`applied:${input.approvalId}`);
       const pending = pendingApprovals.get(input.approvalId);
       const cacheKey = pending?.cacheKey ?? "thread-tool-e2e:browser:mutate:approval:browser.form.submit";
+      if (appliedApprovalIds.has(input.approvalId) || appliedCacheKeys.has(cacheKey)) {
+        return {
+          status: "applied",
+          approvalId: input.approvalId,
+          cacheKey,
+          message: "Already applied.",
+        };
+      }
+      permissionEvents.push(`applied:${input.approvalId}`);
+      appliedApprovalIds.add(input.approvalId);
       appliedCacheKeys.add(cacheKey);
       appliedActions.add(pending?.action ?? "browser.form.submit");
       return {

@@ -1589,6 +1589,82 @@ test("llm role response generator repairs textual tool-call markup during final 
   );
 });
 
+test("llm role response generator fails closed when final repair still emits tool-call markup", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-done", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Research evidence.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.equal(input.tools, undefined);
+    return {
+      text: '<minimax:tool_call><invoke name="sessions_history"></invoke></minimax:tool_call>',
+      modelId: "minimax-test",
+      providerId: "minimax",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          task_id: "task-1",
+          session_key: "worker:explore:task-1:toolu-done",
+          agent_id: "explore",
+          status: "completed",
+          result: "Sub-agent completed with evidence.",
+          final_content:
+            "Evidence ledger: source A verifies the product positioning; source B verifies the repository. Missing metrics are marked not verified.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content:
+              "Evidence ledger: source A verifies the product positioning; source B verifies the repository. Missing metrics are marked not verified.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.match(result.content, /can't safely complete the final answer/i);
+  assert.doesNotMatch(result.content, /<minimax:tool_call>/);
+  assert.equal(gatewayInputs.length, 3);
+  assert.ok(
+    gatewayInputs[2]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes("pseudo tool-call markup")
+    )
+  );
+});
+
 test("llm role response generator repairs textual tool-call markup after a normal tool round", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;

@@ -1038,12 +1038,14 @@ async function executeSessionsSend(
   if (!state) {
     return errorResult(input.call, `session not found: ${sessionKey}`);
   }
+  const label = requiredString(input.call.input.label) ?? record.context?.label ?? null;
   if (state.status === "done" && state.lastResult && isCachedSummaryRequest(message)) {
     return cachedCompletedSessionResult(input.call, {
       taskId: input.activation.handoff.taskId,
       sessionKey,
       result: state.lastResult,
       context: record.context,
+      label,
     });
   }
   const gate = await maybeGateBrowserSideEffect({
@@ -1094,9 +1096,9 @@ async function executeSessionsSend(
         taskId: input.activation.handoff.taskId,
         timeoutMs,
         evidenceSummary: summarizeWorkerEvidence(timeoutState),
-        label: record.context?.label ?? null,
+        label,
         parentSessionKey: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
-        toolCallId: record.context?.toolCallId ?? input.call.id,
+        toolCallId: input.call.id,
       });
     }
     result = sendResult;
@@ -1109,9 +1111,9 @@ async function executeSessionsSend(
       sessionKey,
       agentId: state.workerType,
       reason: registration.cancellationReason() ?? "Tool call cancelled.",
-      label: record.context?.label ?? null,
+      label,
       parentSessionKey: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
-      toolCallId: record.context?.toolCallId ?? input.call.id,
+      toolCallId: input.call.id,
     });
   }
   const missingResultMessage = `${state.workerType} sub-agent returned no executable result for the follow-up.`;
@@ -1121,9 +1123,9 @@ async function executeSessionsSend(
     agentId: state.workerType,
     result,
     missingResultMessage,
-    label: record.context?.label ?? null,
+    label,
     parentSessionKey: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
-    toolCallId: record.context?.toolCallId ?? input.call.id,
+    toolCallId: input.call.id,
   });
   return {
     toolCallId: input.call.id,
@@ -1150,6 +1152,7 @@ function cachedCompletedSessionResult(
     sessionKey: string;
     result: WorkerExecutionResult;
     context?: { label?: string; parentSessionKey?: string; parentSpanId?: string; toolCallId?: string };
+    label?: string | null;
   }
 ): RoleToolExecutionResult {
   const phase = mapCachedWorkerResultPhase(input.result.status);
@@ -1160,9 +1163,9 @@ function cachedCompletedSessionResult(
     result: input.result,
     missingResultMessage: input.result.summary,
     cached: true,
-    label: input.context?.label ?? null,
+    label: input.label ?? input.context?.label ?? null,
     parentSessionKey: input.context?.parentSessionKey ?? input.context?.parentSpanId ?? null,
-    toolCallId: input.context?.toolCallId ?? call.id,
+    toolCallId: call.id,
   });
   return {
     toolCallId: call.id,

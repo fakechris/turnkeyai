@@ -231,6 +231,20 @@ export function createMissionToolPermissionService(
         };
       }
 
+      const existing = await options.permissionCacheStore.get(toolPermission.requirement.cacheKey);
+      if (
+        existing?.decision === "granted" &&
+        existing.threadId === toolPermission.threadId &&
+        existing.workerType === toolPermission.workerType
+      ) {
+        return {
+          status: "applied",
+          approvalId: input.approvalId,
+          cacheKey: toolPermission.requirement.cacheKey,
+          message: `Permission request ${input.approvalId} already applied.`,
+        };
+      }
+
       const now = options.clock.now();
       const record: PermissionCacheRecord = {
         cacheKey: toolPermission.requirement.cacheKey,

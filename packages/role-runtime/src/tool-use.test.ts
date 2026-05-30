@@ -1595,6 +1595,81 @@ test("sessions_send timeout does not treat worker errors as usable evidence", as
   assert.equal(body.evidence_summary, undefined);
 });
 
+test("sessions_send uses the current follow-up label in its session result envelope", async () => {
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:existing",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+            label: "Original source",
+            toolCallId: "call-original",
+          },
+          state: {
+            workerRunKey: "worker:explore:existing",
+            workerType: "explore",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:existing",
+        workerType: "explore",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async resume() {
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Continuation evidence gathered.",
+        payload: { step: "continued" },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-follow-up",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:existing",
+        message: "Continue the existing research task with fresh evidence.",
+        label: "Follow-up source",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { label: string; tool_call_id: string; result: string };
+  assert.equal(result.isError, undefined);
+  assert.equal(body.label, "Follow-up source");
+  assert.equal(body.tool_call_id, "call-follow-up");
+  assert.equal(body.result, "Continuation evidence gathered.");
+});
+
 test("sessions_send reuses a completed session for summary-only follow-ups", async () => {
   let sendCalled = false;
   const lastResult = {

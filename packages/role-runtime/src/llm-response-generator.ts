@@ -556,8 +556,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         },
       },
     });
+    const repairedResult = containsAnyToolCallForm(repaired.result)
+      ? {
+          ...repaired.result,
+          text: [
+            "I can't safely complete the final answer from the current tool results.",
+            "The model attempted to emit another tool call after tools were disabled for final synthesis.",
+            "Please retry or continue the mission so the runtime can collect a clean final answer.",
+          ].join(" "),
+        }
+      : repaired.result;
     return {
-      result: repaired.result,
+      result: repairedResult,
       ...(repaired.reduction ?? generated.reduction
         ? { reduction: (repaired.reduction ?? generated.reduction)! }
         : {}),
