@@ -153,6 +153,14 @@ try {
       await operatorRuntimePage.locator(".card", { hasText: "Dashboard comparison mission" }).isVisible(),
       "operator runtime should surface mission health attention rows"
     );
+    assert(
+      await operatorRuntimePage.locator(".card", { hasText: "longest active 2m 5s" }).isVisible(),
+      "operator runtime should surface longest active mission duration"
+    );
+    assert(
+      await operatorRuntimePage.locator(".runtime-health-row", { hasText: "running 2m 5s" }).isVisible(),
+      "operator runtime should show per-attention mission wall-clock duration"
+    );
     await operatorRuntimePage.getByRole("button", { name: "Reconcile" }).click();
     await operatorRuntimePage.waitForSelector("text=Reconciled 1 linked mission");
     assert(
@@ -1309,6 +1317,12 @@ function diagnosticsFixture() {
       needsApproval: 1,
       withBlockers: 0,
       snapshotErrorCount: 0,
+      duration: {
+        longestActiveMs: 125_000,
+        longestActiveMissionId: missionId,
+        longestActiveMissionTitle: "Dashboard comparison mission",
+        oldestActiveCreatedAtMs: Date.now() - 125_000,
+      },
       latestMission: {
         id: missionId,
         title: "Dashboard comparison mission",
@@ -1350,6 +1364,7 @@ function diagnosticsFixture() {
           toolTimeouts: 0,
           recoveryEvents: 0,
           staleRuntimeSubjects: 0,
+          wallClockMs: 125_000,
           lastProgressAtMs: Date.now() - 20_000,
         },
       ],

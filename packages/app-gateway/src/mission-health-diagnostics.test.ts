@@ -68,6 +68,9 @@ test("buildDiagnosticsMissionHealthSnapshot aggregates mission quality, liveness
   assert.equal(snapshot.needsApproval, 1);
   assert.equal(snapshot.byStatus.working, 1);
   assert.equal(snapshot.byStatus.needs_approval, 1);
+  assert.equal(snapshot.duration.longestActiveMs, 29_000);
+  assert.equal(snapshot.duration.longestActiveMissionId, "msn.active");
+  assert.equal(snapshot.duration.longestActiveMissionTitle, "Active research");
   assert.equal(snapshot.qualityGate.blocked, 1);
   assert.equal(snapshot.qualityGate.running, 1);
   assert.equal(snapshot.qualityGate.passed, 1);
@@ -77,6 +80,7 @@ test("buildDiagnosticsMissionHealthSnapshot aggregates mission quality, liveness
   assert.equal(snapshot.liveness.stale, 1);
   assert.equal(snapshot.snapshotErrorCount, 0);
   assert.equal(snapshot.attentionMissions[0]?.id, "msn.active");
+  assert.equal(snapshot.attentionMissions[0]?.wallClockMs, 29_000);
   assert.equal(snapshot.attentionMissions.some((item) => item.id === "msn.approval"), true);
 });
 

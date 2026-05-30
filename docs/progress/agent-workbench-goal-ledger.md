@@ -1656,3 +1656,46 @@ Regression Risk:
 - Remaining gap: this does not add admin-gated transport mutation controls.
   Those should wait for daemon config routes and restart semantics rather than
   being bolted onto the page.
+
+## 2026-05-31 01:41 CST - Runtime Mission Duration Diagnostics
+
+Direction: converging
+
+Execution Kernel:
+- No agent, tool-use, worker, browser, approval, or completion semantics
+  changed.
+- Diagnostics now aggregate longest active mission wall-clock duration from the
+  canonical mission health snapshot, preserving the existing mission evaluator
+  and replay lifecycle.
+
+Result Quality:
+- Final-answer synthesis did not change.
+- Operators can now distinguish fresh active work from long-running active work
+  before deciding whether a weak or delayed result needs follow-up, reconcile,
+  or cancellation.
+
+Workbench UX:
+- Runtime Mission health now surfaces longest active mission duration in the
+  summary and per-attention mission wall-clock duration in the attention list.
+- This makes the workbench clearer during long real tasks: "working" is paired
+  with elapsed time instead of only counts.
+
+Browser Reliability:
+- Browser runtime behavior did not change.
+- Browser-backed missions benefit indirectly because stuck browser spans are
+  easier to spot when their mission has been active for a visible duration.
+
+Acceptance Evidence:
+- `npx tsx --test packages/app-gateway/src/mission-health-diagnostics.test.ts packages/app-gateway/src/routes/diagnostics-routes.test.ts`:
+  passed, 42 tests.
+- `npm run build --workspace @turnkeyai/control-center`: passed.
+- `npm run control-center:smoke -- --allow-missing-browser`: passed.
+- Smoke assertions cover longest active mission duration and per-attention
+  mission wall-clock duration in Runtime.
+
+Regression Risk:
+- The new diagnostics fields are additive. Older clients can ignore them; the
+  Control Center type mirror and smoke fixture were updated together.
+- The duration is based on mission creation time for active mission statuses,
+  so it is a coarse operator signal, not proof that every second was spent in
+  active tool execution.

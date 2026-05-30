@@ -141,6 +141,12 @@ export interface DiagnosticsMissionHealthSnapshot {
   needsApproval: number;
   withBlockers: number;
   snapshotErrorCount: number;
+  duration: {
+    longestActiveMs: number;
+    longestActiveMissionId?: string;
+    longestActiveMissionTitle?: string;
+    oldestActiveCreatedAtMs?: number;
+  };
   latestMission?: {
     id: string;
     title: string;
@@ -181,6 +187,7 @@ export interface DiagnosticsMissionHealthSnapshot {
     toolTimeouts: number;
     recoveryEvents: number;
     staleRuntimeSubjects: number;
+    wallClockMs: number;
     lastProgressAtMs?: number;
   }>;
 }
