@@ -840,17 +840,24 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
   if (method === "POST" && url.pathname === "/mission-context-sources") {
+    if (!hasOperatorAccess(req)) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized", requiredAccess: "operator" }));
+      return;
+    }
     const body = await readJsonBody(req);
     postedContextSources.push(body);
+    const index = postedContextSources.length;
+    const kind = contextSourceKindFromBody(body);
     res.writeHead(201, { "content-type": "application/json" });
     res.end(JSON.stringify({
-      id: "ctx.folder.manual.ui-smoke",
-      kind: "folder",
+      id: contextSourceId(kind, index),
+      kind,
       title: String((body as { title?: unknown }).title ?? ""),
       url: String((body as { path?: unknown; url?: unknown }).path ?? (body as { url?: unknown }).url ?? ""),
       state: "attached",
       lastUse: "",
-      lastUseAtMs: 1_779_984_004_300,
+      lastUseAtMs: 1_779_984_004_300 + index - 1,
     }));
     return;
   }
@@ -902,6 +909,10 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 function json(res: ServerResponse, body: unknown): void {
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
+}
+
+function hasOperatorAccess(req: IncomingMessage): boolean {
+  return req.headers.authorization === "Bearer ui-smoke-admin-token" || req.headers.authorization === "Bearer ui-smoke-operator-token";
 }
 
 function missionFixture() {
@@ -1201,15 +1212,18 @@ function artifactsFixture() {
 }
 
 function contextSourcesFixture() {
-  const created = postedContextSources.map((body, index) => ({
-    id: `ctx.folder.manual.ui-smoke.${index + 1}`,
-    kind: "folder",
-    title: String((body as { title?: unknown }).title ?? ""),
-    url: String((body as { path?: unknown; url?: unknown }).path ?? (body as { url?: unknown }).url ?? ""),
-    state: "attached",
-    lastUse: "",
-    lastUseAtMs: 1_779_984_004_300 + index,
-  }));
+  const created = postedContextSources.map((body, index) => {
+    const kind = contextSourceKindFromBody(body);
+    return {
+      id: contextSourceId(kind, index + 1),
+      kind,
+      title: String((body as { title?: unknown }).title ?? ""),
+      url: String((body as { path?: unknown; url?: unknown }).path ?? (body as { url?: unknown }).url ?? ""),
+      state: "attached",
+      lastUse: "",
+      lastUseAtMs: 1_779_984_004_300 + index,
+    };
+  });
   return [
     {
       id: "ctx.browser.session.browser-ui",
@@ -1232,6 +1246,15 @@ function contextSourcesFixture() {
     },
     ...created,
   ];
+}
+
+function contextSourceKindFromBody(body: unknown): string {
+  const kind = (body as { kind?: unknown }).kind;
+  return typeof kind === "string" && kind.length > 0 ? kind : "folder";
+}
+
+function contextSourceId(kind: string, index: number): string {
+  return `ctx.${kind}.manual.ui-smoke.${index}`;
 }
 
 function agentsFixture() {

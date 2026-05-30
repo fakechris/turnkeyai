@@ -208,7 +208,13 @@ export async function handleMissionRoutes(input: {
       sendJson(res, 400, { error: "title is required" });
       return true;
     }
-    const urlOrPath = readNonEmptyString(bodyResult.value.url) ?? readNonEmptyString(bodyResult.value.path);
+    const url = readNonEmptyString(bodyResult.value.url);
+    const path = readNonEmptyString(bodyResult.value.path);
+    if (url && path) {
+      sendJson(res, 400, { error: "Provide either url or path, not both" });
+      return true;
+    }
+    const urlOrPath = url ?? path;
     if (!urlOrPath) {
       sendJson(res, 400, { error: "url or path is required" });
       return true;

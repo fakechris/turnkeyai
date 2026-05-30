@@ -704,6 +704,25 @@ describe("mission-routes", () => {
       });
       assert.equal(missingPath.getStatus(), 400);
       assert.deepEqual(missingPath.getJson(), { error: "url or path is required" });
+
+      const bothFields = createResponse();
+      await handleMissionRoutes({
+        req: createRequest({
+          method: "POST",
+          url: "/mission-context-sources",
+          body: {
+            kind: "api",
+            title: "Workspace API",
+            url: "https://example.com/workspace",
+            path: "/Users/alice/workspace",
+          },
+        }),
+        res: bothFields.res,
+        url: new URL("http://127.0.0.1/mission-context-sources"),
+        deps,
+      });
+      assert.equal(bothFields.getStatus(), 400);
+      assert.deepEqual(bothFields.getJson(), { error: "Provide either url or path, not both" });
     } finally {
       t.cleanup();
     }

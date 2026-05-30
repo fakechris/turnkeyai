@@ -92,7 +92,11 @@ export function ContextSourcesPage() {
             className="btn primary"
             disabled={!canAttachSource}
             title={canAttachSource ? "Attach a document, folder, API, or desktop context source." : OPERATOR_ACTION_SCOPE_HINT}
-            onClick={() => setAttachOpen((value) => !value)}
+            onClick={() => {
+              setAttachOpen((value) => !value);
+              setNotice(null);
+              setError(null);
+            }}
           >
             <Icon name="plus" size={13} /> Attach source
           </button>
