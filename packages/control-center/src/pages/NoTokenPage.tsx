@@ -105,9 +105,9 @@ export function NoTokenPage() {
             Token is read from <code>~/.turnkeyai/config.json</code> by the launcher.{" "}
             Check access with <code>turnkeyai daemon status</code>,{" "}
             <code>turnkeyai daemon service status</code>,{" "}
-            restart the service with <code>turnkeyai daemon service restart</code>,{" "}
             <code>npx @turnkeyai/cli daemon status</code>, or <code>npm run daemon:status</code>{" "}
-            from a source checkout.
+            from a source checkout. Restart the service with{" "}
+            <code>turnkeyai daemon service restart</code>.
           </p>
         </div>
       </div>
