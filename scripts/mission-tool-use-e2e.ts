@@ -1635,6 +1635,8 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         `The recommendation bullet must start with "- recommendation: ${PRODUCT_WORKBENCH_FINAL_MARKER}" and state the release decision.`,
         "Keep the final answer concise, under 230 words.",
         "Use exactly this section skeleton for the final answer, with no preamble before it and no closing note after it:",
+        "The first non-empty line of the final answer must be exactly: evidence",
+        "Do not write any completion/status sentence before the first section label.",
         "evidence",
         `- orchestration evidence: ${PRODUCT_ORCHESTRATION_SOURCE_LABEL}; ${PRODUCT_ORCHESTRATION_MARKER}; include primary user story, multi-agent decomposition, durable sub-session history, and gap.`,
         `- bridge evidence: ${PRODUCT_BRIDGE_SOURCE_LABEL}; ${PRODUCT_BRIDGE_MARKER}; browser bridge controls; include browser-only boundary and first-run setup risk.`,
@@ -1707,6 +1709,8 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         "Never write assume, assumed, estimate, probably, maybe, to be confirmed, or pending confirmation in the final answer.",
         `The recommendation bullet must start with "- recommendation: ${REALISTIC_BRIEF_FINAL_MARKER}" and state the decision.`,
         "Use exactly this section skeleton for the final answer, with no preamble before it and no closing note after it:",
+        "The first non-empty line of the final answer must be exactly: source coverage",
+        "Do not write any completion/status sentence before the first section label.",
         "source coverage",
         `- Vendor Alpha (${ALPHA_MARKER}): include price $19 per seat, strength, and risk.`,
         `- Vendor Beta (${BETA_MARKER}): include price $29 per workspace, strength, and risk.`,
@@ -2265,22 +2269,35 @@ function assertMissionToolUseTimeline(timeline: ActivityEvent[], spec: ScenarioS
 
 function assertMissionSourceLabels(timeline: ActivityEvent[], spec: ScenarioSpec): void {
   if (!spec.expectedSourceLabels?.length) return;
+  const expectedLabels = new Set(spec.expectedSourceLabels);
   const callLabels = [
     ...findToolPhaseIndexes(timeline, "sessions_spawn", "call"),
     ...findToolPhaseIndexes(timeline, "sessions_send", "call"),
   ]
     .map((index) => readToolCallLabel(timeline[index]))
     .filter((label): label is string => Boolean(label));
+  const callLabelSet = new Set(callLabels);
   const resultLabels = [
     ...findToolPhaseIndexes(timeline, "sessions_spawn", "result"),
     ...findToolPhaseIndexes(timeline, "sessions_send", "result"),
   ]
     .map((index) => timeline[index]?.runtime?.["sourceLabel"])
     .filter((label): label is string => typeof label === "string" && label.trim().length > 0);
-  for (const label of spec.expectedSourceLabels) {
-    assert.ok(callLabels.includes(label), `${spec.scenario} session tool call must include source label ${label}`);
-    assert.ok(resultLabels.includes(label), `${spec.scenario} session tool result must expose runtime.sourceLabel ${label}`);
-  }
+  const resultLabelSet = new Set(resultLabels);
+  assertLabelSetEqual(spec.scenario, "session tool call", callLabelSet, expectedLabels);
+  assertLabelSetEqual(spec.scenario, "session tool result", resultLabelSet, expectedLabels);
+}
+
+function assertLabelSetEqual(
+  scenario: string,
+  surface: string,
+  actual: Set<string>,
+  expected: Set<string>
+): void {
+  const missing = [...expected].filter((label) => !actual.has(label));
+  const unexpected = [...actual].filter((label) => !expected.has(label));
+  assert.deepEqual(missing, [], `${scenario} ${surface} missing source labels: ${missing.join(", ")}`);
+  assert.deepEqual(unexpected, [], `${scenario} ${surface} has unexpected source labels: ${unexpected.join(", ")}`);
 }
 
 function assertCountInRange(value: number, min: number, max: number | undefined, label: string): void {

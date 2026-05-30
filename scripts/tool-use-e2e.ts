@@ -420,7 +420,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<RealToo
       quality = evaluateAnswerQuality({
         scenario: options.scenario,
         answer: reply.content,
-        gate: followupQualityGate(targetMarker),
+        gate: followupQualityGate(targetMarker, sessions.map((session) => session.workerRunKey)),
         toolCallNames,
         spawnedSessionCount: sessions.length,
       });
@@ -591,6 +591,7 @@ function buildRealLlmScenarioPacket(input: {
         "Phase 1: ask the explore sub-agent for the phase-one checkpoint.",
         "Phase 2: continue the same sub-agent session with sessions_send using the continuation instruction from phase 1.",
         `Final answer must include ${input.targetMarker} and a short note that no duplicate session was spawned.`,
+        "Use the exact final answer shape from the output contract; do not rename, capitalize, or decorate the bullet labels.",
         "Do not include the raw session_key in the final answer.",
       ].join("\n")
     : input.timeoutScenario
@@ -618,9 +619,11 @@ function buildRealLlmScenarioPacket(input: {
   const outputContract = input.followupScenario
     ? [
         `Final answer must include ${input.targetMarker}.`,
-        "Use Markdown with a heading `Evidence` and at least three bullets named exactly: phase-one evidence, follow-up evidence, residual risk.",
+        "Use exactly this Markdown shape; keep the three bullet labels byte-for-byte as written:",
+        "## Evidence",
         "- phase-one evidence: cite TURNKEYAI_FOLLOWUP_PHASE_ONE from the original sessions_spawn result.",
         "- follow-up evidence: cite TURNKEYAI_FOLLOWUP_E2E_OK from sessions_send on the same session.",
+        "- residual risk: state what this local deterministic fixture does not prove.",
         "State that the continuation used sessions_send on the same session rather than a duplicate sessions_spawn.",
         "Do not include the raw session_key.",
       ].join("\n")
@@ -641,7 +644,12 @@ function buildRealLlmScenarioPacket(input: {
     : input.multiSourceScenario
     ? [
         `Final answer must include ${input.targetMarker}.`,
-        "Use Markdown with a heading `Evidence` and at least three bullets: explore evidence, browser evidence, residual risk.",
+        "Use exactly this Markdown shape:",
+        "## Evidence",
+        `- explore evidence: cite TURNKEYAI_COMPLEX_EXPLORE_OK from the explore session.`,
+        `- browser evidence: cite TURNKEYAI_COMPLEX_BROWSER_OK from the browser session.`,
+        `- final marker: ${input.targetMarker}; state that both source sessions were used.`,
+        "- residual risk: state what the deterministic fixture does not prove.",
         "Do not include the success marker unless both sub-agent results were used.",
       ].join("\n")
     : `Final answer must include ${input.targetMarker} and must mention the session tool evidence.`;
@@ -717,6 +725,8 @@ interface AnswerQualityGate {
   maxSpawnedSessions?: number;
   requiredPatterns?: Array<{ label: string; pattern: RegExp }>;
   forbiddenPatterns?: Array<{ label: string; pattern: RegExp }>;
+  forbiddenLiterals?: Array<{ label: string; value: string }>;
+  requiredBulletLabels?: string[];
   requiredToolNames?: string[];
 }
 
@@ -762,13 +772,14 @@ function multiSourceQualityGate(targetMarker: string): AnswerQualityGate {
   };
 }
 
-function followupQualityGate(targetMarker: string): AnswerQualityGate {
+function followupQualityGate(targetMarker: string, forbiddenSessionKeys: string[] = []): AnswerQualityGate {
   return {
     minBytes: 180,
     minBullets: 3,
     minEvidenceSources: 2,
     maxSpawnedSessions: 1,
     requiredToolNames: ["sessions_spawn", "sessions_send"],
+    requiredBulletLabels: ["phase-one evidence", "follow-up evidence", "residual risk"],
     requiredPatterns: [
       { label: "target success marker", pattern: new RegExp(escapeRegExp(targetMarker)) },
       { label: "evidence heading", pattern: /Evidence/i },
@@ -780,6 +791,7 @@ function followupQualityGate(targetMarker: string): AnswerQualityGate {
       { label: "duplicate-session claim", pattern: /\b(spawned a second session|duplicate session was used)\b/i },
       { label: "raw session key leak", pattern: /\bworker:(?:explore|browser|finance|general):[^\s`'",)]+|\bTASK-\d+[^`'",\s]*call_/i },
     ],
+    forbiddenLiterals: forbiddenSessionKeys.map((value) => ({ label: "literal session key leak", value })),
   };
 }
 
@@ -859,6 +871,16 @@ function evaluateAnswerQuality(input: {
       failures.push(`forbidden unsupported claim: ${forbidden.label}`);
     }
   }
+  for (const forbidden of input.gate.forbiddenLiterals ?? []) {
+    if (forbidden.value && input.answer.includes(forbidden.value)) {
+      failures.push(`forbidden literal: ${forbidden.label}`);
+    }
+  }
+  for (const label of input.gate.requiredBulletLabels ?? []) {
+    if (!hasExactBulletLabel(input.answer, label)) {
+      failures.push(`missing exact bullet label: ${label}`);
+    }
+  }
   if (mentionsToolFallbackAnswer(input.answer)) {
     failures.push("final answer falls back to model knowledge after tool/search/browser unavailable");
   }
@@ -874,6 +896,10 @@ function evaluateAnswerQuality(input: {
     evidenceSourceCount,
     failures,
   };
+}
+
+function hasExactBulletLabel(answer: string, label: string): boolean {
+  return answer.split(/\r?\n/).some((line) => line.startsWith(`- ${label}:`));
 }
 
 function assertAnswerQuality(report: AnswerQualityReport): void {
@@ -1043,6 +1069,29 @@ function runMockAcceptanceQualitySuiteE2e(): {
   assert.ok(
     fallbackReport.failures.includes("final answer falls back to model knowledge after tool/search/browser unavailable"),
     "tool-use quality gate must reject tool-unavailable fallback answers"
+  );
+  const malformedFollowupReport = evaluateAnswerQuality({
+    scenario: "follow_up_resume",
+    answer: [
+      "## Evidence",
+      "- Phase-one evidence: TURNKEYAI_FOLLOWUP_PHASE_ONE from the original result.",
+      "- follow up evidence: TURNKEYAI_FOLLOWUP_E2E_OK from sessions_send.",
+      "- residual risk: local fixture only.",
+      "worker:explore:task:TASK-1:call_abc",
+    ].join("\n"),
+    gate: followupQualityGate("TURNKEYAI_FOLLOWUP_E2E_OK", ["worker:explore:task:TASK-1:call_abc"]),
+  });
+  assert.ok(
+    malformedFollowupReport.failures.includes("missing exact bullet label: phase-one evidence"),
+    "tool-use quality gate must reject renamed follow-up bullet labels"
+  );
+  assert.ok(
+    malformedFollowupReport.failures.includes("missing exact bullet label: follow-up evidence"),
+    "tool-use quality gate must reject punctuation-changed follow-up bullet labels"
+  );
+  assert.ok(
+    malformedFollowupReport.failures.includes("forbidden literal: literal session key leak"),
+    "tool-use quality gate must reject the actual leaked session key"
   );
   return {
     scenarios: cases.map((item) => item.name),

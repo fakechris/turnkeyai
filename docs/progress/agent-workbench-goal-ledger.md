@@ -2391,3 +2391,75 @@ Regression Risk:
   runtime fix and a full real acceptance record. If follow-up/session-continuity
   failures recur within the next day, pause feature work for methodology review
   of worker-session continuation and transcript persistence.
+
+## 2026-05-31 05:50 CST - Strict Acceptance Gate
+
+Direction: converging
+
+Execution Kernel:
+- The final gate passed after tightening acceptance semantics rather than
+  relaxing them: source labels are now checked as exact call/result sets,
+  standalone follow-up rejects the literal returned session key, and
+  `sessions_send` continues through the runtime resume path with transcript
+  context.
+- Multi-source standalone tool-use now has a fixed final marker bullet, and
+  product/operator mission briefs require a fixed first section label with no
+  status preamble.
+
+Result Quality:
+- Full real acceptance passed with all strict output-shape gates active.
+- `followup` validated same-session continuation without raw session key
+  leakage. `realistic-brief` and `product-workbench-brief` produced operator
+  briefs without status preambles and with exact source coverage.
+- `cancel` and `timeout-recovery` still completed as expected blocked-quality
+  cases with no lingering liveness.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- Mission timelines and final answers are now more predictable for users:
+  evidence sources are exact, process/status preambles are rejected, and final
+  answers keep the result separate from tool execution mechanics.
+
+Browser Reliability:
+- Direct-CDP smoke passed in the same gate.
+- Browser-backed scenarios passed: standalone `complex`, mission
+  `browser-dynamic`, `browser-dashboard`, `product-workbench-brief`, and
+  `realistic-brief`.
+- Remaining risk is still external-page soak/profile-lock coverage, not local
+  fixture execution.
+
+Acceptance Evidence:
+- Command:
+  `npm run acceptance:real -- --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --cdp-timeout-ms 45000`
+- Result: passed in 358314ms.
+- Validation run:
+  `validation-ops:real-llm-acceptance:2026-05-30T21-44-11-363Z:nikrb5`
+- Artifact:
+  `/Users/chris/.turnkeyai/data/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T21-44-11-363Z%3Anikrb5-mission-e2e.json`
+- Mission results:
+  `basic` `msn.mpsvqo3b.1` done/passed tools `1/1` sessions `1/0`;
+  `comparison` `msn.mpsvqzri.2` done/passed tools `2/2` sessions `2/0`;
+  `followup` `msn.mpsvrdra.3` done/passed tools `2/2` sessions `1/1`;
+  `cancel` `msn.mpsvrwek.4` done/blocked tools `1/1` sessions `1/0`;
+  `approval` `msn.mpsvs1ut.5` done/passed tools `1/1` sessions `1/0`;
+  `browser-dynamic` `msn.mpsvshhx.6` done/passed tools `1/1`
+  sessions `1/0`; `browser-dashboard` `msn.mpsvsxsi.7` done/passed
+  tools `1/1` sessions `1/0`; `timeout-recovery` `msn.mpsvtcjr.8`
+  done/blocked tools `1/1` sessions `1/0`; `memory-recall`
+  `msn.mpsvuwen.9` done/passed tools `2/2` sessions `0/0`;
+  `task-tracking` `msn.mpsvv5q9.10` done/passed tools `3/3`
+  sessions `0/0`; `product-workbench-brief` `msn.mpsvvb65.11`
+  done/passed tools `3/3` sessions `3/0`; `realistic-brief`
+  `msn.mpsvvuki.12` done/passed tools `3/3` sessions `3/0`.
+- Liveness was `0/0/0` for every mission.
+
+Regression Risk:
+- Direction is converging, but the repeated strict-gate failures during this
+  checkpoint show the system is still sensitive to prompt/output contract
+  drift. The fix direction is now explicit contracts plus hard quality gates,
+  not lowering budgets or allowing weak answers.
+- 24-hour methodology check: if another round produces failures in the same
+  categories of missing markers, source drift, status preambles, or session-key
+  leakage, pause feature PRs and review the shared answer-shape harness before
+  adding new capabilities.
