@@ -5,7 +5,11 @@ import type {
   ActivityEvent,
   Mission,
 } from "@turnkeyai/core-types/mission";
-import type { RoleRunState, TeamMessage } from "@turnkeyai/core-types/team";
+import type {
+  RoleRunState,
+  TeamMessage,
+  WorkerSessionRecord,
+} from "@turnkeyai/core-types/team";
 
 import { createMissionThreadBridge } from "./mission-thread-bridge";
 
@@ -55,6 +59,14 @@ function memRoleRunStore(runs: RoleRunState[]) {
   return {
     async listByThread(threadId: string): Promise<RoleRunState[]> {
       return runs.filter((run) => run.threadId === threadId);
+    },
+  };
+}
+
+function memWorkerSessionStore(sessions: WorkerSessionRecord[]) {
+  return {
+    async list(): Promise<WorkerSessionRecord[]> {
+      return sessions;
     },
   };
 }
@@ -477,6 +489,73 @@ describe("MissionThreadBridge", () => {
           maxIterations: 6,
           inbox: [],
           lastActiveAt: 200,
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+          toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+          toolStatus: "pending",
+        },
+      ]),
+      activityStore: memActivityStore(),
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "working");
+  });
+
+  it("does not block an unresolved tool turn while a worker session is still active", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"] };
+    const missionStore = memMissionStore([mission]);
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      workerSessionStore: memWorkerSessionStore([
+        {
+          workerRunKey: "worker:browser:1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "span-1",
+            toolCallId: "call-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:1",
+            workerType: "browser",
+            status: "running",
+            createdAt: 100,
+            updatedAt: 200,
+          },
         },
       ]),
       teamMessageStore: memTeamMessageStore([

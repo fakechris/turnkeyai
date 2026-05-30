@@ -1209,3 +1209,52 @@ Regression Risk:
   download/open support remains a separate product feature.
 - The path is shown as plain text rather than a link to avoid inventing a file
   serving route in this slice.
+
+## 2026-05-31 00:21 CST - Mission Lifecycle Sees Active Workers
+
+Direction: converging
+
+Execution Kernel:
+- Mission lifecycle reconciliation now considers durable worker sessions in
+  addition to role-run state before declaring a stalled tool turn blocked.
+- If worker-session lookup fails while the store is configured, reconciliation
+  treats the worker state as unknown/active instead of prematurely blocking the
+  mission.
+
+Result Quality:
+- No prompt or answer synthesis changed.
+- This reduces false blocked states where a child worker is still collecting
+  evidence, which protects complex-task runs from being cut off before the
+  final synthesis turn can use the worker result.
+
+Workbench UX:
+- Mission status should remain `working` while an associated worker session is
+  still running, waiting for input, waiting externally, or resumable.
+- The thought/process view still comes from message and progress mirroring;
+  this slice only fixes the lifecycle gate that decides whether the mission is
+  still active or stalled.
+
+Browser Reliability:
+- Browser workers are now part of mission completion evaluation through the
+  same durable worker-session path as other sub-agents.
+- This helps long browser sessions avoid being mislabeled as stalled when the
+  lead role has yielded but the browser worker has not finished.
+
+Acceptance Evidence:
+- `npm run typecheck`: passed.
+- `npm run build`: passed.
+- `git diff --check`: passed.
+- `npm test -- --runInBand packages/app-gateway/src/mission-completion-evaluator.test.ts packages/app-gateway/src/mission-thread-bridge.test.ts`:
+  passed; the command ran the current repo test harness and reported `1227`
+  passing tests.
+- New evaluator coverage verifies active and unknown worker sessions prevent
+  premature stalled-tool blocking.
+- New thread-bridge coverage verifies an idle lead run plus a running worker
+  session keeps the mission `working`.
+
+Regression Risk:
+- The bridge filters worker sessions by `context.threadId`; sessions without a
+  thread context do not keep unrelated missions alive.
+- Worker-session lookup failure is conservative and may delay a blocked status
+  until a later reconciliation tick can read the store, but it avoids the worse
+  failure mode of cutting off a live worker.

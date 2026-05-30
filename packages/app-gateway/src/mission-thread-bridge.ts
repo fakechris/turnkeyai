@@ -18,11 +18,11 @@
 // duplicates events, and a missed tick just means the next tick picks
 // up the backlog.
 //
-// Cost: O(M × (T + A)) per tick where M = missions with threadId,
-// T = messages per thread, A = activity events per mission. K3.5 demo
-// workloads keep all three small (single-digit missions, ~dozens of
-// messages each). Revisit with a per-thread cursor file when missions
-// run long-form.
+// Cost: O(M × (T + A + W)) per tick where M = missions with threadId,
+// T = messages per thread, A = activity events per mission, and W =
+// worker sessions when lifecycle reconciliation is enabled. K3.5 demo
+// workloads keep these small. Revisit with per-thread indexes/cursors
+// when missions run long-form.
 
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 
@@ -38,6 +38,8 @@ import type {
   RoleRunStore,
   TeamMessage,
   TeamMessageStore,
+  WorkerSessionRecord,
+  WorkerSessionStore,
 } from "@turnkeyai/core-types/team";
 import {
   evaluateMissionCompletion,
@@ -51,6 +53,7 @@ export interface MissionThreadBridgeOptions {
   // into mocks for no benefit.
   missionStore: MissionThreadBridgeMissionStore;
   roleRunStore?: Pick<RoleRunStore, "listByThread">;
+  workerSessionStore?: Pick<WorkerSessionStore, "list">;
   teamMessageStore: Pick<TeamMessageStore, "list">;
   activityStore: Pick<ActivityEventStore, "append" | "listByMission">;
   newEventId: () => string;
@@ -207,6 +210,7 @@ export function createMissionThreadBridge(
       mission,
       messages,
       roleRuns,
+      workerSessions: await listWorkerSessions(threadId),
     });
     if (decision.action !== "update") return;
     await updateMissionLifecycle(mission, decision.patch);
@@ -240,6 +244,20 @@ export function createMissionThreadBridge(
       return await options.roleRunStore.listByThread(threadId);
     } catch (error) {
       logger.warn("role run list failed for mission lifecycle reconciliation", {
+        threadId,
+        error: errorMessage(error),
+      });
+      return "unknown" as const;
+    }
+  }
+
+  async function listWorkerSessions(threadId: string): Promise<WorkerSessionRecord[] | "unknown" | undefined> {
+    if (!options.workerSessionStore) return undefined;
+    try {
+      const sessions = await options.workerSessionStore.list();
+      return sessions.filter((session) => session.context?.threadId === threadId);
+    } catch (error) {
+      logger.warn("worker session list failed for mission lifecycle reconciliation", {
         threadId,
         error: errorMessage(error),
       });

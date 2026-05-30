@@ -2,7 +2,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import type { Mission } from "@turnkeyai/core-types/mission";
-import type { RoleRunState, TeamMessage } from "@turnkeyai/core-types/team";
+import type {
+  RoleRunState,
+  TeamMessage,
+  WorkerSessionRecord,
+} from "@turnkeyai/core-types/team";
 
 import { evaluateMissionCompletion } from "./mission-completion-evaluator";
 
@@ -46,6 +50,26 @@ const idleRun: RoleRunState = {
   maxIterations: 12,
   inbox: [],
   lastActiveAt: 100,
+};
+
+const runningWorker: WorkerSessionRecord = {
+  workerRunKey: "worker:browser:1",
+  executionToken: 1,
+  context: {
+    threadId: "thread-1",
+    flowId: "flow-1",
+    taskId: "task-1",
+    roleId: "role-lead",
+    parentSpanId: "span-1",
+    toolCallId: "call-1",
+  },
+  state: {
+    workerRunKey: "worker:browser:1",
+    workerType: "browser",
+    status: "running",
+    createdAt: 100,
+    updatedAt: 200,
+  },
 };
 
 describe("MissionCompletionEvaluator", () => {
@@ -95,7 +119,7 @@ describe("MissionCompletionEvaluator", () => {
       messages: [incomplete],
       roleRuns: [{ ...idleRun, status: "running" }],
     });
-    assert.deepEqual(active, { action: "none", reason: "active_role_run" });
+    assert.deepEqual(active, { action: "none", reason: "active_execution" });
 
     const idle = evaluateMissionCompletion({
       mission,
@@ -225,7 +249,41 @@ describe("MissionCompletionEvaluator", () => {
       messages: [stalled],
       roleRuns: [{ ...idleRun, status: "waiting_worker" }],
     });
-    assert.deepEqual(decision, { action: "none", reason: "active_role_run" });
+    assert.deepEqual(decision, { action: "none", reason: "active_execution" });
+  });
+
+  it("does not block unresolved lead tool turns while a worker session is active", () => {
+    const stalled = {
+      ...message("a-worker-active", "assistant", 100),
+      roleId: "role-lead",
+      name: "Lead",
+      toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+      toolStatus: "pending" as const,
+    };
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [stalled],
+      roleRuns: [idleRun],
+      workerSessions: [runningWorker],
+    });
+    assert.deepEqual(decision, { action: "none", reason: "active_execution" });
+  });
+
+  it("treats worker session lookup failure as active to avoid premature blocking", () => {
+    const stalled = {
+      ...message("a-worker-unknown", "assistant", 100),
+      roleId: "role-lead",
+      name: "Lead",
+      toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+      toolStatus: "pending" as const,
+    };
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [stalled],
+      roleRuns: [idleRun],
+      workerSessions: "unknown",
+    });
+    assert.deepEqual(decision, { action: "none", reason: "active_execution" });
   });
 
   it("blocks skipped lead tool turn when no final answer follows", () => {
