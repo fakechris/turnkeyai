@@ -384,7 +384,14 @@ async function checkTransportSpecific(): Promise<CheckResult | null> {
   return null;
 }
 
-export async function runDoctor(_args: string[]): Promise<void> {
+export async function runDoctor(args: string[]): Promise<void> {
+  if (args.some((arg) => arg === "--help" || arg === "-h" || arg === "help")) {
+    printDoctorHelp(0);
+  }
+  if (args.length > 0) {
+    console.error(`Unknown doctor argument: ${args[0]}`);
+    printDoctorHelp(1);
+  }
   const paths = getRuntimePaths();
   const transportMode = resolveTransportMode(paths);
   const checks: CheckResult[] = [];
@@ -420,4 +427,31 @@ export async function runDoctor(_args: string[]): Promise<void> {
   }
   console.error(`turnkeyai doctor: ${failed} check(s) failed, ${warned} warning(s)`);
   process.exit(1);
+}
+
+function printDoctorHelp(exitCode: number): never {
+  const lines = [
+    "TurnkeyAI doctor",
+    "",
+    "Usage:",
+    "  turnkeyai doctor",
+    "  turnkeyai doctor --help",
+    "",
+    "Checks:",
+    "  node version and local runtime directory",
+    "  daemon config, port, health, and API auth",
+    "  daemon readiness from /diagnostics when reachable",
+    "  relay extension and transport-specific setup",
+    "",
+    "Environment:",
+    "  TURNKEYAI_HOME",
+    "  TURNKEYAI_DAEMON_URL",
+    "  TURNKEYAI_DAEMON_OPERATOR_TOKEN",
+    "  TURNKEYAI_DAEMON_TOKEN",
+    "  TURNKEYAI_DAEMON_ADMIN_TOKEN",
+    "  TURNKEYAI_DAEMON_READ_TOKEN",
+  ];
+  const output = exitCode === 0 ? console.log : console.error;
+  output(lines.join("\n"));
+  process.exit(exitCode);
 }

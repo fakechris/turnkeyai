@@ -38,6 +38,14 @@ describe("cli help", () => {
     assert.match(result.stdout, /turnkeyai app install-launcher \[--path <file>\]/);
   });
 
+  it("prints doctor help without running diagnostics", async () => {
+    const result = await runCliHelp(["doctor", "--help"]);
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /TurnkeyAI doctor/);
+    assert.match(result.stdout, /daemon readiness from \/diagnostics/);
+    assert.doesNotMatch(result.stdout, /\[ok\s*\] node version/);
+  });
+
   it("prints local launcher installer help", async () => {
     const result = await runCliHelp(["app", "install-launcher", "--help"]);
     assert.equal(result.code, 0);
