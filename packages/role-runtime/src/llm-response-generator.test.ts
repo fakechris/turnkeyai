@@ -1088,6 +1088,13 @@ test("llm role response generator synthesizes instead of falling back when tool 
     )
   );
   assert.ok(finalSynthesisPrompt(gatewayInputs[3])?.includes("Do not collapse requested bullets into a paragraph"));
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "round_limit");
+  assert.equal(closeout?.maxRounds, 2);
+  assert.equal(closeout?.toolCallCount, 2);
+  assert.equal(closeout?.roundCount, 2);
+  assert.equal(closeout?.pendingToolCallCount, 1);
+  assert.equal(closeout?.evidenceAvailable, true);
 });
 
 test("llm role response generator synthesizes from evidence when tool wall-clock budget is reached", async () => {
@@ -1156,6 +1163,13 @@ test("llm role response generator synthesizes from evidence when tool wall-clock
     )
   );
   assert.ok(finalSynthesisPrompt(gatewayInputs[2])?.includes("Final synthesis format contract"));
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "wall_clock_budget");
+  assert.equal(closeout?.maxWallClockMs, 100);
+  assert.equal(closeout?.toolCallCount, 1);
+  assert.equal(closeout?.roundCount, 1);
+  assert.equal(closeout?.pendingToolCallCount, 1);
+  assert.equal(closeout?.evidenceAvailable, true);
 });
 
 test("llm role response generator synthesizes immediately after sub-agent timeout", async () => {
@@ -1237,6 +1251,13 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("If the task specifies a heading, bullet count"));
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("bare http:// / https:// URLs"));
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("Do not copy internal fetch URLs"));
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "sub_agent_timeout");
+  assert.equal(closeout?.toolName, "sessions_spawn");
+  assert.equal(closeout?.timeoutSeconds, 120);
+  assert.equal(closeout?.evidenceAvailable, false);
+  assert.equal(closeout?.toolCallCount, 1);
+  assert.equal(closeout?.roundCount, 1);
 });
 
 test("llm role response generator synthesizes immediately after completed sub-agent final content", async () => {
@@ -1332,6 +1353,13 @@ test("llm role response generator synthesizes immediately after completed sub-ag
   assert.ok(synthesisPrompt.includes("Do not add extra sections, summaries, notes"));
   assert.ok(synthesisPrompt.includes("line must start with a literal prefix"));
   assert.ok(synthesisPrompt.includes("Do not write a preamble before a requested final shape"));
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "completed_sub_agent_final");
+  assert.equal(closeout?.toolName, "sessions_spawn");
+  assert.equal(closeout?.finalContentCount, 1);
+  assert.equal(closeout?.toolCallCount, 1);
+  assert.equal(closeout?.roundCount, 1);
+  assert.equal(closeout?.evidenceAvailable, true);
 });
 
 test("llm role response generator accepts short completed sub-agent final content", async () => {

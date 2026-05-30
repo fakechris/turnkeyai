@@ -33,6 +33,26 @@ import type {
 } from "./pre-compaction-memory-flusher";
 import { parseSessionToolResult } from "./session-tool-result-protocol";
 
+type ToolLoopCloseoutReason =
+  | "pseudo_tool_call"
+  | "wall_clock_budget"
+  | "round_limit"
+  | "completed_sub_agent_final"
+  | "sub_agent_timeout";
+
+interface ToolLoopCloseoutMetadata {
+  reason: ToolLoopCloseoutReason;
+  toolCallCount: number;
+  roundCount: number;
+  maxRounds?: number;
+  maxWallClockMs?: number;
+  pendingToolCallCount?: number;
+  toolName?: string;
+  timeoutSeconds?: number;
+  evidenceAvailable?: boolean;
+  finalContentCount?: number;
+}
+
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
@@ -100,6 +120,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const toolTrace: NativeToolRoundTrace[] = [];
     let messages: LLMMessage[] = initialGatewayInput.messages;
     const toolLoopStartedAtMs = this.clock.now();
+    let toolLoopCloseout: ToolLoopCloseoutMetadata | undefined;
     for (let round = 0; ; round++) {
       throwIfAborted(input.signal);
       const gatewayMessages = prepareToolHistoryForGateway(messages);
@@ -128,6 +149,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
       const toolCalls = result.toolCalls ?? [];
       if (activeToolLoop && toolCalls.length === 0 && containsAnyToolCallForm(result)) {
+        const maxRounds = activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+        toolLoopCloseout = {
+          reason: "pseudo_tool_call",
+          maxRounds,
+          toolCallCount: countToolCalls(toolTrace),
+          roundCount: toolTrace.length,
+        };
         throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
           activation: input.activation,
@@ -141,7 +169,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               content: result.text,
             },
           ],
-          maxRounds: activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS,
+          maxRounds,
           reasonLines: [
             "The previous assistant response attempted to emit XML, JSON, or pseudo tool-call markup without a native tool call.",
             "Tools are not available through text markup. Do not call more tools.",
@@ -171,6 +199,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         maxWallClockMs > 0 &&
         this.clock.now() - toolLoopStartedAtMs >= maxWallClockMs
       ) {
+        toolLoopCloseout = {
+          reason: "wall_clock_budget",
+          maxRounds,
+          maxWallClockMs,
+          pendingToolCallCount: toolCalls.length,
+          toolCallCount: countToolCalls(toolTrace),
+          roundCount: toolTrace.length,
+          evidenceAvailable: toolTrace.length > 0,
+        };
         throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
           activation: input.activation,
@@ -197,6 +234,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         break;
       }
       if (round >= maxRounds) {
+        toolLoopCloseout = {
+          reason: "round_limit",
+          maxRounds,
+          pendingToolCallCount: toolCalls.length,
+          toolCallCount: countToolCalls(toolTrace),
+          roundCount: toolTrace.length,
+          evidenceAvailable: toolTrace.length > 0,
+        };
         throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
           activation: input.activation,
@@ -258,6 +303,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
       const completedSubAgent = findCompletedSubAgentFinal(toolResults);
       if (completedSubAgent) {
+        toolLoopCloseout = {
+          reason: "completed_sub_agent_final",
+          maxRounds,
+          toolName: completedSubAgent.toolName,
+          finalContentCount: completedSubAgent.finalContents.length,
+          toolCallCount: countToolCalls(toolTrace),
+          roundCount: toolTrace.length,
+          evidenceAvailable: true,
+        };
         throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
           activation: input.activation,
@@ -292,6 +346,15 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
       const timeoutSignal = findSubAgentToolTimeout(toolResults);
       if (timeoutSignal) {
+        toolLoopCloseout = {
+          reason: "sub_agent_timeout",
+          maxRounds,
+          toolName: timeoutSignal.toolName,
+          ...(timeoutSignal.timeoutSeconds == null ? {} : { timeoutSeconds: timeoutSignal.timeoutSeconds }),
+          evidenceAvailable: timeoutSignal.evidenceAvailable,
+          toolCallCount: countToolCalls(toolTrace),
+          roundCount: toolTrace.length,
+        };
         throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
           activation: input.activation,
@@ -348,6 +411,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               },
             }
           : {}),
+        ...(toolLoopCloseout ? { toolLoopCloseout } : {}),
       },
     };
   }
@@ -1443,6 +1507,10 @@ function summarizeToolResultContent(content: string): string {
 
 function isPrunedToolResultContent(content: string): boolean {
   return content.includes('"tool_result_pruned": true');
+}
+
+function countToolCalls(rounds: NativeToolRoundTrace[]): number {
+  return rounds.reduce((sum, round) => sum + round.calls.length, 0);
 }
 
 function formatDurationMs(ms: number): string {

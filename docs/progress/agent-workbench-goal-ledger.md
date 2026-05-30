@@ -2729,3 +2729,58 @@ Regression Risk:
   and a negative test that proves missing G0 policy sections fail explicitly.
 - Product regression risk is low because no runtime or Control Center code
   changed.
+
+## 2026-05-31 07:53 CST - Tool Loop Closeout Visibility
+
+Direction: converging
+
+Execution Kernel:
+- The runtime now records structured `toolLoopCloseout` metadata when final
+  synthesis is forced by pseudo tool-call markup, wall-clock budget,
+  tool-round limit, completed sub-agent final content, or sub-agent timeout.
+- Execution behavior is intentionally unchanged in this slice: it does not
+  retry timed-out tools or change budgets. It removes ambiguity by preserving
+  why the tool loop stopped and how many rounds/calls had completed.
+
+Result Quality:
+- Budget-limited, timeout-limited, and malformed-tool-call closeouts can no
+  longer appear as fully healthy final answers in mission observability.
+- Completed sub-agent final-content closeout remains a healthy path, while
+  forced closeouts now mark Mission Health as `needs_attention` so users know
+  to inspect evidence or continue with a narrower follow-up before accepting
+  the answer.
+
+Workbench UX:
+- Mission Detail now surfaces the closeout quality check and prioritizes a
+  concrete action for budget-limited answers: continue from the same mission
+  with narrower scope or inspect the trace before accepting the answer.
+- Control Center smoke covers the visible action text so the attention path
+  stays user-visible.
+
+Browser Reliability:
+- Browser execution, profile selection, CDP, and bridge behavior did not
+  change.
+- Browser-backed work benefits indirectly because browser sub-agent timeouts
+  now carry through as final-answer closeout context instead of only appearing
+  in lower-level tool traces.
+
+Acceptance Evidence:
+- `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts`:
+  26 passed.
+- `npx tsx --test packages/app-gateway/src/mission-thread-bridge.test.ts
+  packages/app-gateway/src/mission-observability.test.ts`: 53 passed.
+- `npm run typecheck`: passed.
+- `npm run build:control-center`: passed.
+- `npm run control-center:smoke -- --allow-missing-browser`: passed with
+  desktop and mobile screenshots.
+- No real LLM/browser acceptance ran because this slice changes runtime
+  metadata propagation and mission visibility, not the tool execution policy.
+  The next execution-policy or browser-runtime behavior change still requires
+  focused real acceptance before claiming convergence.
+
+Regression Risk:
+- Main compatibility risk is adding new optional metadata/runtime fields. The
+  bridge keeps them additive and stringifies only primitive closeout fields.
+- Quality-gate risk is over-warning completed work. Tests pin the distinction:
+  budget-limited closeout warns, completed sub-agent final-content closeout
+  passes.

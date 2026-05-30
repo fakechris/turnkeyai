@@ -1620,6 +1620,9 @@ function missionQualityAction(
   if (visibleChecks.some((check) => check.name === "evidence_usage")) {
     return "Ask a follow-up to tie each claim to the captured evidence.";
   }
+  if (visibleChecks.some((check) => check.name === "tool_loop_closeout")) {
+    return "Continue from the same mission with a narrower scope, or inspect the trace before accepting a budget-limited answer.";
+  }
   if (visibleChecks.some((check) => check.name === "tool_fallback_answer")) {
     return "Continue with a narrower tool-backed request or inspect tool availability before accepting the answer.";
   }

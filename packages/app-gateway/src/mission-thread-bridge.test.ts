@@ -889,6 +889,14 @@ describe("MissionThreadBridge", () => {
             },
           ],
         },
+        toolLoopCloseout: {
+          reason: "round_limit",
+          toolCallCount: 1,
+          roundCount: 1,
+          maxRounds: 1,
+          pendingToolCallCount: 1,
+          evidenceAvailable: true,
+        },
       },
     };
     const bridge = createMissionThreadBridge({
@@ -930,6 +938,11 @@ describe("MissionThreadBridge", () => {
     assert.equal(resultEvent.runtime?.toolCallId, "call_1");
     // Final answer carries the assistant content.
     assert.equal(ordered[3]!.text, "The page title is Example Domain.");
+    assert.equal(ordered[3]!.runtime?.toolLoopCloseout, "true");
+    assert.equal(ordered[3]!.runtime?.toolLoopCloseoutReason, "round_limit");
+    assert.equal(ordered[3]!.runtime?.["toolLoopCloseout.maxRounds"], "1");
+    assert.equal(ordered[3]!.runtime?.["toolLoopCloseout.pendingToolCallCount"], "1");
+    assert.equal(ordered[3]!.runtime?.["toolLoopCloseout.evidenceAvailable"], "true");
   });
 
   it("tool-result event carries full content on runtime.resultContent (K3.6)", async () => {
