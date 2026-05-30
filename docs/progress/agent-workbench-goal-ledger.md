@@ -1017,3 +1017,52 @@ Regression Risk:
 - Adding script tests to the root `npm test` command broadens the default test
   surface; the immediate risk is low because the new script test is fast and
   self-contained.
+
+## 2026-05-30 23:08 CST - Mission E2E JSON Evidence
+
+Direction: converging
+
+Execution Kernel:
+- No mission, role, tool-use, worker, browser, approval, or completion
+  semantics changed.
+- The mission-level E2E harness can now write a structured JSON report for
+  completed real-LLM mission runs, preserving the same assertions while making
+  the acceptance evidence durable.
+
+Result Quality:
+- No answer synthesis, prompt, or runtime quality gate changed.
+- The report carries final-answer byte count, bullet count, quality gate
+  status, and quality failures so reviewers can compare complex-task delivery
+  across runs without treating PR/test counts as the progress signal.
+
+Workbench UX:
+- No Control Center or TUI surface changed.
+- User-visible benefit is operational: release reviewers and operators can
+  attach a compact mission E2E report to a release/checkpoint instead of
+  reconstructing acceptance quality from terminal logs.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- Browser-backed mission scenarios can now persist browser-related evidence
+  counts, tool/session metrics, recovery events, and liveness state in the same
+  report as non-browser scenarios.
+
+Acceptance Evidence:
+- `npm run ledger:check`: passed, 19 checkpoint(s).
+- `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`: 3 passed.
+- `npm run mission:e2e -- --help`: passed and lists `--json <path>`.
+- `npm run typecheck`: passed.
+- `npm test -- --runInBand`: 1223 passed.
+- `npm run build`: passed.
+- `git diff --check`: passed.
+- Real LLM E2E was not rerun for this checkpoint because this is an acceptance
+  artifact change, not a runtime/result-quality change. The next runtime or
+  result-quality stage still requires a fresh real LLM mission acceptance run.
+
+Regression Risk:
+- The JSON report is a review artifact, not a substitute for running real E2E.
+  It can prove what a successful run observed, but cannot make an unrun
+  scenario count as accepted.
+- The report intentionally omits the final-answer body to keep artifacts small
+  and avoid leaking bulky or sensitive mission output; reviewers still need the
+  raw mission logs when debugging content quality.

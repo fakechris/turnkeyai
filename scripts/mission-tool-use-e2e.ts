@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -19,6 +19,7 @@ interface MissionToolUseE2eOptions {
   scenario: MissionE2eScenario;
   matrix: boolean;
   matrixScenarios?: MissionE2eScenario[];
+  jsonPath?: string;
 }
 
 type DaemonChildProcess = ChildProcessByStdio<null, Readable, Readable>;
@@ -151,13 +152,62 @@ export interface ScenarioSpec {
   expectedBullets: number;
 }
 
-interface MissionScenarioResult {
+export interface MissionScenarioResult {
   scenario: MissionE2eScenario;
   mission: Mission;
   timeline: ActivityEvent[];
   metrics: MissionObservabilitySnapshot;
   final: ActivityEvent;
   quality: ReturnType<typeof evaluateFinalQuality>;
+}
+
+export interface MissionE2eScenarioReport {
+  scenario: MissionE2eScenario;
+  missionId: string;
+  status: string;
+  threadId?: string;
+  timelineEvents: number;
+  toolEvents: number;
+  qualityGate: string;
+  metrics: {
+    tools: {
+      requested: number;
+      results: number;
+      failed: number;
+      cancelled: number;
+      timeouts: number;
+    };
+    sessions: {
+      spawned: number;
+      continued: number;
+    };
+    approvals: {
+      requested: number;
+      decided: number;
+      applied: number;
+    };
+    liveness: {
+      active: number;
+      waiting: number;
+      stale: number;
+    };
+    evidenceEvents: number;
+    recoveryEvents: number;
+  };
+  final: {
+    bytes: number;
+    bullets: number;
+    qualityFailures: string[];
+  };
+}
+
+export interface MissionE2eJsonReport {
+  kind: "turnkeyai.mission-e2e.report";
+  status: "passed" | "failed";
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  scenarios: MissionE2eScenarioReport[];
 }
 
 interface WorkerSessionRecord {
@@ -236,6 +286,15 @@ function parseOptions(args: string[]): MissionToolUseE2eOptions {
       index += 1;
       continue;
     }
+    if (arg === "--json") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --json");
+      }
+      options.jsonPath = value;
+      index += 1;
+      continue;
+    }
   }
   return options;
 }
@@ -272,6 +331,7 @@ function printHelp(exitCode: number): never {
     "  --matrix-scenarios <a,b,...>   Run a comma-separated scenario matrix",
     "  --scenario-timeout-ms <ms>     Per-scenario timeout. Default: 180000",
     "  --model-catalog <path>         Model catalog path. Also reads TURNKEYAI_MODEL_CATALOG, models.local.json, models.json",
+    "  --json <path>                  Write a structured acceptance evidence report",
     "  --list-scenarios              Print scenario names and exit",
     "  --help, -h                    Show this help and exit",
     "",
@@ -288,6 +348,7 @@ function printHelp(exitCode: number): never {
 }
 
 async function main(options: MissionToolUseE2eOptions): Promise<void> {
+  const startedAt = Date.now();
   const modelCatalogPath = resolveModelCatalogPath(options.modelCatalogPath);
   const fixture = await startFixtureServer();
   await assertRenderedFixtureEvidenceHidden(fixture);
@@ -325,6 +386,16 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
     }
     for (const result of results) {
       printScenarioResult(result);
+    }
+    if (options.jsonPath) {
+      const completedAt = Date.now();
+      const report = buildMissionE2eJsonReport({
+        startedAt,
+        completedAt,
+        results,
+      });
+      writeMissionE2eJsonReport(options.jsonPath, report);
+      console.log(`mission-e2e-json: ${path.resolve(options.jsonPath)}`);
     }
     if (scenarios.length > 1) {
       console.log(`mission tool-use real llm matrix passed: ${scenarios.join(",")}`);
@@ -789,6 +860,74 @@ function printScenarioResult(result: MissionScenarioResult): void {
   console.log(`mission-metrics-evidence: ${result.metrics.qualityGate.evidenceEvents}`);
   console.log(`mission-final-bytes: ${Buffer.byteLength(result.final.text, "utf8")}`);
   console.log(`mission-final-bullets: ${result.quality.bullets}`);
+}
+
+export function buildMissionE2eJsonReport(input: {
+  startedAt: number;
+  completedAt: number;
+  results: MissionScenarioResult[];
+}): MissionE2eJsonReport {
+  const scenarios = input.results.map(summarizeMissionScenarioResult);
+  return {
+    kind: "turnkeyai.mission-e2e.report",
+    status: scenarios.every(isPassingMissionScenarioReport) ? "passed" : "failed",
+    startedAt: new Date(input.startedAt).toISOString(),
+    completedAt: new Date(input.completedAt).toISOString(),
+    durationMs: Math.max(0, input.completedAt - input.startedAt),
+    scenarios,
+  };
+}
+
+export function summarizeMissionScenarioResult(result: MissionScenarioResult): MissionE2eScenarioReport {
+  return {
+    scenario: result.scenario,
+    missionId: result.mission.id,
+    status: result.mission.status,
+    ...(result.mission.threadId ? { threadId: result.mission.threadId } : {}),
+    timelineEvents: result.timeline.length,
+    toolEvents: result.timeline.filter((event) => event.kind === "tool").length,
+    qualityGate: result.metrics.qualityGate.status,
+    metrics: {
+      tools: {
+        requested: result.metrics.tool.requested,
+        results: result.metrics.tool.results,
+        failed: result.metrics.tool.failed,
+        cancelled: result.metrics.tool.cancelled,
+        timeouts: result.metrics.tool.timeouts,
+      },
+      sessions: {
+        spawned: result.metrics.sessions.spawned,
+        continued: result.metrics.sessions.continued,
+      },
+      approvals: {
+        requested: result.metrics.approvals.requested,
+        decided: result.metrics.approvals.decided,
+        applied: result.metrics.approvals.applied,
+      },
+      liveness: {
+        active: result.metrics.liveness.active,
+        waiting: result.metrics.liveness.waiting,
+        stale: result.metrics.liveness.stale,
+      },
+      evidenceEvents: result.metrics.qualityGate.evidenceEvents,
+      recoveryEvents: result.metrics.recovery.events,
+    },
+    final: {
+      bytes: Buffer.byteLength(result.final.text, "utf8"),
+      bullets: result.quality.bullets,
+      qualityFailures: [...result.quality.failures],
+    },
+  };
+}
+
+function isPassingMissionScenarioReport(report: MissionE2eScenarioReport): boolean {
+  return report.status === "done" && report.qualityGate === "passed" && report.final.qualityFailures.length === 0;
+}
+
+function writeMissionE2eJsonReport(jsonPath: string, report: MissionE2eJsonReport): void {
+  const resolvedPath = path.resolve(jsonPath);
+  mkdirSync(path.dirname(resolvedPath), { recursive: true });
+  writeFileSync(resolvedPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 }
 
 function resolveModelCatalogPath(explicitPath?: string): string {
