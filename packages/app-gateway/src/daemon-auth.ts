@@ -277,7 +277,12 @@ function isBridgeExpertRoute(pathname: string): boolean {
 }
 
 function isBridgeRoute(pathname: string): boolean {
-  return pathname === "/bridge/command" || pathname === "/bridge/advanced" || pathname === "/bridge/batch";
+  return (
+    pathname === "/bridge/command" ||
+    pathname === "/bridge/advanced" ||
+    pathname === "/bridge/batch" ||
+    pathname === "/bridge/reconnect"
+  );
 }
 
 function isWorkflowMutationRoute(pathname: string): boolean {

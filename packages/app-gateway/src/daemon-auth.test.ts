@@ -61,6 +61,7 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "POST", pathname: "/browser-sessions/spawn", expected: "operator" },
     { method: "GET", pathname: "/browser-sessions", expected: "operator" },
     { method: "POST", pathname: "/browser-sessions/session-1/revoke", expected: "operator" },
+    { method: "POST", pathname: "/bridge/reconnect", expected: "operator" },
     { method: "GET", pathname: "/browser-sessions/session-1/expert/targets", expected: "admin" },
     { method: "POST", pathname: "/browser-sessions/session-1/expert/send", expected: "admin" },
     { method: "POST", pathname: "/recovery-runs/run-1/retry", expected: "operator" },

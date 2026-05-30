@@ -17,6 +17,17 @@ export interface BridgeStatus {
   transport: {
     mode: TransportMode;
     label: string;
+    health?: {
+      transportMode: TransportMode;
+      transportLabel: string;
+      healthy: boolean;
+      reason?: string;
+      endpoint?: string;
+      peerCount?: number;
+      activePeerCount?: number;
+      connected?: boolean;
+      checkedAt: number;
+    };
   };
   relay: {
     configured: boolean;

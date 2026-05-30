@@ -255,6 +255,7 @@ function extractBridgeRequestToken(req: http.IncomingMessage): string | null {
 
 async function buildBridgeStatusSnapshot(): Promise<BridgeStatusInfo> {
   const sessions = await browserBridge.listSessions().catch(() => []);
+  const transportHealth = await browserBridge.getTransportHealth().catch(() => undefined);
   const relaySnapshot = relayGateway
     ? {
         configured: true,
@@ -276,6 +277,7 @@ async function buildBridgeStatusSnapshot(): Promise<BridgeStatusInfo> {
     configFile: RUNTIME_PATHS.configFile,
     transportMode: browserBridge.transportMode,
     transportLabel: browserBridge.transportLabel,
+    ...(transportHealth ? { transportHealth } : {}),
     relay: relaySnapshot,
     directCdp: {
       configured: Boolean(DIRECT_CDP_ENDPOINT) || browserBridge.transportMode === "direct-cdp",
@@ -725,6 +727,10 @@ const server = http.createServer(async (req, res) => {
         url,
         deps: {
           getStatusInfo: buildBridgeStatusSnapshot,
+          transportControl: {
+            getHealth: () => browserBridge.getTransportHealth(),
+            reconnect: (request) => browserBridge.reconnect(request),
+          },
           commandDispatcher: bridgeCommandDispatcher,
           advancedDispatcher: bridgeAdvancedDispatcher,
           batchDispatcher: bridgeBatchDispatcher,

@@ -156,6 +156,10 @@ try {
       "operator runtime should still render the release acceptance card"
     );
     assert(
+      await operatorRuntimePage.locator(".card", { hasText: "local-automation · healthy" }).isVisible(),
+      "operator runtime should surface bridge transport health from /bridge/status"
+    );
+    assert(
       await operatorRuntimePage.locator(".card", { hasText: "admin token required" }).isVisible(),
       "operator runtime should explain that validation ops require admin scope"
     );
@@ -1138,6 +1142,13 @@ function diagnosticsFixture() {
     transport: {
       mode: "local",
       label: "local-automation",
+      health: {
+        transportMode: "local",
+        transportLabel: "local-automation",
+        healthy: true,
+        connected: true,
+        checkedAt: 1_700_000_000_100,
+      },
     },
     counters: {
       sessionCount: 1,
@@ -1250,6 +1261,13 @@ function bridgeStatusFixture() {
     transport: {
       mode: "local",
       label: "local-automation",
+      health: {
+        transportMode: "local",
+        transportLabel: "local-automation",
+        healthy: true,
+        connected: true,
+        checkedAt: 1_700_000_000_100,
+      },
     },
     relay: {
       configured: false,
