@@ -2117,3 +2117,66 @@ Regression Risk:
   in manual testing, the next acceptance-reporting slice should add a bounded
   final-answer excerpt or operator-safe quality digest so reviewers can audit
   usefulness without opening the live mission store.
+
+## 2026-05-31 03:25 CST - Source Label Coverage Acceptance
+
+Direction: converging
+
+Execution Kernel:
+- Session tool-result timeline expansion now promotes the existing
+  session-result `label` field into `runtime.sourceLabel`.
+- When a tool-result summary path lacks the full session-result JSON, the
+  timeline falls back to the matching `sessions_spawn` call's `label` field.
+  This keeps source identity durable across both split role=tool results and
+  assistant-metadata result summaries.
+
+Result Quality:
+- The focused real acceptance matrix now requires the `comparison` and
+  `realistic-brief` scenarios to use explicit source labels and prove that
+  `source_coverage` audited them.
+- This closes the previous caveat where `source_coverage` passed only because
+  no visible multi-source labels reached Mission metrics.
+
+Workbench UX:
+- No visual layout changed.
+- Mission Detail and Runtime acceptance quality rows now receive stronger
+  source-coverage truth: multi-source final answers can be judged against
+  visible labels such as Vendor Alpha, Vendor Beta, and Ops dashboard instead
+  of only generic evidence counts.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- The `realistic-brief` acceptance scenario includes one browser child session
+  labeled `Ops dashboard`; it passed source-label propagation and completion,
+  but this is still a local fixture gate rather than a raw CDP/full browser
+  reliability soak.
+
+Acceptance Evidence:
+- Initial real run failed as intended after the new gate exposed the missing
+  result-side label:
+  `comparison sessions_spawn result must expose runtime.sourceLabel Vendor Beta`.
+- After the bridge fallback fix, command passed:
+  `npm run acceptance:real -- --skip-tooluse --mission-scenarios
+  comparison,realistic-brief --model-catalog models.local.json
+  --scenario-timeout-ms 300000`
+- Validation run:
+  `validation-ops:real-llm-acceptance:2026-05-30T19-23-19-873Z:f4dmol`
+- Artifact:
+  `/Users/chris/.turnkeyai/data/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3A2026-05-30T19-23-19-873Z%3Af4dmol-mission-e2e.json`
+- `comparison`: mission `msn.mpsqnrt9.1`, status `done`,
+  quality `passed`, tools `2/2`, sessions `2/0`, liveness `0/0/0`,
+  source coverage `Final answer covers 2/2 visible source label(s).`
+- `realistic-brief`: mission `msn.mpsqo513.2`, status `done`,
+  quality `passed`, tools `3/3`, sessions `3/0`, liveness `0/0/0`,
+  source coverage `Final answer covers 3/3 visible source label(s).`
+- Local verification: focused MissionThreadBridge tests, `npm run typecheck`,
+  `npm run build`, `npm test -- --runInBand`, and `git diff --check`.
+
+Regression Risk:
+- The fallback from call label to result source label is intentionally narrow:
+  it only applies to tool-result events associated with a structured tool call
+  that supplied a `label`.
+- Risk: a misleading model-supplied label could still make source coverage look
+  cleaner than the underlying evidence. The next hardening step should consider
+  worker-owned source labels for browser/explore outputs so the runtime can
+  verify labels independently of the lead's call arguments.

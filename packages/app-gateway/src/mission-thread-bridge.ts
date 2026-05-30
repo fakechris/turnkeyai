@@ -461,6 +461,7 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
         toolCallId: message.toolCallId,
         toolPhase: "result",
         resultContent: message.content,
+        ...sessionToolSourceRuntime(message.content),
         ...(admission ? { admission } : {}),
       };
       if (admission !== "skipped" && (message.toolStatus === "failed" || message.toolStatus === "cancelled")) {
@@ -551,6 +552,7 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
               result: matchingResult,
               roundNumber: round.round,
               callName: call.name,
+              sourceLabel: readToolCallSourceLabel(call.input),
             })
           );
           emittedResultCallIds.add(matchingResult.toolCallId);
@@ -563,6 +565,7 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
               tMs: tMsForStep(message.createdAt, stepIndex, totalSubEvents),
               call,
               roundNumber: round.round,
+              sourceLabel: readToolCallSourceLabel(call.input),
             })
           );
           stepIndex += 1;
@@ -591,6 +594,7 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
             result,
             roundNumber: round.round,
             callName: matchingCall?.name ?? result.toolName,
+            sourceLabel: readToolCallSourceLabel(matchingCall?.input),
           })
         );
         stepIndex += 1;
@@ -758,6 +762,31 @@ function isUserVisibleToolProgress(event: NonNullable<TeamMessage["toolProgress"
   return event.phase === "progress" && typeof event.summary === "string" && event.summary.trim().length > 0;
 }
 
+function sessionToolSourceRuntime(content: string | undefined): Record<string, string> {
+  const label = readSessionToolSourceLabel(content);
+  return label ? { sourceLabel: label } : {};
+}
+
+function readToolCallSourceLabel(input: Record<string, unknown> | undefined): string | null {
+  const label = input?.label;
+  return typeof label === "string" && label.trim() ? label.trim() : null;
+}
+
+function readSessionToolSourceLabel(content: string | undefined): string | null {
+  if (!content?.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || parsed.protocol !== "turnkeyai.session_tool_result.v1") {
+    return null;
+  }
+  const label = parsed.label;
+  return typeof label === "string" && label.trim() ? label.trim() : null;
+}
+
 function isNativeSplitToolEnvelope(message: TeamMessage): boolean {
   return isRecord(message.metadata) && message.metadata.nativeToolUse === true;
 }
@@ -887,6 +916,7 @@ interface BuildToolResultEventInput {
   };
   roundNumber: number;
   callName: string;
+  sourceLabel?: string | null;
 }
 
 interface BuildToolProgressEventInput {
@@ -913,6 +943,7 @@ interface BuildSplitToolResultEventInput {
   tMs: number;
   call: { id: string; name: string; input: Record<string, unknown> };
   roundNumber: number;
+  sourceLabel?: string | null;
 }
 
 function buildToolProgressEvent(input: BuildToolProgressEventInput): ActivityEvent {
@@ -989,11 +1020,13 @@ function buildSplitToolResultEvent(input: BuildSplitToolResultEventInput): Activ
     toolCallId,
     toolPhase: "result",
     resultContent: input.message.content,
+    ...sessionToolSourceRuntime(input.message.content),
     round: String(input.roundNumber),
     contentBytes: String(contentBytes),
     ...(admission ? { admission } : {}),
   };
   if (input.message.source?.route) runtime.route = input.message.source.route;
+  if (input.sourceLabel && !runtime.sourceLabel) runtime.sourceLabel = input.sourceLabel;
   const event: ActivityEvent = {
     id: input.newEventId(),
     missionId: input.missionId,
@@ -1046,7 +1079,9 @@ function buildToolResultEvent(input: BuildToolResultEventInput): ActivityEvent {
   };
   if (input.result.content !== undefined) {
     runtime.resultContent = input.result.content;
+    Object.assign(runtime, sessionToolSourceRuntime(input.result.content));
   }
+  if (input.sourceLabel && !runtime.sourceLabel) runtime.sourceLabel = input.sourceLabel;
   if (input.result.contentTruncated) {
     runtime.resultTruncated = "true";
   }

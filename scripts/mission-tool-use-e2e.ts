@@ -139,6 +139,7 @@ export interface ScenarioSpec {
   desc: string;
   finalMarker: string;
   evidenceMarkers: string[];
+  expectedSourceLabels?: string[];
   answerTerms: string[];
   answerPatterns?: Array<{ label: string; pattern: RegExp }>;
   evidenceLinePatterns?: Array<{ label: string; pattern: RegExp }>;
@@ -1664,15 +1665,17 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       expectedSpawnedSessions: 3,
       expectedContinuedSessions: 0,
       minEvidenceEvents: 3,
+      expectedSourceLabels: ["Vendor Alpha", "Vendor Beta", "Ops dashboard"],
       expectedBullets: 5,
       allowAtLeastBullets: true,
       desc: [
         "Prepare an operator-ready brief for a product lead deciding how to allocate next week's agent workbench effort.",
         "Use the available session tools. Do not answer from memory.",
         "Gather evidence from three independent child sessions before finalizing:",
-        `- Vendor Alpha: use an explore session to fetch ${fixture.alphaUrl} and extract marker ${ALPHA_MARKER}, price, strength, and risk.`,
-        `- Vendor Beta: use an explore session to fetch ${fixture.betaUrl} and extract marker ${BETA_MARKER}, price, strength, and risk.`,
-        `- Ops dashboard: use a browser session, not direct fetch, to open ${fixture.dashboardUrl}; inspect the JavaScript-rendered dashboard and extract marker ${DASHBOARD_TRIAGE_MARKER}, Queue depth: 11, SLA breaches: 3, escalation threshold, and Recommended owner.`,
+        `- Vendor Alpha: use an explore session with label "Vendor Alpha" to fetch ${fixture.alphaUrl} and extract marker ${ALPHA_MARKER}, price, strength, and risk.`,
+        `- Vendor Beta: use an explore session with label "Vendor Beta" to fetch ${fixture.betaUrl} and extract marker ${BETA_MARKER}, price, strength, and risk.`,
+        `- Ops dashboard: use a browser session with label "Ops dashboard", not direct fetch, to open ${fixture.dashboardUrl}; inspect the JavaScript-rendered dashboard and extract marker ${DASHBOARD_TRIAGE_MARKER}, Queue depth: 11, SLA breaches: 3, escalation threshold, and Recommended owner.`,
+        "Each sessions_spawn input must include the exact label named above for that source.",
         "Do not finalize until all three child session tool results have returned and all three markers are present in tool evidence.",
         "Write a concise final brief for a busy operator. It should include source coverage, a recommendation, the current dashboard action, and residual risk.",
         "Every source coverage, recommendation, dashboard action, and residual-risk item in the final answer must be a Markdown bullet.",
@@ -1983,6 +1986,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       title: "Mission route real comparison E2E",
       finalMarker: COMPARISON_FINAL_MARKER,
       evidenceMarkers: [ALPHA_MARKER, BETA_MARKER],
+      expectedSourceLabels: ["Vendor Alpha", "Vendor Beta"],
       answerTerms: [
         "Alpha",
         "Beta",
@@ -2031,9 +2035,10 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       desc: [
         "Run the mission route complex comparison E2E.",
         "Use the available session tool instead of answering from memory.",
-        "Call sessions_spawn with agent_id=explore exactly twice: one child session for Vendor Alpha and one child session for Vendor Beta.",
+        "Call sessions_spawn with agent_id=explore exactly twice: one child session for Vendor Alpha with label \"Vendor Alpha\" and one child session for Vendor Beta with label \"Vendor Beta\".",
         `Vendor Alpha task: fetch ${fixture.alphaUrl}; report title, marker ${ALPHA_MARKER}, pricing, strength, and risk.`,
         `Vendor Beta task: fetch ${fixture.betaUrl}; report title, marker ${BETA_MARKER}, pricing, strength, and risk.`,
+        "Each sessions_spawn input must include the exact label for its source so mission source coverage can be audited.",
         "Do not finalize until both child session tool results have returned and both markers are present in tool evidence.",
         `Final answer must include ${COMPARISON_FINAL_MARKER}, ${ALPHA_MARKER}, and ${BETA_MARKER}.`,
         "Use this exact final answer shape after both child session tool results return:",
@@ -2216,8 +2221,34 @@ function assertMissionToolUseTimeline(timeline: ActivityEvent[], spec: ScenarioS
   for (const marker of spec.evidenceMarkers) {
     assert.match(resultEvidence, new RegExp(marker), `sessions_spawn results must include fixture evidence ${marker}`);
   }
+  assertMissionSourceLabels(timeline, spec);
   const danger = timeline.find((event) => event.emph === "danger" || event.kind === "recovery");
   assert.equal(danger, undefined, `mission E2E timeline contains recovery/danger event: ${danger?.text ?? ""}`);
+}
+
+function assertMissionSourceLabels(timeline: ActivityEvent[], spec: ScenarioSpec): void {
+  if (!spec.expectedSourceLabels?.length) return;
+  const callLabels = findToolPhaseIndexes(timeline, "sessions_spawn", "call")
+    .map((index) => readToolCallLabel(timeline[index]))
+    .filter((label): label is string => Boolean(label));
+  const resultLabels = findToolPhaseIndexes(timeline, "sessions_spawn", "result")
+    .map((index) => timeline[index]?.runtime?.["sourceLabel"])
+    .filter((label): label is string => typeof label === "string" && label.trim().length > 0);
+  for (const label of spec.expectedSourceLabels) {
+    assert.ok(callLabels.includes(label), `${spec.scenario} sessions_spawn call must include source label ${label}`);
+    assert.ok(resultLabels.includes(label), `${spec.scenario} sessions_spawn result must expose runtime.sourceLabel ${label}`);
+  }
+}
+
+function readToolCallLabel(event: ActivityEvent | undefined): string | null {
+  const callInput = event?.runtime?.["callInput"];
+  if (typeof callInput !== "string") return null;
+  try {
+    const parsed = JSON.parse(callInput) as { label?: unknown };
+    return typeof parsed.label === "string" && parsed.label.trim() ? parsed.label.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 function extractFirstSessionKey(timeline: ActivityEvent[]): string | null {
@@ -2535,6 +2566,15 @@ function assertMissionMetrics(metrics: MissionObservabilitySnapshot, spec: Scena
     `mission metrics quality gate must pass: ${JSON.stringify(metrics.qualityGate.checks)}`
   );
   assert.ok(metrics.qualityGate.evidenceEvents >= spec.minEvidenceEvents, "mission metrics must count evidence-bearing events");
+  if (spec.expectedSourceLabels?.length) {
+    const sourceCoverage = metrics.qualityGate.checks?.find((check) => check.name === "source_coverage");
+    assert.equal(sourceCoverage?.status, "pass", "mission source coverage check must pass");
+    assert.match(
+      String(sourceCoverage?.detail ?? ""),
+      new RegExp(`Final answer covers ${spec.expectedSourceLabels.length}/${spec.expectedSourceLabels.length} visible source label`),
+      "mission source coverage must prove visible source labels were audited"
+    );
+  }
 }
 
 function assertMissionCancelMetrics(metrics: MissionObservabilitySnapshot, spec: ScenarioSpec): void {

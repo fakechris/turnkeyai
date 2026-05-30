@@ -935,7 +935,18 @@ describe("MissionThreadBridge", () => {
   it("tool-result event carries full content on runtime.resultContent (K3.6)", async () => {
     counter = 0;
     const activity = memActivityStore();
-    const fullResult = "Page title: Example Domain.\nFirst paragraph: This domain is for use in documentation examples...";
+    const fullResult = JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      task_id: "task-1",
+      session_key: "worker:explore:1",
+      agent_id: "explore",
+      label: "Vendor Alpha",
+      status: "completed",
+      tool_chain: ["explore"],
+      result: "Page title: Example Domain.",
+      final_content: "Page title: Example Domain.\nFirst paragraph: This domain is for use in documentation examples...",
+      payload: null,
+    }, null, 2);
     const message: TeamMessage = {
       ...baseMessage("a", "assistant", 5_000),
       roleId: "role-lead",
@@ -972,8 +983,51 @@ describe("MissionThreadBridge", () => {
     assert.ok(result, "expected a tool-result event");
     // Full content on runtime so the UI can expand it.
     assert.equal(result.runtime?.resultContent, fullResult);
+    assert.equal(result.runtime?.sourceLabel, "Vendor Alpha");
     // Inline text includes a head slice (not just byte count).
     assert.match(result.text, /Page title: Example Domain/);
+  });
+
+  it("tool-result event falls back to call label for source coverage", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const message: TeamMessage = {
+      ...baseMessage("a-source-label", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Done.",
+      metadata: {
+        toolUse: {
+          rounds: [
+            {
+              round: 1,
+              calls: [{ id: "c1", name: "sessions_spawn", input: { agent_id: "explore", label: "Vendor Beta" } }],
+              results: [
+                {
+                  toolCallId: "c1",
+                  toolName: "sessions_spawn",
+                  isError: false,
+                  contentBytes: 24,
+                  content: "Beta source returned evidence.",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([message]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const result = activity.events.find((e) => e.runtime?.toolPhase === "result");
+    assert.ok(result, "expected a tool-result event");
+    assert.equal(result.runtime?.sourceLabel, "Vendor Beta");
   });
 
   it("expands native assistant toolCalls/toolProgress without metadata trace", async () => {
@@ -1392,7 +1446,18 @@ describe("MissionThreadBridge", () => {
     const toolMessage: TeamMessage = {
       ...baseMessage("t-native", "tool", 5_001),
       name: "sessions_send",
-      content: "Durable tool result content.",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-1",
+        session_key: "worker:browser:1",
+        agent_id: "browser",
+        label: "Ops dashboard",
+        status: "completed",
+        tool_chain: ["browser"],
+        result: "Durable tool result content.",
+        final_content: "Durable tool result content.",
+        payload: null,
+      }, null, 2),
       toolCallId: "c-native",
       toolStatus: "completed",
     };
@@ -1411,7 +1476,8 @@ describe("MissionThreadBridge", () => {
     );
     assert.equal(resultEvents.length, 1);
     assert.equal(resultEvents[0]?.runtime?.messageId, "t-native");
-    assert.equal(resultEvents[0]?.runtime?.resultContent, "Durable tool result content.");
+    assert.equal(resultEvents[0]?.runtime?.resultContent, toolMessage.content);
+    assert.equal(resultEvents[0]?.runtime?.sourceLabel, "Ops dashboard");
     assert.ok(
       activity.events.some((event) => event.runtime?.toolPhase === "call" && event.runtime.toolCallId === "c-native")
     );
