@@ -118,10 +118,84 @@ describe("doctor", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it("fails when the primary model provider key is missing", async () => {
+    const server = await startHealthServer({
+      models: {
+        defaultSelection: {
+          ok: true,
+          chainId: "lead_reasoning",
+          primaryModelId: "minimax-m2",
+          fallbackModelIds: ["gpt-5"],
+        },
+        models: [
+          { id: "minimax-m2", configured: false, apiKeyEnv: "MINIMAX_API_KEY" },
+          { id: "gpt-5", configured: true, apiKeyEnv: "OPENAI_API_KEY" },
+        ],
+      },
+    });
+    const home = await mkdtemp(path.join(tmpdir(), "turnkeyai-doctor-model-primary-"));
+    try {
+      await writeConfig(home, { token: "test-token", port: server.port, transportMode: "local" });
+      const result = await runCli(["doctor"], {
+        TURNKEYAI_HOME: home,
+        TURNKEYAI_DAEMON_URL: `http://127.0.0.1:${server.port}`,
+      });
+
+      assert.equal(result.code, 1);
+      assert.match(result.stdout, /\[fail\] model readiness\s+primary minimax-m2 missing key MINIMAX_API_KEY/);
+      assert.match(result.stderr, /turnkeyai doctor: 1 check\(s\) failed, 1 warning\(s\)/);
+    } finally {
+      server.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("warns when only fallback model provider keys are missing", async () => {
+    const server = await startHealthServer({
+      models: {
+        defaultSelection: {
+          ok: true,
+          chainId: "lead_reasoning",
+          primaryModelId: "minimax-m2",
+          fallbackModelIds: ["gpt-5"],
+        },
+        models: [
+          { id: "minimax-m2", configured: true, apiKeyEnv: "MINIMAX_API_KEY" },
+          { id: "gpt-5", configured: false, apiKeyEnv: "OPENAI_API_KEY" },
+        ],
+      },
+    });
+    const home = await mkdtemp(path.join(tmpdir(), "turnkeyai-doctor-model-fallback-"));
+    try {
+      await writeConfig(home, { token: "test-token", port: server.port, transportMode: "local" });
+      const result = await runCli(["doctor"], {
+        TURNKEYAI_HOME: home,
+        TURNKEYAI_DAEMON_URL: `http://127.0.0.1:${server.port}`,
+      });
+
+      assert.equal(result.code, 0);
+      assert.match(result.stdout, /\[warn\] model readiness\s+lead_reasoning: minimax-m2 ready, 1 fallback key\(s\) missing/);
+      assert.match(result.stdout, /turnkeyai doctor: 2 warning\(s\), no failures/);
+    } finally {
+      server.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });
 
 async function startHealthServer(input: {
   acceptedBridgeToken?: string;
+  models?: {
+    defaultSelection: {
+      ok?: boolean;
+      chainId?: string;
+      primaryModelId?: string;
+      fallbackModelIds?: string[];
+      error?: string;
+    };
+    models?: Array<{ id: string; configured: boolean; apiKeyEnv: string }>;
+  };
   readiness?: {
     checks: Array<{
       label: string;
@@ -165,6 +239,29 @@ async function startHealthServer(input: {
           checks: [{ label: "Daemon", status: "ok", detail: "Listening." }],
         },
       }));
+      return;
+    }
+    if (req.url === "/models") {
+      if (
+        input.acceptedBridgeToken &&
+        req.headers.authorization !== `Bearer ${input.acceptedBridgeToken}`
+      ) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(
+        input.models ?? {
+          defaultSelection: {
+            ok: true,
+            chainId: "lead_reasoning",
+            primaryModelId: "minimax-m2",
+            fallbackModelIds: [],
+          },
+          models: [{ id: "minimax-m2", configured: true, apiKeyEnv: "MINIMAX_API_KEY" }],
+        }
+      ));
       return;
     }
     res.writeHead(404);

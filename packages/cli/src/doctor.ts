@@ -29,6 +29,21 @@ interface DiagnosticsReadinessPayload {
   };
 }
 
+interface ModelsPayload {
+  defaultSelection?: {
+    ok?: boolean;
+    chainId?: string;
+    primaryModelId?: string;
+    fallbackModelIds?: string[];
+    error?: string;
+  };
+  models?: Array<{
+    id?: string;
+    configured?: boolean;
+    apiKeyEnv?: string;
+  }>;
+}
+
 function getRuntimePaths() {
   const rootDir = process.env.TURNKEYAI_HOME?.trim() || path.join(homedir(), ".turnkeyai");
   return {
@@ -315,6 +330,82 @@ async function checkDaemonReadiness(
   });
 }
 
+async function checkModelReadiness(
+  paths: ReturnType<typeof getRuntimePaths>,
+  daemonHealthy: boolean,
+  daemonApiAuthenticated: boolean
+): Promise<CheckResult> {
+  if (!daemonHealthy) {
+    return {
+      name: "model readiness",
+      status: "warn",
+      detail: "skipped because daemon /health is unreachable",
+    };
+  }
+  if (!daemonApiAuthenticated) {
+    return {
+      name: "model readiness",
+      status: "warn",
+      detail: "skipped because daemon API auth failed",
+    };
+  }
+  const config = readConfig(paths.configFile);
+  const token = resolveDaemonCliToken(process.env, config?.token, "read");
+  if (!token) {
+    return {
+      name: "model readiness",
+      status: "fail",
+      detail: "no read-capable daemon token available for /models",
+    };
+  }
+  const baseUrl = resolveDaemonBaseUrl(paths);
+  const result = await fetchAuthenticatedJson<ModelsPayload>(`${baseUrl}/models`, token.token);
+  if (!result.ok) {
+    return {
+      name: "model readiness",
+      status: "warn",
+      detail: result.statusCode
+        ? `/models returned HTTP ${result.statusCode}`
+        : `/models unreachable: ${result.error ?? "request failed"}`,
+    };
+  }
+  const selection = result.json.defaultSelection;
+  if (!selection?.ok || !selection.primaryModelId) {
+    return {
+      name: "model readiness",
+      status: "fail",
+      detail: selection?.error ?? "no default model selection",
+    };
+  }
+  const primary = result.json.models?.find((model) => model.id === selection.primaryModelId);
+  if (primary && !primary.configured) {
+    return {
+      name: "model readiness",
+      status: "fail",
+      detail: `primary ${selection.primaryModelId} missing key ${primary.apiKeyEnv ?? "(unknown env)"}`,
+    };
+  }
+  const missingFallbacks = (selection.fallbackModelIds ?? []).filter((id) => {
+    const model = result.json.models?.find((candidate) => candidate.id === id);
+    return model && !model.configured;
+  });
+  const chain = selection.chainId
+    ? `${selection.chainId}: ${selection.primaryModelId}`
+    : selection.primaryModelId;
+  if (missingFallbacks.length > 0) {
+    return {
+      name: "model readiness",
+      status: "warn",
+      detail: `${chain} ready, ${missingFallbacks.length} fallback key(s) missing`,
+    };
+  }
+  return {
+    name: "model readiness",
+    status: "ok",
+    detail: `${chain} ready`,
+  };
+}
+
 function normalizeReadinessStatus(status: unknown): CheckResult["status"] {
   if (status === "ok") return "ok";
   if (status === "warn") return "warn";
@@ -403,6 +494,7 @@ export async function runDoctor(args: string[]): Promise<void> {
   checks.push(healthCheck);
   const apiAuthCheck = await checkDaemonApiAuth(paths, healthCheck.status === "ok");
   checks.push(apiAuthCheck);
+  checks.push(await checkModelReadiness(paths, healthCheck.status === "ok", apiAuthCheck.status === "ok"));
   checks.push(...(await checkDaemonReadiness(paths, healthCheck.status === "ok", apiAuthCheck.status === "ok")));
   checks.push(await checkRelayExtension(paths, transportMode));
   const transport = await checkTransportSpecific();
@@ -440,6 +532,7 @@ function printDoctorHelp(exitCode: number): never {
     "Checks:",
     "  node version and local runtime directory",
     "  daemon config, port, health, and API auth",
+    "  model provider readiness from /models",
     "  daemon readiness from /diagnostics when reachable",
     "  relay extension and transport-specific setup",
     "",
