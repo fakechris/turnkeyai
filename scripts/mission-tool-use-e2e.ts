@@ -365,27 +365,34 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
     const baseUrl = `http://127.0.0.1:${port}`;
     await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: 20_000 });
     const scenarios = options.matrixScenarios ?? (options.matrix ? [...MISSION_E2E_SCENARIOS] : [options.scenario]);
-    const results = [];
-    for (const scenario of scenarios) {
+    const results: MissionScenarioResult[] = [];
+    for (const [index, scenario] of scenarios.entries()) {
+      const scenarioStartedAt = Date.now();
+      console.log(formatMissionScenarioStart({ scenario, index: index + 1, total: scenarios.length }));
       try {
-        results.push(
-          await runMissionScenario({
-            baseUrl,
-            token,
-            fixture,
-            runtimeRoot,
-            scenario,
-            timeoutMs: options.scenarioTimeoutMs,
+        const result = await runMissionScenario({
+          baseUrl,
+          token,
+          fixture,
+          runtimeRoot,
+          scenario,
+          timeoutMs: options.scenarioTimeoutMs,
+        });
+        results.push(result);
+        console.log(
+          formatMissionScenarioPass({
+            result,
+            index: index + 1,
+            total: scenarios.length,
+            durationMs: Date.now() - scenarioStartedAt,
           })
         );
+        printScenarioResult(result);
       } catch (error) {
         throw new Error(
           `mission scenario ${scenario} failed: ${errorMessage(error)}\n\ndaemon output tail:\n${daemon.output()}`
         );
       }
-    }
-    for (const result of results) {
-      printScenarioResult(result);
     }
     if (options.jsonPath) {
       const completedAt = Date.now();
@@ -839,6 +846,30 @@ async function runMissionTaskTrackingScenario(input: {
     `mission task tracking final answer quality failures: ${quality.failures.join("; ")}\n${final.text}`
   );
   return { scenario: "task-tracking", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+export function formatMissionScenarioStart(input: {
+  scenario: MissionE2eScenario;
+  index: number;
+  total: number;
+}): string {
+  return `mission scenario starting: ${input.scenario} (${input.index}/${input.total})`;
+}
+
+export function formatMissionScenarioPass(input: {
+  result: MissionScenarioResult;
+  index: number;
+  total: number;
+  durationMs: number;
+}): string {
+  return [
+    `mission scenario passed: ${input.result.scenario} (${input.index}/${input.total}, ${input.durationMs}ms)`,
+    `mission-id=${input.result.mission.id}`,
+    `quality=${input.result.metrics.qualityGate.status}`,
+    `tools=${input.result.metrics.tool.requested}/${input.result.metrics.tool.results}`,
+    `sessions=${input.result.metrics.sessions.spawned}/${input.result.metrics.sessions.continued}`,
+    `liveness=${input.result.metrics.liveness.active}/${input.result.metrics.liveness.waiting}/${input.result.metrics.liveness.stale}`,
+  ].join(" ");
 }
 
 function printScenarioResult(result: MissionScenarioResult): void {

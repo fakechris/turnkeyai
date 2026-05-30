@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 
 import {
   buildMissionE2eJsonReport,
+  formatMissionScenarioPass,
+  formatMissionScenarioStart,
   summarizeMissionScenarioResult,
   type MissionScenarioResult,
 } from "./mission-tool-use-e2e";
@@ -79,6 +81,16 @@ describe("mission tool-use e2e report", () => {
     });
 
     assert.equal(report.status, "failed");
+  });
+
+  it("formats per-scenario progress lines for long matrix runs", () => {
+    const result = fakeResult();
+
+    assert.equal(formatMissionScenarioStart({ scenario: "realistic-brief", index: 3, total: 12 }), "mission scenario starting: realistic-brief (3/12)");
+    assert.equal(
+      formatMissionScenarioPass({ result, index: 3, total: 12, durationMs: 1234 }),
+      "mission scenario passed: realistic-brief (3/12, 1234ms) mission-id=msn.report.1 quality=passed tools=2/2 sessions=2/1 liveness=0/0/0"
+    );
   });
 });
 
