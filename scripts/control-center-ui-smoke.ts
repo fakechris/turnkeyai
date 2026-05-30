@@ -159,6 +159,14 @@ try {
       "operator runtime should surface longest active mission duration"
     );
     assert(
+      await operatorRuntimePage.locator(".card", { hasText: "profile fallback 1" }).isVisible(),
+      "operator runtime should surface aggregate browser profile fallback count"
+    );
+    assert(
+      await operatorRuntimePage.locator(".runtime-health-row", { hasText: "1 profile fallback" }).isVisible(),
+      "operator runtime should show mission-level browser profile fallback attention"
+    );
+    assert(
       await operatorRuntimePage.locator(".runtime-health-row", { hasText: "running 2m 5s" }).isVisible(),
       "operator runtime should show per-attention mission wall-clock duration"
     );
@@ -1438,6 +1446,9 @@ function diagnosticsFixture() {
         spawned: 2,
         continued: 1,
       },
+      browser: {
+        profileFallbacks: 1,
+      },
       liveness: {
         active: 1,
         waiting: 1,
@@ -1454,6 +1465,7 @@ function diagnosticsFixture() {
           blockers: 0,
           toolFailures: 0,
           toolTimeouts: 0,
+          browserProfileFallbacks: 1,
           recoveryEvents: 0,
           staleRuntimeSubjects: 0,
           wallClockMs: 125_000,

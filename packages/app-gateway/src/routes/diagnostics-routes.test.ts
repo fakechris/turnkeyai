@@ -199,6 +199,9 @@ describe("diagnostics-routes", () => {
               spawned: 1,
               continued: 0,
             },
+            browser: {
+              profileFallbacks: 0,
+            },
             liveness: {
               active: 1,
               waiting: 1,
@@ -215,6 +218,7 @@ describe("diagnostics-routes", () => {
                 blockers: 0,
                 toolFailures: 0,
                 toolTimeouts: 0,
+                browserProfileFallbacks: 0,
                 recoveryEvents: 0,
                 staleRuntimeSubjects: 0,
                 wallClockMs: 12_000,

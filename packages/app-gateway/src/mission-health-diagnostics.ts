@@ -61,6 +61,9 @@ export interface DiagnosticsMissionHealthSnapshot {
     spawned: number;
     continued: number;
   };
+  browser: {
+    profileFallbacks: number;
+  };
   liveness: {
     active: number;
     waiting: number;
@@ -76,6 +79,7 @@ export interface DiagnosticsMissionHealthSnapshot {
     blockers: number;
     toolFailures: number;
     toolTimeouts: number;
+    browserProfileFallbacks: number;
     recoveryEvents: number;
     staleRuntimeSubjects: number;
     wallClockMs: number;
@@ -128,6 +132,7 @@ export async function buildDiagnosticsMissionHealthSnapshot(
   const qualityGate = { running: 0, passed: 0, needsAttention: 0, blocked: 0 };
   const tool = { requested: 0, executed: 0, failed: 0, cancelled: 0, timeouts: 0 };
   const sessions = { spawned: 0, continued: 0 };
+  const browser = { profileFallbacks: 0 };
   const liveness = { active: 0, waiting: 0, stale: 0 };
   let recoveryEvents = 0;
 
@@ -142,6 +147,7 @@ export async function buildDiagnosticsMissionHealthSnapshot(
     tool.timeouts += snapshot.tool.timeouts;
     sessions.spawned += snapshot.sessions.spawned;
     sessions.continued += snapshot.sessions.continued;
+    browser.profileFallbacks += snapshot.browser.profileFallbacks;
     liveness.active += snapshot.liveness.active;
     liveness.waiting += snapshot.liveness.waiting;
     liveness.stale += snapshot.liveness.stale;
@@ -158,6 +164,7 @@ export async function buildDiagnosticsMissionHealthSnapshot(
         blockers: mission.blockers,
         toolFailures: snapshot.tool.failed,
         toolTimeouts: snapshot.tool.timeouts,
+        browserProfileFallbacks: snapshot.browser.profileFallbacks,
         recoveryEvents: snapshot.recovery.events,
         staleRuntimeSubjects: snapshot.liveness.stale,
         wallClockMs: snapshot.wallClockMs,
@@ -205,6 +212,7 @@ export async function buildDiagnosticsMissionHealthSnapshot(
     qualityGate,
     tool,
     sessions,
+    browser,
     liveness,
     recoveryEvents,
     attentionMissions: attentionMissions.slice(0, 6),
@@ -261,6 +269,7 @@ function shouldSurfaceMissionAttention(mission: Mission, snapshot: MissionObserv
   if (mission.status === "blocked" || mission.blockers > 0) return true;
   if (snapshot.qualityGate.status === "blocked" || snapshot.qualityGate.status === "needs_attention") return true;
   if (snapshot.liveness.stale > 0) return true;
+  if (snapshot.browser.profileFallbacks > 0) return true;
   if (snapshot.tool.failed > 0 || snapshot.tool.timeouts > 0 || snapshot.recovery.events > 0) return true;
   return false;
 }
@@ -270,6 +279,7 @@ function attentionRank(mission: DiagnosticsMissionHealthSnapshot["attentionMissi
     mission.staleRuntimeSubjects * 100 +
     mission.toolTimeouts * 50 +
     mission.toolFailures * 40 +
+    mission.browserProfileFallbacks * 35 +
     mission.recoveryEvents * 30 +
     mission.blockers * 25 +
     mission.pendingApprovals * 20 +
