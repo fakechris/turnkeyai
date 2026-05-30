@@ -924,3 +924,53 @@ Regression Risk:
   as a successful complex-task delivery.
 - The realistic-brief real LLM pass protects against over-rejecting normal
   evidence-backed answers.
+
+## 2026-05-30 22:36 CST - Mission-Level TUI Entry
+
+Direction: converging
+
+Execution Kernel:
+- No mission, role, tool-use, worker, browser, approval, or completion
+  semantics changed.
+- The change is an entry-surface improvement: terminal users can now create,
+  inspect, select, and follow up on missions without dropping to raw
+  thread/runtime commands.
+
+Result Quality:
+- No result synthesis logic changed, so this checkpoint does not claim better
+  answer quality.
+- The TUI now surfaces mission quality gate status, non-passing checks, evidence
+  count, latest final answer, and recent timeline events, making weak or
+  fallback answers easier to catch from the terminal path.
+
+Workbench UX:
+- Added mission-level TUI commands: `missions`, `mission`, `mission-use`,
+  `mission-new`, and `mission-send`.
+- The TUI prompt now tracks the current mission when one is selected or created.
+- The local install runbook now documents the terminal mission workflow as a
+  friendly fallback to the browser workbench, not as the primary product entry.
+
+Browser Reliability:
+- Browser transport behavior did not change.
+- Browser-backed missions benefit only indirectly because the TUI can inspect
+  the same mission timeline and health metrics that browser tasks already
+  populate.
+
+Acceptance Evidence:
+- `npx tsx --test packages/tui/src/mission-tui.test.ts`: 5 passed.
+- `npm run tui -- --help`: passed.
+- `npm run typecheck`: passed.
+- `npm test -- --runInBand`: 1215 passed.
+- `npm run build`: passed.
+- `git diff --check`: passed.
+- Real LLM E2E was not rerun for this checkpoint because execution semantics did
+  not change; the previous realistic-brief acceptance remains the latest
+  runtime/result-quality proof.
+
+Regression Risk:
+- Main risk is CLI/TUI formatting or route wiring, not runtime correctness.
+- Mission creation and follow-up still depend on the daemon orchestrator being
+  configured; missing orchestrator returns the existing route-level error.
+- If terminal mission usage exposes poor follow-up quality later, that should be
+  counted as a runtime/result-quality issue and must go through real mission
+  E2E rather than another UI-only pass.

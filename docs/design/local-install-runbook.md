@@ -62,6 +62,31 @@ that URL directly in a browser for SSH/headless environments.
 `turnkeyai` is not on `PATH`, either run `npm run install:local-cli`, keep using
 the source-checkout commands, or launch through `npx @turnkeyai/cli app`.
 
+### Terminal Mission Workflow
+
+The browser UI remains the recommended workbench. When a terminal is the right
+entry point, use the TUI at the mission level instead of low-level thread
+commands:
+
+```bash
+npm run tui
+```
+
+Useful mission commands:
+
+```text
+missions [limit]
+mission <missionId>
+mission-new <title> :: <prompt>
+mission-use <missionId>
+mission-send [missionId] <message>
+```
+
+`mission-new` creates a linked mission/runtime thread and starts execution.
+`mission` shows mission health, quality gate status, the latest final answer,
+and the recent timeline. `mission-send` sends a follow-up to the current mission
+after `mission-use`, or to an explicit mission id.
+
 After one successful CLI launch, install the double-click launcher:
 
 ```bash
