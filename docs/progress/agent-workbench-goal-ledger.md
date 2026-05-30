@@ -663,7 +663,7 @@ Regression Risk:
 
 ## 2026-05-30 20:49 CST - Daemon Service Restart Entry
 
-Direction: unknown
+Direction: converging
 
 Execution Kernel:
 - No mission, role, tool-use, sub-agent, browser command, or result-synthesis
@@ -704,16 +704,18 @@ Acceptance Evidence:
 - Review caught a real restart race: `kickstart -k` can return before the old
   daemon stops, so a naive health check may hit the old process. The command now
   waits for the pre-restart PID to change or exit before accepting health.
-- After merge, run real local lifecycle acceptance before calling the local
-  entry path fully converged:
-  `turnkeyai daemon service restart`,
-  `turnkeyai daemon service status`,
-  `turnkeyai doctor`.
+- Real local lifecycle acceptance passed after merge:
+  `turnkeyai daemon service restart` returned
+  `daemon service restarted: com.turnkeyai.daemon` at
+  `http://127.0.0.1:4100`;
+  `turnkeyai daemon service status` reported launchd running with pid `63691`;
+  `turnkeyai doctor` reported no failures and one optional relay-extension
+  warning.
 
 Regression Risk:
 - Risk is limited to the macOS service namespace. A bad restart implementation
   could leave the local daemon stopped or healthy on a different config than
   the UI expects.
 - Focused help/artifact tests cover the exposed command surface and the
-  pre-restart PID guard. Real local service acceptance is required before this
-  checkpoint can be considered converging.
+  pre-restart PID guard. Real local service acceptance covered the installed
+  LaunchAgent path on this workstation.
