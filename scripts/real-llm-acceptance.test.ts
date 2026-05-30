@@ -1,7 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildRealAcceptancePlan, parseRealAcceptanceArgs } from "./real-llm-acceptance";
+import {
+  buildRealAcceptanceHelpResult,
+  buildRealAcceptanceHelpText,
+  buildRealAcceptancePlan,
+  parseRealAcceptanceArgs,
+} from "./real-llm-acceptance";
+
+test("real acceptance help documents full and focused gates", () => {
+  const help = buildRealAcceptanceHelpText();
+
+  assert.match(help, /TurnkeyAI real LLM acceptance gate/);
+  assert.match(help, /--skip-tooluse\s+Run only the mission E2E matrix/);
+  assert.match(help, /--skip-browser-tooluse\s+Keep tool-use matrix/);
+  assert.match(help, /Focused mission-quality gate:/);
+  assert.match(help, /--mission-scenarios comparison,realistic-brief/);
+  assert.match(help, /Full release gate:/);
+  assert.match(help, /--cdp-timeout-ms 45000/);
+});
+
+test("real acceptance CLI treats help as an early exit", () => {
+  assert.deepEqual(buildRealAcceptanceHelpResult(["--help"]), {
+    shouldExit: true,
+    text: buildRealAcceptanceHelpText(),
+  });
+  assert.equal(buildRealAcceptanceHelpResult(["--skip-tooluse"]).shouldExit, false);
+});
 
 test("real acceptance plan keeps full release gate by default", () => {
   const options = parseRealAcceptanceArgs([

@@ -44,6 +44,11 @@ export interface RealAcceptancePlan {
   steps: RealAcceptanceCommandStep[];
 }
 
+export interface RealAcceptanceHelpResult {
+  shouldExit: boolean;
+  text: string;
+}
+
 interface RuntimeConfig {
   dataDir?: string | null;
 }
@@ -53,6 +58,11 @@ const DEFAULT_TOOLUSE_NON_BROWSER_SCENARIOS = joinRealAcceptanceScenarios(DEFAUL
 const DEFAULT_MISSION_SCENARIOS = joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS);
 
 export async function runRealAcceptanceCli(args: string[]): Promise<void> {
+  const help = buildRealAcceptanceHelpResult(args);
+  if (help.shouldExit) {
+    console.log(help.text);
+    return;
+  }
   const options = parseRealAcceptanceArgs(args);
   const plan = buildRealAcceptancePlan(options, { startedAt: Date.now() });
   console.log("real acceptance starting");
@@ -155,6 +165,47 @@ export function parseRealAcceptanceArgs(args: string[]): RealAcceptanceOptions {
     throw new Error("--tooluse-scenarios cannot be combined with --skip-tooluse");
   }
   return options;
+}
+
+export function buildRealAcceptanceHelpResult(args: string[]): RealAcceptanceHelpResult {
+  const shouldExit = args.some((arg) => arg === "--help" || arg === "-h" || arg === "help");
+  return {
+    shouldExit,
+    text: buildRealAcceptanceHelpText(),
+  };
+}
+
+export function buildRealAcceptanceHelpText(): string {
+  return [
+    "TurnkeyAI real LLM acceptance gate",
+    "",
+    "Usage:",
+    "  npm run acceptance:real -- [options]",
+    "",
+    "Options:",
+    "  --model-catalog <path>         Model catalog path. Also reads the underlying mission/tool-use defaults",
+    "  --data-dir <path>              Runtime data dir for validation-ops and generated artifacts",
+    "  --mission-json <path>          Write the mission E2E report to a specific path",
+    "  --no-mission-json             Do not write the mission E2E report artifact",
+    "  --no-record-validation-ops    Do not record a validation-ops run",
+    "  --scenario-timeout-ms <ms>     Per-scenario timeout. Default: 240000",
+    "  --cdp-timeout-ms <ms>          Browser CDP timeout for browser tool-use scenarios. Default: 45000",
+    "  --tooluse-scenarios <a,b,...>  Tool-use real-matrix scenarios",
+    "  --mission-scenarios <a,b,...>  Mission E2E scenarios",
+    "  --skip-tooluse                Run only the mission E2E matrix",
+    "  --skip-browser-tooluse        Keep tool-use matrix but omit browser-backed tool-use scenarios",
+    "  --help, -h                    Show this help and exit",
+    "",
+    "Default release gate:",
+    `  tool-use scenarios: ${DEFAULT_TOOLUSE_BROWSER_SCENARIOS}`,
+    `  mission scenarios: ${DEFAULT_MISSION_SCENARIOS}`,
+    "",
+    "Focused mission-quality gate:",
+    "  npm run acceptance:real -- --skip-tooluse --mission-scenarios comparison,realistic-brief --model-catalog models.local.json --scenario-timeout-ms 300000",
+    "",
+    "Full release gate:",
+    "  npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 300000 --cdp-timeout-ms 45000",
+  ].join("\n");
 }
 
 export function buildRealAcceptancePlan(
