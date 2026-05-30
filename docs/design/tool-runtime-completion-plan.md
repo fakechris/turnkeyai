@@ -101,14 +101,21 @@ Status: implemented. Latest local acceptance on 2026-05-30:
 - `npm run tooluse:e2e -- --real-llm --model-catalog models.local.json`
 - `npm run tooluse:e2e -- --real-llm --with-browser --model-catalog models.local.json --cdp-timeout-ms 45000`
 - `npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 240000 --cdp-timeout-ms 45000`
+- `npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 300000 --cdp-timeout-ms 45000`
 - `npm run mission:e2e -- --scenario realistic-brief --model-catalog models.local.json --scenario-timeout-ms 240000`
 - `npm run mission:e2e -- --scenario product-workbench-brief --model-catalog models.local.json --scenario-timeout-ms 300000`
 
 The latest full `acceptance:real` gate recorded
-`validation-ops:real-llm-acceptance:2026-05-30T08-28-34-523Z:tg62k7` with
-status `passed`. In that gate, `product-workbench-brief` completed mission
-`msn.mps3hqas.11` with status `done`, 3/3 tool executions, 3 evidence signals,
-and a passing mission quality gate.
+`validation-ops:real-llm-acceptance:2026-05-30T09-13-34-577Z:03tlrt` with
+status `passed`. That run covered the full tool-use matrix (`basic`,
+`approval`, `followup`, `timeout`, `complex`), direct-CDP smoke, and the full
+mission matrix (`basic`, `comparison`, `followup`, `cancel`, `approval`,
+`browser-dynamic`, `browser-dashboard`, `timeout-recovery`, `memory-recall`,
+`task-tracking`, `product-workbench-brief`, `realistic-brief`). In that gate,
+`product-workbench-brief` completed mission `msn.mps531iq.11` with status
+`done`, 3/3 tool executions, 3 evidence signals, and a passing mission quality
+gate; `realistic-brief` completed mission `msn.mps53r3z.12` with status `done`,
+3/3 tool executions, 3 evidence signals, and a passing mission quality gate.
 
 ### 4. Browser Profile And Session Stability
 
