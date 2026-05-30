@@ -688,20 +688,17 @@ function delay(ms: number): Promise<void> {
 }
 
 async function bootstrapLaunchAgent(domain: string, launchAgentFile: string): Promise<void> {
-  let lastError: unknown;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
       await runLaunchctl(["bootstrap", domain, launchAgentFile]);
       return;
     } catch (error) {
-      lastError = error;
       if (!isTransientLaunchctlBootstrapError(error) || attempt === 3) {
         throw error;
       }
       await delay(250 * (attempt + 1));
     }
   }
-  throw lastError;
 }
 
 function launchctlServiceName(label: string): string {
