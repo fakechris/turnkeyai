@@ -562,6 +562,7 @@ function buildRealLlmScenarioPacket(input: {
           "2. Set timeout_seconds to 0.001 so the sub-agent times out quickly.",
           "3. After the timeout result, do not call more tools or spawn fallback sessions.",
           "4. Produce an evidence-only final answer from the timeout result.",
+          `5. The marker ${input.targetMarker} means the timeout recovery behavior was exercised; it does not mean the slow verification succeeded.`,
         ].join("\n")
       : input.approvalScenario
       ? [
@@ -594,7 +595,7 @@ function buildRealLlmScenarioPacket(input: {
     ? [
         "Run the bounded timeout recovery E2E.",
         "Ask the explore sub-agent to perform a deliberately slow verification with timeout_seconds=0.001.",
-        `Final answer must include ${input.targetMarker}, explain that verification timed out, and mark missing evidence as not verified.`,
+        `Final answer must include ${input.targetMarker} exactly once inside the timeout-result bullet, explain that verification timed out, and mark missing evidence as not verified.`,
       ].join("\n")
     : input.approvalScenario
     ? [
@@ -622,6 +623,7 @@ function buildRealLlmScenarioPacket(input: {
     ? [
         `Final answer must include ${input.targetMarker}.`,
         "Use Markdown with a heading `Evidence` and at least three bullets: timeout result, attempted verification, residual risk.",
+        `The first bullet must start with "- timeout result: ${input.targetMarker};" and must say the sub-agent timed out.`,
         "State `not verified` for anything the timed-out worker did not prove.",
         "Do not claim the underlying slow verification succeeded.",
       ].join("\n")

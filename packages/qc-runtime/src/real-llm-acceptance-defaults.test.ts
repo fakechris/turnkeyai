@@ -33,10 +33,11 @@ test("real LLM acceptance defaults include the product-level mission matrix", ()
     "timeout-recovery",
     "memory-recall",
     "task-tracking",
+    "product-workbench-brief",
     "realistic-brief",
   ]);
   assert.equal(
     joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS),
-    "basic,comparison,followup,cancel,approval,browser-dynamic,browser-dashboard,timeout-recovery,memory-recall,task-tracking,realistic-brief"
+    "basic,comparison,followup,cancel,approval,browser-dynamic,browser-dashboard,timeout-recovery,memory-recall,task-tracking,product-workbench-brief,realistic-brief"
   );
 });

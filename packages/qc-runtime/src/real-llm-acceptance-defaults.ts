@@ -24,6 +24,7 @@ export const DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS = [
   "timeout-recovery",
   "memory-recall",
   "task-tracking",
+  "product-workbench-brief",
   "realistic-brief",
 ] as const;
 
