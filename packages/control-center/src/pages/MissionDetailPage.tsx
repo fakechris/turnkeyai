@@ -51,6 +51,7 @@ import { StatusTag } from "../components/atoms";
 import { useAppState } from "../state/AppState";
 import { canUseOperatorActions, OPERATOR_ACTION_SCOPE_HINT } from "../state/scopeAccess";
 import { formatDurationMs, groupTimelineForReplay, type TimelineReplayItem, type ToolProcessItem } from "../state/toolReplay";
+import { buildMissionProgressNow, type MissionProgressNow } from "../state/missionProgress";
 
 type TraceFilter = "all" | "agent" | "tools" | "approvals" | "recovery" | "evidence";
 
@@ -266,6 +267,17 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
     0
   );
   const finalAnswer = latestFinalAnswer(timeline.value);
+  const progressNow = useMemo(
+    () =>
+      buildMissionProgressNow({
+        mission,
+        metrics: metrics.value,
+        timeline: timeline.value,
+        roleRuns: roleRuns.value,
+        workerSessions: workerSessions.value,
+      }),
+    [metrics.value, mission, roleRuns.value, timeline.value, workerSessions.value]
+  );
   const { refetch: refetchTimeline } = timeline;
   const { refetch: refetchMetrics } = metrics;
   const { refetch: refetchRecoveryRuns } = recoveryRuns;
@@ -437,6 +449,7 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
           </div>
         )}
         <div className="mission-detail-scroll">
+          <MissionProgressNowCard progress={progressNow} />
           <ActiveRoleRunsCard
             runs={roleRuns.value}
             isLive={roleRuns.isLive}
@@ -639,6 +652,47 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function MissionProgressNowCard({ progress }: { progress: MissionProgressNow }) {
+  return (
+    <section className="card mission-progress-card" data-tone={progress.tone}>
+      <div className="mission-progress-main">
+        <div>
+          <div className="label" style={{ fontSize: 11 }}>Mission now</div>
+          <h3>{progress.title}</h3>
+        </div>
+        <div className="mission-progress-meta">
+          {progress.meta.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+      </div>
+      <div className="mission-progress-detail">{progress.detail}</div>
+      <div className="mission-progress-grid">
+        <MissionProgressLine
+          label="Latest event"
+          value={progress.latestEvent ? progress.latestEvent.label : "Waiting for replay"}
+          detail={progress.latestEvent?.text}
+        />
+        <MissionProgressLine
+          label="Latest tool"
+          value={progress.latestTool ? `${progress.latestTool.name} · ${progress.latestTool.phase}` : "No tool step yet"}
+          detail={progress.latestTool?.text}
+        />
+      </div>
+    </section>
+  );
+}
+
+function MissionProgressLine({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return (
+    <div className="mission-progress-line">
+      <span>{label}</span>
+      <b>{value}</b>
+      {detail && <p>{detail}</p>}
     </div>
   );
 }

@@ -1506,3 +1506,50 @@ Regression Risk:
 - This improves release/operator feedback but does not replace true live UI
   streaming. The next observability step should surface comparable mission
   progress in the workbench rather than only in scripts.
+
+## 2026-05-31 01:16 CST - Mission Now Workbench Summary
+
+Direction: converging
+
+Execution Kernel:
+- No mission, role, tool-use, worker, browser, approval, or completion
+  semantics changed.
+- Mission Detail now derives a compact `Mission now` summary from existing
+  mission status, metrics, timeline events, role runs, and worker sessions.
+
+Result Quality:
+- Result synthesis did not change.
+- The new summary makes weak or attention-needed terminal output easier to spot
+  because it pairs the quality state with the latest replay event and latest
+  tool step instead of hiding those signals behind the collapsed trace.
+
+Workbench UX:
+- Mission Detail now starts with an always-visible state card showing current
+  or latest mission state, role/session activity, tool result counts, liveness,
+  latest replay event, and latest tool step.
+- The card keeps the detailed trace collapsed by default while still answering
+  whether the mission is running, waiting, stale, blocked, done, or done with
+  attention.
+
+Browser Reliability:
+- Browser/runtime behavior did not change.
+- Browser-backed missions benefit from clearer diagnosis because the latest
+  browser/session tool step appears above runtime detail cards even when the
+  trace remains collapsed.
+
+Acceptance Evidence:
+- `npx tsx --test packages/control-center/src/state/missionProgress.test.ts`:
+  passed, 3 tests.
+- `npm run build --workspace @turnkeyai/control-center`: passed.
+- `npm run control-center:smoke -- --allow-missing-browser`: passed.
+- Smoke screenshot sizes: desktop `123354` bytes, mobile `54166` bytes.
+- Smoke asserts `Mission now`, `Done, needs attention`, latest replay event
+  `thought · role-lead`, latest tool step `sessions_spawn · result`, and
+  vertical order above runtime detail cards.
+
+Regression Risk:
+- This is a frontend summary over existing data. If backend metrics or timeline
+  polling lag, the card can briefly show the latest known state rather than the
+  instantaneous state; that matches the current 2s polling model.
+- The card is not yet a streaming event feed. A future websocket or live event
+  channel would be needed for sub-second updates.
