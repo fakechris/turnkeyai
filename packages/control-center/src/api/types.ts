@@ -108,6 +108,7 @@ export interface DiagnosticsSnapshot {
       action?: string;
     }>;
   };
+  missionHealth?: DiagnosticsMissionHealthSnapshot;
 }
 
 export interface DiagnosticsLogs {
@@ -118,6 +119,59 @@ export interface DiagnosticsLogs {
   truncatedFromHead?: boolean;
   redacted?: boolean;
   note?: string;
+}
+
+export interface DiagnosticsMissionHealthSnapshot {
+  total: number;
+  inspected: number;
+  byStatus: Record<"draft" | "planning" | "working" | "needs_approval" | "blocked" | "done" | "archived", number>;
+  active: number;
+  terminal: number;
+  needsApproval: number;
+  withBlockers: number;
+  snapshotErrorCount: number;
+  latestMission?: {
+    id: string;
+    title: string;
+    status: "draft" | "planning" | "working" | "needs_approval" | "blocked" | "done" | "archived";
+    createdAtMs: number;
+  };
+  qualityGate: {
+    running: number;
+    passed: number;
+    needsAttention: number;
+    blocked: number;
+  };
+  tool: {
+    requested: number;
+    executed: number;
+    failed: number;
+    cancelled: number;
+    timeouts: number;
+  };
+  sessions: {
+    spawned: number;
+    continued: number;
+  };
+  liveness: {
+    active: number;
+    waiting: number;
+    stale: number;
+  };
+  recoveryEvents: number;
+  attentionMissions: Array<{
+    id: string;
+    title: string;
+    status: "draft" | "planning" | "working" | "needs_approval" | "blocked" | "done" | "archived";
+    qualityGateStatus: "running" | "passed" | "needs_attention" | "blocked";
+    pendingApprovals: number;
+    blockers: number;
+    toolFailures: number;
+    toolTimeouts: number;
+    recoveryEvents: number;
+    staleRuntimeSubjects: number;
+    lastProgressAtMs?: number;
+  }>;
 }
 
 // --- /onboarding/state (packages/app-gateway/src/routes/onboarding-routes.ts) ---

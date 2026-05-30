@@ -160,6 +160,7 @@ export function RuntimePage() {
       <div className="runtime-grid">
         <div>
           <MetricTiles live={live} />
+          <MissionHealthCard diagnostics={live.diagnostics} reachable={live.reachable} onOpenMission={openMission} />
           <SetupHealthCard diagnostics={live.diagnostics} reachable={live.reachable} />
           <BrowserSessionsCard sessions={live.workerSessions} reachable={live.reachable} />
           <DaemonLogCard logs={live.logs} reachable={live.reachable} />
@@ -184,8 +185,9 @@ function MetricTiles({ live }: { live: Live }) {
       ? buildLiveTiles(live)
       : ([
           { l: "Daemon", v: "—", d: "connecting…" },
+          { l: "Mission health", v: "—", d: "" },
           { l: "Browser sessions", v: "—", d: "" },
-          { l: "Relay peers", v: "—", d: "" },
+          { l: "Runtime attention", v: "—", d: "" },
           { l: "Auth mode", v: "—", d: "" },
           { l: "Expert lane", v: "—", d: "" },
           { l: "Action queue", v: "—", d: "" },
@@ -211,8 +213,26 @@ function buildLiveTiles(live: Live): Array<{ l: string; v: string; d: string }> 
   const relayPeer = d?.counters.relayPeerCount ?? s?.relay.peerCount ?? 0;
   const relayTargets = d?.counters.relayTargetCount ?? s?.relay.targetCount ?? 0;
   const runtime = live.runtimeSummary;
+  const missionHealth = d?.missionHealth;
+  const missionAttention =
+    missionHealth
+      ? Math.max(
+          missionHealth.attentionMissions.length,
+          missionHealth.liveness.stale,
+          missionHealth.qualityGate.blocked,
+          missionHealth.tool.failed,
+          missionHealth.tool.timeouts
+        )
+      : 0;
   return [
     { l: "Daemon", v: `v${d?.daemon.version ?? "?"}`, d: `:${d?.daemon.port ?? "?"}` },
+    {
+      l: "Mission health",
+      v: missionHealth ? `${missionHealth.active} active` : "—",
+      d: missionHealth
+        ? `${missionAttention} need attention, ${missionHealth.needsApproval} approval`
+        : "diagnostics pending",
+    },
     { l: "Browser sessions", v: String(sessionCount), d: `transport: ${transport}` },
     { l: "Runtime attention", v: String(runtime?.attentionCount ?? 0), d: `${runtime?.activeCount ?? 0} active` },
     {
@@ -235,6 +255,93 @@ function buildLiveTiles(live: Live): Array<{ l: string; v: string; d: string }> 
           : "no relay",
     },
   ];
+}
+
+function MissionHealthCard({
+  diagnostics,
+  reachable,
+  onOpenMission,
+}: {
+  diagnostics: DiagnosticsSnapshot | null;
+  reachable: boolean;
+  onOpenMission: (missionId: string) => void;
+}) {
+  const health = diagnostics?.missionHealth;
+  const attention = health?.attentionMissions ?? [];
+  const hasAttention =
+    health != null &&
+    (attention.length > 0 ||
+      health.liveness.stale > 0 ||
+      health.qualityGate.blocked > 0 ||
+      health.tool.failed > 0 ||
+      health.tool.timeouts > 0 ||
+      health.needsApproval > 0);
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="card-hd">
+        <Icon name="runtime" size={13} />
+        <h3>Mission health</h3>
+        <span className={`tag ${hasAttention ? "warning" : health ? "success" : "info"}`} style={{ marginLeft: "auto" }}>
+          {health ? `${health.total} missions` : reachable ? "checking" : "offline"}
+        </span>
+      </div>
+      {health ? (
+        <>
+          <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border-soft)" }}>
+            <div className="runtime-health-label">
+              active {health.active} · approval {health.needsApproval} · blocked {health.withBlockers}
+            </div>
+            <div className="runtime-health-detail">
+              quality passed {health.qualityGate.passed} · attention {health.qualityGate.needsAttention + health.qualityGate.blocked}
+              {" · "}tool failed {health.tool.failed} · timeouts {health.tool.timeouts}
+            </div>
+            <div className="runtime-health-action">
+              inspected {health.inspected} · sessions spawned {health.sessions.spawned} · stale runtime {health.liveness.stale}
+            </div>
+          </div>
+          {attention.length > 0 ? (
+            <div style={{ display: "grid" }}>
+              {attention.map((mission) => (
+                <button
+                  key={mission.id}
+                  type="button"
+                  className="runtime-health-row"
+                  style={{ textAlign: "left", background: "transparent", border: 0, cursor: "pointer" }}
+                  onClick={() => onOpenMission(mission.id)}
+                >
+                  <span className={`status-dot ${missionStatusDot(mission.status, mission.qualityGateStatus)}`} />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="runtime-health-label">{mission.title}</div>
+                    <div className="runtime-health-detail">
+                      {mission.status} · {mission.qualityGateStatus}
+                      {mission.pendingApprovals > 0 ? ` · ${mission.pendingApprovals} approval` : ""}
+                      {mission.blockers > 0 ? ` · ${mission.blockers} blocker` : ""}
+                    </div>
+                    <div className="runtime-health-action">
+                      stale {mission.staleRuntimeSubjects} · failed {mission.toolFailures} · timeouts {mission.toolTimeouts}
+                      {mission.lastProgressAtMs ? ` · last progress ${formatRelativeAge(mission.lastProgressAtMs)}` : ""}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div style={{ padding: 14 }}>
+              <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+                No mission needs operator attention right now.
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div style={{ padding: 14 }}>
+          <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+            {reachable ? "Waiting for mission health…" : "Connect to the daemon to see mission health."}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function findReplayMissionId(summary: RuntimeSummaryReport | null, missions: Mission[]): string | null {
@@ -322,6 +429,15 @@ function readinessDotClass(status: "ok" | "warn" | "error"): string {
   if (status === "error") return "blocked";
   if (status === "warn") return "needs_approval";
   return "working";
+}
+
+function missionStatusDot(status: string, qualityStatus: string): string {
+  if (status === "blocked" || qualityStatus === "blocked") return "blocked";
+  if (status === "needs_approval") return "needs_approval";
+  if (status === "done") return qualityStatus === "needs_attention" ? "needs_approval" : "done";
+  if (status === "working") return "working";
+  if (status === "archived") return "archived";
+  return "planning";
 }
 
 function formatUptimeShort(ms: number): string {

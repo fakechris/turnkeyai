@@ -1,6 +1,7 @@
 import type http from "node:http";
 import { open, stat } from "node:fs/promises";
 
+import type { DiagnosticsMissionHealthSnapshot } from "../mission-health-diagnostics";
 import { sendJson } from "../http-helpers";
 
 // Diagnostics endpoints feed the Control Center's "Diagnostics" page and
@@ -54,6 +55,8 @@ export interface DiagnosticsRouteDeps {
   }>;
   /** Recent browser runtime health, derived from session history. */
   browserHealthSnapshot?(): Promise<DiagnosticsBrowserHealthSnapshot>;
+  /** Mission-level quality/liveness aggregate for the operator Runtime view. */
+  missionHealthSnapshot?(): Promise<DiagnosticsMissionHealthSnapshot>;
 }
 
 export type DiagnosticsReadinessStatus = "ok" | "warn" | "error";
@@ -119,7 +122,8 @@ async function handleDiagnosticsSnapshot(
   }
 
   const logFileStat = await stat(deps.logFile).catch(() => null);
-  const readiness = await buildReadinessChecks(deps, logFileStat);
+  const missionHealthResult = await loadMissionHealthSnapshot(deps);
+  const readiness = await buildReadinessChecks(deps, logFileStat, missionHealthResult);
 
   const snapshot = {
     daemon: {
@@ -154,6 +158,7 @@ async function handleDiagnosticsSnapshot(
       status: summarizeReadiness(readiness),
       checks: readiness,
     },
+    ...(missionHealthResult.snapshot ? { missionHealth: missionHealthResult.snapshot } : {}),
   };
 
   if (req.method === "HEAD") {
@@ -168,7 +173,8 @@ async function handleDiagnosticsSnapshot(
 
 async function buildReadinessChecks(
   deps: DiagnosticsRouteDeps,
-  logFileStat: Awaited<ReturnType<typeof stat>> | null
+  logFileStat: Awaited<ReturnType<typeof stat>> | null,
+  missionHealthResult: MissionHealthLoadResult
 ): Promise<DiagnosticsReadinessCheck[]> {
   const checks: DiagnosticsReadinessCheck[] = [
     {
@@ -181,9 +187,26 @@ async function buildReadinessChecks(
     await buildModelCatalogReadiness(deps.modelCatalogPath),
     buildBrowserTransportReadiness(deps),
     ...(await buildBrowserRuntimeReadiness(deps)),
+    ...buildMissionRuntimeReadiness(deps, missionHealthResult),
     await buildLogFileReadiness(deps.logFile, logFileStat),
   ];
   return checks;
+}
+
+interface MissionHealthLoadResult {
+  snapshot: DiagnosticsMissionHealthSnapshot | null;
+  error: string | null;
+}
+
+async function loadMissionHealthSnapshot(deps: DiagnosticsRouteDeps): Promise<MissionHealthLoadResult> {
+  if (!deps.missionHealthSnapshot) {
+    return { snapshot: null, error: null };
+  }
+  try {
+    return { snapshot: await deps.missionHealthSnapshot(), error: null };
+  } catch (error) {
+    return { snapshot: null, error: errorMessageForDiagnostics(error) };
+  }
 }
 
 function buildAuthReadiness(authMode: DiagnosticsRouteDeps["authMode"]): DiagnosticsReadinessCheck {
@@ -367,6 +390,74 @@ async function buildBrowserRuntimeReadiness(
       label: "Browser runtime",
       status: "ok",
       detail: `Recent browser history is healthy across ${snapshot.inspectedSessionCount} session(s).`,
+    },
+  ];
+}
+
+function buildMissionRuntimeReadiness(
+  deps: DiagnosticsRouteDeps,
+  result: MissionHealthLoadResult
+): DiagnosticsReadinessCheck[] {
+  if (!deps.missionHealthSnapshot) {
+    return [];
+  }
+  if (result.error) {
+    return [
+      {
+        id: "mission_runtime",
+        label: "Mission runtime",
+        status: "warn",
+        detail: `Mission health is not readable: ${result.error}.`,
+        action: "Open Runtime logs before trusting mission progress or replay status.",
+      },
+    ];
+  }
+  const snapshot = result.snapshot;
+  if (!snapshot) {
+    return [];
+  }
+  if (snapshot.snapshotErrorCount > 0) {
+    return [
+      {
+        id: "mission_runtime",
+        label: "Mission runtime",
+        status: "warn",
+        detail: `${snapshot.snapshotErrorCount} mission health snapshot(s) could not be built.`,
+        action: "Open the affected mission timelines and daemon logs before relying on replay summaries.",
+      },
+    ];
+  }
+  if (snapshot.liveness.stale > 0 || snapshot.qualityGate.blocked > 0 || snapshot.tool.failed > 0 || snapshot.tool.timeouts > 0) {
+    return [
+      {
+        id: "mission_runtime",
+        label: "Mission runtime",
+        status: "warn",
+        detail: `${snapshot.attentionMissions.length} mission(s) need attention; ${snapshot.liveness.stale} stale runtime span(s), ${snapshot.tool.timeouts} timeout(s), ${snapshot.tool.failed} failed tool result(s).`,
+        action: "Open Mission replay for the highest-priority attention item.",
+      },
+    ];
+  }
+  if (snapshot.needsApproval > 0) {
+    return [
+      {
+        id: "mission_runtime",
+        label: "Mission runtime",
+        status: "warn",
+        detail: `${snapshot.needsApproval} mission(s) are waiting for operator approval.`,
+        action: "Open Approvals or the mission detail page to apply or deny pending requests.",
+      },
+    ];
+  }
+  return [
+    {
+      id: "mission_runtime",
+      label: "Mission runtime",
+      status: "ok",
+      detail:
+        snapshot.total === 0
+          ? "No missions have been created yet."
+          : `${snapshot.total} mission(s), ${snapshot.active} active, ${snapshot.qualityGate.passed} passed quality gate.`,
     },
   ];
 }

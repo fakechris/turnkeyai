@@ -146,6 +146,109 @@ describe("diagnostics-routes", () => {
       });
     });
 
+    it("includes mission health and readiness when the mission snapshot is available", async () => {
+      const { res, getJson } = createResponse();
+      await handleDiagnosticsRoutes({
+        req: createRequest({ method: "GET", url: "/diagnostics" }),
+        res,
+        url: new URL("http://127.0.0.1/diagnostics"),
+        deps: makeDeps({
+          missionHealthSnapshot: async () => ({
+            total: 2,
+            inspected: 2,
+            byStatus: {
+              draft: 0,
+              planning: 0,
+              working: 1,
+              needs_approval: 1,
+              blocked: 0,
+              done: 0,
+              archived: 0,
+            },
+            active: 2,
+            terminal: 0,
+            needsApproval: 1,
+            withBlockers: 0,
+            snapshotErrorCount: 0,
+            latestMission: {
+              id: "msn.1",
+              title: "Research dashboard",
+              status: "working",
+              createdAtMs: 1_700_000_000_000,
+            },
+            qualityGate: {
+              running: 2,
+              passed: 0,
+              needsAttention: 0,
+              blocked: 0,
+            },
+            tool: {
+              requested: 3,
+              executed: 2,
+              failed: 0,
+              cancelled: 0,
+              timeouts: 0,
+            },
+            sessions: {
+              spawned: 1,
+              continued: 0,
+            },
+            liveness: {
+              active: 1,
+              waiting: 1,
+              stale: 0,
+            },
+            recoveryEvents: 0,
+            attentionMissions: [
+              {
+                id: "msn.2",
+                title: "Needs approval",
+                status: "needs_approval",
+                qualityGateStatus: "running",
+                pendingApprovals: 1,
+                blockers: 0,
+                toolFailures: 0,
+                toolTimeouts: 0,
+                recoveryEvents: 0,
+                staleRuntimeSubjects: 0,
+              },
+            ],
+          }),
+        }),
+      });
+      const body = getJson() as {
+        missionHealth: { active: number; needsApproval: number };
+        readiness: { status: string; checks: Array<{ id: string; status: string; detail: string }> };
+      };
+      assert.equal(body.missionHealth.active, 2);
+      assert.equal(body.missionHealth.needsApproval, 1);
+      const missionRuntime = body.readiness.checks.find((check) => check.id === "mission_runtime");
+      assert.equal(missionRuntime?.status, "warn");
+      assert.match(missionRuntime?.detail ?? "", /waiting for operator approval/);
+    });
+
+    it("keeps diagnostics available when mission health cannot be loaded", async () => {
+      const { res, getJson } = createResponse();
+      await handleDiagnosticsRoutes({
+        req: createRequest({ method: "GET", url: "/diagnostics" }),
+        res,
+        url: new URL("http://127.0.0.1/diagnostics"),
+        deps: makeDeps({
+          missionHealthSnapshot: async () => {
+            throw new Error("mission store unavailable");
+          },
+        }),
+      });
+      const body = getJson() as {
+        missionHealth?: unknown;
+        readiness: { checks: Array<{ id: string; status: string; detail: string }> };
+      };
+      assert.equal(body.missionHealth, undefined);
+      const missionRuntime = body.readiness.checks.find((check) => check.id === "mission_runtime");
+      assert.equal(missionRuntime?.status, "warn");
+      assert.match(missionRuntime?.detail ?? "", /mission store unavailable/);
+    });
+
     it("reports model catalog readiness as warn when no catalog is configured", async () => {
       const { res, getJson } = createResponse();
       await handleDiagnosticsRoutes({
