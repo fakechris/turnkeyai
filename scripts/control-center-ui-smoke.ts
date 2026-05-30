@@ -46,6 +46,7 @@ const postedMissions: unknown[] = [];
 const postedMessages: unknown[] = [];
 const postedContextSources: unknown[] = [];
 const postedRecoveryActions: string[] = [];
+const savedModelCatalogContents: string[] = [];
 let onboardingState = onboardingStateFixture();
 const browserConsoleErrors: string[] = [];
 const browserPageErrors: string[] = [];
@@ -428,17 +429,30 @@ try {
       await page.locator('input[value*="chain lead_reasoning"]').isVisible(),
       "settings should show the live default model chain"
     );
+    const chainList = page.locator(".settings-chain-list");
     assert(
-      await page.locator("text=lead_reasoning").isVisible(),
+      await chainList.locator("text=lead_reasoning").isVisible(),
       "settings should show live model chain routing"
     );
     assert(
-      await page.locator("text=minimax-m2 -> gpt-5").isVisible(),
+      await chainList.locator("text=minimax-m2 -> gpt-5").isVisible(),
       "settings should show model chain primary and fallback order"
     );
     assert(
       await page.locator('input[value="/tmp/turnkeyai-ui-smoke/data"]').isVisible(),
       "settings should show live daemon paths"
+    );
+    assert(
+      await page.getByLabel("Model catalog JSON").isVisible(),
+      "settings should expose the admin model catalog editor"
+    );
+    await page.getByLabel("Model catalog JSON").fill(JSON.stringify(modelCatalogConfigContent({ defaultModelId: "gpt-5" }), null, 2));
+    await page.getByRole("button", { name: /^Save$/ }).click();
+    await page.waitForSelector("text=Catalog saved");
+    assert(savedModelCatalogContents.length === 1, "settings should PUT edited model catalog content once");
+    assert(
+      savedModelCatalogContents[0]?.includes('"defaultModelId": "gpt-5"'),
+      "settings should send the edited model catalog JSON"
     );
 
     await page.goto(`http://127.0.0.1:${port}/app#/agent-connect`, {
@@ -831,6 +845,32 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (method === "GET" && url.pathname === "/models") {
     json(res, modelsFixture());
+    return;
+  }
+  if (method === "GET" && url.pathname === "/daemon/config/model-catalog") {
+    if (req.headers.authorization !== "Bearer ui-smoke-admin-token") {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized", requiredAccess: "admin" }));
+      return;
+    }
+    json(res, modelCatalogConfigFixture());
+    return;
+  }
+  if (method === "PUT" && url.pathname === "/daemon/config/model-catalog") {
+    if (req.headers.authorization !== "Bearer ui-smoke-admin-token") {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized", requiredAccess: "admin" }));
+      return;
+    }
+    const body = await readJsonBody(req) as { content?: unknown };
+    if (typeof body.content === "string") {
+      savedModelCatalogContents.push(body.content);
+    }
+    json(res, {
+      ...modelCatalogConfigFixture(typeof body.content === "string" ? body.content : undefined),
+      saved: true,
+      restartRequired: false,
+    });
     return;
   }
   if (method === "GET" && url.pathname === "/capabilities") {
@@ -1261,6 +1301,58 @@ function modelsFixture() {
         configured: false,
       },
     ],
+  };
+}
+
+function modelCatalogConfigFixture(content?: string) {
+  const catalogContent = content ?? JSON.stringify(modelCatalogConfigContent(), null, 2);
+  return {
+    currentModelCatalogPath: "/tmp/turnkeyai-ui-smoke-models.json",
+    editableModelCatalogPath: "/tmp/turnkeyai-ui-smoke-models.json",
+    exists: true,
+    content: catalogContent,
+    restartRequired: false,
+    liveReloadAvailable: true,
+    validation: {
+      ok: true,
+      errors: [],
+      warnings: ["Missing API key env: OPENAI_API_KEY"],
+      modelCount: 2,
+      chainCount: 1,
+      missingApiKeyEnvs: ["OPENAI_API_KEY"],
+      missingBaseUrlEnvs: [],
+    },
+  };
+}
+
+function modelCatalogConfigContent(overrides: Record<string, unknown> = {}) {
+  return {
+    defaultModelChainId: "lead_reasoning",
+    models: {
+      "minimax-m2": {
+        label: "MiniMax M2",
+        providerId: "minimax",
+        apiType: "anthropic",
+        model: "MiniMax-M2.7-highspeed",
+        baseURL: "https://minimax.example/v1",
+        apiKeyEnv: "MINIMAX_API_KEY",
+      },
+      "gpt-5": {
+        label: "GPT 5",
+        providerId: "openai",
+        apiType: "openai",
+        model: "gpt-5",
+        baseURL: "https://api.openai.example/v1",
+        apiKeyEnv: "OPENAI_API_KEY",
+      },
+    },
+    modelChains: {
+      lead_reasoning: {
+        primary: "minimax-m2",
+        fallbacks: ["gpt-5"],
+      },
+    },
+    ...overrides,
   };
 }
 

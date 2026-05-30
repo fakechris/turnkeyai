@@ -1,11 +1,12 @@
-// Settings — read-only runtime configuration and policy defaults.
+// Settings — local runtime configuration and policy defaults.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
-import type { DiagnosticsSnapshot, ModelsReport } from "../api/types";
+import type { DiagnosticsSnapshot, ModelCatalogConfigReport, ModelsReport } from "../api/types";
 import { useApiClient } from "../api/useApiClient";
 import { Icon } from "../components/Icon";
 import { usePolling } from "../hooks/usePolling";
+import { useAppState } from "../state/AppState";
 
 const POLICIES = [
   { k: "browser.form.submit", v: "always require approval", lvl: "warning" as const },
@@ -20,26 +21,76 @@ const POLL_MS = 5_000;
 interface SettingsLive {
   diagnostics: DiagnosticsSnapshot | null;
   models: ModelsReport | null;
+  modelCatalogConfig: ModelCatalogConfigReport | null;
+  modelCatalogConfigError: string | null;
   reachable: boolean;
 }
 
 export function SettingsPage() {
   const client = useApiClient();
+  const { state } = useAppState();
+  const editorDirtyRef = useRef(false);
+  const [catalogEditor, setCatalogEditor] = useState("");
+  const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
+  const [catalogSaving, setCatalogSaving] = useState(false);
   const [live, setLive] = useState<SettingsLive>({
     diagnostics: null,
     models: null,
+    modelCatalogConfig: null,
+    modelCatalogConfigError: null,
     reachable: false,
   });
 
   usePolling(async () => {
-    const [diagnosticsResult, modelsResult] = await Promise.allSettled([
+    const [diagnosticsResult, modelsResult, modelCatalogConfigResult] = await Promise.allSettled([
       client.get<DiagnosticsSnapshot>("/diagnostics"),
       client.get<ModelsReport>("/models"),
+      client.getNoAuthReset<ModelCatalogConfigReport>("/daemon/config/model-catalog"),
     ]);
     const diagnostics = diagnosticsResult.status === "fulfilled" ? diagnosticsResult.value : null;
     const models = modelsResult.status === "fulfilled" ? modelsResult.value : null;
-    setLive({ diagnostics, models, reachable: diagnostics != null || models != null });
+    const modelCatalogConfig =
+      modelCatalogConfigResult.status === "fulfilled" ? modelCatalogConfigResult.value : null;
+    const modelCatalogConfigError =
+      modelCatalogConfigResult.status === "rejected" ? readableSettingsError(modelCatalogConfigResult.reason) : null;
+    if (modelCatalogConfig && !editorDirtyRef.current) {
+      setCatalogEditor(modelCatalogConfig.content);
+    }
+    setLive({
+      diagnostics,
+      models,
+      modelCatalogConfig,
+      modelCatalogConfigError,
+      reachable: diagnostics != null || models != null || modelCatalogConfig != null,
+    });
   }, POLL_MS);
+
+  const saveCatalog = async () => {
+    setCatalogSaving(true);
+    setCatalogNotice(null);
+    try {
+      const saved = await client.putNoAuthReset<ModelCatalogConfigReport>("/daemon/config/model-catalog", {
+        content: catalogEditor,
+      });
+      setLive((current) => ({
+        ...current,
+        modelCatalogConfig: saved,
+        modelCatalogConfigError: null,
+        reachable: true,
+      }));
+      editorDirtyRef.current = false;
+      setCatalogEditor(saved.content);
+      setCatalogNotice(
+        saved.restartRequired
+          ? "Catalog saved. Restart the daemon for the new runtime model selection to take effect."
+          : "Catalog saved and reloaded."
+      );
+    } catch (error) {
+      setCatalogNotice(readableSettingsError(error));
+    } finally {
+      setCatalogSaving(false);
+    }
+  };
 
   return (
     <div className="page" style={{ maxWidth: 920 }}>
@@ -76,6 +127,20 @@ export function SettingsPage() {
         <div className="card-bd">
           <ModelCatalogRow models={live.models} />
           <DefaultModelSelectionRow models={live.models} />
+          <ModelCatalogEditor
+            config={live.modelCatalogConfig}
+            error={live.modelCatalogConfigError}
+            editor={catalogEditor}
+            saving={catalogSaving}
+            notice={catalogNotice}
+            scope={state.scope}
+            onChange={(value) => {
+              editorDirtyRef.current = true;
+              setCatalogNotice(null);
+              setCatalogEditor(value);
+            }}
+            onSave={saveCatalog}
+          />
           <ModelChainsBlock models={live.models} />
           {live.models?.models.length ? (
             live.models.models.map((model) => (
@@ -131,6 +196,77 @@ export function SettingsPage() {
           <PathRow label="Daemon log" value={live.diagnostics?.paths.logFile} />
           <PathRow label="Model catalog" value={live.diagnostics?.paths.modelCatalogPath ?? live.models?.modelCatalogPath ?? null} last />
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ModelCatalogEditor({
+  config,
+  error,
+  editor,
+  saving,
+  notice,
+  scope,
+  onChange,
+  onSave,
+}: {
+  config: ModelCatalogConfigReport | null;
+  error: string | null;
+  editor: string;
+  saving: boolean;
+  notice: string | null;
+  scope: string;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  const canAttemptSave = scope === "admin" || scope === "unknown";
+  const validation = config?.validation;
+  return (
+    <div className="setting-row settings-catalog-editor">
+      <div className="lbl">
+        <b>Catalog editor</b>
+        <span>admin-scoped local JSON; restart only when live reload is unavailable</span>
+      </div>
+      <div className="settings-catalog-editor-main">
+        <textarea
+          className="field settings-catalog-textarea"
+          value={editor}
+          spellCheck={false}
+          disabled={!canAttemptSave}
+          onChange={(event) => onChange(event.target.value)}
+          aria-label="Model catalog JSON"
+        />
+        <div className="settings-catalog-meta">
+          {config ? (
+            <>
+              <span>{config.editableModelCatalogPath}</span>
+              <span>{config.liveReloadAvailable ? "live reload available" : "daemon restart may be required"}</span>
+              <span>{validation?.modelCount ?? 0} model(s), {validation?.chainCount ?? 0} chain(s)</span>
+            </>
+          ) : (
+            <span>{error ?? "Admin scope is required to read or edit the model catalog."}</span>
+          )}
+        </div>
+        {validation && (!validation.ok || validation.warnings.length > 0) ? (
+          <div className="settings-catalog-feedback" data-ok={validation.ok ? "true" : "false"}>
+            {[...validation.errors, ...validation.warnings].slice(0, 4).map((item) => (
+              <div key={item}>{item}</div>
+            ))}
+          </div>
+        ) : null}
+        {notice ? <div className="settings-catalog-feedback" data-ok="true">{notice}</div> : null}
+      </div>
+      <div>
+        <button
+          type="button"
+          className="btn primary"
+          onClick={onSave}
+          disabled={!canAttemptSave || saving || editor.trim().length === 0}
+          title={canAttemptSave ? "Validate and save the local model catalog" : "Admin token required"}
+        >
+          {saving ? "Saving" : "Save"}
+        </button>
       </div>
     </div>
   );
@@ -203,4 +339,10 @@ function PathRow({ label, value, last }: { label: string; value?: string | null;
 function authTone(authMode: DiagnosticsSnapshot["daemon"]["authMode"] | undefined): string {
   if (!authMode) return "warning";
   return authMode === "disabled" ? "warning" : "success";
+}
+
+function readableSettingsError(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "request failed";
 }

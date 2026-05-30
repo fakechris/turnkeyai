@@ -123,6 +123,7 @@ import {
   handleDiagnosticsRoutes,
   type DiagnosticsBrowserHealthSnapshot,
 } from "./routes/diagnostics-routes";
+import { handleDaemonConfigRoutes } from "./routes/daemon-config-routes";
 import { handleInspectionRoutes } from "./routes/inspection-routes";
 import { handleMissionRoutes } from "./routes/mission-routes";
 import { handleOnboardingRoutes } from "./routes/onboarding-routes";
@@ -176,6 +177,7 @@ const runtimeLimits = {
   maxPerRoleHopCount: 3,
 };
 const modelCatalogPath = await resolveModelCatalogPath();
+const editableModelCatalogPath = resolveEditableModelCatalogPath();
 
 const foundations = composeDaemonFoundations({
   dataDir: DATA_DIR,
@@ -347,6 +349,7 @@ const runtimeServices = await composeDaemonRuntimeServices({
 });
 const {
   workerRuntime,
+  modelRegistry,
   llmGateway,
   coordinationEngine,
   recoveryActionService,
@@ -595,6 +598,28 @@ const server = http.createServer(async (req, res) => {
               runtimeProgressStore,
               nowMs: clock.now(),
             }),
+        },
+      })
+    ) {
+      return;
+    }
+
+    if (
+      await handleDaemonConfigRoutes({
+        req,
+        res,
+        url,
+        deps: {
+          currentModelCatalogPath: modelCatalogPath,
+          editableModelCatalogPath,
+          ...(modelRegistry && modelCatalogPath === editableModelCatalogPath
+            ? {
+                reloadActiveModelCatalog: async () => {
+                  modelRegistry.clearCache();
+                  await modelRegistry.describeSelection({});
+                },
+              }
+            : {}),
         },
       })
     ) {
@@ -924,6 +949,11 @@ async function resolveModelCatalogPath(): Promise<string | null> {
   }
 
   return null;
+}
+
+function resolveEditableModelCatalogPath(): string {
+  const explicit = process.env.TURNKEYAI_MODEL_CATALOG?.trim();
+  return explicit ? path.resolve(explicit) : path.resolve(process.cwd(), "models.local.json");
 }
 
 function wantsProcessHelp(args: string[]): boolean {

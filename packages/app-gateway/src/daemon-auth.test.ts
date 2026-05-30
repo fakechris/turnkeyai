@@ -67,6 +67,8 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "POST", pathname: "/replay-recoveries/thread-1/dispatch", expected: "operator" },
     { method: "GET", pathname: "/replay-recoveries/thread-1", expected: "read" },
     { method: "GET", pathname: "/validation-ops", expected: "admin" },
+    { method: "GET", pathname: "/daemon/config/model-catalog", expected: "admin" },
+    { method: "PUT", pathname: "/daemon/config/model-catalog", expected: "admin" },
     { method: "POST", pathname: "/validation-profiles/run", expected: "admin" },
     { method: "POST", pathname: "/transport-soak/run", expected: "admin" },
     { method: "POST", pathname: "/phase1-readiness/run", expected: "admin" },

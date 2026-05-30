@@ -143,6 +143,10 @@ export function resolveDaemonRequestAccess(
     return "admin";
   }
 
+  if (isDaemonConfigRoute(url.pathname)) {
+    return "admin";
+  }
+
   if (isBrowserExpertRoute(url.pathname)) {
     return "admin";
   }
@@ -247,6 +251,10 @@ function isValidationRoute(pathname: string): boolean {
     "/phase1-readiness/run",
     "/phase1-baseline/run",
   ].includes(pathname);
+}
+
+function isDaemonConfigRoute(pathname: string): boolean {
+  return pathname === "/daemon/config/model-catalog";
 }
 
 function isBrowserRoute(pathname: string): boolean {

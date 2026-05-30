@@ -12,6 +12,14 @@ class InMemoryCatalogSource implements ModelCatalogSource {
   }
 }
 
+class MutableCatalogSource implements ModelCatalogSource {
+  constructor(public catalog: ModelCatalog) {}
+
+  async load(): Promise<ModelCatalog> {
+    return this.catalog;
+  }
+}
+
 test("model registry normalizes object-based model and chain catalogs", async () => {
   const previousApiKey = process.env.TEST_MINIMAX_API_KEY;
   const previousBaseUrl = process.env.TEST_MINIMAX_BASE_URL;
@@ -142,4 +150,41 @@ test("model registry excludes the primary model from fallback ids", async () => 
 
   assert.equal(selection.primaryModelId, "primary-model");
   assert.deepEqual(selection.fallbackModelIds, ["fallback-model"]);
+});
+
+test("model registry clearCache reloads the underlying catalog source", async () => {
+  const source = new MutableCatalogSource({
+    defaultModelId: "first",
+    models: {
+      first: {
+        label: "First",
+        providerId: "test",
+        protocol: "openai-compatible",
+        model: "first-model",
+        baseURL: "https://first.example/v1",
+        apiKeyEnv: "FIRST_KEY",
+      },
+    },
+  });
+  const registry = new ModelRegistry(source);
+
+  assert.equal((await registry.describeSelection({})).primary.id, "first");
+
+  source.catalog = {
+    defaultModelId: "second",
+    models: {
+      second: {
+        label: "Second",
+        providerId: "test",
+        protocol: "openai-compatible",
+        model: "second-model",
+        baseURL: "https://second.example/v1",
+        apiKeyEnv: "SECOND_KEY",
+      },
+    },
+  };
+
+  assert.equal((await registry.describeSelection({})).primary.id, "first");
+  registry.clearCache();
+  assert.equal((await registry.describeSelection({})).primary.id, "second");
 });

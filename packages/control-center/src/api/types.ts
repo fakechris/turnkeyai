@@ -216,6 +216,25 @@ export interface ModelsReport {
   }>;
 }
 
+export interface ModelCatalogConfigReport {
+  currentModelCatalogPath: string | null;
+  editableModelCatalogPath: string;
+  exists: boolean;
+  content: string;
+  saved?: boolean;
+  restartRequired: boolean;
+  liveReloadAvailable: boolean;
+  validation: {
+    ok: boolean;
+    errors: string[];
+    warnings: string[];
+    modelCount: number;
+    chainCount: number;
+    missingApiKeyEnvs: string[];
+    missingBaseUrlEnvs: string[];
+  };
+}
+
 // --- /capabilities (packages/app-gateway/src/routes/inspection-routes.ts) ---
 
 export interface CapabilityInspectionReport {
