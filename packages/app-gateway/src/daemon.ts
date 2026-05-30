@@ -77,6 +77,7 @@ import { createBrowserContextSourceProvider } from "./browser-context-source-pro
 import { createMissionThreadBridge } from "./mission-thread-bridge";
 import { createMissionTaskToolService } from "./mission-task-tool-service";
 import { createMissionToolPermissionService } from "./tool-permission-service";
+import { buildBrowserRuntimeHealthSnapshot } from "./browser-runtime-health";
 
 import {
   parsePositiveInteger,
@@ -286,37 +287,10 @@ async function buildBridgeStatusSnapshot(): Promise<BridgeStatusInfo> {
 async function buildBrowserHealthSnapshot(
   sessions: BrowserSession[]
 ): Promise<DiagnosticsBrowserHealthSnapshot> {
-  const inspectedSessions = [...sessions]
-    .sort((left, right) => right.updatedAt - left.updatedAt)
-    .slice(0, 25);
-  const histories = (
-    await Promise.all(
-      inspectedSessions.map((session) =>
-        browserBridge.getSessionHistory({ browserSessionId: session.browserSessionId, limit: 5 }).catch(() => [])
-      )
-    )
-  )
-    .flat()
-    .sort((left, right) => right.completedAt - left.completedAt);
-  const recentFailures = histories.filter((entry) => entry.status === "failed");
-  const profileFallbacks = histories.filter((entry) => entry.profileFallback);
-  const latestProfileFallback = profileFallbacks[0];
-  return {
-    inspectedSessionCount: inspectedSessions.length,
-    recentHistoryCount: histories.length,
-    recentFailureCount: recentFailures.length,
-    profileFallbackCount: profileFallbacks.length,
-    ...(recentFailures[0]?.summary ? { latestFailureSummary: recentFailures[0].summary } : {}),
-    ...(latestProfileFallback?.profileFallback
-      ? {
-          latestProfileFallback: {
-            browserSessionId: latestProfileFallback.browserSessionId,
-            completedAt: latestProfileFallback.completedAt,
-            fallbackDir: latestProfileFallback.profileFallback.fallbackDir,
-          },
-        }
-      : {}),
-  };
+  return buildBrowserRuntimeHealthSnapshot({
+    sessions,
+    loadHistory: (input) => browserBridge.getSessionHistory(input),
+  });
 }
 
 // PR K2 — Mission Control stores (mission/work-item/activity/approval/
