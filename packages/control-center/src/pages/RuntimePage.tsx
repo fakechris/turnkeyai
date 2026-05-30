@@ -781,13 +781,14 @@ function TransportCard({ status }: { status: BridgeStatus | null }) {
   const liveMode = status?.transport.mode;
   const health = status?.transport.health;
   const activeDot = health ? (health.healthy ? "done" : "needs_approval") : "working";
+  const transportLabel = status?.transport.label ?? "chrome.local · 9222";
   const healthDetail = health
     ? health.healthy
       ? health.connected === false
         ? "healthy · not connected yet"
         : "healthy"
       : health.reason ?? "unhealthy"
-    : status?.transport.label ?? "chrome.local · 9222";
+    : null;
   return (
     <div className="card">
       <div className="card-hd"><h3>Transport</h3></div>
@@ -799,7 +800,7 @@ function TransportCard({ status }: { status: BridgeStatus | null }) {
               {liveMode ?? "direct-CDP available"}
             </div>
             <div className="muted mono" style={{ fontSize: 10.5 }}>
-              {status?.transport.label ?? "chrome.local · 9222"} · {healthDetail}
+              {transportLabel}{healthDetail ? ` · ${healthDetail}` : ""}
             </div>
           </div>
         </div>
