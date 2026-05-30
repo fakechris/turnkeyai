@@ -64,7 +64,10 @@ import {
 import { writeJsonFileAtomic } from "@turnkeyai/shared-utils/file-store-utils";
 
 import { composeDaemonFoundations } from "./composition/foundations";
-import { composeDaemonRuntimeServices } from "./composition/runtime-services";
+import {
+  DEFAULT_DAEMON_RUNTIME_LIMITS,
+  composeDaemonRuntimeServices,
+} from "./composition/runtime-services";
 import { createBrowserRouteHelpers } from "./composition/browser-route-helpers";
 import { resolveControlCenterAssetDir } from "./composition/control-center-assets";
 import { buildDemoRoles } from "./composition/demo-roles";
@@ -170,12 +173,7 @@ const routeIdempotencyStore = createFileRouteIdempotencyStore({
   now: clock.now,
 });
 type RuntimeChainEntry = { chain: RuntimeChain; status: RuntimeChainStatus };
-const runtimeLimits = {
-  memberMaxIterations: 6,
-  flowMaxHops: 20,
-  maxQueuedHandoffsPerRole: 4,
-  maxPerRoleHopCount: 3,
-};
+const runtimeLimits = DEFAULT_DAEMON_RUNTIME_LIMITS;
 const modelCatalogPath = await resolveModelCatalogPath();
 const editableModelCatalogPath = resolveEditableModelCatalogPath();
 

@@ -81,6 +81,13 @@ export interface DaemonRuntimeLimits {
   maxPerRoleHopCount: number;
 }
 
+export const DEFAULT_DAEMON_RUNTIME_LIMITS: DaemonRuntimeLimits = {
+  memberMaxIterations: 128,
+  flowMaxHops: 20,
+  maxQueuedHandoffsPerRole: 4,
+  maxPerRoleHopCount: 3,
+};
+
 export interface DaemonRuntimeServicesInputs {
   foundations: DaemonFoundations;
   dataDir: string;

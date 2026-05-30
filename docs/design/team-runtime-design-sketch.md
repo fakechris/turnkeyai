@@ -419,13 +419,15 @@ type RoleFailurePolicy =
 
 ```ts
 type RuntimeLimits = {
-  memberMaxIterations: 6;
+  memberMaxIterations: 128;
   flowMaxHops: 20;
   maxQueuedHandoffsPerRole: 4;
 };
 ```
 
-不要只靠一个粗糙的 iteration cap。
+不要只靠一个粗糙的 iteration cap。外层 role activation budget 要给复杂任务足够空间；
+收敛依赖最后一步收口提示、native tool loop wall-clock、worker timeout、stale
+diagnostics 和 mission quality gate 共同约束。
 
 ### 8.3 lead role 必须保留兜底权
 
