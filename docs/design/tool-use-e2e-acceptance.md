@@ -158,7 +158,11 @@ polls `GET /missions/:id` plus `GET /missions/:id/timeline`, and reads
 explore sub-agent at a local fixture page, so the acceptance does not depend on
 public search results. The isolated daemon enables loopback-only explore access
 for these fixtures; production daemon defaults still reject loopback/private
-hosts in the explore worker. It verifies:
+hosts in the explore worker. In matrix mode the script prints a per-scenario
+start line before each real mission and a per-scenario pass line with mission
+id, quality gate, tool/session counts, liveness, and elapsed time immediately
+after that scenario completes, so a long release gate does not appear idle until
+the whole matrix finishes. It verifies:
 
 - the product entry path creates a linked team-runtime thread
 - the lead model emits `sessions_spawn` from the mission route

@@ -1454,3 +1454,55 @@ Regression Risk:
   execution kernel.
 - This checkpoint proves the current broad gate can pass once; it is not yet a
   statistical soak of repeated real-LLM runs.
+
+## 2026-05-31 01:04 CST - Mission Matrix Progress Visibility
+
+Direction: converging
+
+Execution Kernel:
+- No mission, role, tool-use, worker, browser, approval, or completion
+  semantics changed.
+- The mission E2E matrix now emits a start line before each scenario and a pass
+  line immediately after each scenario completes, including elapsed time,
+  mission id, quality gate, tool/session counts, and liveness.
+
+Result Quality:
+- Result synthesis did not change.
+- The focused real mission subset still passed quality gates for both `basic`
+  and `followup`, proving the visibility change did not alter final-answer
+  behavior for those paths.
+
+Workbench UX:
+- Long real acceptance runs no longer look idle until the entire mission matrix
+  finishes. Operators can now see which user-facing scenario is currently
+  running and which mission id was produced as soon as each scenario completes.
+- This closes the immediate observability gap recorded in the previous
+  checkpoint, though it is still terminal/script visibility rather than a live
+  Control Center stream.
+
+Browser Reliability:
+- This slice did not change browser transport or browser worker behavior.
+- The change makes browser-backed mission scenarios easier to diagnose in a
+  full gate because the running scenario and last completed browser mission are
+  visible before the matrix exits.
+
+Acceptance Evidence:
+- `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`: passed, 4
+  tests.
+- `npm run mission:e2e -- --matrix-scenarios basic,followup --model-catalog models.local.json --scenario-timeout-ms 300000 --json /tmp/turnkeyai-mission-e2e-progress-lines-20260531.json`:
+  passed.
+- Real output included immediate progress lines:
+  `mission scenario starting: basic (1/2)`,
+  `mission scenario passed: basic (1/2, 15132ms) mission-id=msn.mpslnja7.1 quality=passed tools=1/1 sessions=1/0 liveness=0/0/0`,
+  `mission scenario starting: followup (2/2)`, and
+  `mission scenario passed: followup (2/2, 33235ms) mission-id=msn.mpslnuyj.2 quality=passed tools=2/2 sessions=1/1 liveness=0/0/0`.
+- Mission JSON artifact:
+  `/tmp/turnkeyai-mission-e2e-progress-lines-20260531.json`.
+
+Regression Risk:
+- Because scenario summaries now print during the loop, logs are more verbose
+  and no longer grouped only at the end. The JSON report remains built from the
+  same accumulated results, so durable artifact shape is unchanged.
+- This improves release/operator feedback but does not replace true live UI
+  streaming. The next observability step should surface comparable mission
+  progress in the workbench rather than only in scripts.
