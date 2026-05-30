@@ -144,6 +144,8 @@ Runtime is the operator page. It should answer:
 - Are missions stuck, stale, blocked, or weakly completed?
 - Which active mission has been running the longest?
 - Are release/acceptance gates fresh and passing?
+- For real acceptance gates, what did the mission report prove: scenario pass
+  count, quality failures, liveness, tool result coverage, and evidence count?
 - Where are logs?
 
 The Reconcile action is safe operator tooling for forcing mission/thread mirror

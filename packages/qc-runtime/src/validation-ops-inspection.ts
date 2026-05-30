@@ -6,6 +6,7 @@ import type {
   ValidationOpsIssueSeverity,
   ValidationOpsRecommendedAction,
   ValidationOpsReport,
+  ValidationOpsRealAcceptanceDetails,
   ValidationOpsRunRecord,
 } from "@turnkeyai/core-types/team";
 
@@ -228,6 +229,7 @@ export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
   missionScenarios: string[];
   browserTooluseEnabled: boolean;
   artifactPath?: string;
+  missionReport?: ValidationOpsRealAcceptanceDetails["missionReport"];
   error?: string;
 }): ValidationOpsRunRecord {
   const totalCases = input.tooluseScenarios.length + input.missionScenarios.length;
@@ -254,6 +256,13 @@ export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
     durationMs: input.completedAt - input.startedAt,
     issueCount: issues.length,
     ...(input.artifactPath ? { artifactPath: input.artifactPath } : {}),
+    realAcceptance: {
+      tooluseScenarios: [...input.tooluseScenarios],
+      missionScenarios: [...input.missionScenarios],
+      browserTooluseEnabled: input.browserTooluseEnabled,
+      totalCases,
+      ...(input.missionReport ? { missionReport: input.missionReport } : {}),
+    },
     selectors: [
       ...input.tooluseScenarios.map((scenario) => `tooluse:${scenario}`),
       ...input.missionScenarios.map((scenario) => `mission:${scenario}`),

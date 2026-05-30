@@ -560,6 +560,20 @@ function validationStatusDot(status: ValidationOpsStatus | "stale" | undefined):
   return "planning";
 }
 
+function formatRealAcceptanceMissionSummary(run: ValidationOpsReport["latestRuns"][number]): string | null {
+  const missionReport = run.realAcceptance?.missionReport;
+  if (!missionReport) {
+    return null;
+  }
+  return [
+    `${missionReport.passedScenarios}/${missionReport.scenarioCount} mission scenarios`,
+    `quality failures ${missionReport.qualityFailures}`,
+    `liveness ${missionReport.livenessActive}/${missionReport.livenessWaiting}/${missionReport.livenessStale}`,
+    `tools ${missionReport.toolResults}/${missionReport.toolRequested}`,
+    `evidence ${missionReport.evidenceEvents}`,
+  ].join(" · ");
+}
+
 function readableRuntimeError(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
   if (typeof error === "string" && error.trim()) return error.trim();
@@ -738,6 +752,11 @@ function ValidationOpsCard({
                     {run.artifactPath ? (
                       <div className="runtime-health-action runtime-artifact-path">
                         artifact: <span className="mono">{run.artifactPath}</span>
+                      </div>
+                    ) : null}
+                    {formatRealAcceptanceMissionSummary(run) ? (
+                      <div className="runtime-health-action">
+                        mission report: {formatRealAcceptanceMissionSummary(run)}
                       </div>
                     ) : null}
                   </div>

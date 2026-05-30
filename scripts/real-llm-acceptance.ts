@@ -9,6 +9,7 @@ import {
   DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS,
   joinRealAcceptanceScenarios,
 } from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
+import { summarizeMissionE2eReportForValidationOps } from "@turnkeyai/qc-runtime/real-llm-acceptance-summary";
 import { buildValidationOpsRecordFromRealLlmAcceptance } from "@turnkeyai/qc-runtime/validation-ops-inspection";
 import { FileValidationOpsRunStore } from "@turnkeyai/team-store/ops/file-validation-ops-run-store";
 
@@ -242,6 +243,9 @@ async function recordValidationOps(
   if (!options.recordValidationOps) return;
   const dataDir = resolveValidationOpsDataDir(options);
   const store = new FileValidationOpsRunStore({ rootDir: path.join(dataDir, "validation-ops-runs") });
+  const missionReport = result.missionJsonPath && existsSync(result.missionJsonPath)
+    ? summarizeMissionJson(result.missionJsonPath)
+    : null;
   const record = buildValidationOpsRecordFromRealLlmAcceptance({
     runId: result.runId,
     startedAt: result.startedAt,
@@ -251,12 +255,23 @@ async function recordValidationOps(
     missionScenarios: splitScenarios(options.missionScenarios ?? DEFAULT_MISSION_SCENARIOS),
     browserTooluseEnabled: !options.skipBrowserTooluse,
     ...(result.missionJsonPath && existsSync(result.missionJsonPath)
-      ? { artifactPath: path.relative(process.cwd(), result.missionJsonPath) }
+      ? {
+          artifactPath: path.relative(process.cwd(), result.missionJsonPath),
+          ...(missionReport ? { missionReport } : {}),
+        }
       : {}),
     ...(result.error ? { error: result.error } : {}),
   });
   await store.put(record);
   console.log(`validation-ops recorded: ${record.runId} (${record.status})`);
+}
+
+function summarizeMissionJson(missionJsonPath: string): ReturnType<typeof summarizeMissionE2eReportForValidationOps> {
+  try {
+    return summarizeMissionE2eReportForValidationOps(JSON.parse(readFileSync(missionJsonPath, "utf8")) as unknown);
+  } catch {
+    return null;
+  }
 }
 
 function resolveValidationOpsDataDir(options: RealAcceptanceOptions): string {
