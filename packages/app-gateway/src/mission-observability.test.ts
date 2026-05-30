@@ -364,6 +364,54 @@ test("buildMissionObservabilitySnapshot flags tool-unavailable fallback answers"
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "unsupported_uncertainty")?.status, "warn");
 });
 
+test("buildMissionObservabilitySnapshot surfaces browser profile fallback as mission attention", () => {
+  const profileFallbackResult = tool(
+    "result-browser-fallback",
+    4_000,
+    "result",
+    "sessions_spawn",
+    "call-browser",
+    [
+      "Browser worker completed session browser-session-profile-fallback.",
+      "Final URL: http://127.0.0.1/dashboard.",
+      "Page title: Dashboard.",
+      "Trace steps: open -> snapshot.",
+      "Profile fallback: profile_locked; persistent profile was unavailable, used .daemon-data/browser/_runtime-fallback/browser-session-profile-fallback/123.",
+      "Screenshots: none",
+    ].join("\n")
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-browser", 2_000, "call", "sessions_spawn", "call-browser", "Calling sessions_spawn"),
+      {
+        ...profileFallbackResult,
+        runtime: {
+          ...profileFallbackResult.runtime,
+          resultContent: profileFallbackResult.text,
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Final answer based on browser-rendered evidence with residual risk noted for local fixture scope."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.browser.profileFallbacks, 1);
+  assert.equal(snapshot.browser.latestProfileFallback?.sessionId, "browser-session-profile-fallback");
+  assert.equal(
+    snapshot.browser.latestProfileFallback?.fallbackDir,
+    ".daemon-data/browser/_runtime-fallback/browser-session-profile-fallback/123"
+  );
+  assert.equal(snapshot.qualityGate.status, "needs_attention");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_profile_fallback")?.status, "warn");
+});
+
 test("buildMissionObservabilitySnapshot handles long fallback phrasing without regex backtracking risk", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "done" }),
