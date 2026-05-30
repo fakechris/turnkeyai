@@ -469,10 +469,11 @@ async function checkModelReadiness(
   }
   const primary = result.json.models?.find((model) => model.id === selection.primaryModelId);
   if (primary && !primary.configured) {
+    const key = typeof primary.apiKeyEnv === "string" && primary.apiKeyEnv.trim() ? primary.apiKeyEnv.trim() : null;
     return {
       name: "model readiness",
       status: "fail",
-      detail: `primary ${selection.primaryModelId} missing key ${primary.apiKeyEnv ?? "(unknown env)"}`,
+      detail: `primary ${selection.primaryModelId} missing key ${key ?? "(unknown env)"}${daemonServiceEnvHint(paths, key)}`,
     };
   }
   const missingFallbacks = (selection.fallbackModelIds ?? []).filter((id) => {
@@ -494,6 +495,26 @@ async function checkModelReadiness(
     status: "ok",
     detail: `${chain} ready`,
   };
+}
+
+function daemonServiceEnvHint(paths: ReturnType<typeof getRuntimePaths>, key: string | null): string {
+  if (!key || platform() !== "darwin") return "";
+  if (!process.env[key]?.trim()) return "";
+  const envFile = path.join(paths.rootDir, "daemon.env");
+  const hint = `; current shell has ${key}, run 'turnkeyai daemon service install --capture-env' to persist it for launchd`;
+  if (!existsSync(envFile)) return hint;
+  try {
+    const content = readFileSync(envFile, "utf8");
+    const activeKey = new RegExp(`^\\s*(?:export\\s+)?${escapeRegExp(key)}=`, "m").test(content);
+    if (activeKey) return "";
+  } catch {
+    return "";
+  }
+  return hint;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeReadinessStatus(status: unknown): CheckResult["status"] {

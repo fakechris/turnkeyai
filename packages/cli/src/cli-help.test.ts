@@ -61,7 +61,8 @@ describe("cli help", () => {
     const result = await runCliHelp(["daemon", "service", "--help"]);
     assert.equal(result.code, 0);
     assert.match(result.stdout, /TurnkeyAI daemon service/);
-    assert.match(result.stdout, /turnkeyai daemon service install \[--no-start\]/);
+    assert.match(result.stdout, /turnkeyai daemon service install \[--no-start\] \[--capture-env\]/);
+    assert.match(result.stdout, /--capture-env writes known provider API keys/);
     assert.match(result.stdout, /~\/\.turnkeyai\/daemon\.env/);
   });
 
