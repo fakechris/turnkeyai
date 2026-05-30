@@ -274,6 +274,76 @@ test("buildMissionObservabilitySnapshot flags weak tool-backed final answers", (
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "unsupported_uncertainty")?.status, "warn");
 });
 
+test("buildMissionObservabilitySnapshot warns when final answer misses a visible evidence source", () => {
+  const alpha = {
+    ...tool("result-alpha", 3_000, "result", "sessions_spawn", "call-alpha", "Alpha source returned evidence."),
+    evidence: [{ kind: "extract" as const, id: "ev-alpha", label: "Vendor Alpha" }],
+  };
+  const beta = {
+    ...tool("result-beta", 4_000, "result", "sessions_spawn", "call-beta", "Beta source returned evidence."),
+    evidence: [{ kind: "extract" as const, id: "ev-beta", label: "Vendor Beta" }],
+  };
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-alpha", 2_000, "call", "sessions_spawn", "call-alpha", "Calling sessions_spawn"),
+      alpha,
+      tool("call-beta", 3_500, "call", "sessions_spawn", "call-beta", "Calling sessions_spawn"),
+      beta,
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Based on source evidence from Vendor Alpha, the recommendation is ready.",
+          "The final answer names the evidence and residual risk, but it omits the second source.",
+          "Residual risk is limited to source updates after this local run.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "needs_attention");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "warn");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.detail ?? "",
+    /Vendor Beta/
+  );
+});
+
+test("buildMissionObservabilitySnapshot passes source coverage when all evidence labels are named", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool("result-alpha", 3_000, "result", "sessions_spawn", "call-alpha", "Alpha source returned evidence."),
+        evidence: [{ kind: "extract", id: "ev-alpha", label: "Vendor Alpha" }],
+      },
+      {
+        ...tool("result-beta", 4_000, "result", "sessions_spawn", "call-beta", "Beta source returned evidence."),
+        evidence: [{ kind: "extract", id: "ev-beta", label: "Vendor Beta" }],
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Based on verified source evidence from Vendor Alpha and Vendor Beta, the recommendation is evidence-backed.",
+          "The answer covers both source labels, names residual risk, and avoids unsupported future pricing or adoption claims.",
+          "Residual risk is limited to source updates after this run.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot flags tool-unavailable fallback answers", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "done" }),
