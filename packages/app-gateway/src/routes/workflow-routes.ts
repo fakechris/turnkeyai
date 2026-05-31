@@ -570,21 +570,16 @@ async function cancelToolCallsOnMessage(input: {
     };
   }
 
-  const cancelProgress = cancellableIds.map((id) => {
-    const call = callById.get(id)!;
-    return {
-      toolCallId: id,
-      toolName: call.name,
-      phase: "cancelled" as const,
-      summary: input.reason,
-      ts: input.now,
-    };
-  });
   const runtimeCancelResults = await input.toolCancellationRegistry?.cancel({
     threadId: message.threadId,
     toolCallIds: cancellableIds,
     reason: input.reason,
   });
+  const runtimeCancelledIds = new Set(
+    (runtimeCancelResults ?? [])
+      .filter((result) => result.active && result.cancelled)
+      .map((result) => result.toolCallId)
+  );
   const runtimeOwned = new Set(
     (runtimeCancelResults ?? [])
       .filter((result) => result.active)
@@ -602,6 +597,19 @@ async function cancelToolCallsOnMessage(input: {
   const syntheticResultIds = cancellableIds.filter(
     (id) => !runtimeOwned.has(id) && !fallbackWorkerCancel.terminalIds.has(id) && !fallbackWorkerCancel.failedIds.has(id)
   );
+  const cancelProgressIds = [
+    ...new Set([...runtimeCancelledIds, ...fallbackWorkerCancel.cancelledIds, ...syntheticResultIds]),
+  ];
+  const cancelProgress = cancelProgressIds.map((id) => {
+    const call = callById.get(id)!;
+    return {
+      toolCallId: id,
+      toolName: call.name,
+      phase: "cancelled" as const,
+      summary: input.reason,
+      ts: input.now,
+    };
+  });
   const toolMessages = syntheticResultIds.map((id, index) => {
     const call = callById.get(id)!;
     return {
