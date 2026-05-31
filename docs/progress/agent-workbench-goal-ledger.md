@@ -3001,3 +3001,65 @@ Convergence question:
 - Next required gate: keep this guard in the broader release acceptance matrix
   and run the full real gate after the next runtime/browser/workbench behavior
   change.
+
+## 2026-05-31 08:55 CST - Global Approval Visibility
+
+Direction: converging
+
+Execution Kernel:
+- No runtime execution, tool-use, session, browser, or mission completion
+  semantics changed.
+- The workbench shell now uses the same pending-approval state as the sidebar
+  count to render a global approval banner. Optimistic approval decisions still
+  subtract from both surfaces, so the banner follows the daemon-backed approval
+  state without adding a second policy path.
+
+Result Quality:
+- Final-answer synthesis did not change.
+- Result quality is indirectly protected because approval-blocked missions are
+  harder to miss: a user on Runtime, Context, Agents, or other workbench pages
+  now sees that an approval may be blocking agent work instead of relying on a
+  small sidebar badge.
+
+Workbench UX:
+- Pending approvals are now visible in the main shell with mission/action
+  context and a direct Review approvals action.
+- The banner uses a named `region`, not a transient `status`, so it does not
+  interfere with operation feedback such as recovery, session continuation, or
+  follow-up accepted notices.
+- Mobile layout wraps the banner action without creating page-level horizontal
+  scroll.
+
+Browser Reliability:
+- Browser/CDP behavior did not change.
+- Browser reliability remains more operable because browser approval requests
+  such as navigation or form submission are now visible from ordinary
+  workbench pages, not only inside Mission Detail or the Approvals page.
+
+Acceptance Evidence:
+- `npm run build:control-center`: passed.
+- `npm run typecheck`: passed.
+- `npm run control-center:smoke -- --allow-missing-browser`: passed.
+- Smoke evidence includes: global approval banner visible on Runtime, banner
+  names `UI smoke mission` and `browser.navigate`, Review approvals routes to
+  `#/approvals`, transient operation status notices still work, and mobile
+  Mission Detail has no page-level horizontal overflow. Screenshot sizes:
+  desktop `133773` bytes, mobile `63934` bytes.
+- No real LLM/browser acceptance ran because this is a user-visible shell
+  affordance, not execution behavior.
+
+Regression Risk:
+- Main UX risk is persistent banner noise when many approvals are pending. This
+  slice keeps the copy compact and names only the highest-priority visible
+  pending approval while preserving the sidebar count for total volume.
+- Main interaction risk was hijacking existing `role=status` waits; smoke
+  caught that and the banner now uses `role=region`.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a user can now see and open pending approval work from the
+  workbench shell, including runtime pages where blocked agent work is likely
+  to be diagnosed, and the focused UI smoke proves the route and mobile layout.
+- Next required gate: after the next execution/runtime behavior change, run a
+  real mission gate; after the next UI shell change, keep screenshot-backed
+  Control Center smoke in the acceptance evidence.

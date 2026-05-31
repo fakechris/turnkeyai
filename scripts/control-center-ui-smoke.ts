@@ -150,6 +150,28 @@ try {
     });
     await operatorRuntimePage.waitForSelector("text=Runtime attention");
     await operatorRuntimePage.waitForSelector("text=Mission health");
+    const approvalBanner = operatorRuntimePage.locator(".approval-banner");
+    await approvalBanner.waitFor({ state: "visible", timeout: 15_000 });
+    assert(
+      await approvalBanner.locator("text=1 pending approval may be blocking agent work").isVisible(),
+      "operator runtime should surface pending approvals in a global banner"
+    );
+    assert(
+      await approvalBanner.locator("text=UI smoke mission").isVisible(),
+      "approval banner should name the blocked mission"
+    );
+    assert(
+      await approvalBanner.locator("text=browser.navigate").isVisible(),
+      "approval banner should name the pending action"
+    );
+    await approvalBanner.getByRole("button", { name: /Review approvals/ }).click();
+    await operatorRuntimePage.waitForSelector("text=Approvals");
+    assert(operatorRuntimePage.url().includes("#/approvals"), "approval banner should route to Approvals");
+    await operatorRuntimePage.goto(`http://127.0.0.1:${port}/app#/runtime`, {
+      waitUntil: "domcontentloaded",
+    });
+    await operatorRuntimePage.waitForSelector("text=Runtime attention");
+    await operatorRuntimePage.waitForSelector("text=Mission health");
     assert(
       await operatorRuntimePage.locator(".card", { hasText: "Dashboard comparison mission" }).isVisible(),
       "operator runtime should surface mission health attention rows"
