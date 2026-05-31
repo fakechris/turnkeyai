@@ -69,6 +69,7 @@ export type NaturalMissionE2eScenario =
   | "natural-approval-dry-run-action"
   | "natural-browser-unavailable-closeout"
   | "natural-timeout-partial-closeout"
+  | "natural-timeout-followup-continuation"
   | "natural-cancel-active-tool"
   | "natural-long-delegation";
 
@@ -80,6 +81,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-approval-dry-run-action",
   "natural-browser-unavailable-closeout",
   "natural-timeout-partial-closeout",
+  "natural-timeout-followup-continuation",
   "natural-cancel-active-tool",
   "natural-long-delegation",
 ] as const satisfies readonly NaturalMissionE2eScenario[];
@@ -311,6 +313,7 @@ export interface NaturalScenarioSpec {
   requiresBrowser: boolean;
   requiresApproval: boolean;
   requiresCancellation?: boolean;
+  requiresTimeout?: boolean;
   allowToolFailure: boolean;
   minEvidenceEvents: number;
   requiredAnswerTerms: string[];
@@ -1242,6 +1245,9 @@ async function runNaturalMissionScenario(input: {
   if (input.scenario === "natural-cancel-active-tool") {
     return runNaturalCancelScenario(input);
   }
+  if (input.scenario === "natural-timeout-followup-continuation") {
+    return runNaturalTimeoutFollowupScenario(input);
+  }
   const spec = buildNaturalScenarioSpec(input.scenario, input.fixture);
   assertNaturalPromptAllowed(spec.desc);
   const mission = await createNaturalMission({
@@ -1562,6 +1568,97 @@ async function runNaturalCancelScenario(input: {
   return { scenario: "natural-cancel-active-tool", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
+async function runNaturalTimeoutFollowupScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+}): Promise<NaturalMissionScenarioResult> {
+  const spec = buildNaturalScenarioSpec("natural-timeout-followup-continuation", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const mission = await createNaturalMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "natural timeout follow-up mission requires a linked team thread");
+
+  await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+    allowBlocked: true,
+  });
+  const initialTimeline = await requestJson<ActivityEvent[]>({
+    method: "GET",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/timeline?limit=300`,
+    token: input.token,
+  });
+  const initialFinal = findLatestThoughtEvent(initialTimeline);
+  assert.ok(initialFinal, "natural timeout follow-up phase one must include an assistant answer");
+  const timeoutSessionKey = extractFirstSessionKey(initialTimeline);
+  assert.ok(timeoutSessionKey, "natural timeout follow-up requires a session_key from the timed-out sessions_spawn result");
+  assertNaturalTimeoutOccurred(initialTimeline);
+  await assertWorkerSessionResumableAfterTimeout({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    threadId: mission.threadId,
+    workerRunKey: timeoutSessionKey,
+  });
+
+  const followup = [
+    "Continue from the slow-source attempt in this mission.",
+    "Resume the existing source-check context if possible, let it finish with the evidence it can collect, and turn the outcome into a release-risk note.",
+    "Separate verified facts from unverified items, describe any residual risk, and explain whether the earlier timeout still limits the conclusion.",
+  ].join("\n");
+  assertNaturalPromptAllowed(followup);
+  await requestJson<{ accepted: boolean; missionId: string }>({
+    method: "POST",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+    token: input.token,
+    body: { content: followup },
+  });
+
+  const result = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+    allowBlocked: true,
+    afterThoughtMs: initialFinal.tMs,
+    ...(initialFinal.id ? { afterThoughtId: initialFinal.id } : {}),
+  });
+  assertNaturalFollowupReusedExistingSession({
+    timeline: result.timeline,
+    phaseOneFinal: initialFinal,
+    expectedSessionKey: timeoutSessionKey,
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  const final = findLatestThoughtEvent(result.timeline);
+  assert.ok(final, "natural timeout follow-up mission must include a final assistant answer");
+  const quality = evaluateNaturalMissionQuality({
+    spec,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+  });
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `natural mission timeout follow-up quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "natural-timeout-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
 async function createNaturalMission(input: {
   baseUrl: string;
   token: string;
@@ -1829,6 +1926,33 @@ export function buildNaturalScenarioSpec(
       ],
     };
   }
+  if (scenario === "natural-timeout-followup-continuation") {
+    return {
+      scenario,
+      title: "Natural timeout follow-up continuation",
+      desc: [
+        "Evaluate this slow source for a release-risk note.",
+        `Slow source: ${fixture.slowUrl}`,
+        "Use a bounded attempt first. If the source does not return in time, close out with the evidence that is available and explain how the mission can continue.",
+        "A follow-up may ask you to resume that same source-check context after the initial closeout.",
+      ].join("\n"),
+      minBytes: 360,
+      minToolResults: 2,
+      maxToolResults: 7,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 2,
+      minContinuedSessions: 1,
+      requiresBrowser: false,
+      requiresApproval: false,
+      requiresTimeout: true,
+      allowToolFailure: true,
+      minEvidenceEvents: 2,
+      requiredAnswerTerms: ["verified", "unverified", "risk", "continue"],
+      forbiddenPatterns: [
+        { label: "pretends slow source was verified before continuation", pattern: /confirmed.*slow mission route tool-use fixture.*before.*continue/i },
+      ],
+    };
+  }
   if (scenario === "natural-cancel-active-tool") {
     return {
       scenario,
@@ -1995,6 +2119,9 @@ export function evaluateNaturalMissionQuality(input: {
   if (input.spec.requiresApproval && !approvalExercised) failures.push("approval scenario did not complete query/result/applied loop");
   if (input.spec.requiresCancellation && input.metrics.tool.cancelled < 1) {
     failures.push("cancellation scenario did not record a cancelled tool result");
+  }
+  if (input.spec.requiresTimeout && input.metrics.tool.timeouts < 1) {
+    failures.push("timeout scenario did not record a timed-out tool result");
   }
   const nonCancelledFailures = Math.max(0, input.metrics.tool.failed - input.metrics.tool.cancelled);
   if (!input.spec.allowToolFailure && nonCancelledFailures > 0) failures.push("scenario had failed tool results");
@@ -3965,6 +4092,15 @@ export function assertNaturalFollowupReusedExistingSession(input: {
   assert.ok(sendResultIndex > sendCallIndex, "natural sessions_send must produce a result after the continuation call");
   const latestThoughtIndex = findLatestThoughtIndex(input.timeline);
   assert.ok(latestThoughtIndex > sendResultIndex, "natural follow-up final answer must follow the continuation result");
+}
+
+function assertNaturalTimeoutOccurred(timeline: ActivityEvent[]): void {
+  const timeoutResults = timeline.filter((event) => {
+    if (event.runtime?.["toolName"] !== "sessions_spawn" || event.runtime?.["toolPhase"] !== "result") return false;
+    const resultContent = String(event.runtime?.["resultContent"] ?? event.text);
+    return /\btimeout\b|\btimed out\b|WORKER_TIMEOUT/i.test(resultContent);
+  });
+  assert.ok(timeoutResults.length >= 1, "natural timeout follow-up phase one must produce a timed-out sessions_spawn result");
 }
 
 function sliceTimelineAfterEvent(timeline: ActivityEvent[], event: ActivityEvent): ActivityEvent[] {
