@@ -206,12 +206,6 @@ function extractEvidenceFromRecord(record: Record<string, unknown>): string | nu
       return extracted;
     }
   }
-  for (const field of ["payload", "data", "raw", "output"]) {
-    const extracted = extractEvidenceFromValue(record[field], 0);
-    if (extracted) {
-      return extracted;
-    }
-  }
   return null;
 }
 
