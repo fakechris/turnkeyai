@@ -780,9 +780,10 @@ function classifyBrowserSideEffect(
   }
   if (
     /\b(post publicly|go live)\b/.test(normalized) ||
+    /\brelease\s+(?:this|the)\s+(?:draft|post|article|page|change|changes|build|version)\b/.test(normalized) ||
     hasBrowserActionVerb(
       normalized,
-      ["publish", "deploy", "release"],
+      ["publish", "deploy"],
       ["date", "time", "version", "history", "status", "notes", "metadata", "frequency", "schedule", "cadence", "information", "info", "details", "count", "counts"]
     )
   ) {
@@ -833,16 +834,29 @@ function classifyBrowserSideEffect(
 function hasBrowserActionVerb(input: string, verbs: string[], readOnlyFollowers: string[]): boolean {
   for (const verb of verbs) {
     const escaped = verb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = input.match(new RegExp(`\\b${escaped}\\b(?:\\s+([a-z][a-z_-]*))?`, "i"));
-    if (!match) continue;
-    if (isNegatedBrowserActionVerb(input, match.index ?? 0)) {
-      continue;
+    const matches = input.matchAll(new RegExp(`\\b${escaped}\\b(?:\\s+([a-z][a-z_-]*))?`, "gi"));
+    for (const match of matches) {
+      const index = match.index ?? 0;
+      if (isReadOnlyBrowserActionVerbContext(input, verb, index)) {
+        continue;
+      }
+      if (isNegatedBrowserActionVerb(input, index)) {
+        continue;
+      }
+      const next = match[1]?.toLowerCase();
+      if (next && readOnlyFollowers.includes(next)) {
+        continue;
+      }
+      return true;
     }
-    const next = match[1]?.toLowerCase();
-    if (next && readOnlyFollowers.includes(next)) {
-      continue;
-    }
-    return true;
+  }
+  return false;
+}
+
+function isReadOnlyBrowserActionVerbContext(input: string, verb: string, index: number): boolean {
+  if (verb === "order") {
+    const prefix = input.slice(Math.max(0, index - 40), index).toLowerCase();
+    return /\b(?:priority|sort|sorted|display|list|ranking|ranked)\s+$/.test(prefix);
   }
   return false;
 }
