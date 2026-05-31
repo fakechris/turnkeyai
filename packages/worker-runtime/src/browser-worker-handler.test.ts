@@ -769,6 +769,96 @@ test("browser worker handler uses browser session protocol dispatch modes", asyn
   assert.deepEqual(calls, ["spawn", "send", "resume"]);
 });
 
+test("browser worker handler cold-recreates read-only resume when the browser session disappeared", async () => {
+  const calls: string[] = [];
+  const bridge: BrowserBridge = {
+    ...buildUnusedBrowserBridge(),
+    async resumeSession() {
+      calls.push("resume");
+      throw new Error("browser session not found: session-gone");
+    },
+    async spawnSession(request) {
+      calls.push(`spawn:${request.targetId ?? ""}`);
+      return {
+        ...buildBrowserResult("session-recreated"),
+        dispatchMode: "spawn",
+        resumeMode: "warm",
+        targetResolution: "new_target",
+      };
+    },
+  };
+
+  const handler = new BrowserWorkerHandler({ browserBridge: bridge });
+  const result = await handler.run(
+    buildWorkerInvocationInput({
+      packet: { continuityMode: "resume-existing" },
+      instructions: "Open https://example.com and summarize what you find.",
+      sessionState: {
+        workerRunKey: "worker:browser:task-1",
+        workerType: "browser",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 3,
+        lastResult: {
+          workerType: "browser",
+          status: "completed",
+          summary: "previous browser result",
+          payload: {
+            sessionId: "session-gone",
+            targetId: "target-gone",
+          },
+        },
+      },
+    })
+  );
+
+  assert.equal(result?.status, "completed");
+  assert.deepEqual(calls, ["resume", "spawn:"]);
+  assert.match(result?.summary ?? "", /Resume mode: cold/);
+  assert.match(result?.summary ?? "", /Target resolution: new_target/);
+});
+
+test("browser worker handler does not cold-recreate mutating resume actions", async () => {
+  let spawnCalled = false;
+  const bridge: BrowserBridge = {
+    ...buildUnusedBrowserBridge(),
+    async resumeSession() {
+      throw new Error("browser session not found: session-gone");
+    },
+    async spawnSession() {
+      spawnCalled = true;
+      return buildBrowserResult("session-recreated");
+    },
+  };
+
+  const handler = new BrowserWorkerHandler({ browserBridge: bridge });
+  const result = await handler.run(
+    buildWorkerInvocationInput({
+      packet: { continuityMode: "resume-existing" },
+      instructions: 'Open https://example.com and click "Delete".',
+      sessionState: {
+        workerRunKey: "worker:browser:task-1",
+        workerType: "browser",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 3,
+        lastResult: {
+          workerType: "browser",
+          status: "completed",
+          summary: "previous browser result",
+          payload: {
+            sessionId: "session-gone",
+            targetId: "target-gone",
+          },
+        },
+      },
+    })
+  );
+
+  assert.equal(result?.status, "failed");
+  assert.equal(spawnCalled, false);
+});
+
 test("browser worker handler turns search-only tasks into an executable browser search", async () => {
   let openedUrl = "";
   const bridge: BrowserBridge = {

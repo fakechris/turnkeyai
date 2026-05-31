@@ -163,7 +163,15 @@ export class BrowserWorkerHandler implements WorkerHandler {
     }
 
     if (input.packet.continuityMode === "resume-existing") {
-      return this.browserBridge.resumeSession({ ...request, browserSessionId: request.browserSessionId });
+      try {
+        return await this.browserBridge.resumeSession({ ...request, browserSessionId: request.browserSessionId });
+      } catch (error) {
+        if (!canColdRecreateReadOnlyBrowserSession(request, error)) {
+          throw error;
+        }
+        const recreated = await this.browserBridge.spawnSession(stripBrowserContinuationHandles(request));
+        return { ...recreated, resumeMode: "cold" as const };
+      }
     }
 
     return this.browserBridge.sendSession({ ...request, browserSessionId: request.browserSessionId });
@@ -343,6 +351,8 @@ function abortReason(signal: AbortSignal, fallback: string): string {
 function summarizeBrowserTask(result: Awaited<ReturnType<BrowserBridge["runTask"]>>): string {
   return [
     `Browser worker completed session ${result.sessionId}.`,
+    result.resumeMode ? `Resume mode: ${result.resumeMode}.` : null,
+    result.targetResolution ? `Target resolution: ${result.targetResolution}.` : null,
     `Final URL: ${result.page.finalUrl}.`,
     `Page title: ${result.page.title}.`,
     `Excerpt: ${result.page.textExcerpt}`,
@@ -354,6 +364,32 @@ function summarizeBrowserTask(result: Awaited<ReturnType<BrowserBridge["runTask"
   ]
     .filter((line): line is string => Boolean(line))
     .join("\n");
+}
+
+function canColdRecreateReadOnlyBrowserSession(
+  request: Parameters<BrowserBridge["runTask"]>[0],
+  error: unknown
+): boolean {
+  if (!isRecoverableBrowserContinuationError(error)) {
+    return false;
+  }
+  const actions = Array.isArray(request.actions) ? request.actions : [];
+  const hasUrlOpen = actions.some((action) => action.kind === "open" && typeof action.url === "string" && action.url.trim());
+  return hasUrlOpen && actions.every((action) => READ_ONLY_COLD_RECREATE_ACTIONS.has(action.kind));
+}
+
+const READ_ONLY_COLD_RECREATE_ACTIONS = new Set(["open", "snapshot", "scroll", "console", "screenshot"]);
+
+function isRecoverableBrowserContinuationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /session not found|detached target|invalid resume/i.test(message);
+}
+
+function stripBrowserContinuationHandles(
+  request: Parameters<BrowserBridge["runTask"]>[0]
+): Parameters<BrowserBridge["spawnSession"]>[0] {
+  const { browserSessionId: _browserSessionId, targetId: _targetId, ...spawnRequest } = request;
+  return spawnRequest;
 }
 
 function summarizeBrowserFailure(
