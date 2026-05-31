@@ -243,6 +243,89 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.weakAnswerSignals.includes("model-knowledge fallback"));
   });
 
+  it("accepts bounded browser-unavailable closeout without accepting model-knowledge fallback", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-unavailable-closeout", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.metrics.tool.failed = 1;
+    result.timeline[1]!.text = "browser result failed";
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent:
+        "browser_cdp_unavailable: Browser CDP endpoint unavailable while opening the rendered operations dashboard.",
+    };
+    result.final.text = [
+      "The browser is unavailable, so the dashboard could not be visually verified.",
+      "Verified: the requested source was the operations dashboard URL and the browser attempt failed with a browser transport error.",
+      "Unverified: Queue depth, SLA breach count, owner, escalation trigger, and any rendered client-side state.",
+      "Next action: restore browser/CDP connectivity, rerun the dashboard review, and avoid operational decisions until rendered evidence is captured.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(quality.weakAnswerSignals.includes("tool unavailable fallback"));
+    assert.deepEqual(quality.failures, []);
+
+    result.final.text += " Based on my knowledge, the dashboard is probably fine.";
+    const fallbackQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(fallbackQuality.failures.some((failure) => failure.includes("model-knowledge fallback")));
+  });
+
+  it("rejects browser-unavailable closeout that claims unsupported rendered dashboard facts", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-unavailable-closeout", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.metrics.tool.failed = 1;
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: "browser_cdp_unavailable: connection refused before rendered dashboard evidence was captured.",
+    };
+    result.final.text = [
+      "The browser is unavailable, but Queue depth is 11 and SLA breaches are 3.",
+      "Verified facts are limited, and the next action is to restore browser access.",
+      "Unverified items remain the rendered dashboard state.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(quality.failures.includes("forbidden unsupported rendered queue depth"));
+    assert.ok(quality.failures.includes("forbidden unsupported rendered SLA breaches"));
+  });
+
   it("requires rendered browser evidence for natural dashboard scenarios", () => {
     const result = fakeNaturalResult();
     const spec = {

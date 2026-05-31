@@ -67,6 +67,7 @@ export type NaturalMissionE2eScenario =
   | "natural-followup-continuation"
   | "natural-memory-recall"
   | "natural-approval-dry-run-action"
+  | "natural-browser-unavailable-closeout"
   | "natural-timeout-partial-closeout"
   | "natural-long-delegation";
 
@@ -76,6 +77,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-followup-continuation",
   "natural-memory-recall",
   "natural-approval-dry-run-action",
+  "natural-browser-unavailable-closeout",
   "natural-timeout-partial-closeout",
   "natural-long-delegation",
 ] as const satisfies readonly NaturalMissionE2eScenario[];
@@ -313,6 +315,7 @@ export interface NaturalScenarioSpec {
   requiredEvidencePatterns?: Array<{ label: string; pattern: RegExp }>;
   requiredToolNames?: string[];
   forbiddenPatterns?: Array<{ label: string; pattern: RegExp }>;
+  allowedWeakAnswerSignals?: string[];
 }
 
 export interface NaturalMissionScenarioResult {
@@ -1680,6 +1683,41 @@ export function buildNaturalScenarioSpec(
       requiredAnswerTerms: ["approval", "dry-run", "browser"],
     };
   }
+  if (scenario === "natural-browser-unavailable-closeout") {
+    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
+    return {
+      scenario,
+      title: "Natural browser unavailable closeout",
+      desc: [
+        "Review this operations dashboard as a user would see it in the browser.",
+        `Dashboard: ${dynamicUrl}`,
+        "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
+        "If the browser cannot be reached, close out with what was verified, what remains unverified, and the next action an operator should take.",
+      ].join("\n"),
+      minBytes: 240,
+      minToolResults: 1,
+      maxToolResults: 5,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 3,
+      requiresBrowser: true,
+      requiresApproval: false,
+      allowToolFailure: true,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["browser", "verified", "next action"],
+      requiredAnswerPatterns: [
+        { label: "unverified closeout section", pattern: /\b(?:unverified|not verified)\b/i },
+      ],
+      requiredEvidencePatterns: [
+        { label: "browser unavailable bucket", pattern: /browser_cdp_unavailable|CDP endpoint unavailable|connection refused|ECONNREFUSED|fetch failed/i },
+      ],
+      forbiddenPatterns: [
+        { label: "unsupported rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
+        { label: "unsupported rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+        { label: "unsupported rendered owner", pattern: /Incident Commander/i },
+      ],
+      allowedWeakAnswerSignals: ["tool unavailable fallback"],
+    };
+  }
   if (scenario === "natural-timeout-partial-closeout") {
     return {
       scenario,
@@ -1784,6 +1822,9 @@ export function evaluateNaturalMissionQuality(input: {
   const failures: string[] = [];
   const completed = input.mission.status === "done" && input.metrics.status === "done";
   const weakAnswerSignals = findWeakAnswerSignals(input.final.text);
+  const blockingWeakAnswerSignals = weakAnswerSignals.filter(
+    (signal) => !(input.spec.allowedWeakAnswerSignals ?? []).includes(signal)
+  );
   const toolNames = collectToolNames(input.timeline);
   const evidenceText = collectTimelineEvidenceText(input.timeline);
   const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
@@ -1836,7 +1877,7 @@ export function evaluateNaturalMissionQuality(input: {
   if (!subAgentCompleted) failures.push("sub-agent work did not complete cleanly");
   if (!finalAnswerHasEvidence) failures.push("final answer lacks required source-backed evidence");
   if (!finalAnswerUseful) failures.push("final answer is too thin or not decision-useful");
-  if (weakAnswerSignals.length > 0) failures.push(`weak answer signals: ${weakAnswerSignals.join(", ")}`);
+  if (blockingWeakAnswerSignals.length > 0) failures.push(`weak answer signals: ${blockingWeakAnswerSignals.join(", ")}`);
   for (const toolName of input.spec.requiredToolNames ?? []) {
     if (!toolNames.has(toolName)) failures.push(`missing required tool family evidence: ${toolName}`);
   }

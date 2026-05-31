@@ -3384,3 +3384,77 @@ Convergence question:
 - Next required gate: add failure-injection acceptance for CDP unavailable,
   attach failure, timeout, and target detach so those buckets produce bounded
   operator-facing outcomes instead of weak answers or loops.
+
+## 2026-05-31 13:36 CST - Natural Browser CDP Unavailable Closeout
+
+Direction: converging
+
+Execution Kernel:
+- Added a natural browser-unavailable acceptance scenario that uses the same
+  browser dashboard prompt shape but forces the browser transport through an
+  unavailable direct-CDP endpoint.
+- Fixed a persistent-context rejection leak in the browser session manager:
+  the active caller already received the launch failure, but the cached
+  derived context promise could still become a process-level unhandled
+  rejection before any reuse caller awaited it.
+- The natural quality gate now distinguishes an allowed, evidence-backed
+  browser-unavailable closeout from forbidden model-knowledge fallback.
+
+Result Quality:
+- The passing real run produced a bounded operator closeout instead of a loop
+  or weak dashboard summary.
+- The final answer explicitly separated verified runtime failure from
+  unverified dashboard content and did not claim rendered Queue depth, SLA, or
+  owner facts after browser evidence was unavailable.
+- The only weak-answer signal retained in the report is the expected
+  tool-unavailable signal; model-knowledge fallback remains a failure.
+
+Workbench UX:
+- No UI changed.
+- The mission timeline and metrics now have real evidence for the future
+  workbench behavior: browser transport failure can end as a clear user-facing
+  closeout rather than a stuck mission or daemon crash.
+
+Browser Reliability:
+- Baseline forced-CDP-unavailable run crashed the daemon through an unhandled
+  persistent-context rejection.
+- After the fix, the same forced failure produced a completed natural mission:
+  browser worker used, no profile fallback, no active/waiting/stale runtime
+  liveness, and a useful final closeout.
+
+Acceptance Evidence:
+- Baseline command:
+  `TURNKEYAI_BROWSER_TRANSPORT=direct-cdp
+  TURNKEYAI_BROWSER_CDP_ENDPOINT=http://127.0.0.1:9
+  npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-unavailable-closeout
+  --scenario-timeout-ms 300000
+  --json tmp/natural-browser-unavailable-e2e.json`: failed because the daemon
+  exited on `browser_cdp_unavailable`.
+- `npm test -- --runInBand scripts/mission-tool-use-e2e-report.test.ts`:
+  passed, 1286 tests.
+- `npm test -- --runInBand
+  packages/browser-bridge/src/chrome-session-manager.test.ts`: passed,
+  1286 tests.
+- Final real E2E command with the same forced unavailable CDP endpoint:
+  passed.
+- Real mission: `msn.mptcjoro.1`, status `done`, natural `passed`,
+  tools `1/1`, sessions `1/0`, browser `yes`, profile fallback `0`,
+  liveness `0/0/0`, final bytes `741`, weak-answer signals
+  `tool unavailable fallback` only.
+
+Regression Risk:
+- Main risk is over-allowing browser-unavailable language. Focused tests keep
+  the exception scoped to the new failure-closeout scenario and still reject
+  model-knowledge fallback.
+- Another risk is accepting unsupported facts when browser evidence is missing.
+  The scenario explicitly forbids rendered dashboard fact claims in the final
+  answer when the browser could not verify them.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a forced real browser transport outage no longer crashes the
+  daemon or stalls the mission; it produces a terminal, evidence-bounded
+  operator closeout under a natural LLM prompt.
+- Next required gate: extend the same natural-real-LLM failure-injection
+  standard to attach failure, command timeout, and target/session detach.

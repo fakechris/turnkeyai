@@ -927,6 +927,10 @@ export class ChromeSessionManager {
         throw error;
       });
     const created = createdWithMeta.then(({ context }) => context);
+    // The metadata promise is awaited by the active caller, but this derived
+    // context promise also lives in the reuse cache. If the launch fails before
+    // another caller awaits the cached promise, Node treats it as unhandled.
+    created.catch(() => undefined);
     record.context = created;
     this.livePersistentContexts.set(persistentDir, record);
     this.liveContexts.set(browserSessionId, created);
