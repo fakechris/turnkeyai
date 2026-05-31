@@ -3059,3 +3059,63 @@ Convergence question:
 - If no, next required gate: run the natural long delegation and natural
   browser dynamic/dashboard gates after the next prompt/runtime slice, and
   record mission ids plus natural report summaries.
+
+## 2026-05-31 11:43 CST - Natural Memory Recall Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added `natural-memory-recall` to the natural mission matrix and the default
+  real-acceptance natural scenario list.
+- The scenario uses a natural follow-up to recover durable Helios-47 launch
+  context through native memory behavior. It does not use contract markers,
+  fixed final-answer shape, or tool-name instructions in the user prompt.
+- The first real run exposed a useful failure: the model searched memory but
+  stopped before inspecting a candidate entry. The scenario now asks for
+  durable memory around the exact codename and requires the runtime evidence to
+  include both search and get phases.
+
+Result Quality:
+- The focused real LLM run completed with the remembered launch window,
+  release owner, residual risk, source-backed evidence, no weak-answer signals,
+  and no stuck liveness.
+- This proves one narrow P0-E capability: natural durable memory recall can
+  recover a seeded thread memory item under a user-like follow-up.
+
+Workbench UX:
+- No UI changed.
+- Downstream readiness views now receive this scenario through the existing
+  natural mission report path when full real acceptance runs.
+
+Browser Reliability:
+- Browser behavior did not change and was not exercised by this memory gate.
+- Browser-backed natural capability still needs its own dynamic/dashboard
+  gate before claiming browser reliability progress.
+
+Acceptance Evidence:
+- `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts
+  scripts/real-llm-acceptance.test.ts`: passed, 18 tests.
+- `npm run typecheck`: passed.
+- `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-memory-recall --scenario-timeout-ms
+  300000 --json tmp/natural-memory-recall-e2e.json`: passed.
+- Real mission: `msn.mpt8ijl6.1`, status `done`, natural `passed`, tools
+  `2/2`, sessions `0/0`, liveness `0/0/0`, final bytes `716`, weak-answer
+  signals `none`.
+
+Regression Risk:
+- Main risk is that this scenario could become too suggestive if the prompt
+  starts spelling out tool mechanics. The prompt-policy test continues to
+  reject fixed markers, exact answer shape, and explicit tool-call commands.
+- Another risk is artificial memory seeding racing with context refresh. The
+  fixture now merges with existing thread memory, waits for setup completion,
+  and asserts the launch note exists before the natural follow-up starts.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a previously unproven natural memory-recall capability now has a
+  focused real LLM mission artifact with ordered native memory tool evidence
+  and a useful final answer.
+- Next required gate: run natural browser dynamic/dashboard and natural long
+  delegation gates so memory is not the only P0 capability with fresh real
+  evidence.

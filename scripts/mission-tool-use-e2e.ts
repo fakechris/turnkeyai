@@ -65,6 +65,7 @@ export type NaturalMissionE2eScenario =
   | "natural-comparison-research"
   | "natural-browser-dynamic-page"
   | "natural-followup-continuation"
+  | "natural-memory-recall"
   | "natural-approval-dry-run-action"
   | "natural-timeout-partial-closeout"
   | "natural-long-delegation";
@@ -73,6 +74,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-comparison-research",
   "natural-browser-dynamic-page",
   "natural-followup-continuation",
+  "natural-memory-recall",
   "natural-approval-dry-run-action",
   "natural-timeout-partial-closeout",
   "natural-long-delegation",
@@ -1112,6 +1114,7 @@ async function runMissionMemoryRecallScenario(input: {
   await seedMemoryRecallFixture({
     runtimeRoot: input.runtimeRoot,
     threadId: mission.threadId,
+    markerMode: "natural",
   });
 
   await requestJson<{ accepted: boolean; missionId: string }>({
@@ -1213,6 +1216,9 @@ async function runNaturalMissionScenario(input: {
 }): Promise<NaturalMissionScenarioResult> {
   if (input.scenario === "natural-followup-continuation") {
     return runNaturalFollowupScenario(input);
+  }
+  if (input.scenario === "natural-memory-recall") {
+    return runNaturalMemoryRecallScenario(input);
   }
   if (input.scenario === "natural-approval-dry-run-action") {
     return runNaturalApprovalScenario(input);
@@ -1326,6 +1332,89 @@ async function runNaturalFollowupScenario(input: {
     `natural mission follow-up quality failures: ${quality.failures.join("; ")}\n${final.text}`
   );
   return { scenario: "natural-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function runNaturalMemoryRecallScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+}): Promise<NaturalMissionScenarioResult> {
+  const spec = buildNaturalScenarioSpec("natural-memory-recall", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const setupPrompt = [
+    "Start a launch-planning thread for Helios-47.",
+    "No research is needed yet; briefly acknowledge that the mission can continue when launch context is available.",
+  ].join("\n");
+  assertNaturalPromptAllowed(setupPrompt);
+  const mission = await requestJson<Mission>({
+    method: "POST",
+    url: `${input.baseUrl}/missions`,
+    token: input.token,
+    body: {
+      title: "Natural durable memory recall",
+      mode: "research",
+      desc: setupPrompt,
+      owner: "natural-e2e",
+      ownerLabel: "Natural E2E",
+    },
+  });
+  assert.ok(mission.threadId, "natural memory recall mission requires a linked team thread");
+
+  const setupResult = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+  });
+  const setupFinal = findLatestThoughtEvent(setupResult.timeline);
+  assert.ok(setupFinal, "natural memory recall setup must include an assistant answer");
+  await sleep(1_000);
+
+  await seedMemoryRecallFixture({
+    runtimeRoot: input.runtimeRoot,
+    threadId: mission.threadId,
+    markerMode: "natural",
+  });
+
+  await requestJson<{ accepted: boolean; missionId: string }>({
+    method: "POST",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+    token: input.token,
+    body: { content: spec.desc },
+  });
+
+  const result = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+    afterThoughtMs: setupFinal.tMs,
+    ...(setupFinal.id ? { afterThoughtId: setupFinal.id } : {}),
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  const final = findLatestThoughtEvent(result.timeline);
+  assert.ok(final, "natural memory recall mission must include a final assistant answer");
+  const quality = evaluateNaturalMissionQuality({
+    spec,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+  });
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `natural mission memory recall quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "natural-memory-recall", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
 async function runNaturalApprovalScenario(input: {
@@ -1518,6 +1607,39 @@ export function buildNaturalScenarioSpec(
         { label: "alpha price", pattern: /\$19\b/ },
       ],
       forbiddenPatterns: unsupportedVendorComparisonPatterns(),
+    };
+  }
+  if (scenario === "natural-memory-recall") {
+    return {
+      scenario,
+      title: "Natural durable memory recall",
+      desc: [
+        "Continue from the launch-planning context in this mission.",
+        "The team previously captured durable launch coordination notes for the Helios-47 codename.",
+        "Please check durable memory for Helios-47 specifically, recover the launch window, owner, and residual risk if they are available, and inspect any candidate memory entry before relying on it.",
+        "If the Helios-47 context cannot be verified from durable memory, say what is missing rather than guessing.",
+        "Keep the answer concise, evidence-backed, and useful for the release lead.",
+      ].join("\n"),
+      minBytes: 260,
+      minToolResults: 2,
+      maxToolResults: 5,
+      minSpawnedSessions: 0,
+      maxSpawnedSessions: 1,
+      requiresBrowser: false,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 2,
+      requiredAnswerTerms: ["Helios-47", "Tuesday 09:30", "Release Captain", "residual risk"],
+      requiredAnswerPatterns: [
+        { label: "launch window", pattern: /Tuesday\s+09:30/i },
+        { label: "release owner", pattern: /Release Captain/i },
+      ],
+      requiredToolNames: ["memory_search", "memory_get"],
+      forbiddenPatterns: [
+        { label: "session delegation", pattern: /\bsessions_(?:spawn|send|list|history)\b/i },
+        { label: "unsupported launch window", pattern: /\b(?:Monday|Wednesday|Thursday|Friday)\s+\d{1,2}:\d{2}\b/i },
+        { label: "unsupported owner", pattern: /\b(?:Product Lead|Incident Commander|Launch Manager)\b/i },
+      ],
     };
   }
   if (scenario === "natural-approval-dry-run-action") {
@@ -2522,20 +2644,42 @@ function buildMemoryRecallSetupSpec(): ScenarioSpec {
   };
 }
 
-async function seedMemoryRecallFixture(input: { runtimeRoot: string; threadId: string }): Promise<void> {
+async function seedMemoryRecallFixture(input: {
+  runtimeRoot: string;
+  threadId: string;
+  markerMode?: "contract" | "natural";
+}): Promise<void> {
   const store = new FileThreadMemoryStore({
     rootDir: path.join(input.runtimeRoot, "data", "context", "thread-memory"),
   });
+  const launchNote =
+    input.markerMode === "natural"
+      ? "Helios-47 launch window is Tuesday 09:30. Owner is Release Captain. Residual risk: calendar lock is remembered locally and should be verified before external release announcements."
+      : `Memory recall fixture: ${MEMORY_SOURCE_MARKER}. Helios-47 launch window is Tuesday 09:30. Owner is Release Captain.`;
+  const existing = await store.get(input.threadId);
   const record: ThreadMemoryRecord = {
     threadId: input.threadId,
     updatedAt: Date.now(),
-    preferences: ["For memory recall acceptance, prefer source-backed launch briefs over unstated assumptions."],
-    constraints: ["When asked about Helios-47, use the durable memory launch window exactly as written."],
-    longTermNotes: [
-      `Memory recall fixture: ${MEMORY_SOURCE_MARKER}. Helios-47 launch window is Tuesday 09:30. Owner is Release Captain.`,
-    ],
+    preferences: appendUnique(
+      existing?.preferences ?? [],
+      "For memory recall acceptance, prefer source-backed launch briefs over unstated assumptions."
+    ),
+    constraints: appendUnique(
+      existing?.constraints ?? [],
+      "When asked about Helios-47, use the durable memory launch window exactly as written."
+    ),
+    longTermNotes: appendUnique(existing?.longTermNotes ?? [], launchNote),
   };
   await store.put(record);
+  const saved = await store.get(input.threadId);
+  assert.ok(
+    saved?.longTermNotes.some((note) => note.includes("Helios-47") && note.includes("Tuesday 09:30")),
+    "memory recall fixture must persist the Helios-47 launch note before follow-up"
+  );
+}
+
+function appendUnique(values: string[], next: string): string[] {
+  return values.includes(next) ? values : [...values, next];
 }
 
 function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer): ScenarioSpec {
