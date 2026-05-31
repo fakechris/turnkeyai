@@ -203,6 +203,14 @@ export function parseRealAcceptanceArgs(args: string[]): RealAcceptanceOptions {
   if (options.skipNaturalMission && options.naturalMissionScenarios) {
     throw new Error("--natural-mission-scenarios cannot be combined with --skip-natural-mission");
   }
+  if (options.recordValidationOps && !options.writeMissionJson) {
+    throw new Error("--no-mission-json cannot be combined with validation-ops recording; add --no-record-validation-ops for scratch runs");
+  }
+  if (options.recordValidationOps && !options.skipNaturalMission && !options.writeNaturalMissionJson) {
+    throw new Error(
+      "--no-natural-mission-json cannot be combined with validation-ops recording while natural mission E2E is enabled; add --no-record-validation-ops for scratch runs"
+    );
+  }
   return options;
 }
 
@@ -412,6 +420,15 @@ async function recordValidationOps(
   const naturalMissionReport = plan.naturalMissionJsonPath && existsSync(plan.naturalMissionJsonPath)
     ? summarizeNaturalMissionJson(plan.naturalMissionJsonPath)
     : null;
+  assertRealAcceptanceArtifactIntegrity({
+    status: result.status,
+    missionScenarios: plan.missionScenarios,
+    naturalMissionScenarios: plan.naturalMissionScenarios,
+    missionJsonPresent: Boolean(plan.missionJsonPath && existsSync(plan.missionJsonPath)),
+    naturalMissionJsonPresent: Boolean(plan.naturalMissionJsonPath && existsSync(plan.naturalMissionJsonPath)),
+    missionReport,
+    naturalMissionReport,
+  });
   const record = buildValidationOpsRecordFromRealLlmAcceptance({
     runId: plan.runId,
     startedAt: plan.startedAt,
@@ -437,6 +454,52 @@ async function recordValidationOps(
   });
   await store.put(record);
   console.log(`validation-ops recorded: ${record.runId} (${record.status})`);
+}
+
+export function assertRealAcceptanceArtifactIntegrity(input: {
+  status: "passed" | "failed";
+  missionScenarios: string[];
+  naturalMissionScenarios: string[];
+  missionJsonPresent: boolean;
+  naturalMissionJsonPresent: boolean;
+  missionReport: ReturnType<typeof summarizeMissionE2eReportForValidationOps>;
+  naturalMissionReport: ReturnType<typeof summarizeNaturalMissionE2eReportForValidationOps>;
+}): void {
+  if (input.status !== "passed") {
+    return;
+  }
+  if (input.missionScenarios.length > 0) {
+    if (!input.missionJsonPresent || !input.missionReport) {
+      throw new Error("real acceptance passed without a mission E2E report artifact");
+    }
+    if (
+      input.missionReport.status !== "passed" ||
+      input.missionReport.failedScenarios > 0 ||
+      input.missionReport.qualityFailures > 0 ||
+      input.missionReport.qualityCheckFailures > 0 ||
+      input.missionReport.livenessActive > 0 ||
+      input.missionReport.livenessWaiting > 0 ||
+      input.missionReport.livenessStale > 0
+    ) {
+      throw new Error("real acceptance mission E2E report does not prove a passing capability gate");
+    }
+  }
+  if (input.naturalMissionScenarios.length > 0) {
+    if (!input.naturalMissionJsonPresent || !input.naturalMissionReport) {
+      throw new Error("real acceptance passed without a natural mission E2E report artifact");
+    }
+    if (
+      input.naturalMissionReport.status !== "passed" ||
+      input.naturalMissionReport.failedScenarios > 0 ||
+      input.naturalMissionReport.completed !== input.naturalMissionReport.scenarioCount ||
+      input.naturalMissionReport.stuckOrLoop > 0 ||
+      input.naturalMissionReport.livenessActive > 0 ||
+      input.naturalMissionReport.livenessWaiting > 0 ||
+      input.naturalMissionReport.livenessStale > 0
+    ) {
+      throw new Error("real acceptance natural mission report does not prove a passing capability gate");
+    }
+  }
 }
 
 function summarizeMissionJson(missionJsonPath: string): ReturnType<typeof summarizeMissionE2eReportForValidationOps> {
