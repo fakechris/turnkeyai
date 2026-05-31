@@ -4015,3 +4015,74 @@ Convergence question:
 - Next required gate: browser process crash / unavailable-session recovery, and
   user-visible replay that makes restart/resume mode understandable without
   reading raw tool events.
+
+## 2026-05-31 19:52 CST - Natural Browser Cold Recreation Continuation Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added conservative browser recovery for explicit `sessions_send`
+  continuation: if a read-only browser continuation targets a missing or
+  detached browser session, the browser worker reopens the same read-only task
+  without retrying mutating actions.
+- Tightened native tool routing so a model that first calls `sessions_list`
+  during an explicit follow-up can still have a duplicate `sessions_spawn`
+  rewritten to `sessions_send` against the listed existing session.
+- Narrowed browser permission classification so read-only wording such as
+  "submit findings/report/summary" does not become a false browser form-submit
+  approval.
+
+Result Quality:
+- The real natural run completed with useful browser-backed evidence after the
+  original browser session was revoked.
+- Final output preserved queue depth, SLA breaches, Incident Commander owner,
+  next action, and residual uncertainty, with no weak-answer signals.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The replayable flow is clearer for future UI work: phase-one browser
+  `sessions_spawn`, explicit follow-up, `sessions_send` to the same sub-agent
+  session, replacement browser session evidence, then final answer.
+
+Browser Reliability:
+- The gate revoked the original browser session before follow-up and still
+  completed by re-opening the read-only dashboard through the existing browser
+  child session.
+- Evidence proves missing-browser-session recovery for read-only dashboard
+  review. It does not prove safe recovery for browser mutations; those remain
+  intentionally blocked from cold recreation.
+
+Acceptance Evidence:
+- Focused regressions:
+  `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts
+  packages/role-runtime/src/tool-use.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts
+  packages/worker-runtime/src/browser-worker-handler.test.ts`: passed, 120
+  tests.
+- `npm run typecheck`: passed.
+- Real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-cold-recreation-continuation
+  --scenario-timeout-ms 360000
+  --json tmp/natural-browser-cold-recreation-e2e.json`: passed.
+- Real mission: `msn.mptpwruc.1`, status `done`, natural `passed`, tools
+  `3/3`, sessions `1/1`, browser `yes`, profile fallback `0`, stuck `no`,
+  final bytes `1085`, weak-answer signals `none`.
+
+Regression Risk:
+- The continuation rewrite must stay scoped to explicit follow-up language plus
+  actual listed session evidence; failed session-result payloads are covered by
+  regression tests so nested success-looking payloads do not hijack new spawns.
+- The cold recreation path is read-only by design. If future product flows need
+  mutation recovery, that must go through approval and idempotency design rather
+  than reusing this path.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a real model followed up naturally after browser-session
+  revocation, reused the existing browser child session, recovered by
+  re-opening the dashboard, completed with useful evidence, and left no stuck
+  runtime state.
+- Next required gate: long multi-source task with browser plus non-browser
+  sub-agents under wall-clock budget, and user-visible replay that explains
+  recovery without raw JSON.

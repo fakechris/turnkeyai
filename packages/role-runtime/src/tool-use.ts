@@ -818,7 +818,33 @@ function classifyBrowserSideEffect(
         "reject",
         "cancel",
       ],
-      ["date", "time", "version", "history", "status", "frequency", "metadata", "count", "counts", "stats", "statistics"]
+      [
+        "date",
+        "time",
+        "version",
+        "history",
+        "status",
+        "frequency",
+        "metadata",
+        "count",
+        "counts",
+        "stats",
+        "statistics",
+        "answer",
+        "answers",
+        "evidence",
+        "finding",
+        "findings",
+        "recommendation",
+        "recommendations",
+        "report",
+        "reports",
+        "result",
+        "results",
+        "review",
+        "summary",
+        "summaries",
+      ]
     )
   ) {
     return {

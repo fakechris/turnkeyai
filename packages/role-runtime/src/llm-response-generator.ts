@@ -109,7 +109,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const memoryFlushes: PreCompactionMemoryFlushResult[] = [];
 
     await this.recordAssemblyBoundarySafely(input.activation, input.packet, selection);
-    const sessionContinuationDirective =
+    const baseSessionContinuationDirective =
       activeToolLoop ? findSessionContinuationDirective(input.packet.taskPrompt) : null;
 
     const initialGatewayInput = buildGatewayInput({
@@ -124,7 +124,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolChoice: "auto" as const,
           }
         : {}),
-      ...(sessionContinuationDirective ? { sessionContinuationDirective } : {}),
+      ...(baseSessionContinuationDirective ? { sessionContinuationDirective: baseSessionContinuationDirective } : {}),
     });
 
     const toolTrace: NativeToolRoundTrace[] = [];
@@ -157,9 +157,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         memoryFlushes.push(generated.memoryFlush);
       }
 
-      const toolCalls = normalizeSessionToolCalls(
-        applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective)
-      );
+      const sessionContinuationDirective =
+        baseSessionContinuationDirective ??
+        (activeToolLoop ? findSessionContinuationDirective(buildContinuationDirectiveContext(input.packet.taskPrompt, messages)) : null);
+      const toolCalls = normalizeSessionToolCalls(applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective));
       if (activeToolLoop && toolCalls.length === 0 && containsAnyToolCallForm(result)) {
         const maxRounds = activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
         toolLoopCloseout = {
@@ -1181,12 +1182,71 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
   return null;
 }
 
+function buildContinuationDirectiveContext(taskPrompt: string, messages: LLMMessage[]): string {
+  const toolEvidence = messages
+    .filter((message) => message.role === "tool")
+    .map((message) => llmMessageContentToText(message.content))
+    .filter((content) => content.includes("session_key"))
+    .join("\n");
+  return toolEvidence ? `${taskPrompt}\n${toolEvidence}` : taskPrompt;
+}
+
+function llmMessageContentToText(content: LLMMessage["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  return content
+    .map((block) => {
+      if (block.type === "text") {
+        return block.text;
+      }
+      if (block.type === "tool_result") {
+        return block.content;
+      }
+      if (block.type === "tool_use") {
+        return JSON.stringify({ name: block.name, input: block.input });
+      }
+      return "";
+    })
+    .join("\n");
+}
+
 function sessionContextSupportsContinuation(context: string): boolean {
   if (/\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(context)) {
     return true;
   }
+  if (contextHasListedContinuableSession(context)) {
+    return true;
+  }
   for (const result of extractSessionToolResultRecords(context)) {
     if (sessionToolResultSupportsContinuation(result)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function contextHasListedContinuableSession(context: string): boolean {
+  for (const parsed of parseJsonObjectsFromContext(context)) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      continue;
+    }
+    const sessions = (parsed as Record<string, unknown>)["sessions"];
+    if (!Array.isArray(sessions)) {
+      continue;
+    }
+    if (
+      sessions.some((session) => {
+        if (!session || typeof session !== "object" || Array.isArray(session)) {
+          return false;
+        }
+        const record = session as Record<string, unknown>;
+        return (
+          typeof record["session_key"] === "string" &&
+          /^(?:done|completed|resumable|timeout|cancelled)$/.test(String(record["status"] ?? ""))
+        );
+      })
+    ) {
       return true;
     }
   }

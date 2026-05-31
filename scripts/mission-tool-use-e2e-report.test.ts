@@ -10,6 +10,7 @@ import {
   buildMissionE2eJsonReport,
   evaluateNaturalMissionQuality,
   extractCancelledSessionKey,
+  extractBrowserSessionIdForSpawnAgent,
   extractSessionKeyForSpawnAgent,
   extractTimedOutSessionKey,
   formatMissionScenarioPass,
@@ -792,6 +793,147 @@ describe("mission tool-use e2e report", () => {
 
     assert.equal(quality.profileFallbackFree, false);
     assert.ok(quality.failures.includes("browser profile fallback occurred 1 time(s)"));
+  });
+
+
+  it("requires natural browser cold recreation to stay useful and visible", () => {
+    const spec = buildNaturalScenarioSpec("natural-browser-cold-recreation-continuation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-browser-cold-recreation-continuation";
+    result.metrics.tool.requested = 2;
+    result.metrics.tool.results = 2;
+    result.metrics.sessions.spawned = 1;
+    result.metrics.sessions.continued = 1;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    const phaseOneFinal = {
+      id: "thought.browser.cold.phase-one",
+      kind: "thought",
+      text: "The dashboard shows Queue depth 11, SLA breaches 3, and Incident Commander as owner.",
+      tMs: 3000,
+    };
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "browser call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          toolCallId: "call-browser",
+          callInput: JSON.stringify({ agent_id: "browser", task: "review dashboard before cold recreation" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser result",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          toolCallId: "call-browser",
+          resultContent: JSON.stringify({
+            status: "completed",
+            session_key: "worker:browser:cold",
+            payload: {
+              sessionId: "browser-session-original",
+            },
+            result: "Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander.",
+          }),
+        },
+      },
+      phaseOneFinal,
+      {
+        kind: "tool",
+        text: "browser cold follow-up call",
+        tMs: 4000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "call",
+          callInput: JSON.stringify({ session_key: "worker:browser:cold", message: "continue after browser session loss" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser cold follow-up result",
+        tMs: 5000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          resultContent:
+            'Resume mode: cold. Target resolution: new_target. Rendered dashboard evidence shows Queue depth: 11, SLA breaches: 3, and Recommended owner: Incident Commander. "payload":{"sessionId":"browser-session-recreated","resumeMode":"cold"}',
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "I recovered by reopening the read-only dashboard in a new browser session after the previous session was unavailable.",
+          "Queue depth remains 11 and SLA breaches remain 3, so the next action is to keep the escalation active.",
+          "Incident Commander remains the owner because the browser continuation re-checked the rendered dashboard evidence.",
+          "My recommendation is to keep the Incident Commander assigned, clear the queue bottleneck first, and ask the operator to validate the three SLA-breach tickets before closing the incident.",
+          "This is useful but still bounded evidence: the dashboard was rendered again after recovery, while residual risk remains around data freshness and ticket-level root cause.",
+        ].join(" "),
+        tMs: 6000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    assert.equal(extractBrowserSessionIdForSpawnAgent(result.timeline, "browser"), "browser-session-original");
+    result.timeline[1]!.runtime = {
+      ...result.timeline[1]!.runtime,
+      resultContent: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-1",
+        session_key: "worker:browser:cold",
+        agent_id: "browser",
+        status: "completed",
+        tool_chain: ["browser"],
+        result: "Browser worker completed session browser-session-summary-only.",
+        final_content: null,
+      }),
+    };
+    assert.equal(extractBrowserSessionIdForSpawnAgent(result.timeline, "browser"), "browser-session-summary-only");
+    result.timeline[1]!.runtime = {
+      ...result.timeline[1]!.runtime,
+      resultContent: "Screenshot path: /tmp/browser-artifacts/browser-session-canonical-only/01-dashboard.png",
+    };
+    assert.equal(extractBrowserSessionIdForSpawnAgent(result.timeline, "browser"), "browser-session-canonical-only");
+    assertNaturalFollowupReusedExistingSession({
+      timeline: result.timeline,
+      phaseOneFinal,
+      expectedSessionKey: "worker:browser:cold",
+    });
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+
+    result.timeline[4]!.runtime = {
+      ...result.timeline[4]!.runtime,
+      resultContent: "Rendered dashboard evidence shows Queue depth: 11 and SLA breaches: 3, but no recovery mode was recorded.",
+    };
+    const missingColdEvidence = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(missingColdEvidence.failures.includes("missing evidence cold recreation evidence"));
   });
 
 
