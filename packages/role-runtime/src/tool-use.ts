@@ -11,6 +11,7 @@ import {
 } from "@turnkeyai/core-types/team";
 import type {
   RoleActivationInput,
+  BrowserSideEffectApprovalContext,
   RuntimeProgressRecorder,
   WorkerExecutionResult,
   WorkerSessionState,
@@ -393,10 +394,16 @@ async function executePermissionQuery(
     return errorResult(input.call, "permission_query requires action, title, risk, level, scope, and rationale");
   }
   const role = input.activation.thread.roles.find((item) => item.roleId === input.activation.runState.roleId);
-  const cacheKey = requiredString(input.call.input.cache_key);
   const workerType = parseWorkerKind(input.call.input.worker_kind);
+  const effectiveWorkerType = action.startsWith("browser.") ? "browser" : workerType;
   const missionId = requiredString(input.call.input.mission_id);
   const affects = readStringArray(input.call.input.affects);
+  const explicitCacheKey = requiredString(input.call.input.cache_key);
+  const cacheKey =
+    explicitCacheKey ??
+    (effectiveWorkerType === "browser" && level === "approval" && action.startsWith("browser.")
+      ? browserSideEffectCacheKey(input.activation.thread.threadId, action, scope)
+      : null);
   const result = await toolPermissionService.request({
     threadId: input.activation.thread.threadId,
     roleId: input.activation.runState.roleId,
@@ -410,7 +417,7 @@ async function executePermissionQuery(
       scope,
       rationale,
       ...(cacheKey ? { cacheKey } : {}),
-      ...(workerType ? { workerType } : {}),
+      ...(effectiveWorkerType ? { workerType: effectiveWorkerType } : {}),
     },
     ...(missionId ? { missionId } : {}),
     ...(affects.length ? { affects } : {}),
@@ -521,6 +528,7 @@ function withPermissionEventType<T extends object>(eventType: string, result: T)
 interface BrowserSideEffectGateOutcome {
   blocked?: RoleToolExecutionResult;
   progress?: RoleToolProgressEvent[];
+  approvedContext?: BrowserSideEffectApprovalContext;
 }
 
 async function maybeGateBrowserSideEffect(input: {
@@ -587,6 +595,7 @@ async function maybeGateBrowserSideEffect(input: {
   }
   if (result.status === "already_granted") {
     return {
+      approvedContext: buildBrowserSideEffectApprovalContext(risk.action, risk.scope, result.requirement.cacheKey),
       progress: [
         {
           phase: "progress",
@@ -672,6 +681,7 @@ async function maybeGateBrowserSideEffect(input: {
       }
       if (applied.status === "applied") {
         return {
+          approvedContext: buildBrowserSideEffectApprovalContext(risk.action, risk.scope, applied.cacheKey),
           progress: [
             queryProgress,
             decisionProgress,
@@ -968,12 +978,21 @@ async function executeSessionsSpawn(
   }
   const approvalProgress = gate?.progress ?? [];
   const label = requiredString(input.call.input.label);
-  const delegatedTaskPrompt = buildDelegatedTaskPrompt(task, input.activation.handoff.payload);
+  const delegatedTaskPrompt = buildDelegatedTaskPrompt(
+    task,
+    input.activation.handoff.payload,
+    gate?.approvedContext
+  );
+  const runtimeApprovalContext = appendRuntimeBrowserApprovalContext(
+    input.packet.runtimeApprovalContext,
+    gate?.approvedContext
+  );
   const packet = {
     ...input.packet,
     taskPrompt: delegatedTaskPrompt,
     preferredWorkerKinds: [agentId],
     continuityMode: "fresh" as const,
+    ...(runtimeApprovalContext ? { runtimeApprovalContext } : {}),
     workerSession: {
       parentSessionKey: input.activation.runState.runKey,
       toolCallId: input.call.id,
@@ -1098,20 +1117,59 @@ function scopeWorkerActivationToToolCall(activation: RoleActivationInput, toolCa
 
 function buildDelegatedTaskPrompt(
   task: string,
-  payload: RoleActivationInput["handoff"]["payload"]
+  payload: RoleActivationInput["handoff"]["payload"],
+  approvalContext?: BrowserSideEffectApprovalContext
 ): string {
-  if (/https?:\/\//i.test(task)) {
-    return task;
-  }
+  const hasUrl = /https?:\/\//i.test(task);
+  const taskWithApproval = approvalContext ? appendBrowserApprovalContext(task, approvalContext) : task;
+  if (hasUrl) return taskWithApproval;
   const parentContext = extractDelegationParentContext(task, payload);
   if (!parentContext) {
-    return task;
+    return taskWithApproval;
   }
   return [
-    task,
+    taskWithApproval,
     "",
     "Parent mission context relevant to this delegated task:",
     parentContext,
+  ].join("\n");
+}
+
+function appendRuntimeBrowserApprovalContext(
+  existing: RolePromptPacket["runtimeApprovalContext"],
+  context: BrowserSideEffectApprovalContext | undefined
+): RolePromptPacket["runtimeApprovalContext"] | undefined {
+  if (!context) return existing;
+  return {
+    ...existing,
+    browserSideEffects: [...(existing?.browserSideEffects ?? []), context],
+  };
+}
+
+function buildBrowserSideEffectApprovalContext(
+  action: string,
+  scope: BrowserSideEffectApprovalContext["scope"],
+  cacheKey?: string
+): BrowserSideEffectApprovalContext {
+  return {
+    action,
+    scope,
+    ...(cacheKey ? { cacheKey } : {}),
+  };
+}
+
+function appendBrowserApprovalContext(
+  task: string,
+  context: BrowserSideEffectApprovalContext
+): string {
+  return [
+    task,
+    "",
+    "Runtime approval context:",
+    `- The parent runtime approval is granted and the permission cache is already applied for scoped browser action ${context.action}.`,
+    `- Scope: ${context.scope}.`,
+    ...(context.cacheKey ? [`- Permission cache key: ${context.cacheKey}.`] : []),
+    "- Perform only this approved scoped browser action, then verify the browser result.",
   ].join("\n");
 }
 
@@ -1223,11 +1281,16 @@ async function executeSessionsSend(
     return gate.blocked;
   }
   const approvalProgress = gate?.progress ?? [];
+  const runtimeApprovalContext = appendRuntimeBrowserApprovalContext(
+    input.packet.runtimeApprovalContext,
+    gate?.approvedContext
+  );
   const packet = {
     ...input.packet,
-    taskPrompt: message,
+    taskPrompt: gate?.approvedContext ? appendBrowserApprovalContext(message, gate.approvedContext) : message,
     preferredWorkerKinds: [state.workerType],
     continuityMode: "resume-existing" as const,
+    ...(runtimeApprovalContext ? { runtimeApprovalContext } : {}),
   };
   const timeoutMs = resolveContinuationToolTimeoutMs(
     input.call.input.timeout_seconds,

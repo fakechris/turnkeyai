@@ -21,6 +21,7 @@ import type {
   DispatchCoordination,
 } from "./team-dispatch";
 import type { CapabilityInspectionResult } from "./team-governance";
+import type { PermissionScope } from "./team-governance";
 
 export interface SupervisorUserMessageInput {
   thread: TeamThread;
@@ -92,6 +93,17 @@ export interface RolePromptPacketLike {
   mergeContext?: DispatchCoordination["merge"];
   parallelContext?: DispatchCoordination["parallel"];
   capabilityInspection?: CapabilityInspectionResult;
+  runtimeApprovalContext?: RuntimeApprovalContext;
+}
+
+export interface RuntimeApprovalContext {
+  browserSideEffects?: BrowserSideEffectApprovalContext[];
+}
+
+export interface BrowserSideEffectApprovalContext {
+  action: string;
+  scope: PermissionScope;
+  cacheKey?: string;
 }
 
 export interface RoleLoopRunner {

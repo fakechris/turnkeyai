@@ -1,5 +1,6 @@
 import type {
   BrowserBridge,
+  BrowserSideEffectApprovalContext,
   BrowserTaskAction,
   BrowserTaskResult,
   Clock,
@@ -511,18 +512,26 @@ function buildBrowserPrivateActionPlan(input: RoleToolExecutionInput):
         actions: [{ kind: "screenshot", label: requiredString(raw.label) ?? "browser-sub-agent" }],
       };
     case "browser_act":
-      return buildBrowserActPlan(raw);
+      return buildBrowserActPlan(raw, {
+        approvalContext: input.packet.runtimeApprovalContext?.browserSideEffects ?? [],
+      });
     default:
       return { error: `Unknown browser sub-agent tool: ${input.call.name}` };
   }
 }
 
-function buildBrowserActPlan(raw: Record<string, unknown>):
+function buildBrowserActPlan(
+  raw: Record<string, unknown>,
+  options: { approvalContext: BrowserSideEffectApprovalContext[] }
+):
   | { instructions: string; actions: BrowserTaskAction[] }
   | { error: string } {
   const action = requiredString(raw.action);
   const target = buildBrowserActionTarget(raw);
-  if (raw.submit === true) {
+  const submitRequest = raw.submit === true
+    ? { action: "browser.form.submit", scope: "mutate" as const, label: "form submit" }
+    : null;
+  if (submitRequest && !isBrowserPrivateSideEffectApproved(submitRequest, options.approvalContext)) {
     return { error: "browser_act does not submit forms. Ask the parent agent to request approval for side-effectful browser work." };
   }
   if (action === "click") {
@@ -534,13 +543,16 @@ function buildBrowserActPlan(raw: Record<string, unknown>):
       };
     }
     const sideEffect = classifyBrowserPrivateSideEffectTarget(target, visibleText);
-    if (sideEffect) {
+    const sideEffectRequest = sideEffect ? classifyBrowserPrivateSideEffectRequest(sideEffect) : null;
+    if (sideEffectRequest && !isBrowserPrivateSideEffectApproved(sideEffectRequest, options.approvalContext)) {
       return {
         error: `browser_act refused likely side-effectful click target "${sideEffect}". Ask the parent agent to request approval first.`,
       };
     }
     return {
-      instructions: "Click the requested browser element and observe the result.",
+      instructions: sideEffectRequest
+        ? "Click the approved scoped browser element and observe the result."
+        : "Click the requested browser element and observe the result.",
       actions: [{ kind: "click", ...target }, { kind: "snapshot", note: "after-click" }],
     };
   }
@@ -572,6 +584,28 @@ function buildBrowserActPlan(raw: Record<string, unknown>):
     };
   }
   return { error: "browser_act action must be click, type, key, or hover." };
+}
+
+function isBrowserPrivateSideEffectApproved(
+  request: { action: string; scope: BrowserSideEffectApprovalContext["scope"] },
+  approvalContext: BrowserSideEffectApprovalContext[]
+): boolean {
+  return approvalContext.some((approval) => approval.action === request.action && approval.scope === request.scope);
+}
+
+function classifyBrowserPrivateSideEffectRequest(
+  label: string
+): { action: string; scope: BrowserSideEffectApprovalContext["scope"]; label: string } {
+  if (/\b(password|2fa|mfa|otp|credential|api key|secret|token)\b/i.test(label)) {
+    return { action: "browser.credential.access", scope: "credential", label };
+  }
+  if (/\b(publish|deploy|go live|release)\b/i.test(label)) {
+    return { action: "browser.publish", scope: "publish", label };
+  }
+  if (/\bsubmit\b/i.test(label)) {
+    return { action: "browser.form.submit", scope: "mutate", label };
+  }
+  return { action: "browser.mutate", scope: "mutate", label };
 }
 
 function buildBrowserActionTarget(raw: Record<string, unknown>):
@@ -862,6 +896,7 @@ function buildSubAgentPromptPacket(input: {
     preferredWorkerKinds: [input.kind],
     ...(inherited.toolUseMode ? { toolUseMode: inherited.toolUseMode } : {}),
     ...(inherited.continuityMode ? { continuityMode: inherited.continuityMode } : {}),
+    ...(inherited.runtimeApprovalContext ? { runtimeApprovalContext: inherited.runtimeApprovalContext } : {}),
   };
 }
 
@@ -882,7 +917,7 @@ function buildSubAgentSystemPrompt(kind: WorkerKind, maxRounds: number): string 
       ...common,
       "You control browser work through private browser tools: browser_open, browser_snapshot, browser_act, browser_scroll, browser_console, and browser_screenshot.",
       "Use browser_open for absolute URLs, browser_snapshot before choosing element refs, browser_act for one targeted click/type/key/hover, browser_scroll for long pages, browser_console for bounded page probes, and browser_screenshot for visible evidence artifacts.",
-      "Do not submit forms, purchase, publish, delete, approve, or change account state from the browser sub-agent private tools; report that the parent must request approval first.",
+      "Do not submit forms, purchase, publish, delete, approve, or change account state from the browser sub-agent private tools unless the delegated task explicitly says parent runtime approval is granted or the permission cache is already applied for that scoped action. Without that explicit approval context, report that the parent must request approval first.",
       "Retry the same browser operation at most three times, changing strategy only when the observed failure justifies it.",
       "Prefer element refIds from snapshots over selectors or visible text when interacting with a page.",
       "Capture screenshots when the parent needs visual evidence or when page state is hard to summarize from text.",

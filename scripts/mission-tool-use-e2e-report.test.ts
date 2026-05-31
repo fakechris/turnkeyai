@@ -162,6 +162,7 @@ describe("mission tool-use e2e report", () => {
 
   it("recognizes stale pending approval thoughts without matching completed approval summaries", () => {
     assert.equal(isStalePendingApprovalThought("Permission request is pending operator decision (`ap-1`)."), true);
+    assert.equal(isStalePendingApprovalThought("The approval request is **pending** operator decision."), true);
     assert.equal(isStalePendingApprovalThought("The approval request is pending. I will wait before proceeding."), true);
     assert.equal(
       isStalePendingApprovalThought("Once approved, the browser worker completed the dry-run and verified the submitted page."),
