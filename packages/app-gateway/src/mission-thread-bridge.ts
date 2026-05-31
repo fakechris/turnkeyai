@@ -565,16 +565,20 @@ function expandMessage(input: ExpandMessageInput): ActivityEvent[] {
         const matchingResult = resultsByCallId.get(call.id);
         const splitResultMessage = splitToolResults.get(call.id);
         const skippedByAdmission = matchingResult?.skipped === true || skippedProgressCallIds.has(call.id);
-        events.push(
-          buildToolCallEvent({
-            ...input,
-            tMs: tMsForStep(message.createdAt, stepIndex, totalSubEvents),
-            call,
-            roundNumber: round.round,
-            ...(skippedByAdmission ? { admission: "skipped" } : matchingResult ? { admission: "admitted" } : {}),
-          })
-        );
-        stepIndex += 1;
+        if (!shouldDelaySessionCallUntilResolved(call, matchingResult, splitResultMessage)) {
+          events.push(
+            buildToolCallEvent({
+              ...input,
+              tMs: tMsForStep(message.createdAt, stepIndex, totalSubEvents),
+              call,
+              ...(matchingResult ? { result: matchingResult } : {}),
+              ...(splitResultMessage?.content ? { resultContent: splitResultMessage.content } : {}),
+              roundNumber: round.round,
+              ...(skippedByAdmission ? { admission: "skipped" } : matchingResult ? { admission: "admitted" } : {}),
+            })
+          );
+          stepIndex += 1;
+        }
         for (const progress of progressByCallId.get(call.id) ?? []) {
           events.push(
             buildToolProgressEvent({
@@ -904,6 +908,8 @@ interface BuildToolCallEventInput {
   newEventId: () => string;
   tMs: number;
   call: { id: string; name: string; input: Record<string, unknown> };
+  result?: ToolUseTrace["rounds"][number]["results"][number];
+  resultContent?: string;
   roundNumber: number;
   admission?: "admitted" | "skipped";
 }
@@ -921,8 +927,9 @@ function buildToolCallEvent(input: BuildToolCallEventInput): ActivityEvent {
   // sending a multi-MB blob doesn't bloat the activity log (which
   // is read whole into memory on the dashboard's polling tick).
   // 16 kB is generous enough for real-world tool args.
-  const inputJson = capJsonString(safeStringify(input.call.input), CALL_INPUT_CAP_BYTES);
-  const text = formatToolCallText(input.call.name, input.call.input);
+  const callInput = canonicalizeDisplayedToolCallInput(input.call, input.result?.content ?? input.resultContent);
+  const inputJson = capJsonString(safeStringify(callInput), CALL_INPUT_CAP_BYTES);
+  const text = formatToolCallText(input.call.name, callInput);
   return {
     id: input.newEventId(),
     missionId: input.missionId,
@@ -943,6 +950,49 @@ function buildToolCallEvent(input: BuildToolCallEventInput): ActivityEvent {
       ...(input.admission ? { admission: input.admission } : {}),
     },
   };
+}
+
+function shouldDelaySessionCallUntilResolved(
+  call: { id: string; name: string; input: Record<string, unknown> },
+  result: ToolUseTrace["rounds"][number]["results"][number] | undefined,
+  splitResultMessage: TeamMessage | undefined
+): boolean {
+  if (result || splitResultMessage || (call.name !== "sessions_send" && call.name !== "sessions_history")) {
+    return false;
+  }
+  return true;
+}
+
+function canonicalizeDisplayedToolCallInput(
+  call: { id: string; name: string; input: Record<string, unknown> },
+  resultContent: string | undefined
+): Record<string, unknown> {
+  if (call.name !== "sessions_send" && call.name !== "sessions_history") {
+    return call.input;
+  }
+  const sessionKey = readSessionKeyFromToolResult(resultContent);
+  if (!sessionKey || call.input.session_key === sessionKey) {
+    return call.input;
+  }
+  return {
+    ...call.input,
+    session_key: sessionKey,
+  };
+}
+
+function readSessionKeyFromToolResult(content: string | undefined): string | null {
+  if (!content?.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) {
+    return null;
+  }
+  const sessionKey = parsed["session_key"];
+  return typeof sessionKey === "string" && sessionKey.trim() ? sessionKey.trim() : null;
 }
 
 interface BuildToolResultEventInput {

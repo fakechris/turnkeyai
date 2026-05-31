@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { RoleActivationInput, TeamMessage } from "@turnkeyai/core-types/team";
+import type { RoleActivationInput, TeamMessage, TeamMessageSummary } from "@turnkeyai/core-types/team";
 import type { GenerateTextInput, GenerateTextResult } from "@turnkeyai/llm-adapter/index";
 import { RequestEnvelopeOverflowError } from "@turnkeyai/llm-adapter/index";
 import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
@@ -2937,6 +2937,153 @@ test("llm role response generator normalizes noisy session_key inputs before exe
   assert.equal(executedCalls[0]?.input.session_key, "worker:explore:task-1:toolu-cancelled");
 });
 
+test("llm role response generator canonicalizes abbreviated continuation session keys from context", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-abbrev-send", "sessions_send", {
+        session_key: "worker:explore:task:TASK-1:call_func_abc123_1",
+        message: "Continue the cancelled source check.",
+      });
+    }
+    return {
+      text: "Final answer from canonical continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.input.session_key, "worker:explore:task:TASK-1:call_function_abc123_1");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "TASK-1",
+          session_key: input.call.input.session_key,
+          agent_id: "explore",
+          status: "completed",
+          result: "Canonical key continuation completed.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the cancelled source-check attempt in this mission.",
+        "",
+        "Recent turns:",
+        "[user] Continue from the cancelled source-check attempt in this mission.",
+        '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"cancelled","session_key":"worker:explore:task:TASK-1:call_function_abc123_1","agent_id":"explore","result":"operator cancelled active source verification"}',
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer from canonical continuation.");
+  assert.equal(executedCalls[0]?.input.session_key, "worker:explore:task:TASK-1:call_function_abc123_1");
+});
+
+test("llm role response generator canonicalizes ellipsized continuation session keys from context", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-ellipsized-send", "sessions_send", {
+        session_key: "worker:explore:task:TASK-1:call_funct…",
+        message: "Continue the cancelled source check.",
+      });
+    }
+    return {
+      text: "Final answer from ellipsized-key continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.input.session_key, "worker:explore:task:TASK-1:call_function_24fkgmynytqr_1");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "TASK-1",
+          session_key: input.call.input.session_key,
+          agent_id: "explore",
+          status: "completed",
+          result: "Ellipsized key continuation completed.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the cancelled source-check attempt in this mission.",
+        "",
+        "Recent turns:",
+        "[user] Continue from the cancelled source-check attempt in this mission.",
+        '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"cancelled","session_key":"worker:explore:task:TASK-1:call_function_24fkgmynytqr_1","agent_id":"explore","result":"operator cancelled active source verification"}',
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer from ellipsized-key continuation.");
+  assert.equal(executedCalls[0]?.input.session_key, "worker:explore:task:TASK-1:call_function_24fkgmynytqr_1");
+  const trace = result.metadata?.toolUse as
+    | { rounds?: Array<{ calls?: Array<{ input?: Record<string, unknown> }> }> }
+    | undefined;
+  assert.equal(
+    trace?.rounds?.[0]?.calls?.[0]?.input?.session_key,
+    "worker:explore:task:TASK-1:call_function_24fkgmynytqr_1"
+  );
+});
+
 test("llm role response generator synthesizes immediately after completed sub-agent final content", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   let executedTools = 0;
@@ -3037,6 +3184,179 @@ test("llm role response generator synthesizes immediately after completed sub-ag
   assert.equal(closeout?.toolCallCount, 1);
   assert.equal(closeout?.roundCount, 1);
   assert.equal(closeout?.evidenceAvailable, true);
+});
+
+test("llm role response generator keeps completed tool evidence when final synthesis is unavailable", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let gatewayCalls = 0;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayCalls += 1;
+    if (gatewayCalls === 1) {
+      return toolCallResult("toolu-done", "sessions_send", {
+        session_key: "worker:explore:task:TASK-1:call_function_abc_1",
+        message: "Continue the source check.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    throw new Error("final synthesis provider unavailable");
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:explore:task:TASK-1:call_function_abc_1",
+          agent_id: "explore",
+          status: "completed",
+          tool_chain: ["explore"],
+          result: "Continuation completed with evidence.",
+          final_content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+  const activation = buildActivation();
+  activation.handoff.payload.intent = {
+    relayBrief: activation.handoff.payload.intent?.relayBrief ?? "Handle the task.",
+    instructions: activation.handoff.payload.intent?.instructions ?? "",
+    recentMessages: [
+    {
+      messageId: "msg-cancel",
+      role: "tool",
+      name: "sessions_spawn",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-1",
+        session_key: "worker:explore:task:TASK-1:call_function_abc_1",
+        agent_id: "explore",
+        status: "cancelled",
+        resumable: true,
+        tool_chain: [],
+        result: "Operator cancelled the first check.",
+        final_content: null,
+        payload: null,
+      }),
+      createdAt: 1,
+    } satisfies TeamMessageSummary,
+    ],
+  };
+  const packet = buildPacket();
+  packet.taskPrompt = `${packet.taskPrompt}\n\nContinue from the cancelled source-check attempt.`;
+
+  const result = await generator.generate({
+    activation,
+    packet,
+  });
+
+  assert.equal(gatewayCalls, 2);
+  assert.match(result.content, /Release Captain/);
+  assert.match(result.content, /runbook gap/);
+  assert.match(result.content, /rollback rehearsal/);
+  assert.match(result.content, /\bVerified:/);
+  assert.match(result.content, /\bUnverified:/);
+  assert.match(result.content, /\bRisk:/);
+  assert.match(result.content, /cancel/i);
+  assert.equal(result.metadata?.adapterName, "local-evidence-closeout");
+});
+
+test("llm role response generator stores evidence-first trace content for oversized session results", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let gatewayCalls = 0;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayCalls += 1;
+    if (gatewayCalls === 1) {
+      return toolCallResult("toolu-done", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Research release risk and return evidence.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: "Final release-risk note.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:explore:task-1:toolu-done",
+          agent_id: "explore",
+          label: "fetch-cancel-resume-fixture",
+          status: "completed",
+          tool_chain: ["explore"],
+          result: "Large raw page snapshot. ".repeat(700),
+          final_content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+            rawHtml: "<html>".repeat(5000),
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  const trace = result.metadata?.toolUse as
+    | { rounds?: Array<{ results?: Array<{ content?: string; contentTruncated?: boolean; contentBytes?: number }> }> }
+    | undefined;
+  const traceResult = trace?.rounds?.[0]?.results?.[0];
+  assert.ok(traceResult?.content);
+  assert.equal(traceResult.contentTruncated, true);
+  assert.ok((traceResult.contentBytes ?? 0) > Buffer.byteLength(traceResult.content, "utf8"));
+  assert.match(traceResult.content, /final_content/);
+  assert.match(traceResult.content, /Release Captain/);
+  assert.match(traceResult.content, /runbook gap/);
+  assert.match(traceResult.content, /rollback rehearsal/);
+  assert.doesNotMatch(traceResult.content, /<html><html>/);
 });
 
 test("llm role response generator accepts short completed sub-agent final content", async () => {

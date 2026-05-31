@@ -1174,6 +1174,124 @@ describe("MissionThreadBridge", () => {
     assert.equal(ordered[2]!.runtime?.toolCallId, "c-native");
   });
 
+  it("shows canonical session_key on sessions_send call events when the result resolved it", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const message: TeamMessage = {
+      ...baseMessage("a-session-canonical", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "Done.",
+      metadata: {
+        toolUse: {
+          rounds: [
+            {
+              round: 1,
+              calls: [
+                {
+                  id: "c-send",
+                  name: "sessions_send",
+                  input: {
+                    session_key: "worker:explore:task:TASK-1:call_function_jf…",
+                    message: "continue",
+                  },
+                },
+              ],
+              results: [
+                {
+                  toolCallId: "c-send",
+                  toolName: "sessions_send",
+                  isError: false,
+                  contentBytes: 120,
+                  content: JSON.stringify({
+                    protocol: "turnkeyai.session_tool_result.v1",
+                    status: "completed",
+                    session_key: "worker:explore:task:TASK-1:call_function_jfz0s4dlftej_1",
+                    result: "continued",
+                  }),
+                },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([message]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const call = activity.events.find((event) => event.runtime?.toolPhase === "call");
+    assert.ok(call);
+    const input = JSON.parse(String(call.runtime?.callInput)) as { session_key?: string };
+    assert.equal(input.session_key, "worker:explore:task:TASK-1:call_function_jfz0s4dlftej_1");
+  });
+
+  it("delays ellipsized sessions_send call events until a result can resolve the session_key", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const assistant: TeamMessage = {
+      ...baseMessage("a-session-pending", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "",
+      metadata: { nativeToolUse: true },
+      toolCalls: [
+        {
+          id: "c-send",
+          name: "sessions_send",
+          arguments: {
+            session_key: "worker:explore:task:TASK-1:call_function_jf…",
+            message: "continue",
+          },
+        },
+      ],
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([assistant]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    assert.equal(activity.events.some((event) => event.runtime?.toolPhase === "call"), false);
+
+    const resolvedBridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([
+        assistant,
+        {
+          ...baseMessage("tool-session-resolved", "tool", 5_001),
+          name: "sessions_send",
+          toolCallId: "c-send",
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            status: "completed",
+            session_key: "worker:explore:task:TASK-1:call_function_jfz0s4dlftej_1",
+            result: "continued",
+          }),
+          metadata: { nativeToolUse: true },
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await resolvedBridge.tickMission("msn.1");
+
+    const call = activity.events.find((event) => event.runtime?.toolPhase === "call");
+    assert.ok(call);
+    const input = JSON.parse(String(call.runtime?.callInput)) as { session_key?: string };
+    assert.equal(input.session_key, "worker:explore:task:TASK-1:call_function_jfz0s4dlftej_1");
+  });
+
   it("interleaves same-round dependent tool calls with their results on the timeline", async () => {
     counter = 0;
     const activity = memActivityStore();
