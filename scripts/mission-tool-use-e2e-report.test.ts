@@ -114,6 +114,26 @@ describe("mission tool-use e2e report", () => {
     assert.equal(wrongGate.status, "failed");
   });
 
+  it("rejects forced closeout reasons in normal long brief scenarios", () => {
+    const forcedCloseout = buildMissionE2eJsonReport({
+      startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
+      completedAt: Date.UTC(2026, 4, 30, 12, 0, 3),
+      results: [fakeScenarioWithCloseout("product-workbench-brief", "passed", "round_limit")],
+    });
+    assert.equal(forcedCloseout.status, "failed");
+    assert.deepEqual(forcedCloseout.scenarios[0]?.final.closeout, {
+      reason: "round_limit",
+      evidenceAvailable: "true",
+    });
+
+    const healthySubAgentCloseout = buildMissionE2eJsonReport({
+      startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
+      completedAt: Date.UTC(2026, 4, 30, 12, 0, 3),
+      results: [fakeScenarioWithCloseout("realistic-brief", "passed", "completed_sub_agent_final")],
+    });
+    assert.equal(healthySubAgentCloseout.status, "passed");
+  });
+
   it("formats per-scenario progress lines for long matrix runs", () => {
     const result = fakeResult();
 
@@ -187,6 +207,21 @@ function fakeResult(): MissionScenarioResult {
 
 function fakeCloseoutResult(
   scenario: "budget-limited-closeout" | "sub-agent-timeout-closeout",
+  qualityGate: string,
+  reason: string
+): MissionScenarioResult {
+  const result = fakeResult();
+  result.scenario = scenario;
+  result.metrics.qualityGate.status = qualityGate;
+  result.final.runtime = {
+    toolLoopCloseoutReason: reason,
+    "toolLoopCloseout.evidenceAvailable": "true",
+  };
+  return result;
+}
+
+function fakeScenarioWithCloseout(
+  scenario: "product-workbench-brief" | "realistic-brief",
   qualityGate: string,
   reason: string
 ): MissionScenarioResult {

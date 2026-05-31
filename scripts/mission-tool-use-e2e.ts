@@ -45,6 +45,13 @@ const CLOSEOUT_ACCEPTANCE_MISSION_SCENARIOS = [
   "sub-agent-timeout-closeout",
 ] as const satisfies readonly MissionE2eScenario[];
 
+const FORCED_TOOL_LOOP_CLOSEOUT_REASONS = new Set([
+  "pseudo_tool_call",
+  "wall_clock_budget",
+  "round_limit",
+  "sub_agent_timeout",
+]);
+
 const MISSION_E2E_SCENARIOS = [
   ...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS,
   ...CLOSEOUT_ACCEPTANCE_MISSION_SCENARIOS,
@@ -1114,10 +1121,15 @@ function isPassingMissionScenarioReport(report: MissionE2eScenarioReport): boole
       : report.scenario === "sub-agent-timeout-closeout"
         ? "sub_agent_timeout"
         : null;
+  const hasUnexpectedForcedCloseout =
+    expectedCloseoutReason === null &&
+    typeof report.final.closeout?.reason === "string" &&
+    FORCED_TOOL_LOOP_CLOSEOUT_REASONS.has(report.final.closeout.reason);
   return (
     report.status === "done" &&
     report.qualityGate === expectedQualityGate &&
     (expectedCloseoutReason === null || report.final.closeout?.reason === expectedCloseoutReason) &&
+    !hasUnexpectedForcedCloseout &&
     report.final.qualityFailures.length === 0
   );
 }
