@@ -462,6 +462,80 @@ test("in-memory worker runtime marks partial results as resumable and supports r
   assert.equal(cancelled?.status, "cancelled");
 });
 
+test("in-memory worker runtime resumes a cancelled session only through explicit resume-existing continuity", async () => {
+  let callCount = 0;
+  const prompts: string[] = [];
+  const handler: WorkerHandler = {
+    kind: "explore",
+    async canHandle() {
+      return true;
+    },
+    async run(input): Promise<WorkerExecutionResult | null> {
+      callCount += 1;
+      prompts.push(input.packet.taskPrompt);
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: callCount === 1 ? "Initial evidence." : "Resumed cancelled evidence.",
+        payload: { callCount },
+      };
+    },
+  };
+
+  const runtime = new InMemoryWorkerRuntime({
+    workerRegistry: {
+      async selectHandler() {
+        return handler;
+      },
+    },
+    now: () => 990,
+  });
+
+  const input = buildWorkerInvocationInput();
+  const spawned = await runtime.spawn(input);
+  assert.ok(spawned);
+  await runtime.send({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: {
+      ...input.packet,
+      taskPrompt: "Check the source before cancellation.",
+    },
+    toolCallId: "call-initial",
+  });
+  await runtime.cancel({
+    workerRunKey: spawned.workerRunKey,
+    reason: "operator cancelled source work",
+  });
+
+  const passiveResume = await runtime.resume({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: {
+      ...input.packet,
+      taskPrompt: "This should not restart without explicit continuity.",
+    },
+  });
+  assert.equal(passiveResume?.summary, "Initial evidence.");
+  assert.equal(callCount, 1);
+
+  const explicitResume = await runtime.resume({
+    workerRunKey: spawned.workerRunKey,
+    activation: input.activation,
+    packet: {
+      ...input.packet,
+      continuityMode: "resume-existing",
+      taskPrompt: "Resume the cancelled source work.",
+    },
+    toolCallId: "call-resume",
+  });
+  assert.equal(explicitResume?.summary, "Resumed cancelled evidence.");
+  assert.equal(callCount, 2);
+  assert.match(prompts[1] ?? "", /Previous worker status: cancelled/);
+  assert.match(prompts[1] ?? "", /operator cancelled source work/);
+  assert.equal((await runtime.getState(spawned.workerRunKey))?.status, "done");
+});
+
 test("in-memory worker runtime emits runtime progress across start, wait, resume, and cancel", async () => {
   let callCount = 0;
   const phases: string[] = [];

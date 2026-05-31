@@ -394,7 +394,8 @@ export class InMemoryWorkerRuntime implements WorkerRuntime {
 
     if (
       ["idle", "waiting_input", "waiting_external", "resumable"].includes(session.state.status) ||
-      (session.state.status === "done" && input.packet.continuityMode === "resume-existing")
+      ((session.state.status === "done" || session.state.status === "cancelled") &&
+        input.packet.continuityMode === "resume-existing")
     ) {
       return this.send({
         workerRunKey: input.workerRunKey,

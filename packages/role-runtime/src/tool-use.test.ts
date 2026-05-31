@@ -1888,6 +1888,90 @@ test("sessions_send timeout does not treat worker errors as usable evidence", as
   assert.equal(body.evidence_summary, undefined);
 });
 
+test("sessions_send uses the worker default timeout floor when resuming a cancelled session", async () => {
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:cancelled",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:cancelled",
+            workerType: "explore",
+            status: "cancelled",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:cancelled",
+        workerType: "explore",
+        status: "cancelled",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async send() {
+      throw new Error("sessions_send should resume the existing session instead of starting a bare send");
+    },
+    async resume() {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Cancelled source check resumed.",
+        payload: {
+          mode: "llm_sub_agent",
+          workerType: "explore",
+          content: "Cancelled source check resumed.",
+        },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    hardTimeoutGraceMs: 1,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-send-cancelled",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:cancelled",
+        message: "Continue the cancelled research task.",
+        timeout_seconds: 0.001,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; result: string };
+  assert.equal(result.isError, undefined);
+  assert.equal(body.status, "completed");
+  assert.equal(body.result, "Cancelled source check resumed.");
+});
+
 test("sessions_send uses the current follow-up label in its session result envelope", async () => {
   const workerRuntime = {
     async listSessions() {

@@ -3779,3 +3779,65 @@ Convergence question:
 - Next required gate: classify the next failing natural scenario by matrix row
   before implementing code, then rerun the natural gate without forced markers
   or exact-answer prompts.
+
+## 2026-05-31 17:49 CST - Natural Cancel Follow-Up Continuation Gate
+
+Direction: converging
+
+Execution Kernel:
+- Implemented explicit continuation for cancelled worker sessions: passive
+  resume keeps the cancelled terminal state, while `sessions_send` with
+  `resume-existing` can continue the same child session after a user follow-up.
+- Tightened the session continuation directive so it only rewrites
+  `sessions_spawn` to `sessions_send` when the latest user turn itself asks to
+  continue, resume, retry, or revisit prior delegated work.
+- Added a guard against the failure found during real E2E: an initial prompt
+  that merely says a later follow-up may resume work must not trigger passive
+  continuation in the same turn.
+
+Result Quality:
+- The real natural run completed with useful, evidence-backed output after an
+  operator cancellation and a separate user follow-up.
+- Final output reported no weak-answer signals and preserved cancellation
+  context while using the resumed source evidence.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The mission timeline now has a stronger replay shape for interrupted work:
+  cancelled `sessions_spawn` result, user follow-up, `sessions_send`
+  continuation, resumed tool result, then final answer.
+
+Browser Reliability:
+- No browser behavior changed.
+- The gate is non-browser by design; it isolates cancelled session continuation
+  without conflating browser/CDP failures.
+
+Acceptance Evidence:
+- `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-cancel-followup-continuation
+  --scenario-timeout-ms 300000
+  --json tmp/natural-cancel-followup-continuation-e2e.json`: passed.
+- Real mission: `msn.mptlebvw.1`, status `done`, natural `passed`,
+  tools `2/2`, sessions `1/1`, browser `no`, profile fallback `0`,
+  liveness `0/0/0`, final bytes `1444`, weak-answer signals `none`.
+- `npm test -- --runInBand`: passed, 1302 tests.
+- `npm run typecheck`: passed.
+- `npm run build`: passed.
+- `git diff --check`: passed.
+
+Regression Risk:
+- Main risk was over-broad continuation rewriting. Unit coverage now pins both
+  sides: explicit user follow-up resumes the cancelled session, while a
+  hypothetical "later follow-up may resume" instruction does not.
+- Another risk is too-short continuation timeouts after cancellation. The tool
+  executor now floors cancelled-session continuation at the worker default so a
+  copied tiny timeout cannot immediately fail resumed work.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a real model completed a cancelled-work follow-up by reusing the
+  same durable child session instead of losing context, passively restarting, or
+  spawning duplicate work.
+- Next required gate: cold/restart continuation or browser hot/warm/cold resume,
+  because cancellation and timeout continuation are now proven only within one
+  live daemon run.
