@@ -18,6 +18,7 @@ import {
   formatMissionScenarioStart,
   formatNaturalMissionScenarioPass,
   formatNaturalMissionScenarioStart,
+  isStalePendingApprovalThought,
   summarizeNaturalMissionScenarioResult,
   summarizeMissionScenarioResult,
   type NaturalMissionScenarioResult,
@@ -150,6 +151,15 @@ describe("mission tool-use e2e report", () => {
       results: [fakeScenarioWithCloseout("realistic-brief", "passed", "completed_sub_agent_final")],
     });
     assert.equal(healthySubAgentCloseout.status, "passed");
+  });
+
+  it("recognizes stale pending approval thoughts without matching completed approval summaries", () => {
+    assert.equal(isStalePendingApprovalThought("Permission request is pending operator decision (`ap-1`)."), true);
+    assert.equal(isStalePendingApprovalThought("The approval request is pending. I will wait before proceeding."), true);
+    assert.equal(
+      isStalePendingApprovalThought("Once approved, the browser worker completed the dry-run and verified the submitted page."),
+      false
+    );
   });
 
   it("formats per-scenario progress lines for long matrix runs", () => {

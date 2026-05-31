@@ -544,7 +544,7 @@ test("llm role response generator repairs stale pending answers after approval i
     }
     if (gatewayInputs.length === 3) {
       return {
-        text: "The approval request is pending. I will wait before proceeding.",
+        text: "Permission request is pending operator decision (`ap-1`). I will proceed once approved.",
         modelId: "claude-test",
         providerId: "anthropic",
         protocol: "anthropic-compatible",

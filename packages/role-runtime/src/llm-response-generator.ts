@@ -1371,7 +1371,7 @@ function hasStalePendingApprovalRepairPrompt(messages: LLMMessage[]): boolean {
 }
 
 function mentionsPendingApproval(text: string): boolean {
-  return /\b(?:approval pending|approval request is pending|awaiting operator approval|waiting for operator decision|waiting for operator|once approved|before (?:the )?(?:browser worker )?can|still pending)\b/i.test(
+  return /\b(?:approval pending|approval request is pending|permission request is pending|pending operator decision|awaiting operator approval|waiting for operator decision|waiting for operator|once approved|before (?:the )?(?:browser worker )?can|still pending)\b/i.test(
     text
   );
 }
