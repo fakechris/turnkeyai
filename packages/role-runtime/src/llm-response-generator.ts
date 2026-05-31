@@ -139,7 +139,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     let toolLoopCloseout: ToolLoopCloseoutMetadata | undefined;
     for (let round = 0; ; round++) {
       throwIfAborted(input.signal);
-      const gatewayMessages = prepareToolHistoryForGateway(messages);
+      const maxRounds = activeToolLoop?.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+      const gatewayMessages = prepareToolHistoryForGateway(
+        withFinalToolRoundWarning(messages, {
+          active: Boolean(activeToolLoop),
+          round,
+          maxRounds,
+        })
+      );
       const generated = await this.generateWithEnvelopeRetry({
         activation: input.activation,
         packet: input.packet,
@@ -307,7 +314,6 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (!activeToolLoop || toolCalls.length === 0) {
         break;
       }
-      const maxRounds = activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
       const maxWallClockMs = activeToolLoop.maxWallClockMs;
       if (
         toolTrace.length > 0 &&
@@ -2059,6 +2065,35 @@ function deriveToolResultEnvelope(messages: LLMMessage[]): { toolResultCount: nu
 
 function prepareToolHistoryForGateway(messages: LLMMessage[]): LLMMessage[] {
   return compactOlderToolHistoryForGateway(pruneToolResultMessagesForGateway(messages));
+}
+
+function withFinalToolRoundWarning(
+  messages: LLMMessage[],
+  input: { active: boolean; round: number; maxRounds: number }
+): LLMMessage[] {
+  if (!input.active) {
+    return messages;
+  }
+  if (!Number.isFinite(input.maxRounds) || input.maxRounds <= 0) {
+    return messages;
+  }
+  const finalAllowedRound = Math.max(0, Math.floor(input.maxRounds) - 1);
+  if (input.round !== finalAllowedRound) {
+    return messages;
+  }
+  return [
+    ...messages,
+    {
+      role: "user",
+      content: [
+        `Runtime notice: this is the final allowed tool-use round (${Math.floor(input.maxRounds)}).`,
+        "If you already have enough evidence, answer now without calling tools.",
+        "If you call tools now, use only the highest-value calls needed to finish.",
+        "After these tool results return, produce the final answer from the gathered evidence instead of asking for more tools.",
+        "If the evidence is still incomplete, mark missing items as not verified and give the next user/operator action.",
+      ].join("\n"),
+    },
+  ];
 }
 
 function pruneToolResultMessagesForGateway(messages: LLMMessage[]): LLMMessage[] {
