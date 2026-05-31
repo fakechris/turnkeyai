@@ -53,6 +53,15 @@ import {
   sendJson,
 } from "../http-helpers";
 import { runIdempotently, type RouteIdempotencyStore } from "../idempotency-store";
+import type {
+  BridgeMissionActivityRecorder,
+  BridgeMissionContext,
+} from "../bridge-mission-activity-recorder";
+import {
+  parseBridgeMissionContext,
+  validateBridgeMissionContext,
+  type BridgeMissionValidatorDeps,
+} from "../bridge-mission-validators";
 
 export interface BrowserTaskRouteBody {
   threadId?: string;
@@ -99,6 +108,10 @@ interface BrowserBridgeDeps {
 
 interface BrowserExpertRouteDeps {
   expertLane?: BrowserRawCdpExpertLane | null;
+  missionContext?: {
+    validator: BridgeMissionValidatorDeps;
+    recorder: BridgeMissionActivityRecorder;
+  };
 }
 
 export interface BrowserRouteDeps {
@@ -273,10 +286,29 @@ export async function handleBrowserRoutes(input: {
       sendJson(res, access.statusCode, { error: access.error });
       return true;
     }
+    const missionContext = await resolveBrowserExpertMissionContext({
+      deps,
+      missionId: url.searchParams.get("missionId"),
+      workItemId: url.searchParams.get("workItemId"),
+    });
+    if ("statusCode" in missionContext) {
+      sendJson(res, missionContext.statusCode, missionContext.body);
+      return true;
+    }
     try {
       sendJson(res, 200, await expertLane.lane.listExpertTargets(access.sessionId));
     } catch (error) {
-      sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
+      sendJson(
+        res,
+        502,
+        await recordBrowserExpertFailure({
+          deps,
+          context: missionContext.context,
+          tool: "raw_cdp.targets",
+          sessionId: access.sessionId,
+          error,
+        })
+      );
     }
     return true;
   }
@@ -306,6 +338,15 @@ export async function handleBrowserRoutes(input: {
       sendJson(res, 400, { error: "limit must be a positive integer <= 200" });
       return true;
     }
+    const missionContext = await resolveBrowserExpertMissionContext({
+      deps,
+      missionId: url.searchParams.get("missionId"),
+      workItemId: url.searchParams.get("workItemId"),
+    });
+    if ("statusCode" in missionContext) {
+      sendJson(res, missionContext.statusCode, missionContext.body);
+      return true;
+    }
     try {
       sendJson(
         res,
@@ -317,7 +358,17 @@ export async function handleBrowserRoutes(input: {
         })
       );
     } catch (error) {
-      sendJson(res, 404, { error: error instanceof Error ? error.message : String(error) });
+      sendJson(
+        res,
+        404,
+        await recordBrowserExpertFailure({
+          deps,
+          context: missionContext.context,
+          tool: "raw_cdp.events",
+          sessionId: access.sessionId,
+          error,
+        })
+      );
     }
     return true;
   }
@@ -371,6 +422,8 @@ export async function handleBrowserRoutes(input: {
     const bodyResult = await readJsonBodySafe<{
       targetId?: string;
       threadId?: string;
+      missionId?: unknown;
+      workItemId?: unknown;
     }>(req);
     if (!bodyResult.ok) {
       sendJson(res, 400, { error: bodyResult.error });
@@ -389,6 +442,15 @@ export async function handleBrowserRoutes(input: {
       sendJson(res, access.statusCode, { error: access.error });
       return true;
     }
+    const missionContext = await resolveBrowserExpertMissionContext({
+      deps,
+      missionId: bodyResult.value.missionId,
+      workItemId: bodyResult.value.workItemId,
+    });
+    if ("statusCode" in missionContext) {
+      sendJson(res, missionContext.statusCode, missionContext.body);
+      return true;
+    }
     try {
       sendJson(
         res,
@@ -399,7 +461,17 @@ export async function handleBrowserRoutes(input: {
         })
       );
     } catch (error) {
-      sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
+      sendJson(
+        res,
+        502,
+        await recordBrowserExpertFailure({
+          deps,
+          context: missionContext.context,
+          tool: "raw_cdp.attach",
+          sessionId: access.sessionId,
+          error,
+        })
+      );
     }
     return true;
   }
@@ -414,6 +486,8 @@ export async function handleBrowserRoutes(input: {
     const bodyResult = await readJsonBodySafe<{
       expertSessionId?: string;
       threadId?: string;
+      missionId?: unknown;
+      workItemId?: unknown;
     }>(req);
     if (!bodyResult.ok) {
       sendJson(res, 400, { error: bodyResult.error });
@@ -432,6 +506,15 @@ export async function handleBrowserRoutes(input: {
       sendJson(res, access.statusCode, { error: access.error });
       return true;
     }
+    const missionContext = await resolveBrowserExpertMissionContext({
+      deps,
+      missionId: bodyResult.value.missionId,
+      workItemId: bodyResult.value.workItemId,
+    });
+    if ("statusCode" in missionContext) {
+      sendJson(res, missionContext.statusCode, missionContext.body);
+      return true;
+    }
     try {
       sendJson(
         res,
@@ -442,7 +525,17 @@ export async function handleBrowserRoutes(input: {
         })
       );
     } catch (error) {
-      sendJson(res, 404, { error: error instanceof Error ? error.message : String(error) });
+      sendJson(
+        res,
+        404,
+        await recordBrowserExpertFailure({
+          deps,
+          context: missionContext.context,
+          tool: "raw_cdp.detach",
+          sessionId: access.sessionId,
+          error,
+        })
+      );
     }
     return true;
   }
@@ -461,6 +554,8 @@ export async function handleBrowserRoutes(input: {
       expertSessionId?: string;
       threadId?: string;
       timeoutMs?: number;
+      missionId?: unknown;
+      workItemId?: unknown;
     }>(req);
     if (!bodyResult.ok) {
       sendJson(res, 400, { error: bodyResult.error });
@@ -479,6 +574,15 @@ export async function handleBrowserRoutes(input: {
       sendJson(res, access.statusCode, { error: access.error });
       return true;
     }
+    const missionContext = await resolveBrowserExpertMissionContext({
+      deps,
+      missionId: bodyResult.value.missionId,
+      workItemId: bodyResult.value.workItemId,
+    });
+    if ("statusCode" in missionContext) {
+      sendJson(res, missionContext.statusCode, missionContext.body);
+      return true;
+    }
     const params = isPlainRecord(bodyResult.value.params) ? bodyResult.value.params : undefined;
     try {
       sendJson(
@@ -494,7 +598,17 @@ export async function handleBrowserRoutes(input: {
         })
       );
     } catch (error) {
-      sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
+      sendJson(
+        res,
+        502,
+        await recordBrowserExpertFailure({
+          deps,
+          context: missionContext.context,
+          tool: "raw_cdp.send",
+          sessionId: access.sessionId,
+          error,
+        })
+      );
     }
     return true;
   }
@@ -831,6 +945,73 @@ function requireBrowserExpertLane(
   return {
     lane: deps.browserExpert.expertLane,
   };
+}
+
+async function resolveBrowserExpertMissionContext(input: {
+  deps: BrowserRouteDeps;
+  missionId?: unknown;
+  workItemId?: unknown;
+}): Promise<
+  | { context: BridgeMissionContext | null }
+  | { statusCode: number; body: { error: string; code: string } }
+> {
+  const missionDeps = input.deps.browserExpert?.missionContext;
+  if (!missionDeps) return { context: null };
+  const validation = await validateBridgeMissionContext({
+    context: parseBridgeMissionContext({
+      missionId: input.missionId,
+      workItemId: input.workItemId,
+    }),
+    deps: missionDeps.validator,
+  });
+  if (!validation.ok) {
+    return { statusCode: validation.statusCode, body: validation.body };
+  }
+  if (!validation.missionId) return { context: null };
+  const context: BridgeMissionContext = { missionId: validation.missionId };
+  if (validation.workItemId) context.workItemId = validation.workItemId;
+  return { context };
+}
+
+async function recordBrowserExpertFailure(input: {
+  deps: BrowserRouteDeps;
+  context: BridgeMissionContext | null;
+  tool: string;
+  sessionId: string;
+  error: unknown;
+}): Promise<Record<string, unknown>> {
+  const message = input.error instanceof Error ? input.error.message : String(input.error);
+  const body: Record<string, unknown> = { error: message };
+  const recorder = input.deps.browserExpert?.missionContext?.recorder;
+  if (!recorder || !input.context) return body;
+
+  const result = await recorder.recordFailure({
+    context: input.context,
+    replayed: false,
+    tool: input.tool,
+    sessionId: input.sessionId,
+    bucket: classifyBrowserExpertFailureBucket(message),
+    message,
+  });
+  if (result.kind === "failed") {
+    body.timelineRecorded = false;
+    body.timelineError = result.error;
+  }
+  return body;
+}
+
+function classifyBrowserExpertFailureBucket(message: string): string {
+  const prefix = message.match(/^([a-z0-9_]+):/i)?.[1];
+  if (
+    prefix === "target_not_found" ||
+    prefix === "attach_failed" ||
+    prefix === "expert_session_detached" ||
+    prefix === "cdp_command_timeout" ||
+    prefix === "browser_cdp_unavailable"
+  ) {
+    return prefix;
+  }
+  return "raw_cdp_failed";
 }
 
 function validateBrowserTaskRouteBody(body: BrowserTaskRouteBody, route: BrowserTaskMutationRoute): string | null {

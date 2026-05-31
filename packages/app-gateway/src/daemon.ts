@@ -707,6 +707,13 @@ const server = http.createServer(async (req, res) => {
           browserBridge,
           browserExpert: {
             expertLane: browserExpertLane,
+            missionContext: {
+              validator: {
+                missionStore: missionDeps.missionStore,
+                workItemStore: missionDeps.workItemStore,
+              },
+              recorder: bridgeMissionRecorder,
+            },
           },
           idGenerator,
           clock,

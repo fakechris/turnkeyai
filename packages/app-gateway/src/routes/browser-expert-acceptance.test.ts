@@ -6,7 +6,16 @@ import test from "node:test";
 import { DirectCdpBrowserAdapter } from "@turnkeyai/browser-bridge/transport/direct-cdp-adapter";
 import type { BrowserRawCdpExpertLane } from "@turnkeyai/core-types/team";
 
+import type { BridgeRecordFailureInput } from "../bridge-mission-activity-recorder";
 import { handleBrowserRoutes, type BrowserRouteDeps } from "./browser-routes";
+
+type RecordedExpertFailure = {
+  tool: string;
+  sessionId: string | null;
+  bucket: string | null;
+  message: string;
+  missionId: string;
+};
 
 function createRequest(input: { method: string; url: string; body?: unknown }) {
   const body =
@@ -35,7 +44,10 @@ function createResponse() {
   };
 }
 
-function createDeps(expertLane: BrowserRawCdpExpertLane): BrowserRouteDeps {
+function createDeps(
+  expertLane: BrowserRawCdpExpertLane,
+  options: { recordedFailures?: RecordedExpertFailure[] } = {}
+): BrowserRouteDeps {
   return {
     browserBridge: {
       async spawnSession() {
@@ -72,6 +84,39 @@ function createDeps(expertLane: BrowserRawCdpExpertLane): BrowserRouteDeps {
     },
     browserExpert: {
       expertLane,
+      ...(options.recordedFailures
+        ? {
+            missionContext: {
+              validator: {
+                missionStore: {
+                  async get(missionId: string) {
+                    return { id: missionId } as any;
+                  },
+                },
+                workItemStore: {
+                  async listByMission() {
+                    return [];
+                  },
+                },
+              },
+              recorder: {
+                async recordSuccess() {
+                  return { kind: "skipped", reason: "no-mission" as const };
+                },
+                async recordFailure(input: BridgeRecordFailureInput) {
+                  options.recordedFailures!.push({
+                    tool: input.tool,
+                    sessionId: input.sessionId,
+                    bucket: input.bucket,
+                    message: input.message,
+                    missionId: input.context!.missionId,
+                  });
+                  return { kind: "appended", eventId: `event-${options.recordedFailures!.length}` };
+                },
+              },
+            },
+          }
+        : {}),
     },
     idGenerator: {
       teamId: () => "team-1",
@@ -433,7 +478,10 @@ class RawCdpDetachThenRecoverRootSession extends RawCdpScenarioRootSession {
   }
 }
 
-function createRawCdpScenarioDeps(rootSession = new RawCdpScenarioRootSession()) {
+function createRawCdpScenarioDeps(
+  rootSession = new RawCdpScenarioRootSession(),
+  options: { recordedFailures?: RecordedExpertFailure[] } = {}
+) {
   const adapter = new DirectCdpBrowserAdapter(
     {
       artifactRootDir: "/tmp/turnkeyai-browser-expert-scenarios",
@@ -448,7 +496,7 @@ function createRawCdpScenarioDeps(rootSession = new RawCdpScenarioRootSession())
   );
   return {
     rootSession,
-    deps: createDeps(adapter.getRawCdpExpertLane()),
+    deps: createDeps(adapter.getRawCdpExpertLane(), options),
   };
 }
 
@@ -708,7 +756,8 @@ test("browser expert scenarios expose root target events for popup discovery", a
 });
 
 test("browser expert scenarios fail an in-flight raw command when its target detaches", async () => {
-  const { deps } = createRawCdpScenarioDeps();
+  const recordedFailures: RecordedExpertFailure[] = [];
+  const { deps } = createRawCdpScenarioDeps(new RawCdpScenarioRootSession(), { recordedFailures });
   const attachResponse = await callBrowserRoute(deps, {
     method: "POST",
     url: "/browser-sessions/session-detach/expert/attach",
@@ -728,10 +777,20 @@ test("browser expert scenarios fail an in-flight raw command when its target det
       method: "Runtime.longTask",
       params: {},
       timeoutMs: 1000,
+      missionId: "msn.raw-detach",
     },
   });
   assert.equal(sendResponse.res.statusCode, 502);
   assert.equal(sendResponse.json.error, "expert_session_detached: expert session detached");
+  assert.deepEqual(recordedFailures, [
+    {
+      tool: "raw_cdp.send",
+      sessionId: "session-detach",
+      bucket: "expert_session_detached",
+      message: "expert_session_detached: expert session detached",
+      missionId: "msn.raw-detach",
+    },
+  ]);
 
   const eventsResponse = await callBrowserRoute(deps, {
     method: "GET",
@@ -742,7 +801,8 @@ test("browser expert scenarios fail an in-flight raw command when its target det
 });
 
 test("browser expert scenarios classify attach failures without leaking expert sessions", async () => {
-  const { deps, rootSession } = createRawCdpScenarioDeps(new RawCdpAttachFailureRootSession());
+  const recordedFailures: RecordedExpertFailure[] = [];
+  const { deps, rootSession } = createRawCdpScenarioDeps(new RawCdpAttachFailureRootSession(), { recordedFailures });
 
   const attachResponse = await callBrowserRoute(deps, {
     method: "POST",
@@ -750,10 +810,20 @@ test("browser expert scenarios classify attach failures without leaking expert s
     body: {
       threadId: "thread-1",
       targetId: "iframe-cross-origin",
+      missionId: "msn.raw-attach",
     },
   });
   assert.equal(attachResponse.res.statusCode, 502);
   assert.equal(attachResponse.json.error, "attach_failed: Target.attachToTarget did not return a sessionId");
+  assert.deepEqual(recordedFailures, [
+    {
+      tool: "raw_cdp.attach",
+      sessionId: "session-attach-failure",
+      bucket: "attach_failed",
+      message: "attach_failed: Target.attachToTarget did not return a sessionId",
+      missionId: "msn.raw-attach",
+    },
+  ]);
 
   const detachResponse = await callBrowserRoute(deps, {
     method: "POST",
@@ -771,8 +841,28 @@ test("browser expert scenarios classify attach failures without leaking expert s
   );
 });
 
+test("browser expert scenarios reject invalid mission context before raw CDP dispatch", async () => {
+  const recordedFailures: RecordedExpertFailure[] = [];
+  const { deps, rootSession } = createRawCdpScenarioDeps(new RawCdpAttachFailureRootSession(), { recordedFailures });
+
+  const attachResponse = await callBrowserRoute(deps, {
+    method: "POST",
+    url: "/browser-sessions/session-invalid-mission/expert/attach",
+    body: {
+      threadId: "thread-1",
+      targetId: "iframe-cross-origin",
+      missionId: "   ",
+    },
+  });
+  assert.equal(attachResponse.res.statusCode, 400);
+  assert.equal(attachResponse.json.error, "missionId must be a non-empty string");
+  assert.deepEqual(recordedFailures, []);
+  assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.attachToTarget").length, 0);
+});
+
 test("browser expert scenarios classify missing targets after attach relist", async () => {
-  const { deps } = createRawCdpScenarioDeps(new RawCdpMissingTargetRootSession());
+  const recordedFailures: RecordedExpertFailure[] = [];
+  const { deps } = createRawCdpScenarioDeps(new RawCdpMissingTargetRootSession(), { recordedFailures });
 
   const attachResponse = await callBrowserRoute(deps, {
     method: "POST",
@@ -780,10 +870,20 @@ test("browser expert scenarios classify missing targets after attach relist", as
     body: {
       threadId: "thread-1",
       targetId: "target-gone",
+      missionId: "msn.raw-target-missing",
     },
   });
   assert.equal(attachResponse.res.statusCode, 502);
   assert.equal(attachResponse.json.error, "target_not_found: raw CDP target disappeared before attach: target-gone");
+  assert.deepEqual(recordedFailures, [
+    {
+      tool: "raw_cdp.attach",
+      sessionId: "session-missing-target",
+      bucket: "target_not_found",
+      message: "target_not_found: raw CDP target disappeared before attach: target-gone",
+      missionId: "msn.raw-target-missing",
+    },
+  ]);
 });
 
 test("browser expert scenarios reattach and retry once after expert session detach", async () => {
@@ -820,7 +920,8 @@ test("browser expert scenarios reattach and retry once after expert session deta
 });
 
 test("browser expert scenarios surface bounded raw command timeout", async () => {
-  const { deps, rootSession } = createRawCdpScenarioDeps(new RawCdpCommandTimeoutRootSession());
+  const recordedFailures: RecordedExpertFailure[] = [];
+  const { deps, rootSession } = createRawCdpScenarioDeps(new RawCdpCommandTimeoutRootSession(), { recordedFailures });
   const attachResponse = await callBrowserRoute(deps, {
     method: "POST",
     url: "/browser-sessions/session-timeout/expert/attach",
@@ -842,11 +943,21 @@ test("browser expert scenarios surface bounded raw command timeout", async () =>
         expression: "window.__neverResolves",
       },
       timeoutMs: 1,
+      missionId: "msn.raw-timeout",
     },
   });
   assert.equal(sendResponse.res.statusCode, 502);
   assert.equal(sendResponse.json.error, "cdp_command_timeout: expert CDP command timed out: Runtime.evaluate");
   assert.equal(rootSession.sent.filter((entry) => entry.method === "Target.sendMessageToTarget").length, 1);
+  assert.deepEqual(recordedFailures, [
+    {
+      tool: "raw_cdp.send",
+      sessionId: "session-timeout",
+      bucket: "cdp_command_timeout",
+      message: "cdp_command_timeout: expert CDP command timed out: Runtime.evaluate",
+      missionId: "msn.raw-timeout",
+    },
+  ]);
 });
 
 test("browser expert scenarios surface unavailable direct CDP endpoint", async () => {

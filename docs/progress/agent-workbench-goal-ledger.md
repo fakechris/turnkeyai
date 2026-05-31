@@ -3458,3 +3458,74 @@ Convergence question:
   operator closeout under a natural LLM prompt.
 - Next required gate: extend the same natural-real-LLM failure-injection
   standard to attach failure, command timeout, and target/session detach.
+
+## 2026-05-31 13:51 CST - Raw CDP Expert Failure Mission Visibility
+
+Direction: converging
+
+Execution Kernel:
+- Kept raw-CDP expert capability out of the default model-visible tool
+  surface. The reference architecture uses browser sub-agents as the
+  model-visible layer; raw CDP remains transport/operator machinery.
+- Added optional mission context to browser expert routes and wired the daemon
+  to validate that context before writing recovery events.
+- Route-level failure injection now records raw-CDP expert failures into the
+  mission activity stream with bucket-level runtime metadata.
+
+Result Quality:
+- No final-answer behavior changed for normal browser work.
+- Expert-lane failures now become structured mission evidence instead of only
+  HTTP error bodies, so replay/operator surfaces can distinguish
+  `attach_failed`, `target_not_found`, `expert_session_detached`, and
+  `cdp_command_timeout`.
+
+Workbench UX:
+- No UI changed.
+- Mission timelines can now include raw-CDP expert recovery events when an
+  operator or diagnostic workflow runs the expert lane with mission context.
+  This closes part of the gap between transport diagnostics and mission
+  replay without exposing unsafe raw-CDP operations to ordinary agents.
+
+Browser Reliability:
+- The injected failure cases exercise the existing direct-CDP expert adapter
+  recovery boundaries:
+  - attach failure after relisting
+  - missing target after relist
+  - detached expert session during an in-flight command
+  - bounded command timeout without retry
+- The real model-visible browser closeout gate was rerun to confirm the public
+  browser sub-agent layer still completes cleanly when CDP is unavailable.
+
+Acceptance Evidence:
+- `npm test -- --runInBand
+  packages/app-gateway/src/routes/browser-expert-acceptance.test.ts`:
+  passed, 1286 tests.
+- `npm run typecheck`: passed.
+- Real LLM E2E:
+  `TURNKEYAI_BROWSER_TRANSPORT=direct-cdp
+  TURNKEYAI_BROWSER_CDP_ENDPOINT=http://127.0.0.1:9
+  npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-unavailable-closeout
+  --scenario-timeout-ms 300000
+  --json tmp/natural-browser-expert-visibility-e2e.json`: passed.
+- Real mission: `msn.mptd2g5r.1`, status `done`, natural `passed`,
+  tools `3/3`, sessions `1/0`, browser `yes`, profile fallback `0`,
+  liveness `0/0/0`, final bytes `710`, weak-answer signals
+  `tool unavailable fallback` only.
+
+Regression Risk:
+- Main risk is widening raw-CDP exposure. This change does not add a
+  model-visible tool and only adds optional mission metadata to existing expert
+  routes.
+- Another risk is writing activity to the wrong mission. The route uses the
+  existing mission/work-item validator before recording; blank, missing-scope,
+  and unknown mission contexts keep the bridge-validator behavior.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: raw-CDP expert failures that previously stopped at route response
+  level are now mission-visible recovery events, while the model-visible
+  browser layer still completes a forced CDP-unavailable natural closeout.
+- Next required gate: add an operator-facing recovery action or diagnostic
+  workflow that consumes these raw-CDP recovery events instead of merely
+  listing them.
