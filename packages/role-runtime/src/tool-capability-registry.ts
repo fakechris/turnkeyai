@@ -483,6 +483,7 @@ function renderBrowserWorkerSection(): string {
   return [
     "## Browser Worker Rules",
     "- Browser work is for authenticated pages, JS-rendered pages, visual inspection, interactive actions, and pages where direct fetch is insufficient.",
+    "- When the task says to review a page as a user would see it, inspect a JS-rendered/client-rendered page, or verify a rendered dashboard, use the browser worker. Do not substitute explore/static fetch for that browser evidence.",
     "- For public research, find the correct URL first; use browser when interaction, login state, screenshots, or dynamic content is required.",
     "- For personal dashboards or account data, prefer the browser worker because it can use the user's active browser session.",
     "- Keep browser tasks bounded: specify target URL or search query, required fields, output format, and when to stop.",

@@ -11,6 +11,7 @@ import {
   evaluateNaturalMissionQuality,
   extractCancelledSessionKey,
   extractBrowserSessionIdForSpawnAgent,
+  extractBrowserSessionIdForSendAfter,
   extractSessionKeyForSpawnAgent,
   extractTimedOutSessionKey,
   formatMissionScenarioPass,
@@ -871,7 +872,7 @@ describe("mission tool-use e2e report", () => {
           toolName: "sessions_send",
           toolPhase: "result",
           resultContent:
-            'Resume mode: cold. Target resolution: new_target. Rendered dashboard evidence shows Queue depth: 11, SLA breaches: 3, and Recommended owner: Incident Commander. "payload":{"sessionId":"browser-session-recreated","resumeMode":"cold"}',
+            'Cold recreation performed. Target resolution: new_target. Rendered dashboard evidence shows Queue depth: 11, SLA breaches: 3, and Recommended owner: Incident Commander. "payload":{"sessionId":"browser-session-recreated","resumeMode":"cold"}',
         },
       },
       {
@@ -912,11 +913,21 @@ describe("mission tool-use e2e report", () => {
       ...result.timeline[1]!.runtime,
       resultContent: JSON.stringify({
         status: "completed",
-        payload: { sessionId: "browser-session-old" },
-        result: "Recreated dashboard path: /tmp/browser-artifacts/browser-session-new/01-dashboard.png",
+        payload: { sessionId: "browser-session-structured" },
+        result: "Diagnostic path with stale prior id: /tmp/browser-artifacts/browser-session-stale/01-dashboard.png",
       }),
     };
-    assert.equal(extractBrowserSessionIdForSpawnAgent(result.timeline, "browser"), "browser-session-new");
+    assert.equal(extractBrowserSessionIdForSpawnAgent(result.timeline, "browser"), "browser-session-structured");
+    result.timeline[4]!.runtime = {
+      ...result.timeline[4]!.runtime,
+      resultContent: JSON.stringify({
+        status: "completed",
+        payload: { sessionId: "browser-session-recreated", resumeMode: "cold" },
+        result:
+          "Cold recreation performed. Target resolution: new_target. Rendered dashboard evidence shows Queue depth: 11, SLA breaches: 3, and Recommended owner: Incident Commander. Stale prior path: /tmp/browser-artifacts/browser-session-original/02-dashboard.png",
+      }),
+    };
+    assert.equal(extractBrowserSessionIdForSendAfter(result.timeline, phaseOneFinal), "browser-session-recreated");
     assertNaturalFollowupReusedExistingSession({
       timeline: result.timeline,
       phaseOneFinal,
@@ -942,7 +953,7 @@ describe("mission tool-use e2e report", () => {
       metrics: result.metrics,
       final: result.final,
     });
-    assert.ok(missingColdEvidence.failures.includes("missing evidence cold recreation evidence"));
+    assert.ok(missingColdEvidence.failures.includes("missing evidence browser recovery evidence"));
   });
 
 

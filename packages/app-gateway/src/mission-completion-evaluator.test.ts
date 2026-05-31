@@ -86,6 +86,37 @@ describe("MissionCompletionEvaluator", () => {
     });
   });
 
+  it("does not treat prematurely done missions with pending approvals as terminal", () => {
+    const decision = evaluateMissionCompletion({
+      mission: { ...mission, status: "done", progress: 1, pendingApprovals: 1 },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Approval pending before action.",
+        },
+      ],
+      roleRuns: [],
+    });
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "pending_approval",
+      patch: { status: "needs_approval" },
+    });
+  });
+
+  it("keeps archived and draft missions terminal even if approvals remain", () => {
+    for (const status of ["archived", "draft"] as const) {
+      const decision = evaluateMissionCompletion({
+        mission: { ...mission, status, pendingApprovals: 1 },
+        messages: [],
+        roleRuns: [],
+      });
+      assert.deepEqual(decision, { action: "none", reason: "terminal" });
+    }
+  });
+
   it("marks final lead answer done", () => {
     const decision = evaluateMissionCompletion({
       mission,

@@ -115,13 +115,19 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
         }),
         ...(input.signal ? { signal: input.signal } : {}),
       });
+      const browserRecovery =
+        this.kind === "browser" ? summarizeBrowserPrivateToolRecovery(reply.metadata ?? {}) : null;
+      const summary = browserRecovery
+        ? `${browserRecovery.summary} ${summarizeReply(reply.content)}`
+        : summarizeReply(reply.content);
       return {
         workerType: this.kind,
         status: "completed",
-        summary: summarizeReply(reply.content),
+        summary,
         payload: {
           mode: "llm_sub_agent",
           workerType: this.kind,
+          ...(browserRecovery ? { browserRecovery } : {}),
           content: reply.content,
           metadata: reply.metadata ?? {},
         },
@@ -764,6 +770,73 @@ function readNativeToolRounds(metadata: Record<string, unknown>): NativeToolRoun
   return Array.isArray(rounds) ? (rounds as NativeToolRoundTrace[]) : [];
 }
 
+function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
+  | {
+      resumeMode: NonNullable<BrowserTaskResult["resumeMode"]>;
+      sessionId: string;
+      summary: string;
+      targetId?: string;
+    }
+  | null {
+  const rounds = readNativeToolRounds(metadata);
+  let latest:
+    | {
+        resumeMode: NonNullable<BrowserTaskResult["resumeMode"]>;
+        sessionId: string;
+        targetId?: string;
+      }
+    | null = null;
+  for (const round of rounds) {
+    for (const result of round.results) {
+      if (!result.toolName.startsWith("browser_") || !result.content) {
+        continue;
+      }
+      const parsed = parseBrowserPrivateToolResult(result.content);
+      if (!parsed || parsed.resumeMode === "hot") {
+        continue;
+      }
+      latest = parsed;
+    }
+  }
+  if (!latest) {
+    return null;
+  }
+  return {
+    ...latest,
+    summary: `Browser recovery metadata: Resume mode: ${latest.resumeMode}. Session ID: ${latest.sessionId}.`,
+  };
+}
+
+function parseBrowserPrivateToolResult(content: string):
+  | {
+      resumeMode: NonNullable<BrowserTaskResult["resumeMode"]>;
+      sessionId: string;
+      targetId?: string;
+    }
+  | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || !isRecord(parsed["payload"])) {
+    return null;
+  }
+  const payload = parsed["payload"];
+  const resumeMode = payload["resumeMode"];
+  const sessionId = payload["sessionId"];
+  const targetId = payload["targetId"];
+  if ((resumeMode !== "hot" && resumeMode !== "warm" && resumeMode !== "cold") || typeof sessionId !== "string") {
+    return null;
+  }
+  return {
+    resumeMode,
+    sessionId,
+    ...(typeof targetId === "string" ? { targetId } : {}),
+  };
+}
+
 function buildSubAgentPromptPacket(input: {
   kind: WorkerKind;
   activation: RoleActivationInput;
@@ -881,6 +954,10 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function abortedResult(kind: WorkerKind): WorkerExecutionResult {
