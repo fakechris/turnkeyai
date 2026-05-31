@@ -3725,3 +3725,57 @@ Convergence question:
   operator-interrupted child session, or improve timeout recovery so resumed
   slow-source work can complete with stronger source evidence instead of a
   second timeout.
+
+## 2026-05-31 17:23 CST - Methodology Reset And Plan Reconciliation
+
+Direction: unknown
+
+Execution Kernel:
+- Paused outer feature, diagnostics, and UI polish work until core runtime
+  evidence is reclassified under the P0 natural runtime reset.
+- Reconciled the runtime completion plan so structural implementation,
+  visibility, capability proof, and unproven areas are no longer collapsed into
+  a single "implemented" status.
+- Future runtime changes must map to an explicit continuation/state row before
+  implementation, especially for cancellation, timeout, approval, active work,
+  retryable failure, and non-retryable failure paths.
+
+Result Quality:
+- This checkpoint does not claim result-quality improvement.
+- A single natural E2E failure followed by a narrow scenario patch is not enough
+  to call the system converging. The failure must first be classified against
+  runtime state, prompt harness, tool protocol, browser reliability, memory, or
+  replay behavior.
+- Capability claims require a natural real LLM E2E mission or validation report
+  artifact with useful terminal output, reasonable tool use, and no weak-answer
+  fallback signals.
+
+Workbench UX:
+- No user-visible UI changed in this checkpoint.
+- Workbench UX remains P1 until P0 gates prove the runtime can reliably produce
+  useful terminal results under natural prompts.
+
+Browser Reliability:
+- No browser behavior changed in this checkpoint.
+- Browser reliability remains evidence-gated by natural dynamic-page/dashboard
+  runs and failure-bucket gates, not by route existence or smoke coverage alone.
+
+Acceptance Evidence:
+- This is a methodology reset and documentation reconciliation checkpoint, not a
+  capability checkpoint.
+- No new natural real LLM E2E was run or claimed for this checkpoint.
+- Next implementation work must cite the matrix row it addresses and can only
+  claim capability after a natural real LLM E2E mission/report artifact passes.
+
+Regression Risk:
+- Risk is process drift: reverting to PR count, test count, fixture markers, or
+  exact prompt shapes as evidence would hide natural task failures.
+- The mitigation is to block capability language unless the evidence class and
+  natural mission/report id are recorded in the plan or ledger.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? unknown
+- Evidence: no new runtime capability evidence was produced in this checkpoint.
+- Next required gate: classify the next failing natural scenario by matrix row
+  before implementing code, then rerun the natural gate without forced markers
+  or exact-answer prompts.

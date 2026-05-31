@@ -7,7 +7,19 @@ This plan closes the remaining gap between TurnkeyAI's native tool-use runtime a
 
 ## Current Baseline
 
-Already structurally present on `main`:
+This document is governed by
+`docs/design/p0-natural-runtime-parity-reset.md`. Use the following status
+terms precisely:
+
+- `structural implemented`: code paths, schemas, persistence, or deterministic
+  tests exist, but this does not prove user-facing capability.
+- `visibility implemented`: runtime state is inspectable in UI, diagnostics, or
+  reports, but this does not prove the agent can use it well.
+- `capability proven`: a natural real LLM E2E mission or validation report
+  completed with useful evidence and is cited by id.
+- `unproven`: evidence is missing, stale, indirect, or only contract-shaped.
+
+Structural/visibility baseline on `main`:
 
 - Provider-native tool schemas and tool-call parsing for supported LLM adapters.
 - Role tool loop with durable assistant tool-call messages, `role=tool` results, and tool progress.
@@ -21,12 +33,11 @@ Already structurally present on `main`:
 - Tool-use E2E mock path, real LLM path, real LLM + browser path, and natural mission E2E path.
 - Role-run cancellation from Mission UI through provider `AbortSignal`.
 
-This list is not a production-grade capability claim by itself. The current
-P0 reset is documented in
-`docs/design/p0-natural-runtime-parity-reset.md`: structural completion,
-visibility, and natural capability evidence must be tracked separately. Any
-future claim that runtime behavior improved must cite a natural real LLM E2E
-artifact, mission id, or validation-ops run id.
+This list is not a production-grade capability claim by itself. Structural
+completion, visibility, and natural capability evidence must be tracked
+separately. Any future claim that runtime behavior improved must cite a natural
+real LLM E2E artifact, mission id, or validation-ops run id. Without that
+evidence, the status remains structural, visibility, or unproven.
 
 ## Completion Requirements
 
@@ -59,8 +70,10 @@ Acceptance:
 - A browser sub-agent can open a URL, snapshot, scroll, run a console probe, take a screenshot, and summarize the observed evidence in one private tool loop.
 - Repeated browser private tool calls reuse the prior session/target unless the bridge reports a closed or missing session.
 
-Status: implemented. Covered by browser sub-agent unit coverage and the real
-LLM + browser E2E gate.
+Status: structural implemented. Capability is proven only for the cited real
+LLM + browser E2E gates. Complex-page handling, failure-bucket recovery, and
+multi-step browser reliability remain evidence-gated until each has natural
+mission or validation report evidence.
 
 ### 2. Durable Sub-Session Transcript
 
@@ -78,8 +91,11 @@ Acceptance:
 - After daemon restart, `sessions_history(include_tools=true)` returns the child assistant/tool turns.
 - A follow-up through `sessions_send` sees the prior child transcript, not only the compact last result.
 
-Status: implemented for worker session history and sub-agent child transcript
-continuation. Covered by worker runtime and sub-agent tests.
+Status: structural implemented for worker session history and sub-agent child
+transcript continuation. Natural follow-up and timeout-follow-up continuation
+are capability proven only where this plan or the goal ledger cites mission ids
+or validation artifacts. Restart/cold continuation remains unproven unless a
+future natural gate records that evidence.
 
 ### 3. Real LLM + Browser E2E Acceptance
 
@@ -99,7 +115,9 @@ Acceptance:
 - A real LLM prompt can complete a browser-backed research task without manual UI probing.
 - Failure output points to the broken layer: provider, tool schema, worker routing, browser transport, permission, replay, or final synthesis.
 
-Status: implemented. Latest local acceptance on 2026-05-30:
+Status: capability proven for the listed 2026-05-30 local acceptance artifacts
+only. This is not a blanket claim that all production browser-backed missions
+are reliable. Latest local acceptance on 2026-05-30:
 
 - `npm run tooluse:e2e`
 - `npm run tooluse:e2e -- --real-llm --model-catalog models.local.json`
@@ -137,8 +155,10 @@ Acceptance:
 - Starting two browser-backed missions does not produce uncontrolled profile lock loops.
 - A profile conflict returns a clear recoverable/unrecoverable status and suggested operator action.
 
-Status: implemented for managed local sessions. Covered by Chrome session
-manager tests and direct-CDP smoke.
+Status: structural implemented and visibility implemented for managed local
+sessions, Chrome session diagnostics, and direct-CDP smoke coverage. Natural
+profile-conflict behavior remains unproven until a real browser reliability
+gate records bounded recovery or a clear operator-facing terminal result.
 
 ### 5. Product Replay, Approval, And Session UX
 
@@ -157,9 +177,11 @@ Acceptance:
 - A completed browser-backed mission reads as: task -> tool process -> evidence -> final answer.
 - A failed/cancelled/approval-denied flow is understandable without reading raw JSON.
 
-Status: implemented as the current Mission Detail baseline: collapsed work
-trace above final answer, markdown final answer rendering, sub-agent
-inspect/continue/cancel controls, active role-run cancel, and approval routing.
+Status: visibility implemented as the current Mission Detail baseline:
+collapsed work trace above final answer, markdown final answer rendering,
+sub-agent inspect/continue/cancel controls, active role-run cancel, and
+approval routing. User effectiveness remains evidence-gated by screenshot-backed
+checks and natural mission replay evidence.
 
 ## Checkpoint Order
 
@@ -169,6 +191,10 @@ inspect/continue/cancel controls, active role-run cancel, and approval routing.
 4. Browser profile/session stability hardening.
 5. Mission replay/approval/session UX completion.
 
-Each checkpoint went through focused implementation, tests, commit, PR, review
-inspection, fixes where needed, merge, and local acceptance. Keep using the
-same flow for future product-validation hardening.
+Future checkpoints must state which evidence class changed: structural,
+visibility, capability, or unproven. PRs and tests can establish structural and
+visibility progress; capability progress requires a natural real LLM E2E mission
+or validation artifact with useful terminal output. Do not treat a single E2E
+failure followed by a scenario-specific patch as convergence unless the fix is
+mapped to a runtime state row and the natural gate improves without forced
+markers or exact-answer prompts.
