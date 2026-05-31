@@ -39,7 +39,8 @@ type ToolLoopCloseoutReason =
   | "round_limit"
   | "completed_sub_agent_final"
   | "sub_agent_timeout"
-  | "operator_cancelled";
+  | "operator_cancelled"
+  | "repeated_tool_failure";
 
 interface ToolLoopCloseoutMetadata {
   reason: ToolLoopCloseoutReason;
@@ -370,6 +371,42 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             `Tool-use round limit reached (${maxRounds}).`,
             "Do not call more tools. Produce the best final answer from the evidence already gathered.",
             "State uncertainties and missing verification explicitly instead of trying another lookup.",
+          ],
+        });
+        throwIfAborted(input.signal);
+        result = generated.result;
+        if (generated.reduction) {
+          reduction = generated.reduction;
+          reductionSnapshot = generated.reductionSnapshot;
+        }
+        if (generated.memoryFlush) {
+          memoryFlushes.push(generated.memoryFlush);
+        }
+        break;
+      }
+      const repeatedFailure = findRepeatedFailedToolCall(toolCalls, toolTrace);
+      if (repeatedFailure) {
+        toolLoopCloseout = {
+          reason: "repeated_tool_failure",
+          maxRounds,
+          pendingToolCallCount: toolCalls.length,
+          toolName: repeatedFailure.toolName,
+          toolCallCount: countToolCalls(toolTrace),
+          roundCount: toolTrace.length,
+          evidenceAvailable: hasUsableEvidence(toolTrace),
+        };
+        throwIfAborted(input.signal);
+        const generated = await this.generateFinalAfterToolRoundLimit({
+          activation: input.activation,
+          packet: input.packet,
+          selection,
+          baseGatewayInput: initialGatewayInput,
+          messages,
+          maxRounds,
+          reasonLines: [
+            `Repeated failing tool call detected: ${repeatedFailure.toolName} failed ${repeatedFailure.failureCount} times with the same arguments.`,
+            "Do not call the same tool again with those arguments, and do not spawn a fallback session for the same target.",
+            "Produce the best final answer from evidence already gathered. If no usable evidence exists, say verification did not complete and name the next operator/user input needed.",
           ],
         });
         throwIfAborted(input.signal);
@@ -1125,6 +1162,67 @@ const ORDER_DEPENDENT_TOOL_NAMES = new Set([
 
 function shouldSerializeToolBatch(toolCalls: LLMToolCall[]): boolean {
   return toolCalls.length > 1 && toolCalls.some((call) => ORDER_DEPENDENT_TOOL_NAMES.has(call.name));
+}
+
+function findRepeatedFailedToolCall(
+  pendingCalls: LLMToolCall[],
+  toolTrace: NativeToolRoundTrace[],
+  maxFailures = 2
+): { toolName: string; failureCount: number } | null {
+  if (pendingCalls.length === 0 || toolTrace.length === 0) {
+    return null;
+  }
+  const callsById = new Map<string, LLMToolCall>();
+  const failedCounts = new Map<string, { toolName: string; count: number }>();
+  for (const round of toolTrace) {
+    for (const call of round.calls) {
+      callsById.set(call.id, call);
+    }
+    for (const result of round.results) {
+      if (!result.isError || result.cancelled) {
+        continue;
+      }
+      const call = callsById.get(result.toolCallId);
+      if (!call) {
+        continue;
+      }
+      const signature = toolCallSignature(call);
+      const current = failedCounts.get(signature) ?? { toolName: call.name, count: 0 };
+      failedCounts.set(signature, { ...current, count: current.count + 1 });
+    }
+  }
+  for (const call of pendingCalls) {
+    const current = failedCounts.get(toolCallSignature(call));
+    if (current && current.count >= maxFailures) {
+      return { toolName: current.toolName, failureCount: current.count };
+    }
+  }
+  return null;
+}
+
+function toolCallSignature(call: LLMToolCall): string {
+  return `${call.name}:${stableJson(normalizeToolInputForSignature(call.input))}`;
+}
+
+function normalizeToolInputForSignature(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.replace(/\s+/g, " ").trim();
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeToolInputForSignature(entry));
+  }
+  const normalized: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    normalized[key] = normalizeToolInputForSignature((value as Record<string, unknown>)[key]);
+  }
+  return normalized;
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value);
 }
 
 interface ReductionEnvelopeSnapshot {

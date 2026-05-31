@@ -54,6 +54,7 @@ const FORCED_TOOL_LOOP_CLOSEOUT_REASONS = new Set([
   "wall_clock_budget",
   "round_limit",
   "sub_agent_timeout",
+  "repeated_tool_failure",
 ]);
 
 const MISSION_E2E_SCENARIOS = [

@@ -335,6 +335,8 @@ function toolLoopCloseoutReasonLabel(reason: string): string {
       return "Final answer was forced after a sub-agent timeout.";
     case "pseudo_tool_call":
       return "Final answer was forced after the model emitted non-native tool-call markup.";
+    case "repeated_tool_failure":
+      return "Final answer was forced after repeated failed attempts with the same tool arguments.";
     default:
       return `Final answer was forced by tool-loop closeout '${reason}'.`;
   }

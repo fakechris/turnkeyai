@@ -1469,6 +1469,79 @@ test("llm role response generator does not report closeout evidence for failed-o
   assert.equal(closeout?.evidenceAvailable, false);
 });
 
+test("llm role response generator closes out repeated failing tool calls before another retry", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let executedTools = 0;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length <= 3) {
+      return toolCallResult(`toolu-${gatewayInputs.length}`, "sessions_spawn", {
+        agent_id: "explore",
+        task: "Fetch the same unstable source.",
+        label: "unstable source",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.equal(input.tools, undefined);
+    return {
+      text: "Verification did not complete after repeated source failures.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedTools += 1;
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        isError: true,
+        content: JSON.stringify({ status: "failed", result: "network failed before collecting evidence" }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Verification did not complete after repeated source failures.");
+  assert.equal(executedTools, 2);
+  assert.equal(gatewayInputs.length, 4);
+  assert.ok(
+    gatewayInputs[3]?.messages.some(
+      (message) =>
+        message.role === "user" &&
+        readToolContent(message.content).includes("Repeated failing tool call detected: sessions_spawn failed 2 times")
+    )
+  );
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "repeated_tool_failure");
+  assert.equal(closeout?.toolName, "sessions_spawn");
+  assert.equal(closeout?.toolCallCount, 2);
+  assert.equal(closeout?.roundCount, 2);
+  assert.equal(closeout?.pendingToolCallCount, 1);
+  assert.equal(closeout?.evidenceAvailable, false);
+});
+
 test("llm role response generator synthesizes immediately after sub-agent timeout", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   let executedTools = 0;
