@@ -10,6 +10,12 @@ G0 operating contract:
   production-grade agent workbench for stable complex-task delivery.
 - This ledger is the source of truth for goal progress while the workbench
   stabilization goal is active.
+- While the production workbench goal is active, implementation stages must
+  either append a checkpoint to this ledger or explicitly point to the latest
+  checkpoint that already covers the same acceptance evidence.
+- A stage is not considered closed only because its PR merged. It is closed
+  when the relevant acceptance evidence is recorded here and the checkpoint can
+  answer whether stable complex-task delivery moved closer.
 - Progress is judged by real acceptance, user-visible behavior, and reduction
   of repeated failure classes. PR count, LOC movement, and test count are
   supporting facts only; they are never sufficient evidence by themselves.
@@ -2877,3 +2883,52 @@ Convergence question:
 - Next required gate: run a longer multi-source product brief with the same
   closeout telemetry enabled to ensure the guardrails do not degrade normal
   high-quality completion paths.
+
+## 2026-05-31 08:36 CST - G0 Active Goal Ledger Supplement
+
+Direction: unknown
+
+Execution Kernel:
+- No execution-kernel, tool-use, session, browser, approval, or mission
+  completion behavior changed in this checkpoint.
+- The ledger contract now states that while the production workbench goal is
+  active, implementation stages must be tied back to recorded acceptance
+  evidence here rather than treated as complete at PR merge time.
+
+Result Quality:
+- Final-answer synthesis did not change.
+- Result-quality governance is stricter: a stage can only claim closure when
+  the ledger records the relevant acceptance evidence and answers whether
+  stable complex-task delivery moved closer for a real user.
+
+Workbench UX:
+- No user-facing workbench UI changed.
+- Product-management UX improves at the operating layer: the ledger now makes
+  the goal object, acceptance evidence, and closure rule explicit enough to
+  prevent drift back to PR-count or test-count progress reporting.
+
+Browser Reliability:
+- Browser runtime, profile, CDP, and bridge behavior did not change.
+- Browser reliability remains evidence-gated. Browser behavior changes still
+  need focused browser or browser-backed real LLM acceptance before a future
+  checkpoint can mark them `converging`.
+
+Acceptance Evidence:
+- Governance-only supplement. No real LLM/browser acceptance ran.
+- Required verification for this checkpoint is `npm run ledger:check`.
+- Next product/runtime gate remains the longer multi-source product brief named
+  in the previous checkpoint, with closeout telemetry enabled and quality
+  assertions strong enough to catch weak synthesis.
+
+Regression Risk:
+- Runtime regression risk is none because only this progress document changed.
+- Process risk is over-recording `converging` for governance-only work. This
+  checkpoint is intentionally `unknown` to preserve the G0 evidence gate.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? no
+- Evidence: the operating ledger is clearer, but no user-facing behavior or
+  real E2E outcome improved in this checkpoint.
+- If no, next required gate: run the longer multi-source product brief real
+  acceptance scenario and record whether answer quality, closeout telemetry,
+  and terminal liveness are all acceptable.
