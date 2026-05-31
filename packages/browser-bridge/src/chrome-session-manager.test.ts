@@ -89,6 +89,51 @@ test("chrome session manager reuses and closes live persistent contexts by brows
   assert.equal(launchCount, 2);
 });
 
+test("chrome session manager does not leak unhandled rejection when persistent launch fails", async () => {
+  const launchError = new Error("browser_cdp_unavailable: connection refused");
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const manager = new ChromeSessionManager({
+      artifactRootDir: ".daemon-data/test-browser-artifacts",
+      browserSessionManager: {
+        async closeSession() {
+          return undefined;
+        },
+      } as never,
+      launchPersistentContext: async () => {
+        throw launchError;
+      },
+      createEphemeralContext: async () => {
+        throw new Error("not used");
+      },
+    });
+
+    const internal = manager as unknown as {
+      createContext(lease: {
+        session: { browserSessionId: string };
+        profile: { persistentDir: string };
+      }): Promise<InternalContextHandle>;
+    };
+
+    await assert.rejects(
+      internal.createContext({
+        session: { browserSessionId: "browser-session-cdp-down" },
+        profile: { persistentDir: "/tmp/browser-session-cdp-down" },
+      }),
+      /browser_cdp_unavailable: connection refused/
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("chrome session manager reuses one live persistent context per profile dir across sessions", async () => {
   let closeHandler: (() => void) | undefined;
   let closeCount = 0;
