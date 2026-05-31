@@ -372,8 +372,9 @@ function canColdRecreateReadOnlyBrowserSession(
   if (!isRecoverableBrowserContinuationError(error)) {
     return false;
   }
-  const hasUrlOpen = request.actions.some((action) => action.kind === "open" && typeof action.url === "string" && action.url.trim());
-  return hasUrlOpen && request.actions.every((action) => READ_ONLY_COLD_RECREATE_ACTIONS.has(action.kind));
+  const actions = Array.isArray(request.actions) ? request.actions : [];
+  const hasUrlOpen = actions.some((action) => action.kind === "open" && typeof action.url === "string" && action.url.trim());
+  return hasUrlOpen && actions.every((action) => READ_ONLY_COLD_RECREATE_ACTIONS.has(action.kind));
 }
 
 const READ_ONLY_COLD_RECREATE_ACTIONS = new Set(["open", "snapshot", "scroll", "console", "screenshot"]);

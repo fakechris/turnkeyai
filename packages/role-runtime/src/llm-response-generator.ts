@@ -1195,6 +1195,9 @@ function llmMessageContentToText(content: LLMMessage["content"]): string {
   if (typeof content === "string") {
     return content;
   }
+  if (!Array.isArray(content)) {
+    return "";
+  }
   return content
     .map((block) => {
       if (block.type === "text") {
@@ -1241,9 +1244,11 @@ function contextHasListedContinuableSession(context: string): boolean {
           return false;
         }
         const record = session as Record<string, unknown>;
+        const status = record["status"];
         return (
           typeof record["session_key"] === "string" &&
-          /^(?:done|completed|resumable|timeout|cancelled)$/.test(String(record["status"] ?? ""))
+          typeof status === "string" &&
+          /^(?:done|completed|resumable|timeout|cancelled)$/.test(status)
         );
       })
     ) {
