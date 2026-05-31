@@ -397,6 +397,110 @@ test("buildMissionObservabilitySnapshot accepts natural source-label stems witho
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot treats review as a generic source-label suffix", () => {
+  const alphaResult = tool(
+    "result-alpha",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-alpha",
+    "Vendor Alpha review returned evidence."
+  );
+  const betaResult = tool(
+    "result-beta",
+    3_000,
+    "result",
+    "sessions_spawn",
+    "call-beta",
+    "Vendor Beta source returned evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...alphaResult,
+        runtime: {
+          ...alphaResult.runtime,
+          sourceLabel: "Vendor Alpha review",
+        },
+      },
+      {
+        ...betaResult,
+        runtime: {
+          ...betaResult.runtime,
+          sourceLabel: "Vendor Beta",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Vendor Alpha and Vendor Beta were both verified from source evidence.",
+          "The recommendation names residual risk and avoids unsupported claims.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
+test("buildMissionObservabilitySnapshot ignores generic continuation task labels for source coverage", () => {
+  const alphaResult = tool(
+    "result-alpha",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-alpha",
+    "Vendor Alpha source returned evidence."
+  );
+  const continuationResult = tool(
+    "result-note",
+    3_000,
+    "result",
+    "sessions_send",
+    "call-note",
+    "Synthesize decision note returned a follow-up summary."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...alphaResult,
+        runtime: {
+          ...alphaResult.runtime,
+          sourceLabel: "Vendor Alpha",
+        },
+      },
+      {
+        ...continuationResult,
+        runtime: {
+          ...continuationResult.runtime,
+          sourceLabel: "Vendor Alpha review extraction",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "Vendor Alpha was verified from source evidence.",
+          "The recommendation is to continue with residual risk around integration evidence.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot still warns when a distinctive source token is missing", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "done" }),
