@@ -10,7 +10,10 @@ import {
   DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS,
   joinRealAcceptanceScenarios,
 } from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
-import { summarizeMissionE2eReportForValidationOps } from "@turnkeyai/qc-runtime/real-llm-acceptance-summary";
+import {
+  summarizeMissionE2eReportForValidationOps,
+  summarizeNaturalMissionE2eReportForValidationOps,
+} from "@turnkeyai/qc-runtime/real-llm-acceptance-summary";
 import { buildValidationOpsRecordFromRealLlmAcceptance } from "@turnkeyai/qc-runtime/validation-ops-inspection";
 import { FileValidationOpsRunStore } from "@turnkeyai/team-store/ops/file-validation-ops-run-store";
 
@@ -412,6 +415,9 @@ async function recordValidationOps(
   const missionReport = plan.missionJsonPath && existsSync(plan.missionJsonPath)
     ? summarizeMissionJson(plan.missionJsonPath)
     : null;
+  const naturalMissionReport = plan.naturalMissionJsonPath && existsSync(plan.naturalMissionJsonPath)
+    ? summarizeNaturalMissionJson(plan.naturalMissionJsonPath)
+    : null;
   const record = buildValidationOpsRecordFromRealLlmAcceptance({
     runId: plan.runId,
     startedAt: plan.startedAt,
@@ -419,11 +425,18 @@ async function recordValidationOps(
     status: result.status,
     tooluseScenarios: plan.tooluseScenarios,
     missionScenarios: plan.missionScenarios,
+    naturalMissionScenarios: plan.naturalMissionScenarios,
     browserTooluseEnabled: plan.browserTooluseEnabled,
     ...(plan.missionJsonPath && existsSync(plan.missionJsonPath)
       ? {
           artifactPath: path.relative(process.cwd(), plan.missionJsonPath),
           ...(missionReport ? { missionReport } : {}),
+        }
+      : {}),
+    ...(plan.naturalMissionJsonPath && existsSync(plan.naturalMissionJsonPath)
+      ? {
+          naturalArtifactPath: path.relative(process.cwd(), plan.naturalMissionJsonPath),
+          ...(naturalMissionReport ? { naturalMissionReport } : {}),
         }
       : {}),
     ...(result.error ? { error: result.error } : {}),
@@ -435,6 +448,16 @@ async function recordValidationOps(
 function summarizeMissionJson(missionJsonPath: string): ReturnType<typeof summarizeMissionE2eReportForValidationOps> {
   try {
     return summarizeMissionE2eReportForValidationOps(JSON.parse(readFileSync(missionJsonPath, "utf8")) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+function summarizeNaturalMissionJson(
+  naturalMissionJsonPath: string
+): ReturnType<typeof summarizeNaturalMissionE2eReportForValidationOps> {
+  try {
+    return summarizeNaturalMissionE2eReportForValidationOps(JSON.parse(readFileSync(naturalMissionJsonPath, "utf8")) as unknown);
   } catch {
     return null;
   }

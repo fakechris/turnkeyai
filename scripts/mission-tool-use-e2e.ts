@@ -358,6 +358,13 @@ export interface NaturalMissionScenarioReport {
 
 export interface NaturalMissionE2eJsonReport {
   kind: "turnkeyai.natural-mission-e2e.report";
+  evidenceMode: "natural-real-llm";
+  progressClaim: "capability";
+  promptPolicy: {
+    forbidsContractGateLanguage: boolean;
+    forbiddenPatterns: string[];
+  };
+  requiredQualitySignals: string[];
   status: "passed" | "failed";
   startedAt: string;
   completedAt: string;
@@ -1881,6 +1888,21 @@ export function buildNaturalMissionE2eJsonReport(input: {
   const scenarios = input.results.map(summarizeNaturalMissionScenarioResult);
   return {
     kind: "turnkeyai.natural-mission-e2e.report",
+    evidenceMode: "natural-real-llm",
+    progressClaim: "capability",
+    promptPolicy: {
+      forbidsContractGateLanguage: true,
+      forbiddenPatterns: NATURAL_PROMPT_FORBIDDEN_PATTERNS.map((pattern) => pattern.source),
+    },
+    requiredQualitySignals: [
+      "completed",
+      "not-stuck-or-looping",
+      "reasonable-tool-use",
+      "clean-sub-agent-liveness",
+      "source-backed-evidence",
+      "decision-useful-final-answer",
+      "no-weak-answer-signals",
+    ],
     status: scenarios.every((scenario) => scenario.natural.status === "passed") ? "passed" : "failed",
     startedAt: new Date(input.startedAt).toISOString(),
     completedAt: new Date(input.completedAt).toISOString(),

@@ -421,6 +421,59 @@ test("validation ops inspection preserves real LLM mission report summary", () =
   });
 });
 
+test("validation ops inspection preserves natural mission acceptance summary", () => {
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-natural-pass",
+    startedAt: 10,
+    completedAt: 30,
+    status: "passed",
+    tooluseScenarios: ["basic"],
+    missionScenarios: ["realistic-brief"],
+    naturalMissionScenarios: ["natural-browser-dynamic-page", "natural-long-delegation"],
+    browserTooluseEnabled: true,
+    naturalArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json",
+    naturalMissionReport: {
+      status: "passed",
+      scenarioCount: 2,
+      passedScenarios: 2,
+      failedScenarios: 0,
+      completed: 2,
+      stuckOrLoop: 0,
+      reasonableToolUse: 2,
+      browserUsed: 2,
+      subAgentCompleted: 2,
+      approvalExercised: 1,
+      finalAnswerHasEvidence: 2,
+      finalAnswerUseful: 2,
+      weakAnswerSignals: 0,
+      toolRequested: 4,
+      toolResults: 4,
+      toolFailed: 0,
+      toolCancelled: 0,
+      toolTimeouts: 0,
+      sessionsSpawned: 3,
+      sessionsContinued: 1,
+      approvalsRequested: 1,
+      approvalsDecided: 1,
+      approvalsApplied: 1,
+      livenessActive: 0,
+      livenessWaiting: 0,
+      livenessStale: 0,
+      evidenceEvents: 5,
+      recoveryEvents: 0,
+    },
+  });
+
+  assert.deepEqual(record.realAcceptance?.naturalMissionScenarios, [
+    "natural-browser-dynamic-page",
+    "natural-long-delegation",
+  ]);
+  assert.equal(record.realAcceptance?.totalCases, 4);
+  assert.equal(record.realAcceptance?.naturalArtifactPath, ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json");
+  assert.equal(record.realAcceptance?.naturalMissionReport?.finalAnswerUseful, 2);
+  assert.ok(record.selectors?.includes("natural-mission:natural-browser-dynamic-page"));
+});
+
 test("validation ops inspection surfaces fresh and stale baseline status", () => {
   const baselineRecord = buildValidationOpsRecordFromPhase1Baseline({
     runId: "baseline-1",

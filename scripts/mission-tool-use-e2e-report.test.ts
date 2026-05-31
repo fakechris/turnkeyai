@@ -190,6 +190,11 @@ describe("mission tool-use e2e report", () => {
     });
 
     assert.equal(report.kind, "turnkeyai.natural-mission-e2e.report");
+    assert.equal(report.evidenceMode, "natural-real-llm");
+    assert.equal(report.progressClaim, "capability");
+    assert.equal(report.promptPolicy.forbidsContractGateLanguage, true);
+    assert.ok(report.promptPolicy.forbiddenPatterns.some((pattern) => pattern.includes("exactly once")));
+    assert.ok(report.requiredQualitySignals.includes("source-backed-evidence"));
     assert.equal(report.status, "passed");
     assert.equal(report.durationMs, 5000);
     assert.equal(report.scenarios[0]?.scenario, "natural-browser-dynamic-page");

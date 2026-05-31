@@ -3001,3 +3001,61 @@ Convergence question:
 - Next required gate: keep this guard in the broader release acceptance matrix
   and run the full real gate after the next runtime/browser/workbench behavior
   change.
+
+## 2026-05-31 11:21 CST - Natural Runtime Parity Reset
+
+Direction: unknown
+
+Execution Kernel:
+- No runtime execution semantics changed in this checkpoint. The change is a
+  reset of evidence accounting after auditing the current core runtime against
+  raw mechanism notes and current code.
+- The reset records that native tool loop, session tools, permission loop,
+  browser private tools, memory tools, timeout closeout, cancellation, and
+  replay are structurally present but remain `partial` unless a natural real
+  LLM E2E proves the relevant behavior.
+
+Result Quality:
+- Natural mission reports now explicitly identify themselves as
+  `natural-real-llm` capability evidence and carry required quality signals:
+  completion, no stuck/loop, reasonable tool use, clean sub-agent liveness,
+  source-backed evidence, decision-useful final answer, and no weak-answer
+  signals.
+- Validation-ops now preserves the natural mission report summary alongside
+  the contract/mission matrix summary, so future readiness views can separate
+  protocol shape from natural user-task capability.
+
+Workbench UX:
+- No UI changed.
+- The workbench impact is downstream: operator/readiness surfaces now have a
+  structured natural report to cite before claiming an agent capability
+  improved.
+
+Browser Reliability:
+- Browser execution did not change.
+- Browser-backed natural capability remains unproven for this checkpoint. The
+  next browser gate must be a natural browser dynamic/dashboard run or a
+  profile/session reliability injection, not a UI-only smoke.
+
+Acceptance Evidence:
+- `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts
+  packages/qc-runtime/src/real-llm-acceptance-summary.test.ts
+  packages/qc-runtime/src/validation-ops-inspection.test.ts
+  scripts/real-llm-acceptance.test.ts`: passed, 28 tests.
+- `npm run typecheck`: passed.
+- No real LLM/browser acceptance ran in this checkpoint, so this is not a
+  capability-converging checkpoint.
+
+Regression Risk:
+- Main risk is schema consumers expecting only mission matrix details in
+  `realAcceptance`. The new natural fields are additive and optional.
+- Another risk is over-counting natural scenarios in readiness totals. Focused
+  tests now pin total-case accounting and natural selectors.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? no
+- Evidence: the acceptance accounting is stricter and less likely to overclaim,
+  but no real user prompt ran better in this checkpoint.
+- If no, next required gate: run the natural long delegation and natural
+  browser dynamic/dashboard gates after the next prompt/runtime slice, and
+  record mission ids plus natural report summaries.

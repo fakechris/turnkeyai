@@ -1,13 +1,13 @@
 # Tool Runtime Completion Plan
 
-> Status: completion checkpoints implemented; keep this file as the release-gate checklist
-> Updated: 2026-05-30
+> Status: structural checkpoints implemented; natural runtime parity remains evidence-gated
+> Updated: 2026-05-31
 
 This plan closes the remaining gap between TurnkeyAI's native tool-use runtime and a production-grade user task runtime. The end state is not "tools exist"; it is that a user can ask a mission-level question, the lead can delegate to specialist sub-agents, browser work can execute safely through a controlled tool surface, the UI can replay the work in order, and release gates can prove the whole chain works.
 
 ## Current Baseline
 
-Already complete on `main`:
+Already structurally present on `main`:
 
 - Provider-native tool schemas and tool-call parsing for supported LLM adapters.
 - Role tool loop with durable assistant tool-call messages, `role=tool` results, and tool progress.
@@ -18,11 +18,15 @@ Already complete on `main`:
 - LLM sub-agent wrapper for browser and explore workers.
 - Browser sub-agent private tool surface for browser-backed work.
 - Durable sub-session history for `sessions_history` and `sessions_send`.
-- Tool-use E2E mock path, real LLM path, and real LLM + browser path.
+- Tool-use E2E mock path, real LLM path, real LLM + browser path, and natural mission E2E path.
 - Role-run cancellation from Mission UI through provider `AbortSignal`.
 
-The remaining work is ongoing product validation on longer real tasks, not a
-known missing runtime primitive in this checkpoint set.
+This list is not a production-grade capability claim by itself. The current
+P0 reset is documented in
+`docs/design/p0-natural-runtime-parity-reset.md`: structural completion,
+visibility, and natural capability evidence must be tracked separately. Any
+future claim that runtime behavior improved must cite a natural real LLM E2E
+artifact, mission id, or validation-ops run id.
 
 ## Completion Requirements
 

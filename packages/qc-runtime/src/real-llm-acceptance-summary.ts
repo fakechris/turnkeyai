@@ -1,6 +1,7 @@
 import type { ValidationOpsRealAcceptanceDetails } from "@turnkeyai/core-types/team";
 
 type MissionReportSummary = NonNullable<ValidationOpsRealAcceptanceDetails["missionReport"]>;
+type NaturalMissionReportSummary = NonNullable<ValidationOpsRealAcceptanceDetails["naturalMissionReport"]>;
 
 interface MissionScenarioReportShape {
   status?: unknown;
@@ -37,6 +38,28 @@ interface MissionScenarioReportShape {
 }
 
 interface MissionE2eReportShape {
+  kind?: unknown;
+  status?: unknown;
+  scenarios?: unknown;
+}
+
+interface NaturalScenarioReportShape {
+  natural?: {
+    status?: unknown;
+    completed?: unknown;
+    stuckOrLoop?: unknown;
+    reasonableToolUse?: unknown;
+    browserUsed?: unknown;
+    subAgentCompleted?: unknown;
+    approvalExercised?: unknown;
+    finalAnswerHasEvidence?: unknown;
+    finalAnswerUseful?: unknown;
+    weakAnswerSignals?: unknown;
+  };
+  metrics?: MissionScenarioReportShape["metrics"];
+}
+
+interface NaturalMissionE2eReportShape {
   kind?: unknown;
   status?: unknown;
   scenarios?: unknown;
@@ -143,11 +166,123 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
   );
 }
 
+export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown): NaturalMissionReportSummary | null {
+  if (!isNaturalMissionE2eReportShape(report) || report.kind !== "turnkeyai.natural-mission-e2e.report") {
+    return null;
+  }
+  const scenarios = Array.isArray(report.scenarios) ? report.scenarios.filter(isNaturalScenarioReportShape) : [];
+  if (scenarios.length === 0) {
+    return {
+      status: report.status === "passed" ? "passed" : "failed",
+      scenarioCount: 0,
+      passedScenarios: 0,
+      failedScenarios: 0,
+      completed: 0,
+      stuckOrLoop: 0,
+      reasonableToolUse: 0,
+      browserUsed: 0,
+      subAgentCompleted: 0,
+      approvalExercised: 0,
+      finalAnswerHasEvidence: 0,
+      finalAnswerUseful: 0,
+      weakAnswerSignals: 0,
+      toolRequested: 0,
+      toolResults: 0,
+      toolFailed: 0,
+      toolCancelled: 0,
+      toolTimeouts: 0,
+      sessionsSpawned: 0,
+      sessionsContinued: 0,
+      approvalsRequested: 0,
+      approvalsDecided: 0,
+      approvalsApplied: 0,
+      livenessActive: 0,
+      livenessWaiting: 0,
+      livenessStale: 0,
+      evidenceEvents: 0,
+      recoveryEvents: 0,
+    };
+  }
+
+  return scenarios.reduce<NaturalMissionReportSummary>(
+    (summary, scenario) => {
+      const passing = scenario.natural?.status === "passed";
+      summary.passedScenarios += passing ? 1 : 0;
+      summary.failedScenarios += passing ? 0 : 1;
+      summary.completed += scenario.natural?.completed === true ? 1 : 0;
+      summary.stuckOrLoop += scenario.natural?.stuckOrLoop === true ? 1 : 0;
+      summary.reasonableToolUse += scenario.natural?.reasonableToolUse === true ? 1 : 0;
+      summary.browserUsed += scenario.natural?.browserUsed === true ? 1 : 0;
+      summary.subAgentCompleted += scenario.natural?.subAgentCompleted === true ? 1 : 0;
+      summary.approvalExercised += scenario.natural?.approvalExercised === true ? 1 : 0;
+      summary.finalAnswerHasEvidence += scenario.natural?.finalAnswerHasEvidence === true ? 1 : 0;
+      summary.finalAnswerUseful += scenario.natural?.finalAnswerUseful === true ? 1 : 0;
+      summary.weakAnswerSignals += Array.isArray(scenario.natural?.weakAnswerSignals)
+        ? scenario.natural.weakAnswerSignals.length
+        : 0;
+      summary.toolRequested += readNumber(scenario.metrics?.tools?.requested);
+      summary.toolResults += readNumber(scenario.metrics?.tools?.results);
+      summary.toolFailed += readNumber(scenario.metrics?.tools?.failed);
+      summary.toolCancelled += readNumber(scenario.metrics?.tools?.cancelled);
+      summary.toolTimeouts += readNumber(scenario.metrics?.tools?.timeouts);
+      summary.sessionsSpawned += readNumber(scenario.metrics?.sessions?.spawned);
+      summary.sessionsContinued += readNumber(scenario.metrics?.sessions?.continued);
+      summary.approvalsRequested += readNumber(scenario.metrics?.approvals?.requested);
+      summary.approvalsDecided += readNumber(scenario.metrics?.approvals?.decided);
+      summary.approvalsApplied += readNumber(scenario.metrics?.approvals?.applied);
+      summary.livenessActive += readNumber(scenario.metrics?.liveness?.active);
+      summary.livenessWaiting += readNumber(scenario.metrics?.liveness?.waiting);
+      summary.livenessStale += readNumber(scenario.metrics?.liveness?.stale);
+      summary.evidenceEvents += readNumber(scenario.metrics?.evidenceEvents);
+      summary.recoveryEvents += readNumber(scenario.metrics?.recoveryEvents);
+      return summary;
+    },
+    {
+      status: report.status === "passed" ? "passed" : "failed",
+      scenarioCount: scenarios.length,
+      passedScenarios: 0,
+      failedScenarios: 0,
+      completed: 0,
+      stuckOrLoop: 0,
+      reasonableToolUse: 0,
+      browserUsed: 0,
+      subAgentCompleted: 0,
+      approvalExercised: 0,
+      finalAnswerHasEvidence: 0,
+      finalAnswerUseful: 0,
+      weakAnswerSignals: 0,
+      toolRequested: 0,
+      toolResults: 0,
+      toolFailed: 0,
+      toolCancelled: 0,
+      toolTimeouts: 0,
+      sessionsSpawned: 0,
+      sessionsContinued: 0,
+      approvalsRequested: 0,
+      approvalsDecided: 0,
+      approvalsApplied: 0,
+      livenessActive: 0,
+      livenessWaiting: 0,
+      livenessStale: 0,
+      evidenceEvents: 0,
+      recoveryEvents: 0,
+    }
+  );
+}
+
 function isMissionE2eReportShape(value: unknown): value is MissionE2eReportShape {
   return typeof value === "object" && value !== null;
 }
 
 function isMissionScenarioReportShape(value: unknown): value is MissionScenarioReportShape {
+  return typeof value === "object" && value !== null;
+}
+
+function isNaturalMissionE2eReportShape(value: unknown): value is NaturalMissionE2eReportShape {
+  return typeof value === "object" && value !== null;
+}
+
+function isNaturalScenarioReportShape(value: unknown): value is NaturalScenarioReportShape {
   return typeof value === "object" && value !== null;
 }
 
