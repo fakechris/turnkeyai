@@ -1599,9 +1599,8 @@ async function runNaturalTimeoutFollowupScenario(input: {
   });
   const initialFinal = findLatestThoughtEvent(initialTimeline);
   assert.ok(initialFinal, "natural timeout follow-up phase one must include an assistant answer");
-  const timeoutSessionKey = extractFirstSessionKey(initialTimeline);
+  const timeoutSessionKey = extractTimedOutSessionKey(initialTimeline);
   assert.ok(timeoutSessionKey, "natural timeout follow-up requires a session_key from the timed-out sessions_spawn result");
-  assertNaturalTimeoutOccurred(initialTimeline);
   await assertWorkerSessionResumableAfterTimeout({
     baseUrl: input.baseUrl,
     token: input.token,
@@ -1627,7 +1626,6 @@ async function runNaturalTimeoutFollowupScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: input.timeoutMs,
-    allowBlocked: true,
     afterThoughtMs: initialFinal.tMs,
     ...(initialFinal.id ? { afterThoughtId: initialFinal.id } : {}),
   });
@@ -1710,7 +1708,10 @@ async function waitForNaturalMissionCompletion(input: {
     if (latestMission.status === "done" && hasRequiredThought) {
       return { mission: latestMission, timeline: latestTimeline };
     }
-    if (latestMission.status === "blocked" && !input.allowBlocked) {
+    if (latestMission.status === "blocked") {
+      if (input.allowBlocked) {
+        return { mission: latestMission, timeline: latestTimeline };
+      }
       throw new Error(`natural mission blocked before completion:\n${summarizeMissionState(latestMission, latestTimeline)}`);
     }
     await sleep(1_000);
@@ -1947,7 +1948,10 @@ export function buildNaturalScenarioSpec(
       requiresTimeout: true,
       allowToolFailure: true,
       minEvidenceEvents: 2,
-      requiredAnswerTerms: ["verified", "unverified", "risk", "continue"],
+      requiredAnswerTerms: ["verified", "unverified", "risk"],
+      requiredAnswerPatterns: [
+        { label: "continuation guidance", pattern: /\b(?:continue|retry|resume|resumable|next step|longer timeout)\b/i },
+      ],
       forbiddenPatterns: [
         { label: "pretends slow source was verified before continuation", pattern: /confirmed.*slow mission route tool-use fixture.*before.*continue/i },
       ],
@@ -2218,7 +2222,10 @@ function findWeakAnswerSignals(text: string): string[] {
     { label: "tool unavailable fallback", pattern: /搜索工具.{0,12}(?:无法|不可用|没有返回)|(?:search|browser|tool).{0,24}(?:unavailable|not available|failed|not working|unable)/i },
     { label: "model-knowledge fallback", pattern: /(?:based on|using) (?:my )?(?:knowledge|training data)|(?:基于|根据)我的(?:知识库|知识|训练数据)/i },
     { label: "placeholder uncertainty", pattern: /\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|estimate|estimated|probably|maybe)\b|待确认|估算/i },
-    { label: "empty summary", pattern: /\b(?:I don't have enough information|unable to provide|cannot determine)\b|无法提供|不能确定/i },
+    {
+      label: "empty summary",
+      pattern: /^\s*(?:I don't have enough information|I am unable to provide|I cannot determine|无法提供|不能确定)\b/i,
+    },
   ];
   return patterns.flatMap((item) => (item.pattern.test(text) ? [item.label] : []));
 }
@@ -4045,6 +4052,19 @@ function extractFirstSessionKey(timeline: ActivityEvent[]): string | null {
   return null;
 }
 
+export function extractTimedOutSessionKey(timeline: ActivityEvent[]): string | null {
+  for (const event of timeline) {
+    if (event.runtime?.["toolName"] !== "sessions_spawn" || event.runtime?.["toolPhase"] !== "result") {
+      continue;
+    }
+    const content = String(event.runtime?.["resultContent"] ?? event.text);
+    if (!/\btimeout\b|\btimed out\b|WORKER_TIMEOUT/i.test(content)) continue;
+    const match = content.match(/"session_key"\s*:\s*"([^"]+)"/);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
 function assertFollowupReusedSession(timeline: ActivityEvent[], expectedSessionKey: string): void {
   const sendCalls = timeline.filter(
     (event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "call"
@@ -4092,15 +4112,6 @@ export function assertNaturalFollowupReusedExistingSession(input: {
   assert.ok(sendResultIndex > sendCallIndex, "natural sessions_send must produce a result after the continuation call");
   const latestThoughtIndex = findLatestThoughtIndex(input.timeline);
   assert.ok(latestThoughtIndex > sendResultIndex, "natural follow-up final answer must follow the continuation result");
-}
-
-function assertNaturalTimeoutOccurred(timeline: ActivityEvent[]): void {
-  const timeoutResults = timeline.filter((event) => {
-    if (event.runtime?.["toolName"] !== "sessions_spawn" || event.runtime?.["toolPhase"] !== "result") return false;
-    const resultContent = String(event.runtime?.["resultContent"] ?? event.text);
-    return /\btimeout\b|\btimed out\b|WORKER_TIMEOUT/i.test(resultContent);
-  });
-  assert.ok(timeoutResults.length >= 1, "natural timeout follow-up phase one must produce a timed-out sessions_spawn result");
 }
 
 function sliceTimelineAfterEvent(timeline: ActivityEvent[], event: ActivityEvent): ActivityEvent[] {

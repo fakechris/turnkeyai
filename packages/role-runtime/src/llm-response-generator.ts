@@ -53,6 +53,11 @@ interface ToolLoopCloseoutMetadata {
   finalContentCount?: number;
 }
 
+interface SessionContinuationDirective {
+  sessionKey: string;
+  messageHint: string;
+}
+
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
@@ -102,6 +107,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     const memoryFlushes: PreCompactionMemoryFlushResult[] = [];
 
     await this.recordAssemblyBoundarySafely(input.activation, input.packet, selection);
+    const sessionContinuationDirective =
+      activeToolLoop ? findSessionContinuationDirective(input.packet.taskPrompt) : null;
 
     const initialGatewayInput = buildGatewayInput({
       activation: input.activation,
@@ -115,6 +122,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             toolChoice: "auto" as const,
           }
         : {}),
+      ...(sessionContinuationDirective ? { sessionContinuationDirective } : {}),
     });
 
     const toolTrace: NativeToolRoundTrace[] = [];
@@ -147,7 +155,10 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         memoryFlushes.push(generated.memoryFlush);
       }
 
-      const toolCalls = result.toolCalls ?? [];
+      const toolCalls = applySessionContinuationDirective(
+        result.toolCalls ?? [],
+        sessionContinuationDirective
+      );
       if (activeToolLoop && toolCalls.length === 0 && containsAnyToolCallForm(result)) {
         const maxRounds = activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
         toolLoopCloseout = {
@@ -1130,6 +1141,79 @@ function containsAnyToolCallForm(result: GenerateTextResult): boolean {
   );
 }
 
+function findSessionContinuationDirective(taskPrompt: string): SessionContinuationDirective | null {
+  if (!/\b(continue|continuation|resume|retry|revisit|follow-?up)\b/i.test(taskPrompt)) {
+    return null;
+  }
+  const sessionMatches = [...taskPrompt.matchAll(/"session_key"\s*:\s*"([^"]+)"/g)];
+  for (let index = sessionMatches.length - 1; index >= 0; index -= 1) {
+    const match = sessionMatches[index]!;
+    const sessionKey = match[1];
+    if (!sessionKey) continue;
+    const start = Math.max(0, (match.index ?? 0) - 1200);
+    const end = Math.min(taskPrompt.length, (match.index ?? 0) + 1200);
+    const context = taskPrompt.slice(start, end);
+    if (!/\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted)\b/i.test(context)) {
+      continue;
+    }
+    return {
+      sessionKey,
+      messageHint: extractLatestUserContinuationText(taskPrompt),
+    };
+  }
+  return null;
+}
+
+function extractLatestUserContinuationText(taskPrompt: string): string {
+  const lines = taskPrompt
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const latestUserLine = [...lines].reverse().find((line) => /^\[?user\]?[:：]/i.test(line));
+  const content = latestUserLine ? latestUserLine.replace(/^\[?user\]?[:：]\s*/i, "") : lines.at(-1) ?? taskPrompt;
+  return sliceUtf8(content.replace(/\s+/g, " ").trim() || "Continue the same delegated work from the existing session.", 1200);
+}
+
+function applySessionContinuationDirective(
+  toolCalls: LLMToolCall[],
+  directive: SessionContinuationDirective | null
+): LLMToolCall[] {
+  if (!directive || toolCalls.length === 0 || toolCalls.some((call) => call.name === "sessions_send")) {
+    return toolCalls;
+  }
+  const spawnIndex = toolCalls.findIndex((call) => call.name === "sessions_spawn");
+  if (spawnIndex < 0) {
+    return toolCalls;
+  }
+  const rewritten = toolCalls[spawnIndex]!;
+  return [
+    ...toolCalls.slice(0, spawnIndex),
+    {
+      ...rewritten,
+      name: "sessions_send",
+      input: {
+        session_key: directive.sessionKey,
+        message: readStringInput(rewritten.input, "task") ?? directive.messageHint,
+        ...(readStringInput(rewritten.input, "label") ? { label: readStringInput(rewritten.input, "label") } : {}),
+        ...(readNumberInput(rewritten.input, "timeout_seconds") !== undefined
+          ? { timeout_seconds: readNumberInput(rewritten.input, "timeout_seconds") }
+          : {}),
+      },
+    },
+    ...toolCalls.slice(spawnIndex + 1).filter((call) => call.name !== "sessions_spawn"),
+  ];
+}
+
+function readStringInput(input: Record<string, unknown>, key: string): string | undefined {
+  const value = input[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readNumberInput(input: Record<string, unknown>, key: string): number | undefined {
+  const value = input[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function buildGatewayInput(input: {
   activation: RoleActivationInput;
   packet: RolePromptPacket;
@@ -1151,7 +1235,18 @@ function buildGatewayInput(input: {
   };
   tools?: GenerateTextInput["tools"];
   toolChoice?: GenerateTextInput["toolChoice"];
+  sessionContinuationDirective?: SessionContinuationDirective;
 }): GenerateTextInput {
+  const runtimeDirective = input.sessionContinuationDirective
+    ? [
+        "",
+        "Runtime session continuation directive:",
+        `A resumable sub-agent session is available: ${input.sessionContinuationDirective.sessionKey}.`,
+        "If this turn continues, resumes, retries, or revisits the same delegated work, use sessions_send with that session_key before considering sessions_spawn.",
+        "Spawn a new session only if the user asks for a new independent task or the existing session is clearly irrelevant.",
+        `Continuation message hint: ${input.sessionContinuationDirective.messageHint}`,
+      ].join("\n")
+    : "";
   return {
     ...(input.modelId ? { modelId: input.modelId } : {}),
     ...(input.modelChainId ? { modelChainId: input.modelChainId } : {}),
@@ -1167,6 +1262,7 @@ function buildGatewayInput(input: {
         role: "user" as const,
         content: [
           input.overrideTaskPrompt ?? input.packet.taskPrompt,
+          runtimeDirective,
           "",
           "Output contract:",
           input.packet.outputContract,

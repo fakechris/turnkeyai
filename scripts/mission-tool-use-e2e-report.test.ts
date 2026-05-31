@@ -9,6 +9,7 @@ import {
   buildNaturalMissionE2eJsonReport,
   buildMissionE2eJsonReport,
   evaluateNaturalMissionQuality,
+  extractTimedOutSessionKey,
   formatMissionScenarioPass,
   formatMissionScenarioStart,
   formatNaturalMissionScenarioPass,
@@ -195,7 +196,7 @@ describe("mission tool-use e2e report", () => {
       text: "Vendor Alpha evidence collected.",
       tMs: 2000,
     };
-    const timeline = [
+    const timeline: Parameters<typeof extractTimedOutSessionKey>[0] = [
       {
         kind: "tool",
         text: "spawn result",
@@ -851,6 +852,21 @@ describe("mission tool-use e2e report", () => {
     });
     assert.deepEqual(quality.failures, []);
 
+    result.final.text = [
+      "Verified facts: the slow-source attempt timed out and the resumed attempt also returned no source content.",
+      "Unverified items: cannot determine whether the endpoint is permanently unavailable or temporarily slow.",
+      "Residual risk: a release that depends on this source can still block; retry with a longer timeout or a restored endpoint before using it as a gate.",
+      "Recommendation: do not use this endpoint as release evidence until availability is confirmed, and keep the timeout result visible in the release note so operators know the conclusion is bounded.",
+    ].join(" ");
+    const boundedUnavailableQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(boundedUnavailableQuality.failures, []);
+
     result.metrics.tool.timeouts = 0;
     const missingTimeout = evaluateNaturalMissionQuality({
       spec,
@@ -871,6 +887,33 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.ok(missingContinuation.failures.some((failure) => failure.includes("tool use was outside")));
+  });
+
+  it("extracts the timed-out session key instead of the first spawned session", () => {
+    const timeline = [
+      {
+        kind: "tool",
+        text: "first child completed",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: '{"status":"done","session_key":"wrk.completed.1"}',
+        },
+      },
+      {
+        kind: "tool",
+        text: "second child timed out",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: '{"status":"timeout","session_key":"wrk.timeout.2","summary":"WORKER_TIMEOUT"}',
+        },
+      },
+    ];
+
+    assert.equal(extractTimedOutSessionKey(timeline), "wrk.timeout.2");
   });
 
   it("formats natural per-scenario progress lines", () => {
