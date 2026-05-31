@@ -885,6 +885,7 @@ function startApprovalDecisionContinuationInBackground(input: {
   void (async () => {
     const mission = await input.deps.missionStore.get(input.approval.missionId);
     if (!mission?.threadId || mission.status === "archived") return;
+    if (mission.status !== "needs_approval" && mission.status !== "working") return;
     const workingMission: Mission =
       mission.status === "working"
         ? mission

@@ -939,6 +939,75 @@ describe("mission-routes", () => {
       }
     });
 
+    it("approval decisions do not reopen terminal missions", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator, posts, ticks } = buildOrchestrator();
+        const { res, getStatus, getJson } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: {
+              title: "Already done",
+              desc: "Terminal mission with late approval decision",
+              mode: "browser",
+            },
+          }),
+          res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(getStatus(), 201);
+        const mission = getJson() as Mission;
+        await waitUntil("initial terminal mission post", () => posts.length === 1);
+        posts.length = 0;
+        ticks.length = 0;
+        await deps.missionStore.putRaw({
+          ...mission,
+          status: "done",
+          progress: 1,
+          pendingApprovals: 1,
+        });
+        await deps.approvalStore.put({
+          id: "ap.done-submit",
+          severity: "med",
+          missionId: mission.id,
+          missionTitle: mission.title,
+          agent: "role-lead",
+          action: "browser.form.submit",
+          title: "Late submit",
+          affects: [],
+          risk: "late decision",
+          requestedAt: "now",
+          requestedAtMs: clock.now(),
+          requestedAgo: "now",
+          policyHint: "approval",
+        });
+
+        const decisionResponse = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/approvals/ap.done-submit/decision",
+            body: { decision: "approved", decidedBy: "operator" },
+          }),
+          res: decisionResponse.res,
+          url: new URL("http://127.0.0.1/approvals/ap.done-submit/decision"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(decisionResponse.getStatus(), 200);
+        await flushMicrotasks();
+        assert.deepEqual(posts, []);
+        assert.deepEqual(ticks, []);
+        const latest = await deps.missionStore.get(mission.id);
+        assert.equal(latest?.status, "done");
+      } finally {
+        t.cleanup();
+      }
+    });
+
     it("records background startup failure without overwriting newer mission state", async () => {
       const t = tmpDir();
       try {

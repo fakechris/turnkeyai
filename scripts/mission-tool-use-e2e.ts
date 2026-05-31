@@ -86,6 +86,7 @@ interface Mission {
 }
 
 interface ActivityEvent {
+  id?: string;
   kind: string;
   text: string;
   tMs: number;
@@ -1295,6 +1296,7 @@ async function runNaturalFollowupScenario(input: {
     missionId: mission.id,
     timeoutMs: input.timeoutMs,
     afterThoughtMs: initialFinal.tMs,
+    ...(initialFinal.id ? { afterThoughtId: initialFinal.id } : {}),
   });
   const metrics = await waitForMissionMetricsSettled({
     baseUrl: input.baseUrl,
@@ -1390,6 +1392,7 @@ async function waitForNaturalMissionCompletion(input: {
   timeoutMs: number;
   allowBlocked?: boolean;
   afterThoughtMs?: number;
+  afterThoughtId?: string;
 }): Promise<{ mission: Mission; timeline: ActivityEvent[] }> {
   const startedAt = Date.now();
   let latestMission: Mission | null = null;
@@ -1408,7 +1411,9 @@ async function waitForNaturalMissionCompletion(input: {
     const latestThought = findLatestThoughtEvent(latestTimeline);
     const hasRequiredThought =
       latestThought &&
-      (input.afterThoughtMs === undefined || latestThought.tMs > input.afterThoughtMs);
+      (input.afterThoughtMs === undefined ||
+        latestThought.tMs > input.afterThoughtMs ||
+        (input.afterThoughtId !== undefined && latestThought.id !== input.afterThoughtId));
     if (latestMission.status === "done" && hasRequiredThought) {
       return { mission: latestMission, timeline: latestTimeline };
     }
@@ -1574,8 +1579,13 @@ export function buildNaturalScenarioSpec(
     requiresBrowser: true,
     requiresApproval: false,
     allowToolFailure: false,
-    minEvidenceEvents: 2,
+    minEvidenceEvents: 3,
     requiredAnswerTerms: ["multi-agent", "browser", "Mission Control", "Stuck missions", "Weak answer rate", "risk"],
+    requiredAnswerPatterns: [
+      { label: "orchestration evidence stream", pattern: /product-orchestration|Product orchestration/i },
+      { label: "bridge evidence stream", pattern: /product-bridge|Capability bridge/i },
+      { label: "product signals evidence stream", pattern: /product-signals|Live signals/i },
+    ],
   };
 }
 
@@ -3686,6 +3696,7 @@ async function driveNaturalApprovalDecisionsUntilComplete(input: {
   let latestMission: Mission | null = null;
   let latestTimeline: ActivityEvent[] = [];
   let afterApprovalThoughtMs: number | undefined;
+  let afterApprovalThoughtId: string | undefined;
   while (Date.now() - startedAt < input.timeoutMs) {
     latestApprovals = await requestJson<ApprovalRecord[]>({
       method: "GET",
@@ -3708,7 +3719,9 @@ async function driveNaturalApprovalDecisionsUntilComplete(input: {
     if (pending.length > 0) {
       assert.equal(latestMission.status, "needs_approval", "mission must expose needs_approval while approval is pending");
       const approval = pending[0]!;
-      afterApprovalThoughtMs = findLatestThoughtEvent(latestTimeline)?.tMs;
+      const latestThought = findLatestThoughtEvent(latestTimeline);
+      afterApprovalThoughtMs = latestThought?.tMs;
+      afterApprovalThoughtId = latestThought?.id;
       await requestJson<unknown>({
         method: "POST",
         url: `${input.baseUrl}/approvals/${encodeURIComponent(approval.id)}/decision`,
@@ -3725,7 +3738,10 @@ async function driveNaturalApprovalDecisionsUntilComplete(input: {
     }
     const latestThought = findLatestThoughtEvent(latestTimeline);
     const hasPostApprovalThought =
-      latestThought && (afterApprovalThoughtMs === undefined || latestThought.tMs > afterApprovalThoughtMs);
+      latestThought &&
+      (afterApprovalThoughtMs === undefined ||
+        latestThought.tMs > afterApprovalThoughtMs ||
+        (afterApprovalThoughtId !== undefined && latestThought.id !== afterApprovalThoughtId));
     if (latestMission.status === "done" && hasPostApprovalThought) {
       assert.ok(
         approvedIds.size > 0,

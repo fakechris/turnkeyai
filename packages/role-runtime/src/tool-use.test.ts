@@ -928,6 +928,74 @@ test("sessions_spawn does not require mutation approval for read-only priority o
   assert.equal(result.isError, undefined);
 });
 
+test("sessions_spawn still requires approval when a later order action follows read-only priority order", async () => {
+  let spawnCalled = false;
+  let requestedAction = "";
+  const toolPermissionService: ToolPermissionService = {
+    async request(input) {
+      requestedAction = input.action;
+      return {
+        status: "pending",
+        approvalId: "ap.thread-1.call-order",
+        action: input.action,
+        requirement: {
+          level: input.requirement.level,
+          scope: input.requirement.scope,
+          cacheKey: input.requirement.cacheKey ?? "missing",
+          rationale: input.requirement.rationale,
+          workerType: input.requirement.workerType ?? "browser",
+        },
+        message: "Approval is pending.",
+      };
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      spawnCalled = true;
+      return { workerType: "browser", workerRunKey: "worker:browser:task-order" };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-order",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Review the options in priority order, then order the cheapest one.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Review options and order the cheapest.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status: string; blocked_before_side_effect: boolean };
+  assert.equal(spawnCalled, false);
+  assert.equal(requestedAction, "browser.mutate");
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "requires_approval");
+  assert.equal(body.blocked_before_side_effect, true);
+});
+
 test("sessions_spawn waits for approval and resumes the same tool call before browser side effects", async () => {
   const events: string[] = [];
   let sendToolCallId: string | undefined;

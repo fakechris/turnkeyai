@@ -834,19 +834,21 @@ function classifyBrowserSideEffect(
 function hasBrowserActionVerb(input: string, verbs: string[], readOnlyFollowers: string[]): boolean {
   for (const verb of verbs) {
     const escaped = verb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = input.match(new RegExp(`\\b${escaped}\\b(?:\\s+([a-z][a-z_-]*))?`, "i"));
-    if (!match) continue;
-    if (isReadOnlyBrowserActionVerbContext(input, verb, match.index ?? 0)) {
-      continue;
+    const matches = input.matchAll(new RegExp(`\\b${escaped}\\b(?:\\s+([a-z][a-z_-]*))?`, "gi"));
+    for (const match of matches) {
+      const index = match.index ?? 0;
+      if (isReadOnlyBrowserActionVerbContext(input, verb, index)) {
+        continue;
+      }
+      if (isNegatedBrowserActionVerb(input, index)) {
+        continue;
+      }
+      const next = match[1]?.toLowerCase();
+      if (next && readOnlyFollowers.includes(next)) {
+        continue;
+      }
+      return true;
     }
-    if (isNegatedBrowserActionVerb(input, match.index ?? 0)) {
-      continue;
-    }
-    const next = match[1]?.toLowerCase();
-    if (next && readOnlyFollowers.includes(next)) {
-      continue;
-    }
-    return true;
   }
   return false;
 }
