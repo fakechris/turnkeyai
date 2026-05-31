@@ -161,6 +161,113 @@ test("sessions_spawn exposes sub-agent final content at top level", async () => 
   });
 });
 
+test("sessions_spawn carries parent source URLs into delegated tasks that omitted them", async () => {
+  let capturedTaskPrompt = "";
+  const activation = buildActivation();
+  activation.handoff.payload = {
+    threadId: "thread-1",
+    intent: {
+      relayBrief: "",
+      instructions: [
+        "Compare these source pages.",
+        "Vendor Alpha source: http://127.0.0.1:4101/vendor-alpha",
+        "Vendor Beta source: http://127.0.0.1:4101/vendor-beta",
+      ].join("\n"),
+      recentMessages: [],
+    },
+  };
+  const workerRuntime = {
+    async spawn(input: WorkerInvocationInput) {
+      capturedTaskPrompt = input.packet.taskPrompt;
+      return { workerType: "explore", workerRunKey: "worker:explore:task-1" };
+    },
+    async send() {
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Evidence gathered.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  await executor.execute({
+    call: {
+      id: "call-parent-context",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Review Vendor Beta pricing and risk.",
+      },
+    },
+    activation,
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Compare vendors.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.match(capturedTaskPrompt, /Review Vendor Beta pricing and risk/);
+  assert.match(capturedTaskPrompt, /Parent mission context relevant to this delegated task/);
+  assert.match(capturedTaskPrompt, /Vendor Beta source: http:\/\/127\.0\.0\.1:4101\/vendor-beta/);
+  assert.doesNotMatch(capturedTaskPrompt, /vendor-alpha[\s\S]*vendor-beta/i, "matched Beta source should be prioritized before Alpha");
+});
+
+test("sessions_spawn does not append parent URL context when the delegated task is already self-contained", async () => {
+  let capturedTaskPrompt = "";
+  const activation = buildActivation();
+  activation.handoff.payload = {
+    threadId: "thread-1",
+    intent: {
+      relayBrief: "",
+      instructions: "Vendor Alpha source: http://127.0.0.1:4101/vendor-alpha",
+      recentMessages: [],
+    },
+  };
+  const workerRuntime = {
+    async spawn(input: WorkerInvocationInput) {
+      capturedTaskPrompt = input.packet.taskPrompt;
+      return { workerType: "explore", workerRunKey: "worker:explore:task-1" };
+    },
+    async send() {
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Evidence gathered.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  await executor.execute({
+    call: {
+      id: "call-self-contained",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Fetch http://127.0.0.1:4101/vendor-alpha and summarize pricing.",
+      },
+    },
+    activation,
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Compare vendors.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(capturedTaskPrompt, "Fetch http://127.0.0.1:4101/vendor-alpha and summarize pricing.");
+});
+
 test("sessions_spawn rejects worker kinds that were not advertised as executable", async () => {
   let spawnCalled = false;
   const workerRuntime = {
