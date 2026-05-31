@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
   DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS,
   DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS,
   joinRealAcceptanceScenarios,
@@ -36,8 +37,28 @@ test("real LLM acceptance defaults include the product-level mission matrix", ()
     "product-workbench-brief",
     "realistic-brief",
   ]);
+  assert.deepEqual([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS], [
+    "natural-comparison-research",
+    "natural-browser-dynamic-page",
+    "natural-browser-followup-continuation",
+    "natural-browser-restart-continuation",
+    "natural-browser-cold-recreation-continuation",
+    "natural-followup-continuation",
+    "natural-memory-recall",
+    "natural-approval-dry-run-action",
+    "natural-browser-unavailable-closeout",
+    "natural-timeout-partial-closeout",
+    "natural-timeout-followup-continuation",
+    "natural-cancel-active-tool",
+    "natural-cancel-followup-continuation",
+    "natural-long-delegation",
+  ]);
   assert.equal(
     joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS),
     "basic,comparison,followup,cancel,approval,browser-dynamic,browser-dashboard,timeout-recovery,memory-recall,task-tracking,product-workbench-brief,realistic-brief"
+  );
+  assert.equal(
+    joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS),
+    "natural-comparison-research,natural-browser-dynamic-page,natural-browser-followup-continuation,natural-browser-restart-continuation,natural-browser-cold-recreation-continuation,natural-followup-continuation,natural-memory-recall,natural-approval-dry-run-action,natural-browser-unavailable-closeout,natural-timeout-partial-closeout,natural-timeout-followup-continuation,natural-cancel-active-tool,natural-cancel-followup-continuation,natural-long-delegation"
   );
 });

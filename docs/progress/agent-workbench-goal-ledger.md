@@ -4086,3 +4086,53 @@ Convergence question:
 - Next required gate: long multi-source task with browser plus non-browser
   sub-agents under wall-clock budget, and user-visible replay that explains
   recovery without raw JSON.
+
+## 2026-05-31 20:21 CST - Real Acceptance Natural Continuity Matrix Alignment
+
+Direction: unknown
+
+Execution Kernel:
+- No runtime behavior changed in this checkpoint.
+- The release acceptance planner now uses a shared natural mission default
+  matrix rather than a stale local subset, so browser follow-up, daemon restart
+  continuation, cold browser-session recreation, timeout follow-up, and
+  cancellation follow-up stay in the production gate.
+
+Result Quality:
+- No new real mission output was produced by this checkpoint.
+- The expected quality impact is stronger future evidence: a full
+  `acceptance:real` run must now prove the newer continuity scenarios instead
+  of passing with only the older natural subset.
+
+Workbench UX:
+- No workbench UI changed in this checkpoint.
+- The release acceptance artifact remains the user-visible proof path for
+  Runtime -> Release acceptance.
+
+Browser Reliability:
+- No browser runtime path changed.
+- The acceptance path now includes the already-defined browser continuity
+  scenarios by default, including follow-up reuse, restart continuation, and
+  cold read-only recreation.
+
+Acceptance Evidence:
+- This checkpoint is structural until a fresh real LLM `acceptance:real` report
+  exists for the expanded natural matrix.
+- Required next evidence: run `npm run acceptance:real -- --model-catalog
+  models.local.json --scenario-timeout-ms 300000 --cdp-timeout-ms 45000` and
+  record the resulting validation-ops run id or JSON artifact.
+
+Regression Risk:
+- The full release gate is longer because it now includes every natural
+  continuity scenario. That is intentional for release evidence, but focused
+  debugging should still use `--natural-mission-scenarios`.
+- If a scenario becomes flaky, it must be fixed at the runtime or scenario
+  quality-gate layer rather than silently dropping it from the default release
+  matrix.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? unknown
+- Evidence: structural planner/test alignment only; no new natural real LLM
+  gate has run yet.
+- Next required gate: a fresh full real acceptance run over the expanded
+  natural continuity matrix.

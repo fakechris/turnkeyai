@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
   DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS,
   DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS,
   joinRealAcceptanceScenarios,
@@ -65,15 +66,7 @@ interface RuntimeConfig {
 const DEFAULT_TOOLUSE_BROWSER_SCENARIOS = joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS);
 const DEFAULT_TOOLUSE_NON_BROWSER_SCENARIOS = joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS);
 const DEFAULT_MISSION_SCENARIOS = joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS);
-const DEFAULT_NATURAL_MISSION_SCENARIOS = [
-  "natural-comparison-research",
-  "natural-browser-dynamic-page",
-  "natural-followup-continuation",
-  "natural-memory-recall",
-  "natural-approval-dry-run-action",
-  "natural-timeout-partial-closeout",
-  "natural-long-delegation",
-].join(",");
+const DEFAULT_NATURAL_MISSION_SCENARIOS = joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS);
 
 export async function runRealAcceptanceCli(args: string[]): Promise<void> {
   const help = buildRealAcceptanceHelpResult(args);

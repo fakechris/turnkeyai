@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS } from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
+
 import {
   buildRealAcceptanceHelpResult,
   buildRealAcceptanceHelpText,
@@ -48,9 +50,7 @@ test("real acceptance plan keeps full release gate by default", () => {
   assert.deepEqual(plan.tooluseScenarios, ["basic", "approval", "followup", "timeout", "complex"]);
   assert.ok(plan.missionScenarios.includes("comparison"));
   assert.ok(plan.missionScenarios.includes("realistic-brief"));
-  assert.ok(plan.naturalMissionScenarios.includes("natural-comparison-research"));
-  assert.ok(plan.naturalMissionScenarios.includes("natural-memory-recall"));
-  assert.ok(plan.naturalMissionScenarios.includes("natural-long-delegation"));
+  assert.deepEqual(plan.naturalMissionScenarios, [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]);
   assert.equal(plan.browserTooluseEnabled, true);
   assert.match(plan.missionJsonPath ?? "", /real-llm-acceptance/);
   assert.match(plan.naturalMissionJsonPath ?? "", /natural-mission-e2e/);
