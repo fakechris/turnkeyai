@@ -3186,3 +3186,67 @@ Convergence question:
 - Next required gate: run natural long delegation and browser reliability
   failure-injection gates so this happy-path proof extends to complex
   multi-agent and recovery behavior.
+
+## 2026-05-31 12:23 CST - Natural Long Delegation Evidence Gate
+
+Direction: converging
+
+Execution Kernel:
+- Tightened `natural-long-delegation` so the three-source requirement is
+  checked against tool/browser evidence rather than by forcing internal fixture
+  labels into the final answer.
+- Improved Mission Health source coverage for natural source labels: exact
+  label coverage still passes, and generated labels with generic suffixes such
+  as research/dashboard can also pass when the final answer names the
+  distinctive source stem.
+
+Result Quality:
+- The first baseline run exposed the wrong gate: the final answer was useful
+  and evidence-backed, but failed because it did not repeat internal source
+  labels. That was not a user-quality failure.
+- After the fix, the real long-delegation run completed with three independent
+  sub-agent results, source coverage `pass`, no weak-answer signals, and no
+  forced closeout.
+
+Workbench UX:
+- No UI changed.
+- Mission Health now aligns better with natural user-facing answers: a final
+  can cite `product-orchestration` / `product-signals` naturally without being
+  marked `needs_attention` for omitting generic suffixes such as research or
+  dashboard.
+
+Browser Reliability:
+- Browser execution semantics did not change.
+- The real gate did exercise a browser sub-agent for the live signal dashboard
+  and completed with no profile fallback, failed tool result, recovery event,
+  or active/waiting/stale runtime liveness.
+
+Acceptance Evidence:
+- `npx tsx --test packages/app-gateway/src/mission-observability.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts`: passed, 35 tests.
+- `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-long-delegation
+  --scenario-timeout-ms 300000 --json tmp/natural-long-delegation-e2e.json`:
+  passed.
+- Real mission: `msn.mpt9wz8v.1`, status `done`, natural `passed`,
+  Mission Health `passed`, tools `3/3`, sessions `3/0`, browser `yes`,
+  liveness `0/0/0`, source coverage `3/3`, final bytes `3852`,
+  weak-answer signals `none`.
+
+Regression Risk:
+- Main risk is making source coverage too permissive. Focused tests keep the
+  guardrail: `Vendor Alpha` plus a vague "second vendor source" still warns
+  because the distinctive `Beta` token is missing.
+- Another risk is accepting final-answer-only source claims. The long
+  delegation gate now checks the three source streams in evidence text, while
+  the final answer still must contain decision-useful terms and pass Mission
+  Health source coverage.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a natural, browser-backed, three-sub-agent product brief now has a
+  real LLM mission artifact with terminal liveness cleanup, Mission Health
+  `passed`, source coverage `3/3`, and no weak-answer or fallback language.
+- Next required gate: run browser reliability failure injection and approval
+  dry-run natural gates with the same standard: real mission artifact, terminal
+  liveness, and user-visible useful output.

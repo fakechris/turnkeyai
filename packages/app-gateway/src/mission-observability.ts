@@ -491,7 +491,46 @@ function finalAnswerCoversSources(text: string, sourceLabels: string[]): boolean
 
 function missingCoveredSources(text: string, sourceLabels: string[]): string[] {
   const normalizedText = normalizeSourceLabel(text);
-  return sourceLabels.filter((label) => !normalizedText.includes(normalizeSourceLabel(label)));
+  const textTokens = new Set(tokenizeSourceLabel(text));
+  return sourceLabels.filter((label) => !sourceLabelCovered(normalizedText, textTokens, label));
+}
+
+function sourceLabelCovered(normalizedText: string, textTokens: Set<string>, label: string): boolean {
+  const normalizedLabel = normalizeSourceLabel(label);
+  if (!normalizedLabel) return true;
+  if (normalizedText.includes(normalizedLabel)) return true;
+  const sourceTokens = distinctiveSourceLabelTokens(label);
+  if (sourceTokens.length === 0) return true;
+  return sourceTokens.every((token) => textTokens.has(token));
+}
+
+const GENERIC_SOURCE_LABEL_TOKENS = new Set([
+  "browser",
+  "capability",
+  "dashboard",
+  "evidence",
+  "fetch",
+  "live",
+  "local",
+  "research",
+  "session",
+  "source",
+  "tool",
+  "worker",
+]);
+
+function distinctiveSourceLabelTokens(label: string): string[] {
+  const tokens = tokenizeSourceLabel(label);
+  const distinctive = tokens.filter((token) => !GENERIC_SOURCE_LABEL_TOKENS.has(token));
+  return distinctive.length > 0 ? distinctive : tokens;
+}
+
+function tokenizeSourceLabel(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 1);
 }
 
 interface BrowserProfileFallbackObservation {
