@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
@@ -71,6 +71,7 @@ export type NaturalMissionE2eScenario =
   | "natural-timeout-partial-closeout"
   | "natural-timeout-followup-continuation"
   | "natural-cancel-active-tool"
+  | "natural-cancel-followup-continuation"
   | "natural-long-delegation";
 
 export const NATURAL_MISSION_E2E_SCENARIOS = [
@@ -83,6 +84,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-timeout-partial-closeout",
   "natural-timeout-followup-continuation",
   "natural-cancel-active-tool",
+  "natural-cancel-followup-continuation",
   "natural-long-delegation",
 ] as const satisfies readonly NaturalMissionE2eScenario[];
 
@@ -186,6 +188,7 @@ interface FixtureServer {
   alphaUrl: string;
   betaUrl: string;
   slowUrl: string;
+  cancelResumeUrl: string;
   approvalUrl: string;
   dynamicUrl: string;
   dashboardUrl: string;
@@ -395,10 +398,21 @@ export interface NaturalMissionE2eJsonReport {
 
 interface WorkerSessionRecord {
   workerRunKey: string;
+  context?: {
+    toolCallId?: string;
+  };
   state: {
     status: string;
     workerType?: string;
+    lastResult?: {
+      status?: string;
+      summary?: string;
+    };
     lastError?: { message?: string };
+    continuationDigest?: {
+      summary?: string;
+      reason?: string;
+    };
   };
 }
 
@@ -1245,6 +1259,9 @@ async function runNaturalMissionScenario(input: {
   if (input.scenario === "natural-cancel-active-tool") {
     return runNaturalCancelScenario(input);
   }
+  if (input.scenario === "natural-cancel-followup-continuation") {
+    return runNaturalCancelFollowupScenario(input);
+  }
   if (input.scenario === "natural-timeout-followup-continuation") {
     return runNaturalTimeoutFollowupScenario(input);
   }
@@ -1518,6 +1535,13 @@ async function runNaturalCancelScenario(input: {
     toolName: "sessions_spawn",
     timeoutMs: Math.min(input.timeoutMs, 60_000),
   });
+  const activeSession = await waitForRunningWorkerSessionForToolCall({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    threadId: mission.threadId,
+    toolCallId: activeCall.toolCallId,
+    timeoutMs: Math.min(input.timeoutMs, 60_000),
+  });
   await requestJson<{ cancelled: boolean }>({
     method: "POST",
     url: `${input.baseUrl}/message/cancel-tools`,
@@ -1539,6 +1563,7 @@ async function runNaturalCancelScenario(input: {
   assertNaturalCancellationTimeline(result.timeline);
   const cancelledSessionKey = extractFirstSessionKey(result.timeline);
   assert.ok(cancelledSessionKey, "natural cancellation requires a session_key from the cancelled sessions_spawn result");
+  assert.equal(cancelledSessionKey, activeSession.workerRunKey, "cancelled tool result must refer to the active worker session that was cancelled");
   await assertWorkerSessionCancelled({
     baseUrl: input.baseUrl,
     token: input.token,
@@ -1566,6 +1591,128 @@ async function runNaturalCancelScenario(input: {
     `natural mission cancellation quality failures: ${quality.failures.join("; ")}\n${final.text}`
   );
   return { scenario: "natural-cancel-active-tool", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function runNaturalCancelFollowupScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+}): Promise<NaturalMissionScenarioResult> {
+  const spec = buildNaturalScenarioSpec("natural-cancel-followup-continuation", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const mission = await createNaturalMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "natural cancellation follow-up mission requires a linked team thread");
+
+  const activeCall = await waitForToolCallEvent({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    toolName: "sessions_spawn",
+    timeoutMs: Math.min(input.timeoutMs, 60_000),
+  });
+  const activeSession = await waitForRunningWorkerSessionForToolCall({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    threadId: mission.threadId,
+    toolCallId: activeCall.toolCallId,
+    timeoutMs: Math.min(input.timeoutMs, 60_000),
+  });
+  await requestJson<{ cancelled: boolean }>({
+    method: "POST",
+    url: `${input.baseUrl}/message/cancel-tools`,
+    token: input.token,
+    body: {
+      messageId: activeCall.messageId,
+      threadId: mission.threadId,
+      toolCallIds: [activeCall.toolCallId],
+      reason: "natural e2e cancelled first source verification before follow-up",
+    },
+  });
+
+  await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+  });
+  const initialTimeline = await requestJson<ActivityEvent[]>({
+    method: "GET",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/timeline?limit=300`,
+    token: input.token,
+  });
+  assertNaturalCancellationTimeline(initialTimeline);
+  const initialFinal = findLatestThoughtEvent(initialTimeline);
+  assert.ok(initialFinal, "natural cancellation follow-up phase one must include an assistant answer");
+  const cancelledSessionKey = extractCancelledSessionKey(initialTimeline);
+  assert.ok(cancelledSessionKey, "natural cancellation follow-up requires a session_key from the cancelled sessions_spawn result");
+  assert.equal(cancelledSessionKey, activeSession.workerRunKey, "cancelled tool result must refer to the active worker session that was cancelled");
+  await assertWorkerSessionCancelled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    threadId: mission.threadId,
+    workerRunKey: cancelledSessionKey,
+  });
+
+  const followup = [
+    "Continue from the cancelled source-check attempt in this mission.",
+    "Resume the existing source-check context if possible, let the source finish now, and turn the outcome into a release-risk note.",
+    "Separate verified facts from unverified items, describe residual risk, and explain how the earlier cancellation affects confidence.",
+  ].join("\n");
+  assertNaturalPromptAllowed(followup);
+  await requestJson<{ accepted: boolean; missionId: string }>({
+    method: "POST",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+    token: input.token,
+    body: { content: followup },
+  });
+
+  const result = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+    afterThoughtMs: initialFinal.tMs,
+    ...(initialFinal.id ? { afterThoughtId: initialFinal.id } : {}),
+  });
+  assertNaturalFollowupReusedExistingSession({
+    timeline: result.timeline,
+    phaseOneFinal: initialFinal,
+    expectedSessionKey: cancelledSessionKey,
+  });
+  await assertWorkerSessionDoneAfterResume({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    threadId: mission.threadId,
+    workerRunKey: cancelledSessionKey,
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  const final = findLatestThoughtEvent(result.timeline);
+  assert.ok(final, "natural cancellation follow-up mission must include a final assistant answer");
+  const quality = evaluateNaturalMissionQuality({
+    spec,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+  });
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `natural mission cancellation follow-up quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "natural-cancel-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
 async function runNaturalTimeoutFollowupScenario(input: {
@@ -1727,7 +1874,7 @@ function findLatestThoughtEvent(timeline: ActivityEvent[]): ActivityEvent | null
 
 export function buildNaturalScenarioSpec(
   scenario: NaturalMissionE2eScenario,
-  fixture: Pick<FixtureServer, "alphaUrl" | "betaUrl" | "dashboardUrl" | "approvalUrl" | "slowUrl" | "orchestrationUrl" | "bridgeUrl" | "productSignalsUrl">
+  fixture: Pick<FixtureServer, "alphaUrl" | "betaUrl" | "dashboardUrl" | "approvalUrl" | "slowUrl" | "cancelResumeUrl" | "orchestrationUrl" | "bridgeUrl" | "productSignalsUrl">
 ): NaturalScenarioSpec {
   if (scenario === "natural-comparison-research") {
     return {
@@ -1987,6 +2134,43 @@ export function buildNaturalScenarioSpec(
       ],
     };
   }
+  if (scenario === "natural-cancel-followup-continuation") {
+    return {
+      scenario,
+      title: "Natural cancellation follow-up continuation",
+      desc: [
+        "Evaluate this static text source for a release-risk note.",
+        `Static source: ${fixture.cancelResumeUrl}`,
+        "Make a source-backed attempt instead of guessing from memory.",
+        "This is a read-only source check; no browser form, click, navigation action, or approval-gated action is needed.",
+        "If an operator cancels the active source check, close out from the cancellation evidence and explain how to continue later.",
+        "A follow-up may ask you to resume the same source-check context after the initial cancellation.",
+      ].join("\n"),
+      minBytes: 360,
+      minToolResults: 2,
+      maxToolResults: 7,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 2,
+      minContinuedSessions: 1,
+      requiresBrowser: false,
+      requiresApproval: false,
+      requiresCancellation: true,
+      allowToolFailure: false,
+      minEvidenceEvents: 2,
+      requiredAnswerTerms: ["verified", "unverified", "risk"],
+      requiredAnswerPatterns: [
+        { label: "cancellation context", pattern: /\bcancel(?:led|ed)?\b/i },
+        { label: "continuation source evidence", pattern: /Release Captain|rollback rehearsal|runbook gap/i },
+      ],
+      requiredEvidencePatterns: [
+        { label: "cancelled tool result", pattern: /\bcancel(?:led|ed)?\b/i },
+        { label: "resumed source evidence", pattern: /Release Captain|rollback rehearsal|runbook gap/i },
+      ],
+      forbiddenPatterns: [
+        { label: "pretends cancelled source was verified before follow-up", pattern: /verified[\s\S]{0,80}Release Captain[\s\S]{0,80}before[\s\S]{0,80}cancel/i },
+      ],
+    };
+  }
   return {
     scenario,
     title: "Natural long delegation brief",
@@ -2052,6 +2236,7 @@ export function assertNaturalScenarioPromptsAllowed(): void {
     dashboardUrl: "http://127.0.0.1/ops-dashboard",
     approvalUrl: "http://127.0.0.1/approval-form",
     slowUrl: "http://127.0.0.1/slow-fixture",
+    cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
     orchestrationUrl: "http://127.0.0.1/product-orchestration",
     bridgeUrl: "http://127.0.0.1/product-bridge",
     productSignalsUrl: "http://127.0.0.1/product-signals",
@@ -2587,7 +2772,24 @@ function resolveModelCatalogPath(explicitPath?: string): string {
   throw new Error("mission E2E requires --model-catalog, TURNKEYAI_MODEL_CATALOG, models.local.json, or models.json");
 }
 
+function writeCancelResumeFixture(res: ServerResponse): void {
+  res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+  res.end(`<!doctype html>
+<html>
+  <head><title>TurnkeyAI Cancel Resume E2E Fixture</title></head>
+  <body>
+    <main>
+      <h1>Cancel resume release source</h1>
+      <p>Verified owner: Release Captain.</p>
+      <p>Verified risk: runbook gap before launch approval.</p>
+      <p>Mitigation: complete rollback rehearsal before release gate.</p>
+    </main>
+  </body>
+</html>`);
+}
+
 async function startFixtureServer(): Promise<FixtureServer> {
+  let cancelResumeRequestCount = 0;
   const server = createServer((req, res) => {
     const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
     if (pathname === "/fixture") {
@@ -2622,6 +2824,19 @@ async function startFixtureServer(): Promise<FixtureServer> {
 </html>`);
       }, 180_000);
       req.on("close", () => clearTimeout(timer));
+      return;
+    }
+    if (pathname === "/cancel-resume-fixture") {
+      cancelResumeRequestCount += 1;
+      if (cancelResumeRequestCount === 1) {
+        const timer = setTimeout(() => {
+          if (res.destroyed) return;
+          writeCancelResumeFixture(res);
+        }, 180_000);
+        req.on("close", () => clearTimeout(timer));
+        return;
+      }
+      writeCancelResumeFixture(res);
       return;
     }
     if (pathname === "/vendor-alpha") {
@@ -2896,6 +3111,7 @@ async function startFixtureServer(): Promise<FixtureServer> {
     alphaUrl: `http://127.0.0.1:${port}/vendor-alpha`,
     betaUrl: `http://127.0.0.1:${port}/vendor-beta`,
     slowUrl: `http://127.0.0.1:${port}/slow-fixture`,
+    cancelResumeUrl: `http://127.0.0.1:${port}/cancel-resume-fixture`,
     approvalUrl: `http://127.0.0.1:${port}/approval-form`,
     dynamicUrl: `http://127.0.0.1:${port}/dynamic-dashboard`,
     dashboardUrl: `http://127.0.0.1:${port}/ops-dashboard`,
@@ -4065,6 +4281,19 @@ export function extractTimedOutSessionKey(timeline: ActivityEvent[]): string | n
   return null;
 }
 
+export function extractCancelledSessionKey(timeline: ActivityEvent[]): string | null {
+  for (const event of timeline) {
+    if (event.runtime?.["toolName"] !== "sessions_spawn" || event.runtime?.["toolPhase"] !== "result") {
+      continue;
+    }
+    const content = String(event.runtime?.["resultContent"] ?? event.text);
+    if (!/\bcancel(?:led|ed)?\b/i.test(content)) continue;
+    const match = content.match(/"session_key"\s*:\s*"([^"]+)"/);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
 function assertFollowupReusedSession(timeline: ActivityEvent[], expectedSessionKey: string): void {
   const sendCalls = timeline.filter(
     (event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "call"
@@ -4225,6 +4454,57 @@ async function waitForToolCallEvent(input: {
     await sleep(500);
   }
   throw new Error(`mission did not emit ${input.toolName} call before cancellation:\n${summarizeMissionState(null, latestTimeline)}`);
+}
+
+async function waitForRunningWorkerSessionForToolCall(input: {
+  baseUrl: string;
+  token: string;
+  threadId: string;
+  toolCallId: string;
+  timeoutMs: number;
+}): Promise<WorkerSessionRecord> {
+  const startedAt = Date.now();
+  let latestSessions: WorkerSessionRecord[] = [];
+  while (Date.now() - startedAt < input.timeoutMs) {
+    latestSessions = await requestJson<WorkerSessionRecord[]>({
+      method: "GET",
+      url: `${input.baseUrl}/runtime-worker-sessions?threadId=${encodeURIComponent(input.threadId)}&limit=50`,
+      token: input.token,
+    });
+    const session = latestSessions.find((item) => item.context?.toolCallId === input.toolCallId);
+    if (session?.state.status === "running") {
+      return session;
+    }
+    if (session && ["done", "failed", "cancelled"].includes(session.state.status)) {
+      throw new Error(
+        `worker session for tool call ${input.toolCallId} reached ${session.state.status} before cancellation: ${JSON.stringify(
+          {
+            workerRunKey: session.workerRunKey,
+            status: session.state.status,
+            workerType: session.state.workerType,
+            lastResultStatus: session.state.lastResult?.status,
+            lastResultSummary: session.state.lastResult?.summary,
+            lastError: session.state.lastError,
+          },
+          null,
+          2
+        )}`
+      );
+    }
+    await sleep(500);
+  }
+  throw new Error(
+    `worker session for tool call ${input.toolCallId} did not enter running before cancellation: ${JSON.stringify(
+      latestSessions.map((session) => ({
+        workerRunKey: session.workerRunKey,
+        toolCallId: session.context?.toolCallId,
+        status: session.state.status,
+        workerType: session.state.workerType,
+      })),
+      null,
+      2
+    )}`
+  );
 }
 
 async function waitForApprovalRequest(input: {
@@ -4523,6 +4803,37 @@ async function assertWorkerSessionCancelled(input: {
   const session = sessions.find((item) => item.workerRunKey === input.workerRunKey);
   assert.ok(session, `cancel E2E must expose worker session ${input.workerRunKey}`);
   assert.equal(session.state.status, "cancelled", "cancel E2E worker session must end as cancelled");
+}
+
+async function assertWorkerSessionDoneAfterResume(input: {
+  baseUrl: string;
+  token: string;
+  threadId: string;
+  workerRunKey: string;
+}): Promise<void> {
+  const sessions = await requestJson<WorkerSessionRecord[]>({
+    method: "GET",
+    url: `${input.baseUrl}/runtime-worker-sessions?threadId=${encodeURIComponent(input.threadId)}&limit=20`,
+    token: input.token,
+  });
+  const session = sessions.find((item) => item.workerRunKey === input.workerRunKey);
+  assert.ok(session, `follow-up E2E must expose worker session ${input.workerRunKey}`);
+  assert.equal(
+    session.state.status,
+    "done",
+    `follow-up E2E worker session must finish after resume: ${JSON.stringify(
+      {
+        status: session.state.status,
+        workerType: session.state.workerType,
+        lastResultStatus: session.state.lastResult?.status,
+        lastResultSummary: session.state.lastResult?.summary,
+        lastError: session.state.lastError,
+        continuationDigest: session.state.continuationDigest,
+      },
+      null,
+      2
+    )}`
+  );
 }
 
 async function assertWorkerSessionResumableAfterTimeout(input: {

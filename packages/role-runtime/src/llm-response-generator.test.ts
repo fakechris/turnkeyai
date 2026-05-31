@@ -1328,6 +1328,7 @@ test("llm role response generator routes continuation follow-up to timed-out ses
         agent_id: "explore",
         task: "Resume the slow source check and return the release-risk note.",
         label: "slow source continuation",
+        timeout_seconds: 120,
       });
     }
     assert.equal(input.toolChoice, "none");
@@ -1360,6 +1361,7 @@ test("llm role response generator routes continuation follow-up to timed-out ses
       assert.equal(input.call.name, "sessions_send");
       assert.equal(input.call.input.session_key, "worker:explore:task-1:toolu-timeout");
       assert.match(String(input.call.input.message), /Resume the slow source check/);
+      assert.equal(input.call.input.timeout_seconds, undefined);
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -1404,6 +1406,142 @@ test("llm role response generator routes continuation follow-up to timed-out ses
   assert.equal(executedCalls[0]?.name, "sessions_send");
   assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /Runtime session continuation directive/);
   assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /worker:explore:task-1:toolu-timeout/);
+});
+
+test("llm role response generator routes continuation follow-up to cancelled session", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-cancel-continue", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Resume the cancelled source check and report what can be verified now.",
+        timeout_seconds: 120,
+      });
+    }
+    return {
+      text: "Final answer from cancelled-session continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: input.call.input.session_key,
+          agent_id: "explore",
+          status: "completed",
+          result: "Cancelled session resumed with source evidence.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the cancelled source-check attempt in this mission.",
+        "",
+        "Recent turns:",
+        '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"cancelled","session_key":"worker:explore:task-1:toolu-cancelled","agent_id":"explore","result":"operator cancelled active source verification"}',
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer from cancelled-session continuation.");
+  assert.equal(executedCalls[0]?.name, "sessions_send");
+  assert.equal(executedCalls[0]?.input.session_key, "worker:explore:task-1:toolu-cancelled");
+  assert.equal(executedCalls[0]?.input.timeout_seconds, undefined);
+});
+
+test("llm role response generator normalizes noisy session_key inputs before execution", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-noisy-send", "sessions_send", {
+        session_key: "worker:explore:task-1:toolu-cancelled | Natural cancellation follow-up\nOpen questions: {}",
+        message: "Continue the cancelled source check.",
+      });
+    }
+    return {
+      text: "Final answer from normalized continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.input.session_key, "worker:explore:task-1:toolu-cancelled");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: input.call.input.session_key,
+          agent_id: "explore",
+          status: "completed",
+          result: "Noisy key continuation completed.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Final answer from normalized continuation.");
+  assert.equal(executedCalls[0]?.input.session_key, "worker:explore:task-1:toolu-cancelled");
 });
 
 test("llm role response generator synthesizes immediately after completed sub-agent final content", async () => {
