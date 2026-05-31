@@ -21,6 +21,7 @@ import { NoTokenPage } from "./pages/NoTokenPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { RuntimePage } from "./pages/RuntimePage";
 import { SettingsPage } from "./pages/SettingsPage";
+import type { ApprovalRow } from "./api/mission-api";
 import {
   useAgents,
   useApprovals,
@@ -56,13 +57,14 @@ export function App() {
   const contextSources = useContextSources([]).value;
   const runtimeSummary = useRuntimeSummary(null, { limit: 1 }).value;
   const onboarding = useOnboardingState(null);
+  const pendingApprovals = approvals.filter(
+    (a) => !a.decision && !state.decisions[a.id]
+  );
   const counts: SidebarCounts = {
     missions: missions.filter((m) => m.status !== "archived").length,
     // Approvals: subtract optimistic local decisions while the daemon
     // decision POST refetches, so the sidebar moves immediately.
-    approvals: approvals.filter(
-      (a) => !a.decision && !state.decisions[a.id]
-    ).length,
+    approvals: pendingApprovals.length,
     agents: agents.length,
     context: contextSources.length,
     recoveries: runtimeSummary?.attentionCount ?? 0,
@@ -99,6 +101,7 @@ export function App() {
       <Sidebar counts={counts} canCreateMission={canCreateMission} onNewMission={openNewMission} />
       <div className="main">
         {state.route !== "mission" && <PageToolbar />}
+        {pendingApprovals.length > 0 && <ApprovalBanner approvals={pendingApprovals} />}
         <div className="content">
           <RoutedPage onNewMission={openNewMission} />
         </div>
@@ -111,6 +114,31 @@ export function App() {
           openMission(missionId);
         }}
       />
+    </div>
+  );
+}
+
+function ApprovalBanner({ approvals }: { approvals: ApprovalRow[] }) {
+  const highestPriority = approvals.find((approval) => approval.severity === "high") ?? approvals[0];
+  const count = approvals.length;
+  const mission = highestPriority?.missionTitle ? ` · ${highestPriority.missionTitle}` : "";
+  const action = highestPriority?.action ? ` · ${highestPriority.action}` : "";
+  const openApprovals = () => {
+    window.location.hash = "#/approvals";
+  };
+  return (
+    <div className="approval-banner" role="region" aria-label="Pending approvals">
+      <span className="warn-dot" aria-hidden="true" />
+      <span>
+        {count} pending approval{count === 1 ? "" : "s"} may be blocking agent work
+        {mission}
+        {action}.
+      </span>
+      <div className="actions">
+        <button type="button" className="btn primary" onClick={openApprovals}>
+          <Icon name="approvals" size={13} /> Review approvals
+        </button>
+      </div>
     </div>
   );
 }

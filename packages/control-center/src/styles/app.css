@@ -1701,6 +1701,25 @@ a { color: inherit; text-decoration: none; }
 .approval-banner > span:nth-child(2) { flex: 1; min-width: 0; }
 .approval-banner .actions { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; }
 
+@media (max-width: 640px) {
+  .approval-banner {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+  }
+  .approval-banner > span:nth-child(2) {
+    flex: 1 1 calc(100% - 24px);
+  }
+  .approval-banner .actions {
+    width: 100%;
+    margin-left: 0;
+  }
+  .approval-banner .actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
 .recovery-banner {
   background: var(--danger-soft);
   border-bottom: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
