@@ -72,7 +72,7 @@ export interface WorkflowRouteDeps {
   idGenerator: IdGenerator;
   clock: Clock;
   roleLoopRunner?: Pick<RoleLoopRunner, "cancel">;
-  workerRuntime?: Pick<WorkerRuntime, "cancel">;
+  workerRuntime?: Pick<WorkerRuntime, "cancel" | "listSessions">;
   toolCancellationRegistry?: ToolCancellationRegistry;
   idempotencyStore?: RouteIdempotencyStore;
 }
@@ -146,6 +146,7 @@ export async function handleWorkflowRoutes(input: {
         toolCallIds: toolCallIds ?? null,
         reason,
         ...(deps.toolCancellationRegistry ? { toolCancellationRegistry: deps.toolCancellationRegistry } : {}),
+        ...(deps.workerRuntime ? { workerRuntime: deps.workerRuntime } : {}),
       });
       return {
         statusCode: result.statusCode,
@@ -526,6 +527,7 @@ export async function handleWorkflowRoutes(input: {
 async function cancelToolCallsOnMessage(input: {
   teamMessageStore: TeamMessageStore;
   toolCancellationRegistry?: ToolCancellationRegistry;
+  workerRuntime?: Pick<WorkerRuntime, "cancel" | "listSessions">;
   now: number;
   messageId: string;
   requestedThreadId: string | null;
@@ -588,7 +590,16 @@ async function cancelToolCallsOnMessage(input: {
       .filter((result) => result.active)
       .map((result) => result.toolCallId)
   );
-  const syntheticResultIds = cancellableIds.filter((id) => !runtimeOwned.has(id));
+  const fallbackWorkerCancel = await cancelWorkerSessionsForToolCalls({
+    threadId: message.threadId,
+    toolCallIds: cancellableIds.filter((id) => !runtimeOwned.has(id)),
+    reason: input.reason,
+    ...(input.workerRuntime ? { workerRuntime: input.workerRuntime } : {}),
+  });
+  for (const id of fallbackWorkerCancel.cancelledIds) {
+    runtimeOwned.add(id);
+  }
+  const syntheticResultIds = cancellableIds.filter((id) => !runtimeOwned.has(id) && !fallbackWorkerCancel.terminalIds.has(id));
   const toolMessages = syntheticResultIds.map((id, index) => {
     const call = callById.get(id)!;
     return {
@@ -638,6 +649,34 @@ async function cancelToolCallsOnMessage(input: {
       toolCallIds: cancellableIds,
     },
   };
+}
+
+async function cancelWorkerSessionsForToolCalls(input: {
+  workerRuntime?: Pick<WorkerRuntime, "cancel" | "listSessions">;
+  threadId: string;
+  toolCallIds: string[];
+  reason: string;
+}): Promise<{ cancelledIds: Set<string>; terminalIds: Set<string> }> {
+  const cancelledIds = new Set<string>();
+  const terminalIds = new Set<string>();
+  if (!input.workerRuntime?.listSessions || input.toolCallIds.length === 0) {
+    return { cancelledIds, terminalIds };
+  }
+  const requested = new Set(input.toolCallIds);
+  const sessions = await input.workerRuntime.listSessions();
+  for (const session of sessions) {
+    const toolCallId = session.context?.toolCallId;
+    if (!toolCallId || !requested.has(toolCallId) || session.context?.threadId !== input.threadId) {
+      continue;
+    }
+    if (["done", "failed", "cancelled"].includes(session.state.status)) {
+      terminalIds.add(toolCallId);
+      continue;
+    }
+    await input.workerRuntime.cancel({ workerRunKey: session.workerRunKey, reason: input.reason });
+    cancelledIds.add(toolCallId);
+  }
+  return { cancelledIds, terminalIds };
 }
 
 function resolveAssistantToolStatus(

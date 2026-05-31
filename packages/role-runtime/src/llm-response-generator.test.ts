@@ -424,7 +424,7 @@ test("llm role response generator runs native tool-use loop and feeds tool resul
   assert.ok(progressEvents.some((event) => event.summary.includes("sessions_spawn completed")));
 });
 
-test("llm role response generator repairs pending approval answers that skipped native tools", async () => {
+test("llm role response generator repairs approval-gated answers that skipped native tools", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -432,7 +432,7 @@ test("llm role response generator repairs pending approval answers that skipped 
     gatewayInputs.push(input);
     if (gatewayInputs.length === 1) {
       return {
-        text: "Approval pending. Once approved, I will run the browser form submission.",
+        text: "The approved browser dry-run is complete and verified.",
         modelId: "claude-test",
         providerId: "anthropic",
         protocol: "anthropic-compatible",
@@ -442,6 +442,7 @@ test("llm role response generator repairs pending approval answers that skipped 
     }
     if (gatewayInputs.length === 2) {
       assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approval-gated browser action/);
+      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /without native approval\/tool evidence/);
       return toolCallResult("toolu-browser", "sessions_spawn", {
         agent_id: "browser",
         task: "Open the approval form, submit the approved dry-run, and verify the post-submit status.",
@@ -1534,7 +1535,14 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
     packet: buildPacket(),
   });
 
-  assert.equal(result.content, "Verification did not complete within the tool budget.");
+  assert.equal(
+    result.content,
+    [
+      "Verification did not complete within the tool budget.",
+      "",
+      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating the missing source as verified.",
+    ].join("\n")
+  );
   assert.equal(executedTools, 1);
   assert.equal(gatewayInputs.length, 2);
   assert.ok(
@@ -1547,6 +1555,7 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("If the task specifies a heading, bullet count"));
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("bare http:// / https:// URLs"));
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("Do not copy internal fetch URLs"));
+  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("continue or retry the same source check"));
   const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
   assert.equal(closeout?.reason, "sub_agent_timeout");
   assert.equal(closeout?.toolName, "sessions_spawn");
@@ -2448,7 +2457,7 @@ test("llm role response generator routes follow-up when completed session result
   assert.equal(executedCalls[0]?.input.session_key, "worker:browser:task-dashboard:toolu-wrapped");
 });
 
-test("llm role response generator does not passively continue cancelled sessions without a user follow-up", async () => {
+test("llm role response generator closes out cancelled sessions without a user follow-up", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
@@ -2503,7 +2512,7 @@ test("llm role response generator does not passively continue cancelled sessions
     toolLoop: { executor, maxRounds: 128 },
   });
 
-  await generator.generate({
+  const result = await generator.generate({
     activation: buildActivation(),
     packet: {
       ...buildPacket(),
@@ -2519,7 +2528,8 @@ test("llm role response generator does not passively continue cancelled sessions
     },
   });
 
-  assert.equal(executedCalls[0]?.name, "sessions_spawn");
+  assert.equal(result.content, "Final answer after passive cancellation closeout.");
+  assert.deepEqual(executedCalls, []);
 });
 
 test("llm role response generator normalizes noisy session_key inputs before execution", async () => {

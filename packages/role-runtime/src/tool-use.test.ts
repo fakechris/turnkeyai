@@ -1372,6 +1372,59 @@ test("sessions_spawn cancels the active worker when the tool call is cancelled",
   assert.equal(result.progress?.at(-1)?.phase, "cancelled");
 });
 
+test("sessions_spawn returns cancelled when the worker session was cancelled outside the registry", async () => {
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
+    },
+    async send() {
+      return null;
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:task-1",
+        workerType: "browser",
+        status: "cancelled",
+        createdAt: 1,
+        updatedAt: 2,
+        lastError: {
+          code: "WORKER_FAILED",
+          message: "operator cancelled browser work",
+          retryable: false,
+        },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-cancel-fallback",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open a slow browser page.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Open a slow browser page.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { status?: string; result?: string };
+  assert.equal(result.cancelled, true);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "cancelled");
+  assert.equal(body.result, "operator cancelled browser work");
+});
+
 test("sessions_spawn interrupts the worker and returns a resumable timeout result", async () => {
   let sendStarted!: () => void;
   let interruptedReason: string | null = null;
