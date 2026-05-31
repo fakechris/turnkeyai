@@ -3119,3 +3119,70 @@ Convergence question:
 - Next required gate: run natural browser dynamic/dashboard and natural long
   delegation gates so memory is not the only P0 capability with fresh real
   evidence.
+
+## 2026-05-31 11:55 CST - Natural Browser Rendered Evidence Gate
+
+Direction: converging
+
+Execution Kernel:
+- Tightened natural mission quality evaluation with `requiredEvidencePatterns`
+  so browser-backed scenarios can require facts to appear in tool evidence,
+  not only in the final answer.
+- The natural browser dynamic page scenario now requires rendered dashboard
+  facts in the evidence stream: queue depth 11, SLA breaches 3, and the
+  recommended owner.
+
+Result Quality:
+- The focused real LLM browser run completed with source-backed operational
+  state, escalation trigger, owner, recommended action, no weak-answer signals,
+  and no forced closeout.
+- This closes the immediate P0-D evidence gap recorded in the reset: the
+  browser natural gate now proves rendered dashboard evidence was collected by
+  the tool path before the final synthesis passed.
+
+Workbench UX:
+- No UI changed.
+- The value is upstream of the workbench: future Mission Detail evidence cards
+  and readiness views can trust that this natural browser scenario only passes
+  when the trace contains rendered tool evidence.
+
+Browser Reliability:
+- The focused browser-backed natural E2E passed with one browser session, one
+  tool result, no failed tools, no recovery events, and no active/waiting/stale
+  liveness after completion.
+- Browser profile lock/CDP failure injection still needs a separate reliability
+  gate; this checkpoint proves the happy-path rendered-page capability, not all
+  browser recovery paths.
+
+Acceptance Evidence:
+- `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`: passed, 13
+  tests.
+- `npm run typecheck`: passed.
+- `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-dynamic-page
+  --scenario-timeout-ms 300000 --json tmp/natural-browser-dynamic-e2e.json`:
+  passed.
+- Real mission: `msn.mpt9919c.1`, status `done`, natural `passed`, tools
+  `1/1`, sessions `1/0`, liveness `0/0/0`, browser `yes`, final bytes
+  `1205`, weak-answer signals `none`.
+
+Regression Risk:
+- Main risk is overfitting the browser scenario to final-answer text. The new
+  check reads timeline evidence text and runtime result content before judging
+  the natural scenario passed.
+- Review caught that the first implementation also read thought events as
+  evidence, which could let the model bypass the gate by restating facts. The
+  evidence collector now only accepts tool/browser/doc/artifact timeline
+  events.
+- Another risk is making natural prompt language fixture-shaped. The prompt
+  remains user-like and the forbidden prompt-language test still rejects fixed
+  markers, exact answer shapes, and explicit tool-call commands.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a natural browser task now has a real LLM mission artifact and a
+  stricter evidence gate proving rendered dashboard facts were captured through
+  the browser tool path.
+- Next required gate: run natural long delegation and browser reliability
+  failure-injection gates so this happy-path proof extends to complex
+  multi-agent and recovery behavior.

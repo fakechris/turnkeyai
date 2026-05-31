@@ -303,6 +303,7 @@ export interface NaturalScenarioSpec {
   minEvidenceEvents: number;
   requiredAnswerTerms: string[];
   requiredAnswerPatterns?: Array<{ label: string; pattern: RegExp }>;
+  requiredEvidencePatterns?: Array<{ label: string; pattern: RegExp }>;
   requiredToolNames?: string[];
   forbiddenPatterns?: Array<{ label: string; pattern: RegExp }>;
 }
@@ -1580,6 +1581,11 @@ export function buildNaturalScenarioSpec(
       allowToolFailure: false,
       minEvidenceEvents: 1,
       requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander"],
+      requiredEvidencePatterns: [
+        { label: "rendered queue depth", pattern: /Queue depth:\s*11/i },
+        { label: "rendered SLA breaches", pattern: /SLA breaches:\s*3/i },
+        { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
+      ],
     };
   }
   if (scenario === "natural-followup-continuation") {
@@ -1769,6 +1775,7 @@ export function evaluateNaturalMissionQuality(input: {
   const completed = input.mission.status === "done" && input.metrics.status === "done";
   const weakAnswerSignals = findWeakAnswerSignals(input.final.text);
   const toolNames = collectToolNames(input.timeline);
+  const evidenceText = collectTimelineEvidenceText(input.timeline);
   const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
   const subAgentCompleted = input.metrics.sessions.spawned >= input.spec.minSpawnedSessions && input.metrics.liveness.active === 0 && input.metrics.liveness.waiting === 0;
   const approvalExercised =
@@ -1820,6 +1827,9 @@ export function evaluateNaturalMissionQuality(input: {
   for (const toolName of input.spec.requiredToolNames ?? []) {
     if (!toolNames.has(toolName)) failures.push(`missing required tool family evidence: ${toolName}`);
   }
+  for (const item of input.spec.requiredEvidencePatterns ?? []) {
+    if (!item.pattern.test(evidenceText)) failures.push(`missing evidence ${item.label}`);
+  }
   for (const item of input.spec.forbiddenPatterns ?? []) {
     if (item.pattern.test(input.final.text)) failures.push(`forbidden ${item.label}`);
   }
@@ -1848,6 +1858,23 @@ function collectToolNames(timeline: ActivityEvent[]): Set<string> {
       .map((event) => event.runtime?.["toolName"])
       .filter((toolName): toolName is string => typeof toolName === "string" && toolName.length > 0)
   );
+}
+
+function collectTimelineEvidenceText(timeline: ActivityEvent[]): string {
+  return timeline
+    .filter(isEvidenceTimelineEvent)
+    .map((event) =>
+      [
+        event.text,
+        typeof event.runtime?.["resultContent"] === "string" ? event.runtime["resultContent"] : "",
+        typeof event.runtime?.["summary"] === "string" ? event.runtime["summary"] : "",
+      ].join("\n")
+    )
+    .join("\n");
+}
+
+function isEvidenceTimelineEvent(event: ActivityEvent): boolean {
+  return event.kind === "tool" || event.kind === "browser" || event.kind === "doc" || event.kind === "artifact";
 }
 
 function timelineUsesWorker(timeline: ActivityEvent[], workerType: string): boolean {

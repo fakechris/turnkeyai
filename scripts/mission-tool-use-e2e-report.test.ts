@@ -236,6 +236,47 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.weakAnswerSignals.includes("model-knowledge fallback"));
   });
 
+  it("requires rendered browser evidence for natural dashboard scenarios", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      scenario: "natural-browser-dynamic-page" as const,
+      title: "Browser page",
+      desc: "Review a browser page.",
+      minBytes: 120,
+      minToolResults: 1,
+      maxToolResults: 6,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 3,
+      requiresBrowser: true,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander"],
+      requiredEvidencePatterns: [
+        { label: "rendered queue depth", pattern: /Queue depth:\s*11/i },
+        { label: "rendered SLA breaches", pattern: /SLA breaches:\s*3/i },
+      ],
+    };
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: "Browser opened but only loading text was captured.",
+    };
+    result.final.text =
+      "Queue depth: 11 and SLA breaches: 3 appear in this answer, but the tool evidence did not capture those rendered facts. Incident Commander remains the likely owner.";
+    result.timeline.push({ kind: "thought", text: result.final.text, tMs: 3000 });
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(quality.failures.includes("missing evidence rendered queue depth"));
+    assert.ok(quality.failures.includes("missing evidence rendered SLA breaches"));
+  });
+
   it("passes natural memory recall only with memory tool evidence and recalled facts", () => {
     const spec = buildNaturalScenarioSpec("natural-memory-recall", {
       alphaUrl: "http://127.0.0.1/vendor-alpha",
