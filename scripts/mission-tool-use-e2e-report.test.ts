@@ -9,6 +9,7 @@ import {
   buildNaturalMissionE2eJsonReport,
   buildMissionE2eJsonReport,
   evaluateNaturalMissionQuality,
+  extractCancelledSessionKey,
   extractTimedOutSessionKey,
   formatMissionScenarioPass,
   formatMissionScenarioStart,
@@ -338,6 +339,7 @@ describe("mission tool-use e2e report", () => {
       dashboardUrl: "http://127.0.0.1/ops-dashboard",
       approvalUrl: "http://127.0.0.1/approval-form",
       slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
       orchestrationUrl: "http://127.0.0.1/product-orchestration",
       bridgeUrl: "http://127.0.0.1/product-bridge",
       productSignalsUrl: "http://127.0.0.1/product-signals",
@@ -387,6 +389,7 @@ describe("mission tool-use e2e report", () => {
       dashboardUrl: "http://127.0.0.1/ops-dashboard",
       approvalUrl: "http://127.0.0.1/approval-form",
       slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
       orchestrationUrl: "http://127.0.0.1/product-orchestration",
       bridgeUrl: "http://127.0.0.1/product-bridge",
       productSignalsUrl: "http://127.0.0.1/product-signals",
@@ -435,6 +438,7 @@ describe("mission tool-use e2e report", () => {
       dashboardUrl: "http://127.0.0.1/ops-dashboard",
       approvalUrl: "http://127.0.0.1/approval-form",
       slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
       orchestrationUrl: "http://127.0.0.1/product-orchestration",
       bridgeUrl: "http://127.0.0.1/product-bridge",
       productSignalsUrl: "http://127.0.0.1/product-signals",
@@ -511,6 +515,7 @@ describe("mission tool-use e2e report", () => {
       dashboardUrl: "http://127.0.0.1/ops-dashboard",
       approvalUrl: "http://127.0.0.1/approval-form",
       slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
       orchestrationUrl: "http://127.0.0.1/product-orchestration",
       bridgeUrl: "http://127.0.0.1/product-bridge",
       productSignalsUrl: "http://127.0.0.1/product-signals",
@@ -552,6 +557,7 @@ describe("mission tool-use e2e report", () => {
         dashboardUrl: "http://127.0.0.1/ops-dashboard",
         approvalUrl: "http://127.0.0.1/approval-form",
         slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
         orchestrationUrl: "http://127.0.0.1/product-orchestration",
         bridgeUrl: "http://127.0.0.1/product-bridge",
         productSignalsUrl: "http://127.0.0.1/product-signals",
@@ -574,6 +580,7 @@ describe("mission tool-use e2e report", () => {
       dashboardUrl: "http://127.0.0.1/ops-dashboard",
       approvalUrl: "http://127.0.0.1/approval-form",
       slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
       orchestrationUrl: "http://127.0.0.1/product-orchestration",
       bridgeUrl: "http://127.0.0.1/product-bridge",
       productSignalsUrl: "http://127.0.0.1/product-signals",
@@ -659,6 +666,7 @@ describe("mission tool-use e2e report", () => {
       dashboardUrl: "http://127.0.0.1/ops-dashboard",
       approvalUrl: "http://127.0.0.1/approval-form",
       slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
       orchestrationUrl: "http://127.0.0.1/product-orchestration",
       bridgeUrl: "http://127.0.0.1/product-bridge",
       productSignalsUrl: "http://127.0.0.1/product-signals",
@@ -708,6 +716,7 @@ describe("mission tool-use e2e report", () => {
       dashboardUrl: "http://127.0.0.1/ops-dashboard",
       approvalUrl: "http://127.0.0.1/approval-form",
       slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
       orchestrationUrl: "http://127.0.0.1/product-orchestration",
       bridgeUrl: "http://127.0.0.1/product-bridge",
       productSignalsUrl: "http://127.0.0.1/product-signals",
@@ -776,6 +785,93 @@ describe("mission tool-use e2e report", () => {
     assert.ok(missingCancellation.failures.includes("cancellation scenario did not record a cancelled tool result"));
   });
 
+  it("requires cancellation evidence and continuation for natural cancellation follow-up", () => {
+    const spec = buildNaturalScenarioSpec("natural-cancel-followup-continuation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-cancel-followup-continuation";
+    result.metrics.tool.requested = 2;
+    result.metrics.tool.results = 2;
+    result.metrics.tool.failed = 1;
+    result.metrics.tool.cancelled = 1;
+    result.metrics.sessions.spawned = 1;
+    result.metrics.sessions.continued = 1;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "source call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "explore", task: "evaluate source" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "sessions_spawn was cancelled by the operator",
+        emph: "danger",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: '{"status":"cancelled","session_key":"wrk.cancel.1","result":"operator cancelled source verification"}',
+        },
+      },
+      {
+        kind: "tool",
+        text: "sessions_send result",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          resultContent:
+            "Verified source evidence: Release Captain owns the release, a runbook gap remains, and rollback rehearsal is the mitigation.",
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "Verified facts now include Release Captain ownership, the runbook gap, and rollback rehearsal as the mitigation.",
+          "Unverified items remain whether the same risk exists outside this source and whether the operator cancellation skipped any intermediate evidence.",
+          "Residual risk: the cancelled first attempt delayed verification, but the resumed source evidence is now available for the release-risk note.",
+        ].join(" "),
+        tMs: 4000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+
+    result.metrics.sessions.continued = 0;
+    const missingContinuation = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(missingContinuation.failures.some((failure) => failure.includes("tool use was outside")));
+  });
+
   it("requires timeout evidence and continuation for natural timeout follow-up", () => {
     const spec = buildNaturalScenarioSpec("natural-timeout-followup-continuation", {
       alphaUrl: "http://127.0.0.1/vendor-alpha",
@@ -783,6 +879,7 @@ describe("mission tool-use e2e report", () => {
       dashboardUrl: "http://127.0.0.1/ops-dashboard",
       approvalUrl: "http://127.0.0.1/approval-form",
       slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
       orchestrationUrl: "http://127.0.0.1/product-orchestration",
       bridgeUrl: "http://127.0.0.1/product-bridge",
       productSignalsUrl: "http://127.0.0.1/product-signals",
@@ -914,6 +1011,33 @@ describe("mission tool-use e2e report", () => {
     ];
 
     assert.equal(extractTimedOutSessionKey(timeline), "wrk.timeout.2");
+  });
+
+  it("extracts the cancelled session key instead of the first spawned session", () => {
+    const timeline = [
+      {
+        kind: "tool",
+        text: "first child completed",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: '{"status":"done","session_key":"wrk.completed.1"}',
+        },
+      },
+      {
+        kind: "tool",
+        text: "second child cancelled",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: '{"status":"cancelled","session_key":"wrk.cancel.2"}',
+        },
+      },
+    ];
+
+    assert.equal(extractCancelledSessionKey(timeline), "wrk.cancel.2");
   });
 
   it("formats natural per-scenario progress lines", () => {

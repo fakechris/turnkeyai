@@ -155,9 +155,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         memoryFlushes.push(generated.memoryFlush);
       }
 
-      const toolCalls = applySessionContinuationDirective(
-        result.toolCalls ?? [],
-        sessionContinuationDirective
+      const toolCalls = normalizeSessionToolCalls(
+        applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective)
       );
       if (activeToolLoop && toolCalls.length === 0 && containsAnyToolCallForm(result)) {
         const maxRounds = activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
@@ -1142,7 +1141,8 @@ function containsAnyToolCallForm(result: GenerateTextResult): boolean {
 }
 
 function findSessionContinuationDirective(taskPrompt: string): SessionContinuationDirective | null {
-  if (!/\b(continue|continuation|resume|retry|revisit|follow-?up)\b/i.test(taskPrompt)) {
+  const latestUserText = extractLatestUserContinuationText(taskPrompt);
+  if (!isExplicitSessionContinuationRequest(latestUserText)) {
     return null;
   }
   const sessionMatches = [...taskPrompt.matchAll(/"session_key"\s*:\s*"([^"]+)"/g)];
@@ -1153,15 +1153,32 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
     const start = Math.max(0, (match.index ?? 0) - 1200);
     const end = Math.min(taskPrompt.length, (match.index ?? 0) + 1200);
     const context = taskPrompt.slice(start, end);
-    if (!/\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted)\b/i.test(context)) {
+    if (!/\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(context)) {
       continue;
     }
     return {
       sessionKey,
-      messageHint: extractLatestUserContinuationText(taskPrompt),
+      messageHint: latestUserText,
     };
   }
   return null;
+}
+
+function isExplicitSessionContinuationRequest(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!/\b(continue|continuation|resume|retry|revisit|follow-?up)\b/i.test(normalized)) {
+    return false;
+  }
+  if (/\b(?:follow-?up|later|afterward|afterwards|future)\b.{0,120}\b(?:may|might|can|could|should)\s+(?:ask|request)\b/i.test(normalized)) {
+    return false;
+  }
+  if (/\b(?:may|might|can|could|should)\s+(?:ask|request)\b.{0,120}\b(?:continue|resume|retry|revisit|follow-?up)\b/i.test(normalized)) {
+    return false;
+  }
+  if (/^(?:please\s+)?(?:continue|resume|retry|revisit|follow-?up)\b/i.test(normalized)) {
+    return true;
+  }
+  return /\b(?:continue|resume|retry|revisit)\s+(?:from|the|that|this|same|existing|previous|prior)\b/i.test(normalized);
 }
 
 function extractLatestUserContinuationText(taskPrompt: string): string {
@@ -1169,8 +1186,8 @@ function extractLatestUserContinuationText(taskPrompt: string): string {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const latestUserLine = [...lines].reverse().find((line) => /^\[?user\]?[:：]/i.test(line));
-  const content = latestUserLine ? latestUserLine.replace(/^\[?user\]?[:：]\s*/i, "") : lines.at(-1) ?? taskPrompt;
+  const latestUserLine = [...lines].reverse().find((line) => /^\[?user\]?(?:[:：]|\s+)/i.test(line));
+  const content = latestUserLine ? latestUserLine.replace(/^\[?user\]?(?:[:：]|\s+)\s*/i, "") : lines.at(-1) ?? taskPrompt;
   return sliceUtf8(content.replace(/\s+/g, " ").trim() || "Continue the same delegated work from the existing session.", 1200);
 }
 
@@ -1195,23 +1212,39 @@ function applySessionContinuationDirective(
         session_key: directive.sessionKey,
         message: readStringInput(rewritten.input, "task") ?? directive.messageHint,
         ...(readStringInput(rewritten.input, "label") ? { label: readStringInput(rewritten.input, "label") } : {}),
-        ...(readNumberInput(rewritten.input, "timeout_seconds") !== undefined
-          ? { timeout_seconds: readNumberInput(rewritten.input, "timeout_seconds") }
-          : {}),
       },
     },
     ...toolCalls.slice(spawnIndex + 1).filter((call) => call.name !== "sessions_spawn"),
   ];
 }
 
+function normalizeSessionToolCalls(toolCalls: LLMToolCall[]): LLMToolCall[] {
+  return toolCalls.map((call) => {
+    if (call.name !== "sessions_send" && call.name !== "sessions_history") {
+      return call;
+    }
+    const sessionKey = readStringInput(call.input, "session_key");
+    const normalizedSessionKey = sessionKey ? extractWorkerSessionKey(sessionKey) : undefined;
+    if (!normalizedSessionKey || normalizedSessionKey === sessionKey) {
+      return call;
+    }
+    return {
+      ...call,
+      input: {
+        ...call.input,
+        session_key: normalizedSessionKey,
+      },
+    };
+  });
+}
+
+function extractWorkerSessionKey(value: string): string | undefined {
+  return value.match(/\bworker:[A-Za-z0-9_-]+:task(?::|-)[^\s"'`,|}\]]+/)?.[0];
+}
+
 function readStringInput(input: Record<string, unknown>, key: string): string | undefined {
   const value = input[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function readNumberInput(input: Record<string, unknown>, key: string): number | undefined {
-  const value = input[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function buildGatewayInput(input: {

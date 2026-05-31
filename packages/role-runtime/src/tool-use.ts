@@ -1164,7 +1164,12 @@ async function executeSessionsSend(
     preferredWorkerKinds: [state.workerType],
     continuityMode: "resume-existing" as const,
   };
-  const timeoutMs = resolveToolTimeoutMs(input.call.input.timeout_seconds, state.workerType, maxSessionToolTimeoutMs);
+  const timeoutMs = resolveContinuationToolTimeoutMs(
+    input.call.input.timeout_seconds,
+    state.workerType,
+    state.status,
+    maxSessionToolTimeoutMs
+  );
   const registration = toolCancellationRegistry?.register({
     threadId: input.activation.thread.threadId,
     toolCallId: input.call.id,
@@ -2026,6 +2031,19 @@ function parseToolTimeoutMs(value: unknown, maxTimeoutMs?: number): number | nul
 
 function resolveToolTimeoutMs(value: unknown, workerKind: WorkerKind, maxTimeoutMs?: number): number {
   return parseToolTimeoutMs(value, maxTimeoutMs) ?? boundDefaultToolTimeoutMs(defaultToolTimeoutMs(workerKind), maxTimeoutMs);
+}
+
+function resolveContinuationToolTimeoutMs(
+  value: unknown,
+  workerKind: WorkerKind,
+  currentStatus: WorkerSessionState["status"],
+  maxTimeoutMs?: number
+): number {
+  const timeoutMs = resolveToolTimeoutMs(value, workerKind, maxTimeoutMs);
+  if (currentStatus !== "cancelled") {
+    return timeoutMs;
+  }
+  return Math.max(timeoutMs, boundDefaultToolTimeoutMs(defaultToolTimeoutMs(workerKind), maxTimeoutMs));
 }
 
 function defaultToolTimeoutMs(workerKind: WorkerKind): number {
