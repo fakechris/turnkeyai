@@ -462,6 +462,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
       const completedSubAgent = findCompletedSubAgentFinal(toolResults);
       if (completedSubAgent) {
+        if (
+          shouldRepairMissingApprovalGate({
+            taskPrompt: input.packet.taskPrompt,
+            resultText: completedSubAgent.finalContents.join("\n\n"),
+            messages,
+            toolTrace,
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "user",
+              content: buildMissingApprovalGateRepairPrompt(),
+            },
+          ];
+          continue;
+        }
         toolLoopCloseout = {
           reason: "completed_sub_agent_final",
           maxRounds,
@@ -1546,8 +1563,10 @@ function buildMissingApprovalGateRepairPrompt(): string {
   return [
     "Runtime correction: approval-gated browser action was finalized or described without native approval/tool evidence.",
     "Do not finalize an approval-gated browser side effect unless a native permission or browser-session tool result created that evidence.",
-    "Use the available native tools now. For a browser form submit or other browser side effect, prefer sessions_spawn with agent_id=browser and include the exact URL, approved action, approval boundary, and verification requirement in the task.",
-    "The runtime will request operator approval before the side effect executes. After the tool result returns, synthesize only from that result.",
+    "Use permission_query now with action=browser.form.submit, level=approval, scope=mutate, worker_kind=browser, the concrete risk, and a redacted payload for the intended dry-run form submission.",
+    "After the operator decision is available, use permission_result and permission_applied before delegating the approved browser action.",
+    "Only after permission_applied succeeds, call sessions_spawn with agent_id=browser and include the exact URL, approved action, and verification requirement in the task.",
+    "After the browser tool result returns, synthesize only from that permission and browser evidence.",
   ].join("\n");
 }
 

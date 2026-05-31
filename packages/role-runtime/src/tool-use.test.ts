@@ -612,6 +612,17 @@ test("sessions_spawn blocks browser side effects before worker execution until a
 
 test("sessions_spawn proceeds with browser side effects after permission cache grants the action", async () => {
   let spawnCalled = false;
+  let spawnedTaskPrompt = "";
+  let approvedRuntimeAction = "";
+  const activation = buildActivation();
+  activation.handoff.payload = {
+    threadId: "thread-1",
+    intent: {
+      relayBrief: "",
+      instructions: "Local approval fixture source: http://127.0.0.1:4101/approval-form",
+      recentMessages: [],
+    },
+  };
   const toolPermissionService: ToolPermissionService = {
     async request(input) {
       return {
@@ -620,7 +631,7 @@ test("sessions_spawn proceeds with browser side effects after permission cache g
         requirement: {
           level: input.requirement.level,
           scope: input.requirement.scope,
-          cacheKey: input.requirement.cacheKey ?? "missing",
+          cacheKey: "http://approval-cache.invalid/key",
           rationale: input.requirement.rationale,
           workerType: input.requirement.workerType ?? "browser",
         },
@@ -635,8 +646,10 @@ test("sessions_spawn proceeds with browser side effects after permission cache g
     },
   };
   const workerRuntime = {
-    async spawn() {
+    async spawn(input: WorkerInvocationInput) {
       spawnCalled = true;
+      spawnedTaskPrompt = input.packet.taskPrompt;
+      approvedRuntimeAction = input.packet.runtimeApprovalContext?.browserSideEffects?.[0]?.action ?? "";
       return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
     },
     async send() {
@@ -663,7 +676,7 @@ test("sessions_spawn proceeds with browser side effects after permission cache g
         task: "Submit the approved form.",
       },
     },
-    activation: buildActivation(),
+    activation,
     packet: {
       roleId: "role-lead",
       roleName: "Lead",
@@ -678,6 +691,12 @@ test("sessions_spawn proceeds with browser side effects after permission cache g
   assert.equal(spawnCalled, true);
   assert.equal(result.isError, undefined);
   assert.match(result.content, /Submitted after approval/);
+  assert.match(spawnedTaskPrompt, /parent runtime approval is granted/i);
+  assert.match(spawnedTaskPrompt, /permission cache is already applied/i);
+  assert.match(spawnedTaskPrompt, /browser\.form\.submit/i);
+  assert.match(spawnedTaskPrompt, /Parent mission context relevant to this delegated task/);
+  assert.match(spawnedTaskPrompt, /Local approval fixture source: http:\/\/127\.0\.0\.1:4101\/approval-form/);
+  assert.equal(approvedRuntimeAction, "browser.form.submit");
 });
 
 test("sessions_spawn does not require publish approval for read-only package publish metadata", async () => {
@@ -1132,6 +1151,7 @@ test("sessions_spawn still requires approval when a later order action follows r
 test("sessions_spawn waits for approval and resumes the same tool call before browser side effects", async () => {
   const events: string[] = [];
   let sendToolCallId: string | undefined;
+  let spawnedTaskPrompt = "";
   const toolPermissionService: ToolPermissionService = {
     async request(input) {
       events.push(`query:${input.toolCallId}`);
@@ -1172,8 +1192,9 @@ test("sessions_spawn waits for approval and resumes the same tool call before br
     },
   };
   const workerRuntime = {
-    async spawn() {
+    async spawn(input: { packet: { taskPrompt: string } }) {
       events.push("spawn");
+      spawnedTaskPrompt = input.packet.taskPrompt;
       return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
     },
     async send(input: { toolCallId?: string }) {
@@ -1225,6 +1246,9 @@ test("sessions_spawn waits for approval and resumes the same tool call before br
   assert.equal(result.isError, undefined);
   assert.equal(result.progress?.some((event) => event.detail?.eventType === "permission.applied"), true);
   assert.match(result.content, /Submitted after same-call approval/);
+  assert.match(spawnedTaskPrompt, /parent runtime approval is granted/i);
+  assert.match(spawnedTaskPrompt, /permission cache is already applied/i);
+  assert.match(spawnedTaskPrompt, /browser\.form\.submit/i);
 });
 
 test("sessions_spawn returns structured permission error when approval wait fails", async () => {
@@ -2308,6 +2332,110 @@ test("sessions_send uses the current follow-up label in its session result envel
   assert.equal(body.result, "Continuation evidence gathered.");
 });
 
+test("sessions_send carries approved browser context into resumed sessions", async () => {
+  let resumedTaskPrompt = "";
+  let approvedRuntimeAction = "";
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:existing",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-browser",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+            parentSessionKey: "role:role-lead:thread:thread-1",
+            toolCallId: "call-original",
+          },
+          state: {
+            workerRunKey: "worker:browser:existing",
+            workerType: "browser",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult: { workerType: "browser", status: "completed", summary: "Existing browser work.", payload: null },
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:existing",
+        workerType: "browser",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async resume(input: { packet: { taskPrompt: string; runtimeApprovalContext?: { browserSideEffects?: Array<{ action: string }> } } }) {
+      resumedTaskPrompt = input.packet.taskPrompt;
+      approvedRuntimeAction = input.packet.runtimeApprovalContext?.browserSideEffects?.[0]?.action ?? "";
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Submitted resumed browser action.",
+        payload: { submitted: true },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService: {
+      async request(input) {
+        return {
+          status: "already_granted",
+          action: input.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey: input.requirement.cacheKey ?? "missing",
+            rationale: input.requirement.rationale,
+            workerType: input.requirement.workerType ?? "browser",
+          },
+          message: "Already granted.",
+        };
+      },
+      async result() {
+        throw new Error("not used");
+      },
+      async apply() {
+        throw new Error("not used");
+      },
+    },
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-send-approved",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:browser:existing",
+        message: "Submit the approved follow-up form.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue browser work.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.match(result.content, /Submitted resumed browser action/);
+  assert.match(resumedTaskPrompt, /parent runtime approval is granted/i);
+  assert.match(resumedTaskPrompt, /permission cache is already applied/i);
+  assert.equal(approvedRuntimeAction, "browser.form.submit");
+});
+
 test("sessions_send reuses a completed session for summary-only follow-ups", async () => {
   let sendCalled = false;
   const lastResult = {
@@ -2641,11 +2769,15 @@ test("sessions_send cached result preserves failed worker status", async () => {
 
 test("permission tools request, observe, and apply operator approval", async () => {
   const calls: string[] = [];
+  let requestedCacheKey = "";
+  let requestedWorkerType = "";
   const executor = createWorkerSessionToolExecutor({
     workerRuntime: {} as WorkerRuntime,
     toolPermissionService: {
       async request(input) {
         calls.push(`request:${input.action}`);
+        requestedCacheKey = input.requirement.cacheKey ?? "";
+        requestedWorkerType = input.requirement.workerType ?? "";
         return {
           status: "pending",
           approvalId: "ap.thread-1.call-permission",
@@ -2654,7 +2786,7 @@ test("permission tools request, observe, and apply operator approval", async () 
           requirement: {
             level: input.requirement.level,
             scope: input.requirement.scope,
-            cacheKey: "thread-1:browser:mutate:approval",
+            cacheKey: input.requirement.cacheKey ?? "missing",
             rationale: input.requirement.rationale,
             workerType: "browser",
           },
@@ -2707,12 +2839,15 @@ test("permission tools request, observe, and apply operator approval", async () 
         level: "approval",
         scope: "mutate",
         rationale: "The task requires checking the submitted pricing flow.",
+        worker_kind: "explore",
       },
     },
     activation,
     packet,
   });
   assert.equal(query.isError, undefined);
+  assert.equal(requestedCacheKey, "thread-1:browser:mutate:approval:browser.form.submit");
+  assert.equal(requestedWorkerType, "browser");
   assert.equal(query.progress?.[0]?.detail?.eventType, "permission.query");
   assert.match(query.content, /"status": "pending"/);
   assert.match(query.content, /"event_type": "permission\.query"/);

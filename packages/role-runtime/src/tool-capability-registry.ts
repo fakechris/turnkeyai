@@ -488,6 +488,7 @@ function renderBrowserWorkerSection(): string {
     "- For personal dashboards or account data, prefer the browser worker because it can use the user's active browser session.",
     "- Keep browser tasks bounded: specify target URL or search query, required fields, output format, and when to stop.",
     "- If the user asks to carry out an approved browser action such as submit, save, purchase, send, delete, or update, the delegated browser task must include that requested action and its approval boundary. Do not downgrade the task to read-only inspection unless the user only asked for inspection.",
+    "- Browser sub-agents do not own approval tools. Parent runtime handles permission_query, permission_result, and permission_applied before dispatch. If your delegated task says approval is granted or applied, perform only that scoped browser action with browser tools; if approval is missing or pending, stop and report the approval requirement.",
     "- Browser results must return evidence, relevant session/target identifiers, and screenshot or artifact references when screenshots are taken.",
     "- Do not loop on browser failures. After repeated navigation, action, or extraction failures, report the failure and the next required input.",
   ].join("\n");

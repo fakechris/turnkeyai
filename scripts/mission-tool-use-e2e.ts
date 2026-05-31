@@ -2522,6 +2522,14 @@ export function buildNaturalScenarioSpec(
       allowToolFailure: false,
       minEvidenceEvents: 1,
       requiredAnswerTerms: ["approval", "dry-run", "browser"],
+      requiredAnswerPatterns: [
+        { label: "submitted result", pattern: /\bsubmit(?:ted|tal)?\b/i },
+      ],
+      forbiddenPatterns: [
+        { label: "approval granted but action incomplete", pattern: /\b(?:form submission|submit(?:ted|tal)?|action)\s+(?:was\s+)?not completed\b/i },
+        { label: "approved submit blocked", pattern: /\b(?:click|submit(?:ted|tal)?|form submission).{0,60}\bblock(?:ed|er|ing)\b/i },
+        { label: "approval tooling unavailable fallback", pattern: /\b(?:approval|permission).{0,80}(?:tool|tooling).{0,80}(?:unavailable|not available|disabled|cannot be traversed)\b/i },
+      ],
     };
   }
   if (scenario === "natural-browser-unavailable-closeout") {
@@ -5336,7 +5344,7 @@ function findLatestApprovalAppliedIndex(timeline: ActivityEvent[], approvedIds: 
 }
 
 export function isStalePendingApprovalThought(text: string): boolean {
-  return /\b(?:approval pending|approval request is pending|permission request is pending|pending operator decision|awaiting operator approval|waiting for operator decision|waiting for operator|still pending)\b/i.test(
+  return /\b(?:approval pending|approval is pending|approval request is pending|permission request is pending|pending operator decision|pending\W+operator\s+decision|awaiting operator approval|waiting for operator decision|waiting for operator|still pending)\b/i.test(
     text
   );
 }

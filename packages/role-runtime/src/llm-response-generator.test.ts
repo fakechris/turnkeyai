@@ -443,6 +443,34 @@ test("llm role response generator repairs approval-gated answers that skipped na
     if (gatewayInputs.length === 2) {
       assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approval-gated browser action/);
       assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /without native approval\/tool evidence/);
+      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /permission_query/);
+      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /action=browser\.form\.submit/);
+      return toolCallResult("toolu-query", "permission_query", {
+        action: "browser.form.submit",
+        title: "Approve local dry-run form submit",
+        risk: "Submit isolated local dry-run form data.",
+        level: "approval",
+        scope: "mutate",
+        rationale: "The user asked to carry the dry-run form submission through an approval gate.",
+        worker_kind: "browser",
+        payload: { url: "http://127.0.0.1/approval-form", submit: "dry-run" },
+      });
+    }
+    if (gatewayInputs.length === 3) {
+      return {
+        text: "Apply the approved permission.",
+        toolCalls: [
+          { id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } },
+          { id: "toolu-applied", name: "permission_applied", input: { approval_id: "ap-1" } },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 4) {
       return toolCallResult("toolu-browser", "sessions_spawn", {
         agent_id: "browser",
         task: "Open the approval form, submit the approved dry-run, and verify the post-submit status.",
@@ -462,6 +490,21 @@ test("llm role response generator repairs approval-gated answers that skipped na
     definitions() {
       return [
         {
+          name: "permission_query",
+          description: "Request approval",
+          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+        },
+        {
+          name: "permission_result",
+          description: "Read approval",
+          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+        },
+        {
+          name: "permission_applied",
+          description: "Mark approval applied",
+          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+        },
+        {
           name: "sessions_spawn",
           description: "Spawn a browser sub-agent",
           inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
@@ -470,6 +513,27 @@ test("llm role response generator repairs approval-gated answers that skipped na
     },
     async execute(input: RoleToolExecutionInput) {
       executedCalls.push(input.call);
+      if (input.call.name === "permission_query") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "pending", approval_id: "ap-1" }),
+        };
+      }
+      if (input.call.name === "permission_result") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "approved", approval_id: "ap-1" }),
+        };
+      }
+      if (input.call.name === "permission_applied") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "applied", approval_id: "ap-1" }),
+        };
+      }
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -509,10 +573,133 @@ test("llm role response generator repairs approval-gated answers that skipped na
   });
 
   assert.equal(result.content, "The approved browser dry-run was submitted and verified.");
-  assert.deepEqual(executedCalls.map((call) => call.name), ["sessions_spawn"]);
-  assert.equal(executedCalls[0]?.input.agent_id, "browser");
-  assert.match(String(executedCalls[0]?.input.task), /submit the approved dry-run/i);
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["permission_query", "permission_result", "permission_applied", "sessions_spawn"]
+  );
+  assert.equal(executedCalls[0]?.input.action, "browser.form.submit");
+  assert.equal(executedCalls[3]?.input.agent_id, "browser");
+  assert.match(String(executedCalls[3]?.input.task), /submit the approved dry-run/i);
+  assert.equal(gatewayInputs.length, 5);
+});
+
+test("llm role response generator keeps tools enabled when approval-gated browser inspection needs parent permission", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-inspect", "sessions_spawn", {
+        agent_id: "browser",
+        label: "Inspect local approval form",
+        task: "Open the approval form, take a screenshot, and report the form fields before submission.",
+      });
+    }
+    if (gatewayInputs.length === 2) {
+      assert.equal(input.toolChoice, "auto");
+      assert.ok(input.tools?.some((tool) => tool.name === "permission_query"));
+      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approval-gated browser action/);
+      return toolCallResult("toolu-query", "permission_query", {
+        action: "browser.form.submit",
+        title: "Approve local dry-run form submit",
+        risk: "Submit isolated local dry-run form data.",
+        level: "approval",
+        scope: "mutate",
+        rationale: "The browser worker found the form; parent runtime must request approval before submission.",
+        worker_kind: "browser",
+        payload: { url: "http://127.0.0.1/approval-form", form: { note: "" } },
+      });
+    }
+    if (gatewayInputs.length === 3) {
+      return {
+        text: "Permission request is pending operator decision (`ap-1`). I will proceed once approved.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    throw new Error(`unexpected gateway call ${gatewayInputs.length}`);
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "permission_query",
+          description: "Request approval",
+          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+        },
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "permission_query") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "pending", approval_id: "ap-1" }),
+        };
+      }
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:browser:task-1:toolu-inspect",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "Browser inspected the form and reported that submission requires parent approval.",
+          final_content: [
+            "Verified local approval form.",
+            "Form field: input[name=\"note\"] is empty.",
+            "Submit button is visible.",
+            "I do not have access to permission_query; the parent agent must request browser.form.submit approval.",
+          ].join("\n"),
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            content: "Verified form. Parent approval is required before browser.form.submit.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+        "Actually carry the safe local dry-run through the approval gate.",
+        "Request approval before applying the browser action, then report what was approved and what evidence the page showed.",
+      ].join("\n"),
+    },
+  });
+
+  assert.match(result.content, /pending operator decision/);
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_spawn", "permission_query"]
+  );
+  assert.equal(executedCalls[1]?.input.action, "browser.form.submit");
   assert.equal(gatewayInputs.length, 3);
+  assert.equal(gatewayInputs[1]?.toolChoice, "auto");
+  assert.notEqual(gatewayInputs[1]?.toolChoice, "none");
+  assert.equal(result.metadata?.toolLoopCloseout, undefined);
 });
 
 test("llm role response generator repairs stale pending answers after approval is applied", async () => {
