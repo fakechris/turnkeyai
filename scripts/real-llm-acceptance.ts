@@ -69,6 +69,7 @@ const DEFAULT_NATURAL_MISSION_SCENARIOS = [
   "natural-comparison-research",
   "natural-browser-dynamic-page",
   "natural-followup-continuation",
+  "natural-memory-recall",
   "natural-approval-dry-run-action",
   "natural-timeout-partial-closeout",
   "natural-long-delegation",

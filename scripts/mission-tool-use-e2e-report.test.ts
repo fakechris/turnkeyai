@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   assertNaturalPromptAllowed,
   assertNaturalScenarioPromptsAllowed,
+  buildNaturalScenarioSpec,
   buildNaturalMissionE2eJsonReport,
   buildMissionE2eJsonReport,
   evaluateNaturalMissionQuality,
@@ -233,6 +234,55 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.failures.some((failure) => failure.includes("browser")));
     assert.ok(quality.weakAnswerSignals.includes("tool unavailable fallback"));
     assert.ok(quality.weakAnswerSignals.includes("model-knowledge fallback"));
+  });
+
+  it("passes natural memory recall only with memory tool evidence and recalled facts", () => {
+    const spec = buildNaturalScenarioSpec("natural-memory-recall", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-memory-recall";
+    result.timeline = [
+      { kind: "tool", text: "memory_search call", tMs: 1000, runtime: { toolName: "memory_search", toolPhase: "call" } },
+      { kind: "tool", text: "memory_search result", tMs: 1200, runtime: { toolName: "memory_search", toolPhase: "result" } },
+      { kind: "tool", text: "memory_get call", tMs: 1400, runtime: { toolName: "memory_get", toolPhase: "call" } },
+      {
+        kind: "tool",
+        text: "memory_get result",
+        tMs: 1600,
+        runtime: {
+          toolName: "memory_get",
+          toolPhase: "result",
+          resultContent: "Helios-47 launch window is Tuesday 09:30. Owner is Release Captain.",
+        },
+      },
+      {
+        kind: "thought",
+        text: "Verified memory shows Helios-47 launches Tuesday 09:30 with Release Captain as owner. Residual risk: confirm the calendar lock before external release announcements. Next action: the release lead should use this remembered coordination note as the internal planning baseline, then verify the calendar hold before sending any external commitment.",
+        tMs: 2000,
+      },
+    ];
+    result.metrics.tool.results = 2;
+    result.metrics.sessions.spawned = 0;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
   });
 
   it("formats natural per-scenario progress lines", () => {
