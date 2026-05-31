@@ -155,6 +155,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           maxRounds,
           toolCallCount: countToolCalls(toolTrace),
           roundCount: toolTrace.length,
+          evidenceAvailable: hasUsableEvidence(toolTrace),
         };
         throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
@@ -206,7 +207,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           pendingToolCallCount: toolCalls.length,
           toolCallCount: countToolCalls(toolTrace),
           roundCount: toolTrace.length,
-          evidenceAvailable: toolTrace.length > 0,
+          evidenceAvailable: hasUsableEvidence(toolTrace),
         };
         throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
@@ -240,7 +241,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           pendingToolCallCount: toolCalls.length,
           toolCallCount: countToolCalls(toolTrace),
           roundCount: toolTrace.length,
-          evidenceAvailable: toolTrace.length > 0,
+          evidenceAvailable: hasUsableEvidence(toolTrace),
         };
         throwIfAborted(input.signal);
         const generated = await this.generateFinalAfterToolRoundLimit({
@@ -1511,6 +1512,10 @@ function isPrunedToolResultContent(content: string): boolean {
 
 function countToolCalls(rounds: NativeToolRoundTrace[]): number {
   return rounds.reduce((sum, round) => sum + round.calls.length, 0);
+}
+
+function hasUsableEvidence(rounds: NativeToolRoundTrace[]): boolean {
+  return rounds.some((round) => round.results.some((result) => !result.isError && result.skipped !== true));
 }
 
 function formatDurationMs(ms: number): string {

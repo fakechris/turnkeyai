@@ -178,7 +178,7 @@ Methodology Review Trigger:
 
 ## 2026-05-30 17:55 CST - Post-Acceptance Product Entry And Recovery Visibility
 
-Direction: converging
+Direction: unknown
 
 Execution Kernel:
 - No kernel semantics changed in this checkpoint. Recent kernel work already
@@ -2773,10 +2773,14 @@ Acceptance Evidence:
 - `npm run build:control-center`: passed.
 - `npm run control-center:smoke -- --allow-missing-browser`: passed with
   desktop and mobile screenshots.
-- No real LLM/browser acceptance ran because this slice changes runtime
-  metadata propagation and mission visibility, not the tool execution policy.
-  The next execution-policy or browser-runtime behavior change still requires
-  focused real acceptance before claiming convergence.
+- No real LLM/browser acceptance ran, so this checkpoint cannot claim runtime
+  convergence under the G0 evidence gate.
+- Next required real gates: a `budget-limited closeout` mission scenario that
+  intentionally exhausts a mission tool budget and verifies Mission Health
+  shows the closeout warning plus `toolLoopCloseoutReason=round_limit`, and a
+  `sub-agent timeout closeout` mission scenario that forces a sub-agent timeout
+  and verifies `toolLoopCloseoutReason=sub_agent_timeout`,
+  `evidenceAvailable`, and the Mission Detail attention action.
 
 Regression Risk:
 - Main compatibility risk is adding new optional metadata/runtime fields. The
@@ -2784,3 +2788,11 @@ Regression Risk:
 - Quality-gate risk is over-warning completed work. Tests pin the distinction:
   budget-limited closeout warns, completed sub-agent final-content closeout
   passes.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? no
+- Evidence: focused unit, bridge, observability, typecheck, build, and UI smoke
+  prove the new signal path locally, but no real mission E2E exercised it.
+- If no, next required gate: run the named `budget-limited closeout` and
+  `sub-agent timeout closeout` real mission scenarios above and verify both the
+  mission telemetry fields and Mission Detail warning/action.
