@@ -3250,3 +3250,74 @@ Convergence question:
 - Next required gate: run browser reliability failure injection and approval
   dry-run natural gates with the same standard: real mission artifact, terminal
   liveness, and user-visible useful output.
+
+## 2026-05-31 12:53 CST - Natural Approval Auto-Apply Gate
+
+Direction: converging
+
+Execution Kernel:
+- Fixed the approval-decision continuation path so an approved operator
+  decision applies the runtime permission cache immediately when the approval
+  carries tool-permission metadata.
+- The follow-up prompt now tells the agent that permission is already applied
+  and asks it to perform only the approved scoped action, instead of relying on
+  the model to manually call `permission_result` and `permission_applied`
+  before it can resume.
+
+Result Quality:
+- Baseline natural approval E2E failed usefully: the model requested approval
+  but produced an "awaiting approval" answer and never completed
+  query/result/applied. That matched the P0 reset concern that approval
+  continuation was structurally present but unproven under a natural prompt.
+- After the fix, the same natural prompt completed the safe browser dry-run
+  with approval requested/decided/applied, a useful final answer, no weak-answer
+  signals, and no fallback language.
+
+Workbench UX:
+- No UI changed.
+- Mission/approval timelines are more trustworthy for the workbench because
+  an operator approval now produces both the decision event and the applied
+  permission event before the agent resumes.
+
+Browser Reliability:
+- Browser execution semantics did not change.
+- The real gate exercised a browser sub-agent after the approval gate and
+  completed with no failed tool result, no recovery event, no profile fallback,
+  and no active/waiting/stale runtime liveness.
+
+Acceptance Evidence:
+- Baseline failure command:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-approval-dry-run-action
+  --scenario-timeout-ms 300000 --json tmp/natural-approval-baseline.json`:
+  failed because `approval scenario did not complete query/result/applied
+  loop`.
+- `npx tsx --test packages/app-gateway/src/routes/mission-routes.test.ts
+  packages/app-gateway/src/tool-permission-service.test.ts`: passed, 36 tests.
+- `npm run typecheck`: passed.
+- `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-approval-dry-run-action
+  --scenario-timeout-ms 300000 --json tmp/natural-approval-e2e.json`: passed.
+- Real mission: `msn.mptaznp0.1`, status `done`, natural `passed`,
+  Mission Health `passed`, tools `1/1`, sessions `1/0`, browser `yes`,
+  approvals `1/1/1`, liveness `0/0/0`, final bytes `875`,
+  weak-answer signals `none`.
+
+Regression Risk:
+- Main risk is applying a permission decision too broadly. The route only
+  auto-applies approved decisions that include tool-permission thread metadata;
+  denied approvals and non-tool approvals keep the prior behavior.
+- Another risk is hiding explicit permission-tool regressions. Focused
+  tool-permission tests still cover manual `permission_query`,
+  `permission_result`, and `permission_applied`; this change hardens the
+  operator-decision route, not the standalone tool protocol.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a natural permission-gated browser action that previously stopped
+  at "awaiting approval" now reaches terminal `done`, records
+  query/result/applied, executes the approved browser dry-run, and leaves no
+  live runtime liveness.
+- Next required gate: browser reliability failure injection with the same
+  natural-real-LLM standard, especially profile lock/CDP unavailable paths
+  that must not degrade into loops or weak fallback answers.

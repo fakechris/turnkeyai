@@ -913,6 +913,7 @@ describe("mission-routes", () => {
           },
         };
         await deps.approvalStore.put(approval);
+        const applied: Array<{ threadId: string; approvalId: string }> = [];
 
         const decisionResponse = createResponse();
         await handleMissionRoutes({
@@ -923,17 +924,117 @@ describe("mission-routes", () => {
           }),
           res: decisionResponse.res,
           url: new URL("http://127.0.0.1/approvals/ap.linked-browser-submit/decision"),
-          deps: { ...deps, orchestrator },
+          deps: {
+            ...deps,
+            orchestrator,
+            toolPermissionService: {
+              async apply(input) {
+                applied.push(input);
+                return {
+                  status: "applied",
+                  approvalId: input.approvalId,
+                  cacheKey: `${mission.threadId}:browser:mutate:approval:browser.form.submit`,
+                  message: `Permission request ${input.approvalId} applied.`,
+                };
+              },
+            },
+          },
         });
         assert.equal(decisionResponse.getStatus(), 200);
+        assert.deepEqual(applied, [{ threadId: mission.threadId!, approvalId: "ap.linked-browser-submit" }]);
         await waitUntil("approval continuation post", () => posts.length === 2);
         assert.equal(posts[1]?.threadId, mission.threadId);
         assert.match(posts[1]?.content ?? "", /ap\.linked-browser-submit/);
-        assert.match(posts[1]?.content ?? "", /permission_result/);
-        assert.match(posts[1]?.content ?? "", /permission_applied/);
+        assert.match(posts[1]?.content ?? "", /runtime permission cache is already applied/);
+        assert.doesNotMatch(posts[1]?.content ?? "", /permission_applied/);
         await waitUntil("approval continuation tick", () => ticks.filter((id) => id === mission.id).length >= 2);
         const resumed = await deps.missionStore.get(mission.id);
         assert.equal(resumed?.status, "working");
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("approval decisions fall back when permission auto-apply fails", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator, posts } = buildOrchestrator();
+        const { res, getStatus, getJson } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "Approval apply fallback", desc: "Dry-run browser action", mode: "browser" },
+          }),
+          res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(getStatus(), 201);
+        const mission = getJson() as Mission;
+        await waitUntil("initial mission post", () => posts.length === 1);
+
+        const latest = await deps.missionStore.get(mission.id);
+        assert.ok(latest);
+        await deps.missionStore.putRaw({
+          ...latest,
+          status: "needs_approval",
+          pendingApprovals: 1,
+        });
+        await deps.approvalStore.put({
+          id: "ap.apply-fallback",
+          severity: "med",
+          missionId: mission.id,
+          missionTitle: mission.title,
+          agent: "role-lead",
+          action: "browser.form.submit",
+          title: "Dry-run submit",
+          affects: [],
+          risk: "isolated local dry-run",
+          requestedAt: "now",
+          requestedAtMs: clock.now(),
+          requestedAgo: "now",
+          policyHint: "approval",
+          payload: {
+            toolPermission: {
+              threadId: mission.threadId,
+              toolCallId: "call-1",
+              action: "browser.form.submit",
+              scope: "mutate",
+              requirement: {
+                level: "approval",
+                scope: "mutate",
+                reason: "browser form submit",
+                cacheKey: `${mission.threadId}:browser:mutate:approval:browser.form.submit`,
+              },
+            },
+          },
+        });
+
+        const decisionResponse = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/approvals/ap.apply-fallback/decision",
+            body: { decision: "approved", decidedBy: "operator" },
+          }),
+          res: decisionResponse.res,
+          url: new URL("http://127.0.0.1/approvals/ap.apply-fallback/decision"),
+          deps: {
+            ...deps,
+            orchestrator,
+            toolPermissionService: {
+              async apply() {
+                throw new Error("permission cache unavailable");
+              },
+            },
+          },
+        });
+        assert.equal(decisionResponse.getStatus(), 200);
+        await waitUntil("approval fallback continuation post", () => posts.length === 2);
+        assert.match(posts[1]?.content ?? "", /permission_result/);
+        assert.match(posts[1]?.content ?? "", /permission_applied/);
       } finally {
         t.cleanup();
       }

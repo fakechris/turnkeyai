@@ -662,6 +662,7 @@ const server = http.createServer(async (req, res) => {
           browserContextSourceProvider,
           orchestrator: missionOrchestrator,
           idempotencyStore: routeIdempotencyStore,
+          toolPermissionService,
           runtimeProgressStore,
         },
       })
