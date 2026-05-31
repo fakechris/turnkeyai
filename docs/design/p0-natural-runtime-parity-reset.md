@@ -22,6 +22,12 @@ Contract E2E remains valuable, but it proves protocol shape only. Natural E2E
 must use user-like prompts and must not contain fixed markers, exact final
 answer templates, or instructions that force a specific tool call.
 
+Do not treat "one natural E2E failed, add a narrow case, run again" as a
+methodology. First classify the failure as a runtime state, prompt harness,
+tool protocol, continuation, timeout, browser reliability, approval, memory, or
+UI replay problem. Implementation resumes only after the expected state
+transition and acceptance evidence are clear.
+
 ## Current Core Status
 
 | Area | Status | Reset finding | Required P0 proof |
@@ -39,6 +45,27 @@ answer templates, or instructions that force a specific tool call.
 | Replay and thought process UI | Partial | Mission Detail has trace and markdown rendering smoke coverage. Prior user-visible ordering and overlap issues mean this remains unproven until screenshot-backed checks cover real mission shapes. | Playwright screenshots for completed, approval, timeout, and browser missions show process first and final answer last. |
 | Cancellation by tool call id | Partial | Active worker cancellation registry exists. Real cancellation and terminal mission cleanup need natural acceptance. | Natural cancellation run stops active work, writes cancelled tool result, and leaves no active worker. |
 | Browser profile/session reliability | Partial | Profile fallback and diagnostics exist. Real profile-lock behavior must not be left to LLM retry behavior. | Browser reliability gate proves conflict classification and bounded recovery. |
+
+## Continuation Matrix Summary
+
+Every live-runtime continuation fix must map to one of these rows before code
+changes are considered capability work.
+
+| Runtime state | Expected user-facing behavior | Required proof |
+| --- | --- | --- |
+| `done` | Follow-up can reuse the completed child session when the user asks to continue the same thread. | Natural follow-up uses `sessions_send`, avoids duplicate spawn, and produces a useful terminal answer. |
+| `resumable timeout` | The timed-out child session remains inspectable and can be continued without hiding the timeout from operators. | Natural timeout follow-up records the timeout, reuses the same session, reaches terminal state, and leaves no active/waiting/stale subjects. |
+| `cancelled` | User cancellation writes a cancelled tool result, stops active worker execution, and a later follow-up can either continue the same context or clearly start new work. | Natural cancel-follow-up continuation proves terminal cancellation, no active worker residue, and correct follow-up routing. |
+| `failed retryable` | The runtime exposes a retryable failure with bounded retry or continuation guidance instead of forcing the lead to improvise. | Natural failure scenario records the bucket, retryability, and either a bounded retry result or a useful evidence-only closeout. |
+| `failed non-retryable` | The runtime stops tool use, explains the unrecoverable state, and asks for user/operator action when needed. | Natural failure scenario reaches terminal state without looped re-spawn or weak unsupported final claims. |
+| `active/running` | The workbench can show ordered progress, and cancellation targets the active tool call or worker. | Natural long-running scenario shows live progress, cancellation by tool call id, and ordered replay after termination. |
+| `needs approval` | Side-effect work pauses before execution, records query/result/applied state, and resumes or closes out based on the decision. | Natural approval dry-run proves no side effect before approval, denial produces useful output, and approval resumes the planned action. |
+
+`natural-cancel-followup-continuation` is a P0-C / D5 / D6 capability gate for
+cancelled continuation and per-agent timeout/continuation policy. It is not a
+temporary scenario patch. Internally this maps to the cancelled-continuation and
+per-agent-timeout rows in the working implementation matrix; the durable product
+contract is the matrix above.
 
 ## P0 Roadmap
 
