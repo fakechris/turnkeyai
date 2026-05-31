@@ -49,7 +49,12 @@ test("real acceptance plan keeps full release gate by default", () => {
   assert.ok(plan.missionScenarios.includes("comparison"));
   assert.ok(plan.missionScenarios.includes("realistic-brief"));
   assert.ok(plan.naturalMissionScenarios.includes("natural-comparison-research"));
+  assert.ok(plan.naturalMissionScenarios.includes("natural-browser-followup-continuation"));
+  assert.ok(plan.naturalMissionScenarios.includes("natural-browser-restart-continuation"));
+  assert.ok(plan.naturalMissionScenarios.includes("natural-browser-cold-recreation-continuation"));
   assert.ok(plan.naturalMissionScenarios.includes("natural-memory-recall"));
+  assert.ok(plan.naturalMissionScenarios.includes("natural-timeout-followup-continuation"));
+  assert.ok(plan.naturalMissionScenarios.includes("natural-cancel-followup-continuation"));
   assert.ok(plan.naturalMissionScenarios.includes("natural-long-delegation"));
   assert.equal(plan.browserTooluseEnabled, true);
   assert.match(plan.missionJsonPath ?? "", /real-llm-acceptance/);
