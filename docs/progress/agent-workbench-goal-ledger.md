@@ -3529,3 +3529,66 @@ Convergence question:
 - Next required gate: add an operator-facing recovery action or diagnostic
   workflow that consumes these raw-CDP recovery events instead of merely
   listing them.
+
+## 2026-05-31 14:08 CST - Natural Active Tool Cancellation Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added a natural-real-LLM cancellation scenario for an active sub-agent tool
+  call. The prompt is user-like and avoids fixed markers, exact final-answer
+  shapes, or tool-call mandates.
+- The gate waits for the runtime to expose a real `sessions_spawn` call with
+  durable `messageId` and `toolCallId`, then drives `/message/cancel-tools`
+  against that active call.
+- The scenario verifies that the worker session reaches `cancelled`, the
+  cancelled tool result is persisted, and mission liveness settles to zero.
+
+Result Quality:
+- Natural quality now has an explicit cancellation requirement: scenarios that
+  claim cancellation coverage must record at least one cancelled tool result.
+- The natural final answer must remain evidence-backed, useful, and free of
+  weak fallback signals while separating verified, unverified, and continuation
+  guidance after cancellation.
+
+Workbench UX:
+- No UI changed in this slice.
+- This produces replayable mission evidence for the existing workbench:
+  `tool call -> cancelled tool result -> final answer`, which is the
+  timeline shape the user needs when stopping long-running work.
+
+Browser Reliability:
+- No browser behavior changed.
+- This gate covers the sibling runtime failure mode: active sub-agent work can
+  be interrupted without leaving the mission stuck in `creating` or `working`.
+
+Acceptance Evidence:
+- `npm test -- --runInBand scripts/mission-tool-use-e2e-report.test.ts`:
+  passed, 1288 tests.
+- `npm run typecheck`: passed.
+- Real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-cancel-active-tool
+  --scenario-timeout-ms 300000
+  --json tmp/natural-cancel-active-tool-e2e.json`: passed.
+- Real mission: `msn.mptdorcc.1`, status `done`, natural `passed`,
+  tools `1/1`, cancelled tools `1`, sessions `1/0`, browser `no`,
+  profile fallback `0`, liveness `0/0/0`, final bytes `1620`, weak-answer
+  signals `none`.
+
+Regression Risk:
+- The test runner now cancels an active tool call in a natural E2E path, so
+  flakes are possible if a model refuses to start tool-backed source work. That
+  is intentional capability evidence, not a contract marker bypass.
+- The cancellation quality check only applies to scenarios that opt into
+  `requiresCancellation`; existing natural scenarios keep their prior gates.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a real model naturally started sub-agent source work, the runtime
+  cancelled the active call by `toolCallId`, persisted the cancelled result,
+  and the mission reached a useful terminal answer with no active/waiting/stale
+  runtime subjects.
+- Next required gate: prove follow-up continuation after a cancelled or
+  timeout-limited run can reuse the durable child context instead of spawning
+  duplicate work.

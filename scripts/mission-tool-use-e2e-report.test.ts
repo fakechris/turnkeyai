@@ -565,6 +565,80 @@ describe("mission tool-use e2e report", () => {
     assert.deepEqual(quality.failures, []);
   });
 
+  it("requires cancelled tool-result evidence for natural cancellation", () => {
+    const spec = buildNaturalScenarioSpec("natural-cancel-active-tool", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-cancel-active-tool";
+    result.metrics.tool.requested = 1;
+    result.metrics.tool.results = 1;
+    result.metrics.tool.cancelled = 1;
+    result.metrics.sessions.spawned = 1;
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "slow source call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "explore", task: "evaluate slow source" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "sessions_spawn was cancelled by the operator",
+        emph: "danger",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "cancelled: active slow source verification was cancelled before page evidence returned.",
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "The slow source verification was cancelled before source facts were verified.",
+          "Verified: a source-backed attempt started and the cancellation result was recorded.",
+          "Unverified: release-risk facts from the slow source remain unavailable.",
+          "Continue by rerunning the source check or asking me to resume when the source can be allowed to finish.",
+        ].join(" "),
+        tMs: 3000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+
+    result.metrics.tool.cancelled = 0;
+    const missingCancellation = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(missingCancellation.failures.includes("cancellation scenario did not record a cancelled tool result"));
+  });
+
   it("formats natural per-scenario progress lines", () => {
     const result = fakeNaturalResult();
 

@@ -69,6 +69,7 @@ export type NaturalMissionE2eScenario =
   | "natural-approval-dry-run-action"
   | "natural-browser-unavailable-closeout"
   | "natural-timeout-partial-closeout"
+  | "natural-cancel-active-tool"
   | "natural-long-delegation";
 
 export const NATURAL_MISSION_E2E_SCENARIOS = [
@@ -79,6 +80,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-approval-dry-run-action",
   "natural-browser-unavailable-closeout",
   "natural-timeout-partial-closeout",
+  "natural-cancel-active-tool",
   "natural-long-delegation",
 ] as const satisfies readonly NaturalMissionE2eScenario[];
 
@@ -308,6 +310,7 @@ export interface NaturalScenarioSpec {
   minContinuedSessions?: number;
   requiresBrowser: boolean;
   requiresApproval: boolean;
+  requiresCancellation?: boolean;
   allowToolFailure: boolean;
   minEvidenceEvents: number;
   requiredAnswerTerms: string[];
@@ -1236,6 +1239,9 @@ async function runNaturalMissionScenario(input: {
   if (input.scenario === "natural-approval-dry-run-action") {
     return runNaturalApprovalScenario(input);
   }
+  if (input.scenario === "natural-cancel-active-tool") {
+    return runNaturalCancelScenario(input);
+  }
   const spec = buildNaturalScenarioSpec(input.scenario, input.fixture);
   assertNaturalPromptAllowed(spec.desc);
   const mission = await createNaturalMission({
@@ -1473,6 +1479,80 @@ async function runNaturalApprovalScenario(input: {
     `natural mission approval quality failures: ${quality.failures.join("; ")}\n${final.text}`
   );
   return { scenario: "natural-approval-dry-run-action", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function runNaturalCancelScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+}): Promise<NaturalMissionScenarioResult> {
+  const spec = buildNaturalScenarioSpec("natural-cancel-active-tool", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const mission = await createNaturalMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "natural cancellation mission requires a linked team thread");
+
+  const activeCall = await waitForToolCallEvent({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    toolName: "sessions_spawn",
+    timeoutMs: Math.min(input.timeoutMs, 60_000),
+  });
+  await requestJson<{ cancelled: boolean }>({
+    method: "POST",
+    url: `${input.baseUrl}/message/cancel-tools`,
+    token: input.token,
+    body: {
+      messageId: activeCall.messageId,
+      threadId: mission.threadId,
+      toolCallIds: [activeCall.toolCallId],
+      reason: "natural e2e cancelled active source verification",
+    },
+  });
+
+  const result = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+  });
+  assertNaturalCancellationTimeline(result.timeline);
+  const cancelledSessionKey = extractFirstSessionKey(result.timeline);
+  assert.ok(cancelledSessionKey, "natural cancellation requires a session_key from the cancelled sessions_spawn result");
+  await assertWorkerSessionCancelled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    threadId: mission.threadId,
+    workerRunKey: cancelledSessionKey,
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  const final = findLatestThoughtEvent(result.timeline);
+  assert.ok(final, "natural cancellation mission must include a final assistant answer");
+  const quality = evaluateNaturalMissionQuality({
+    spec,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+  });
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `natural mission cancellation quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "natural-cancel-active-tool", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
 async function createNaturalMission(input: {
@@ -1742,6 +1822,36 @@ export function buildNaturalScenarioSpec(
       ],
     };
   }
+  if (scenario === "natural-cancel-active-tool") {
+    return {
+      scenario,
+      title: "Natural active tool cancellation",
+      desc: [
+        "Evaluate this slow source for a release-risk note.",
+        `Slow source: ${fixture.slowUrl}`,
+        "Make a source-backed attempt instead of guessing from memory.",
+        "If an operator cancels the active source check, stop additional source work and close out from the cancellation evidence.",
+        "Separate what was verified, what remains unverified, and how the user can continue the mission later.",
+      ].join("\n"),
+      minBytes: 260,
+      minToolResults: 1,
+      maxToolResults: 4,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 2,
+      requiresBrowser: false,
+      requiresApproval: false,
+      requiresCancellation: true,
+      allowToolFailure: true,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["cancel", "verified", "unverified", "continue"],
+      requiredEvidencePatterns: [
+        { label: "cancelled tool result", pattern: /\bcancel(?:led|ed)?\b/i },
+      ],
+      forbiddenPatterns: [
+        { label: "pretends slow source was verified", pattern: /confirmed.*slow mission route tool-use fixture/i },
+      ],
+    };
+  }
   return {
     scenario,
     title: "Natural long delegation brief",
@@ -1872,6 +1982,9 @@ export function evaluateNaturalMissionQuality(input: {
   if (input.spec.requiresBrowser && !browserUsed) failures.push("browser scenario did not show browser worker use");
   if (!profileFallbackFree) failures.push(`browser profile fallback occurred ${profileFallbackCount} time(s)`);
   if (input.spec.requiresApproval && !approvalExercised) failures.push("approval scenario did not complete query/result/applied loop");
+  if (input.spec.requiresCancellation && input.metrics.tool.cancelled < 1) {
+    failures.push("cancellation scenario did not record a cancelled tool result");
+  }
   if (!input.spec.allowToolFailure && input.metrics.tool.failed > 0) failures.push("scenario had failed tool results");
   if (!input.spec.allowToolFailure && input.metrics.tool.timeouts > 0) failures.push("scenario had timed-out tool results");
   if (!subAgentCompleted) failures.push("sub-agent work did not complete cleanly");
@@ -4037,6 +4150,24 @@ function assertMissionCancelTimeline(timeline: ActivityEvent[], spec: ScenarioSp
   assert.ok(planIndex >= 0, "mission cancellation timeline must include the user plan event");
   assert.equal(callIndexes.length, 1, "cancel E2E expected exactly one sessions_spawn call");
   assert.equal(resultIndexes.length, 1, "cancel E2E expected exactly one sessions_spawn result");
+  assert.ok(callIndexes[0]! > planIndex, "sessions_spawn call must appear after the user plan");
+  assert.ok(resultIndexes[0]! > callIndexes[0]!, "cancelled sessions_spawn result must appear after the call");
+  assert.ok(finalIndex > resultIndexes[0]!, "final answer must appear after the cancelled sessions_spawn result");
+  const result = timeline[resultIndexes[0]!];
+  const resultBlob = [result?.text ?? "", String(result?.runtime?.["resultContent"] ?? "")].join("\n");
+  assert.match(resultBlob, /\bcancel(?:led|ed)?\b/i, "cancelled sessions_spawn result must name cancellation");
+  assert.equal(result?.emph, "danger", "cancelled sessions_spawn result should be marked as an attention event");
+}
+
+function assertNaturalCancellationTimeline(timeline: ActivityEvent[]): void {
+  assert.ok(timeline.length > 0, "natural cancellation timeline must not be empty");
+  const planIndex = timeline.findIndex((event) => event.kind === "plan");
+  const callIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "call");
+  const resultIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "result");
+  const finalIndex = timeline.findIndex((event) => event.kind === "thought" && event.text.trim().length > 0);
+  assert.ok(planIndex >= 0, "natural cancellation timeline must include the user plan event");
+  assert.equal(callIndexes.length, 1, "natural cancellation expected exactly one sessions_spawn call");
+  assert.equal(resultIndexes.length, 1, "natural cancellation expected exactly one sessions_spawn result");
   assert.ok(callIndexes[0]! > planIndex, "sessions_spawn call must appear after the user plan");
   assert.ok(resultIndexes[0]! > callIndexes[0]!, "cancelled sessions_spawn result must appear after the call");
   assert.ok(finalIndex > resultIndexes[0]!, "final answer must appear after the cancelled sessions_spawn result");
