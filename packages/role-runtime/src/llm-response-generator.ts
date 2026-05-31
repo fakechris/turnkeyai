@@ -161,12 +161,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         memoryFlushes.push(generated.memoryFlush);
       }
 
+      const sessionContinuationContext = buildContinuationDirectiveContext(input.packet.taskPrompt, messages);
       const sessionContinuationDirective =
-        baseSessionContinuationDirective ??
-        (activeToolLoop ? findSessionContinuationDirective(buildContinuationDirectiveContext(input.packet.taskPrompt, messages)) : null);
+        baseSessionContinuationDirective ?? (activeToolLoop ? findSessionContinuationDirective(sessionContinuationContext) : null);
       const sessionContinuationLookupDirective =
         !sessionContinuationDirective && activeToolLoop
-          ? findSessionContinuationLookupDirective(buildContinuationDirectiveContext(input.packet.taskPrompt, messages))
+          ? findSessionContinuationLookupDirective(input.packet.taskPrompt, sessionContinuationContext)
           : null;
       const toolCalls = normalizeSessionToolCalls(
         applySessionContinuationLookupDirective(
@@ -1195,8 +1195,8 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
   return null;
 }
 
-function findSessionContinuationLookupDirective(context: string): SessionContinuationLookupDirective | null {
-  const latestUserText = extractLatestUserContinuationText(context);
+function findSessionContinuationLookupDirective(taskPrompt: string, context: string): SessionContinuationLookupDirective | null {
+  const latestUserText = extractLatestUserContinuationText(taskPrompt);
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
     return null;
   }
@@ -1416,8 +1416,11 @@ function applySessionContinuationDirective(
   toolCalls: LLMToolCall[],
   directive: SessionContinuationDirective | null
 ): LLMToolCall[] {
-  if (!directive || toolCalls.length === 0 || toolCalls.some((call) => call.name === "sessions_send")) {
+  if (!directive || toolCalls.length === 0) {
     return toolCalls;
+  }
+  if (toolCalls.some((call) => call.name === "sessions_send")) {
+    return toolCalls.filter((call) => call.name !== "sessions_spawn");
   }
   const spawnIndex = toolCalls.findIndex((call) => call.name === "sessions_spawn");
   if (spawnIndex < 0) {
@@ -1443,12 +1446,14 @@ function applySessionContinuationLookupDirective(
   toolCalls: LLMToolCall[],
   directive: SessionContinuationLookupDirective | null
 ): LLMToolCall[] {
-  if (
-    !directive ||
-    toolCalls.length === 0 ||
-    toolCalls.some((call) => call.name === "sessions_send" || call.name === "sessions_list")
-  ) {
+  if (!directive || toolCalls.length === 0) {
     return toolCalls;
+  }
+  if (toolCalls.some((call) => call.name === "sessions_send")) {
+    return toolCalls.filter((call) => call.name !== "sessions_spawn");
+  }
+  if (toolCalls.some((call) => call.name === "sessions_list")) {
+    return toolCalls.filter((call) => call.name !== "sessions_spawn");
   }
   const spawnIndex = toolCalls.findIndex((call) => call.name === "sessions_spawn");
   if (spawnIndex < 0) {

@@ -4174,15 +4174,15 @@ Browser Reliability:
 Acceptance Evidence:
 - Focused regression:
   `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts`:
-  passed, 37 tests.
+  passed, 39 tests.
 - Real LLM E2E:
   `npm run mission:e2e:natural -- --model-catalog models.local.json
   --natural-matrix-scenarios natural-browser-followup-continuation
   --scenario-timeout-ms 360000
-  --json /tmp/natural-browser-followup-routing-e2e.json`: passed.
-- Real mission: `msn.mpts7661.1`, status `done`, natural `passed`, tools
-  `2/2`, sessions `1/1`, browser `yes`, profile fallback `0`, stuck `no`,
-  final bytes `1031`, weak-answer signals `none`.
+  --json /tmp/natural-browser-followup-routing-e2e-reviewfix.json`: passed.
+- Real mission: `msn.mptsl8nu.1`, status `done`, natural `passed`, tools
+  `3/3`, sessions `1/1`, browser `yes`, profile fallback `0`, stuck `no`,
+  final bytes `1209`, weak-answer signals `none`.
 - Prior failed full acceptance run that exposed this gap:
   `validation-ops:real-llm-acceptance:2026-05-31T12-31-25-285Z:syzsts`.
 

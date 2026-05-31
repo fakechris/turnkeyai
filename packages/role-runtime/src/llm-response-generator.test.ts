@@ -1675,6 +1675,105 @@ test("llm role response generator lists sessions before spawning on explicit fol
   );
 });
 
+test("llm role response generator drops same-round duplicate spawn when sending continuation", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return {
+        text: "",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+        toolCalls: [
+          {
+            id: "toolu-send",
+            name: "sessions_send",
+            input: {
+              session_key: "worker:browser:task-dashboard:toolu-browser",
+              message: "Continue the dashboard review.",
+            },
+          },
+          {
+            id: "toolu-duplicate",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              task: "Continue the dashboard review.",
+            },
+          },
+        ],
+      };
+    }
+    return {
+      text: "Final answer after send only.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.name, "sessions_send");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          session_key: input.call.input.session_key,
+          agent_id: "browser",
+          status: "completed",
+          result: "Continued.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue the operations dashboard review.",
+        "",
+        "Recent turns:",
+        "[user] Continue the operations dashboard review.",
+        '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"completed","session_key":"worker:browser:task-dashboard:toolu-browser","agent_id":"browser","result":"Dashboard evidence."}',
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer after send only.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_send"]
+  );
+});
+
 test("llm role response generator allows a new spawn after an empty continuation session lookup", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -1756,6 +1855,91 @@ test("llm role response generator allows a new spawn after an empty continuation
   assert.deepEqual(
     executedCalls.map((call) => call.name),
     ["sessions_list", "sessions_spawn"]
+  );
+});
+
+test("llm role response generator drops same-round duplicate spawn when listing continuation sessions", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return {
+        text: "",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+        toolCalls: [
+          { id: "toolu-list", name: "sessions_list", input: { agent_id: "browser" } },
+          {
+            id: "toolu-duplicate",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              task: "Continue the dashboard review.",
+            },
+          },
+        ],
+      };
+    }
+    return {
+      text: "Final answer after list only.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_list",
+          description: "List sessions",
+          inputSchema: { type: "object", properties: { agent_id: { type: "string" } } },
+        },
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.name, "sessions_list");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({ sessions: [] }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue the operations dashboard review from the previous browser context if one exists.",
+        "",
+        "Recent turns:",
+        "[user] Continue the operations dashboard review from the previous browser context if one exists.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer after list only.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_list"]
   );
 });
 
