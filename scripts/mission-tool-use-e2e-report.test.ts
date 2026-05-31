@@ -543,6 +543,113 @@ describe("mission tool-use e2e report", () => {
     assert.deepEqual(quality.failures, []);
   });
 
+  it("requires natural browser follow-up to continue the existing browser session", () => {
+    const spec = buildNaturalScenarioSpec("natural-browser-followup-continuation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-browser-followup-continuation";
+    result.metrics.tool.requested = 2;
+    result.metrics.tool.results = 2;
+    result.metrics.sessions.spawned = 1;
+    result.metrics.sessions.continued = 1;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    const phaseOneFinal = {
+      id: "thought.browser.phase-one",
+      kind: "thought",
+      text: "The dashboard shows Queue depth 11, SLA breaches 3, and Incident Commander as owner.",
+      tMs: 3000,
+    };
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "browser call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "review dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser result",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: '{"status":"done","session_key":"worker:browser:ops","summary":"Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander."}',
+        },
+      },
+      phaseOneFinal,
+      {
+        kind: "tool",
+        text: "browser follow-up call",
+        tMs: 4000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "call",
+          callInput: JSON.stringify({ session_key: "worker:browser:ops", message: "re-check dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser follow-up result",
+        tMs: 5000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          resultContent:
+            "Rendered dashboard still shows Queue depth: 11, SLA breaches: 3, and Recommended owner: Incident Commander.",
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "Queue depth remains 11 and SLA breaches remain 3, so the next action is to keep the escalation active.",
+          "Incident Commander remains the owner because the browser follow-up re-checked the rendered dashboard evidence.",
+          "The recommendation is to keep this as an operator-facing incident path, not a generic status summary, because both queue and SLA signals are already beyond the escalation trigger.",
+          "Residual risk is limited to the local dashboard state, missing ticket-level context, and whether the same browser view remains current before external action.",
+        ].join(" "),
+        tMs: 6000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    assertNaturalFollowupReusedExistingSession({
+      timeline: result.timeline,
+      phaseOneFinal,
+      expectedSessionKey: "worker:browser:ops",
+    });
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+
+    result.metrics.sessions.continued = 0;
+    const missingContinuation = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(missingContinuation.failures.some((failure) => failure.includes("tool use was outside")));
+  });
+
   it("fails natural browser quality when a profile fallback is present", () => {
     const result = fakeNaturalResult();
     result.metrics.browser.profileFallbacks = 1;

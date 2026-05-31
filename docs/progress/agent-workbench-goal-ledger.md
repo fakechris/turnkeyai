@@ -3841,3 +3841,109 @@ Convergence question:
 - Next required gate: cold/restart continuation or browser hot/warm/cold resume,
   because cancellation and timeout continuation are now proven only within one
   live daemon run.
+
+## 2026-05-31 17:55 CST - 24-Hour Goal Review
+
+Direction: unknown
+
+Repeated Issue Classes:
+- The dominant repeated class was not route coverage or UI polish. It was
+  runtime credibility under natural prompts: weak final answers, stalled
+  missions, over-broad continuation, browser fallback instability, and
+  capability claims that were too easy to infer from structural tests.
+- Recent gates moved several of those from unknown to evidence-backed within a
+  live daemon run: natural follow-up reuse, timeout continuation, cancellation
+  continuation, browser rendered evidence, browser unavailable closeout, and
+  profile fallback visibility.
+- The repeated unresolved class is restart-grade continuity. Hot session reuse
+  is improving, but warm/cold continuation after daemon restart or browser
+  reattachment is still not proven.
+
+E2E Trend:
+- Trend over the last 24 hours is mixed but improving. Early work included too
+  much structural confidence and too little natural validation; later work
+  increasingly required real mission ids, no weak-answer signals, reasonable
+  tool use, and clean liveness.
+- The strongest positive trend is that failed or interrupted child work now has
+  natural follow-up gates instead of only unit tests.
+- The weakest trend remains browser recovery beyond a live process and the
+  user-visible replay surface for understanding reused context.
+
+Decision:
+- Continue P0 runtime work, but only in slices tied to a matrix row and a
+  natural real LLM gate.
+- Do not restart outer feature/UI polish as the primary track until warm/cold
+  browser/session continuity and replay clarity are either proven or explicitly
+  scoped as remaining P0 risk.
+
+Methodology Review Trigger:
+- If the next two P0 slices add special-case prompt wording or local assertions
+  without improving natural E2E outcomes, pause implementation and reopen the
+  methodology review.
+- If a natural E2E fails with the same class twice, stop adding narrow cases and
+  root-cause the runtime/prompt/browser layer responsible for the repeated
+  failure.
+
+## 2026-05-31 18:04 CST - Natural Browser Follow-Up Continuation Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added a natural browser follow-up E2E scenario that first opens a
+  JavaScript-rendered operations dashboard through a browser child session, then
+  sends a normal user follow-up asking to continue from the same browser
+  context.
+- The gate asserts the second turn uses `sessions_send` with the original
+  browser `session_key`, does not spawn duplicate browser work after the
+  phase-one answer, records a continuation result, and emits the final answer
+  after that result.
+- The scenario is tied to the active/running and follow-up continuation rows:
+  browser context must be reusable as mission evidence, not only as a one-shot
+  page read.
+
+Result Quality:
+- The real natural run completed with useful, evidence-backed output that
+  preserved rendered dashboard facts across the follow-up.
+- Final output reported no weak-answer signals and named the operator action,
+  owner, queue/SLA evidence, and residual uncertainty.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The mission timeline now has replayable browser continuity evidence:
+  browser `sessions_spawn`, phase-one answer, user follow-up, `sessions_send`
+  against the same browser session, continuation result, then final answer.
+
+Browser Reliability:
+- The real run used the browser worker path and completed with zero profile
+  fallback events.
+- This proves hot browser-context reuse inside one live daemon run. Warm/cold
+  browser recovery remains unproven.
+
+Acceptance Evidence:
+- `npm test -- --runInBand scripts/mission-tool-use-e2e-report.test.ts`:
+  passed, 1303 tests.
+- `npm run typecheck`: passed.
+- Real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-followup-continuation
+  --scenario-timeout-ms 300000
+  --json tmp/natural-browser-followup-continuation-e2e.json`: passed.
+- Real mission: `msn.mptm2x4h.1`, status `done`, natural `passed`,
+  tools `2/2`, sessions `1/1`, browser `yes`, profile fallback `0`,
+  liveness `0/0/0`, final bytes `1096`, weak-answer signals `none`.
+
+Regression Risk:
+- The new gate can fail from genuine browser instability, prompt/tool
+  discipline drift, or rendered-evidence quality loss. Such failures should be
+  root-caused by row instead of bypassed with exact-answer prompts.
+- Because this is hot reuse only, it must not be used to claim restart-safe
+  browser recovery.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a real model continued a browser-backed dashboard review by reusing
+  the same browser child session, produced useful terminal output, and left no
+  active/waiting/stale runtime residue.
+- Next required gate: warm/cold browser continuation after daemon restart or
+  browser session reattachment, plus a product-facing replay view that makes
+  the reused browser context obvious to the user.

@@ -64,6 +64,7 @@ const MISSION_E2E_SCENARIOS = [
 export type NaturalMissionE2eScenario =
   | "natural-comparison-research"
   | "natural-browser-dynamic-page"
+  | "natural-browser-followup-continuation"
   | "natural-followup-continuation"
   | "natural-memory-recall"
   | "natural-approval-dry-run-action"
@@ -77,6 +78,7 @@ export type NaturalMissionE2eScenario =
 export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-comparison-research",
   "natural-browser-dynamic-page",
+  "natural-browser-followup-continuation",
   "natural-followup-continuation",
   "natural-memory-recall",
   "natural-approval-dry-run-action",
@@ -1250,6 +1252,9 @@ async function runNaturalMissionScenario(input: {
   if (input.scenario === "natural-followup-continuation") {
     return runNaturalFollowupScenario(input);
   }
+  if (input.scenario === "natural-browser-followup-continuation") {
+    return runNaturalBrowserFollowupScenario(input);
+  }
   if (input.scenario === "natural-memory-recall") {
     return runNaturalMemoryRecallScenario(input);
   }
@@ -1381,6 +1386,97 @@ async function runNaturalFollowupScenario(input: {
     expectedSessionKey: initialSessionKey,
   });
   return { scenario: "natural-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function runNaturalBrowserFollowupScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+}): Promise<NaturalMissionScenarioResult> {
+  const spec = buildNaturalScenarioSpec("natural-browser-followup-continuation", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const mission = await createNaturalMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "natural browser follow-up mission requires a linked team thread");
+
+  await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+  });
+  const initialTimeline = await requestJson<ActivityEvent[]>({
+    method: "GET",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/timeline?limit=300`,
+    token: input.token,
+  });
+  const initialFinal = findLatestThoughtEvent(initialTimeline);
+  assert.ok(initialFinal, "natural browser follow-up phase one must include an assistant answer");
+  const initialSessionKey = extractFirstSessionKey(initialTimeline);
+  assert.ok(initialSessionKey, "natural browser follow-up phase one must expose a reusable browser session key");
+
+  const followup = [
+    "Continue the operations dashboard review from the browser context already used in this mission.",
+    "Re-check the rendered dashboard state if needed, then explain whether the escalation owner and next action still look correct.",
+    "Keep the answer grounded in the dashboard evidence and call out any residual uncertainty from the page state.",
+  ].join("\n");
+  assertNaturalPromptAllowed(followup);
+  await requestJson<{ accepted: boolean; missionId: string }>({
+    method: "POST",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+    token: input.token,
+    body: { content: followup },
+  });
+
+  const result = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+    afterThoughtMs: initialFinal.tMs,
+    ...(initialFinal.id ? { afterThoughtId: initialFinal.id } : {}),
+  });
+  assertNaturalFollowupReusedExistingSession({
+    timeline: result.timeline,
+    phaseOneFinal: initialFinal,
+    expectedSessionKey: initialSessionKey,
+  });
+  assertNaturalFollowupResultIncludes({
+    timeline: result.timeline,
+    phaseOneFinal: initialFinal,
+    patterns: [
+      { label: "continued rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
+      { label: "continued rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+      { label: "continued rendered owner", pattern: /Incident Commander/i },
+    ],
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  const final = findLatestThoughtEvent(result.timeline);
+  assert.ok(final, "natural browser follow-up mission must include a final assistant answer");
+  const quality = evaluateNaturalMissionQuality({
+    spec,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+  });
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `natural mission browser follow-up quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "natural-browser-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
 async function runNaturalMemoryRecallScenario(input: {
@@ -1925,6 +2021,36 @@ export function buildNaturalScenarioSpec(
       allowToolFailure: false,
       minEvidenceEvents: 1,
       requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander"],
+      requiredEvidencePatterns: [
+        { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
+        { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+        { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
+      ],
+    };
+  }
+  if (scenario === "natural-browser-followup-continuation") {
+    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
+    return {
+      scenario,
+      title: "Natural browser follow-up continuation",
+      desc: [
+        "Review this operations dashboard as a user would see it in the browser.",
+        `Dashboard: ${dynamicUrl}`,
+        "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
+        "Summarize the operational state, escalation trigger, owner, and recommended next action for an operator.",
+        "A follow-up may ask you to continue from the same browser context and re-check the rendered dashboard state.",
+      ].join("\n"),
+      minBytes: 380,
+      minToolResults: 2,
+      maxToolResults: 8,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 2,
+      minContinuedSessions: 1,
+      requiresBrowser: true,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 2,
+      requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander", "next action"],
       requiredEvidencePatterns: [
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
         { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
@@ -4341,6 +4467,22 @@ export function assertNaturalFollowupReusedExistingSession(input: {
   assert.ok(sendResultIndex > sendCallIndex, "natural sessions_send must produce a result after the continuation call");
   const latestThoughtIndex = findLatestThoughtIndex(input.timeline);
   assert.ok(latestThoughtIndex > sendResultIndex, "natural follow-up final answer must follow the continuation result");
+}
+
+function assertNaturalFollowupResultIncludes(input: {
+  timeline: ActivityEvent[];
+  phaseOneFinal: ActivityEvent;
+  patterns: Array<{ label: string; pattern: RegExp }>;
+}): void {
+  const tail = sliceTimelineAfterEvent(input.timeline, input.phaseOneFinal);
+  const sendResultText = tail
+    .filter((event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "result")
+    .map((event) => [event.text, String(event.runtime?.["resultContent"] ?? "")].join("\n"))
+    .join("\n");
+  assert.ok(sendResultText.trim().length > 0, "natural follow-up must record sessions_send result evidence");
+  for (const item of input.patterns) {
+    assert.match(sendResultText, item.pattern, `natural follow-up result missing ${item.label}`);
+  }
 }
 
 function sliceTimelineAfterEvent(timeline: ActivityEvent[], event: ActivityEvent): ActivityEvent[] {
