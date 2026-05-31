@@ -1088,6 +1088,13 @@ test("llm role response generator synthesizes instead of falling back when tool 
     )
   );
   assert.ok(finalSynthesisPrompt(gatewayInputs[3])?.includes("Do not collapse requested bullets into a paragraph"));
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "round_limit");
+  assert.equal(closeout?.maxRounds, 2);
+  assert.equal(closeout?.toolCallCount, 2);
+  assert.equal(closeout?.roundCount, 2);
+  assert.equal(closeout?.pendingToolCallCount, 1);
+  assert.equal(closeout?.evidenceAvailable, true);
 });
 
 test("llm role response generator synthesizes from evidence when tool wall-clock budget is reached", async () => {
@@ -1156,6 +1163,70 @@ test("llm role response generator synthesizes from evidence when tool wall-clock
     )
   );
   assert.ok(finalSynthesisPrompt(gatewayInputs[2])?.includes("Final synthesis format contract"));
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "wall_clock_budget");
+  assert.equal(closeout?.maxWallClockMs, 100);
+  assert.equal(closeout?.toolCallCount, 1);
+  assert.equal(closeout?.roundCount, 1);
+  assert.equal(closeout?.pendingToolCallCount, 1);
+  assert.equal(closeout?.evidenceAvailable, true);
+});
+
+test("llm role response generator does not report closeout evidence for failed-only tool rounds", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length <= 2) {
+      return toolCallResult(`toolu-${gatewayInputs.length}`, "sessions_spawn", {
+        agent_id: "explore",
+        task: `Fetch source ${gatewayInputs.length}`,
+      });
+    }
+    return {
+      text: "Final answer after failed-only bounded tool use.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        isError: true,
+        content: "source fetch failed",
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 1 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "round_limit");
+  assert.equal(closeout?.toolCallCount, 1);
+  assert.equal(closeout?.roundCount, 1);
+  assert.equal(closeout?.pendingToolCallCount, 1);
+  assert.equal(closeout?.evidenceAvailable, false);
 });
 
 test("llm role response generator synthesizes immediately after sub-agent timeout", async () => {
@@ -1237,6 +1308,13 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("If the task specifies a heading, bullet count"));
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("bare http:// / https:// URLs"));
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("Do not copy internal fetch URLs"));
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "sub_agent_timeout");
+  assert.equal(closeout?.toolName, "sessions_spawn");
+  assert.equal(closeout?.timeoutSeconds, 120);
+  assert.equal(closeout?.evidenceAvailable, false);
+  assert.equal(closeout?.toolCallCount, 1);
+  assert.equal(closeout?.roundCount, 1);
 });
 
 test("llm role response generator synthesizes immediately after completed sub-agent final content", async () => {
@@ -1332,6 +1410,13 @@ test("llm role response generator synthesizes immediately after completed sub-ag
   assert.ok(synthesisPrompt.includes("Do not add extra sections, summaries, notes"));
   assert.ok(synthesisPrompt.includes("line must start with a literal prefix"));
   assert.ok(synthesisPrompt.includes("Do not write a preamble before a requested final shape"));
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "completed_sub_agent_final");
+  assert.equal(closeout?.toolName, "sessions_spawn");
+  assert.equal(closeout?.finalContentCount, 1);
+  assert.equal(closeout?.toolCallCount, 1);
+  assert.equal(closeout?.roundCount, 1);
+  assert.equal(closeout?.evidenceAvailable, true);
 });
 
 test("llm role response generator accepts short completed sub-agent final content", async () => {
@@ -1587,6 +1672,11 @@ test("llm role response generator repairs textual tool-call markup during final 
         readToolContent(message.content).includes("pseudo tool-call markup")
     )
   );
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "completed_sub_agent_final");
+  assert.equal(closeout?.toolCallCount, 1);
+  assert.equal(closeout?.roundCount, 1);
+  assert.equal(closeout?.evidenceAvailable, true);
 });
 
 test("llm role response generator fails closed when final repair still emits tool-call markup", async () => {
@@ -1663,6 +1753,11 @@ test("llm role response generator fails closed when final repair still emits too
         readToolContent(message.content).includes("pseudo tool-call markup")
     )
   );
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "completed_sub_agent_final");
+  assert.equal(closeout?.toolCallCount, 1);
+  assert.equal(closeout?.roundCount, 1);
+  assert.equal(closeout?.evidenceAvailable, true);
 });
 
 test("llm role response generator repairs textual tool-call markup after a normal tool round", async () => {
@@ -1734,6 +1829,11 @@ test("llm role response generator repairs textual tool-call markup after a norma
         readToolContent(message.content).includes("pseudo tool-call markup without a native tool call")
     )
   );
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "pseudo_tool_call");
+  assert.equal(closeout?.toolCallCount, 1);
+  assert.equal(closeout?.roundCount, 1);
+  assert.equal(closeout?.evidenceAvailable, true);
 });
 
 test("llm role response generator caps parallel tool execution fan-out", async () => {

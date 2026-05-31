@@ -382,7 +382,7 @@ try {
       "mission health should show the source coverage quality detail"
     );
     assert(
-      await page.locator(".mission-quality-action-panel", { hasText: "Continue with a narrower tool-backed request" }).isVisible(),
+      await page.locator(".mission-quality-action-panel", { hasText: "budget-limited answer" }).isVisible(),
       "mission health should suggest a concrete follow-up action"
     );
     assert(await page.locator(".context-continuity-card").count() === 1, "expected one context continuity card");
@@ -1354,6 +1354,11 @@ function metricsFixture() {
           name: "tool_fallback_answer",
           status: "warn",
           detail: "Final answer says a required tool or search path was unavailable and falls back to model knowledge.",
+        },
+        {
+          name: "tool_loop_closeout",
+          status: "warn",
+          detail: "Final answer was forced after the tool-round limit. 2 completed rounds; 2 executed tool calls; 1 pending tool call.",
         },
         {
           name: "browser_profile_fallback",

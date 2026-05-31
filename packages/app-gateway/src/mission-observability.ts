@@ -249,6 +249,7 @@ function buildQualityChecks(input: {
           ? "Final answer says a required tool or search path was unavailable and falls back to model knowledge."
           : "Final answer does not claim a tool/search fallback.",
     },
+    toolLoopCloseoutCheck(input.finalAnswer),
     {
       name: "browser_profile_fallback",
       status: input.browserProfileFallbacks.length > 0 ? "warn" : "pass",
@@ -274,6 +275,69 @@ function buildQualityChecks(input: {
           : `${input.failureEvents} recovery/failed tool event(s) require attention.`,
     },
   ];
+}
+
+function toolLoopCloseoutCheck(
+  finalAnswer: ActivityEvent | null
+): MissionObservabilitySnapshot["qualityGate"]["checks"][number] {
+  if (!finalAnswer) {
+    return {
+      name: "tool_loop_closeout",
+      status: "pending",
+      detail: "Waiting for the final answer.",
+    };
+  }
+  const reason = finalAnswer.runtime?.toolLoopCloseoutReason;
+  if (!reason) {
+    return {
+      name: "tool_loop_closeout",
+      status: "pass",
+      detail: "Final answer did not require a forced tool-loop closeout.",
+    };
+  }
+  if (reason === "completed_sub_agent_final") {
+    return {
+      name: "tool_loop_closeout",
+      status: "pass",
+      detail: toolLoopCloseoutDetail(finalAnswer, "Final answer synthesized from completed sub-agent final content."),
+    };
+  }
+  return {
+    name: "tool_loop_closeout",
+    status: "warn",
+    detail: toolLoopCloseoutDetail(finalAnswer, toolLoopCloseoutReasonLabel(reason)),
+  };
+}
+
+function toolLoopCloseoutDetail(finalAnswer: ActivityEvent, label: string): string {
+  const rounds = finalAnswer.runtime?.["toolLoopCloseout.roundCount"];
+  const calls = finalAnswer.runtime?.["toolLoopCloseout.toolCallCount"];
+  const pending = finalAnswer.runtime?.["toolLoopCloseout.pendingToolCallCount"];
+  const toolName = finalAnswer.runtime?.["toolLoopCloseout.toolName"];
+  const evidence = finalAnswer.runtime?.["toolLoopCloseout.evidenceAvailable"];
+  const details = [
+    rounds ? `${rounds} completed round(s)` : null,
+    calls ? `${calls} executed tool call(s)` : null,
+    pending ? `${pending} pending tool call(s)` : null,
+    toolName ? `tool ${toolName}` : null,
+    evidence ? `evidence available: ${evidence}` : null,
+  ].filter(Boolean);
+  return details.length > 0 ? `${label} ${details.join("; ")}.` : label;
+}
+
+function toolLoopCloseoutReasonLabel(reason: string): string {
+  switch (reason) {
+    case "round_limit":
+      return "Final answer was forced after the tool-round limit.";
+    case "wall_clock_budget":
+      return "Final answer was forced after the tool wall-clock budget.";
+    case "sub_agent_timeout":
+      return "Final answer was forced after a sub-agent timeout.";
+    case "pseudo_tool_call":
+      return "Final answer was forced after the model emitted non-native tool-call markup.";
+    default:
+      return `Final answer was forced by tool-loop closeout '${reason}'.`;
+  }
 }
 
 function summarizeRuntimeLiveness(

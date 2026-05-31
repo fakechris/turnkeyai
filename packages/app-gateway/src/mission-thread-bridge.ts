@@ -412,6 +412,43 @@ function readStringMetadata(metadata: Record<string, unknown> | undefined, key: 
   return typeof value === "string" ? value : undefined;
 }
 
+function readRecordMetadata(
+  metadata: Record<string, unknown> | undefined,
+  key: string
+): Record<string, unknown> | undefined {
+  const value = metadata?.[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function toolLoopCloseoutRuntime(metadata: Record<string, unknown> | undefined): Record<string, string> {
+  const closeout = readRecordMetadata(metadata, "toolLoopCloseout");
+  const reason = typeof closeout?.reason === "string" ? closeout.reason : undefined;
+  if (!closeout || !reason) {
+    return {};
+  }
+  const runtime: Record<string, string> = {
+    toolLoopCloseout: "true",
+    toolLoopCloseoutReason: reason,
+  };
+  for (const key of [
+    "toolCallCount",
+    "roundCount",
+    "maxRounds",
+    "maxWallClockMs",
+    "pendingToolCallCount",
+    "toolName",
+    "timeoutSeconds",
+    "evidenceAvailable",
+    "finalContentCount",
+  ]) {
+    const value = closeout[key];
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      runtime[`toolLoopCloseout.${key}`] = String(value);
+    }
+  }
+  return runtime;
+}
+
 interface ExpandMessageInput {
   missionId: string;
   message: TeamMessage;
@@ -841,6 +878,7 @@ function buildPlainEvent(input: BuildPlainEventInput): ActivityEvent {
     activitySourceId: sourceId,
   };
   if (input.message.source?.route) runtime.route = input.message.source.route;
+  Object.assign(runtime, toolLoopCloseoutRuntime(input.message.metadata));
   return {
     id: input.newEventId(),
     missionId: input.missionId,

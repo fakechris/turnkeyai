@@ -412,6 +412,84 @@ test("buildMissionObservabilitySnapshot surfaces browser profile fallback as mis
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_profile_fallback")?.status, "warn");
 });
 
+test("buildMissionObservabilitySnapshot flags budget-limited tool-loop closeout answers", () => {
+  const finalAnswer = event(
+    "final-1",
+    "thought",
+    5_000,
+    "role-lead",
+    [
+      "Based on verified tool evidence, the partial comparison is evidence-backed and useful.",
+      "The gathered source evidence supports the confirmed points, and residual risk is that the tool budget ended before every source could be checked.",
+      "No unsupported future pricing or adoption claim is included.",
+    ].join(" ")
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
+      {
+        ...finalAnswer,
+        runtime: {
+          ...finalAnswer.runtime,
+          toolLoopCloseout: "true",
+          toolLoopCloseoutReason: "round_limit",
+          "toolLoopCloseout.roundCount": "2",
+          "toolLoopCloseout.toolCallCount": "2",
+          "toolLoopCloseout.pendingToolCallCount": "1",
+          "toolLoopCloseout.evidenceAvailable": "true",
+        },
+      },
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "needs_attention");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "tool_loop_closeout")?.status, "warn");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "tool_loop_closeout")?.detail ?? "",
+    /tool-round limit/
+  );
+});
+
+test("buildMissionObservabilitySnapshot accepts completed sub-agent final closeout as healthy", () => {
+  const finalAnswer = event(
+    "final-1",
+    "thought",
+    5_000,
+    "role-lead",
+    [
+      "Based on verified tool evidence, the comparison is evidence-backed and complete.",
+      "The gathered source evidence supports the confirmed points, and residual risk is limited to later source updates.",
+      "No unsupported future pricing or adoption claim is included.",
+    ].join(" ")
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 4_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
+      {
+        ...finalAnswer,
+        runtime: {
+          ...finalAnswer.runtime,
+          toolLoopCloseout: "true",
+          toolLoopCloseoutReason: "completed_sub_agent_final",
+          "toolLoopCloseout.roundCount": "1",
+          "toolLoopCloseout.toolCallCount": "1",
+          "toolLoopCloseout.finalContentCount": "1",
+          "toolLoopCloseout.evidenceAvailable": "true",
+        },
+      },
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "tool_loop_closeout")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot handles long fallback phrasing without regex backtracking risk", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "done" }),
