@@ -2732,7 +2732,7 @@ Regression Risk:
 
 ## 2026-05-31 07:53 CST - Tool Loop Closeout Visibility
 
-Direction: converging
+Direction: unknown
 
 Execution Kernel:
 - The runtime now records structured `toolLoopCloseout` metadata when final
@@ -2796,3 +2796,84 @@ Convergence question:
 - If no, next required gate: run the named `budget-limited closeout` and
   `sub-agent timeout closeout` real mission scenarios above and verify both the
   mission telemetry fields and Mission Detail warning/action.
+
+## 2026-05-31 08:15 CST - Closeout Real Acceptance Gates
+
+Direction: converging
+
+Execution Kernel:
+- Added optional mission E2E scenarios for the two closeout paths the previous
+  checkpoint named as required gates: `budget-limited-closeout` and
+  `sub-agent-timeout-closeout`.
+- The budget scenario starts the daemon with
+  `TURNKEYAI_AGENT_TOOL_MAX_ROUNDS=1` and requires the model to gather one
+  source, attempt a second tool call, then synthesize from gathered evidence
+  after the runtime forces `toolLoopCloseoutReason=round_limit`.
+- The timeout scenario forces `sessions_spawn(timeout_seconds=0.001)` and
+  verifies `toolLoopCloseoutReason=sub_agent_timeout`, evidence availability
+  propagation, resumable worker-session state, no fallback tool calls, and
+  terminal mission liveness cleanup.
+
+Result Quality:
+- Closeout scenarios are no longer judged by a blanket healthy quality gate.
+  The JSON report treats `budget-limited-closeout` as passing only when Mission
+  Health is `needs_attention`, and treats `sub-agent-timeout-closeout` as
+  passing only when the quality gate is `blocked` with a visible closeout
+  warning.
+- This is stricter than unit coverage because the final answer must include a
+  bounded, source-aware response and must not claim unverified second-source or
+  timeout evidence.
+
+Workbench UX:
+- No new UI components changed in this checkpoint.
+- The acceptance path now proves the Mission Detail data model has the fields
+  needed for user-visible closeout explanation: `toolLoopCloseoutReason`,
+  completed round/call counts, evidence availability as emitted by the tool
+  result, and the closeout quality check.
+
+Browser Reliability:
+- Browser/CDP execution did not change.
+- The timeout gate directly exercises sub-agent timeout closeout behavior,
+  which is one of the paths that previously made browser-heavy missions look
+  like they were still working or silently weak.
+
+Acceptance Evidence:
+- `npm run mission:e2e:matrix -- --model-catalog models.local.json
+  --matrix-scenarios budget-limited-closeout,sub-agent-timeout-closeout
+  --scenario-timeout-ms 240000 --json tmp/mission-closeout-e2e.json`: passed
+  against a real LLM in 88157ms.
+- `budget-limited-closeout`: mission `msn.mpt1c5hz.1`, status `done`,
+  quality `needs_attention`, tools `1/1`, sessions `0/0`, liveness `0/0/0`,
+  final closeout `round_limit`, evidence available `true`.
+- `sub-agent-timeout-closeout`: mission `msn.mpt1cjia.2`, status `done`,
+  quality `blocked`, tools `1/1`, sessions `1/0`, liveness `0/0/0`, final
+  closeout `sub_agent_timeout`, evidence available `true`.
+- The first attempted real run failed usefully: the budget gate used
+  `sessions_spawn` and hit `completed_sub_agent_final` instead of
+  `round_limit`. The scenario was corrected to use task tools so the acceptance
+  gate now measures the intended runtime path.
+- Re-run command for this focused gate:
+  `npm run mission:e2e:matrix -- --model-catalog models.local.json
+  --matrix-scenarios budget-limited-closeout,sub-agent-timeout-closeout
+  --scenario-timeout-ms 240000 --json tmp/mission-closeout-e2e.json`
+- Required local regression gate for the PR remains:
+  `npm test -- --runInBand`, `npm run typecheck`, `npm run build`,
+  `npm run ledger:check`, and `git diff --check`.
+
+Regression Risk:
+- Main runtime risk is the new environment knob
+  `TURNKEYAI_AGENT_TOOL_MAX_ROUNDS`. It is additive and defaults to the current
+  production value of 128 when unset or invalid.
+- Main acceptance risk is model compliance in the budget-limited scenario: if a
+  model calls both tools in one turn, the scenario should fail rather than hide
+  the fact that the round-limit closeout was not actually exercised.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a real LLM exercised both forced-closeout paths, reached terminal
+  mission state, left no active/waiting/stale runtime spans, and surfaced the
+  expected user-visible Mission Health status instead of silently presenting a
+  weak answer as healthy.
+- Next required gate: run a longer multi-source product brief with the same
+  closeout telemetry enabled to ensure the guardrails do not degrade normal
+  high-quality completion paths.
