@@ -1565,6 +1565,200 @@ test("llm role response generator routes explicit follow-up to completed session
   assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /Runtime session continuation directive/);
 });
 
+test("llm role response generator lists sessions before spawning on explicit follow-up without a session key", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-would-duplicate", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Re-check the operations dashboard from the same browser context.",
+        label: "ops-dashboard-followup",
+      });
+    }
+    if (executedCalls.length === 1 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-after-list", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Re-check the operations dashboard from the same browser context.",
+        label: "ops-dashboard-followup",
+      });
+    }
+    return {
+      text: "Final answer from looked-up browser continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_list",
+          description: "List sessions",
+          inputSchema: { type: "object", properties: { kinds: { type: "array" }, agent_id: { type: "string" } } },
+        },
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "sessions_list") {
+        assert.equal(input.call.input.agent_id, "browser");
+        assert.deepEqual(input.call.input.kinds, ["browser"]);
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            sessions: [
+              {
+                session_key: "worker:browser:task-dashboard:toolu-browser",
+                agent_id: "browser",
+                status: "done",
+                label: "ops-dashboard-review",
+              },
+            ],
+          }),
+        };
+      }
+      assert.equal(input.call.name, "sessions_send");
+      assert.equal(input.call.input.session_key, "worker:browser:task-dashboard:toolu-browser");
+      assert.match(String(input.call.input.message), /Re-check the operations dashboard/);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-dashboard",
+          session_key: input.call.input.session_key,
+          agent_id: "browser",
+          status: "completed",
+          result: "Dashboard session continued after forced lookup.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue the operations dashboard review from the browser context already used in this mission.",
+        "",
+        "Recent turns:",
+        "[user] Continue the operations dashboard review from the browser context already used in this mission.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer from looked-up browser continuation.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_list", "sessions_send"]
+  );
+});
+
+test("llm role response generator allows a new spawn after an empty continuation session lookup", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length < 2 && input.toolChoice !== "none") {
+      return toolCallResult(`toolu-${executedCalls.length + 1}`, "sessions_spawn", {
+        agent_id: "browser",
+        task: "Start a fresh dashboard check because no existing session is available.",
+      });
+    }
+    return {
+      text: "Final answer after fresh browser session.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_list",
+          description: "List sessions",
+          inputSchema: { type: "object", properties: { kinds: { type: "array" }, agent_id: { type: "string" } } },
+        },
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "sessions_list") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ sessions: [] }),
+        };
+      }
+      assert.equal(input.call.name, "sessions_spawn");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-dashboard",
+          session_key: "worker:browser:fresh",
+          agent_id: "browser",
+          status: "completed",
+          result: "Fresh dashboard session completed.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue the operations dashboard review from the previous browser context if one exists.",
+        "",
+        "Recent turns:",
+        "[user] Continue the operations dashboard review from the previous browser context if one exists.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer after fresh browser session.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_list", "sessions_spawn"]
+  );
+});
+
 test("llm role response generator routes follow-up through sessions_list result before duplicate spawn", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -1676,8 +1870,8 @@ test("llm role response generator ignores nested completed status when session r
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
-    if (executedCalls.length === 0 && input.toolChoice !== "none") {
-      return toolCallResult("toolu-new", "sessions_spawn", {
+    if (executedCalls.length < 2 && input.toolChoice !== "none") {
+      return toolCallResult(`toolu-new-${executedCalls.length + 1}`, "sessions_spawn", {
         agent_id: "browser",
         task: "Start a fresh dashboard check.",
       });
@@ -1695,6 +1889,11 @@ test("llm role response generator ignores nested completed status when session r
     definitions() {
       return [
         {
+          name: "sessions_list",
+          description: "List sessions",
+          inputSchema: { type: "object", properties: { kinds: { type: "array" }, agent_id: { type: "string" } } },
+        },
+        {
           name: "sessions_spawn",
           description: "Spawn a sub-agent",
           inputSchema: { type: "object", properties: { task: { type: "string" } } },
@@ -1708,6 +1907,14 @@ test("llm role response generator ignores nested completed status when session r
     },
     async execute(input: RoleToolExecutionInput) {
       executedCalls.push(input.call);
+      if (input.call.name === "sessions_list") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ sessions: [] }),
+        };
+      }
+      assert.equal(input.call.name, "sessions_spawn");
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -1735,7 +1942,11 @@ test("llm role response generator ignores nested completed status when session r
     },
   });
 
-  assert.equal(executedCalls[0]?.name, "sessions_spawn");
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_list", "sessions_spawn"]
+  );
+  assert.equal(executedCalls.some((call) => call.name === "sessions_send"), false);
 });
 
 test("llm role response generator routes follow-up when completed session result is wrapped in tool trace content", async () => {

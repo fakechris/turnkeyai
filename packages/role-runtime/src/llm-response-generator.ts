@@ -58,6 +58,10 @@ interface SessionContinuationDirective {
   messageHint: string;
 }
 
+interface SessionContinuationLookupDirective {
+  messageHint: string;
+}
+
 const SESSION_TOOL_RESULT_PROTOCOL = "turnkeyai.session_tool_result.v1";
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
@@ -160,7 +164,16 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       const sessionContinuationDirective =
         baseSessionContinuationDirective ??
         (activeToolLoop ? findSessionContinuationDirective(buildContinuationDirectiveContext(input.packet.taskPrompt, messages)) : null);
-      const toolCalls = normalizeSessionToolCalls(applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective));
+      const sessionContinuationLookupDirective =
+        !sessionContinuationDirective && activeToolLoop
+          ? findSessionContinuationLookupDirective(buildContinuationDirectiveContext(input.packet.taskPrompt, messages))
+          : null;
+      const toolCalls = normalizeSessionToolCalls(
+        applySessionContinuationLookupDirective(
+          applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective),
+          sessionContinuationLookupDirective
+        )
+      );
       if (activeToolLoop && toolCalls.length === 0 && containsAnyToolCallForm(result)) {
         const maxRounds = activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
         toolLoopCloseout = {
@@ -1182,11 +1195,24 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
   return null;
 }
 
+function findSessionContinuationLookupDirective(context: string): SessionContinuationLookupDirective | null {
+  const latestUserText = extractLatestUserContinuationText(context);
+  if (!isExplicitSessionContinuationRequest(latestUserText)) {
+    return null;
+  }
+  if (contextHasSessionListResult(context)) {
+    return null;
+  }
+  return {
+    messageHint: latestUserText,
+  };
+}
+
 function buildContinuationDirectiveContext(taskPrompt: string, messages: LLMMessage[]): string {
   const toolEvidence = messages
     .filter((message) => message.role === "tool")
     .map((message) => llmMessageContentToText(message.content))
-    .filter((content) => content.includes("session_key"))
+    .filter((content) => content.includes("session_key") || content.includes('"sessions"'))
     .join("\n");
   return toolEvidence ? `${taskPrompt}\n${toolEvidence}` : taskPrompt;
 }
@@ -1227,6 +1253,15 @@ function sessionContextSupportsContinuation(context: string): boolean {
     }
   }
   return false;
+}
+
+function contextHasSessionListResult(context: string): boolean {
+  return parseJsonObjectsFromContext(context).some((parsed) => {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return false;
+    }
+    return Array.isArray((parsed as Record<string, unknown>)["sessions"]);
+  });
 }
 
 function contextHasListedContinuableSession(context: string): boolean {
@@ -1398,6 +1433,38 @@ function applySessionContinuationDirective(
         session_key: directive.sessionKey,
         message: readStringInput(rewritten.input, "task") ?? directive.messageHint,
         ...(readStringInput(rewritten.input, "label") ? { label: readStringInput(rewritten.input, "label") } : {}),
+      },
+    },
+    ...toolCalls.slice(spawnIndex + 1).filter((call) => call.name !== "sessions_spawn"),
+  ];
+}
+
+function applySessionContinuationLookupDirective(
+  toolCalls: LLMToolCall[],
+  directive: SessionContinuationLookupDirective | null
+): LLMToolCall[] {
+  if (
+    !directive ||
+    toolCalls.length === 0 ||
+    toolCalls.some((call) => call.name === "sessions_send" || call.name === "sessions_list")
+  ) {
+    return toolCalls;
+  }
+  const spawnIndex = toolCalls.findIndex((call) => call.name === "sessions_spawn");
+  if (spawnIndex < 0) {
+    return toolCalls;
+  }
+  const spawned = toolCalls[spawnIndex]!;
+  const agentId = readStringInput(spawned.input, "agent_id");
+  return [
+    ...toolCalls.slice(0, spawnIndex),
+    {
+      ...spawned,
+      name: "sessions_list",
+      input: {
+        limit: 5,
+        ...(agentId ? { agent_id: agentId, kinds: [agentId] } : {}),
+        reason: `continuation lookup: ${directive.messageHint}`,
       },
     },
     ...toolCalls.slice(spawnIndex + 1).filter((call) => call.name !== "sessions_spawn"),
