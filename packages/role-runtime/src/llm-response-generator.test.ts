@@ -1565,6 +1565,72 @@ test("llm role response generator routes explicit follow-up to completed session
   assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /Runtime session continuation directive/);
 });
 
+test("llm role response generator ignores nested completed status when session result failed", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-new", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Start a fresh dashboard check.",
+      });
+    }
+    return {
+      text: "Final answer after fresh dashboard check.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({ status: "completed" }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue the operations dashboard review.",
+        "",
+        "Recent turns:",
+        "[user] Continue the operations dashboard review.",
+        '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"failed","session_key":"worker:browser:task-dashboard:toolu-browser","agent_id":"browser","payload":{"status":"completed"},"result":"browser unavailable"}',
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(executedCalls[0]?.name, "sessions_spawn");
+});
+
 test("llm role response generator does not passively continue cancelled sessions without a user follow-up", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;

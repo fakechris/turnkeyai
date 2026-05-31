@@ -539,9 +539,14 @@ const GENERIC_SOURCE_LABEL_TOKENS = new Set([
   "after",
   "before",
   "continue",
+  "continuation",
+  "follow",
+  "followup",
   "post",
   "pre",
   "resume",
+  "retry",
+  "revisit",
 ]);
 
 function distinctiveSourceLabelTokens(label: string): string[] {

@@ -1168,10 +1168,71 @@ function sessionContextSupportsContinuation(context: string): boolean {
   if (/\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(context)) {
     return true;
   }
-  if (!/turnkeyai\.session_tool_result\.v1/i.test(context)) {
-    return false;
+  for (const parsed of parseJsonObjectsFromContext(context)) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      continue;
+    }
+    const result = parsed as Record<string, unknown>;
+    if (result["protocol"] === "turnkeyai.session_tool_result.v1" && result["status"] === "completed") {
+      return true;
+    }
   }
-  return /"status"\s*:\s*"completed"/i.test(context);
+  return false;
+}
+
+function parseJsonObjectsFromContext(context: string): unknown[] {
+  const parsed: unknown[] = [];
+  for (let index = 0; index < context.length; index += 1) {
+    if (context[index] !== "{") {
+      continue;
+    }
+    const end = findJsonObjectEnd(context, index);
+    if (end === null) {
+      continue;
+    }
+    try {
+      parsed.push(JSON.parse(context.slice(index, end + 1)));
+      index = end;
+    } catch {
+      // The context window may start or end inside a JSON blob. Keep scanning
+      // for the next balanced object instead of falling back to raw status text.
+    }
+  }
+  return parsed;
+}
+
+function findJsonObjectEnd(context: string, start: number): number | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < context.length; index += 1) {
+    const char = context[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return null;
 }
 
 function isExplicitSessionContinuationRequest(text: string): boolean {

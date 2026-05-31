@@ -533,7 +533,7 @@ test("buildMissionObservabilitySnapshot ignores restart continuation wording whi
         ...restartResult,
         runtime: {
           ...restartResult.runtime,
-          sourceLabel: "Resume dashboard review after restart",
+          sourceLabel: "Continuation followup retry revisit dashboard review after restart",
         },
       },
       event(
