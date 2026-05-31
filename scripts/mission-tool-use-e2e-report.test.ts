@@ -42,6 +42,9 @@ describe("mission tool-use e2e report", () => {
           spawned: 2,
           continued: 1,
         },
+        browser: {
+          profileFallbacks: 0,
+        },
         approvals: {
           requested: 1,
           decided: 1,
@@ -172,6 +175,7 @@ describe("mission tool-use e2e report", () => {
       stuckOrLoop: false,
       reasonableToolUse: true,
       browserUsed: true,
+      profileFallbackFree: true,
       subAgentCompleted: true,
       approvalExercised: false,
       finalAnswerHasEvidence: true,
@@ -196,9 +200,12 @@ describe("mission tool-use e2e report", () => {
     assert.equal(report.promptPolicy.forbidsContractGateLanguage, true);
     assert.ok(report.promptPolicy.forbiddenPatterns.some((pattern) => pattern.includes("exactly once")));
     assert.ok(report.requiredQualitySignals.includes("source-backed-evidence"));
+    assert.ok(report.requiredQualitySignals.includes("no-browser-profile-fallback"));
     assert.equal(report.status, "passed");
     assert.equal(report.durationMs, 5000);
     assert.equal(report.scenarios[0]?.scenario, "natural-browser-dynamic-page");
+    assert.equal(report.scenarios[0]?.natural.profileFallbackFree, true);
+    assert.equal(report.scenarios[0]?.metrics.browser.profileFallbacks, 0);
   });
 
   it("fails natural quality on weak fallback answers and missing browser evidence", () => {
@@ -276,6 +283,70 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.failures.includes("missing evidence rendered queue depth"));
     assert.ok(quality.failures.includes("missing evidence rendered SLA breaches"));
   });
+
+  it("accepts natural rendered evidence phrasing for browser dashboard facts", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-dynamic-page", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent:
+        "Browser-rendered dashboard evidence: queue depth is now 11, SLA breaches are 3, and the recommended owner is Incident Commander.",
+    };
+    result.final.text = [
+      "Queue depth is 11 and SLA breaches are 3, so the dashboard state needs operator attention now.",
+      "Incident Commander should own the next action, review the queue, and coordinate the escalation.",
+      "The recommendation is evidence-backed by browser-rendered dashboard facts, with residual risk limited to the local fixture and missing per-ticket detail.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.failures, []);
+  });
+
+  it("fails natural browser quality when a profile fallback is present", () => {
+    const result = fakeNaturalResult();
+    result.metrics.browser.profileFallbacks = 1;
+    result.metrics.browser.latestProfileFallback = {
+      sessionId: "browser-session-profile-fallback",
+      fallbackDir: ".daemon-data/browser/_runtime-fallback/browser-session-profile-fallback/123",
+    };
+    const quality = evaluateNaturalMissionQuality({
+      spec: buildNaturalScenarioSpec("natural-browser-dynamic-page", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+
+    assert.equal(quality.profileFallbackFree, false);
+    assert.ok(quality.failures.includes("browser profile fallback occurred 1 time(s)"));
+  });
+
 
   it("checks natural long-delegation source coverage in evidence rather than final fixture labels", () => {
     const spec = buildNaturalScenarioSpec("natural-long-delegation", {
@@ -420,7 +491,7 @@ describe("mission tool-use e2e report", () => {
     );
     assert.equal(
       formatNaturalMissionScenarioPass({ result, index: 2, total: 6, durationMs: 4321 }),
-      "natural mission scenario passed: natural-browser-dynamic-page (2/6, 4321ms) mission-id=msn.natural.1 natural=passed tools=2/2 sessions=1/0 browser=yes stuck=no"
+      "natural mission scenario passed: natural-browser-dynamic-page (2/6, 4321ms) mission-id=msn.natural.1 natural=passed tools=2/2 sessions=1/0 browser=yes profileFallbacks=0 stuck=no"
     );
   });
 });
@@ -450,6 +521,9 @@ function fakeResult(): MissionScenarioResult {
       sessions: {
         spawned: 2,
         continued: 1,
+      },
+      browser: {
+        profileFallbacks: 0,
       },
       approvals: {
         requested: 1,
@@ -574,6 +648,9 @@ function fakeNaturalResult(): NaturalMissionScenarioResult {
         spawned: 1,
         continued: 0,
       },
+      browser: {
+        profileFallbacks: 0,
+      },
       approvals: {
         requested: 0,
         applied: 0,
@@ -604,6 +681,7 @@ function fakeNaturalResult(): NaturalMissionScenarioResult {
       stuckOrLoop: false,
       reasonableToolUse: true,
       browserUsed: true,
+      profileFallbackFree: true,
       subAgentCompleted: true,
       approvalExercised: false,
       finalAnswerHasEvidence: true,

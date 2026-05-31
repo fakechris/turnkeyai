@@ -3321,3 +3321,66 @@ Convergence question:
 - Next required gate: browser reliability failure injection with the same
   natural-real-LLM standard, especially profile lock/CDP unavailable paths
   that must not degrade into loops or weak fallback answers.
+
+## 2026-05-31 13:18 CST - Natural Browser Profile Fallback Gate
+
+Direction: converging
+
+Execution Kernel:
+- Tightened the natural mission acceptance evaluator so browser profile
+  fallback is no longer invisible in browser-backed natural runs.
+- Natural mission reports now carry profile fallback counts in the structured
+  scenario metrics and surface `profileFallbackFree` as a first-class quality
+  signal.
+
+Result Quality:
+- The browser dynamic-page natural gate still requires rendered facts to appear
+  in the evidence stream, not only in the final answer.
+- The rendered-fact matcher now accepts natural table/sentence phrasing for
+  `Queue depth` and `SLA breaches` while keeping the source of truth in
+  tool/browser/doc/artifact evidence.
+
+Workbench UX:
+- No UI changed.
+- Validation summaries now preserve browser profile fallback counts, so future
+  workbench surfaces can distinguish clean browser evidence from evidence that
+  succeeded through an isolated fallback profile.
+
+Browser Reliability:
+- Browser-backed natural E2E now fails if a profile lock fallback occurs.
+- This does not yet inject a profile lock or CDP-unavailable failure. It closes
+  the previous evidence gap where such degradation could pass a natural browser
+  gate unnoticed.
+
+Acceptance Evidence:
+- `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts
+  packages/qc-runtime/src/real-llm-acceptance-summary.test.ts
+  packages/qc-runtime/src/validation-ops-inspection.test.ts`: passed,
+  27 tests.
+- `npm run typecheck`: passed.
+- `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-dynamic-page
+  --scenario-timeout-ms 300000
+  --json tmp/natural-browser-profile-gate-e2e.json`: passed.
+- Real mission: `msn.mptbv72k.1`, status `done`, natural `passed`,
+  tools `1/1`, sessions `1/0`, browser `yes`,
+  profile fallback `0`, liveness `0/0/0`, final bytes `904`,
+  weak-answer signals `none`.
+
+Regression Risk:
+- Main risk is making rendered evidence matching too permissive. Focused tests
+  still fail when the rendered facts appear only in the final answer and not in
+  timeline evidence.
+- Another risk is over-claiming browser reliability. This checkpoint proves
+  the natural gate now rejects hidden profile fallback; it does not prove CDP
+  unavailable, attach failure, timeout, or target detach recovery under natural
+  real LLM prompts.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a real browser-backed natural mission now passes only when the
+  browser path is clean of profile fallback and still has rendered facts in
+  the durable evidence stream.
+- Next required gate: add failure-injection acceptance for CDP unavailable,
+  attach failure, timeout, and target detach so those buckets produce bounded
+  operator-facing outcomes instead of weak answers or loops.

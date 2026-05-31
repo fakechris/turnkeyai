@@ -249,6 +249,13 @@ export interface MissionE2eScenarioReport {
       spawned: number;
       continued: number;
     };
+    browser: {
+      profileFallbacks: number;
+      latestProfileFallback?: {
+        sessionId?: string;
+        fallbackDir?: string;
+      };
+    };
     approvals: {
       requested: number;
       decided: number;
@@ -323,6 +330,7 @@ export interface NaturalMissionQuality {
   stuckOrLoop: boolean;
   reasonableToolUse: boolean;
   browserUsed: boolean;
+  profileFallbackFree: boolean;
   subAgentCompleted: boolean;
   approvalExercised: boolean;
   finalAnswerHasEvidence: boolean;
@@ -346,6 +354,7 @@ export interface NaturalMissionScenarioReport {
     stuckOrLoop: boolean;
     reasonableToolUse: boolean;
     browserUsed: boolean;
+    profileFallbackFree: boolean;
     subAgentCompleted: boolean;
     approvalExercised: boolean;
     finalAnswerHasEvidence: boolean;
@@ -1582,8 +1591,8 @@ export function buildNaturalScenarioSpec(
       minEvidenceEvents: 1,
       requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander"],
       requiredEvidencePatterns: [
-        { label: "rendered queue depth", pattern: /Queue depth:\s*11/i },
-        { label: "rendered SLA breaches", pattern: /SLA breaches:\s*3/i },
+        { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
+        { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
         { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
       ],
     };
@@ -1778,6 +1787,8 @@ export function evaluateNaturalMissionQuality(input: {
   const toolNames = collectToolNames(input.timeline);
   const evidenceText = collectTimelineEvidenceText(input.timeline);
   const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
+  const profileFallbackCount = input.metrics.browser?.profileFallbacks ?? 0;
+  const profileFallbackFree = profileFallbackCount === 0;
   const subAgentCompleted = input.metrics.sessions.spawned >= input.spec.minSpawnedSessions && input.metrics.liveness.active === 0 && input.metrics.liveness.waiting === 0;
   const approvalExercised =
     input.metrics.approvals.requested > 0 &&
@@ -1818,6 +1829,7 @@ export function evaluateNaturalMissionQuality(input: {
     );
   }
   if (input.spec.requiresBrowser && !browserUsed) failures.push("browser scenario did not show browser worker use");
+  if (!profileFallbackFree) failures.push(`browser profile fallback occurred ${profileFallbackCount} time(s)`);
   if (input.spec.requiresApproval && !approvalExercised) failures.push("approval scenario did not complete query/result/applied loop");
   if (!input.spec.allowToolFailure && input.metrics.tool.failed > 0) failures.push("scenario had failed tool results");
   if (!input.spec.allowToolFailure && input.metrics.tool.timeouts > 0) failures.push("scenario had timed-out tool results");
@@ -1844,6 +1856,7 @@ export function evaluateNaturalMissionQuality(input: {
     stuckOrLoop,
     reasonableToolUse,
     browserUsed,
+    profileFallbackFree,
     subAgentCompleted,
     approvalExercised,
     finalAnswerHasEvidence,
@@ -1962,6 +1975,7 @@ export function formatNaturalMissionScenarioPass(input: {
     `tools=${input.result.metrics.tool.requested}/${input.result.metrics.tool.results}`,
     `sessions=${input.result.metrics.sessions.spawned}/${input.result.metrics.sessions.continued}`,
     `browser=${input.result.quality.browserUsed ? "yes" : "no"}`,
+    `profileFallbacks=${input.result.metrics.browser?.profileFallbacks ?? 0}`,
     `stuck=${input.result.quality.stuckOrLoop ? "yes" : "no"}`,
   ].join(" ");
 }
@@ -2001,6 +2015,7 @@ function printNaturalScenarioResult(result: NaturalMissionScenarioResult): void 
   console.log(`natural-stuck-or-loop: ${result.quality.stuckOrLoop}`);
   console.log(`natural-reasonable-tool-use: ${result.quality.reasonableToolUse}`);
   console.log(`natural-browser-used: ${result.quality.browserUsed}`);
+  console.log(`natural-profile-fallback-free: ${result.quality.profileFallbackFree}`);
   console.log(`natural-sub-agent-completed: ${result.quality.subAgentCompleted}`);
   console.log(`natural-approval-exercised: ${result.quality.approvalExercised}`);
   console.log(`natural-final-evidence: ${result.quality.finalAnswerHasEvidence}`);
@@ -2008,6 +2023,7 @@ function printNaturalScenarioResult(result: NaturalMissionScenarioResult): void 
   console.log(`natural-weak-answer-signals: ${result.quality.weakAnswerSignals.join(",") || "none"}`);
   console.log(`mission-metrics-tools: ${result.metrics.tool.requested}/${result.metrics.tool.results}`);
   console.log(`mission-metrics-sessions: ${result.metrics.sessions.spawned}/${result.metrics.sessions.continued}`);
+  console.log(`mission-metrics-browser-profile-fallbacks: ${result.metrics.browser?.profileFallbacks ?? 0}`);
   console.log(
     `mission-metrics-liveness: ${result.metrics.liveness.active}/${result.metrics.liveness.waiting}/${result.metrics.liveness.stale}`
   );
@@ -2052,6 +2068,7 @@ export function buildNaturalMissionE2eJsonReport(input: {
       "source-backed-evidence",
       "decision-useful-final-answer",
       "no-weak-answer-signals",
+      "no-browser-profile-fallback",
     ],
     status: scenarios.every((scenario) => scenario.natural.status === "passed") ? "passed" : "failed",
     startedAt: new Date(input.startedAt).toISOString(),
@@ -2081,6 +2098,12 @@ export function summarizeMissionScenarioResult(result: MissionScenarioResult): M
       sessions: {
         spawned: result.metrics.sessions.spawned,
         continued: result.metrics.sessions.continued,
+      },
+      browser: {
+        profileFallbacks: result.metrics.browser?.profileFallbacks ?? 0,
+        ...(result.metrics.browser?.latestProfileFallback
+          ? { latestProfileFallback: result.metrics.browser.latestProfileFallback }
+          : {}),
       },
       approvals: {
         requested: result.metrics.approvals.requested,
@@ -2126,6 +2149,12 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
         spawned: result.metrics.sessions.spawned,
         continued: result.metrics.sessions.continued,
       },
+      browser: {
+        profileFallbacks: result.metrics.browser?.profileFallbacks ?? 0,
+        ...(result.metrics.browser?.latestProfileFallback
+          ? { latestProfileFallback: result.metrics.browser.latestProfileFallback }
+          : {}),
+      },
       approvals: {
         requested: result.metrics.approvals.requested,
         decided: result.metrics.approvals.decided,
@@ -2146,6 +2175,7 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
       stuckOrLoop: result.quality.stuckOrLoop,
       reasonableToolUse: result.quality.reasonableToolUse,
       browserUsed: result.quality.browserUsed,
+      profileFallbackFree: result.quality.profileFallbackFree,
       subAgentCompleted: result.quality.subAgentCompleted,
       approvalExercised: result.quality.approvalExercised,
       finalAnswerHasEvidence: result.quality.finalAnswerHasEvidence,

@@ -18,6 +18,9 @@ interface MissionScenarioReportShape {
       spawned?: unknown;
       continued?: unknown;
     };
+    browser?: {
+      profileFallbacks?: unknown;
+    };
     approvals?: {
       requested?: unknown;
       decided?: unknown;
@@ -84,6 +87,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       toolTimeouts: 0,
       sessionsSpawned: 0,
       sessionsContinued: 0,
+      browserProfileFallbacks: 0,
       approvalsRequested: 0,
       approvalsDecided: 0,
       approvalsApplied: 0,
@@ -118,6 +122,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       summary.toolTimeouts += readNumber(scenario.metrics?.tools?.timeouts);
       summary.sessionsSpawned += readNumber(scenario.metrics?.sessions?.spawned);
       summary.sessionsContinued += readNumber(scenario.metrics?.sessions?.continued);
+      summary.browserProfileFallbacks += readNumber(scenario.metrics?.browser?.profileFallbacks);
       summary.approvalsRequested += readNumber(scenario.metrics?.approvals?.requested);
       summary.approvalsDecided += readNumber(scenario.metrics?.approvals?.decided);
       summary.approvalsApplied += readNumber(scenario.metrics?.approvals?.applied);
@@ -150,6 +155,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       toolTimeouts: 0,
       sessionsSpawned: 0,
       sessionsContinued: 0,
+      browserProfileFallbacks: 0,
       approvalsRequested: 0,
       approvalsDecided: 0,
       approvalsApplied: 0,
@@ -193,6 +199,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       toolTimeouts: 0,
       sessionsSpawned: 0,
       sessionsContinued: 0,
+      browserProfileFallbacks: 0,
       approvalsRequested: 0,
       approvalsDecided: 0,
       approvalsApplied: 0,
@@ -227,6 +234,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       summary.toolTimeouts += readNumber(scenario.metrics?.tools?.timeouts);
       summary.sessionsSpawned += readNumber(scenario.metrics?.sessions?.spawned);
       summary.sessionsContinued += readNumber(scenario.metrics?.sessions?.continued);
+      summary.browserProfileFallbacks += readNumber(scenario.metrics?.browser?.profileFallbacks);
       summary.approvalsRequested += readNumber(scenario.metrics?.approvals?.requested);
       summary.approvalsDecided += readNumber(scenario.metrics?.approvals?.decided);
       summary.approvalsApplied += readNumber(scenario.metrics?.approvals?.applied);
@@ -258,6 +266,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       toolTimeouts: 0,
       sessionsSpawned: 0,
       sessionsContinued: 0,
+      browserProfileFallbacks: 0,
       approvalsRequested: 0,
       approvalsDecided: 0,
       approvalsApplied: 0,
