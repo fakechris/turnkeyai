@@ -304,6 +304,11 @@ export async function handleMissionRoutes(input: {
         decidedBy,
         ...(reason ? { reason } : {}),
       });
+      startApprovalDecisionContinuationInBackground({
+        deps,
+        approval: result.approval,
+        decision: result.decision.decision,
+      });
       sendJson(res, 200, result);
       return true;
     } catch (error) {
@@ -868,6 +873,64 @@ function startMissionFollowUpInBackground(input: {
       }
     }
   })();
+}
+
+function startApprovalDecisionContinuationInBackground(input: {
+  deps: MissionRouteDeps;
+  approval: { id: string; missionId: string; action: string };
+  decision: "approved" | "denied";
+}): void {
+  const orchestrator = input.deps.orchestrator;
+  if (!orchestrator) return;
+  void (async () => {
+    const mission = await input.deps.missionStore.get(input.approval.missionId);
+    if (!mission?.threadId || mission.status === "archived") return;
+    const workingMission: Mission =
+      mission.status === "working"
+        ? mission
+        : {
+            ...mission,
+            status: "working",
+            progress: Math.min(mission.progress, 0.99),
+          };
+    if (workingMission !== mission) {
+      await input.deps.missionStore.putRaw(workingMission);
+    }
+    const content = buildApprovalDecisionContinuationMessage({
+      approvalId: input.approval.id,
+      action: input.approval.action,
+      decision: input.decision,
+    });
+    startMissionFollowUpInBackground({
+      deps: input.deps,
+      orchestrator,
+      mission: workingMission,
+      threadId: mission.threadId,
+      content,
+    });
+  })().catch((error) => {
+    console.error("mission approval continuation failed", {
+      missionId: input.approval.missionId,
+      approvalId: input.approval.id,
+      error,
+    });
+  });
+}
+
+function buildApprovalDecisionContinuationMessage(input: {
+  approvalId: string;
+  action: string;
+  decision: "approved" | "denied";
+}): string {
+  const outcome =
+    input.decision === "approved"
+      ? "The operator approved it. Continue from the paused approval point: call permission_result for this approval_id, call permission_applied, then perform only the approved scoped action."
+      : "The operator denied it. Continue from the paused approval point: call permission_result for this approval_id, do not perform the denied action, and report the safe fallback.";
+  return [
+    `Operator decision recorded for approval ${input.approvalId}.`,
+    `Action: ${input.action}.`,
+    outcome,
+  ].join("\n");
 }
 
 const VALID_MODES = new Set([

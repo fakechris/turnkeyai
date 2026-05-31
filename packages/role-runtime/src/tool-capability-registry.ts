@@ -255,7 +255,8 @@ export function buildSessionToolDefinitions(
     },
     {
       name: "sessions_send",
-      description: "Send a follow-up message to an existing sub-agent session.",
+      description:
+        "Send a follow-up message to an existing sub-agent session. Prefer this over sessions_spawn when continuing, refining, or adding evidence to prior delegated work.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -462,6 +463,8 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
     "In one assistant turn, emit at most five session tool calls total. For two independent subtasks, emit exactly two focused calls, then wait for results before any follow-up wave.",
     "Use timeout_seconds for bounded work. Suggested caps: browser 1080s for authenticated/interactive web work; explore/finance 480s for focused research or data lookup.",
     "If a sub-agent times out, inspect sessions_history and continue with sessions_send only if the remaining work is still valuable. Do not treat a timeout as final evidence.",
+    "When the user asks to continue, refine, revisit, add a source to, or follow up on prior delegated work, route that request back to the relevant existing session with sessions_send instead of answering only from parent context or spawning a duplicate. Synthesize directly only when the user asks for pure formatting and no session-owned evidence needs to be revisited.",
+    "If you need a session key for prior delegated work, use sessions_list or the previous sessions_spawn result before deciding to spawn again.",
     "After a sub-agent returns, first read the sessions_spawn/sessions_send result and final_content. Do not page through session history when that result already contains the evidence you need.",
     "If history is needed, prefer one sessions_history call with tail=true and a small limit. Avoid repeated pagination unless the user explicitly asks for the transcript.",
     "Validate coverage before presenting the result. If the result is partial, use sessions_send or a new focused spawn; otherwise synthesize directly.",
@@ -483,6 +486,7 @@ function renderBrowserWorkerSection(): string {
     "- For public research, find the correct URL first; use browser when interaction, login state, screenshots, or dynamic content is required.",
     "- For personal dashboards or account data, prefer the browser worker because it can use the user's active browser session.",
     "- Keep browser tasks bounded: specify target URL or search query, required fields, output format, and when to stop.",
+    "- If the user asks to carry out an approved browser action such as submit, save, purchase, send, delete, or update, the delegated browser task must include that requested action and its approval boundary. Do not downgrade the task to read-only inspection unless the user only asked for inspection.",
     "- Browser results must return evidence, relevant session/target identifiers, and screenshot or artifact references when screenshots are taken.",
     "- Do not loop on browser failures. After repeated navigation, action, or extraction failures, report the failure and the next required input.",
   ].join("\n");

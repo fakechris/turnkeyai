@@ -780,9 +780,10 @@ function classifyBrowserSideEffect(
   }
   if (
     /\b(post publicly|go live)\b/.test(normalized) ||
+    /\brelease\s+(?:this|the)\s+(?:draft|post|article|page|change|changes|build|version)\b/.test(normalized) ||
     hasBrowserActionVerb(
       normalized,
-      ["publish", "deploy", "release"],
+      ["publish", "deploy"],
       ["date", "time", "version", "history", "status", "notes", "metadata", "frequency", "schedule", "cadence", "information", "info", "details", "count", "counts"]
     )
   ) {
@@ -835,6 +836,9 @@ function hasBrowserActionVerb(input: string, verbs: string[], readOnlyFollowers:
     const escaped = verb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const match = input.match(new RegExp(`\\b${escaped}\\b(?:\\s+([a-z][a-z_-]*))?`, "i"));
     if (!match) continue;
+    if (isReadOnlyBrowserActionVerbContext(input, verb, match.index ?? 0)) {
+      continue;
+    }
     if (isNegatedBrowserActionVerb(input, match.index ?? 0)) {
       continue;
     }
@@ -843,6 +847,14 @@ function hasBrowserActionVerb(input: string, verbs: string[], readOnlyFollowers:
       continue;
     }
     return true;
+  }
+  return false;
+}
+
+function isReadOnlyBrowserActionVerbContext(input: string, verb: string, index: number): boolean {
+  if (verb === "order") {
+    const prefix = input.slice(Math.max(0, index - 40), index).toLowerCase();
+    return /\b(?:priority|sort|sorted|display|list|ranking|ranked)\s+$/.test(prefix);
   }
   return false;
 }

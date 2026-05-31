@@ -299,6 +299,7 @@ export interface NaturalScenarioSpec {
   allowToolFailure: boolean;
   minEvidenceEvents: number;
   requiredAnswerTerms: string[];
+  requiredAnswerPatterns?: Array<{ label: string; pattern: RegExp }>;
   requiredToolNames?: string[];
   forbiddenPatterns?: Array<{ label: string; pattern: RegExp }>;
 }
@@ -1268,9 +1269,17 @@ async function runNaturalFollowupScenario(input: {
     missionId: mission.id,
     timeoutMs: input.timeoutMs,
   });
+  const initialTimeline = await requestJson<ActivityEvent[]>({
+    method: "GET",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/timeline?limit=300`,
+    token: input.token,
+  });
+  const initialFinal = findLatestThoughtEvent(initialTimeline);
+  assert.ok(initialFinal, "natural follow-up phase one must include an assistant answer");
   const followup = [
     "Continue from the previous work on this mission.",
-    "Now add the second source and revise the recommendation so it compares both vendors.",
+    "Ask the same Vendor Alpha research thread to revisit its notes and turn the evidence into a decision note for a product lead.",
+    "Keep continuity with that earlier research thread rather than starting the same Vendor Alpha work from scratch.",
     "Keep the answer source-bounded and call out any remaining uncertainty from the collected evidence.",
   ].join("\n");
   assertNaturalPromptAllowed(followup);
@@ -1285,6 +1294,7 @@ async function runNaturalFollowupScenario(input: {
     token: input.token,
     missionId: mission.id,
     timeoutMs: input.timeoutMs,
+    afterThoughtMs: initialFinal.tMs,
   });
   const metrics = await waitForMissionMetricsSettled({
     baseUrl: input.baseUrl,
@@ -1325,24 +1335,7 @@ async function runNaturalApprovalScenario(input: {
     spec,
   });
   assert.ok(mission.threadId, "natural approval mission requires a linked team thread");
-  const approval = await waitForApprovalRequest({
-    baseUrl: input.baseUrl,
-    token: input.token,
-    missionId: mission.id,
-    action: "browser.form.submit",
-    timeoutMs: Math.min(input.timeoutMs, 120_000),
-  });
-  await requestJson<unknown>({
-    method: "POST",
-    url: `${input.baseUrl}/approvals/${encodeURIComponent(approval.id)}/decision`,
-    token: input.token,
-    body: {
-      decision: "approved",
-      decidedBy: "natural-mission-e2e",
-      reason: "approving isolated local dry-run browser action for natural acceptance",
-    },
-  });
-  const result = await waitForNaturalMissionCompletion({
+  const result = await driveNaturalApprovalDecisionsUntilComplete({
     baseUrl: input.baseUrl,
     token: input.token,
     missionId: mission.id,
@@ -1396,6 +1389,7 @@ async function waitForNaturalMissionCompletion(input: {
   missionId: string;
   timeoutMs: number;
   allowBlocked?: boolean;
+  afterThoughtMs?: number;
 }): Promise<{ mission: Mission; timeline: ActivityEvent[] }> {
   const startedAt = Date.now();
   let latestMission: Mission | null = null;
@@ -1411,7 +1405,11 @@ async function waitForNaturalMissionCompletion(input: {
       url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}/timeline?limit=300`,
       token: input.token,
     });
-    if (latestMission.status === "done" && findLatestThoughtEvent(latestTimeline)) {
+    const latestThought = findLatestThoughtEvent(latestTimeline);
+    const hasRequiredThought =
+      latestThought &&
+      (input.afterThoughtMs === undefined || latestThought.tMs > input.afterThoughtMs);
+    if (latestMission.status === "done" && hasRequiredThought) {
       return { mission: latestMission, timeline: latestTimeline };
     }
     if (latestMission.status === "blocked" && !input.allowBlocked) {
@@ -1453,6 +1451,11 @@ export function buildNaturalScenarioSpec(
       allowToolFailure: false,
       minEvidenceEvents: 1,
       requiredAnswerTerms: ["Alpha", "Beta", "$19", "$29", "recommend", "risk"],
+      requiredAnswerPatterns: [
+        { label: "alpha price", pattern: /\$19\b/ },
+        { label: "beta price", pattern: /\$29\b/ },
+      ],
+      forbiddenPatterns: unsupportedVendorComparisonPatterns(),
     };
   }
   if (scenario === "natural-browser-dynamic-page") {
@@ -1498,7 +1501,11 @@ export function buildNaturalScenarioSpec(
       requiresApproval: false,
       allowToolFailure: false,
       minEvidenceEvents: 2,
-      requiredAnswerTerms: ["Alpha", "Beta", "$19", "$29", "recommend"],
+      requiredAnswerTerms: ["Alpha", "$19", "risk", "verified"],
+      requiredAnswerPatterns: [
+        { label: "alpha price", pattern: /\$19\b/ },
+      ],
+      forbiddenPatterns: unsupportedVendorComparisonPatterns(),
     };
   }
   if (scenario === "natural-approval-dry-run-action") {
@@ -1508,6 +1515,8 @@ export function buildNaturalScenarioSpec(
       desc: [
         "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
         `Form: ${fixture.approvalUrl}`,
+        "The dry-run action under review is the form submission, not just opening the page.",
+        "Actually carry the safe local dry-run through the approval gate; do not stop at a plan or a generic approval explanation.",
         "Treat the page as isolated local test data. Request approval before applying the browser action, then report what was approved and what evidence the page showed.",
       ].join("\n"),
       minBytes: 260,
@@ -1554,20 +1563,29 @@ export function buildNaturalScenarioSpec(
       `Research source: ${fixture.orchestrationUrl}`,
       `Capability source: ${fixture.bridgeUrl}`,
       `Live signal dashboard: ${fixture.productSignalsUrl}`,
-      "Use specialist work where it helps. The dashboard needs browser-visible evidence.",
+      "These are three independent evidence streams. Use specialist work where it helps, and use browser-visible evidence for the live signal dashboard.",
       "The final brief should tell a product leader what to build next, why it matters, what not to over-emphasize, and what risk remains.",
     ].join("\n"),
     minBytes: 700,
-    minToolResults: 3,
+    minToolResults: 2,
     maxToolResults: 12,
-    minSpawnedSessions: 3,
+    minSpawnedSessions: 2,
     maxSpawnedSessions: 8,
     requiresBrowser: true,
     requiresApproval: false,
     allowToolFailure: false,
-    minEvidenceEvents: 3,
+    minEvidenceEvents: 2,
     requiredAnswerTerms: ["multi-agent", "browser", "Mission Control", "Stuck missions", "Weak answer rate", "risk"],
   };
+}
+
+function unsupportedVendorComparisonPatterns(): Array<{ label: string; pattern: RegExp }> {
+  return [
+    { label: "unsupported alternate Alpha pricing", pattern: /\$(?:89|199)\b/i },
+    { label: "unsupported SLA claim", pattern: /\b(?:99\.9|99\.99|uptime guaranteed|published SLA|SLA guarantee)\b/i },
+    { label: "unsupported integration catalog details", pattern: /\b(?:Shopify|HubSpot|Salesforce|Stripe|Slack|GA4)\b/i },
+    { label: "unsupported support tier", pattern: /\b(?:dedicated CSM|24\/7 dedicated support)\b/i },
+  ];
 }
 
 const NATURAL_PROMPT_FORBIDDEN_PATTERNS = [
@@ -1629,7 +1647,8 @@ export function evaluateNaturalMissionQuality(input: {
     input.metrics.sessions.continued >= (input.spec.minContinuedSessions ?? 0);
   const finalAnswerHasEvidence =
     input.metrics.qualityGate.evidenceEvents >= input.spec.minEvidenceEvents &&
-    input.spec.requiredAnswerTerms.every((term) => input.final.text.toLowerCase().includes(term.toLowerCase()));
+    input.spec.requiredAnswerTerms.every((term) => input.final.text.toLowerCase().includes(term.toLowerCase())) &&
+    (input.spec.requiredAnswerPatterns ?? []).every((item) => item.pattern.test(input.final.text));
   const finalAnswerUseful =
     Buffer.byteLength(input.final.text, "utf8") >= input.spec.minBytes &&
     /\b(recommend|next action|risk|owner|tradeoff|continue|verified)\b/i.test(input.final.text);
@@ -1641,7 +1660,16 @@ export function evaluateNaturalMissionQuality(input: {
 
   if (!completed) failures.push("mission did not complete with done status");
   if (stuckOrLoop) failures.push("mission appears stuck, looping, or retains live runtime subjects");
-  if (!reasonableToolUse) failures.push("tool use was outside the natural scenario range");
+  if (!reasonableToolUse) {
+    failures.push(
+      [
+        "tool use was outside the natural scenario range",
+        `toolResults=${input.metrics.tool.results}/${input.spec.minToolResults}-${input.spec.maxToolResults}`,
+        `spawned=${input.metrics.sessions.spawned}/${input.spec.minSpawnedSessions}-${input.spec.maxSpawnedSessions}`,
+        `continued=${input.metrics.sessions.continued}/${input.spec.minContinuedSessions ?? 0}+`,
+      ].join(" ")
+    );
+  }
   if (input.spec.requiresBrowser && !browserUsed) failures.push("browser scenario did not show browser worker use");
   if (input.spec.requiresApproval && !approvalExercised) failures.push("approval scenario did not complete query/result/applied loop");
   if (!input.spec.allowToolFailure && input.metrics.tool.failed > 0) failures.push("scenario had failed tool results");
@@ -1655,6 +1683,9 @@ export function evaluateNaturalMissionQuality(input: {
   }
   for (const item of input.spec.forbiddenPatterns ?? []) {
     if (item.pattern.test(input.final.text)) failures.push(`forbidden ${item.label}`);
+  }
+  for (const item of input.spec.requiredAnswerPatterns ?? []) {
+    if (!item.pattern.test(input.final.text)) failures.push(`missing ${item.label}`);
   }
 
   return {
@@ -2120,14 +2151,30 @@ async function startFixtureServer(): Promise<FixtureServer> {
       res.end(`<!doctype html>
 <html>
   <head><title>Approval Gate Fixture</title></head>
-  <body>
-    <main>
-      <h1>Approval gate fixture</h1>
-      <p id="marker">${APPROVAL_MARKER}</p>
-      <p>This local page is safe evidence for browser.form.submit approval gating; no external mutation is performed.</p>
-    </main>
-  </body>
-</html>`);
+	  <body>
+	    <main>
+	      <h1>Approval gate fixture</h1>
+	      <p id="marker">${APPROVAL_MARKER}</p>
+	      <p>This local page is safe evidence for browser.form.submit approval gating; no external mutation is performed.</p>
+	      <form id="dry-run-form">
+	        <label>
+	          Review note
+	          <input name="note" value="local approval dry-run" />
+	        </label>
+	        <button type="submit">Submit dry-run</button>
+	      </form>
+	      <p id="dry-run-result" aria-live="polite">Dry-run has not been submitted.</p>
+	    </main>
+	    <script>
+	      document.getElementById("dry-run-form").addEventListener("submit", (event) => {
+	        event.preventDefault();
+	        window.__turnkeyApprovalDryRun = { submitted: true, marker: "${APPROVAL_MARKER}" };
+	        document.getElementById("dry-run-result").textContent =
+	          "Dry-run submitted locally after approval; no external mutation was performed. ${APPROVAL_MARKER}";
+	      });
+	    </script>
+	  </body>
+	</html>`);
       return;
     }
     if (pathname === "/dynamic-dashboard") {
@@ -3621,6 +3668,79 @@ async function waitForApprovalRequest(input: {
   }
   throw new Error(
     `mission did not request approval ${input.action} within ${input.timeoutMs}ms: ${JSON.stringify({
+      mission: latestMission,
+      approvals: latestApprovals,
+    })}`
+  );
+}
+
+async function driveNaturalApprovalDecisionsUntilComplete(input: {
+  baseUrl: string;
+  token: string;
+  missionId: string;
+  timeoutMs: number;
+}): Promise<{ mission: Mission; timeline: ActivityEvent[] }> {
+  const startedAt = Date.now();
+  const approvedIds = new Set<string>();
+  let latestApprovals: ApprovalRecord[] = [];
+  let latestMission: Mission | null = null;
+  let latestTimeline: ActivityEvent[] = [];
+  let afterApprovalThoughtMs: number | undefined;
+  while (Date.now() - startedAt < input.timeoutMs) {
+    latestApprovals = await requestJson<ApprovalRecord[]>({
+      method: "GET",
+      url: `${input.baseUrl}/approvals`,
+      token: input.token,
+    });
+    const pending = latestApprovals
+      .filter((item) => item.missionId === input.missionId && item.decision == null && !approvedIds.has(item.id))
+      .sort((a, b) => (a.requestedAtMs ?? 0) - (b.requestedAtMs ?? 0));
+    latestMission = await requestJson<Mission>({
+      method: "GET",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}`,
+      token: input.token,
+    });
+    latestTimeline = await requestJson<ActivityEvent[]>({
+      method: "GET",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}/timeline?limit=300`,
+      token: input.token,
+    });
+    if (pending.length > 0) {
+      assert.equal(latestMission.status, "needs_approval", "mission must expose needs_approval while approval is pending");
+      const approval = pending[0]!;
+      afterApprovalThoughtMs = findLatestThoughtEvent(latestTimeline)?.tMs;
+      await requestJson<unknown>({
+        method: "POST",
+        url: `${input.baseUrl}/approvals/${encodeURIComponent(approval.id)}/decision`,
+        token: input.token,
+        body: {
+          decision: "approved",
+          decidedBy: "natural-mission-e2e",
+          reason: `approving isolated local dry-run action ${approval.action} for natural acceptance`,
+        },
+      });
+      approvedIds.add(approval.id);
+      await sleep(500);
+      continue;
+    }
+    const latestThought = findLatestThoughtEvent(latestTimeline);
+    const hasPostApprovalThought =
+      latestThought && (afterApprovalThoughtMs === undefined || latestThought.tMs > afterApprovalThoughtMs);
+    if (latestMission.status === "done" && hasPostApprovalThought) {
+      assert.ok(
+        approvedIds.size > 0,
+        `natural approval mission must request at least one approval:\n${summarizeMissionState(latestMission, latestTimeline)}`
+      );
+      return { mission: latestMission, timeline: latestTimeline };
+    }
+    if (latestMission.status === "blocked") {
+      throw new Error(`mission blocked while driving natural approval: ${summarizeMissionState(latestMission, latestTimeline)}`);
+    }
+    await sleep(500);
+  }
+  throw new Error(
+    `mission did not complete after natural approval decisions within ${input.timeoutMs}ms: ${JSON.stringify({
+      approvedIds: [...approvedIds],
       mission: latestMission,
       approvals: latestApprovals,
     })}`

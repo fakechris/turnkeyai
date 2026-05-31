@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 
-import type { ActivityEvent, Mission } from "@turnkeyai/core-types/mission";
+import type { ActivityEvent, ApprovalRequest, Mission } from "@turnkeyai/core-types/mission";
 import type { RuntimeProgressEvent, TeamMessage } from "@turnkeyai/core-types/team";
 
 import { composeMissionDeps } from "../composition/mission-deps";
@@ -851,6 +851,89 @@ describe("mission-routes", () => {
         releasePost();
         await waitUntil("initial mission tick", () => ticks.length === 1);
         assert.deepEqual(ticks, [mission.id]);
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("approval decisions resume linked mission threads", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        const { orchestrator, posts, ticks } = buildOrchestrator();
+        const { res, getStatus, getJson } = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions",
+            body: { title: "Approval gated browser task", desc: "Open a local form and dry-run submit", mode: "browser" },
+          }),
+          res,
+          url: new URL("http://127.0.0.1/missions"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(getStatus(), 201);
+        const mission = getJson() as Mission;
+        await waitUntil("initial mission post", () => posts.length === 1);
+
+        const latest = await deps.missionStore.get(mission.id);
+        assert.ok(latest);
+        await deps.missionStore.putRaw({
+          ...latest,
+          status: "needs_approval",
+          pendingApprovals: 1,
+        });
+        const approval: ApprovalRequest = {
+          id: "ap.linked-browser-submit",
+          severity: "med",
+          missionId: mission.id,
+          missionTitle: mission.title,
+          agent: "role-lead",
+          action: "browser.form.submit",
+          title: "Dry-run submit",
+          affects: [],
+          risk: "isolated local dry-run",
+          requestedAt: "now",
+          requestedAtMs: clock.now(),
+          requestedAgo: "now",
+          policyHint: "approval",
+          payload: {
+            toolPermission: {
+              threadId: mission.threadId,
+              toolCallId: "call-1",
+              action: "browser.form.submit",
+              scope: "mutate",
+              requirement: {
+                level: "approval",
+                scope: "mutate",
+                reason: "browser form submit",
+                cacheKey: `${mission.threadId}:browser:mutate:approval:browser.form.submit`,
+              },
+            },
+          },
+        };
+        await deps.approvalStore.put(approval);
+
+        const decisionResponse = createResponse();
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/approvals/ap.linked-browser-submit/decision",
+            body: { decision: "approved", decidedBy: "operator" },
+          }),
+          res: decisionResponse.res,
+          url: new URL("http://127.0.0.1/approvals/ap.linked-browser-submit/decision"),
+          deps: { ...deps, orchestrator },
+        });
+        assert.equal(decisionResponse.getStatus(), 200);
+        await waitUntil("approval continuation post", () => posts.length === 2);
+        assert.equal(posts[1]?.threadId, mission.threadId);
+        assert.match(posts[1]?.content ?? "", /ap\.linked-browser-submit/);
+        assert.match(posts[1]?.content ?? "", /permission_result/);
+        assert.match(posts[1]?.content ?? "", /permission_applied/);
+        await waitUntil("approval continuation tick", () => ticks.filter((id) => id === mission.id).length >= 2);
+        const resumed = await deps.missionStore.get(mission.id);
+        assert.equal(resumed?.status, "working");
       } finally {
         t.cleanup();
       }

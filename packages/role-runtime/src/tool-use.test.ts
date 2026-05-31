@@ -810,6 +810,124 @@ test("sessions_spawn does not require publish approval for read-only release inf
   assert.match(result.content, /Fetched release metadata/);
 });
 
+test("sessions_spawn does not require publish approval for release-risk notes", async () => {
+  let permissionRequested = false;
+  const toolPermissionService: ToolPermissionService = {
+    async request() {
+      permissionRequested = true;
+      throw new Error("release-risk analysis should not request publish approval");
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      return { workerType: "browser", workerRunKey: "worker:browser:task-release-risk" };
+    },
+    async send() {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Fetched release-risk source.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-release-risk",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Attempt to fetch a slow source for a release-risk note. Do not publish or change anything.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Evaluate slow source.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(permissionRequested, false);
+  assert.equal(result.isError, undefined);
+  assert.match(result.content, /release-risk source/);
+});
+
+test("sessions_spawn does not require mutation approval for read-only priority order wording", async () => {
+  let spawnCalled = false;
+  let permissionRequested = false;
+  const toolPermissionService: ToolPermissionService = {
+    async request() {
+      permissionRequested = true;
+      throw new Error("read-only browser review should not request mutation approval");
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      spawnCalled = true;
+      return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
+    },
+    async send() {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Reviewed page.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-readonly-priority",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open the source page and review focus areas in priority order: pricing, strength, risk.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Review page.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(spawnCalled, true);
+  assert.equal(permissionRequested, false);
+  assert.equal(result.isError, undefined);
+});
+
 test("sessions_spawn waits for approval and resumes the same tool call before browser side effects", async () => {
   const events: string[] = [];
   let sendToolCallId: string | undefined;

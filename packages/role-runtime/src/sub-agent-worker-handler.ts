@@ -801,6 +801,8 @@ function buildSubAgentSystemPrompt(kind: WorkerKind, maxRounds: number): string 
     "If a partial result is the best available answer, say exactly what was verified and what is still missing.",
     "On repeated failure, summarize the best evidence already gathered instead of looping.",
     "Your final answer must be complete. If space is tight, return a shorter complete evidence ledger instead of a cut-off report.",
+    "After using a private tool, base factual claims only on the private tool result and the delegated task text. Do not add pricing, SLA, support, security, integration, adoption, or product claims from general knowledge.",
+    "If a requested fact is absent from the tool result, write not verified instead of filling it from memory.",
   ];
   if (kind === "browser") {
     return [
