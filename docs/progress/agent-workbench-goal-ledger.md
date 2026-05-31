@@ -4278,3 +4278,75 @@ Convergence question:
 - Next required gate: run a fresh full `acceptance:real` and require the
   validation-ops record plus natural JSON report to pass before claiming this
   checkpoint is converging.
+
+## 2026-06-01 01:40 CST - Recorded Acceptance Artifact Integrity
+
+Direction: unknown
+
+Execution Kernel:
+- No runtime execution behavior changed in this checkpoint.
+- The real acceptance recorder now refuses to record a passed validation-ops
+  gate unless the mission report artifacts exist and their summaries prove a
+  passing capability gate.
+- CLI arguments now reject recorded validation-ops runs that disable mission or
+  natural mission JSON artifacts. Scratch runs can still skip artifacts by also
+  disabling validation-ops recording.
+
+Result Quality:
+- This improves the evidence contract rather than model answer quality directly.
+- A passed recorded gate now requires inspectable mission ids, quality summaries,
+  liveness counts, and natural capability signals instead of relying only on
+  subprocess exit codes.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- Runtime/validation surfaces will now receive stronger release-gate records:
+  a recorded `passed` real-acceptance run should have artifact paths and summary
+  data that an operator can inspect.
+
+Browser Reliability:
+- No browser runtime behavior changed.
+- The focused real LLM gate for this checkpoint did not include browser
+  scenarios; browser reliability remains covered by the existing browser
+  natural gates and still needs a fresh full release run for broad proof.
+
+Acceptance Evidence:
+- PR #325 merged as `8103ecf`.
+- Full local verification before merge:
+  `npm test -- --runInBand`: passed, 1330 tests;
+  `npm run build`: passed;
+  `git diff --check`: passed.
+- Control Center smoke also passed before the implementation slice:
+  `npm run control-center:smoke`, screenshot bytes `124977`, mobile screenshot
+  bytes `54275`.
+- Focused real LLM acceptance after merge:
+  `npm run acceptance:real -- --skip-tooluse --mission-scenarios comparison
+  --natural-mission-scenarios natural-comparison-research --model-catalog
+  models.local.json --scenario-timeout-ms 300000 --data-dir
+  /tmp/turnkeyai-real-acceptance-artifact-integrity-20260601`: passed.
+- Validation-ops run id:
+  `validation-ops:real-llm-acceptance:2026-05-31T17-39-19-053Z:qa28jp`.
+- Real mission evidence:
+  mission `msn.mpu2dv1w.1`, status `done`, quality `passed`, tools `2/2`,
+  sessions `2/0`, liveness `0/0/0`, evidence `2`.
+- Natural mission evidence:
+  mission `msn.mpu2ecof.1`, natural `passed`, tools `2/2`, sessions `2/0`,
+  browser `no`, profile fallback `0`, stuck `no`, weak-answer signals `none`,
+  final bytes `1671`.
+
+Regression Risk:
+- The main risk is stricter CLI behavior for users who previously combined
+  validation-ops recording with artifact suppression. That path now fails
+  intentionally because it cannot support a capability claim.
+- Full `acceptance:real` has not been rerun in this checkpoint. The focused gate
+  proves artifact integrity and comparison/natural-comparison behavior, not the
+  full browser/approval/timeout/delegation matrix.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? unknown.
+- Evidence: the proof system is stricter and a focused real LLM run passed with
+  recorded mission and natural artifacts, but this checkpoint does not by itself
+  improve runtime capability or prove the full matrix.
+- Next required gate: run full `acceptance:real` and require a passed
+  validation-ops record with both mission and natural report artifacts before
+  calling the broader runtime direction converging.
