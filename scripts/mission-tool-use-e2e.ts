@@ -1716,10 +1716,11 @@ export function buildNaturalScenarioSpec(
     allowToolFailure: false,
     minEvidenceEvents: 3,
     requiredAnswerTerms: ["multi-agent", "browser", "Mission Control", "Stuck missions", "Weak answer rate", "risk"],
-    requiredAnswerPatterns: [
-      { label: "orchestration evidence stream", pattern: /product-orchestration|Product orchestration/i },
-      { label: "bridge evidence stream", pattern: /product-bridge|Capability bridge/i },
-      { label: "product signals evidence stream", pattern: /product-signals|Live signals/i },
+    requiredEvidencePatterns: [
+      { label: "orchestration evidence stream", pattern: /multi-agent decomposition|durable sub-session history/i },
+      { label: "bridge evidence stream", pattern: /browser work is a means|does not control the desktop|command-line setup/i },
+      { label: "product signals stuck missions", pattern: /Stuck missions:\s*6|6\s+stuck missions/i },
+      { label: "product signals weak answer rate", pattern: /Weak answer rate:\s*24%|24%\s+weak answer rate/i },
     ],
   };
 }

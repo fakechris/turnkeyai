@@ -277,6 +277,91 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.failures.includes("missing evidence rendered SLA breaches"));
   });
 
+  it("checks natural long-delegation source coverage in evidence rather than final fixture labels", () => {
+    const spec = buildNaturalScenarioSpec("natural-long-delegation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-long-delegation";
+    result.metrics.tool.results = 3;
+    result.metrics.sessions.spawned = 3;
+    result.metrics.qualityGate.evidenceEvents = 3;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "orchestration result",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          callInput: JSON.stringify({ agent_id: "explore", task: "review orchestration source" }),
+          resultContent: "Strength: multi-agent decomposition with durable sub-session history and follow-up.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "bridge result",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          callInput: JSON.stringify({ agent_id: "explore", task: "review bridge source" }),
+          resultContent:
+            "Boundary: browser work is a means for mission completion; the bridge does not control the desktop outside the browser.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser signal result",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          callInput: JSON.stringify({ agent_id: "browser", task: "review live signal dashboard" }),
+          resultContent:
+            "Rendered dashboard evidence: Stuck missions: 6. Weak answer rate: 24%. Recommended next action: make Mission Control the default entry.",
+        },
+      },
+      {
+        kind: "thought",
+        text: longDelegationFinalWithoutFixtureLabels(),
+        tMs: 4000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+
+    result.timeline[2]!.runtime = {
+      ...result.timeline[2]!.runtime,
+      resultContent: "Browser opened the dashboard but did not capture the rendered signal metrics.",
+    };
+    const missingSignalQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(missingSignalQuality.failures.includes("missing evidence product signals stuck missions"));
+    assert.ok(missingSignalQuality.failures.includes("missing evidence product signals weak answer rate"));
+  });
+
   it("passes natural memory recall only with memory tool evidence and recalled facts", () => {
     const spec = buildNaturalScenarioSpec("natural-memory-recall", {
       alphaUrl: "http://127.0.0.1/vendor-alpha",
@@ -398,6 +483,17 @@ function fakeResult(): MissionScenarioResult {
       failures: [],
     },
   };
+}
+
+function longDelegationFinalWithoutFixtureLabels(): string {
+  return [
+    "Recommendation: make Mission Control the default entry for the next release, then gate broader expansion on real LLM scenario quality.",
+    "The strongest product story is multi-agent coordination around a user mission, with durable follow-up and specialist work feeding one decision-ready brief.",
+    "Browser capability should stay framed as an execution surface, not the product itself: use it for rendered evidence, forms after approval, screenshots, and artifacts when a mission needs page context.",
+    "Current signals make this urgent. Stuck missions: 6 and Weak answer rate: 24% mean the release should prioritize reliable completion, evidence quality, and first-run setup over adding more surfaces.",
+    "Do not over-emphasize desktop automation or broad feature count. The bridge boundary and setup risk show that browser work needs to remain scoped and understandable.",
+    "Residual risk: these signals are still local fixture evidence, so production telemetry and continued natural E2E runs should verify the trend before a broad launch.",
+  ].join(" ");
 }
 
 function fakeCloseoutResult(
