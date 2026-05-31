@@ -1292,6 +1292,41 @@ describe("MissionThreadBridge", () => {
     assert.equal(input.session_key, "worker:explore:task:TASK-1:call_function_jfz0s4dlftej_1");
   });
 
+  it("emits clean unresolved sessions_send call events without waiting for a result", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const assistant: TeamMessage = {
+      ...baseMessage("a-session-clean-pending", "assistant", 5_000),
+      roleId: "role-lead",
+      content: "",
+      metadata: { nativeToolUse: true },
+      toolCalls: [
+        {
+          id: "c-send-clean",
+          name: "sessions_send",
+          arguments: {
+            session_key: "worker:browser:existing",
+            message: "continue",
+          },
+        },
+      ],
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([assistant]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+
+    const call = activity.events.find((event) => event.runtime?.toolPhase === "call");
+    assert.ok(call);
+    const input = JSON.parse(String(call.runtime?.callInput)) as { session_key?: string };
+    assert.equal(input.session_key, "worker:browser:existing");
+  });
+
   it("interleaves same-round dependent tool calls with their results on the timeline", async () => {
     counter = 0;
     const activity = memActivityStore();

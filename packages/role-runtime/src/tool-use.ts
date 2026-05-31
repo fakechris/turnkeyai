@@ -1433,7 +1433,10 @@ function isMalformedOrTruncatedSessionKey(sessionKey: string): boolean {
   if (/…|\.{3}|\n|\|/.test(sessionKey)) {
     return true;
   }
-  return !/^worker:[A-Za-z0-9_-]+:task[:|-][A-Za-z0-9_:-]+$/.test(sessionKey);
+  return !(
+    /^worker:[A-Za-z0-9_-]+:task[:|-][A-Za-z0-9_:-]+$/.test(sessionKey) ||
+    /^worker:[A-Za-z0-9_-]+:existing$/.test(sessionKey)
+  );
 }
 
 function cachedCompletedSessionResult(

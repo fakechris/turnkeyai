@@ -3222,11 +3222,13 @@ test("llm role response generator keeps completed tool evidence when final synth
           status: "completed",
           tool_chain: ["explore"],
           result: "Continuation completed with evidence.",
-          final_content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+          final_content:
+            "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal. Source: http://127.0.0.1:4321/cancel-resume-fixture.",
           payload: {
             mode: "llm_sub_agent",
             workerType: "explore",
-            content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+            content:
+              "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal. Source: http://127.0.0.1:4321/cancel-resume-fixture.",
           },
         }),
       };
@@ -3241,28 +3243,29 @@ test("llm role response generator keeps completed tool evidence when final synth
     relayBrief: activation.handoff.payload.intent?.relayBrief ?? "Handle the task.",
     instructions: activation.handoff.payload.intent?.instructions ?? "",
     recentMessages: [
-    {
-      messageId: "msg-cancel",
-      role: "tool",
-      name: "sessions_spawn",
-      content: JSON.stringify({
-        protocol: "turnkeyai.session_tool_result.v1",
-        task_id: "task-1",
-        session_key: "worker:explore:task:TASK-1:call_function_abc_1",
-        agent_id: "explore",
-        status: "cancelled",
-        resumable: true,
-        tool_chain: [],
-        result: "Operator cancelled the first check.",
-        final_content: null,
-        payload: null,
-      }),
-      createdAt: 1,
-    } satisfies TeamMessageSummary,
+      {
+        messageId: "msg-cancel",
+        role: "tool",
+        name: "sessions_spawn",
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:explore:task:TASK-1:call_function_abc_1",
+          agent_id: "explore",
+          status: "cancelled",
+          resumable: true,
+          tool_chain: [],
+          result: "Operator cancelled the first check.",
+          final_content: null,
+          payload: null,
+        }),
+        createdAt: 1,
+      } satisfies TeamMessageSummary,
     ],
   };
   const packet = buildPacket();
   packet.taskPrompt = `${packet.taskPrompt}\n\nContinue from the cancelled source-check attempt.`;
+  packet.outputContract = "Return a concise final answer. Do not include URLs.";
 
   const result = await generator.generate({
     activation,
@@ -3277,7 +3280,71 @@ test("llm role response generator keeps completed tool evidence when final synth
   assert.match(result.content, /\bUnverified:/);
   assert.match(result.content, /\bRisk:/);
   assert.match(result.content, /cancel/i);
+  assert.doesNotMatch(result.content, /127\.0\.0\.1/);
+  assert.match(result.content, /local fixture source/);
   assert.equal(result.metadata?.adapterName, "local-evidence-closeout");
+});
+
+test("llm role response generator does not use local evidence closeout for exact final shapes", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let gatewayCalls = 0;
+  gateway.generate = async () => {
+    gatewayCalls += 1;
+    if (gatewayCalls === 1) {
+      return toolCallResult("toolu-done", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Return exact shaped evidence.",
+      });
+    }
+    throw new Error("final synthesis provider unavailable");
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:explore:task:TASK-1:call_function_exact_1",
+          agent_id: "explore",
+          status: "completed",
+          tool_chain: ["explore"],
+          result: "Exact shape source completed.",
+          final_content: "Verified exact-shape evidence.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content: "Verified exact-shape evidence.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+  const packet = buildPacket();
+  packet.taskPrompt = `${packet.taskPrompt}\n\nUse this exact final answer shape after the tool result returns:\n- evidence: <one sentence>`;
+
+  await assert.rejects(
+    () =>
+      generator.generate({
+        activation: buildActivation(),
+        packet,
+      }),
+    /final synthesis provider unavailable/
+  );
 });
 
 test("llm role response generator stores evidence-first trace content for oversized session results", async () => {

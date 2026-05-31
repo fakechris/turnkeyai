@@ -869,7 +869,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       if (!localResult) {
         throw error;
       }
-      return { result: localResult };
+      return {
+        result: maybeRedactForbiddenLocalUrls({
+          result: localResult,
+          packet: input.packet,
+        }),
+      };
     }
   }
 
@@ -2550,6 +2555,9 @@ function buildLocalEvidenceCloseout(input: {
   };
   error: unknown;
 }): GenerateTextResult | null {
+  if (expectsExactFinalAnswerShape(input.packet.taskPrompt, input.packet.outputContract)) {
+    return null;
+  }
   const toolResults = input.messages
     .filter((message) => message.role === "tool")
     .map((message) => parseSessionToolResult(readToolResultContentText(message.content)))

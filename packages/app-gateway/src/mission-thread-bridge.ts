@@ -960,7 +960,8 @@ function shouldDelaySessionCallUntilResolved(
   if (result || splitResultMessage || (call.name !== "sessions_send" && call.name !== "sessions_history")) {
     return false;
   }
-  return true;
+  const sessionKey = call.input.session_key;
+  return typeof sessionKey === "string" && isNoisyContinuationKey(sessionKey);
 }
 
 function canonicalizeDisplayedToolCallInput(
@@ -978,6 +979,10 @@ function canonicalizeDisplayedToolCallInput(
     ...call.input,
     session_key: sessionKey,
   };
+}
+
+function isNoisyContinuationKey(sessionKey: string): boolean {
+  return /…|\.{3}|\n|\|/.test(sessionKey) || /\bcall_func(?:t(?:ion)?)?(?=…|\.{3})/.test(sessionKey);
 }
 
 function readSessionKeyFromToolResult(content: string | undefined): string | null {

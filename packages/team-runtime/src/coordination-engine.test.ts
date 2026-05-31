@@ -422,8 +422,8 @@ test("coordination engine caps and truncates recent messages before dispatch pay
       assert.equal(limit, 8);
       return Array.from({ length: 12 }, (_, index) => ({
         messageId: `msg-${index + 1}`,
-        role: index === 11 ? "tool" : index % 2 === 0 ? "user" : "assistant",
-        name: index === 11 ? "sessions_send" : index % 2 === 0 ? "user" : "Lead",
+        role: index === 10 || index === 11 ? "tool" : index % 2 === 0 ? "user" : "assistant",
+        name: index === 10 || index === 11 ? "sessions_send" : index % 2 === 0 ? "user" : "Lead",
         content:
           index === 11
             ? JSON.stringify({
@@ -431,10 +431,14 @@ test("coordination engine caps and truncates recent messages before dispatch pay
                 status: "completed",
                 agent_id: "explore",
                 session_key: "worker:explore:task:TASK-1:call_function_abc_1",
-                result: "Large raw result. ".repeat(200),
-                final_content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
-                payload: { raw: "x".repeat(4000) },
+                payload: {
+                  result: "Large raw result. ".repeat(200),
+                  final_content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+                  raw: "x".repeat(4000),
+                },
               })
+            : index === 10
+              ? `Plain tool output: ${"y".repeat(700)}`
             : `Recent message ${index + 1}: ${"x".repeat(400)}`,
         createdAt: index + 1,
       }));
@@ -545,6 +549,9 @@ test("coordination engine caps and truncates recent messages before dispatch pay
   assert.equal(firstHandoff.payload.intent?.recentMessages.length, 8);
   assert.ok((recentMessages[0]?.content.length ?? 0) <= 320);
   assert.match(recentMessages[0]?.content ?? "", /…$/);
+  assert.ok((recentMessages.at(-2)?.content.length ?? 0) > 320);
+  assert.ok((recentMessages.at(-2)?.content.length ?? 0) <= 1600);
+  assert.match(recentMessages.at(-2)?.content ?? "", /Plain tool output/);
   assert.ok((recentMessages.at(-1)?.content.length ?? 0) <= 1600);
   assert.match(recentMessages.at(-1)?.content ?? "", /Release Captain/);
   assert.match(recentMessages.at(-1)?.content ?? "", /rollback rehearsal/);

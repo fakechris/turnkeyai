@@ -2580,6 +2580,67 @@ test("sessions_send does not resolve an unrelated clean session_key to the only 
   assert.equal(resumeCalled, false);
 });
 
+test("sessions_send does not treat legacy clean session keys as malformed continuation keys", async () => {
+  let resumeCalled = false;
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:task:TASK-1:call_function_lvrrnmdym6lp_1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:task:TASK-1:call_function_lvrrnmdym6lp_1",
+            workerType: "browser",
+            status: "cancelled",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      assert.fail("getState should not be called for a missing legacy clean key");
+    },
+    async resume() {
+      resumeCalled = true;
+      assert.fail("resume should not be called for a missing legacy clean key");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-follow-up",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:browser:existing",
+        message: "Continue the existing browser session.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(result.content, "session not found: worker:browser:existing");
+  assert.equal(resumeCalled, false);
+});
+
 test("sessions_send carries approved browser context into resumed sessions", async () => {
   let resumedTaskPrompt = "";
   let approvedRuntimeAction = "";

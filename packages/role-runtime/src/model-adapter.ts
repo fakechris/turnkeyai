@@ -98,8 +98,10 @@ function summarizeLeadConclusion(activation: RoleActivationInput): string {
     reversedToolUpdates.find((message) => message.content.trim().length > 0);
 
   if (latestToolUpdate) {
+    const latestToolUpdateIndex = recentToolUpdates.lastIndexOf(latestToolUpdate);
+    const earlierToolUpdates = latestToolUpdateIndex >= 0 ? recentToolUpdates.slice(0, latestToolUpdateIndex) : [];
     return summarizeToolConclusion(latestToolUpdate.content, {
-      cancellationSeen: recentToolUpdates.some((message) => hasCancelledToolEvidence(message.content)),
+      cancellationSeen: earlierToolUpdates.some((message) => hasCancelledToolEvidence(message.content)),
     });
   }
 

@@ -132,6 +132,7 @@ test("heuristic fallback lead synthesis prefers completed evidence over a later 
   assert.match(result.content, /runbook gap/);
   assert.match(result.content, /rollback rehearsal/);
   assert.doesNotMatch(result.content, /earlier cancellation remained visible/);
+  assert.doesNotMatch(result.content, /Cancellation context/);
 });
 
 function buildActivationWithToolResult(
