@@ -599,7 +599,9 @@ async function cancelToolCallsOnMessage(input: {
   for (const id of fallbackWorkerCancel.cancelledIds) {
     runtimeOwned.add(id);
   }
-  const syntheticResultIds = cancellableIds.filter((id) => !runtimeOwned.has(id) && !fallbackWorkerCancel.terminalIds.has(id));
+  const syntheticResultIds = cancellableIds.filter(
+    (id) => !runtimeOwned.has(id) && !fallbackWorkerCancel.terminalIds.has(id) && !fallbackWorkerCancel.failedIds.has(id)
+  );
   const toolMessages = syntheticResultIds.map((id, index) => {
     const call = callById.get(id)!;
     return {
@@ -656,14 +658,17 @@ async function cancelWorkerSessionsForToolCalls(input: {
   threadId: string;
   toolCallIds: string[];
   reason: string;
-}): Promise<{ cancelledIds: Set<string>; terminalIds: Set<string> }> {
+}): Promise<{ cancelledIds: Set<string>; terminalIds: Set<string>; failedIds: Set<string> }> {
   const cancelledIds = new Set<string>();
   const terminalIds = new Set<string>();
-  if (!input.workerRuntime?.listSessions || input.toolCallIds.length === 0) {
-    return { cancelledIds, terminalIds };
+  const failedIds = new Set<string>();
+  if (!input.workerRuntime?.listSessions || !input.workerRuntime?.cancel || input.toolCallIds.length === 0) {
+    return { cancelledIds, terminalIds, failedIds };
   }
   const requested = new Set(input.toolCallIds);
+  // WorkerRuntime has no direct toolCallId lookup yet; this bounded O(N) scan is the fallback for registry misses.
   const sessions = await input.workerRuntime.listSessions();
+  const pendingCancels: Array<Promise<{ toolCallId: string; cancelled: boolean }>> = [];
   for (const session of sessions) {
     const toolCallId = session.context?.toolCallId;
     if (!toolCallId || !requested.has(toolCallId) || session.context?.threadId !== input.threadId) {
@@ -673,10 +678,22 @@ async function cancelWorkerSessionsForToolCalls(input: {
       terminalIds.add(toolCallId);
       continue;
     }
-    await input.workerRuntime.cancel({ workerRunKey: session.workerRunKey, reason: input.reason });
-    cancelledIds.add(toolCallId);
+    pendingCancels.push(
+      input.workerRuntime
+        .cancel({ workerRunKey: session.workerRunKey, reason: input.reason })
+        .then(() => ({ toolCallId, cancelled: true }))
+        .catch(() => ({ toolCallId, cancelled: false }))
+    );
   }
-  return { cancelledIds, terminalIds };
+  const results = await Promise.all(pendingCancels);
+  for (const result of results) {
+    if (result.cancelled) {
+      cancelledIds.add(result.toolCallId);
+    } else {
+      failedIds.add(result.toolCallId);
+    }
+  }
+  return { cancelledIds, terminalIds, failedIds };
 }
 
 function resolveAssistantToolStatus(
