@@ -36,9 +36,19 @@ export type MissionE2eScenario =
   | "memory-recall"
   | "task-tracking"
   | "product-workbench-brief"
-  | "realistic-brief";
+  | "realistic-brief"
+  | "budget-limited-closeout"
+  | "sub-agent-timeout-closeout";
 
-const MISSION_E2E_SCENARIOS = DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS satisfies readonly MissionE2eScenario[];
+const CLOSEOUT_ACCEPTANCE_MISSION_SCENARIOS = [
+  "budget-limited-closeout",
+  "sub-agent-timeout-closeout",
+] as const satisfies readonly MissionE2eScenario[];
+
+const MISSION_E2E_SCENARIOS = [
+  ...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS,
+  ...CLOSEOUT_ACCEPTANCE_MISSION_SCENARIOS,
+] as const satisfies readonly MissionE2eScenario[];
 
 interface Mission {
   id: string;
@@ -118,6 +128,8 @@ const DYNAMIC_BROWSER_FINAL_MARKER = "TURNKEYAI_MISSION_DYNAMIC_BROWSER_OK";
 const DASHBOARD_TRIAGE_MARKER = "TURNKEYAI_DASHBOARD_TRIAGE_OK";
 const DASHBOARD_TRIAGE_FINAL_MARKER = "TURNKEYAI_MISSION_DASHBOARD_TRIAGE_OK";
 const TIMEOUT_FINAL_MARKER = "TURNKEYAI_MISSION_TIMEOUT_OK";
+const BUDGET_CLOSEOUT_FINAL_MARKER = "TURNKEYAI_MISSION_BUDGET_CLOSEOUT_OK";
+const SUB_AGENT_TIMEOUT_CLOSEOUT_FINAL_MARKER = "TURNKEYAI_MISSION_SUB_AGENT_TIMEOUT_CLOSEOUT_OK";
 const MEMORY_SETUP_MARKER = "TURNKEYAI_MISSION_MEMORY_SETUP_OK";
 const MEMORY_SOURCE_MARKER = "TURNKEYAI_MEMORY_RECALL_SOURCE_OK";
 const MEMORY_RECALL_FINAL_MARKER = "TURNKEYAI_MISSION_MEMORY_RECALL_OK";
@@ -165,11 +177,16 @@ export interface ScenarioSpec {
   expectedSendCalls: number;
   expectedToolResults: number;
   expectedToolResultsMax?: number;
+  expectedToolFailures?: number;
+  expectedToolTimeouts?: number;
   expectedSpawnedSessions: number;
   expectedSpawnedSessionsMax?: number;
   expectedContinuedSessions: number;
   minEvidenceEvents: number;
   expectedBullets: number;
+  expectedQualityGateStatus?: string;
+  expectedCloseoutReason?: string;
+  expectedCloseoutEvidenceAvailable?: string;
 }
 
 export interface MissionScenarioResult {
@@ -223,6 +240,10 @@ export interface MissionE2eScenarioReport {
     bytes: number;
     bullets: number;
     qualityFailures: string[];
+    closeout?: {
+      reason: string;
+      evidenceAvailable?: string;
+    };
   };
 }
 
@@ -380,16 +401,18 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-mission-e2e-"));
   const port = await allocatePort();
   const token = `mission-e2e-${Date.now()}`;
+  const scenarios = options.matrixScenarios ?? (options.matrix ? [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS] : [options.scenario]);
+  assertSupportedScenarioMix(scenarios);
   const daemon = startDaemon({
     runtimeRoot,
     port,
     token,
     modelCatalogPath,
+    ...(scenarios.includes("budget-limited-closeout") ? { agentToolMaxRounds: 1 } : {}),
   });
   try {
     const baseUrl = `http://127.0.0.1:${port}`;
     await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: 20_000 });
-    const scenarios = options.matrixScenarios ?? (options.matrix ? [...MISSION_E2E_SCENARIOS] : [options.scenario]);
     const results: MissionScenarioResult[] = [];
     for (const [index, scenario] of scenarios.entries()) {
       const scenarioStartedAt = Date.now();
@@ -439,6 +462,22 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
   }
 }
 
+function assertSupportedScenarioMix(scenarios: MissionE2eScenario[]): void {
+  if (!scenarios.includes("budget-limited-closeout")) {
+    return;
+  }
+  const allowedWithBudget = new Set<MissionE2eScenario>(CLOSEOUT_ACCEPTANCE_MISSION_SCENARIOS);
+  const incompatible = scenarios.filter((scenario) => !allowedWithBudget.has(scenario));
+  if (incompatible.length > 0) {
+    throw new Error(
+      [
+        "budget-limited-closeout runs the daemon with a deliberately low tool-round budget.",
+        `Run it separately from normal mission scenarios. Incompatible scenario(s): ${incompatible.join(", ")}`,
+      ].join(" ")
+    );
+  }
+}
+
 async function runMissionScenario(input: {
   baseUrl: string;
   token: string;
@@ -458,6 +497,12 @@ async function runMissionScenario(input: {
   }
   if (input.scenario === "timeout-recovery") {
     return runMissionTimeoutScenario(input);
+  }
+  if (input.scenario === "budget-limited-closeout") {
+    return runMissionCloseoutScenario(input);
+  }
+  if (input.scenario === "sub-agent-timeout-closeout") {
+    return runMissionCloseoutScenario(input);
   }
   if (input.scenario === "memory-recall") {
     return runMissionMemoryRecallScenario(input);
@@ -757,6 +802,62 @@ async function runMissionTimeoutScenario(input: {
   return { scenario: "timeout-recovery", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
+async function runMissionCloseoutScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  scenario: MissionE2eScenario;
+  timeoutMs: number;
+}): Promise<MissionScenarioResult> {
+  const spec = buildScenarioSpec(input.scenario, input.fixture);
+  const mission = await createMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "mission route must create a linked team thread");
+
+  const result = await waitForMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    finalMarker: spec.finalMarker,
+    timeoutMs: input.timeoutMs,
+    failFastDoneWithoutMarker: true,
+  });
+  if (input.scenario === "sub-agent-timeout-closeout") {
+    assertMissionTimeoutTimeline(result.timeline, spec);
+    const timeoutSessionKey = extractFirstSessionKey(result.timeline);
+    assert.ok(timeoutSessionKey, "sub-agent timeout closeout E2E requires a session_key from sessions_spawn");
+    await assertWorkerSessionResumableAfterTimeout({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      threadId: mission.threadId,
+      workerRunKey: timeoutSessionKey,
+    });
+  } else {
+    assertMissionBudgetCloseoutTimeline(result.timeline, spec);
+  }
+  assertMissionCloseoutTimeline(result.timeline, spec);
+
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  assertMissionMetrics(metrics, spec);
+  const final = findFinalEvent(result.timeline, spec.finalMarker);
+  assert.ok(final, "mission timeline must include a closeout final assistant answer");
+  const quality = evaluateFinalQuality(final.text, spec);
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `mission ${input.scenario} final answer quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
 async function runMissionMemoryRecallScenario(input: {
   baseUrl: string;
   token: string;
@@ -918,6 +1019,10 @@ function printScenarioResult(result: MissionScenarioResult): void {
     `mission-metrics-liveness: ${result.metrics.liveness.active}/${result.metrics.liveness.waiting}/${result.metrics.liveness.stale}`
   );
   console.log(`mission-metrics-evidence: ${result.metrics.qualityGate.evidenceEvents}`);
+  const closeoutReason = result.final.runtime?.["toolLoopCloseoutReason"];
+  if (typeof closeoutReason === "string") {
+    console.log(`mission-tool-loop-closeout: ${closeoutReason}`);
+  }
   console.log(`mission-final-bytes: ${Buffer.byteLength(result.final.text, "utf8")}`);
   console.log(`mission-final-bullets: ${result.quality.bullets}`);
 }
@@ -977,12 +1082,44 @@ export function summarizeMissionScenarioResult(result: MissionScenarioResult): M
       bytes: Buffer.byteLength(result.final.text, "utf8"),
       bullets: result.quality.bullets,
       qualityFailures: [...result.quality.failures],
+      ...summarizeCloseout(result.final),
+    },
+  };
+}
+
+function summarizeCloseout(final: ActivityEvent): Pick<MissionE2eScenarioReport["final"], "closeout"> {
+  const reason = final.runtime?.["toolLoopCloseoutReason"];
+  if (typeof reason !== "string") {
+    return {};
+  }
+  const evidenceAvailable = final.runtime?.["toolLoopCloseout.evidenceAvailable"];
+  return {
+    closeout: {
+      reason,
+      ...(typeof evidenceAvailable === "string" ? { evidenceAvailable } : {}),
     },
   };
 }
 
 function isPassingMissionScenarioReport(report: MissionE2eScenarioReport): boolean {
-  return report.status === "done" && report.qualityGate === "passed" && report.final.qualityFailures.length === 0;
+  const expectedQualityGate =
+    report.scenario === "budget-limited-closeout"
+      ? "needs_attention"
+      : report.scenario === "sub-agent-timeout-closeout"
+        ? "blocked"
+        : "passed";
+  const expectedCloseoutReason =
+    report.scenario === "budget-limited-closeout"
+      ? "round_limit"
+      : report.scenario === "sub-agent-timeout-closeout"
+        ? "sub_agent_timeout"
+        : null;
+  return (
+    report.status === "done" &&
+    report.qualityGate === expectedQualityGate &&
+    (expectedCloseoutReason === null || report.final.closeout?.reason === expectedCloseoutReason) &&
+    report.final.qualityFailures.length === 0
+  );
 }
 
 function summarizeQualityChecks(
@@ -1791,6 +1928,121 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       ].join("\n"),
     };
   }
+  if (scenario === "budget-limited-closeout") {
+    return {
+      scenario,
+      title: "Mission route budget-limited closeout E2E",
+      finalMarker: BUDGET_CLOSEOUT_FINAL_MARKER,
+      evidenceMarkers: [],
+      answerTerms: ["tool-round limit", "tasks_list", "residual risk", "continue"],
+      answerPatterns: [
+        { label: "round-limit disclosure", pattern: /tool-round limit|round limit|budget/i },
+        { label: "evidence-bounded answer", pattern: /already gathered|available evidence|task/i },
+      ],
+      evidenceLinePatterns: [
+        {
+          label: "budget boundary line",
+          pattern:
+            /^\s*[-*+]\s+budget boundary\s*:.*TURNKEYAI_MISSION_BUDGET_CLOSEOUT_OK.*(?:tool-round limit|round limit|budget)/im,
+        },
+        {
+          label: "available evidence line",
+          pattern: /^\s*[-*+]\s+available evidence\s*:.*tasks_list.*tool result/im,
+        },
+        { label: "residual risk line", pattern: /^\s*[-*+]\s+residual risk\s*:.*continue/im },
+      ],
+      forbiddenPatterns: [
+        { label: "unsupported task creation", pattern: /Verify budget closeout second step.*(?:created|done|completed)/i },
+        { label: "internal source URL", pattern: /https?:\/\//i },
+      ],
+      expectedSpawnCalls: 0,
+      expectedSendCalls: 0,
+      expectedToolResults: 1,
+      expectedSpawnedSessions: 0,
+      expectedContinuedSessions: 0,
+      minEvidenceEvents: 1,
+      expectedBullets: 3,
+      minBytes: 180,
+      maxBytes: 900,
+      expectedQualityGateStatus: "needs_attention",
+      expectedCloseoutReason: "round_limit",
+      expectedCloseoutEvidenceAvailable: "true",
+      desc: [
+        "Run the mission route budget-limited closeout E2E.",
+        "Use native task tools instead of answering from memory.",
+        "In the first assistant tool turn, call tasks_list exactly once with limit 10. Do not call multiple tools in the same assistant turn.",
+        "After the tasks_list result returns, attempt one more tool call: tasks_create with title \"Verify budget closeout second step\" and status \"working\". Do not write the final answer before attempting this second tool call.",
+        "The daemon intentionally runs this scenario with a one-round tool budget, so the second tool call should not execute. When the runtime tells you to stop using tools, synthesize only from already gathered evidence.",
+        `Final answer must include ${BUDGET_CLOSEOUT_FINAL_MARKER} exactly once, and only inside the first bullet. It must also include tasks_list, tool result, tool-round limit, continue, and the exact words residual risk.`,
+        `Use plain Markdown with the exact heading "Budget closeout" with no #, **, or __ markup, followed by exactly three bullets: budget boundary, available evidence, residual risk. The first bullet must start with "- budget boundary: ${BUDGET_CLOSEOUT_FINAL_MARKER} - tool-round limit".`,
+        `The available evidence and residual risk bullets must not include ${BUDGET_CLOSEOUT_FINAL_MARKER}.`,
+        "The available evidence bullet must mention that only the tasks_list tool result is verified.",
+        "The residual risk bullet must include the literal word continue and state that the tasks_create second step was not verified.",
+        "Do not claim the second task was created, done, or completed.",
+        "Do not use sessions_spawn, sessions_send, browser tools, source URLs, raw session keys, tables, links, code fences, or bold/italic markup.",
+      ].join("\n"),
+    };
+  }
+  if (scenario === "sub-agent-timeout-closeout") {
+    return {
+      scenario,
+      title: "Mission route sub-agent timeout closeout E2E",
+      finalMarker: SUB_AGENT_TIMEOUT_CLOSEOUT_FINAL_MARKER,
+      evidenceMarkers: [],
+      answerTerms: ["timed out", "verification did not complete", "continue", "residual risk"],
+      expectedSpawnCalls: 1,
+      expectedSendCalls: 0,
+      expectedToolResults: 1,
+      expectedToolFailures: 1,
+      expectedToolTimeouts: 1,
+      expectedSpawnedSessions: 1,
+      expectedContinuedSessions: 0,
+      minEvidenceEvents: 1,
+      expectedBullets: 3,
+      expectedQualityGateStatus: "blocked",
+      expectedCloseoutReason: "sub_agent_timeout",
+      expectedCloseoutEvidenceAvailable: "true",
+      evidenceLinePatterns: [
+        {
+          label: "timeout boundary line",
+          pattern: /^\s*[-*+]\s+timeout boundary\s*:.*TURNKEYAI_MISSION_SUB_AGENT_TIMEOUT_CLOSEOUT_OK.*timed out/im,
+        },
+        {
+          label: "attempted verification line",
+          pattern: /^\s*[-*+]\s+attempted verification\s*:.*verification did not complete/im,
+        },
+        {
+          label: "residual risk line",
+          pattern: /^\s*[-*+]\s+residual risk\s*:.*continue/im,
+        },
+      ],
+      forbiddenPatterns: [
+        {
+          label: "timeout marker outside timeout boundary",
+          pattern: /^\s*[-*+]\s+(?!timeout boundary\s*:).*TURNKEYAI_MISSION_SUB_AGENT_TIMEOUT_CLOSEOUT_OK/im,
+        },
+      ],
+      minBytes: 140,
+      maxBytes: 900,
+      desc: [
+        "Run the mission route sub-agent timeout closeout E2E.",
+        "Use the available session tool instead of answering from memory.",
+        "Call sessions_spawn with agent_id=explore exactly once.",
+        "The sessions_spawn input must include timeout_seconds as the JSON number 0.001.",
+        `The explore sub-agent task must fetch ${fixture.slowUrl} and report the page title plus marker ${FIXTURE_MARKER}.`,
+        "The local fixture is intentionally too slow; do not call sessions_send, sessions_history, sessions_list, or any fallback session after the timeout result.",
+        `Final answer must include ${SUB_AGENT_TIMEOUT_CLOSEOUT_FINAL_MARKER} exactly once, and only inside the first bullet. It must also include timed out, verification did not complete, continue, and the exact words residual risk.`,
+        `Use plain Markdown with the exact heading "Timeout closeout" with no #, **, or __ markup, followed by exactly three bullets: timeout boundary, attempted verification, residual risk. The first bullet must start with "- timeout boundary: ${SUB_AGENT_TIMEOUT_CLOSEOUT_FINAL_MARKER} - timed out".`,
+        `The attempted verification and residual risk bullets must not include ${SUB_AGENT_TIMEOUT_CLOSEOUT_FINAL_MARKER}.`,
+        "The attempted verification bullet must include the exact phrase verification did not complete.",
+        "The third bullet must include the literal word continue without repeating the final success marker.",
+        "In the attempted verification bullet, name the slow fixture but do not include the fixture URL.",
+        "Do not add any paragraph, summary, or note after the three bullets.",
+        "Do not claim the fixture marker was verified unless it appears in the tool result.",
+        "Do not use tables, links, code fences, or bold/italic markup.",
+      ].join("\n"),
+    };
+  }
   if (scenario === "browser-dynamic") {
     return {
       scenario,
@@ -2567,6 +2819,68 @@ function assertMissionTimeoutTimeline(timeline: ActivityEvent[], spec: ScenarioS
   assert.equal(result?.emph, "danger", "timeout sessions_spawn result should be marked as an attention event");
 }
 
+function assertMissionCloseoutTimeline(timeline: ActivityEvent[], spec: ScenarioSpec): void {
+  assert.ok(spec.expectedCloseoutReason, "closeout timeline assertion requires expectedCloseoutReason");
+  const final = findFinalEvent(timeline, spec.finalMarker);
+  assert.ok(final, "closeout E2E must include the final assistant answer");
+  assert.equal(
+    final.runtime?.["toolLoopCloseoutReason"],
+    spec.expectedCloseoutReason,
+    "closeout E2E final answer must expose the expected toolLoopCloseoutReason"
+  );
+  assert.equal(
+    final.runtime?.["toolLoopCloseout"],
+    "true",
+    "closeout E2E final answer must mark toolLoopCloseout=true"
+  );
+  if (spec.expectedCloseoutEvidenceAvailable !== undefined) {
+    assert.equal(
+      final.runtime?.["toolLoopCloseout.evidenceAvailable"],
+      spec.expectedCloseoutEvidenceAvailable,
+      "closeout E2E final answer must expose expected evidence availability"
+    );
+  }
+  assert.match(
+    String(final.runtime?.["toolLoopCloseout.roundCount"] ?? ""),
+    /^\d+$/,
+    "closeout E2E final answer must expose completed round count"
+  );
+  assert.match(
+    String(final.runtime?.["toolLoopCloseout.toolCallCount"] ?? ""),
+    /^\d+$/,
+    "closeout E2E final answer must expose executed tool-call count"
+  );
+}
+
+function assertMissionBudgetCloseoutTimeline(timeline: ActivityEvent[], spec: ScenarioSpec): void {
+  assert.ok(timeline.length > 0, "budget closeout timeline must not be empty");
+  const planIndex = timeline.findIndex((event) => event.kind === "plan");
+  const listCallIndexes = findToolPhaseIndexes(timeline, "tasks_list", "call");
+  const listResultIndexes = findToolPhaseIndexes(timeline, "tasks_list", "result");
+  const createCallIndexes = findToolPhaseIndexes(timeline, "tasks_create", "call");
+  const createResultIndexes = findToolPhaseIndexes(timeline, "tasks_create", "result");
+  const sessionCallIndexes = [
+    ...findToolPhaseIndexes(timeline, "sessions_spawn", "call"),
+    ...findToolPhaseIndexes(timeline, "sessions_send", "call"),
+  ];
+  const finalIndex = timeline.findIndex((event) => event.kind === "thought" && event.text.includes(spec.finalMarker));
+
+  assert.ok(planIndex >= 0, "budget closeout timeline must include the user plan event");
+  assert.equal(sessionCallIndexes.length, 0, "budget closeout E2E must not use sub-agent session tools");
+  assert.equal(listCallIndexes.length, 1, "budget closeout E2E expected exactly one tasks_list call");
+  assert.equal(listResultIndexes.length, 1, "budget closeout E2E expected exactly one tasks_list result");
+  assert.equal(createCallIndexes.length, 0, "budget-limited pending tasks_create must not be persisted as an executed tool call");
+  assert.equal(createResultIndexes.length, 0, "budget-limited pending tasks_create must not execute");
+  assert.ok(listCallIndexes[0]! > planIndex, "tasks_list call must appear after the user plan");
+  assert.ok(listResultIndexes[0]! > listCallIndexes[0]!, "tasks_list result must appear after the call");
+  assert.ok(finalIndex > listResultIndexes[0]!, "final answer must appear after the first tool result");
+
+  const callInput = timeline[listCallIndexes[0]!]!.runtime?.["callInput"];
+  assert.equal(typeof callInput, "string", "budget closeout tasks_list call must persist structured callInput");
+  const parsedCall = JSON.parse(callInput as string) as { limit?: number };
+  assert.equal(parsedCall.limit, 10, "budget closeout E2E must request tasks_list limit 10");
+}
+
 async function assertWorkerSessionCancelled(input: {
   baseUrl: string;
   token: string;
@@ -2651,8 +2965,16 @@ function assertMissionMetrics(metrics: MissionObservabilitySnapshot, spec: Scena
       `mission metrics tool results must be between ${spec.expectedToolResults} and ${spec.expectedToolResultsMax}`
     );
   }
-  assert.equal(metrics.tool.failed, 0, "mission metrics must not report failed tool results");
-  assert.equal(metrics.tool.timeouts, 0, "mission metrics must not report timed-out tools");
+  assert.equal(
+    metrics.tool.failed,
+    spec.expectedToolFailures ?? 0,
+    "mission metrics must match failed tool results"
+  );
+  assert.equal(
+    metrics.tool.timeouts,
+    spec.expectedToolTimeouts ?? 0,
+    "mission metrics must match timed-out tools"
+  );
   assertCountInRange(
     metrics.sessions.spawned,
     spec.expectedSpawnedSessions,
@@ -2666,9 +2988,18 @@ function assertMissionMetrics(metrics: MissionObservabilitySnapshot, spec: Scena
   assert.equal(metrics.liveness.stale, 0, "mission metrics must not report stale runtime subjects");
   assert.equal(
     metrics.qualityGate.status,
-    "passed",
-    `mission metrics quality gate must pass: ${JSON.stringify(metrics.qualityGate.checks)}`
+    spec.expectedQualityGateStatus ?? "passed",
+    `mission metrics quality gate must match expected status: ${JSON.stringify(metrics.qualityGate.checks)}`
   );
+  if (spec.expectedCloseoutReason) {
+    const closeoutCheck = metrics.qualityGate.checks?.find((check) => check.name === "tool_loop_closeout");
+    assert.equal(closeoutCheck?.status, "warn", "forced closeout must surface a tool_loop_closeout warning");
+    assert.match(
+      String(closeoutCheck?.detail ?? ""),
+      new RegExp(spec.expectedCloseoutReason === "round_limit" ? "tool-round limit" : "sub-agent timeout", "i"),
+      "tool_loop_closeout detail must name the closeout reason"
+    );
+  }
   assert.ok(metrics.qualityGate.evidenceEvents >= spec.minEvidenceEvents, "mission metrics must count evidence-bearing events");
   if (spec.expectedSourceLabels?.length) {
     const sourceCoverage = metrics.qualityGate.checks?.find((check) => check.name === "source_coverage");
@@ -2820,6 +3151,7 @@ function startDaemon(input: {
   port: number;
   token: string;
   modelCatalogPath: string;
+  agentToolMaxRounds?: number;
 }): { child: DaemonChildProcess; output: () => string } {
   let output = "";
   const child = spawn("npm", ["run", "daemon"], {
@@ -2833,6 +3165,9 @@ function startDaemon(input: {
       TURNKEYAI_MODEL_CATALOG: input.modelCatalogPath,
       TURNKEYAI_BROWSER_TRANSPORT: process.env.TURNKEYAI_BROWSER_TRANSPORT?.trim() || "local",
       TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE: "1",
+      ...(input.agentToolMaxRounds === undefined
+        ? {}
+        : { TURNKEYAI_AGENT_TOOL_MAX_ROUNDS: String(input.agentToolMaxRounds) }),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

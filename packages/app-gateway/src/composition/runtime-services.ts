@@ -73,6 +73,17 @@ const DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS = 5;
 const DEFAULT_AGENT_TOOL_MAX_CALLS_PER_ROUND = 5;
 const DEFAULT_AGENT_TOOL_MAX_PARENT_SESSIONS = 5;
 const DEFAULT_AGENT_TOOL_MAX_GLOBAL_SESSIONS = 12;
+const AGENT_TOOL_MAX_ROUNDS = readPositiveIntegerEnv(
+  "TURNKEYAI_AGENT_TOOL_MAX_ROUNDS",
+  DEFAULT_AGENT_TOOL_MAX_ROUNDS
+);
+
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 export interface DaemonRuntimeLimits {
   memberMaxIterations: number;
@@ -266,7 +277,7 @@ export async function composeDaemonRuntimeServices(
                 ...(inputs.toolPermissionService ? { toolPermissionService: inputs.toolPermissionService } : {}),
                 ...(inputs.taskToolService ? { taskToolService: inputs.taskToolService } : {}),
               }),
-              maxRounds: DEFAULT_AGENT_TOOL_MAX_ROUNDS,
+              maxRounds: AGENT_TOOL_MAX_ROUNDS,
               maxWallClockMs: DEFAULT_AGENT_TOOL_WALL_CLOCK_MS,
               maxParallelToolCalls: DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS,
               maxToolCallsPerRound: DEFAULT_AGENT_TOOL_MAX_CALLS_PER_ROUND,
