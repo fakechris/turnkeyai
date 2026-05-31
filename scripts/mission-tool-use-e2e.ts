@@ -620,12 +620,13 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
   const token = `mission-e2e-${Date.now()}`;
   const scenarios = options.matrixScenarios ?? (options.matrix ? [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS] : [options.scenario]);
   assertSupportedScenarioMix(scenarios);
+  const shouldUseBudgetLimitedDaemon = !options.natural && scenarios.includes("budget-limited-closeout");
   let daemon = startDaemon({
     runtimeRoot,
     port,
     token,
     modelCatalogPath,
-    ...(scenarios.includes("budget-limited-closeout") ? { agentToolMaxRounds: 1 } : {}),
+    ...(shouldUseBudgetLimitedDaemon ? { agentToolMaxRounds: 1 } : {}),
   });
   const restartDaemon = async () => {
     await stopDaemon(daemon.child);
@@ -634,7 +635,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
       port,
       token,
       modelCatalogPath,
-      ...(scenarios.includes("budget-limited-closeout") ? { agentToolMaxRounds: 1 } : {}),
+      ...(shouldUseBudgetLimitedDaemon ? { agentToolMaxRounds: 1 } : {}),
     });
     await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: 30_000 });
   };
@@ -1436,7 +1437,7 @@ async function runNaturalBrowserFollowupScenario(input: {
   });
   const initialFinal = findLatestThoughtEvent(initialTimeline);
   assert.ok(initialFinal, "natural browser follow-up phase one must include an assistant answer");
-  const initialSessionKey = extractFirstSessionKey(initialTimeline);
+  const initialSessionKey = extractSessionKeyForSpawnAgent(initialTimeline, "browser");
   assert.ok(initialSessionKey, "natural browser follow-up phase one must expose a reusable browser session key");
 
   const followup = [
@@ -1529,7 +1530,7 @@ async function runNaturalBrowserRestartContinuationScenario(input: {
   });
   const initialFinal = findLatestThoughtEvent(initialTimeline);
   assert.ok(initialFinal, "natural browser restart phase one must include an assistant answer");
-  const initialSessionKey = extractFirstSessionKey(initialTimeline);
+  const initialSessionKey = extractSessionKeyForSpawnAgent(initialTimeline, "browser");
   assert.ok(initialSessionKey, "natural browser restart phase one must expose a reusable browser session key");
 
   await input.restartDaemon();
@@ -4535,6 +4536,51 @@ function extractFirstSessionKey(timeline: ActivityEvent[]): string | null {
     }
   }
   return null;
+}
+
+export function extractSessionKeyForSpawnAgent(timeline: ActivityEvent[], agentId: string): string | null {
+  const matchingCallIds = new Set<string>();
+  for (const event of timeline) {
+    if (event.runtime?.["toolName"] !== "sessions_spawn" || event.runtime?.["toolPhase"] !== "call") {
+      continue;
+    }
+    const toolCallId = readRuntimeString(event, "toolCallId");
+    if (!toolCallId) {
+      continue;
+    }
+    const callInput = event.runtime?.["callInput"];
+    if (typeof callInput !== "string") {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(callInput) as { agent_id?: unknown };
+      if (parsed.agent_id === agentId) {
+        matchingCallIds.add(toolCallId);
+      }
+    } catch {
+      continue;
+    }
+  }
+  for (const event of timeline) {
+    if (event.runtime?.["toolName"] !== "sessions_spawn" || event.runtime?.["toolPhase"] !== "result") {
+      continue;
+    }
+    const toolCallId = readRuntimeString(event, "toolCallId");
+    if (!toolCallId || !matchingCallIds.has(toolCallId)) {
+      continue;
+    }
+    const content = String(event.runtime?.["resultContent"] ?? event.text);
+    const match = content.match(/"session_key"\s*:\s*"([^"]+)"/);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+function readRuntimeString(event: ActivityEvent, key: string): string | null {
+  const value = event.runtime?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 export function extractTimedOutSessionKey(timeline: ActivityEvent[]): string | null {

@@ -3986,17 +3986,16 @@ Browser Reliability:
 Acceptance Evidence:
 - Focused regression:
   `npm test -- --runInBand packages/role-runtime/src/llm-response-generator.test.ts
-  scripts/mission-tool-use-e2e-report.test.ts
-  packages/app-gateway/src/mission-observability.test.ts`: passed, 1306 tests.
+  scripts/mission-tool-use-e2e-report.test.ts`: passed, 1309 tests.
 - `npm run typecheck`: passed.
 - Real LLM E2E:
   `npm run mission:e2e:natural -- --model-catalog models.local.json
   --natural-matrix-scenarios natural-browser-restart-continuation
   --scenario-timeout-ms 360000
   --json tmp/natural-browser-restart-continuation-e2e.json`: passed.
-- Real mission: `msn.mptn2dsj.1`, status `done`, quality gate `passed`,
-  natural `passed`, tools `2/2`, sessions `1/1`, browser `yes`, profile
-  fallback `0`, liveness `0/0/0`, final bytes `1317`, weak-answer signals
+- Real mission: `msn.mptnvop6.1`, status `done`, quality gate `passed`,
+  natural `passed`, tools `3/3`, sessions `1/1`, browser `yes`, profile
+  fallback `0`, liveness `0/0/0`, final bytes `778`, weak-answer signals
   `none`.
 
 Regression Risk:

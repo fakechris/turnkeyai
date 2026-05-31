@@ -58,6 +58,8 @@ interface SessionContinuationDirective {
   messageHint: string;
 }
 
+const SESSION_TOOL_RESULT_PROTOCOL = "turnkeyai.session_tool_result.v1";
+
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
@@ -1145,6 +1147,21 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
     return null;
   }
+  const sessionResults = extractSessionToolResultRecords(taskPrompt);
+  for (let index = sessionResults.length - 1; index >= 0; index -= 1) {
+    const result = sessionResults[index]!;
+    const sessionKey = result["session_key"];
+    if (typeof sessionKey !== "string" || !sessionKey.trim()) {
+      continue;
+    }
+    if (!sessionToolResultSupportsContinuation(result)) {
+      continue;
+    }
+    return {
+      sessionKey: sessionKey.trim(),
+      messageHint: latestUserText,
+    };
+  }
   const sessionMatches = [...taskPrompt.matchAll(/"session_key"\s*:\s*"([^"]+)"/g)];
   for (let index = sessionMatches.length - 1; index >= 0; index -= 1) {
     const match = sessionMatches[index]!;
@@ -1168,16 +1185,49 @@ function sessionContextSupportsContinuation(context: string): boolean {
   if (/\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(context)) {
     return true;
   }
-  for (const parsed of parseJsonObjectsFromContext(context)) {
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      continue;
-    }
-    const result = parsed as Record<string, unknown>;
-    if (result["protocol"] === "turnkeyai.session_tool_result.v1" && result["status"] === "completed") {
+  for (const result of extractSessionToolResultRecords(context)) {
+    if (sessionToolResultSupportsContinuation(result)) {
       return true;
     }
   }
   return false;
+}
+
+function extractSessionToolResultRecords(context: string): Array<Record<string, unknown>> {
+  const records: Array<Record<string, unknown>> = [];
+  for (const parsed of parseJsonObjectsFromContext(context)) {
+    collectSessionToolResultRecords(parsed, records);
+  }
+  return records;
+}
+
+function collectSessionToolResultRecords(value: unknown, records: Array<Record<string, unknown>>): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return;
+  }
+  const result = value as Record<string, unknown>;
+  if (result["protocol"] === SESSION_TOOL_RESULT_PROTOCOL) {
+    records.push(result);
+  }
+  for (const key of ["content", "resultContent"]) {
+    const nested = result[key];
+    if (typeof nested !== "string" || !nested.includes(SESSION_TOOL_RESULT_PROTOCOL)) {
+      continue;
+    }
+    for (const parsed of parseJsonObjectsFromContext(nested)) {
+      collectSessionToolResultRecords(parsed, records);
+    }
+  }
+}
+
+function sessionToolResultSupportsContinuation(result: Record<string, unknown>): boolean {
+  if (result["protocol"] !== SESSION_TOOL_RESULT_PROTOCOL) {
+    return false;
+  }
+  if (result["status"] === "completed" || result["status"] === "timeout" || result["status"] === "cancelled") {
+    return true;
+  }
+  return result["resumable"] === true;
 }
 
 function parseJsonObjectsFromContext(context: string): unknown[] {

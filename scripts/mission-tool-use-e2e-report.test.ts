@@ -10,6 +10,7 @@ import {
   buildMissionE2eJsonReport,
   evaluateNaturalMissionQuality,
   extractCancelledSessionKey,
+  extractSessionKeyForSpawnAgent,
   extractTimedOutSessionKey,
   formatMissionScenarioPass,
   formatMissionScenarioStart,
@@ -1232,6 +1233,58 @@ describe("mission tool-use e2e report", () => {
     ];
 
     assert.equal(extractTimedOutSessionKey(timeline), "wrk.timeout.2");
+  });
+
+  it("extracts a session key for the matching spawned agent", () => {
+    const timeline = [
+      {
+        kind: "tool",
+        text: "explore call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          toolCallId: "call-explore",
+          callInput: JSON.stringify({ agent_id: "explore", task: "fetch notes" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser call",
+        tMs: 1100,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          toolCallId: "call-browser",
+          callInput: JSON.stringify({ agent_id: "browser", task: "inspect page" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "explore result",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          toolCallId: "call-explore",
+          resultContent: '{"status":"done","session_key":"worker:explore:wrong"}',
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser result",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          toolCallId: "call-browser",
+          resultContent: '{"status":"done","session_key":"worker:browser:right"}',
+        },
+      },
+    ];
+
+    assert.equal(extractSessionKeyForSpawnAgent(timeline, "finance"), null);
+    assert.equal(extractSessionKeyForSpawnAgent(timeline, "browser"), "worker:browser:right");
   });
 
   it("extracts the cancelled session key instead of the first spawned session", () => {
