@@ -121,13 +121,15 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
       const summary = browserRecovery
         ? `${browserRecovery.summary} ${summarizeReply(reply.content)}`
         : summarizeReply(reply.content);
+      const status = isTimeoutSummaryInvocation(input) ? "partial" : "completed";
       return {
         workerType: this.kind,
-        status: "completed",
+        status,
         summary,
         payload: {
           mode: "llm_sub_agent",
           workerType: this.kind,
+          ...(status === "partial" ? { resumableReason: "timeout_summary" } : {}),
           ...(browserRecovery ? { browserRecovery } : {}),
           content: reply.content,
           metadata: reply.metadata ?? {},
@@ -156,6 +158,14 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
       };
     }
   }
+}
+
+function isTimeoutSummaryInvocation(input: WorkerInvocationInput): boolean {
+  return (
+    input.packet.toolUseMode === "disabled" &&
+    input.packet.continuityMode === "resume-existing" &&
+    /\bprevious sub-agent run reached its timeout boundary\b/i.test(input.packet.taskPrompt)
+  );
 }
 
 class SubAgentToolExecutor implements RoleToolExecutor {

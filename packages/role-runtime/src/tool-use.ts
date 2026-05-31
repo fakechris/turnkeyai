@@ -1953,7 +1953,7 @@ async function sendWorkerWithOptionalTimeout(
             });
             return null;
           })
-          .then((summaryResult) => resolve(summaryResult ?? WORKER_TOOL_TIMEOUT));
+          .then(() => resolve(WORKER_TOOL_TIMEOUT));
       }, graceMs);
     }, timeoutMs);
   });

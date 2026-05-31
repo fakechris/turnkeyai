@@ -585,6 +585,78 @@ describe("MissionThreadBridge", () => {
     assert.equal(updated?.status, "working");
   });
 
+  it("marks a mission blocked when the linked worker paused as resumable", async () => {
+    counter = 0;
+    const mission: Mission = { ...baseMission, agents: ["role-lead"] };
+    const missionStore = memMissionStore([mission]);
+    const activity = memActivityStore();
+    const bridge = createMissionThreadBridge({
+      missionStore,
+      roleRunStore: memRoleRunStore([
+        {
+          runKey: "role:role-lead:thread:thread-1",
+          threadId: "thread-1",
+          roleId: "role-lead",
+          mode: "group",
+          status: "idle",
+          iterationCount: 1,
+          maxIterations: 6,
+          inbox: [],
+          lastActiveAt: 200,
+        },
+      ]),
+      workerSessionStore: memWorkerSessionStore([
+        {
+          workerRunKey: "worker:browser:1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "span-1",
+            toolCallId: "call-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:1",
+            workerType: "browser",
+            status: "resumable",
+            createdAt: 100,
+            updatedAt: 200,
+          },
+        },
+      ]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "",
+          source: {
+            type: "worker",
+            chatType: "group",
+            route: "lead-role",
+            speakerType: "Role",
+            speakerName: "Lead",
+          },
+          toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+          toolStatus: "pending",
+        },
+      ]),
+      activityStore: activity,
+      newEventId,
+      clock,
+    });
+
+    await bridge.tickMission("msn.1");
+    const updated = await missionStore.get("msn.1");
+    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.blockers, 1);
+    const stalled = activity.events.find((event) => event.runtime?.eventType === "mission.stalled_no_final_answer");
+    assert.equal(stalled?.runtime?.toolStatus, "resumable");
+    assert.deepEqual(stalled?.tags, ["mission_stalled", "resumable"]);
+  });
+
   it("marks a mission blocked when the latest lead tool turn was skipped without a final answer", async () => {
     counter = 0;
     const mission: Mission = { ...baseMission, agents: ["role-lead"] };

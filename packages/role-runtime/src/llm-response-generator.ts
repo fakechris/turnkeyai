@@ -177,12 +177,30 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         !sessionContinuationDirective && activeToolLoop
           ? findSessionContinuationLookupDirective(input.packet.taskPrompt, sessionContinuationContext)
           : null;
-      const toolCalls = normalizeSessionToolCalls(
+      let toolCalls = normalizeSessionToolCalls(
         applySessionContinuationLookupDirective(
           applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective),
           sessionContinuationLookupDirective
         )
       );
+      if (
+        activeToolLoop &&
+        toolCalls.length === 0 &&
+        sessionContinuationDirective &&
+        !hasExecutedSessionsSend(toolTrace, sessionContinuationDirective.sessionKey) &&
+        hasToolDefinition(initialGatewayInput.tools, "sessions_send")
+      ) {
+        toolCalls = [
+          {
+            id: `runtime-continuation-${round + 1}`,
+            name: "sessions_send",
+            input: {
+              session_key: sessionContinuationDirective.sessionKey,
+              message: sessionContinuationDirective.messageHint,
+            },
+          },
+        ];
+      }
       if (
         activeToolLoop &&
         toolCalls.length > 0 &&
@@ -1943,6 +1961,16 @@ function normalizeSessionToolCalls(toolCalls: LLMToolCall[]): LLMToolCall[] {
       },
     };
   });
+}
+
+function hasExecutedSessionsSend(toolTrace: NativeToolRoundTrace[], sessionKey: string): boolean {
+  return toolTrace.some((round) =>
+    round.calls.some((call) => call.name === "sessions_send" && readStringInput(call.input, "session_key") === sessionKey)
+  );
+}
+
+function hasToolDefinition(tools: GenerateTextInput["tools"] | undefined, name: string): boolean {
+  return (tools ?? []).some((tool) => tool.name === name);
 }
 
 function extractWorkerSessionKey(value: string): string | undefined {

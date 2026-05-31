@@ -38,7 +38,16 @@ export type MissionCompletionRecovery =
   | {
       kind: "stalled_tool_turn";
       message: TeamMessage;
-      status: "pending" | "completed" | "failed" | "cancelled" | "skipped" | "timeout";
+      status:
+        | "pending"
+        | "completed"
+        | "failed"
+        | "cancelled"
+        | "skipped"
+        | "timeout"
+        | "waiting_input"
+        | "waiting_external"
+        | "resumable";
     };
 
 export function evaluateMissionCompletion(input: {
@@ -125,7 +134,7 @@ export function evaluateMissionCompletion(input: {
     };
   }
 
-  const stalled = findStalledLeadToolTurn(mission, messages);
+  const stalled = findStalledLeadToolTurn(mission, messages, input.workerSessions);
   if (stalled) {
     if (hasActiveExecution(input.roleRuns, input.workerSessions)) {
       return { action: "none", reason: "active_execution" };
@@ -248,8 +257,12 @@ function looksLikeTruncatedMarkdown(content: string): boolean {
 
 function findStalledLeadToolTurn(
   mission: Mission,
-  messages: TeamMessage[]
-): { message: TeamMessage; status: "pending" | "failed" | "cancelled" | "timeout" } | null {
+  messages: TeamMessage[],
+  workerSessions: WorkerSessionRecord[] | "unknown" | undefined
+): {
+  message: TeamMessage;
+  status: "pending" | "failed" | "cancelled" | "timeout" | "waiting_input" | "waiting_external" | "resumable";
+} | null {
   const latest = findLatestLeadToolMessage(mission, messages);
   if (!latest) return null;
   if (
@@ -262,6 +275,12 @@ function findStalledLeadToolTurn(
   if (!latest.toolCalls || latest.toolCalls.length === 0) return null;
   if (latest.toolStatus === "failed" && isTimeoutToolTurn(latest, messages)) {
     return { message: latest, status: "timeout" };
+  }
+  if (latest.toolStatus === "pending") {
+    const pausedWorkerStatus = findPausedLinkedWorkerStatus(latest, workerSessions);
+    if (pausedWorkerStatus) {
+      return { message: latest, status: pausedWorkerStatus };
+    }
   }
   return { message: latest, status: latest.toolStatus };
 }
@@ -353,6 +372,26 @@ function mentionsTimeout(text: string): boolean {
   return /\btime(?:d)?\s*out\b|\btimeout\b/i.test(text);
 }
 
+function findPausedLinkedWorkerStatus(
+  assistant: TeamMessage,
+  workerSessions: WorkerSessionRecord[] | "unknown" | undefined
+): "waiting_input" | "waiting_external" | "resumable" | null {
+  if (!Array.isArray(workerSessions)) return null;
+  const callIds = new Set((assistant.toolCalls ?? []).map((call) => call.id));
+  if (callIds.size === 0) return null;
+  const linkedSessions = workerSessions
+    .filter((session) => session.context?.toolCallId && callIds.has(session.context.toolCallId))
+    .sort((left, right) => right.state.updatedAt - left.state.updatedAt);
+  const paused = linkedSessions.find(
+    (session) =>
+      session.state.status === "resumable" ||
+      session.state.status === "waiting_external" ||
+      session.state.status === "waiting_input"
+  );
+  const status = paused?.state.status;
+  return status === "resumable" || status === "waiting_external" || status === "waiting_input" ? status : null;
+}
+
 function isActiveRoleRun(run: RoleRunState): boolean {
   return (
     run.status === "queued" ||
@@ -363,10 +402,5 @@ function isActiveRoleRun(run: RoleRunState): boolean {
 }
 
 function isActiveWorkerSession(session: WorkerSessionRecord): boolean {
-  return (
-    session.state.status === "running" ||
-    session.state.status === "waiting_input" ||
-    session.state.status === "waiting_external" ||
-    session.state.status === "resumable"
-  );
+  return session.state.status === "running";
 }

@@ -300,6 +300,39 @@ describe("MissionCompletionEvaluator", () => {
     assert.deepEqual(decision, { action: "none", reason: "active_execution" });
   });
 
+  it("blocks unresolved lead tool turns when the linked worker is paused for continuation", () => {
+    for (const status of ["resumable", "waiting_external", "waiting_input"] as const) {
+      const stalled = {
+        ...message(`a-worker-${status}`, "assistant", 100),
+        roleId: "role-lead",
+        name: "Lead",
+        toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+        toolStatus: "pending" as const,
+      };
+      const decision = evaluateMissionCompletion({
+        mission,
+        messages: [stalled],
+        roleRuns: [idleRun],
+        workerSessions: [
+          {
+            ...runningWorker,
+            state: {
+              ...runningWorker.state,
+              status,
+            },
+          },
+        ],
+      });
+      assert.equal(decision.action, "update");
+      if (decision.action === "update") {
+        assert.equal(decision.reason, "stalled_tool_turn");
+        assert.deepEqual(decision.patch, { status: "blocked", blockers: 1 });
+        assert.equal(decision.recovery?.kind, "stalled_tool_turn");
+        assert.equal(decision.recovery?.status, status);
+      }
+    }
+  });
+
   it("treats worker session lookup failure as active to avoid premature blocking", () => {
     const stalled = {
       ...message("a-worker-unknown", "assistant", 100),
