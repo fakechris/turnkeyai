@@ -48,7 +48,7 @@ export function evaluateMissionCompletion(input: {
   workerSessions?: WorkerSessionRecord[] | "unknown" | undefined;
 }): MissionCompletionDecision {
   const { mission, messages } = input;
-  if (mission.status === "done" || mission.status === "archived" || mission.status === "draft") {
+  if (mission.status === "archived" || mission.status === "draft") {
     return { action: "none", reason: "terminal" };
   }
 
@@ -61,6 +61,10 @@ export function evaluateMissionCompletion(input: {
       reason: "pending_approval",
       patch: { status: "needs_approval" },
     };
+  }
+
+  if (mission.status === "done") {
+    return { action: "none", reason: "terminal" };
   }
 
   if (mission.blockers > 0) {

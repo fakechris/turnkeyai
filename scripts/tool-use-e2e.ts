@@ -578,7 +578,7 @@ function buildRealLlmScenarioPacket(input: {
       ? [
           "You must gather two independent evidence sources before final answer:",
           "1. Call sessions_spawn with agent_id=explore to verify TURNKEYAI_COMPLEX_EXPLORE_OK.",
-          "2. Call sessions_spawn with agent_id=browser to open the fixture page and verify TURNKEYAI_COMPLEX_BROWSER_OK.",
+          "2. Call sessions_spawn with agent_id=browser to open the fixture page and verify TURNKEYAI_COMPLEX_BROWSER_OK plus the browser evidence text.",
           "The two tasks are independent; use both session results and do not finalize from one source only.",
         ].join("\n")
       : input.withBrowser
@@ -610,7 +610,7 @@ function buildRealLlmScenarioPacket(input: {
     ? [
         "Run the production-grade multi-agent tool-use E2E.",
         "Explore task: retrieve the release marker TURNKEYAI_COMPLEX_EXPLORE_OK and its deterministic source label.",
-        `Browser task: open ${requiredFixtureUrl(input)}, read the page title, marker TURNKEYAI_COMPLEX_BROWSER_OK, and evidence text.`,
+        `Browser task: open ${requiredFixtureUrl(input)}, read the page title, marker TURNKEYAI_COMPLEX_BROWSER_OK, and the phrase "complex browser evidence" from the evidence text.`,
         `Final answer must include ${input.targetMarker}, TURNKEYAI_COMPLEX_EXPLORE_OK, and TURNKEYAI_COMPLEX_BROWSER_OK.`,
       ].join("\n")
     : input.withBrowser
@@ -647,7 +647,7 @@ function buildRealLlmScenarioPacket(input: {
         "Use exactly this Markdown shape:",
         "## Evidence",
         `- explore evidence: cite TURNKEYAI_COMPLEX_EXPLORE_OK from the explore session.`,
-        `- browser evidence: cite TURNKEYAI_COMPLEX_BROWSER_OK from the browser session.`,
+        `- browser evidence: cite TURNKEYAI_COMPLEX_BROWSER_OK and the phrase "complex browser evidence" from the browser session.`,
         `- final marker: ${input.targetMarker}; state that both source sessions were used.`,
         "- residual risk: state what the deterministic fixture does not prove.",
         "Do not include the success marker unless both sub-agent results were used.",
@@ -737,6 +737,7 @@ interface AnswerQualityReport {
   evidenceBullets: number;
   evidenceSourceCount: number;
   failures: string[];
+  answerExcerpt: string;
 }
 
 type AcceptanceScenarioName =
@@ -902,6 +903,7 @@ function evaluateAnswerQuality(input: {
     evidenceBullets,
     evidenceSourceCount,
     failures,
+    answerExcerpt: input.answer.replace(/\s+/g, " ").trim().slice(0, 1200),
   };
 }
 
@@ -914,7 +916,11 @@ function hasExactLine(answer: string, expected: string): boolean {
 }
 
 function assertAnswerQuality(report: AnswerQualityReport): void {
-  assert.deepEqual(report.failures, [], `quality gate failed for ${report.scenario}: ${report.failures.join("; ")}`);
+  assert.deepEqual(
+    report.failures,
+    [],
+    `quality gate failed for ${report.scenario}: ${report.failures.join("; ")}; answer excerpt: ${report.answerExcerpt}`
+  );
 }
 
 function mentionsToolFallbackAnswer(text: string): boolean {

@@ -225,7 +225,14 @@ export function createMissionThreadBridge(
   ): Promise<void> {
     try {
       const latest = (await options.missionStore.get(mission.id)) ?? mission;
-      if (latest.status === "done" || latest.status === "archived" || latest.status === "draft") return;
+      const canReopenDoneForPendingApproval =
+        latest.status === "done" && patch.status === "needs_approval" && latest.pendingApprovals > 0;
+      if (
+        !canReopenDoneForPendingApproval &&
+        (latest.status === "done" || latest.status === "archived" || latest.status === "draft")
+      ) {
+        return;
+      }
       await options.missionStore.putRaw({
         ...latest,
         ...patch,

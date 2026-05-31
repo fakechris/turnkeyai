@@ -189,6 +189,67 @@ test("mission tool permission service reuses pending approvals for the same cach
   }
 });
 
+test("mission tool permission service reopens prematurely done missions while approval is pending", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "tk-tool-permission-done-race-"));
+  try {
+    const clock = { now: () => 1_700_000_000_000 };
+    const missionDeps = composeMissionDeps({ dataDir: dir, clock });
+    const permissionCacheStore = new FilePermissionCacheStore({
+      rootDir: path.join(dir, "governance", "permission-cache"),
+    });
+    await missionDeps.missionStore.putRaw({
+      id: "msn.1",
+      shortId: "MSN-0001",
+      title: "Submit form",
+      desc: "",
+      status: "done",
+      mode: "browser",
+      modeLabel: "Browser",
+      owner: "you",
+      ownerLabel: "You",
+      createdAt: new Date(clock.now()).toISOString(),
+      createdAtMs: clock.now(),
+      agents: ["role-lead"],
+      progress: 1,
+      pendingApprovals: 0,
+      blockers: 0,
+      contextSummary: [],
+      threadId: "thread-1",
+    });
+    const service = createMissionToolPermissionService({
+      missionStore: missionDeps.missionStore,
+      approvalStore: missionDeps.approvalStore,
+      activityStore: missionDeps.activityStore,
+      permissionCacheStore,
+      clock,
+      newEventId: () => "ev.permission",
+    });
+
+    const query = await service.request({
+      threadId: "thread-1",
+      roleId: "role-lead",
+      roleName: "Lead",
+      toolCallId: "call-1",
+      action: "browser.form.submit",
+      title: "Submit local form",
+      risk: "Submits isolated local test data.",
+      requirement: {
+        level: "approval",
+        scope: "mutate",
+        rationale: "Needed to verify the post-submit page state.",
+      },
+    });
+
+    assert.equal(query.status, "pending");
+    const reopened = await missionDeps.missionStore.get("msn.1");
+    assert.equal(reopened?.status, "needs_approval");
+    assert.equal(reopened?.pendingApprovals, 1);
+    assert.equal(reopened?.progress, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("mission tool permission service synchronizes pending approval count from approval store", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "tk-tool-permission-count-"));
   try {

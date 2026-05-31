@@ -268,6 +268,60 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   assert.equal(transcript.at(-1)?.content, "Browser evidence captured.");
 });
 
+test("LLMSubAgentWorkerHandler promotes browser private recovery metadata above final wording", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_snapshot", { note: "continue-from-existing-tab" });
+    }
+    return textResult("Queue 11, SLA 3 minutes, Incident Commander Riley.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async sendSession() {
+        return browserResult({
+          sessionId: "browser-session-new",
+          targetId: "target-new",
+          resumeMode: "cold",
+          title: "Ops Console",
+        });
+      },
+    }),
+  });
+
+  const result = await handler.run({
+    ...buildInvocationInput("browser"),
+    sessionState: {
+      workerRunKey: "worker:browser:existing",
+      workerType: "browser",
+      status: "resumable",
+      createdAt: 1,
+      updatedAt: 2,
+      lastResult: {
+        workerType: "browser",
+        status: "completed",
+        summary: "Existing browser session.",
+        payload: { sessionId: "browser-session-old", targetId: "target-old" },
+      },
+    },
+  });
+
+  assert.equal(result?.status, "completed");
+  assert.match(result?.summary ?? "", /Resume mode: cold/);
+  assert.match(result?.summary ?? "", /Session ID: browser-session-new/);
+  assert.match(result?.summary ?? "", /Queue 11/);
+  assert.deepEqual((result?.payload as { browserRecovery?: unknown }).browserRecovery, {
+    resumeMode: "cold",
+    sessionId: "browser-session-new",
+    targetId: "target-new",
+    summary: "Browser recovery metadata: Resume mode: cold. Session ID: browser-session-new.",
+  });
+});
+
 test("LLMSubAgentWorkerHandler reports failed private browser action traces as tool errors", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -664,17 +718,20 @@ function buildBrowserBridge(overrides: Partial<BrowserBridge>): BrowserBridge {
 }
 
 function browserResult(input: {
+  sessionId?: string;
+  targetId?: string;
+  resumeMode?: BrowserTaskResult["resumeMode"];
   title?: string;
   finalUrl?: string;
   traceKinds?: string[];
   traceStatuses?: Array<"ok" | "failed">;
 }): BrowserTaskResult {
   return {
-    sessionId: "browser-session-1",
-    targetId: "target-1",
+    sessionId: input.sessionId ?? "browser-session-1",
+    targetId: input.targetId ?? "target-1",
     transportMode: "direct-cdp",
     transportLabel: "direct-cdp",
-    resumeMode: "hot",
+    resumeMode: input.resumeMode ?? "hot",
     page: {
       requestedUrl: input.finalUrl ?? "https://example.test/",
       finalUrl: input.finalUrl ?? "https://example.test/",

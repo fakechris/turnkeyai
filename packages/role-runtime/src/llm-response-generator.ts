@@ -174,6 +174,52 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           sessionContinuationLookupDirective
         )
       );
+      if (
+        activeToolLoop &&
+        toolCalls.length === 0 &&
+        shouldRepairMissingApprovalGate({
+          taskPrompt: input.packet.taskPrompt,
+          resultText: result.text,
+          messages,
+          toolTrace,
+        })
+      ) {
+        messages = [
+          ...messages,
+          {
+            role: "assistant",
+            content: result.text,
+          },
+          {
+            role: "user",
+            content: buildMissingApprovalGateRepairPrompt(),
+          },
+        ];
+        continue;
+      }
+      if (
+        activeToolLoop &&
+        toolCalls.length === 0 &&
+        shouldRepairStalePendingApproval({
+          taskPrompt: input.packet.taskPrompt,
+          resultText: result.text,
+          messages,
+          toolTrace,
+        })
+      ) {
+        messages = [
+          ...messages,
+          {
+            role: "assistant",
+            content: result.text,
+          },
+          {
+            role: "user",
+            content: buildStalePendingApprovalRepairPrompt(),
+          },
+        ];
+        continue;
+      }
       if (activeToolLoop && toolCalls.length === 0 && containsAnyToolCallForm(result)) {
         const maxRounds = activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
         toolLoopCloseout = {
@@ -353,14 +399,31 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             "Use the completed sub-agent final_content below as the source of truth. Do not override it with memory, assumptions, or general product knowledge.",
             "Do not add capabilities, target users, pricing, open-source claims, or product positioning unless they are stated in this source content.",
             "If a requested dimension is missing or uncertain in the source content, write not verified.",
-            "Preserve uncertainty labels and source URLs from the source content.",
+            "Preserve uncertainty labels. Preserve source URLs only when the original user did not forbid links or source URLs.",
+            ...(completedSubAgent.browserRecoverySummaries.length
+              ? [
+                  "The source also includes browser continuity metadata.",
+                  "If the user asked to continue, recover, reopen, reconnect, or handle an unavailable browser session, include one concise user-visible continuity sentence in the final answer.",
+                  ...completedSubAgent.browserRecoverySummaries.map(
+                    (summary, index) => `Browser continuity ${index + 1}: ${summary}`
+                  ),
+                ]
+              : []),
             ...completedSubAgent.finalContents.map(
               (content, index) => `Source ${index + 1} final_content:\n${sliceUtf8(content, 8 * 1024)}`
             ),
           ],
         });
         throwIfAborted(input.signal);
-        result = generated.result;
+        result = maybeAppendBrowserRecoveryVisibility({
+          result: generated.result,
+          taskPrompt: input.packet.taskPrompt,
+          browserRecoverySummaries: completedSubAgent.browserRecoverySummaries,
+        });
+        result = maybeRedactForbiddenLocalUrls({
+          result,
+          packet: input.packet,
+        });
         if (generated.reduction) {
           reduction = generated.reduction;
           reductionSnapshot = generated.reductionSnapshot;
@@ -1119,8 +1182,13 @@ function findSubAgentToolTimeout(results: RoleToolExecutionResult[]):
   return null;
 }
 
-function findCompletedSubAgentFinal(results: RoleToolExecutionResult[]): { toolName: string; finalContents: string[] } | null {
+function findCompletedSubAgentFinal(results: RoleToolExecutionResult[]): {
+  toolName: string;
+  finalContents: string[];
+  browserRecoverySummaries: string[];
+} | null {
   const finalContents: string[] = [];
+  const browserRecoverySummaries: string[] = [];
   let toolName: string | null = null;
   for (const result of results) {
     if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
@@ -1143,8 +1211,80 @@ function findCompletedSubAgentFinal(results: RoleToolExecutionResult[]): { toolN
     }
     toolName = toolName ?? result.toolName;
     finalContents.push(finalContent.trim());
+    const browserRecoverySummary = readBrowserRecoverySummary(payload as Record<string, unknown>);
+    if (browserRecoverySummary) {
+      browserRecoverySummaries.push(browserRecoverySummary);
+    }
   }
-  return toolName && finalContents.length > 0 ? { toolName, finalContents } : null;
+  return toolName && finalContents.length > 0 ? { toolName, finalContents, browserRecoverySummaries } : null;
+}
+
+function readBrowserRecoverySummary(payload: Record<string, unknown>): string | null {
+  const recovery = payload["browserRecovery"];
+  if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) {
+    return null;
+  }
+  const record = recovery as Record<string, unknown>;
+  const summary = record["summary"];
+  if (typeof summary === "string" && summary.trim()) {
+    return summary.trim();
+  }
+  const resumeMode = record["resumeMode"];
+  if (resumeMode === "warm" || resumeMode === "cold") {
+    return `Browser recovery metadata: Resume mode: ${resumeMode}.`;
+  }
+  return null;
+}
+
+function maybeAppendBrowserRecoveryVisibility(input: {
+  result: GenerateTextResult;
+  taskPrompt: string;
+  browserRecoverySummaries: string[];
+}): GenerateTextResult {
+  if (input.browserRecoverySummaries.length === 0) {
+    return input.result;
+  }
+  if (!/continue|recover|reopen|reconnect|restart|unavailable|previous browser session/i.test(input.taskPrompt)) {
+    return input.result;
+  }
+  if (/\b(recovered|recovery|reopen(?:ed)?|reconnect(?:ed)?|warm|cold|session was unavailable|new browser session)\b/i.test(input.result.text)) {
+    return input.result;
+  }
+  if (expectsExactFinalAnswerShape(input.taskPrompt, input.result.text)) {
+    return input.result;
+  }
+  const resumeMode = input.browserRecoverySummaries.join("\n").match(/Resume mode:\s*(warm|cold)/i)?.[1]?.toLowerCase();
+  const continuity = resumeMode
+    ? `Browser continuity: browser context was recovered before the page was rechecked (resume mode: ${resumeMode}).`
+    : "Browser continuity: browser context was recovered before the page was rechecked.";
+  return {
+    ...input.result,
+    text: `${input.result.text.trim()}\n\n${continuity}`.trim(),
+  };
+}
+
+function maybeRedactForbiddenLocalUrls(input: { result: GenerateTextResult; packet: RolePromptPacket }): GenerateTextResult {
+  const constraintText = `${input.packet.taskPrompt}\n${input.packet.outputContract}`;
+  if (!forbidsFinalUrls(constraintText)) {
+    return input.result;
+  }
+  const redacted = input.result.text.replace(
+    /\bhttps?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/[^\s)\],;]*)?/gi,
+    "local fixture source"
+  );
+  if (redacted === input.result.text) {
+    return input.result;
+  }
+  return {
+    ...input.result,
+    text: redacted,
+  };
+}
+
+function forbidsFinalUrls(text: string): boolean {
+  return /\b(?:do not include (?:source )?urls?|do not use [^\n.]*links?|links? (?:are )?forbidden|no links?|bare http:\/\/\s*\/\s*https?:\/\/ URLs?)\b/i.test(
+    text
+  );
 }
 
 function containsAnyToolCallForm(result: GenerateTextResult): boolean {
@@ -1154,6 +1294,126 @@ function containsAnyToolCallForm(result: GenerateTextResult): boolean {
   return /<\s*(?:minimax:)?tool_call\b|<\s*invoke\b|<\/\s*(?:minimax:)?tool_call\s*>|\btool_calls?\s*[:=]/i.test(
     result.text
   );
+}
+
+function shouldRepairMissingApprovalGate(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (hasMissingApprovalGateRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (input.toolTrace.some((round) => round.calls.some((call) => call.name.startsWith("permission_")))) {
+    return false;
+  }
+  return mentionsPendingApproval(input.resultText) && requestsApprovalGatedBrowserAction(input.taskPrompt);
+}
+
+function shouldRepairStalePendingApproval(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (hasStalePendingApprovalRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (!mentionsPendingApproval(input.resultText) || !requestsApprovalGatedBrowserAction(input.taskPrompt)) {
+    return false;
+  }
+  return latestPermissionToolName(input.toolTrace) === "permission_applied";
+}
+
+function latestPermissionToolName(toolTrace: NativeToolRoundTrace[]): string | null {
+  for (let roundIndex = toolTrace.length - 1; roundIndex >= 0; roundIndex -= 1) {
+    const round = toolTrace[roundIndex]!;
+    for (let callIndex = round.calls.length - 1; callIndex >= 0; callIndex -= 1) {
+      const name = round.calls[callIndex]!.name;
+      if (name.startsWith("permission_")) {
+        return name;
+      }
+    }
+  }
+  return null;
+}
+
+function expectsExactFinalAnswerShape(taskPrompt: string, resultText: string): boolean {
+  const combined = `${taskPrompt}\n${resultText}`;
+  if (/^\s*(?:\{[\s\S]*\}|\[[\s\S]*\])\s*$/.test(resultText)) {
+    try {
+      JSON.parse(resultText);
+      return true;
+    } catch {
+      // Fall through to prompt-shape checks.
+    }
+  }
+  return /\b(?:respond with only|output only|answer only|final answer must|answer must be|use this exact final answer|exact final answer shape|valid json|json object|json array|csv only|markdown table only)\b|^\s*Final Answer\s*:/im.test(
+    combined
+  );
+}
+
+function hasMissingApprovalGateRepairPrompt(messages: LLMMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes("Runtime correction: approval-gated browser action")
+  );
+}
+
+function hasStalePendingApprovalRepairPrompt(messages: LLMMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes("Runtime correction: approval already applied")
+  );
+}
+
+function mentionsPendingApproval(text: string): boolean {
+  return /\b(?:approval pending|approval request is pending|awaiting operator approval|waiting for operator decision|waiting for operator|once approved|before (?:the )?(?:browser worker )?can|still pending)\b/i.test(
+    text
+  );
+}
+
+function requestsApprovalGatedBrowserAction(taskPrompt: string): boolean {
+  return (
+    /\bapproval\b/i.test(taskPrompt) &&
+    /\bbrowser\b/i.test(taskPrompt) &&
+    /\b(?:submit|submission|form|mutat(?:e|ion)|side[- ]effect|dry[- ]run action|approved scoped action)\b/i.test(taskPrompt)
+  );
+}
+
+function buildMissingApprovalGateRepairPrompt(): string {
+  return [
+    "Runtime correction: approval-gated browser action was described without a native tool call.",
+    "Do not finalize with a pending-approval explanation unless a native permission or browser-session tool result created that pending approval.",
+    "Use the available native tools now. For a browser form submit or other browser side effect, prefer sessions_spawn with agent_id=browser and include the exact URL, approved action, approval boundary, and verification requirement in the task.",
+    "The runtime will request operator approval before the side effect executes. After the tool result returns, synthesize only from that result.",
+  ].join("\n");
+}
+
+function buildStalePendingApprovalRepairPrompt(): string {
+  return [
+    "Runtime correction: approval already applied, but the assistant tried to finalize with a pending-approval explanation.",
+    "Do not wait again. Continue from the applied approval point now.",
+    "Use native tools for the approved scoped action, preferably sessions_spawn with agent_id=browser, then summarize the concrete browser result.",
+  ].join("\n");
+}
+
+function readMessageContentText(content: LLMMessage["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  return content
+    .map((block) => {
+      if (block && typeof block === "object" && "type" in block) {
+        if (block.type === "text" && "text" in block) return String(block.text);
+        if (block.type === "tool_result" && "content" in block) return String(block.content);
+      }
+      return "";
+    })
+    .join("\n");
 }
 
 function findSessionContinuationDirective(taskPrompt: string): SessionContinuationDirective | null {

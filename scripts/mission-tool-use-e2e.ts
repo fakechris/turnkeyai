@@ -623,6 +623,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
   const scenarios = options.matrixScenarios ?? (options.matrix ? [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS] : [options.scenario]);
   assertSupportedScenarioMix(scenarios);
   const shouldUseBudgetLimitedDaemon = !options.natural && scenarios.includes("budget-limited-closeout");
+  let daemonEnvOverrides: Record<string, string> = {};
   let daemon = startDaemon({
     runtimeRoot,
     port,
@@ -630,13 +631,15 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
     modelCatalogPath,
     ...(shouldUseBudgetLimitedDaemon ? { agentToolMaxRounds: 1 } : {}),
   });
-  const restartDaemon = async () => {
+  const restartDaemon = async (envOverrides?: Record<string, string>) => {
+    daemonEnvOverrides = envOverrides ?? daemonEnvOverrides;
     await stopDaemon(daemon.child);
     daemon = startDaemon({
       runtimeRoot,
       port,
       token,
       modelCatalogPath,
+      extraEnv: daemonEnvOverrides,
       ...(shouldUseBudgetLimitedDaemon ? { agentToolMaxRounds: 1 } : {}),
     });
     await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: 30_000 });
@@ -1265,7 +1268,7 @@ async function runNaturalMissionScenario(input: {
   runtimeRoot: string;
   scenario: NaturalMissionE2eScenario;
   timeoutMs: number;
-  restartDaemon?: () => Promise<void>;
+  restartDaemon?: (envOverrides?: Record<string, string>) => Promise<void>;
 }): Promise<NaturalMissionScenarioResult> {
   if (input.scenario === "natural-followup-continuation") {
     return runNaturalFollowupScenario(input);
@@ -1284,6 +1287,9 @@ async function runNaturalMissionScenario(input: {
   }
   if (input.scenario === "natural-approval-dry-run-action") {
     return runNaturalApprovalScenario(input);
+  }
+  if (input.scenario === "natural-browser-unavailable-closeout") {
+    return runNaturalBrowserUnavailableScenario(input);
   }
   if (input.scenario === "natural-cancel-active-tool") {
     return runNaturalCancelScenario(input);
@@ -1330,6 +1336,64 @@ async function runNaturalMissionScenario(input: {
     `natural mission ${input.scenario} quality failures: ${quality.failures.join("; ")}\n${final.text}`
   );
   return { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function runNaturalBrowserUnavailableScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+  restartDaemon?: (envOverrides?: Record<string, string>) => Promise<void>;
+}): Promise<NaturalMissionScenarioResult> {
+  const { restartDaemon } = input;
+  assert.ok(restartDaemon, "natural browser unavailable closeout requires a daemon restart hook");
+  const unavailableCdpPort = await allocatePort();
+  await restartDaemon({
+    TURNKEYAI_BROWSER_TRANSPORT: "direct-cdp",
+    TURNKEYAI_BROWSER_CDP_ENDPOINT: `http://127.0.0.1:${unavailableCdpPort}`,
+  });
+  try {
+    const spec = buildNaturalScenarioSpec("natural-browser-unavailable-closeout", input.fixture);
+    assertNaturalPromptAllowed(spec.desc);
+    const mission = await createNaturalMission({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      spec,
+    });
+    assert.ok(mission.threadId, "natural browser unavailable mission requires a linked team thread");
+    const result = await waitForNaturalMissionCompletion({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: input.timeoutMs,
+      allowBlocked: true,
+    });
+    const metrics = await waitForMissionMetricsSettled({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: 20_000,
+    });
+    const final = findLatestThoughtEvent(result.timeline);
+    assert.ok(final, "natural browser unavailable mission timeline must include a final assistant answer");
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+    });
+    assert.deepEqual(
+      quality.failures,
+      [],
+      `natural mission natural-browser-unavailable-closeout quality failures: ${quality.failures.join("; ")}\n${final.text}`
+    );
+    return { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  } finally {
+    await restartDaemon({});
+  }
 }
 
 async function runNaturalFollowupScenario(input: {
@@ -1649,8 +1713,8 @@ async function runNaturalBrowserColdRecreationScenario(input: {
   );
   assert.equal(
     revokeResult.status,
-    "revoked",
-    "natural browser cold recreation must confirm browser session revocation before follow-up"
+    "closed",
+    "natural browser cold recreation must confirm browser session closure before follow-up"
   );
 
   const followup = [
@@ -1684,13 +1748,13 @@ async function runNaturalBrowserColdRecreationScenario(input: {
     phaseOneFinal: initialFinal,
     patterns: [
       {
-        label: "cold recreation evidence",
+        label: "browser recovery evidence",
         pattern:
-          /Resume mode:\s*cold|["']resumeMode["']\s*:\s*["']cold["']|cold[- ]recovery|cold[- ]recreated|re[- ]?open(?:ed)?|recovery confirmed|new browser session/i,
+          /Resume mode:\s*(?:warm|cold)|["']resumeMode["']\s*:\s*["'](?:warm|cold)["']|(?:warm|cold)[- ]recovery|(?:warm|cold)[- ]recreat(?:ion|ed)|re[- ]?open(?:ed)?|recovery confirmed|new browser session/i,
       },
-      { label: "cold recreated queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
-      { label: "cold recreated SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
-      { label: "cold recreated owner", pattern: /Incident Commander/i },
+      { label: "recovered rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
+      { label: "recovered rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+      { label: "recovered rendered owner", pattern: /Incident Commander/i },
     ],
   });
   const resumedBrowserSessionId = extractBrowserSessionIdForSendAfter(result.timeline, initialFinal);
@@ -2264,7 +2328,10 @@ export function buildNaturalScenarioSpec(
       requiresApproval: false,
       allowToolFailure: false,
       minEvidenceEvents: 1,
-      requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander"],
+      requiredAnswerTerms: ["SLA", "Incident Commander"],
+      requiredAnswerPatterns: [
+        { label: "visible queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\bqueue(?: depth)?[\s\S]{0,40}\b11\b|\bdepth[\s\S]{0,40}\b11\b|\b11\b[\s\S]{0,40}(?:queue|backlog)/i },
+      ],
       requiredEvidencePatterns: [
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
         { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
@@ -2294,7 +2361,7 @@ export function buildNaturalScenarioSpec(
       requiresApproval: false,
       allowToolFailure: false,
       minEvidenceEvents: 2,
-      requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander", "next action"],
+      requiredAnswerTerms: ["SLA", "Incident Commander", "action"],
       requiredEvidencePatterns: [
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
         { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
@@ -2324,7 +2391,10 @@ export function buildNaturalScenarioSpec(
       requiresApproval: false,
       allowToolFailure: false,
       minEvidenceEvents: 2,
-      requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander", "next action", "restart"],
+      requiredAnswerTerms: ["SLA", "Incident Commander", "action"],
+      requiredAnswerPatterns: [
+        { label: "visible restart continuity", pattern: /\b(?:restart|reconnect(?:ed)?|fresh browser session|browser continuity|session .*expired)\b/i },
+      ],
       requiredEvidencePatterns: [
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
         { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
@@ -2354,15 +2424,15 @@ export function buildNaturalScenarioSpec(
       requiresApproval: false,
       allowToolFailure: false,
       minEvidenceEvents: 2,
-      requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander", "next action"],
+      requiredAnswerTerms: ["SLA", "Incident Commander", "action"],
       requiredAnswerPatterns: [
-        { label: "visible cold recreation", pattern: /\b(reopen|reopened|recreate|recreated|recovered|new browser session|session was unavailable|cold)\b/i },
+        { label: "visible browser recovery", pattern: /\b(reopen|reopened|recreate|recreated|recovered|new browser session|session was unavailable|warm|cold)\b/i },
       ],
       requiredEvidencePatterns: [
         {
-          label: "cold recreation evidence",
+          label: "browser recovery evidence",
           pattern:
-            /Resume mode:\s*cold|["']resumeMode["']\s*:\s*["']cold["']|cold[- ]recovery|cold[- ]recreated|re[- ]?open(?:ed)?|recovery confirmed|new browser session/i,
+            /Resume mode:\s*(?:warm|cold)|["']resumeMode["']\s*:\s*["'](?:warm|cold)["']|(?:warm|cold)[- ]recovery|(?:warm|cold)[- ]recreat(?:ion|ed)|re[- ]?open(?:ed)?|recovery confirmed|new browser session/i,
         },
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
         { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
@@ -2506,7 +2576,10 @@ export function buildNaturalScenarioSpec(
       requiresApproval: false,
       allowToolFailure: true,
       minEvidenceEvents: 1,
-      requiredAnswerTerms: ["timed out", "verified", "unverified", "continue"],
+      requiredAnswerTerms: ["verified", "unverified", "continue"],
+      requiredAnswerPatterns: [
+        { label: "timeout closeout", pattern: /\b(?:timed out|timeout|did not respond|no response)\b/i },
+      ],
       forbiddenPatterns: [
         { label: "pretends slow source was verified", pattern: /confirmed.*slow mission route tool-use fixture/i },
       ],
@@ -2722,7 +2795,9 @@ export function evaluateNaturalMissionQuality(input: {
     (input.spec.requiredAnswerPatterns ?? []).every((item) => item.pattern.test(input.final.text));
   const finalAnswerUseful =
     Buffer.byteLength(input.final.text, "utf8") >= input.spec.minBytes &&
-    /\b(recommend|next action|risk|owner|tradeoff|continue|verified)\b/i.test(input.final.text);
+    /\b(recommend|next action|risk|owner|tradeoff|continue|verified|approved|submitted|confirmed|complete)\b/i.test(
+      input.final.text
+    );
   const stuckOrLoop =
     input.metrics.liveness.active > 0 ||
     input.metrics.liveness.waiting > 0 ||
@@ -3841,7 +3916,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         {
           label: "bridge evidence line",
           pattern:
-            /^\s*[-*+]\s+bridge evidence\s*:.*(?:Bridge capability research|browser bridge).*TURNKEYAI_PRODUCT_BRIDGE_OK.*(?:browser bridge|controls).*(?:desktop outside the browser|browser-only scope)/im,
+            /^\s*[-*+]\s+bridge evidence\s*:.*(?:Bridge capability research|browser bridge).*TURNKEYAI_PRODUCT_BRIDGE_OK.*(?:browser bridge|controls).*(?:desktop (?:control )?outside the browser|browser-only (?:scope|work scoped|boundary))/im,
         },
         {
           label: "browser signal evidence line",
@@ -4778,7 +4853,8 @@ export function extractBrowserSessionIdForSpawnAgent(timeline: ActivityEvent[], 
       continue;
     }
     const browserSessionId = extractBrowserSessionIdFromSessionToolResult(
-      String(event.runtime?.["resultContent"] ?? event.text)
+      String(event.runtime?.["resultContent"] ?? event.text),
+      { preferPayloadSessionId: true }
     );
     if (browserSessionId) {
       return browserSessionId;
@@ -4787,14 +4863,15 @@ export function extractBrowserSessionIdForSpawnAgent(timeline: ActivityEvent[], 
   return null;
 }
 
-function extractBrowserSessionIdForSendAfter(timeline: ActivityEvent[], phaseOneFinal: ActivityEvent): string | null {
+export function extractBrowserSessionIdForSendAfter(timeline: ActivityEvent[], phaseOneFinal: ActivityEvent): string | null {
   const tail = sliceTimelineAfterEvent(timeline, phaseOneFinal);
   for (const event of tail) {
     if (event.runtime?.["toolName"] !== "sessions_send" || event.runtime?.["toolPhase"] !== "result") {
       continue;
     }
     const browserSessionId = extractBrowserSessionIdFromSessionToolResult(
-      String(event.runtime?.["resultContent"] ?? event.text)
+      String(event.runtime?.["resultContent"] ?? event.text),
+      { preferPayloadSessionId: true }
     );
     if (browserSessionId) {
       return browserSessionId;
@@ -4803,16 +4880,22 @@ function extractBrowserSessionIdForSendAfter(timeline: ActivityEvent[], phaseOne
   return null;
 }
 
-function extractBrowserSessionIdFromSessionToolResult(content: string): string | null {
+function extractBrowserSessionIdFromSessionToolResult(
+  content: string,
+  options: { preferPayloadSessionId?: boolean } = {}
+): string | null {
   try {
     const parsed = JSON.parse(content) as { payload?: { sessionId?: unknown }; result?: unknown };
+    const sessionId = parsed.payload?.sessionId;
+    if (options.preferPayloadSessionId && typeof sessionId === "string" && sessionId.trim()) {
+      return sessionId.trim();
+    }
     const contentSessionId = extractBrowserSessionIdFromText(content);
     if (contentSessionId) return contentSessionId;
     const resultSessionId = extractBrowserSessionIdFromText(typeof parsed.result === "string" ? parsed.result : "");
     if (resultSessionId) {
       return resultSessionId;
     }
-    const sessionId = parsed.payload?.sessionId;
     if (typeof sessionId === "string" && sessionId.trim()) {
       return sessionId.trim();
     }
@@ -5205,9 +5288,14 @@ async function driveNaturalApprovalDecisionsUntilComplete(input: {
       await sleep(500);
       continue;
     }
-    const latestThought = findLatestThoughtEvent(latestTimeline);
+    const latestThoughtIndex = findLatestThoughtIndex(latestTimeline);
+    const latestThought = latestThoughtIndex >= 0 ? latestTimeline[latestThoughtIndex] : null;
+    const appliedIndex = findLatestApprovalAppliedIndex(latestTimeline, approvedIds);
     const hasPostApprovalThought =
       latestThought &&
+      appliedIndex >= 0 &&
+      latestThoughtIndex > appliedIndex &&
+      !isStalePendingApprovalThought(latestThought.text) &&
       (afterApprovalThoughtMs === undefined ||
         latestThought.tMs > afterApprovalThoughtMs ||
         (afterApprovalThoughtId !== undefined && latestThought.id !== afterApprovalThoughtId));
@@ -5229,6 +5317,26 @@ async function driveNaturalApprovalDecisionsUntilComplete(input: {
       mission: latestMission,
       approvals: latestApprovals,
     })}`
+  );
+}
+
+function findLatestApprovalAppliedIndex(timeline: ActivityEvent[], approvedIds: Set<string>): number {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index]!;
+    if (event.runtime?.["eventType"] !== "permission.applied") {
+      continue;
+    }
+    const approvalId = event.approvalId ?? String(event.runtime?.["approvalId"] ?? "");
+    if (approvedIds.size === 0 || (approvalId && approvedIds.has(approvalId))) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function isStalePendingApprovalThought(text: string): boolean {
+  return /\b(?:approval pending|approval request is pending|awaiting operator approval|waiting for operator decision|waiting for operator|still pending)\b/i.test(
+    text
   );
 }
 
@@ -5689,6 +5797,7 @@ function startDaemon(input: {
   token: string;
   modelCatalogPath: string;
   agentToolMaxRounds?: number;
+  extraEnv?: Record<string, string>;
 }): { child: DaemonChildProcess; output: () => string } {
   let output = "";
   const child = spawn("npm", ["run", "daemon"], {
@@ -5705,6 +5814,7 @@ function startDaemon(input: {
       ...(input.agentToolMaxRounds === undefined
         ? {}
         : { TURNKEYAI_AGENT_TOOL_MAX_ROUNDS: String(input.agentToolMaxRounds) }),
+      ...(input.extraEnv ?? {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

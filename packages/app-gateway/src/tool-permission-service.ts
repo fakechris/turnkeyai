@@ -344,7 +344,7 @@ async function syncMissionApprovalState(input: {
 }): Promise<void> {
   const { missionStore, approvalStore, missionId } = input;
   const mission = await missionStore.get(missionId);
-  if (!mission || mission.status === "done" || mission.status === "archived") return;
+  if (!mission || mission.status === "archived" || mission.status === "draft") return;
   const [approvals, decisions] = await Promise.all([
     approvalStore.listByMission(missionId),
     approvalStore.listDecisions(),
@@ -353,6 +353,9 @@ async function syncMissionApprovalState(input: {
   const pendingApprovals = approvals.filter(
     (approval) => !decidedIds.has(approval.id)
   ).length;
+  if (mission.status === "done" && pendingApprovals === 0) {
+    return;
+  }
   await missionStore.putRaw({
     ...mission,
     pendingApprovals,
