@@ -3947,3 +3947,72 @@ Convergence question:
 - Next required gate: warm/cold browser continuation after daemon restart or
   browser session reattachment, plus a product-facing replay view that makes
   the reused browser context obvious to the user.
+
+## 2026-05-31 18:32 CST - Natural Browser Restart Continuation Gate
+
+Direction: converging
+
+Execution Kernel:
+- Tightened the continuation directive so an explicit user follow-up can bind
+  to the latest durable completed sub-agent session, not only timeout or
+  cancelled sessions.
+- The first real restart gate failed because the follow-up re-spawned browser
+  work after daemon restart. The fix is in the runtime session-continuation
+  contract: completed session results with a durable `session_key` can now
+  drive `sessions_send` when the user asks to continue, resume, retry, revisit,
+  or follow up.
+- This reduces duplicate child work after process restart and keeps the lead
+  from doing session selection purely from prompt history.
+
+Result Quality:
+- The passing real run produced an evidence-backed dashboard summary after
+  daemon restart, with no weak-answer signals.
+- The answer preserved rendered dashboard facts: queue depth, SLA breaches,
+  owner, next action, and residual uncertainty.
+
+Workbench UX:
+- No workbench UI changed in this checkpoint.
+- The underlying replay signal is clearer: the mission can show a browser
+  `sessions_spawn` before restart and a `sessions_send` continuation after
+  restart instead of an unexplained duplicate spawn.
+
+Browser Reliability:
+- The real run used the browser worker path and completed with zero persistent
+  profile fallback events.
+- Evidence proves daemon-restart continuation for a recoverable browser child
+  session. It does not yet prove arbitrary browser process crash recovery or
+  all cold-profile cases.
+
+Acceptance Evidence:
+- Focused regression:
+  `npm test -- --runInBand packages/role-runtime/src/llm-response-generator.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts
+  packages/app-gateway/src/mission-observability.test.ts`: passed, 1306 tests.
+- `npm run typecheck`: passed.
+- Real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-restart-continuation
+  --scenario-timeout-ms 360000
+  --json tmp/natural-browser-restart-continuation-e2e.json`: passed.
+- Real mission: `msn.mptn2dsj.1`, status `done`, quality gate `passed`,
+  natural `passed`, tools `2/2`, sessions `1/1`, browser `yes`, profile
+  fallback `0`, liveness `0/0/0`, final bytes `1317`, weak-answer signals
+  `none`.
+
+Regression Risk:
+- The continuation rewrite must not hijack unrelated new tasks. Existing
+  passive-continuation tests still cover future-looking "may ask later" wording,
+  and the new behavior only activates on explicit continuation language plus a
+  durable session result.
+- Remaining risk is broader cold recovery: if the browser process or profile is
+  unrecoverable, the product still needs a visible recovery path rather than
+  silently claiming same-context continuity.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: after a real daemon restart, a natural user follow-up reused the
+  existing browser child session through `sessions_send`, preserved rendered
+  dashboard evidence, completed the mission, and left no stuck runtime state.
+- Next required gate: browser process crash / unavailable-session recovery, and
+  user-visible replay that makes restart/resume mode understandable without
+  reading raw tool events.

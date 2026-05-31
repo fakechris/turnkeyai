@@ -536,6 +536,12 @@ const GENERIC_SOURCE_LABEL_TOKENS = new Set([
   "verification",
   "verify",
   "worker",
+  "after",
+  "before",
+  "continue",
+  "post",
+  "pre",
+  "resume",
 ]);
 
 function distinctiveSourceLabelTokens(label: string): string[] {

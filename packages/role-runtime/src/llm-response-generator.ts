@@ -1153,7 +1153,7 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
     const start = Math.max(0, (match.index ?? 0) - 1200);
     const end = Math.min(taskPrompt.length, (match.index ?? 0) + 1200);
     const context = taskPrompt.slice(start, end);
-    if (!/\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(context)) {
+    if (!sessionContextSupportsContinuation(context)) {
       continue;
     }
     return {
@@ -1162,6 +1162,16 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
     };
   }
   return null;
+}
+
+function sessionContextSupportsContinuation(context: string): boolean {
+  if (/\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(context)) {
+    return true;
+  }
+  if (!/turnkeyai\.session_tool_result\.v1/i.test(context)) {
+    return false;
+  }
+  return /"status"\s*:\s*"completed"/i.test(context);
 }
 
 function isExplicitSessionContinuationRequest(text: string): boolean {
