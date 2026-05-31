@@ -2932,3 +2932,72 @@ Convergence question:
 - If no, next required gate: run the longer multi-source product brief real
   acceptance scenario and record whether answer quality, closeout telemetry,
   and terminal liveness are all acceptable.
+
+## 2026-05-31 08:44 CST - Long Brief Closeout Acceptance Gate
+
+Direction: converging
+
+Execution Kernel:
+- Runtime execution semantics did not change. This checkpoint hardens the
+  mission E2E report gate so ordinary long brief scenarios cannot pass JSON
+  acceptance when their final answer was forced by `pseudo_tool_call`,
+  `wall_clock_budget`, `round_limit`, or `sub_agent_timeout` closeout.
+- Healthy `completed_sub_agent_final` synthesis remains allowed for normal
+  multi-source missions because it means the lead synthesized from completed
+  child-session final content rather than being forced to stop.
+
+Result Quality:
+- The long product brief gate now distinguishes healthy completed-sub-agent
+  synthesis from degraded forced closeout. This prevents a quality-passed
+  final answer from hiding the same forced-stop paths that previously caused
+  weak or incomplete user-visible results.
+- The real LLM run completed both product brief scenarios with passed quality
+  checks, 3/3 tool results, 3 evidence-bearing events, 0 quality failures, and
+  no fallback-answer language.
+
+Workbench UX:
+- No new UI components changed.
+- The acceptance artifact is more useful to operators and reviewers: it now
+  keeps closeout telemetry visible for normal long missions and fails the
+  release gate if a forced closeout appears in a scenario that is supposed to
+  complete normally.
+
+Browser Reliability:
+- Browser/CDP behavior did not change.
+- The real `realistic-brief` scenario included browser-rendered dashboard
+  evidence and completed with no recovery events, no browser profile fallback
+  warning, and zero active/waiting/stale runtime subjects after terminal
+  mission completion.
+
+Acceptance Evidence:
+- `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`: 6 passed.
+- `npm run typecheck`: passed.
+- `npm run mission:e2e:matrix -- --model-catalog models.local.json
+  --matrix-scenarios product-workbench-brief,realistic-brief
+  --scenario-timeout-ms 300000 --json
+  tmp/mission-long-brief-closeout-gate.json`: passed against a real LLM in
+  68235ms.
+- `product-workbench-brief`: mission `msn.mpt22nn0.1`, status `done`, quality
+  `passed`, tools `3/3`, sessions `3/0`, liveness `0/0/0`, closeout
+  `completed_sub_agent_final`, final bytes `1677`, bullets `6`.
+- `realistic-brief`: mission `msn.mpt23f0o.2`, status `done`, quality
+  `passed`, tools `3/3`, sessions `3/0`, liveness `0/0/0`, closeout
+  `completed_sub_agent_final`, final bytes `1249`, bullets `6`.
+
+Regression Risk:
+- Main risk is over-failing a legitimate normal scenario that reaches a forced
+  closeout but still produces a locally useful answer. That is intentional for
+  release acceptance: forced closeout belongs in explicit closeout scenarios or
+  user-visible attention states, not in a normal long-brief pass.
+- The report gate now allows only the healthy `completed_sub_agent_final`
+  closeout in normal scenarios; focused unit coverage pins both the forced
+  failure and healthy pass cases.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: the previously named long-brief gate passed with real LLM evidence,
+  normal multi-source missions stayed high quality, and the acceptance report
+  would now fail if future normal briefs silently rely on forced closeout.
+- Next required gate: keep this guard in the broader release acceptance matrix
+  and run the full real gate after the next runtime/browser/workbench behavior
+  change.
