@@ -3659,3 +3659,69 @@ Convergence question:
   terminal answer, and left no runtime liveness residue.
 - Next required gate: prove continuation works after a timeout-limited or
   interrupted child session, not only after a clean completed child session.
+
+## 2026-05-31 15:16 CST - Natural Timeout Follow-Up Continuation Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added a natural timeout-follow-up E2E scenario that starts with a bounded
+  slow-source attempt, verifies the timed-out worker session is resumable, then
+  sends a normal user follow-up against the same mission.
+- The gate asserts phase two uses `sessions_send` with the original
+  `session_key`, does not spawn duplicate child work after the phase-one
+  answer, and emits a continuation result before the final answer.
+- Natural quality now has an explicit `requiresTimeout` signal, so timeout
+  scenarios cannot pass by merely talking about a timeout without a recorded
+  timed-out tool result.
+
+Result Quality:
+- The real E2E completed with a useful final answer and no weak-answer signals,
+  while preserving operator attention for the timeout path.
+- The mission quality gate stayed `blocked` because two timed-out tool results
+  are still real failed-tool attention. That is expected for this scenario:
+  the capability gate is continuation and clean terminal closeout, not hiding
+  the timeout from operators.
+
+Workbench UX:
+- No UI changed in this slice.
+- The existing timeline now has replayable evidence for the full sequence:
+  timed-out `sessions_spawn`, user follow-up, `sessions_send` continuation, and
+  terminal answer.
+
+Browser Reliability:
+- No browser implementation changed.
+- The real run reported zero browser profile fallbacks and no active/waiting/
+  stale runtime subjects after completion.
+
+Acceptance Evidence:
+- `npm test -- --runInBand scripts/mission-tool-use-e2e-report.test.ts`:
+  passed, 1293 tests.
+- `npm run typecheck`: passed.
+- Real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-timeout-followup-continuation
+  --scenario-timeout-ms 300000
+  --json tmp/natural-timeout-followup-continuation-e2e.json`: passed.
+- Real mission: `msn.mptfz2jw.1`, status `done`, natural `passed`,
+  mission qualityGate `blocked` for expected timeout attention, tools `3/3`,
+  timed-out tools `2`, sessions `1/1`, browser `yes`, profile fallback `0`,
+  liveness `0/0/0`, final bytes `1657`, weak-answer signals `none`.
+
+Regression Risk:
+- The new gate is intentionally stricter than aggregate counters: it requires
+  the timeout to be real, the worker session to be resumable, and the follow-up
+  to reuse that session instead of restarting the source work.
+- Because it uses a live model and slow-source behavior, failures may indicate
+  either runtime regression or prompt/tool discipline drift. The failure output
+  should be treated as root-cause evidence, not bypassed with marker prompts.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a real model recovered from a timeout-limited child session via the
+  durable continuation path, reached a terminal answer, and left no liveness
+  residue while preserving the timeout as operator-visible attention.
+- Next required gate: prove the same continuation behavior after an
+  operator-interrupted child session, or improve timeout recovery so resumed
+  slow-source work can complete with stronger source evidence instead of a
+  second timeout.

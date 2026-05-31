@@ -775,6 +775,104 @@ describe("mission tool-use e2e report", () => {
     assert.ok(missingCancellation.failures.includes("cancellation scenario did not record a cancelled tool result"));
   });
 
+  it("requires timeout evidence and continuation for natural timeout follow-up", () => {
+    const spec = buildNaturalScenarioSpec("natural-timeout-followup-continuation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-timeout-followup-continuation";
+    result.metrics.tool.requested = 2;
+    result.metrics.tool.results = 2;
+    result.metrics.tool.failed = 1;
+    result.metrics.tool.timeouts = 1;
+    result.metrics.sessions.spawned = 1;
+    result.metrics.sessions.continued = 1;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "slow source call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "explore", task: "evaluate slow source" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "sessions_spawn timed out",
+        emph: "danger",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: '{"status":"timeout","session_key":"wrk.timeout.1","summary":"WORKER_TIMEOUT"}',
+        },
+      },
+      {
+        kind: "tool",
+        text: "sessions_send result",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          resultContent:
+            "Verified: the slow source eventually returned release-risk evidence. Unverified: production freshness remains unknown.",
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "Verified facts now include the resumed slow-source evidence and the earlier timeout record.",
+          "Unverified items remain production freshness and whether the risk appears outside this source.",
+          "The release risk is that the initial timeout delayed source confirmation; continue with operator review if the same source becomes slow again.",
+          "Next action: use the verified resumed evidence for the release note and keep residual risk visible.",
+        ].join(" "),
+        tMs: 4000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+
+    result.metrics.tool.timeouts = 0;
+    const missingTimeout = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(missingTimeout.failures.includes("timeout scenario did not record a timed-out tool result"));
+
+    result.metrics.tool.timeouts = 1;
+    result.metrics.sessions.continued = 0;
+    const missingContinuation = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(missingContinuation.failures.some((failure) => failure.includes("tool use was outside")));
+  });
+
   it("formats natural per-scenario progress lines", () => {
     const result = fakeNaturalResult();
 
