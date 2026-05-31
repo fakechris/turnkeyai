@@ -1921,6 +1921,87 @@ test("llm role response generator routes continuation follow-up to timed-out ses
   assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /worker:explore:task-1:toolu-timeout/);
 });
 
+test("llm role response generator forces sessions_send for explicit continuation when the model answers directly", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return {
+        text: "I can continue from the prior timeout without another tool.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "Final answer after forced session continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.name, "sessions_send");
+      assert.equal(input.call.input.session_key, "worker:explore:task-1:toolu-timeout");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:explore:task-1:toolu-timeout",
+          agent_id: "explore",
+          status: "completed",
+          result: "Continuation evidence from the timed-out session.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the slow-source attempt in this mission and finish the release-risk note.",
+        "",
+        "Recent turns:",
+        "[user] Continue from the slow-source attempt in this mission and finish the release-risk note.",
+        '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"timeout","session_key":"worker:explore:task-1:toolu-timeout","agent_id":"explore","result":"WORKER_TIMEOUT","resumable":true}',
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer after forced session continuation.");
+  assert.equal(executedCalls.length, 1);
+  assert.equal(executedCalls[0]?.name, "sessions_send");
+});
+
 test("llm role response generator routes continuation follow-up to cancelled session", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;

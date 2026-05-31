@@ -90,6 +90,14 @@ function extractWorkerObservation(taskPrompt: string): string | null {
 }
 
 function summarizeLeadConclusion(activation: RoleActivationInput): string {
+  const latestToolUpdate = [...getRecentMessages(activation.handoff.payload)]
+    .reverse()
+    .find((message) => message.role === "tool" && message.content.trim().length > 0);
+
+  if (latestToolUpdate) {
+    return summarizeToolConclusion(latestToolUpdate.content);
+  }
+
   const latestMemberUpdate = [...getRecentMessages(activation.handoff.payload)]
     .reverse()
     .find((message) => message.role === "assistant" && message.roleId && message.roleId !== activation.runState.roleId);
@@ -103,4 +111,46 @@ function summarizeLeadConclusion(activation: RoleActivationInput): string {
     .trim();
 
   return `Final synthesis based on the latest specialist update:\n${normalized}`;
+}
+
+function summarizeToolConclusion(content: string): string {
+  const extracted = extractToolEvidence(content);
+  return [
+    "Final synthesis based on the latest tool result:",
+    `Verified: ${extracted || "the tool returned a result, but no concise evidence summary was available."}`,
+    "Unverified: any claim not present in the tool result remains unverified.",
+    "Residual risk: this fallback answer was produced without another model synthesis pass, so use the visible tool evidence as the authority.",
+    "Continuation: if the evidence is incomplete or timeout-bounded, continue the same session rather than starting duplicate work.",
+  ].join("\n");
+}
+
+function extractToolEvidence(content: string): string {
+  const parsed = parseJsonObject(content);
+  if (parsed) {
+    const fields = ["final_content", "result", "evidence_summary", "summary"];
+    for (const field of fields) {
+      const value = parsed[field];
+      if (typeof value === "string" && value.trim()) {
+        return sliceToolEvidence(value);
+      }
+    }
+  }
+  return sliceToolEvidence(content);
+}
+
+function parseJsonObject(content: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function sliceToolEvidence(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 1200) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 1197)}...`;
 }

@@ -147,6 +147,45 @@ test("LLMSubAgentWorkerHandler blocks recursive session tools at executor level"
   assert.equal(metadata?.toolUse?.rounds?.[0]?.results?.[0]?.isError, true);
 });
 
+test("LLMSubAgentWorkerHandler returns timeout summaries as partial resumable results", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => textResult("Verified source A before timeout; source B not verified.");
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler: buildInnerHandler({
+      kind: "explore",
+      async run() {
+        return {
+          workerType: "explore",
+          status: "completed",
+          summary: "should not run private tools",
+          payload: {},
+        };
+      },
+    }),
+    gateway,
+  });
+  const base = buildInvocationInput("explore");
+
+  const result = await handler.run({
+    ...base,
+    packet: {
+      ...base.packet,
+      taskPrompt: [
+        "The previous sub-agent run reached its timeout boundary.",
+        "Timeout reason: sessions_spawn timed out after 0.001s.",
+        "Produce an evidence-only timeout summary from this session's existing transcript/state.",
+      ].join("\n"),
+      continuityMode: "resume-existing",
+      toolUseMode: "disabled",
+    },
+  });
+
+  assert.equal(result?.status, "partial");
+  assert.equal(result?.summary, "Verified source A before timeout; source B not verified.");
+  assert.equal((result?.payload as { resumableReason?: string } | undefined)?.resumableReason, "timeout_summary");
+});
+
 test("LLMSubAgentWorkerHandler bounds default explore wall-clock before more private tools", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   let now = 1;
