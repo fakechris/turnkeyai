@@ -1993,6 +1993,7 @@ function validationOpsFixture() {
             toolTimeouts: 0,
             sessionsSpawned: 5,
             sessionsContinued: 1,
+            browserProfileFallbacks: 0,
             approvalsRequested: 0,
             approvalsDecided: 0,
             approvalsApplied: 0,
