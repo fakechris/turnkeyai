@@ -4136,3 +4136,68 @@ Convergence question:
   gate has run yet.
 - Next required gate: a fresh full real acceptance run over the expanded
   natural continuity matrix.
+
+## 2026-05-31 20:58 CST - Natural Browser Follow-Up Routing Regression
+
+Direction: converging
+
+Execution Kernel:
+- Tightened explicit follow-up routing when the prompt asks to continue prior
+  browser-backed work but no durable `session_key` is visible in the immediate
+  prompt context.
+- The runtime now performs one `sessions_list` lookup before allowing a
+  duplicate `sessions_spawn`; if a continuable browser child session is found,
+  the next attempted duplicate spawn is rewritten to `sessions_send`.
+- Empty lookup results still allow a fresh spawn, and failed session results
+  cannot be mistaken for continuable sessions.
+
+Result Quality:
+- The focused natural run completed with a useful browser-backed follow-up
+  answer instead of creating a duplicate browser child session.
+- The final answer was evidence-backed and had no weak-answer signals. The
+  report still marked one source-coverage warning, so this is not a full-matrix
+  release claim.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The mission timeline now preserves the expected user story for this path:
+  initial browser child session, explicit follow-up, continuation of that
+  child session, then final answer.
+
+Browser Reliability:
+- The browser was actually used, the same browser child session was continued,
+  and the run reported zero persistent-profile fallbacks.
+- This checkpoint proves follow-up routing stability for an already available
+  browser child session. It does not prove daemon-restart or cold recreation
+  paths; those remain separate gates.
+
+Acceptance Evidence:
+- Focused regression:
+  `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts`:
+  passed, 39 tests.
+- Real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-followup-continuation
+  --scenario-timeout-ms 360000
+  --json /tmp/natural-browser-followup-routing-e2e-reviewfix.json`: passed.
+- Real mission: `msn.mptsl8nu.1`, status `done`, natural `passed`, tools
+  `3/3`, sessions `1/1`, browser `yes`, profile fallback `0`, stuck `no`,
+  final bytes `1209`, weak-answer signals `none`.
+- Prior failed full acceptance run that exposed this gap:
+  `validation-ops:real-llm-acceptance:2026-05-31T12-31-25-285Z:syzsts`.
+
+Regression Risk:
+- This adds a routing guard before duplicate spawn in explicit follow-up turns.
+  The main risk is over-routing a legitimate new task that uses the word
+  "continue"; the lookup is bounded and an empty result permits a fresh spawn.
+- The full expanded real acceptance matrix still needs to be rerun. This
+  checkpoint only closes the focused failure that blocked the previous run.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes, for
+  natural browser follow-up routing.
+- Evidence: the exact blocked natural scenario now passes with real LLM output,
+  one spawned child session, one continued child session, actual browser use,
+  no stuck runtime state, and no duplicate child session after phase one.
+- Next required gate: rerun full `acceptance:real` over the expanded natural
+  matrix and record the validation-ops run id or JSON artifact.
