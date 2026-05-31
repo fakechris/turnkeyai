@@ -151,6 +151,13 @@ describe("mission tool-use e2e report", () => {
       results: [fakeScenarioWithCloseout("realistic-brief", "passed", "completed_sub_agent_final")],
     });
     assert.equal(healthySubAgentCloseout.status, "passed");
+
+    const repeatedFailureCloseout = buildMissionE2eJsonReport({
+      startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
+      completedAt: Date.UTC(2026, 4, 30, 12, 0, 3),
+      results: [fakeScenarioWithCloseout("realistic-brief", "passed", "repeated_tool_failure")],
+    });
+    assert.equal(repeatedFailureCloseout.status, "failed");
   });
 
   it("recognizes stale pending approval thoughts without matching completed approval summaries", () => {

@@ -694,6 +694,50 @@ test("buildMissionObservabilitySnapshot flags budget-limited tool-loop closeout 
   );
 });
 
+test("buildMissionObservabilitySnapshot flags repeated tool failure closeout answers", () => {
+  const finalAnswer = event(
+    "final-1",
+    "thought",
+    5_000,
+    "role-lead",
+    [
+      "Verification did not complete after repeated tool failures.",
+      "The answer separates gathered evidence from unverified claims and asks for the next source to check.",
+      "Residual risk remains because the failing source produced no usable evidence.",
+    ].join(" ")
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 3_000, "result", "sessions_spawn", "call-a", "Tool sessions_spawn failed."),
+      tool("call-2", 4_000, "call", "sessions_spawn", "call-b", "Calling sessions_spawn"),
+      tool("result-2", 4_500, "result", "sessions_spawn", "call-b", "Tool sessions_spawn failed."),
+      {
+        ...finalAnswer,
+        runtime: {
+          ...finalAnswer.runtime,
+          toolLoopCloseout: "true",
+          toolLoopCloseoutReason: "repeated_tool_failure",
+          "toolLoopCloseout.roundCount": "2",
+          "toolLoopCloseout.toolCallCount": "2",
+          "toolLoopCloseout.pendingToolCallCount": "1",
+          "toolLoopCloseout.toolName": "sessions_spawn",
+          "toolLoopCloseout.evidenceAvailable": "false",
+        },
+      },
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "needs_attention");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "tool_loop_closeout")?.status, "warn");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "tool_loop_closeout")?.detail ?? "",
+    /repeated failed attempts/
+  );
+});
+
 test("buildMissionObservabilitySnapshot accepts completed sub-agent final closeout as healthy", () => {
   const finalAnswer = event(
     "final-1",
