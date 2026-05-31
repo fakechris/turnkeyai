@@ -505,24 +505,42 @@ function sourceLabelCovered(normalizedText: string, textTokens: Set<string>, lab
 }
 
 const GENERIC_SOURCE_LABEL_TOKENS = new Set([
+  "analysis",
+  "brief",
   "browser",
   "capability",
+  "check",
+  "compare",
+  "comparison",
   "dashboard",
+  "decision",
   "evidence",
+  "evaluate",
+  "evaluation",
+  "extract",
+  "extraction",
   "fetch",
   "live",
   "local",
+  "note",
   "research",
+  "report",
+  "review",
+  "scan",
   "session",
   "source",
+  "summary",
+  "synthesize",
+  "synthesis",
   "tool",
+  "verification",
+  "verify",
   "worker",
 ]);
 
 function distinctiveSourceLabelTokens(label: string): string[] {
   const tokens = tokenizeSourceLabel(label);
-  const distinctive = tokens.filter((token) => !GENERIC_SOURCE_LABEL_TOKENS.has(token));
-  return distinctive.length > 0 ? distinctive : tokens;
+  return tokens.filter((token) => !GENERIC_SOURCE_LABEL_TOKENS.has(token));
 }
 
 function tokenizeSourceLabel(text: string): string[] {

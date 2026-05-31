@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   assertNaturalPromptAllowed,
+  assertNaturalFollowupReusedExistingSession,
   assertNaturalScenarioPromptsAllowed,
   buildNaturalScenarioSpec,
   buildNaturalMissionE2eJsonReport,
@@ -187,6 +188,92 @@ describe("mission tool-use e2e report", () => {
     assert.equal(summary.final.excerpt.includes("recommended next action"), true);
   });
 
+  it("requires natural follow-up to reuse the existing child session", () => {
+    const phaseOneFinal = {
+      id: "thought.phase-one",
+      kind: "thought",
+      text: "Vendor Alpha evidence collected.",
+      tMs: 2000,
+    };
+    const timeline = [
+      {
+        kind: "tool",
+        text: "spawn result",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: JSON.stringify({ session_key: "worker:explore:alpha" }),
+        },
+      },
+      phaseOneFinal,
+      {
+        kind: "tool",
+        text: "send call",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "call",
+          callInput: JSON.stringify({ session_key: "worker:explore:alpha", message: "continue" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "send result",
+        tMs: 4000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          resultContent: "continued Vendor Alpha notes",
+        },
+      },
+      {
+        kind: "thought",
+        text: "Follow-up decision note from the existing child context.",
+        tMs: 5000,
+      },
+    ];
+
+    assertNaturalFollowupReusedExistingSession({
+      timeline,
+      phaseOneFinal,
+      expectedSessionKey: "worker:explore:alpha",
+    });
+
+    assert.throws(
+      () =>
+        assertNaturalFollowupReusedExistingSession({
+          timeline: [
+            ...timeline.slice(0, 2),
+            {
+              kind: "tool",
+              text: "duplicate spawn",
+              tMs: 2500,
+              runtime: {
+                toolName: "sessions_spawn",
+                toolPhase: "call",
+                callInput: JSON.stringify({ agent_id: "explore" }),
+              },
+            },
+            ...timeline.slice(2),
+          ],
+          phaseOneFinal,
+          expectedSessionKey: "worker:explore:alpha",
+        }),
+      /must not spawn duplicate child sessions/
+    );
+
+    assert.throws(
+      () =>
+        assertNaturalFollowupReusedExistingSession({
+          timeline,
+          phaseOneFinal,
+          expectedSessionKey: "worker:explore:beta",
+        }),
+      /reuse the phase-one session_key/
+    );
+  });
+
   it("builds a distinct natural E2E report envelope", () => {
     const report = buildNaturalMissionE2eJsonReport({
       startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
@@ -241,6 +328,54 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.failures.some((failure) => failure.includes("browser")));
     assert.ok(quality.weakAnswerSignals.includes("tool unavailable fallback"));
     assert.ok(quality.weakAnswerSignals.includes("model-knowledge fallback"));
+  });
+
+  it("flags unsupported vendor integration claims without rejecting unverified integration questions", () => {
+    const spec = buildNaturalScenarioSpec("natural-followup-continuation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    const result = fakeNaturalResult();
+    result.mission.status = "done";
+    result.metrics.status = "done";
+    result.metrics.sessions.continued = 1;
+    result.metrics.tool.results = 2;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.final.text = [
+      "Vendor Alpha is verified at $19 per seat, with browser automation and traceable screenshots as the main strength.",
+      "The integration scope is a risk: Slack, Zoom, and Zapier are not present on the source page and remain unverified questions for follow-up.",
+      "The recommendation is to keep Vendor Alpha in the shortlist only for low-cost browser automation trials, and to continue only after those integration questions are verified against source evidence.",
+      "Residual risk remains around implementation fit, missing integration proof, and whether the limited API catalog blocks the product lead's expected workflow.",
+    ].join(" ");
+
+    const cautiousQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(cautiousQuality.failures, []);
+
+    result.final.text = [
+      "Vendor Alpha is verified at $19 per seat and supports Slack and Zapier integrations.",
+      "The recommendation is to proceed, with residual risk limited to source freshness and rollout timing.",
+      "This answer is intentionally long enough to isolate the unsupported-integration quality failure from length or usefulness failures.",
+    ].join(" ");
+    const unsupportedQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(unsupportedQuality.failures.includes("forbidden unsupported integration catalog details"));
   });
 
   it("accepts bounded browser-unavailable closeout without accepting model-knowledge fallback", () => {

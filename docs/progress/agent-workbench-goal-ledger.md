@@ -3592,3 +3592,70 @@ Convergence question:
 - Next required gate: prove follow-up continuation after a cancelled or
   timeout-limited run can reuse the durable child context instead of spawning
   duplicate work.
+
+## 2026-05-31 14:56 CST - Natural Follow-Up Session Reuse Gate
+
+Direction: converging
+
+Execution Kernel:
+- Tightened the natural follow-up E2E so phase two must continue the child
+  session created in phase one with `sessions_send`.
+- The gate now extracts the phase-one `session_key`, asserts phase two does not
+  call `sessions_spawn` again after the first answer, and verifies the
+  continuation result arrives before the follow-up final answer.
+- The natural prompt remains user-like: it asks to continue the same Vendor
+  Alpha research thread without exact call counts, fixed markers, or final
+  answer shape instructions.
+
+Result Quality:
+- Real E2E exposed two quality-gate false positives while the runtime behavior
+  was correct: continuation work labels such as `Vendor Alpha review extraction`
+  were counted as source labels, and cautious unverified integration questions
+  were treated as unsupported positive claims.
+- Source coverage now distinguishes entity tokens from generic work/action
+  suffixes such as review, extraction, synthesis, summary, report, and
+  verification. Final answers still must cover distinctive source entities such
+  as Vendor Alpha, Vendor Beta, or Ops.
+- Unsupported vendor-integration checks now reject positive support claims, but
+  allow the final answer to list those integrations as unverified questions.
+
+Workbench UX:
+- No UI changed in this slice.
+- The replay/timeline signal is stronger: the user can see one child session
+  being spawned, one continuation being sent, and the final answer following the
+  continuation result without duplicate child work.
+
+Browser Reliability:
+- No browser control behavior changed.
+- The real E2E used the browser-backed worker path for source collection and
+  completed with zero profile fallbacks.
+
+Acceptance Evidence:
+- `npm test -- --runInBand packages/app-gateway/src/mission-observability.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts`: passed, 1292 tests.
+- `npm run typecheck`: passed.
+- Real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-followup-continuation
+  --scenario-timeout-ms 300000
+  --json tmp/natural-followup-continuity-e2e-final4.json`: passed.
+- Real mission: `msn.mptfccgc.1`, status `done`, natural `passed`,
+  mission qualityGate `passed`, tools `2/2`, sessions `1/1`, browser `yes`,
+  profile fallback `0`, liveness `0/0/0`, final bytes `2715`, weak-answer
+  signals `none`.
+
+Regression Risk:
+- The new continuation assertion is deliberately stricter than aggregate
+  counters. A model that starts duplicate child work during natural follow-up
+  will now fail even if the final answer looks acceptable.
+- Source-label token filtering must not hide real source omissions. Regression
+  tests keep distinctive source tokens warning when missing while ignoring only
+  generic work/action words.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a real model completed a two-turn mission by reusing the durable
+  child session instead of restarting the research task, produced a useful
+  terminal answer, and left no runtime liveness residue.
+- Next required gate: prove continuation works after a timeout-limited or
+  interrupted child session, not only after a clean completed child session.

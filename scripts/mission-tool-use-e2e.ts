@@ -91,7 +91,7 @@ interface Mission {
   blockers?: number;
 }
 
-interface ActivityEvent {
+export interface ActivityEvent {
   id?: string;
   kind: string;
   text: string;
@@ -1309,6 +1309,8 @@ async function runNaturalFollowupScenario(input: {
   });
   const initialFinal = findLatestThoughtEvent(initialTimeline);
   assert.ok(initialFinal, "natural follow-up phase one must include an assistant answer");
+  const initialSessionKey = extractFirstSessionKey(initialTimeline);
+  assert.ok(initialSessionKey, "natural follow-up phase one must expose a reusable child session key");
   const followup = [
     "Continue from the previous work on this mission.",
     "Ask the same Vendor Alpha research thread to revisit its notes and turn the evidence into a decision note for a product lead.",
@@ -1350,6 +1352,11 @@ async function runNaturalFollowupScenario(input: {
     [],
     `natural mission follow-up quality failures: ${quality.failures.join("; ")}\n${final.text}`
   );
+  assertNaturalFollowupReusedExistingSession({
+    timeline: result.timeline,
+    phaseOneFinal: initialFinal,
+    expectedSessionKey: initialSessionKey,
+  });
   return { scenario: "natural-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
@@ -1886,7 +1893,11 @@ function unsupportedVendorComparisonPatterns(): Array<{ label: string; pattern: 
   return [
     { label: "unsupported alternate Alpha pricing", pattern: /\$(?:89|199)\b/i },
     { label: "unsupported SLA claim", pattern: /\b(?:99\.9|99\.99|uptime guaranteed|published SLA|SLA guarantee)\b/i },
-    { label: "unsupported integration catalog details", pattern: /\b(?:Shopify|HubSpot|Salesforce|Stripe|Slack|GA4)\b/i },
+    {
+      label: "unsupported integration catalog details",
+      pattern:
+        /\b(?:supports?|integrates?|connects?|works)\s+(?:with\s+)?(?:[^.\n;:]{0,80}\s+)?(?:Shopify|HubSpot|Salesforce|Stripe|Slack|Zoom|Zapier|GA4)\b|\b(?:native|available|supported)\s+(?:integration|connector)s?\s+(?:include|include[s]?|with|for)\s+(?:[^.\n;:]{0,80}\s+)?(?:Shopify|HubSpot|Salesforce|Stripe|Slack|Zoom|Zapier|GA4)\b/i,
+    },
     { label: "unsupported support tier", pattern: /\b(?:dedicated CSM|24\/7 dedicated support)\b/i },
   ];
 }
@@ -3916,6 +3927,60 @@ function assertFollowupReusedSession(timeline: ActivityEvent[], expectedSessionK
   assert.equal(typeof callInput, "string", "sessions_send call must persist structured callInput");
   const parsed = JSON.parse(callInput as string) as { session_key?: string };
   assert.equal(parsed.session_key, expectedSessionKey, "sessions_send must reuse the phase-one session_key");
+}
+
+export function assertNaturalFollowupReusedExistingSession(input: {
+  timeline: ActivityEvent[];
+  phaseOneFinal: ActivityEvent;
+  expectedSessionKey: string;
+}): void {
+  const tail = sliceTimelineAfterEvent(input.timeline, input.phaseOneFinal);
+  const duplicateSpawnCalls = tail.filter(
+    (event) => event.runtime?.["toolName"] === "sessions_spawn" && event.runtime?.["toolPhase"] === "call"
+  );
+  assert.equal(
+    duplicateSpawnCalls.length,
+    0,
+    "natural follow-up must not spawn duplicate child sessions after the phase-one answer"
+  );
+  const sendCalls = tail.filter(
+    (event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "call"
+  );
+  assert.ok(sendCalls.length >= 1, "natural follow-up must continue an existing child session with sessions_send");
+  const callInput = sendCalls[0]?.runtime?.["callInput"];
+  assert.equal(typeof callInput, "string", "natural sessions_send call must persist structured callInput");
+  const parsed = JSON.parse(callInput as string) as { session_key?: unknown };
+  assert.equal(
+    parsed.session_key,
+    input.expectedSessionKey,
+    "natural sessions_send must reuse the phase-one session_key"
+  );
+  const sendCallIndex = input.timeline.indexOf(sendCalls[0]!);
+  const sendResultIndex = input.timeline.findIndex(
+    (event, index) =>
+      index > sendCallIndex &&
+      event.runtime?.["toolName"] === "sessions_send" &&
+      event.runtime?.["toolPhase"] === "result"
+  );
+  assert.ok(sendResultIndex > sendCallIndex, "natural sessions_send must produce a result after the continuation call");
+  const latestThoughtIndex = findLatestThoughtIndex(input.timeline);
+  assert.ok(latestThoughtIndex > sendResultIndex, "natural follow-up final answer must follow the continuation result");
+}
+
+function sliceTimelineAfterEvent(timeline: ActivityEvent[], event: ActivityEvent): ActivityEvent[] {
+  const index = timeline.findIndex((candidate) => {
+    if (event.id && candidate.id === event.id) return true;
+    return candidate.kind === event.kind && candidate.tMs === event.tMs && candidate.text === event.text;
+  });
+  if (index >= 0) return timeline.slice(index + 1);
+  return timeline.filter((candidate) => candidate.tMs > event.tMs);
+}
+
+function findLatestThoughtIndex(timeline: ActivityEvent[]): number {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    if (timeline[index]?.kind === "thought" && timeline[index]?.text.trim().length) return index;
+  }
+  return -1;
 }
 
 function assertMissionMemoryRecallTimeline(timeline: ActivityEvent[], spec: ScenarioSpec): void {
