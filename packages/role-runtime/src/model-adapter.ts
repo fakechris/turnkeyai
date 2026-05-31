@@ -90,15 +90,22 @@ function extractWorkerObservation(taskPrompt: string): string | null {
 }
 
 function summarizeLeadConclusion(activation: RoleActivationInput): string {
-  const latestToolUpdate = [...getRecentMessages(activation.handoff.payload)]
-    .reverse()
-    .find((message) => message.role === "tool" && message.content.trim().length > 0);
+  const recentMessages = getRecentMessages(activation.handoff.payload);
+  const recentToolUpdates = recentMessages.filter((message) => message.role === "tool" && message.content.trim().length > 0);
+  const reversedToolUpdates = [...recentToolUpdates].reverse();
+  const latestToolUpdate =
+    reversedToolUpdates.find((message) => hasCompletedOrPartialToolEvidence(message.content)) ??
+    reversedToolUpdates.find((message) => message.content.trim().length > 0);
 
   if (latestToolUpdate) {
-    return summarizeToolConclusion(latestToolUpdate.content);
+    const latestToolUpdateIndex = recentToolUpdates.lastIndexOf(latestToolUpdate);
+    const earlierToolUpdates = latestToolUpdateIndex >= 0 ? recentToolUpdates.slice(0, latestToolUpdateIndex) : [];
+    return summarizeToolConclusion(latestToolUpdate.content, {
+      cancellationSeen: earlierToolUpdates.some((message) => hasCancelledToolEvidence(message.content)),
+    });
   }
 
-  const latestMemberUpdate = [...getRecentMessages(activation.handoff.payload)]
+  const latestMemberUpdate = [...recentMessages]
     .reverse()
     .find((message) => message.role === "assistant" && message.roleId && message.roleId !== activation.runState.roleId);
 
@@ -113,10 +120,15 @@ function summarizeLeadConclusion(activation: RoleActivationInput): string {
   return `Final synthesis based on the latest specialist update:\n${normalized}`;
 }
 
-function summarizeToolConclusion(content: string): string {
+function summarizeToolConclusion(content: string, context: { cancellationSeen?: boolean } = {}): string {
   const extracted = extractToolEvidence(content);
   return [
     "Final synthesis based on the latest tool result:",
+    ...(context.cancellationSeen
+      ? [
+          "Cancellation context: an earlier tool result was cancelled before this continuation; confidence depends on the resumed evidence below.",
+        ]
+      : []),
     `Verified: ${extracted || "the tool returned a result, but no concise evidence summary was available."}`,
     "Unverified: any claim not present in the tool result remains unverified.",
     "Residual risk: this fallback answer was produced without another model synthesis pass, so use the visible tool evidence as the authority.",
@@ -125,32 +137,148 @@ function summarizeToolConclusion(content: string): string {
 }
 
 function extractToolEvidence(content: string): string {
-  const parsed = parseJsonObject(content);
-  if (parsed) {
-    const fields = ["final_content", "result", "evidence_summary", "summary"];
-    for (const field of fields) {
-      const value = parsed[field];
-      if (typeof value === "string" && value.trim()) {
-        return sliceToolEvidence(value);
-      }
-    }
+  const extracted = extractEvidenceFromValue(content, 0);
+  if (extracted) {
+    return extracted;
   }
   return sliceToolEvidence(content);
 }
 
-function parseJsonObject(content: string): Record<string, unknown> | null {
+function parseJsonObject(content: string): unknown | null {
   try {
     const parsed = JSON.parse(content) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    return parsed;
   } catch {
-    return null;
+    return parseFirstJsonObjectSubstring(content);
   }
 }
 
+function parseFirstJsonObjectSubstring(content: string): unknown | null {
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] !== "{") continue;
+    const end = findJsonObjectEnd(content, index);
+    if (end === null) continue;
+    try {
+      return JSON.parse(content.slice(index, end + 1)) as unknown;
+    } catch {}
+  }
+  return null;
+}
+
+function findJsonObjectEnd(content: string, start: number): number | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < content.length; index += 1) {
+    const char = content[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return null;
+}
+
+function extractEvidenceFromRecord(record: Record<string, unknown>): string | null {
+  const fields = ["final_content", "evidence_summary", "summary", "content", "text", "payload", "data", "output", "result", "raw"];
+  for (const field of fields) {
+    const value = record[field];
+    const extracted = extractEvidenceFromValue(value, 0);
+    if (extracted) {
+      return extracted;
+    }
+  }
+  return null;
+}
+
+function extractEvidenceFromValue(value: unknown, depth: number): string | null {
+  if (depth > 5 || value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const nested = parseJsonObject(trimmed);
+    if (nested !== null && nested !== value) {
+      return extractEvidenceFromValue(nested, depth + 1);
+    }
+    return sliceToolEvidence(trimmed);
+  }
+
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => extractEvidenceFromValue(item, depth + 1))
+      .filter((item): item is string => Boolean(item));
+    return parts.length > 0 ? sliceToolEvidence(parts.join(" ")) : null;
+  }
+
+  if (typeof value === "object") {
+    return extractEvidenceFromRecord(value as Record<string, unknown>);
+  }
+
+  return null;
+}
+
 function sliceToolEvidence(value: string): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
+  const normalized = stripHtml(value)
+    .replace(/\s+/g, " ")
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .trim();
   if (normalized.length <= 1200) {
     return normalized;
   }
   return `${normalized.slice(0, 1197)}...`;
+}
+
+function stripHtml(value: string): string {
+  return value
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, " ");
+}
+
+function hasCancelledToolEvidence(content: string): boolean {
+  const parsed = parseJsonObject(content);
+  if (isRecord(parsed) && parsed["status"] === "cancelled") {
+    return true;
+  }
+  return /\bcancel(?:led|ed|lation)\b/i.test(content);
+}
+
+function hasCompletedOrPartialToolEvidence(content: string): boolean {
+  const parsed = parseJsonObject(content);
+  if (isRecord(parsed)) {
+    const status = parsed["status"];
+    return (status === "completed" || status === "partial") && Boolean(extractEvidenceFromRecord(parsed));
+  }
+  return false;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

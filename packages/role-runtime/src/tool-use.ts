@@ -15,6 +15,7 @@ import type {
   RuntimeProgressRecorder,
   WorkerExecutionResult,
   WorkerSessionState,
+  WorkerSessionRecord,
   WorkerKind,
   WorkerRuntime,
 } from "@turnkeyai/core-types/team";
@@ -1242,20 +1243,20 @@ async function executeSessionsSend(
   maxSessionToolTimeoutMs?: number,
   hardTimeoutGraceMs?: number
 ): Promise<RoleToolExecutionResult> {
-  const sessionKey = requiredString(input.call.input.session_key);
+  const requestedSessionKey = requiredString(input.call.input.session_key);
   const message = requiredString(input.call.input.message);
-  if (!sessionKey || !message) {
+  if (!requestedSessionKey || !message) {
     return errorResult(input.call, "sessions_send requires session_key and message");
   }
   // codex K3.5: enforce thread ownership before sending — without
   // this, a lead role on thread A could drive sub-agents owned by
   // thread B.
   const callerThreadId = input.activation.thread.threadId;
-  const record = workerRuntime.listSessions
-    ? (await workerRuntime.listSessions()).find((r) => r.workerRunKey === sessionKey)
-    : null;
+  const records = workerRuntime.listSessions ? await workerRuntime.listSessions() : [];
+  const record = resolveWorkerSessionRecord(records, requestedSessionKey, callerThreadId);
+  const sessionKey = record?.workerRunKey ?? requestedSessionKey;
   if (!record || record.context?.threadId !== callerThreadId) {
-    return errorResult(input.call, `session not found: ${sessionKey}`);
+    return errorResult(input.call, `session not found: ${requestedSessionKey}`);
   }
   const state = await workerRuntime.getState(sessionKey);
   if (!state) {
@@ -1377,6 +1378,65 @@ async function executeSessionsSend(
     ],
     raw: result,
   };
+}
+
+function resolveWorkerSessionRecord(
+  records: WorkerSessionRecord[],
+  requestedSessionKey: string,
+  callerThreadId: string
+): WorkerSessionRecord | null {
+  const visibleRecords = records.filter((record) => record.context?.threadId === callerThreadId);
+  const exact = visibleRecords.find((record) => record.workerRunKey === requestedSessionKey);
+  if (exact) {
+    return exact;
+  }
+  const requestedSignature = relaxedSessionKeySignature(requestedSessionKey);
+  const signatureMatches = visibleRecords.filter(
+    (record) => relaxedSessionKeySignature(record.workerRunKey) === requestedSignature
+  );
+  if (signatureMatches.length === 1) {
+    return signatureMatches[0]!;
+  }
+  const truncatedPrefix = readTruncatedSessionKeyPrefix(requestedSignature);
+  if (truncatedPrefix) {
+    const prefixMatches = visibleRecords.filter((record) =>
+      relaxedSessionKeySignature(record.workerRunKey).startsWith(truncatedPrefix)
+    );
+    if (prefixMatches.length === 1) {
+      return prefixMatches[0]!;
+    }
+  }
+  if (isMalformedOrTruncatedSessionKey(requestedSessionKey) && visibleRecords.length === 1) {
+    return visibleRecords[0]!;
+  }
+  return null;
+}
+
+function relaxedSessionKeySignature(sessionKey: string): string {
+  return sessionKey
+    .replace(/call_function_/g, "call_")
+    .replace(/call_func_/g, "call_")
+    .replace(/call_funct(?:ion)?(?=…|\.{3})/g, "call_")
+    .replace(/call_func(?=…|\.{3})/g, "call_");
+}
+
+function readTruncatedSessionKeyPrefix(sessionKey: string): string | null {
+  const ellipsisIndex = sessionKey.search(/…|\.\.\./);
+  if (ellipsisIndex < 0) {
+    return null;
+  }
+  const prefix = sessionKey.slice(0, ellipsisIndex);
+  return prefix.length >= 24 ? prefix : null;
+}
+
+function isMalformedOrTruncatedSessionKey(sessionKey: string): boolean {
+  if (/…|\.{3}|\n|\|/.test(sessionKey)) {
+    return true;
+  }
+  return !(
+    /^worker:[A-Za-z0-9_-]+:task[:|-][A-Za-z0-9_:-]+$/.test(sessionKey) ||
+    /^worker:[A-Za-z0-9_-]+:existing$/.test(sessionKey)
+  );
 }
 
 function cachedCompletedSessionResult(

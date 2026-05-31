@@ -33,7 +33,116 @@ test("heuristic fallback lead synthesis uses latest tool evidence instead of a g
   assert.doesNotMatch(result.content, /daemon, flow ledger, role runs/i);
 });
 
-function buildActivationWithToolResult(): RoleActivationInput {
+test("heuristic fallback lead synthesis extracts nested session tool evidence without raw JSON", async () => {
+  const adapter = new HeuristicModelAdapter();
+  const activation = buildActivationWithToolResult([
+    JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      task_id: "task-1",
+      session_key: "worker:explore:1",
+      agent_id: "explore",
+      label: "fetch-cancel-resume-fixture",
+      status: "cancelled",
+      result: "operator cancelled active source verification",
+    }),
+    [
+      "sessions_send result:",
+      JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-1",
+        session_key: "worker:explore:1",
+        agent_id: "explore",
+        label: "fetch-cancel-resume-fixture",
+        status: "completed",
+        result: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          final_content: null,
+          payload: null,
+        }),
+        payload: {
+          final_content: [
+            "<p>Verified owner: Release Captain.</p>",
+            "<p>Verified risk: runbook gap before launch approval.</p>",
+            "<p>Mitigation: complete rollback rehearsal before release gate.</p>",
+          ].join(""),
+        },
+      }),
+    ].join("\n"),
+  ]);
+  const profile = new DefaultRoleProfileRegistry().resolve(activation.thread.roles[0]!);
+
+  const result = await adapter.invoke({
+    activation,
+    profile,
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue from the cancelled source-check attempt.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.match(result.content, /Release Captain/);
+  assert.match(result.content, /runbook gap/);
+  assert.match(result.content, /rollback rehearsal/);
+  assert.match(result.content, /Cancellation context/);
+  assert.match(result.content, /Unverified/);
+  assert.match(result.content, /Residual risk/);
+  assert.match(result.content, /Continuation/);
+  assert.doesNotMatch(result.content, /"protocol"/);
+  assert.doesNotMatch(result.content, /<p>/);
+});
+
+test("heuristic fallback lead synthesis prefers completed evidence over a later cancellation note", async () => {
+  const adapter = new HeuristicModelAdapter();
+  const activation = buildActivationWithToolResult([
+    JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      status: "completed",
+      result: "Continuation completed.",
+      final_content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+    }),
+    JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      status: "cancelled",
+      result: "earlier cancellation remained visible in the timeline",
+    }),
+  ]);
+  const profile = new DefaultRoleProfileRegistry().resolve(activation.thread.roles[0]!);
+
+  const result = await adapter.invoke({
+    activation,
+    profile,
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Close out the continuation.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.match(result.content, /Release Captain/);
+  assert.match(result.content, /runbook gap/);
+  assert.match(result.content, /rollback rehearsal/);
+  assert.doesNotMatch(result.content, /earlier cancellation remained visible/);
+  assert.doesNotMatch(result.content, /Cancellation context/);
+});
+
+function buildActivationWithToolResult(
+  content: string | string[] = JSON.stringify({
+    protocol: "turnkeyai.session_tool_result.v1",
+    status: "completed",
+    result: "Verified resumed source evidence. Unverified freshness remains.",
+  })
+): RoleActivationInput {
+  const contents = Array.isArray(content) ? content : [content];
   return {
     thread: {
       threadId: "thread-1",
@@ -96,19 +205,13 @@ function buildActivationWithToolResult(): RoleActivationInput {
         threadId: "thread-1",
         intent: {
           relayBrief: "Handle the task.",
-          recentMessages: [
-            {
-              messageId: "tool-1",
-              role: "tool",
-              name: "sessions_send",
-              content: JSON.stringify({
-                protocol: "turnkeyai.session_tool_result.v1",
-                status: "completed",
-                result: "Verified resumed source evidence. Unverified freshness remains.",
-              }),
-              createdAt: 1,
-            },
-          ],
+          recentMessages: contents.map((item, index) => ({
+            messageId: `tool-${index + 1}`,
+            role: "tool",
+            name: index === 0 && contents.length > 1 ? "sessions_spawn" : "sessions_send",
+            content: item,
+            createdAt: index + 1,
+          })),
         },
       },
       createdAt: 1,

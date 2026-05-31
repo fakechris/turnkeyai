@@ -1806,15 +1806,66 @@ export class CoordinationEngine {
 
 const MAX_RECENT_MESSAGES_PER_DISPATCH = 8;
 const MAX_RECENT_MESSAGE_CHARS = 320;
+const MAX_RECENT_TOOL_MESSAGE_CHARS = 1600;
 
 function sanitizeRecentMessagesForDispatch(messages: TeamMessageSummary[]): TeamMessageSummary[] {
   return messages.slice(-MAX_RECENT_MESSAGES_PER_DISPATCH).map((message) => ({
     ...message,
-    content:
-      message.content.length > MAX_RECENT_MESSAGE_CHARS
-        ? `${message.content.slice(0, MAX_RECENT_MESSAGE_CHARS - 1)}…`
-        : message.content,
+    content: sanitizeRecentMessageContent(message),
   }));
+}
+
+function sanitizeRecentMessageContent(message: TeamMessageSummary): string {
+  const isTool = message.role === "tool";
+  const compacted = isTool ? compactToolResultForDispatch(message.content) : null;
+  const content = compacted ?? message.content;
+  const limit = isTool ? MAX_RECENT_TOOL_MESSAGE_CHARS : MAX_RECENT_MESSAGE_CHARS;
+  return content.length > limit ? `${content.slice(0, limit - 1)}…` : content;
+}
+
+function compactToolResultForDispatch(content: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content) as unknown;
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record["protocol"] !== "turnkeyai.session_tool_result.v1") {
+    return null;
+  }
+  const payload = record["payload"];
+  const payloadRecord =
+    payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : null;
+  const compacted = {
+    protocol: record["protocol"],
+    status: record["status"],
+    agent_id: record["agent_id"],
+    label: record["label"],
+    session_key: record["session_key"],
+    final_content:
+      typeof record["final_content"] === "string"
+        ? record["final_content"]
+        : typeof payloadRecord?.["final_content"] === "string"
+          ? payloadRecord["final_content"]
+          : null,
+    evidence_summary:
+      typeof record["evidence_summary"] === "string"
+        ? record["evidence_summary"]
+        : typeof payloadRecord?.["evidence_summary"] === "string"
+          ? payloadRecord["evidence_summary"]
+          : undefined,
+    result:
+      typeof record["result"] === "string"
+        ? record["result"]
+        : typeof payloadRecord?.["result"] === "string"
+          ? payloadRecord["result"]
+          : undefined,
+  };
+  return JSON.stringify(compacted, null, 2);
 }
 
 function unique<T>(items: T[]): T[] {

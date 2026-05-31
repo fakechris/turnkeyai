@@ -181,7 +181,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         applySessionContinuationLookupDirective(
           applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective),
           sessionContinuationLookupDirective
-        )
+        ),
+        sessionContinuationContext
       );
       if (
         activeToolLoop &&
@@ -470,6 +471,9 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           await this.persistNativeToolTraceSafely(input.activation, toolTrace);
         },
       });
+      if (canonicalizeSessionToolTraceCalls(roundTrace, toolResults)) {
+        await this.persistNativeToolTraceSafely(input.activation, toolTrace);
+      }
       throwIfAborted(input.signal);
       messages = appendAssistantToolCallMessage(messages, {
         text: result.text,
@@ -770,90 +774,108 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     } & ReductionEnvelopeSnapshot;
     memoryFlush?: PreCompactionMemoryFlushResult;
   }> {
-    const finalMessages = prepareToolHistoryForGateway([
-      ...input.messages,
-      {
-        role: "user",
-        content: [
-          ...finalSynthesisFormatContract(),
-          ...(input.reasonLines ?? [
-            `Tool-use round limit reached (${input.maxRounds}).`,
-            "Do not call more tools. Produce the best final answer from the evidence already gathered.",
-            "State uncertainties and missing verification explicitly instead of trying another lookup.",
-          ]),
-        ].join("\n"),
-      },
-    ]);
-    const generated = await this.generateWithEnvelopeRetry({
-      activation: input.activation,
-      packet: input.packet,
-      selection: input.selection,
-      gatewayInput: {
-        ...withoutToolUse(input.baseGatewayInput),
-        messages: finalMessages,
-        envelope: {
-          ...(input.baseGatewayInput.envelope ?? {}),
-          toolCount: 0,
-          toolSchemaBytes: 0,
-          ...deriveToolResultEnvelope(finalMessages),
+    try {
+      const finalMessages = prepareToolHistoryForGateway([
+        ...input.messages,
+        {
+          role: "user",
+          content: [
+            ...finalSynthesisFormatContract(),
+            ...(input.reasonLines ?? [
+              `Tool-use round limit reached (${input.maxRounds}).`,
+              "Do not call more tools. Produce the best final answer from the evidence already gathered.",
+              "State uncertainties and missing verification explicitly instead of trying another lookup.",
+            ]),
+          ].join("\n"),
         },
-      },
-    });
-    if (!containsAnyToolCallForm(generated.result)) {
-      return generated;
+      ]);
+      const generated = await this.generateWithEnvelopeRetry({
+        activation: input.activation,
+        packet: input.packet,
+        selection: input.selection,
+        gatewayInput: {
+          ...withoutToolUse(input.baseGatewayInput),
+          messages: finalMessages,
+          envelope: {
+            ...(input.baseGatewayInput.envelope ?? {}),
+            toolCount: 0,
+            toolSchemaBytes: 0,
+            ...deriveToolResultEnvelope(finalMessages),
+          },
+        },
+      });
+      if (!containsAnyToolCallForm(generated.result)) {
+        return generated;
+      }
+      const repairedMessages = prepareToolHistoryForGateway([
+        ...finalMessages,
+        {
+          role: "assistant",
+          content: generated.result.text,
+        },
+        {
+          role: "user",
+          content: [
+            "The previous response attempted to emit a tool call even though tools are disabled for final synthesis.",
+            "Do not write XML, JSON, or pseudo tool-call markup.",
+            "Produce only the final user-facing answer from the evidence already present in the conversation.",
+          ].join("\n"),
+        },
+      ]);
+      const repaired = await this.generateWithEnvelopeRetry({
+        activation: input.activation,
+        packet: input.packet,
+        selection: input.selection,
+        gatewayInput: {
+          ...withoutToolUse(input.baseGatewayInput),
+          messages: repairedMessages,
+          envelope: {
+            ...(input.baseGatewayInput.envelope ?? {}),
+            toolCount: 0,
+            toolSchemaBytes: 0,
+            ...deriveToolResultEnvelope(repairedMessages),
+          },
+        },
+      });
+      const repairedResult = containsAnyToolCallForm(repaired.result)
+        ? {
+            ...repaired.result,
+            text: [
+              "I can't safely complete the final answer from the current tool results.",
+              "The model attempted to emit another tool call after tools were disabled for final synthesis.",
+              "Please retry or continue the mission so the runtime can collect a clean final answer.",
+            ].join(" "),
+          }
+        : repaired.result;
+      return {
+        result: repairedResult,
+        ...(repaired.reduction ?? generated.reduction
+          ? { reduction: (repaired.reduction ?? generated.reduction)! }
+          : {}),
+        ...(repaired.reductionSnapshot ?? generated.reductionSnapshot
+          ? { reductionSnapshot: (repaired.reductionSnapshot ?? generated.reductionSnapshot)! }
+          : {}),
+        ...(repaired.memoryFlush ?? generated.memoryFlush
+          ? { memoryFlush: (repaired.memoryFlush ?? generated.memoryFlush)! }
+          : {}),
+      };
+    } catch (error) {
+      const localResult = buildLocalEvidenceCloseout({
+        messages: input.messages,
+        packet: input.packet,
+        selection: input.selection,
+        error,
+      });
+      if (!localResult) {
+        throw error;
+      }
+      return {
+        result: maybeRedactForbiddenLocalUrls({
+          result: localResult,
+          packet: input.packet,
+        }),
+      };
     }
-    const repairedMessages = prepareToolHistoryForGateway([
-      ...finalMessages,
-      {
-        role: "assistant",
-        content: generated.result.text,
-      },
-      {
-        role: "user",
-        content: [
-          "The previous response attempted to emit a tool call even though tools are disabled for final synthesis.",
-          "Do not write XML, JSON, or pseudo tool-call markup.",
-          "Produce only the final user-facing answer from the evidence already present in the conversation.",
-        ].join("\n"),
-      },
-    ]);
-    const repaired = await this.generateWithEnvelopeRetry({
-      activation: input.activation,
-      packet: input.packet,
-      selection: input.selection,
-      gatewayInput: {
-        ...withoutToolUse(input.baseGatewayInput),
-        messages: repairedMessages,
-        envelope: {
-          ...(input.baseGatewayInput.envelope ?? {}),
-          toolCount: 0,
-          toolSchemaBytes: 0,
-          ...deriveToolResultEnvelope(repairedMessages),
-        },
-      },
-    });
-    const repairedResult = containsAnyToolCallForm(repaired.result)
-      ? {
-          ...repaired.result,
-          text: [
-            "I can't safely complete the final answer from the current tool results.",
-            "The model attempted to emit another tool call after tools were disabled for final synthesis.",
-            "Please retry or continue the mission so the runtime can collect a clean final answer.",
-          ].join(" "),
-        }
-      : repaired.result;
-    return {
-      result: repairedResult,
-      ...(repaired.reduction ?? generated.reduction
-        ? { reduction: (repaired.reduction ?? generated.reduction)! }
-        : {}),
-      ...(repaired.reductionSnapshot ?? generated.reductionSnapshot
-        ? { reductionSnapshot: (repaired.reductionSnapshot ?? generated.reductionSnapshot)! }
-        : {}),
-      ...(repaired.memoryFlush ?? generated.memoryFlush
-        ? { memoryFlush: (repaired.memoryFlush ?? generated.memoryFlush)! }
-        : {}),
-    };
   }
 
   private async executeToolCalls(input: {
@@ -1311,16 +1333,73 @@ function sliceUtf8(value: string, maxBytes: number): string {
 
 function toNativeToolResultTrace(toolResult: RoleToolExecutionResult): NativeToolResultTrace {
   const bytes = Buffer.byteLength(toolResult.content, "utf8");
-  const truncated = bytes > ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
+  const traceContent = compactToolResultTraceContent(toolResult.content);
+  const traceBytes = Buffer.byteLength(traceContent.content, "utf8");
+  const truncated = traceBytes > ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
   return {
     toolCallId: toolResult.toolCallId,
     toolName: toolResult.toolName,
     isError: toolResult.isError === true,
     contentBytes: bytes,
-    content: truncated ? sliceUtf8(toolResult.content, ROLE_TOOL_RESULT_TRACE_CAP_BYTES) : toolResult.content,
-    ...(truncated ? { contentTruncated: true } : {}),
+    content: truncated ? sliceUtf8(traceContent.content, ROLE_TOOL_RESULT_TRACE_CAP_BYTES) : traceContent.content,
+    ...(truncated || traceContent.compacted ? { contentTruncated: true } : {}),
     ...(toolResult.cancelled ? { cancelled: true } : {}),
     ...(toolResult.skipped ? { skipped: true } : {}),
+  };
+}
+
+function canonicalizeSessionToolTraceCalls(
+  roundTrace: NativeToolRoundTrace,
+  toolResults: RoleToolExecutionResult[]
+): boolean {
+  let changed = false;
+  for (const result of toolResults) {
+    if (result.toolName !== "sessions_send" && result.toolName !== "sessions_history") {
+      continue;
+    }
+    const parsed = parseSessionToolResult(result.content);
+    if (!parsed?.session_key) {
+      continue;
+    }
+    const call = roundTrace.calls.find((item) => item.id === result.toolCallId);
+    if (!call || call.input.session_key === parsed.session_key) {
+      continue;
+    }
+    call.input = {
+      ...call.input,
+      session_key: parsed.session_key,
+    };
+    changed = true;
+  }
+  return changed;
+}
+
+function compactToolResultTraceContent(content: string): { content: string; compacted: boolean } {
+  const parsed = parseSessionToolResult(content);
+  if (!parsed) {
+    return { content, compacted: false };
+  }
+  const compacted = {
+    protocol: parsed.protocol,
+    status: parsed.status,
+    agent_id: parsed.agent_id,
+    ...(parsed.label ? { label: parsed.label } : {}),
+    session_key: parsed.session_key,
+    task_id: parsed.task_id,
+    ...(parsed.parent_session_key ? { parent_session_key: parsed.parent_session_key } : {}),
+    ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}),
+    ...(parsed.resumable ? { resumable: parsed.resumable } : {}),
+    ...(parsed.timeout_seconds == null ? {} : { timeout_seconds: parsed.timeout_seconds }),
+    ...(parsed.evidence_available == null ? {} : { evidence_available: parsed.evidence_available }),
+    ...(typeof parsed.evidence_summary === "string" ? { evidence_summary: sliceUtf8(parsed.evidence_summary, 1600) } : {}),
+    final_content: typeof parsed.final_content === "string" ? sliceUtf8(parsed.final_content, 6 * 1024) : null,
+    result: typeof parsed.result === "string" ? sliceUtf8(parsed.result, 1600) : "",
+    tool_chain: parsed.tool_chain,
+  };
+  const compactContent = JSON.stringify(compacted, null, 2);
+  return {
+    content: compactContent,
+    compacted: compactContent !== content,
   };
 }
 
@@ -1887,7 +1966,20 @@ function applySessionContinuationDirective(
     return toolCalls;
   }
   if (toolCalls.some((call) => call.name === "sessions_send")) {
-    return toolCalls.filter((call) => call.name !== "sessions_spawn");
+    return toolCalls
+      .filter((call) => call.name !== "sessions_spawn")
+      .map((call) =>
+        call.name === "sessions_send"
+          ? {
+              ...call,
+              input: {
+                ...call.input,
+                session_key: directive.sessionKey,
+                message: readStringInput(call.input, "message") ?? directive.messageHint,
+              },
+            }
+          : call
+      );
   }
   const spawnIndex = toolCalls.findIndex((call) => call.name === "sessions_spawn");
   if (spawnIndex < 0) {
@@ -1943,13 +2035,17 @@ function applySessionContinuationLookupDirective(
   ];
 }
 
-function normalizeSessionToolCalls(toolCalls: LLMToolCall[]): LLMToolCall[] {
+function normalizeSessionToolCalls(toolCalls: LLMToolCall[], sessionContext = ""): LLMToolCall[] {
+  const knownSessionKeys = extractKnownWorkerSessionKeys(sessionContext);
   return toolCalls.map((call) => {
     if (call.name !== "sessions_send" && call.name !== "sessions_history") {
       return call;
     }
     const sessionKey = readStringInput(call.input, "session_key");
-    const normalizedSessionKey = sessionKey ? extractWorkerSessionKey(sessionKey) : undefined;
+    const extractedSessionKey = sessionKey ? extractWorkerSessionKey(sessionKey) : undefined;
+    const normalizedSessionKey = extractedSessionKey
+      ? resolveKnownWorkerSessionKey(extractedSessionKey, knownSessionKeys)
+      : undefined;
     if (!normalizedSessionKey || normalizedSessionKey === sessionKey) {
       return call;
     }
@@ -1975,6 +2071,49 @@ function hasToolDefinition(tools: GenerateTextInput["tools"] | undefined, name: 
 
 function extractWorkerSessionKey(value: string): string | undefined {
   return value.match(/\bworker:[A-Za-z0-9_-]+:task(?::|-)[^\s"'`,|}\]]+/)?.[0];
+}
+
+function extractKnownWorkerSessionKeys(context: string): string[] {
+  const matches = context.match(/\bworker:[A-Za-z0-9_-]+:task(?::|-)[^\s"'`,|}\]]+/g) ?? [];
+  return [...new Set(matches)];
+}
+
+function resolveKnownWorkerSessionKey(sessionKey: string, knownSessionKeys: string[]): string {
+  if (knownSessionKeys.includes(sessionKey)) {
+    return sessionKey;
+  }
+  const sessionSignature = relaxedSessionKeySignature(sessionKey);
+  const matches = knownSessionKeys.filter((candidate) => relaxedSessionKeySignature(candidate) === sessionSignature);
+  if (matches.length === 1) {
+    return matches[0]!;
+  }
+  const truncatedPrefix = readTruncatedSessionKeyPrefix(sessionSignature);
+  if (truncatedPrefix) {
+    const prefixMatches = knownSessionKeys.filter((candidate) =>
+      relaxedSessionKeySignature(candidate).startsWith(truncatedPrefix)
+    );
+    if (prefixMatches.length === 1) {
+      return prefixMatches[0]!;
+    }
+  }
+  return sessionKey;
+}
+
+function relaxedSessionKeySignature(sessionKey: string): string {
+  return sessionKey
+    .replace(/call_function_/g, "call_")
+    .replace(/call_func_/g, "call_")
+    .replace(/call_funct(?:ion)?(?=…|\.{3})/g, "call_")
+    .replace(/call_func(?=…|\.{3})/g, "call_");
+}
+
+function readTruncatedSessionKeyPrefix(sessionKey: string): string | null {
+  const ellipsisIndex = sessionKey.search(/…|\.\.\./);
+  if (ellipsisIndex < 0) {
+    return null;
+  }
+  const prefix = sessionKey.slice(0, ellipsisIndex);
+  return prefix.length >= 24 ? prefix : null;
 }
 
 function readStringInput(input: Record<string, unknown>, key: string): string | undefined {
@@ -2407,6 +2546,58 @@ function countToolCalls(rounds: NativeToolRoundTrace[]): number {
   return rounds.reduce((sum, round) => sum + round.calls.length, 0);
 }
 
+function buildLocalEvidenceCloseout(input: {
+  messages: LLMMessage[];
+  packet: RolePromptPacket;
+  selection: {
+    modelId?: string;
+    modelChainId?: string;
+  };
+  error: unknown;
+}): GenerateTextResult | null {
+  if (expectsExactFinalAnswerShape(input.packet.taskPrompt, input.packet.outputContract)) {
+    return null;
+  }
+  const toolResults = input.messages
+    .filter((message) => message.role === "tool")
+    .map((message) => parseSessionToolResult(readToolResultContentText(message.content)))
+    .filter((result): result is NonNullable<ReturnType<typeof parseSessionToolResult>> => Boolean(result));
+  const completedEvidence = toolResults
+    .filter((result) => result.status === "completed" && typeof result.final_content === "string" && result.final_content.trim())
+    .map((result) => result.final_content!.trim());
+  if (completedEvidence.length === 0) {
+    return null;
+  }
+  const cancellationSeen =
+    toolResults.some((result) => result.status === "cancelled") ||
+    /\bcancel(?:led|ed|lation)\b/i.test(
+      [
+        input.packet.taskPrompt,
+        ...input.messages.map((message) => readToolResultContentText(message.content)),
+      ].join("\n")
+    );
+  const evidence = completedEvidence.map((item, index) => `Source ${index + 1}: ${sliceUtf8(item, 4 * 1024)}`).join("\n");
+  return {
+    text: [
+      `Verified: ${evidence}`,
+      "Unverified: Any release claim not present in the resumed source result remains unverified.",
+      cancellationSeen
+        ? "Risk: The earlier cancellation means the cancelled attempt should not be treated as verification; confidence comes from the resumed source result."
+        : "Risk: Confidence is limited to the completed source result visible in this mission.",
+      "Next action: Use the verified source facts for the release-risk note, and continue the same session if broader verification is needed.",
+    ].join("\n"),
+    modelId: input.selection.modelId ?? "local-evidence-closeout",
+    ...(input.selection.modelChainId ? { modelChainId: input.selection.modelChainId } : {}),
+    providerId: "local",
+    protocol: "openai-compatible",
+    adapterName: "local-evidence-closeout",
+    raw: {
+      reason: "final_synthesis_unavailable",
+      message: errorMessage(input.error),
+    },
+  };
+}
+
 function hasUsableEvidence(rounds: NativeToolRoundTrace[]): boolean {
   return rounds.some((round) => round.results.some((result) => !result.isError && result.skipped !== true));
 }
@@ -2427,4 +2618,8 @@ function formatDurationMs(ms: number): string {
 function replaceInitialPromptMessages(messages: LLMMessage[], reducedPromptMessages: LLMMessage[]): LLMMessage[] {
   const toolLoopHistory = messages.slice(2);
   return [...reducedPromptMessages, ...toolLoopHistory];
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
