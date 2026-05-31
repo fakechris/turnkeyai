@@ -42,6 +42,7 @@ import type {
   WorkItemStore,
 } from "@turnkeyai/core-types/mission";
 import type { RuntimeProgressStore } from "@turnkeyai/core-types/team";
+import type { ToolPermissionService } from "@turnkeyai/role-runtime/tool-permission-service";
 
 import {
   parsePositiveLimit,
@@ -125,6 +126,7 @@ export interface MissionRouteDeps {
   browserContextSourceProvider?: {
     listLive(): Promise<import("@turnkeyai/core-types/mission").ContextSource[]>;
   };
+  toolPermissionService?: Pick<ToolPermissionService, "apply">;
   runtimeProgressStore?: Pick<RuntimeProgressStore, "listByThread">;
 }
 
@@ -304,10 +306,16 @@ export async function handleMissionRoutes(input: {
         decidedBy,
         ...(reason ? { reason } : {}),
       });
+      const permissionApplied = await applyApprovedPermissionDecision({
+        approval: result.approval,
+        decision: result.decision.decision,
+        ...(deps.toolPermissionService ? { toolPermissionService: deps.toolPermissionService } : {}),
+      });
       startApprovalDecisionContinuationInBackground({
         deps,
         approval: result.approval,
         decision: result.decision.decision,
+        permissionApplied,
       });
       sendJson(res, 200, result);
       return true;
@@ -879,6 +887,7 @@ function startApprovalDecisionContinuationInBackground(input: {
   deps: MissionRouteDeps;
   approval: { id: string; missionId: string; action: string };
   decision: "approved" | "denied";
+  permissionApplied?: boolean;
 }): void {
   const orchestrator = input.deps.orchestrator;
   if (!orchestrator) return;
@@ -901,6 +910,7 @@ function startApprovalDecisionContinuationInBackground(input: {
       approvalId: input.approval.id,
       action: input.approval.action,
       decision: input.decision,
+      permissionApplied: input.permissionApplied === true,
     });
     startMissionFollowUpInBackground({
       deps: input.deps,
@@ -922,16 +932,59 @@ function buildApprovalDecisionContinuationMessage(input: {
   approvalId: string;
   action: string;
   decision: "approved" | "denied";
+  permissionApplied?: boolean;
 }): string {
   const outcome =
     input.decision === "approved"
-      ? "The operator approved it. Continue from the paused approval point: call permission_result for this approval_id, call permission_applied, then perform only the approved scoped action."
+      ? input.permissionApplied
+        ? "The operator approved it and the runtime permission cache is already applied. Continue from the approved point: perform only the approved scoped action now, do not ask for approval again, and verify the result before the final answer."
+        : "The operator approved it. Continue from the paused approval point: call permission_result for this approval_id, call permission_applied, then perform only the approved scoped action."
       : "The operator denied it. Continue from the paused approval point: call permission_result for this approval_id, do not perform the denied action, and report the safe fallback.";
   return [
     `Operator decision recorded for approval ${input.approvalId}.`,
     `Action: ${input.action}.`,
     outcome,
   ].join("\n");
+}
+
+async function applyApprovedPermissionDecision(input: {
+  toolPermissionService?: Pick<ToolPermissionService, "apply">;
+  approval: { id: string; payload?: Record<string, unknown> };
+  decision: "approved" | "denied";
+}): Promise<boolean> {
+  if (input.decision !== "approved" || !input.toolPermissionService) {
+    return false;
+  }
+  const threadId = readApprovalToolPermissionThreadId(input.approval.payload);
+  if (!threadId) {
+    return false;
+  }
+  try {
+    const applied = await input.toolPermissionService.apply({
+      threadId,
+      approvalId: input.approval.id,
+    });
+    return applied.status === "applied";
+  } catch (error) {
+    console.error("mission approval permission auto-apply failed", {
+      approvalId: input.approval.id,
+      error,
+    });
+    return false;
+  }
+}
+
+function readApprovalToolPermissionThreadId(payload: Record<string, unknown> | undefined): string | null {
+  const toolPermission = payload?.["toolPermission"];
+  if (!isRecord(toolPermission)) {
+    return null;
+  }
+  const threadId = toolPermission["threadId"];
+  return typeof threadId === "string" && threadId.trim() ? threadId.trim() : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 const VALID_MODES = new Set([
