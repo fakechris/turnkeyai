@@ -227,12 +227,16 @@ export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
   status: "passed" | "failed";
   tooluseScenarios: string[];
   missionScenarios: string[];
+  naturalMissionScenarios?: string[];
   browserTooluseEnabled: boolean;
   artifactPath?: string;
+  naturalArtifactPath?: string;
   missionReport?: ValidationOpsRealAcceptanceDetails["missionReport"];
+  naturalMissionReport?: ValidationOpsRealAcceptanceDetails["naturalMissionReport"];
   error?: string;
 }): ValidationOpsRunRecord {
-  const totalCases = input.tooluseScenarios.length + input.missionScenarios.length;
+  const naturalMissionScenarios = input.naturalMissionScenarios ?? [];
+  const totalCases = input.tooluseScenarios.length + input.missionScenarios.length + naturalMissionScenarios.length;
   const commandHint = "npm run acceptance:real -- --model-catalog models.local.json";
   const issues = input.status === "failed"
     ? [
@@ -259,13 +263,17 @@ export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
     realAcceptance: {
       tooluseScenarios: [...input.tooluseScenarios],
       missionScenarios: [...input.missionScenarios],
+      ...(naturalMissionScenarios.length ? { naturalMissionScenarios: [...naturalMissionScenarios] } : {}),
       browserTooluseEnabled: input.browserTooluseEnabled,
       totalCases,
+      ...(input.naturalArtifactPath ? { naturalArtifactPath: input.naturalArtifactPath } : {}),
       ...(input.missionReport ? { missionReport: input.missionReport } : {}),
+      ...(input.naturalMissionReport ? { naturalMissionReport: input.naturalMissionReport } : {}),
     },
     selectors: [
       ...input.tooluseScenarios.map((scenario) => `tooluse:${scenario}`),
       ...input.missionScenarios.map((scenario) => `mission:${scenario}`),
+      ...naturalMissionScenarios.map((scenario) => `natural-mission:${scenario}`),
       input.browserTooluseEnabled ? "browser-tooluse" : "browser-tooluse-skipped",
     ],
     closedLoop: buildClosedLoopMetric({

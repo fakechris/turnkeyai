@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { summarizeMissionE2eReportForValidationOps } from "./real-llm-acceptance-summary";
+import {
+  summarizeMissionE2eReportForValidationOps,
+  summarizeNaturalMissionE2eReportForValidationOps,
+} from "./real-llm-acceptance-summary";
 
 test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and liveness", () => {
   const summary = summarizeMissionE2eReportForValidationOps({
@@ -76,4 +79,93 @@ test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and 
 test("summarizeMissionE2eReportForValidationOps rejects unrelated artifacts", () => {
   assert.equal(summarizeMissionE2eReportForValidationOps({ kind: "other", scenarios: [] }), null);
   assert.equal(summarizeMissionE2eReportForValidationOps(null), null);
+});
+
+test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capability signals", () => {
+  const summary = summarizeNaturalMissionE2eReportForValidationOps({
+    kind: "turnkeyai.natural-mission-e2e.report",
+    status: "failed",
+    scenarios: [
+      {
+        natural: {
+          status: "passed",
+          completed: true,
+          stuckOrLoop: false,
+          reasonableToolUse: true,
+          browserUsed: true,
+          subAgentCompleted: true,
+          approvalExercised: false,
+          finalAnswerHasEvidence: true,
+          finalAnswerUseful: true,
+          weakAnswerSignals: [],
+        },
+        metrics: {
+          tools: { requested: 2, results: 2, failed: 0, cancelled: 0, timeouts: 0 },
+          sessions: { spawned: 1, continued: 0 },
+          approvals: { requested: 0, decided: 0, applied: 0 },
+          liveness: { active: 0, waiting: 0, stale: 0 },
+          evidenceEvents: 2,
+          recoveryEvents: 0,
+        },
+      },
+      {
+        natural: {
+          status: "failed",
+          completed: false,
+          stuckOrLoop: true,
+          reasonableToolUse: false,
+          browserUsed: false,
+          subAgentCompleted: false,
+          approvalExercised: true,
+          finalAnswerHasEvidence: false,
+          finalAnswerUseful: false,
+          weakAnswerSignals: ["tool unavailable fallback", "model-knowledge fallback"],
+        },
+        metrics: {
+          tools: { requested: 3, results: 1, failed: 1, cancelled: 1, timeouts: 1 },
+          sessions: { spawned: 2, continued: 1 },
+          approvals: { requested: 1, decided: 1, applied: 1 },
+          liveness: { active: 1, waiting: 1, stale: 0 },
+          evidenceEvents: 0,
+          recoveryEvents: 1,
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(summary, {
+    status: "failed",
+    scenarioCount: 2,
+    passedScenarios: 1,
+    failedScenarios: 1,
+    completed: 1,
+    stuckOrLoop: 1,
+    reasonableToolUse: 1,
+    browserUsed: 1,
+    subAgentCompleted: 1,
+    approvalExercised: 1,
+    finalAnswerHasEvidence: 1,
+    finalAnswerUseful: 1,
+    weakAnswerSignals: 2,
+    toolRequested: 5,
+    toolResults: 3,
+    toolFailed: 1,
+    toolCancelled: 1,
+    toolTimeouts: 1,
+    sessionsSpawned: 3,
+    sessionsContinued: 1,
+    approvalsRequested: 1,
+    approvalsDecided: 1,
+    approvalsApplied: 1,
+    livenessActive: 1,
+    livenessWaiting: 1,
+    livenessStale: 0,
+    evidenceEvents: 2,
+    recoveryEvents: 1,
+  });
+});
+
+test("summarizeNaturalMissionE2eReportForValidationOps rejects unrelated artifacts", () => {
+  assert.equal(summarizeNaturalMissionE2eReportForValidationOps({ kind: "other", scenarios: [] }), null);
+  assert.equal(summarizeNaturalMissionE2eReportForValidationOps(null), null);
 });

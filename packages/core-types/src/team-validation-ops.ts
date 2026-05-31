@@ -95,8 +95,10 @@ export interface ValidationOpsBaselineRunDetails {
 export interface ValidationOpsRealAcceptanceDetails {
   tooluseScenarios: string[];
   missionScenarios: string[];
+  naturalMissionScenarios?: string[];
   browserTooluseEnabled: boolean;
   totalCases: number;
+  naturalArtifactPath?: string;
   missionReport?: {
     status: "passed" | "failed";
     scenarioCount: number;
@@ -120,6 +122,36 @@ export interface ValidationOpsRealAcceptanceDetails {
     qualityCheckFailures: number;
     sourceCoverageWarnings: number;
     sourceCoverageFailures: number;
+    evidenceEvents: number;
+    recoveryEvents: number;
+  };
+  naturalMissionReport?: {
+    status: "passed" | "failed";
+    scenarioCount: number;
+    passedScenarios: number;
+    failedScenarios: number;
+    completed: number;
+    stuckOrLoop: number;
+    reasonableToolUse: number;
+    browserUsed: number;
+    subAgentCompleted: number;
+    approvalExercised: number;
+    finalAnswerHasEvidence: number;
+    finalAnswerUseful: number;
+    weakAnswerSignals: number;
+    toolRequested: number;
+    toolResults: number;
+    toolFailed: number;
+    toolCancelled: number;
+    toolTimeouts: number;
+    sessionsSpawned: number;
+    sessionsContinued: number;
+    approvalsRequested: number;
+    approvalsDecided: number;
+    approvalsApplied: number;
+    livenessActive: number;
+    livenessWaiting: number;
+    livenessStale: number;
     evidenceEvents: number;
     recoveryEvents: number;
   };
