@@ -1261,8 +1261,10 @@ test("llm role response generator compacts older tool history before message-cou
   assert.ok(gatewayInputs[8]!.messages.length <= 16);
   assert.equal(gatewayInputs[8]!.messages[2]?.role, "user");
   assert.match(readToolContent(gatewayInputs[8]!.messages[2]!.content), /Earlier tool history compacted/);
-  assert.equal(gatewayInputs[8]!.messages.at(-1)?.role, "tool");
-  assert.equal(gatewayInputs[8]!.messages.at(-1)?.toolCallId, "toolu-8");
+  assert.equal(gatewayInputs[8]!.messages.at(-1)?.role, "user");
+  assert.match(readToolContent(gatewayInputs[8]!.messages.at(-1)!.content), /final allowed tool-use round \(9\)/);
+  assert.equal(gatewayInputs[8]!.messages.at(-2)?.role, "tool");
+  assert.equal(gatewayInputs[8]!.messages.at(-2)?.toolCallId, "toolu-8");
 });
 
 test("llm role response generator synthesizes instead of falling back when tool round limit is reached", async () => {
@@ -1318,6 +1320,8 @@ test("llm role response generator synthesizes instead of falling back when tool 
   assert.equal(result.content, "Final answer after bounded tool use.");
   assert.equal(executedTools, 2);
   assert.equal(gatewayInputs.length, 4);
+  assert.doesNotMatch(readToolContent(gatewayInputs[0]!.messages.at(-1)!.content), /final allowed tool-use round/);
+  assert.match(readToolContent(gatewayInputs[1]!.messages.at(-1)!.content), /final allowed tool-use round \(2\)/);
   assert.equal(gatewayInputs[3]?.toolChoice, "none");
   assert.equal(gatewayInputs[3]?.tools, undefined);
   assert.ok(
