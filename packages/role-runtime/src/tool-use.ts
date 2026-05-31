@@ -1038,12 +1038,14 @@ async function executeSessionsSpawn(
   } finally {
     registration?.unregister();
   }
-  if (registration?.isCancelled()) {
+  const cancelledState =
+    registration?.isCancelled() || result ? null : await getCancelledWorkerState(workerRuntime, spawned.workerRunKey);
+  if (registration?.isCancelled() || cancelledState) {
     return cancelledSessionToolResult(input.call, {
       taskId: input.activation.handoff.taskId,
       sessionKey: spawned.workerRunKey,
       agentId: spawned.workerType,
-      reason: registration.cancellationReason() ?? "Tool call cancelled.",
+      reason: registration?.cancellationReason() ?? cancelledState?.lastError?.message ?? "Tool call cancelled.",
       label,
       parentSessionKey: input.activation.runState.runKey,
       toolCallId: input.call.id,
@@ -1273,12 +1275,13 @@ async function executeSessionsSend(
   } finally {
     registration?.unregister();
   }
-  if (registration?.isCancelled()) {
+  const cancelledState = registration?.isCancelled() || result ? null : await getCancelledWorkerState(workerRuntime, sessionKey);
+  if (registration?.isCancelled() || cancelledState) {
     return cancelledSessionToolResult(input.call, {
       taskId: input.activation.handoff.taskId,
       sessionKey,
       agentId: state.workerType,
-      reason: registration.cancellationReason() ?? "Tool call cancelled.",
+      reason: registration?.cancellationReason() ?? cancelledState?.lastError?.message ?? "Tool call cancelled.",
       label,
       parentSessionKey: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
       toolCallId: input.call.id,
@@ -1828,6 +1831,11 @@ async function getWorkerStateSafely(workerRuntime: WorkerRuntime, workerRunKey: 
   } catch {
     return null;
   }
+}
+
+async function getCancelledWorkerState(workerRuntime: WorkerRuntime, workerRunKey: string): Promise<WorkerSessionState | null> {
+  const state = await getWorkerStateSafely(workerRuntime, workerRunKey);
+  return state?.status === "cancelled" ? state : null;
 }
 
 async function sendWorkerWithOptionalTimeout(

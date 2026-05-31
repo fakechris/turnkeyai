@@ -38,7 +38,8 @@ type ToolLoopCloseoutReason =
   | "wall_clock_budget"
   | "round_limit"
   | "completed_sub_agent_final"
-  | "sub_agent_timeout";
+  | "sub_agent_timeout"
+  | "operator_cancelled";
 
 interface ToolLoopCloseoutMetadata {
   reason: ToolLoopCloseoutReason;
@@ -174,6 +175,48 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           sessionContinuationLookupDirective
         )
       );
+      if (
+        activeToolLoop &&
+        toolCalls.length > 0 &&
+        shouldCloseoutCancelledSessionWithoutContinuation({
+          taskPrompt: input.packet.taskPrompt,
+          messages,
+        })
+      ) {
+        const maxRounds = activeToolLoop.maxRounds ?? DEFAULT_ROLE_TOOL_MAX_ROUNDS;
+        toolLoopCloseout = {
+          reason: "operator_cancelled",
+          maxRounds,
+          toolCallCount: countToolCalls(toolTrace),
+          roundCount: toolTrace.length,
+          evidenceAvailable: hasUsableEvidence(toolTrace),
+        };
+        throwIfAborted(input.signal);
+        const generated = await this.generateFinalAfterToolRoundLimit({
+          activation: input.activation,
+          packet: input.packet,
+          selection,
+          baseGatewayInput: initialGatewayInput,
+          messages,
+          maxRounds,
+          reasonLines: [
+            "A previous sub-agent session was cancelled by the operator.",
+            "The latest user message did not ask to continue, resume, or retry that cancelled session.",
+            "Do not call more tools or spawn a replacement session. Produce the final answer from the cancellation evidence already present.",
+            "State what remains unverified and how the user can continue later if they want the cancelled work resumed.",
+          ],
+        });
+        throwIfAborted(input.signal);
+        result = generated.result;
+        if (generated.reduction) {
+          reduction = generated.reduction;
+          reductionSnapshot = generated.reductionSnapshot;
+        }
+        if (generated.memoryFlush) {
+          memoryFlushes.push(generated.memoryFlush);
+        }
+        break;
+      }
       if (
         activeToolLoop &&
         toolCalls.length === 0 &&
@@ -460,10 +503,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             timeoutSignal.evidenceAvailable
               ? "Produce the best final answer from the evidence already gathered and state any remaining uncertainty."
               : "No usable evidence was gathered before the timeout. Say that verification did not complete, summarize what was attempted, and tell the user they can ask to continue.",
+            "Include one concise continuation sentence: the user can continue or retry the same source check with a longer timeout before treating the missing source as verified.",
           ],
         });
         throwIfAborted(input.signal);
-        result = generated.result;
+        result = maybeAppendTimeoutContinuationVisibility(generated.result);
         if (generated.reduction) {
           reduction = generated.reduction;
           reductionSnapshot = generated.reductionSnapshot;
@@ -1263,6 +1307,16 @@ function maybeAppendBrowserRecoveryVisibility(input: {
   };
 }
 
+function maybeAppendTimeoutContinuationVisibility(result: GenerateTextResult): GenerateTextResult {
+  if (/\b(?:continue|retry|resume|resumable|next step|longer timeout)\b/i.test(result.text)) {
+    return result;
+  }
+  return {
+    ...result,
+    text: `${result.text.trim()}\n\nContinuation: this source check is resumable; continue or retry with a longer timeout before treating the missing source as verified.`.trim(),
+  };
+}
+
 function maybeRedactForbiddenLocalUrls(input: { result: GenerateTextResult; packet: RolePromptPacket }): GenerateTextResult {
   const constraintText = `${input.packet.taskPrompt}\n${input.packet.outputContract}`;
   if (!forbidsFinalUrls(constraintText)) {
@@ -1308,7 +1362,7 @@ function shouldRepairMissingApprovalGate(input: {
   if (input.toolTrace.some((round) => round.calls.some((call) => call.name.startsWith("permission_")))) {
     return false;
   }
-  return mentionsPendingApproval(input.resultText) && requestsApprovalGatedBrowserAction(input.taskPrompt);
+  return requestsApprovalGatedBrowserAction(input.taskPrompt);
 }
 
 function shouldRepairStalePendingApproval(input: {
@@ -1386,8 +1440,8 @@ function requestsApprovalGatedBrowserAction(taskPrompt: string): boolean {
 
 function buildMissingApprovalGateRepairPrompt(): string {
   return [
-    "Runtime correction: approval-gated browser action was described without a native tool call.",
-    "Do not finalize with a pending-approval explanation unless a native permission or browser-session tool result created that pending approval.",
+    "Runtime correction: approval-gated browser action was finalized or described without native approval/tool evidence.",
+    "Do not finalize an approval-gated browser side effect unless a native permission or browser-session tool result created that evidence.",
     "Use the available native tools now. For a browser form submit or other browser side effect, prefer sessions_spawn with agent_id=browser and include the exact URL, approved action, approval boundary, and verification requirement in the task.",
     "The runtime will request operator approval before the side effect executes. After the tool result returns, synthesize only from that result.",
   ].join("\n");
@@ -1513,6 +1567,18 @@ function sessionContextSupportsContinuation(context: string): boolean {
     }
   }
   return false;
+}
+
+function shouldCloseoutCancelledSessionWithoutContinuation(input: { taskPrompt: string; messages: LLMMessage[] }): boolean {
+  const context = buildContinuationDirectiveContext(input.taskPrompt, input.messages);
+  if (!contextHasCancelledSessionResult(context)) {
+    return false;
+  }
+  return !isExplicitSessionContinuationRequest(extractLatestUserContinuationText(input.taskPrompt));
+}
+
+function contextHasCancelledSessionResult(context: string): boolean {
+  return extractSessionToolResultRecords(context).some((result) => result["status"] === "cancelled");
 }
 
 function contextHasSessionListResult(context: string): boolean {
