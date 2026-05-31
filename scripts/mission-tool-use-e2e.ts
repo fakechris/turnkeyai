@@ -5334,8 +5334,8 @@ function findLatestApprovalAppliedIndex(timeline: ActivityEvent[], approvedIds: 
   return -1;
 }
 
-function isStalePendingApprovalThought(text: string): boolean {
-  return /\b(?:approval pending|approval request is pending|awaiting operator approval|waiting for operator decision|waiting for operator|still pending)\b/i.test(
+export function isStalePendingApprovalThought(text: string): boolean {
+  return /\b(?:approval pending|approval request is pending|permission request is pending|pending operator decision|awaiting operator approval|waiting for operator decision|waiting for operator|still pending)\b/i.test(
     text
   );
 }
