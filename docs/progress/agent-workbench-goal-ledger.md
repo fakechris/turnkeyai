@@ -4350,3 +4350,75 @@ Convergence question:
 - Next required gate: run full `acceptance:real` and require a passed
   validation-ops record with both mission and natural report artifacts before
   calling the broader runtime direction converging.
+
+## 2026-06-01 03:21 CST - Natural Core Delegation Evidence After Runtime Guards
+
+Direction: converging
+
+Execution Kernel:
+- Revalidated the current runtime after the repeated-failure closeout guard and
+  final-tool-round warning were merged.
+- The focused natural run exercised parent delegation, sub-agent completion,
+  final synthesis, and liveness cleanup without hitting forced closeout,
+  repeated failed tool attempts, or stuck active/waiting/stale runtime state.
+- This is capability evidence for two core natural paths, not a full release
+  claim for the whole workbench objective.
+
+Result Quality:
+- `natural-comparison-research` completed with a useful evidence-backed answer,
+  1/1 tool result, one completed sub-agent, no weak-answer signals, and final
+  quality `passed`.
+- `natural-long-delegation` completed with three independent sub-agent results,
+  browser evidence, 3/3 visible source coverage, residual-risk coverage, no
+  unsupported placeholder language, and final quality `passed`.
+- Neither scenario required fixture-shaped final-answer markers or exact answer
+  skeletons; both used natural mission acceptance scoring.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The generated mission timelines are still useful acceptance artifacts: each
+  run reached a terminal `done` state with ordered tool call/result evidence and
+  no lingering liveness counts. Screenshot-backed Mission Detail checks remain
+  a separate P1/P0-visibility gate.
+
+Browser Reliability:
+- `natural-long-delegation` reported `browser=yes` and `profileFallbacks=0`.
+- This proves one browser-backed natural delegation path remained stable after
+  the runtime guard changes. It does not prove profile-conflict recovery,
+  restart/cold browser continuation, or complex real-page robustness.
+
+Acceptance Evidence:
+- Real LLM natural matrix:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-comparison-research,natural-long-delegation --model-catalog
+  models.local.json --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-core-20260531T191908Z.json`: passed.
+- Natural report: `/tmp/turnkeyai-natural-core-20260531T191908Z.json`, kind
+  `turnkeyai.natural-mission-e2e.report`, evidence mode `natural-real-llm`,
+  status `passed`.
+- `natural-comparison-research`: mission `msn.mpu5ym8w.1`, status `done`,
+  natural `passed`, tools `1/1`, sessions `1/0`, browser `no`,
+  profile fallback `0`, liveness `0/0/0`, weak-answer signals `none`, final
+  bytes `1926`.
+- `natural-long-delegation`: mission `msn.mpu5zac2.2`, status `done`, natural
+  `passed`, tools `3/3`, sessions `3/0`, browser `yes`, profile fallback `0`,
+  liveness `0/0/0`, weak-answer signals `none`, final bytes `2477`.
+
+Regression Risk:
+- This evidence is narrower than full `acceptance:real`; it covers natural
+  comparison and long-delegation behavior after runtime guard changes.
+- The remaining risk is that browser continuation, approval, timeout,
+  cancellation, memory pressure, and UI replay can still regress outside this
+  focused gate. The next broad capability gate should be a fresh full
+  `acceptance:real` run or focused natural browser/approval/timeout scenarios
+  tied to the next implementation slice.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes, for
+  natural parent delegation and browser-backed long-delegation synthesis.
+- Evidence: the runtime completed two natural real LLM scenarios with useful
+  evidence-backed final answers, completed sub-agents, no weak-answer signals,
+  and no active/waiting/stale residue.
+- Next required gate: rerun a broader natural matrix covering browser
+  continuation, approval dry-run, timeout follow-up, cancellation follow-up,
+  and memory recall before claiming broader production convergence.
