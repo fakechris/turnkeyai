@@ -501,6 +501,58 @@ test("buildMissionObservabilitySnapshot ignores generic continuation task labels
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot ignores restart continuation wording while preserving restart as coverage", () => {
+  const dashboardResult = tool(
+    "result-dashboard",
+    2_000,
+    "result",
+    "sessions_spawn",
+    "call-dashboard",
+    "Dashboard source returned evidence."
+  );
+  const restartResult = tool(
+    "result-restart",
+    3_000,
+    "result",
+    "sessions_send",
+    "call-restart",
+    "Restart continuation returned dashboard evidence."
+  );
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...dashboardResult,
+        runtime: {
+          ...dashboardResult.runtime,
+          sourceLabel: "Operations dashboard",
+        },
+      },
+      {
+        ...restartResult,
+        runtime: {
+          ...restartResult.runtime,
+          sourceLabel: "Continuation followup retry revisit dashboard review after restart",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        [
+          "The operations dashboard evidence was rechecked after daemon restart.",
+          "Incident Commander remains owner, with residual risk around page freshness.",
+        ].join(" ")
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "passed");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "source_coverage")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot still warns when a distinctive source token is missing", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "done" }),

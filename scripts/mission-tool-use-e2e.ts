@@ -65,6 +65,7 @@ export type NaturalMissionE2eScenario =
   | "natural-comparison-research"
   | "natural-browser-dynamic-page"
   | "natural-browser-followup-continuation"
+  | "natural-browser-restart-continuation"
   | "natural-followup-continuation"
   | "natural-memory-recall"
   | "natural-approval-dry-run-action"
@@ -79,6 +80,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-comparison-research",
   "natural-browser-dynamic-page",
   "natural-browser-followup-continuation",
+  "natural-browser-restart-continuation",
   "natural-followup-continuation",
   "natural-memory-recall",
   "natural-approval-dry-run-action",
@@ -614,18 +616,30 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
   await assertRenderedFixtureEvidenceHidden(fixture);
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-mission-e2e-"));
   const port = await allocatePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
   const token = `mission-e2e-${Date.now()}`;
   const scenarios = options.matrixScenarios ?? (options.matrix ? [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS] : [options.scenario]);
   assertSupportedScenarioMix(scenarios);
-  const daemon = startDaemon({
+  const shouldUseBudgetLimitedDaemon = !options.natural && scenarios.includes("budget-limited-closeout");
+  let daemon = startDaemon({
     runtimeRoot,
     port,
     token,
     modelCatalogPath,
-    ...(scenarios.includes("budget-limited-closeout") ? { agentToolMaxRounds: 1 } : {}),
+    ...(shouldUseBudgetLimitedDaemon ? { agentToolMaxRounds: 1 } : {}),
   });
+  const restartDaemon = async () => {
+    await stopDaemon(daemon.child);
+    daemon = startDaemon({
+      runtimeRoot,
+      port,
+      token,
+      modelCatalogPath,
+      ...(shouldUseBudgetLimitedDaemon ? { agentToolMaxRounds: 1 } : {}),
+    });
+    await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: 30_000 });
+  };
   try {
-    const baseUrl = `http://127.0.0.1:${port}`;
     await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: 20_000 });
     if (options.natural) {
       const naturalScenarios =
@@ -643,6 +657,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
             runtimeRoot,
             scenario,
             timeoutMs: options.scenarioTimeoutMs,
+            restartDaemon,
           });
           naturalResults.push(result);
           console.log(
@@ -1248,12 +1263,16 @@ async function runNaturalMissionScenario(input: {
   runtimeRoot: string;
   scenario: NaturalMissionE2eScenario;
   timeoutMs: number;
+  restartDaemon?: () => Promise<void>;
 }): Promise<NaturalMissionScenarioResult> {
   if (input.scenario === "natural-followup-continuation") {
     return runNaturalFollowupScenario(input);
   }
   if (input.scenario === "natural-browser-followup-continuation") {
     return runNaturalBrowserFollowupScenario(input);
+  }
+  if (input.scenario === "natural-browser-restart-continuation") {
+    return runNaturalBrowserRestartContinuationScenario(input);
   }
   if (input.scenario === "natural-memory-recall") {
     return runNaturalMemoryRecallScenario(input);
@@ -1418,7 +1437,7 @@ async function runNaturalBrowserFollowupScenario(input: {
   });
   const initialFinal = findLatestThoughtEvent(initialTimeline);
   assert.ok(initialFinal, "natural browser follow-up phase one must include an assistant answer");
-  const initialSessionKey = extractFirstSessionKey(initialTimeline);
+  const initialSessionKey = extractSessionKeyForSpawnAgent(initialTimeline, "browser");
   assert.ok(initialSessionKey, "natural browser follow-up phase one must expose a reusable browser session key");
 
   const followup = [
@@ -1477,6 +1496,101 @@ async function runNaturalBrowserFollowupScenario(input: {
     `natural mission browser follow-up quality failures: ${quality.failures.join("; ")}\n${final.text}`
   );
   return { scenario: "natural-browser-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function runNaturalBrowserRestartContinuationScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+  restartDaemon?: () => Promise<void>;
+}): Promise<NaturalMissionScenarioResult> {
+  assert.ok(input.restartDaemon, "natural browser restart continuation requires a daemon restart hook");
+  const spec = buildNaturalScenarioSpec("natural-browser-restart-continuation", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const mission = await createNaturalMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "natural browser restart continuation mission requires a linked team thread");
+
+  await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+  });
+  const initialTimeline = await requestJson<ActivityEvent[]>({
+    method: "GET",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/timeline?limit=300`,
+    token: input.token,
+  });
+  const initialFinal = findLatestThoughtEvent(initialTimeline);
+  assert.ok(initialFinal, "natural browser restart phase one must include an assistant answer");
+  const initialSessionKey = extractSessionKeyForSpawnAgent(initialTimeline, "browser");
+  assert.ok(initialSessionKey, "natural browser restart phase one must expose a reusable browser session key");
+
+  await input.restartDaemon();
+
+  const followup = [
+    "Continue the operations dashboard review from before the daemon restart.",
+    "Use the existing browser context if it is still recoverable; if the browser has to reconnect or reopen the page, keep that visible in the answer.",
+    "Re-check the rendered dashboard state and give the operator the current owner, next action, and residual uncertainty.",
+  ].join("\n");
+  assertNaturalPromptAllowed(followup);
+  await requestJson<{ accepted: boolean; missionId: string }>({
+    method: "POST",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+    token: input.token,
+    body: { content: followup },
+  });
+
+  const result = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+    afterThoughtMs: initialFinal.tMs,
+    ...(initialFinal.id ? { afterThoughtId: initialFinal.id } : {}),
+  });
+  assertNaturalFollowupReusedExistingSession({
+    timeline: result.timeline,
+    phaseOneFinal: initialFinal,
+    expectedSessionKey: initialSessionKey,
+  });
+  assertNaturalFollowupResultIncludes({
+    timeline: result.timeline,
+    phaseOneFinal: initialFinal,
+    patterns: [
+      { label: "restarted rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
+      { label: "restarted rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+      { label: "restarted rendered owner", pattern: /Incident Commander/i },
+    ],
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  const final = findLatestThoughtEvent(result.timeline);
+  assert.ok(final, "natural browser restart continuation mission must include a final assistant answer");
+  const quality = evaluateNaturalMissionQuality({
+    spec,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+  });
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `natural mission browser restart continuation quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "natural-browser-restart-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
 async function runNaturalMemoryRecallScenario(input: {
@@ -2051,6 +2165,36 @@ export function buildNaturalScenarioSpec(
       allowToolFailure: false,
       minEvidenceEvents: 2,
       requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander", "next action"],
+      requiredEvidencePatterns: [
+        { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
+        { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+        { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
+      ],
+    };
+  }
+  if (scenario === "natural-browser-restart-continuation") {
+    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
+    return {
+      scenario,
+      title: "Natural browser restart continuation",
+      desc: [
+        "Review this operations dashboard as a user would see it in the browser.",
+        `Dashboard: ${dynamicUrl}`,
+        "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
+        "Summarize the operational state, escalation trigger, owner, and recommended next action for an operator.",
+        "The mission may be continued after a daemon restart, so preserve enough browser context for a later follow-up.",
+      ].join("\n"),
+      minBytes: 420,
+      minToolResults: 2,
+      maxToolResults: 9,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 2,
+      minContinuedSessions: 1,
+      requiresBrowser: true,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 2,
+      requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander", "next action", "restart"],
       requiredEvidencePatterns: [
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
         { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
@@ -4392,6 +4536,51 @@ function extractFirstSessionKey(timeline: ActivityEvent[]): string | null {
     }
   }
   return null;
+}
+
+export function extractSessionKeyForSpawnAgent(timeline: ActivityEvent[], agentId: string): string | null {
+  const matchingCallIds = new Set<string>();
+  for (const event of timeline) {
+    if (event.runtime?.["toolName"] !== "sessions_spawn" || event.runtime?.["toolPhase"] !== "call") {
+      continue;
+    }
+    const toolCallId = readRuntimeString(event, "toolCallId");
+    if (!toolCallId) {
+      continue;
+    }
+    const callInput = event.runtime?.["callInput"];
+    if (typeof callInput !== "string") {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(callInput) as { agent_id?: unknown };
+      if (parsed.agent_id === agentId) {
+        matchingCallIds.add(toolCallId);
+      }
+    } catch {
+      continue;
+    }
+  }
+  for (const event of timeline) {
+    if (event.runtime?.["toolName"] !== "sessions_spawn" || event.runtime?.["toolPhase"] !== "result") {
+      continue;
+    }
+    const toolCallId = readRuntimeString(event, "toolCallId");
+    if (!toolCallId || !matchingCallIds.has(toolCallId)) {
+      continue;
+    }
+    const content = String(event.runtime?.["resultContent"] ?? event.text);
+    const match = content.match(/"session_key"\s*:\s*"([^"]+)"/);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+function readRuntimeString(event: ActivityEvent, key: string): string | null {
+  const value = event.runtime?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 export function extractTimedOutSessionKey(timeline: ActivityEvent[]): string | null {

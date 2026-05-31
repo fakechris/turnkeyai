@@ -10,6 +10,7 @@ import {
   buildMissionE2eJsonReport,
   evaluateNaturalMissionQuality,
   extractCancelledSessionKey,
+  extractSessionKeyForSpawnAgent,
   extractTimedOutSessionKey,
   formatMissionScenarioPass,
   formatMissionScenarioStart,
@@ -650,6 +651,120 @@ describe("mission tool-use e2e report", () => {
     assert.ok(missingContinuation.failures.some((failure) => failure.includes("tool use was outside")));
   });
 
+  it("requires natural browser restart continuation to keep browser evidence useful", () => {
+    const spec = buildNaturalScenarioSpec("natural-browser-restart-continuation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    assertNaturalPromptAllowed(spec.desc);
+    const result = fakeNaturalResult();
+    result.scenario = "natural-browser-restart-continuation";
+    result.metrics.tool.requested = 2;
+    result.metrics.tool.results = 2;
+    result.metrics.sessions.spawned = 1;
+    result.metrics.sessions.continued = 1;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    const phaseOneFinal = {
+      id: "thought.browser.restart.phase-one",
+      kind: "thought",
+      text: "The dashboard shows Queue depth 11, SLA breaches 3, and Incident Commander as owner.",
+      tMs: 3000,
+    };
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "browser call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "review dashboard before restart" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser result",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: '{"status":"done","session_key":"worker:browser:restart","summary":"Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander."}',
+        },
+      },
+      phaseOneFinal,
+      {
+        kind: "tool",
+        text: "browser restart follow-up call",
+        tMs: 4000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "call",
+          callInput: JSON.stringify({ session_key: "worker:browser:restart", message: "continue after daemon restart" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser restart follow-up result",
+        tMs: 5000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          resultContent:
+            "After restart, rendered dashboard evidence still shows Queue depth: 11, SLA breaches: 3, and Recommended owner: Incident Commander.",
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "After the restart, Queue depth remains 11 and SLA breaches remain 3, so the next action is to keep the escalation active.",
+          "Incident Commander remains the owner because the browser continuation re-checked the rendered dashboard evidence.",
+          "The recommendation is to treat this as an operator-facing incident path and verify the same browser view again before external action.",
+          "Residual risk remains around dashboard freshness after restart and missing ticket-level context.",
+        ].join(" "),
+        tMs: 6000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    assertNaturalFollowupReusedExistingSession({
+      timeline: result.timeline,
+      phaseOneFinal,
+      expectedSessionKey: "worker:browser:restart",
+    });
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+
+    result.timeline[1]!.runtime = {
+      ...result.timeline[1]!.runtime,
+      resultContent: '{"status":"done","session_key":"worker:browser:restart","summary":"Browser opened before restart, but no rendered dashboard facts were captured."}',
+    };
+    result.timeline[4]!.runtime = {
+      ...result.timeline[4]!.runtime,
+      resultContent: "After restart the browser session continued, but no rendered dashboard facts were captured.",
+    };
+    const missingRestartEvidence = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(missingRestartEvidence.failures.includes("missing evidence rendered queue depth"));
+  });
+
   it("fails natural browser quality when a profile fallback is present", () => {
     const result = fakeNaturalResult();
     result.metrics.browser.profileFallbacks = 1;
@@ -1118,6 +1233,58 @@ describe("mission tool-use e2e report", () => {
     ];
 
     assert.equal(extractTimedOutSessionKey(timeline), "wrk.timeout.2");
+  });
+
+  it("extracts a session key for the matching spawned agent", () => {
+    const timeline = [
+      {
+        kind: "tool",
+        text: "explore call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          toolCallId: "call-explore",
+          callInput: JSON.stringify({ agent_id: "explore", task: "fetch notes" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser call",
+        tMs: 1100,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          toolCallId: "call-browser",
+          callInput: JSON.stringify({ agent_id: "browser", task: "inspect page" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "explore result",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          toolCallId: "call-explore",
+          resultContent: '{"status":"done","session_key":"worker:explore:wrong"}',
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser result",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          toolCallId: "call-browser",
+          resultContent: '{"status":"done","session_key":"worker:browser:right"}',
+        },
+      },
+    ];
+
+    assert.equal(extractSessionKeyForSpawnAgent(timeline, "finance"), null);
+    assert.equal(extractSessionKeyForSpawnAgent(timeline, "browser"), "worker:browser:right");
   });
 
   it("extracts the cancelled session key instead of the first spawned session", () => {

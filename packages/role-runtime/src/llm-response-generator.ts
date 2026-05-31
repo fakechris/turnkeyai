@@ -58,6 +58,8 @@ interface SessionContinuationDirective {
   messageHint: string;
 }
 
+const SESSION_TOOL_RESULT_PROTOCOL = "turnkeyai.session_tool_result.v1";
+
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
   private readonly gateway: LLMGateway;
   private readonly runtimeProgressRecorder: RuntimeProgressRecorder | undefined;
@@ -1145,6 +1147,21 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
     return null;
   }
+  const sessionResults = extractSessionToolResultRecords(taskPrompt);
+  for (let index = sessionResults.length - 1; index >= 0; index -= 1) {
+    const result = sessionResults[index]!;
+    const sessionKey = result["session_key"];
+    if (typeof sessionKey !== "string" || !sessionKey.trim()) {
+      continue;
+    }
+    if (!sessionToolResultSupportsContinuation(result)) {
+      continue;
+    }
+    return {
+      sessionKey: sessionKey.trim(),
+      messageHint: latestUserText,
+    };
+  }
   const sessionMatches = [...taskPrompt.matchAll(/"session_key"\s*:\s*"([^"]+)"/g)];
   for (let index = sessionMatches.length - 1; index >= 0; index -= 1) {
     const match = sessionMatches[index]!;
@@ -1153,13 +1170,117 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
     const start = Math.max(0, (match.index ?? 0) - 1200);
     const end = Math.min(taskPrompt.length, (match.index ?? 0) + 1200);
     const context = taskPrompt.slice(start, end);
-    if (!/\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(context)) {
+    if (!sessionContextSupportsContinuation(context)) {
       continue;
     }
     return {
       sessionKey,
       messageHint: latestUserText,
     };
+  }
+  return null;
+}
+
+function sessionContextSupportsContinuation(context: string): boolean {
+  if (/\b(timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(context)) {
+    return true;
+  }
+  for (const result of extractSessionToolResultRecords(context)) {
+    if (sessionToolResultSupportsContinuation(result)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function extractSessionToolResultRecords(context: string): Array<Record<string, unknown>> {
+  const records: Array<Record<string, unknown>> = [];
+  for (const parsed of parseJsonObjectsFromContext(context)) {
+    collectSessionToolResultRecords(parsed, records);
+  }
+  return records;
+}
+
+function collectSessionToolResultRecords(value: unknown, records: Array<Record<string, unknown>>): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return;
+  }
+  const result = value as Record<string, unknown>;
+  if (result["protocol"] === SESSION_TOOL_RESULT_PROTOCOL) {
+    records.push(result);
+  }
+  for (const key of ["content", "resultContent"]) {
+    const nested = result[key];
+    if (typeof nested !== "string" || !nested.includes(SESSION_TOOL_RESULT_PROTOCOL)) {
+      continue;
+    }
+    for (const parsed of parseJsonObjectsFromContext(nested)) {
+      collectSessionToolResultRecords(parsed, records);
+    }
+  }
+}
+
+function sessionToolResultSupportsContinuation(result: Record<string, unknown>): boolean {
+  if (result["protocol"] !== SESSION_TOOL_RESULT_PROTOCOL) {
+    return false;
+  }
+  if (result["status"] === "completed" || result["status"] === "timeout" || result["status"] === "cancelled") {
+    return true;
+  }
+  return result["resumable"] === true;
+}
+
+function parseJsonObjectsFromContext(context: string): unknown[] {
+  const parsed: unknown[] = [];
+  for (let index = 0; index < context.length; index += 1) {
+    if (context[index] !== "{") {
+      continue;
+    }
+    const end = findJsonObjectEnd(context, index);
+    if (end === null) {
+      continue;
+    }
+    try {
+      parsed.push(JSON.parse(context.slice(index, end + 1)));
+      index = end;
+    } catch {
+      // The context window may start or end inside a JSON blob. Keep scanning
+      // for the next balanced object instead of falling back to raw status text.
+    }
+  }
+  return parsed;
+}
+
+function findJsonObjectEnd(context: string, start: number): number | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < context.length; index += 1) {
+    const char = context[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
   }
   return null;
 }
