@@ -169,7 +169,8 @@ export class BrowserWorkerHandler implements WorkerHandler {
         if (!canColdRecreateReadOnlyBrowserSession(request, error)) {
           throw error;
         }
-        return this.browserBridge.spawnSession(stripBrowserContinuationHandles(request));
+        const recreated = await this.browserBridge.spawnSession(stripBrowserContinuationHandles(request));
+        return { ...recreated, resumeMode: "cold" as const };
       }
     }
 

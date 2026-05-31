@@ -858,6 +858,22 @@ function classifyBrowserSideEffect(
 }
 
 function hasBrowserActionVerb(input: string, verbs: string[], readOnlyFollowers: string[]): boolean {
+  const contextualReadOnlyFollowers = new Set([
+    "answer",
+    "answers",
+    "evidence",
+    "finding",
+    "findings",
+    "recommendation",
+    "recommendations",
+    "report",
+    "reports",
+    "result",
+    "results",
+    "review",
+    "summary",
+    "summaries",
+  ]);
   for (const verb of verbs) {
     const escaped = verb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const matches = input.matchAll(new RegExp(`\\b${escaped}\\b(?:\\s+([a-z][a-z_-]*))?`, "gi"));
@@ -871,6 +887,12 @@ function hasBrowserActionVerb(input: string, verbs: string[], readOnlyFollowers:
       }
       const next = match[1]?.toLowerCase();
       if (next && readOnlyFollowers.includes(next)) {
+        if (
+          contextualReadOnlyFollowers.has(next) &&
+          !hasReadOnlyOutputFollowerContext(input, index + match[0].length)
+        ) {
+          return true;
+        }
         continue;
       }
       return true;
@@ -885,6 +907,21 @@ function isReadOnlyBrowserActionVerbContext(input: string, verb: string, index: 
     return /\b(?:priority|sort|sorted|display|list|ranking|ranked)\s+$/.test(prefix);
   }
   return false;
+}
+
+function hasReadOnlyOutputFollowerContext(input: string, followerEndIndex: number): boolean {
+  const suffix = input.slice(followerEndIndex, followerEndIndex + 100).toLowerCase();
+  if (
+    /^\s+(?:to\s+(?:the\s+)?operator|as\s+(?:a\s+)?read-only\b|for\s+(?:operator|review|analysis|evidence|summary)\b|with\s+(?:evidence|citations|sources)\b)/.test(
+      suffix
+    )
+  ) {
+    return true;
+  }
+  const context = input.slice(Math.max(0, followerEndIndex - 80), followerEndIndex + 80).toLowerCase();
+  return /\bread-only\s+(?:answer|answers|evidence|finding|findings|recommendation|recommendations|report|reports|result|results|review|summary|summaries)\b/.test(
+    context
+  );
 }
 
 function isNegatedBrowserActionVerb(input: string, index: number): boolean {

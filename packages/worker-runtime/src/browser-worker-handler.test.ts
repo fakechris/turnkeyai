@@ -782,7 +782,7 @@ test("browser worker handler cold-recreates read-only resume when the browser se
       return {
         ...buildBrowserResult("session-recreated"),
         dispatchMode: "spawn",
-        resumeMode: "cold",
+        resumeMode: "warm",
         targetResolution: "new_target",
       };
     },

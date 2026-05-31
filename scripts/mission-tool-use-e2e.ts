@@ -1633,7 +1633,7 @@ async function runNaturalBrowserColdRecreationScenario(input: {
   const initialBrowserSessionId = extractBrowserSessionIdForSpawnAgent(initialTimeline, "browser");
   assert.ok(initialBrowserSessionId, "natural browser cold recreation phase one must expose a browser session id");
 
-  await requestJson<{ browserSessionId: string; status: string; reason: string }>({
+  const revokeResult = await requestJson<{ browserSessionId: string; status: string; reason: string }>({
     method: "POST",
     url: `${input.baseUrl}/browser-sessions/${encodeURIComponent(initialBrowserSessionId)}/revoke`,
     token: input.token,
@@ -1642,6 +1642,16 @@ async function runNaturalBrowserColdRecreationScenario(input: {
       reason: "natural cold recreation gate",
     },
   });
+  assert.equal(
+    revokeResult.browserSessionId,
+    initialBrowserSessionId,
+    "natural browser cold recreation must revoke the phase-one browser session before follow-up"
+  );
+  assert.equal(
+    revokeResult.status,
+    "revoked",
+    "natural browser cold recreation must confirm browser session revocation before follow-up"
+  );
 
   const followup = [
     "Continue the operations dashboard review from the same browser-backed work.",
@@ -4796,13 +4806,15 @@ function extractBrowserSessionIdForSendAfter(timeline: ActivityEvent[], phaseOne
 function extractBrowserSessionIdFromSessionToolResult(content: string): string | null {
   try {
     const parsed = JSON.parse(content) as { payload?: { sessionId?: unknown }; result?: unknown };
-    const sessionId = parsed.payload?.sessionId;
-    if (typeof sessionId === "string" && sessionId.trim()) {
-      return sessionId.trim();
-    }
+    const contentSessionId = extractBrowserSessionIdFromText(content);
+    if (contentSessionId) return contentSessionId;
     const resultSessionId = extractBrowserSessionIdFromText(typeof parsed.result === "string" ? parsed.result : "");
     if (resultSessionId) {
       return resultSessionId;
+    }
+    const sessionId = parsed.payload?.sessionId;
+    if (typeof sessionId === "string" && sessionId.trim()) {
+      return sessionId.trim();
     }
   } catch {
     // Fall through to text extraction. Tool-result traces may be truncated
@@ -4812,6 +4824,11 @@ function extractBrowserSessionIdFromSessionToolResult(content: string): string |
 }
 
 function extractBrowserSessionIdFromText(content: string): string | null {
+  const canonicalBrowserMatches = [...content.matchAll(/\bbrowser-session-[A-Za-z0-9_.:-]+/gi)];
+  const canonicalBrowserMatch = canonicalBrowserMatches.at(-1)?.[0];
+  if (canonicalBrowserMatch?.trim()) {
+    return canonicalBrowserMatch.trim().replace(/[.,;]+$/, "");
+  }
   const jsonMatch = content.match(/"sessionId"\s*:\s*"([^"]+)"/);
   if (jsonMatch?.[1]?.trim()) {
     return jsonMatch[1].trim();
@@ -4819,10 +4836,6 @@ function extractBrowserSessionIdFromText(content: string): string | null {
   const markdownSessionMatch = content.match(/Session ID:\*\*?\s*`?([A-Za-z0-9_.:-]+)`?/i);
   if (markdownSessionMatch?.[1]?.trim()) {
     return markdownSessionMatch[1].trim().replace(/[.,;]+$/, "");
-  }
-  const canonicalBrowserMatch = content.match(/\bbrowser-session-[A-Za-z0-9_.:-]+/i);
-  if (canonicalBrowserMatch?.[0]?.trim()) {
-    return canonicalBrowserMatch[0].trim().replace(/[.,;]+$/, "");
   }
   const summaryMatch = content.match(/Browser worker completed session\s+([A-Za-z0-9_.:-]+)/i);
   return summaryMatch?.[1]?.trim().replace(/[.,;]+$/, "") ?? null;

@@ -908,6 +908,15 @@ describe("mission tool-use e2e report", () => {
       resultContent: "Screenshot path: /tmp/browser-artifacts/browser-session-canonical-only/01-dashboard.png",
     };
     assert.equal(extractBrowserSessionIdForSpawnAgent(result.timeline, "browser"), "browser-session-canonical-only");
+    result.timeline[1]!.runtime = {
+      ...result.timeline[1]!.runtime,
+      resultContent: JSON.stringify({
+        status: "completed",
+        payload: { sessionId: "browser-session-old" },
+        result: "Recreated dashboard path: /tmp/browser-artifacts/browser-session-new/01-dashboard.png",
+      }),
+    };
+    assert.equal(extractBrowserSessionIdForSpawnAgent(result.timeline, "browser"), "browser-session-new");
     assertNaturalFollowupReusedExistingSession({
       timeline: result.timeline,
       phaseOneFinal,

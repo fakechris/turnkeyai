@@ -988,6 +988,79 @@ test("sessions_spawn does not require mutation approval for read-only submit fin
   assert.equal(result.isError, undefined);
 });
 
+test("sessions_spawn requires mutation approval for ambiguous browser submit output wording", async () => {
+  for (const [id, task] of [
+    ["submit-review", "Open the page and submit review."],
+    ["submit-report-abuse", "Open the page and submit report abuse."],
+  ] as const) {
+    let spawnCalled = false;
+    let requestedAction = "";
+    const toolPermissionService: ToolPermissionService = {
+      async request(input) {
+        requestedAction = input.action;
+        return {
+          status: "pending",
+          approvalId: `ap.thread-1.${id}`,
+          action: input.action,
+          requirement: {
+            level: input.requirement.level,
+            scope: input.requirement.scope,
+            cacheKey: input.requirement.cacheKey ?? "missing",
+            rationale: input.requirement.rationale,
+            workerType: input.requirement.workerType ?? "browser",
+          },
+          message: "Approval is pending.",
+        };
+      },
+      async result() {
+        throw new Error("not used");
+      },
+      async apply() {
+        throw new Error("not used");
+      },
+    };
+    const workerRuntime = {
+      async spawn() {
+        spawnCalled = true;
+        return { workerType: "browser", workerRunKey: `worker:browser:${id}` };
+      },
+    } as unknown as WorkerRuntime;
+    const executor = createWorkerSessionToolExecutor({
+      workerRuntime,
+      availableWorkerKinds: ["browser"],
+      toolPermissionService,
+    });
+
+    const result = await executor.execute({
+      call: {
+        id: `call-${id}`,
+        name: "sessions_spawn",
+        input: {
+          agent_id: "browser",
+          task,
+        },
+      },
+      activation: buildActivation(),
+      packet: {
+        roleId: "role-lead",
+        roleName: "Lead",
+        seat: "lead",
+        systemPrompt: "Lead.",
+        taskPrompt: "Review page.",
+        outputContract: "Return result.",
+        suggestedMentions: [],
+      },
+    });
+
+    const body = JSON.parse(result.content) as { status: string; blocked_before_side_effect: boolean };
+    assert.equal(spawnCalled, false);
+    assert.equal(requestedAction, "browser.form.submit");
+    assert.equal(result.isError, true);
+    assert.equal(body.status, "requires_approval");
+    assert.equal(body.blocked_before_side_effect, true);
+  }
+});
+
 test("sessions_spawn still requires approval when a later order action follows read-only priority order", async () => {
   let spawnCalled = false;
   let requestedAction = "";
