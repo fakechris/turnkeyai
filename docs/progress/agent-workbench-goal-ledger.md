@@ -3571,9 +3571,9 @@ Acceptance Evidence:
   --natural-matrix-scenarios natural-cancel-active-tool
   --scenario-timeout-ms 300000
   --json tmp/natural-cancel-active-tool-e2e.json`: passed.
-- Real mission: `msn.mptdorcc.1`, status `done`, natural `passed`,
+- Real mission: `msn.mpte1iau.1`, status `done`, natural `passed`,
   tools `1/1`, cancelled tools `1`, sessions `1/0`, browser `no`,
-  profile fallback `0`, liveness `0/0/0`, final bytes `1620`, weak-answer
+  profile fallback `0`, liveness `0/0/0`, final bytes `1152`, weak-answer
   signals `none`.
 
 Regression Risk:

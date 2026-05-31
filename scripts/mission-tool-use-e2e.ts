@@ -1835,13 +1835,13 @@ export function buildNaturalScenarioSpec(
       ].join("\n"),
       minBytes: 260,
       minToolResults: 1,
-      maxToolResults: 4,
+      maxToolResults: 1,
       minSpawnedSessions: 1,
-      maxSpawnedSessions: 2,
+      maxSpawnedSessions: 1,
       requiresBrowser: false,
       requiresApproval: false,
       requiresCancellation: true,
-      allowToolFailure: true,
+      allowToolFailure: false,
       minEvidenceEvents: 1,
       requiredAnswerTerms: ["cancel", "verified", "unverified", "continue"],
       requiredEvidencePatterns: [
@@ -1985,7 +1985,8 @@ export function evaluateNaturalMissionQuality(input: {
   if (input.spec.requiresCancellation && input.metrics.tool.cancelled < 1) {
     failures.push("cancellation scenario did not record a cancelled tool result");
   }
-  if (!input.spec.allowToolFailure && input.metrics.tool.failed > 0) failures.push("scenario had failed tool results");
+  const nonCancelledFailures = Math.max(0, input.metrics.tool.failed - input.metrics.tool.cancelled);
+  if (!input.spec.allowToolFailure && nonCancelledFailures > 0) failures.push("scenario had failed tool results");
   if (!input.spec.allowToolFailure && input.metrics.tool.timeouts > 0) failures.push("scenario had timed-out tool results");
   if (!subAgentCompleted) failures.push("sub-agent work did not complete cleanly");
   if (!finalAnswerHasEvidence) failures.push("final answer lacks required source-backed evidence");
@@ -4164,7 +4165,14 @@ function assertNaturalCancellationTimeline(timeline: ActivityEvent[]): void {
   const planIndex = timeline.findIndex((event) => event.kind === "plan");
   const callIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "call");
   const resultIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "result");
-  const finalIndex = timeline.findIndex((event) => event.kind === "thought" && event.text.trim().length > 0);
+  let finalIndex = -1;
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index]!;
+    if (event.kind === "thought" && event.text.trim().length > 0) {
+      finalIndex = index;
+      break;
+    }
+  }
   assert.ok(planIndex >= 0, "natural cancellation timeline must include the user plan event");
   assert.equal(callIndexes.length, 1, "natural cancellation expected exactly one sessions_spawn call");
   assert.equal(resultIndexes.length, 1, "natural cancellation expected exactly one sessions_spawn result");

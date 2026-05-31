@@ -581,6 +581,7 @@ describe("mission tool-use e2e report", () => {
     result.scenario = "natural-cancel-active-tool";
     result.metrics.tool.requested = 1;
     result.metrics.tool.results = 1;
+    result.metrics.tool.failed = 1;
     result.metrics.tool.cancelled = 1;
     result.metrics.sessions.spawned = 1;
     result.metrics.qualityGate.evidenceEvents = 1;
