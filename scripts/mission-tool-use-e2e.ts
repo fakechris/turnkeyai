@@ -19,6 +19,10 @@ interface MissionToolUseE2eOptions {
   scenario: MissionE2eScenario;
   matrix: boolean;
   matrixScenarios?: MissionE2eScenario[];
+  natural: boolean;
+  naturalScenario: NaturalMissionE2eScenario;
+  naturalMatrix: boolean;
+  naturalMatrixScenarios?: NaturalMissionE2eScenario[];
   jsonPath?: string;
 }
 
@@ -56,6 +60,23 @@ const MISSION_E2E_SCENARIOS = [
   ...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS,
   ...CLOSEOUT_ACCEPTANCE_MISSION_SCENARIOS,
 ] as const satisfies readonly MissionE2eScenario[];
+
+export type NaturalMissionE2eScenario =
+  | "natural-comparison-research"
+  | "natural-browser-dynamic-page"
+  | "natural-followup-continuation"
+  | "natural-approval-dry-run-action"
+  | "natural-timeout-partial-closeout"
+  | "natural-long-delegation";
+
+export const NATURAL_MISSION_E2E_SCENARIOS = [
+  "natural-comparison-research",
+  "natural-browser-dynamic-page",
+  "natural-followup-continuation",
+  "natural-approval-dry-run-action",
+  "natural-timeout-partial-closeout",
+  "natural-long-delegation",
+] as const satisfies readonly NaturalMissionE2eScenario[];
 
 interface Mission {
   id: string;
@@ -263,6 +284,85 @@ export interface MissionE2eJsonReport {
   scenarios: MissionE2eScenarioReport[];
 }
 
+export interface NaturalScenarioSpec {
+  scenario: NaturalMissionE2eScenario;
+  title: string;
+  desc: string;
+  minBytes: number;
+  minToolResults: number;
+  maxToolResults: number;
+  minSpawnedSessions: number;
+  maxSpawnedSessions: number;
+  minContinuedSessions?: number;
+  requiresBrowser: boolean;
+  requiresApproval: boolean;
+  allowToolFailure: boolean;
+  minEvidenceEvents: number;
+  requiredAnswerTerms: string[];
+  requiredToolNames?: string[];
+  forbiddenPatterns?: Array<{ label: string; pattern: RegExp }>;
+}
+
+export interface NaturalMissionScenarioResult {
+  scenario: NaturalMissionE2eScenario;
+  mission: Mission;
+  timeline: ActivityEvent[];
+  metrics: MissionObservabilitySnapshot;
+  final: ActivityEvent;
+  quality: NaturalMissionQuality;
+}
+
+export interface NaturalMissionQuality {
+  status: "passed" | "failed";
+  completed: boolean;
+  stuckOrLoop: boolean;
+  reasonableToolUse: boolean;
+  browserUsed: boolean;
+  subAgentCompleted: boolean;
+  approvalExercised: boolean;
+  finalAnswerHasEvidence: boolean;
+  finalAnswerUseful: boolean;
+  weakAnswerSignals: string[];
+  failures: string[];
+}
+
+export interface NaturalMissionScenarioReport {
+  scenario: NaturalMissionE2eScenario;
+  missionId: string;
+  status: string;
+  threadId?: string;
+  timelineEvents: number;
+  toolEvents: number;
+  qualityGate: string;
+  metrics: MissionE2eScenarioReport["metrics"];
+  natural: {
+    status: "passed" | "failed";
+    completed: boolean;
+    stuckOrLoop: boolean;
+    reasonableToolUse: boolean;
+    browserUsed: boolean;
+    subAgentCompleted: boolean;
+    approvalExercised: boolean;
+    finalAnswerHasEvidence: boolean;
+    finalAnswerUseful: boolean;
+    weakAnswerSignals: string[];
+    failures: string[];
+  };
+  final: {
+    bytes: number;
+    excerpt: string;
+  };
+}
+
+export interface NaturalMissionE2eJsonReport {
+  kind: "turnkeyai.natural-mission-e2e.report";
+  status: "passed" | "failed";
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  scenarios: NaturalMissionScenarioReport[];
+}
+
 interface WorkerSessionRecord {
   workerRunKey: string;
   state: {
@@ -285,6 +385,9 @@ function parseOptions(args: string[]): MissionToolUseE2eOptions {
     scenarioTimeoutMs: 180_000,
     scenario: "basic",
     matrix: false,
+    natural: false,
+    naturalScenario: "natural-comparison-research",
+    naturalMatrix: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -295,8 +398,21 @@ function parseOptions(args: string[]): MissionToolUseE2eOptions {
       console.log(MISSION_E2E_SCENARIOS.join("\n"));
       process.exit(0);
     }
+    if (arg === "--list-natural-scenarios") {
+      console.log(NATURAL_MISSION_E2E_SCENARIOS.join("\n"));
+      process.exit(0);
+    }
     if (arg === "--matrix") {
       options.matrix = true;
+      continue;
+    }
+    if (arg === "--natural") {
+      options.natural = true;
+      continue;
+    }
+    if (arg === "--natural-matrix") {
+      options.natural = true;
+      options.naturalMatrix = true;
       continue;
     }
     if (arg === "--model-catalog") {
@@ -317,12 +433,32 @@ function parseOptions(args: string[]): MissionToolUseE2eOptions {
       index += 1;
       continue;
     }
+    if (arg === "--natural-scenario") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --natural-scenario");
+      }
+      options.natural = true;
+      options.naturalScenario = parseNaturalScenarioName(value, "--natural-scenario");
+      index += 1;
+      continue;
+    }
     if (arg === "--matrix-scenarios") {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) {
         throw new Error("missing value for --matrix-scenarios");
       }
       options.matrixScenarios = parseScenarioList(value);
+      index += 1;
+      continue;
+    }
+    if (arg === "--natural-matrix-scenarios") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --natural-matrix-scenarios");
+      }
+      options.natural = true;
+      options.naturalMatrixScenarios = parseNaturalScenarioList(value);
       index += 1;
       continue;
     }
@@ -363,11 +499,29 @@ function parseScenarioList(value: string): MissionE2eScenario[] {
   return scenarios.map((scenario) => parseScenarioName(scenario, "--matrix-scenarios"));
 }
 
+function parseNaturalScenarioList(value: string): NaturalMissionE2eScenario[] {
+  const scenarios = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  if (scenarios.length === 0) {
+    throw new Error("--natural-matrix-scenarios must include at least one scenario");
+  }
+  return scenarios.map((scenario) => parseNaturalScenarioName(scenario, "--natural-matrix-scenarios"));
+}
+
 function parseScenarioName(value: string, argName: string): MissionE2eScenario {
   for (const scenario of MISSION_E2E_SCENARIOS) {
     if (value === scenario) return scenario;
   }
   throw new Error(`${argName} must be one of: ${MISSION_E2E_SCENARIOS.join(", ")}`);
+}
+
+function parseNaturalScenarioName(value: string, argName: string): NaturalMissionE2eScenario {
+  for (const scenario of NATURAL_MISSION_E2E_SCENARIOS) {
+    if (value === scenario) return scenario;
+  }
+  throw new Error(`${argName} must be one of: ${NATURAL_MISSION_E2E_SCENARIOS.join(", ")}`);
 }
 
 function printHelp(exitCode: number): never {
@@ -377,11 +531,16 @@ function printHelp(exitCode: number): never {
     "Usage:",
     "  npm run mission:e2e -- [options]",
     "  npm run mission:e2e:matrix -- [options]",
+    "  npm run mission:e2e:natural -- [options]",
     "",
     "Options:",
     "  --scenario <name>              Run one scenario. Default: basic",
     "  --matrix                       Run the default real-LLM mission acceptance matrix",
     "  --matrix-scenarios <a,b,...>   Run a comma-separated scenario matrix",
+    "  --natural                      Run one natural mission scenario. Default: natural-comparison-research",
+    "  --natural-matrix               Run the natural mission acceptance matrix",
+    "  --natural-scenario <name>      Run one natural mission scenario",
+    "  --natural-matrix-scenarios <a,b,...> Run a comma-separated natural scenario matrix",
     "  --scenario-timeout-ms <ms>     Per-scenario timeout. Default: 180000",
     "  --model-catalog <path>         Model catalog path. Also reads TURNKEYAI_MODEL_CATALOG, models.local.json, models.json",
     "  --json <path>                  Write a structured acceptance evidence report",
@@ -390,6 +549,8 @@ function printHelp(exitCode: number): never {
     "",
     "Scenarios:",
     `  ${MISSION_E2E_SCENARIOS.join(", ")}`,
+    "Natural scenarios:",
+    `  ${NATURAL_MISSION_E2E_SCENARIOS.join(", ")}`,
     "",
     "Examples:",
     "  npm run mission:e2e -- --scenario comparison --model-catalog models.local.json --scenario-timeout-ms 240000",
@@ -420,6 +581,54 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
   try {
     const baseUrl = `http://127.0.0.1:${port}`;
     await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: 20_000 });
+    if (options.natural) {
+      const naturalScenarios =
+        options.naturalMatrixScenarios ??
+        (options.naturalMatrix ? [...NATURAL_MISSION_E2E_SCENARIOS] : [options.naturalScenario]);
+      const naturalResults: NaturalMissionScenarioResult[] = [];
+      for (const [index, scenario] of naturalScenarios.entries()) {
+        const scenarioStartedAt = Date.now();
+        console.log(formatNaturalMissionScenarioStart({ scenario, index: index + 1, total: naturalScenarios.length }));
+        try {
+          const result = await runNaturalMissionScenario({
+            baseUrl,
+            token,
+            fixture,
+            runtimeRoot,
+            scenario,
+            timeoutMs: options.scenarioTimeoutMs,
+          });
+          naturalResults.push(result);
+          console.log(
+            formatNaturalMissionScenarioPass({
+              result,
+              index: index + 1,
+              total: naturalScenarios.length,
+              durationMs: Date.now() - scenarioStartedAt,
+            })
+          );
+          printNaturalScenarioResult(result);
+        } catch (error) {
+          throw new Error(
+            `natural mission scenario ${scenario} failed: ${errorMessage(error)}\n\ndaemon output tail:\n${daemon.output()}`
+          );
+        }
+      }
+      if (options.jsonPath) {
+        const completedAt = Date.now();
+        const report = buildNaturalMissionE2eJsonReport({
+          startedAt,
+          completedAt,
+          results: naturalResults,
+        });
+        writeNaturalMissionE2eJsonReport(options.jsonPath, report);
+        console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
+      }
+      if (naturalScenarios.length > 1) {
+        console.log(`natural mission real llm matrix passed: ${naturalScenarios.join(",")}`);
+      }
+      return;
+    }
     const results: MissionScenarioResult[] = [];
     for (const [index, scenario] of scenarios.entries()) {
       const scenarioStartedAt = Date.now();
@@ -985,6 +1194,531 @@ async function runMissionTaskTrackingScenario(input: {
   return { scenario: "task-tracking", mission: result.mission, timeline: result.timeline, metrics, final, quality };
 }
 
+async function runNaturalMissionScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+}): Promise<NaturalMissionScenarioResult> {
+  if (input.scenario === "natural-followup-continuation") {
+    return runNaturalFollowupScenario(input);
+  }
+  if (input.scenario === "natural-approval-dry-run-action") {
+    return runNaturalApprovalScenario(input);
+  }
+  const spec = buildNaturalScenarioSpec(input.scenario, input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const mission = await createNaturalMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "natural mission route must create a linked team thread");
+  const result = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+    allowBlocked: spec.allowToolFailure,
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  const final = findLatestThoughtEvent(result.timeline);
+  assert.ok(final, "natural mission timeline must include a final assistant answer");
+  const quality = evaluateNaturalMissionQuality({
+    spec,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+  });
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `natural mission ${input.scenario} quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function runNaturalFollowupScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+}): Promise<NaturalMissionScenarioResult> {
+  const spec = buildNaturalScenarioSpec("natural-followup-continuation", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const mission = await createNaturalMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "natural follow-up mission requires a linked team thread");
+  await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+  });
+  const followup = [
+    "Continue from the previous work on this mission.",
+    "Now add the second source and revise the recommendation so it compares both vendors.",
+    "Keep the answer source-bounded and call out any remaining uncertainty from the collected evidence.",
+  ].join("\n");
+  assertNaturalPromptAllowed(followup);
+  await requestJson<{ accepted: boolean; missionId: string }>({
+    method: "POST",
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/messages`,
+    token: input.token,
+    body: { content: followup },
+  });
+  const result = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  const final = findLatestThoughtEvent(result.timeline);
+  assert.ok(final, "natural follow-up mission must include a final assistant answer");
+  const quality = evaluateNaturalMissionQuality({
+    spec,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+  });
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `natural mission follow-up quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "natural-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function runNaturalApprovalScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+}): Promise<NaturalMissionScenarioResult> {
+  const spec = buildNaturalScenarioSpec("natural-approval-dry-run-action", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const mission = await createNaturalMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "natural approval mission requires a linked team thread");
+  const approval = await waitForApprovalRequest({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    action: "browser.form.submit",
+    timeoutMs: Math.min(input.timeoutMs, 120_000),
+  });
+  await requestJson<unknown>({
+    method: "POST",
+    url: `${input.baseUrl}/approvals/${encodeURIComponent(approval.id)}/decision`,
+    token: input.token,
+    body: {
+      decision: "approved",
+      decidedBy: "natural-mission-e2e",
+      reason: "approving isolated local dry-run browser action for natural acceptance",
+    },
+  });
+  const result = await waitForNaturalMissionCompletion({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+  });
+  const metrics = await waitForMissionMetricsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: 20_000,
+  });
+  const final = findLatestThoughtEvent(result.timeline);
+  assert.ok(final, "natural approval mission must include a final assistant answer");
+  const quality = evaluateNaturalMissionQuality({
+    spec,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+  });
+  assert.deepEqual(
+    quality.failures,
+    [],
+    `natural mission approval quality failures: ${quality.failures.join("; ")}\n${final.text}`
+  );
+  return { scenario: "natural-approval-dry-run-action", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+}
+
+async function createNaturalMission(input: {
+  baseUrl: string;
+  token: string;
+  spec: NaturalScenarioSpec;
+}): Promise<Mission> {
+  return requestJson<Mission>({
+    method: "POST",
+    url: `${input.baseUrl}/missions`,
+    token: input.token,
+    body: {
+      title: input.spec.title,
+      mode: "research",
+      desc: input.spec.desc,
+      owner: "natural-e2e",
+      ownerLabel: "Natural E2E",
+    },
+  });
+}
+
+async function waitForNaturalMissionCompletion(input: {
+  baseUrl: string;
+  token: string;
+  missionId: string;
+  timeoutMs: number;
+  allowBlocked?: boolean;
+}): Promise<{ mission: Mission; timeline: ActivityEvent[] }> {
+  const startedAt = Date.now();
+  let latestMission: Mission | null = null;
+  let latestTimeline: ActivityEvent[] = [];
+  while (Date.now() - startedAt < input.timeoutMs) {
+    latestMission = await requestJson<Mission>({
+      method: "GET",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}`,
+      token: input.token,
+    });
+    latestTimeline = await requestJson<ActivityEvent[]>({
+      method: "GET",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}/timeline?limit=300`,
+      token: input.token,
+    });
+    if (latestMission.status === "done" && findLatestThoughtEvent(latestTimeline)) {
+      return { mission: latestMission, timeline: latestTimeline };
+    }
+    if (latestMission.status === "blocked" && !input.allowBlocked) {
+      throw new Error(`natural mission blocked before completion:\n${summarizeMissionState(latestMission, latestTimeline)}`);
+    }
+    await sleep(1_000);
+  }
+  throw new Error(
+    `natural mission did not complete within ${input.timeoutMs}ms:\n${summarizeMissionState(latestMission, latestTimeline)}`
+  );
+}
+
+function findLatestThoughtEvent(timeline: ActivityEvent[]): ActivityEvent | null {
+  return [...timeline].reverse().find((event) => event.kind === "thought" && event.text.trim().length > 0) ?? null;
+}
+
+export function buildNaturalScenarioSpec(
+  scenario: NaturalMissionE2eScenario,
+  fixture: Pick<FixtureServer, "alphaUrl" | "betaUrl" | "dashboardUrl" | "approvalUrl" | "slowUrl" | "orchestrationUrl" | "bridgeUrl" | "productSignalsUrl">
+): NaturalScenarioSpec {
+  if (scenario === "natural-comparison-research") {
+    return {
+      scenario,
+      title: "Natural comparison research",
+      desc: [
+        "A product lead is deciding between Vendor Alpha and Vendor Beta for next week's workbench investment.",
+        `Review these two source pages: ${fixture.alphaUrl} and ${fixture.betaUrl}.`,
+        "Return a concise recommendation that compares pricing, strengths, risks, and the tradeoff that matters most for an agent workbench team.",
+        "Close with a clear recommendation for the product lead, including when the other option would be preferable.",
+        "Use only evidence you collected during this mission. If a source is unavailable, say what was verified and what was not.",
+      ].join("\n"),
+      minBytes: 360,
+      minToolResults: 1,
+      maxToolResults: 8,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 6,
+      requiresBrowser: false,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["Alpha", "Beta", "$19", "$29", "recommend", "risk"],
+    };
+  }
+  if (scenario === "natural-browser-dynamic-page") {
+    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
+    return {
+      scenario,
+      title: "Natural browser dynamic page review",
+      desc: [
+        "Review this operations dashboard as a user would see it in the browser.",
+        `Dashboard: ${dynamicUrl}`,
+        "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
+        "Summarize the operational state, escalation trigger, owner, and recommended next action for an operator.",
+      ].join("\n"),
+      minBytes: 320,
+      minToolResults: 1,
+      maxToolResults: 8,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 4,
+      requiresBrowser: true,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["Queue depth", "SLA", "Incident Commander"],
+    };
+  }
+  if (scenario === "natural-followup-continuation") {
+    return {
+      scenario,
+      title: "Natural follow-up continuation",
+      desc: [
+        "Start a source-backed review of Vendor Alpha for a product lead.",
+        `Source: ${fixture.alphaUrl}`,
+        "Keep the work useful for a likely follow-up comparison rather than writing a one-off trivia answer.",
+        "Focus on pricing, strength, and risk, and keep source labels visible in the answer.",
+      ].join("\n"),
+      minBytes: 420,
+      minToolResults: 2,
+      maxToolResults: 10,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 6,
+      minContinuedSessions: 1,
+      requiresBrowser: false,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 2,
+      requiredAnswerTerms: ["Alpha", "Beta", "$19", "$29", "recommend"],
+    };
+  }
+  if (scenario === "natural-approval-dry-run-action") {
+    return {
+      scenario,
+      title: "Natural approval dry-run browser action",
+      desc: [
+        "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+        `Form: ${fixture.approvalUrl}`,
+        "Treat the page as isolated local test data. Request approval before applying the browser action, then report what was approved and what evidence the page showed.",
+      ].join("\n"),
+      minBytes: 260,
+      minToolResults: 1,
+      maxToolResults: 8,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 4,
+      requiresBrowser: true,
+      requiresApproval: true,
+      allowToolFailure: false,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["approval", "dry-run", "browser"],
+    };
+  }
+  if (scenario === "natural-timeout-partial-closeout") {
+    return {
+      scenario,
+      title: "Natural timeout partial evidence closeout",
+      desc: [
+        "Evaluate this slow source for a release-risk note.",
+        `Slow source: ${fixture.slowUrl}`,
+        "Use a bounded attempt. If the source does not return in time, close out with the evidence that is available, clearly separating verified facts from unverified items and explaining how to continue.",
+      ].join("\n"),
+      minBytes: 260,
+      minToolResults: 1,
+      maxToolResults: 5,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 3,
+      requiresBrowser: false,
+      requiresApproval: false,
+      allowToolFailure: true,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["timed out", "verified", "unverified", "continue"],
+      forbiddenPatterns: [
+        { label: "pretends slow source was verified", pattern: /confirmed.*slow mission route tool-use fixture/i },
+      ],
+    };
+  }
+  return {
+    scenario,
+    title: "Natural long delegation brief",
+    desc: [
+      "Prepare a product-ready brief about the next agent workbench release.",
+      `Research source: ${fixture.orchestrationUrl}`,
+      `Capability source: ${fixture.bridgeUrl}`,
+      `Live signal dashboard: ${fixture.productSignalsUrl}`,
+      "Use specialist work where it helps. The dashboard needs browser-visible evidence.",
+      "The final brief should tell a product leader what to build next, why it matters, what not to over-emphasize, and what risk remains.",
+    ].join("\n"),
+    minBytes: 700,
+    minToolResults: 3,
+    maxToolResults: 12,
+    minSpawnedSessions: 3,
+    maxSpawnedSessions: 8,
+    requiresBrowser: true,
+    requiresApproval: false,
+    allowToolFailure: false,
+    minEvidenceEvents: 3,
+    requiredAnswerTerms: ["multi-agent", "browser", "Mission Control", "Stuck missions", "Weak answer rate", "risk"],
+  };
+}
+
+const NATURAL_PROMPT_FORBIDDEN_PATTERNS = [
+  /\bexactly once\b/i,
+  /\buse this exact\b/i,
+  /\bmust call\b/i,
+  /\bfinal answer must include\b/i,
+  /\bTURNKEYAI_[A-Z0-9_]+\b/,
+  /\bfixed marker\b/i,
+] as const;
+
+export function assertNaturalPromptAllowed(prompt: string): void {
+  for (const pattern of NATURAL_PROMPT_FORBIDDEN_PATTERNS) {
+    assert.equal(pattern.test(prompt), false, `natural E2E prompt contains contract-gate language: ${pattern}`);
+  }
+}
+
+export function assertNaturalScenarioPromptsAllowed(): void {
+  const fixture = {
+    alphaUrl: "http://127.0.0.1/vendor-alpha",
+    betaUrl: "http://127.0.0.1/vendor-beta",
+    dashboardUrl: "http://127.0.0.1/ops-dashboard",
+    approvalUrl: "http://127.0.0.1/approval-form",
+    slowUrl: "http://127.0.0.1/slow-fixture",
+    orchestrationUrl: "http://127.0.0.1/product-orchestration",
+    bridgeUrl: "http://127.0.0.1/product-bridge",
+    productSignalsUrl: "http://127.0.0.1/product-signals",
+  };
+  for (const scenario of NATURAL_MISSION_E2E_SCENARIOS) {
+    assertNaturalPromptAllowed(buildNaturalScenarioSpec(scenario, fixture).desc);
+  }
+}
+
+export function evaluateNaturalMissionQuality(input: {
+  spec: NaturalScenarioSpec;
+  mission: Mission;
+  timeline: ActivityEvent[];
+  metrics: MissionObservabilitySnapshot;
+  final: ActivityEvent;
+}): NaturalMissionQuality {
+  const failures: string[] = [];
+  const completed = input.mission.status === "done" && input.metrics.status === "done";
+  const weakAnswerSignals = findWeakAnswerSignals(input.final.text);
+  const toolNames = collectToolNames(input.timeline);
+  const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
+  const subAgentCompleted = input.metrics.sessions.spawned >= input.spec.minSpawnedSessions && input.metrics.liveness.active === 0 && input.metrics.liveness.waiting === 0;
+  const approvalExercised =
+    input.metrics.approvals.requested > 0 &&
+    input.metrics.approvals.decided > 0 &&
+    input.metrics.approvals.applied > 0 &&
+    hasRuntimeEvent(input.timeline, "permission.query") &&
+    hasRuntimeEvent(input.timeline, "permission.result") &&
+    hasRuntimeEvent(input.timeline, "permission.applied");
+  const reasonableToolUse =
+    input.metrics.tool.results >= input.spec.minToolResults &&
+    input.metrics.tool.results <= input.spec.maxToolResults &&
+    input.metrics.sessions.spawned >= input.spec.minSpawnedSessions &&
+    input.metrics.sessions.spawned <= input.spec.maxSpawnedSessions &&
+    input.metrics.sessions.continued >= (input.spec.minContinuedSessions ?? 0);
+  const finalAnswerHasEvidence =
+    input.metrics.qualityGate.evidenceEvents >= input.spec.minEvidenceEvents &&
+    input.spec.requiredAnswerTerms.every((term) => input.final.text.toLowerCase().includes(term.toLowerCase()));
+  const finalAnswerUseful =
+    Buffer.byteLength(input.final.text, "utf8") >= input.spec.minBytes &&
+    /\b(recommend|next action|risk|owner|tradeoff|continue|verified)\b/i.test(input.final.text);
+  const stuckOrLoop =
+    input.metrics.liveness.active > 0 ||
+    input.metrics.liveness.waiting > 0 ||
+    input.metrics.liveness.stale > 0 ||
+    hasRepeatedToolLoop(input.timeline);
+
+  if (!completed) failures.push("mission did not complete with done status");
+  if (stuckOrLoop) failures.push("mission appears stuck, looping, or retains live runtime subjects");
+  if (!reasonableToolUse) failures.push("tool use was outside the natural scenario range");
+  if (input.spec.requiresBrowser && !browserUsed) failures.push("browser scenario did not show browser worker use");
+  if (input.spec.requiresApproval && !approvalExercised) failures.push("approval scenario did not complete query/result/applied loop");
+  if (!input.spec.allowToolFailure && input.metrics.tool.failed > 0) failures.push("scenario had failed tool results");
+  if (!input.spec.allowToolFailure && input.metrics.tool.timeouts > 0) failures.push("scenario had timed-out tool results");
+  if (!subAgentCompleted) failures.push("sub-agent work did not complete cleanly");
+  if (!finalAnswerHasEvidence) failures.push("final answer lacks required source-backed evidence");
+  if (!finalAnswerUseful) failures.push("final answer is too thin or not decision-useful");
+  if (weakAnswerSignals.length > 0) failures.push(`weak answer signals: ${weakAnswerSignals.join(", ")}`);
+  for (const toolName of input.spec.requiredToolNames ?? []) {
+    if (!toolNames.has(toolName)) failures.push(`missing required tool family evidence: ${toolName}`);
+  }
+  for (const item of input.spec.forbiddenPatterns ?? []) {
+    if (item.pattern.test(input.final.text)) failures.push(`forbidden ${item.label}`);
+  }
+
+  return {
+    status: failures.length === 0 ? "passed" : "failed",
+    completed,
+    stuckOrLoop,
+    reasonableToolUse,
+    browserUsed,
+    subAgentCompleted,
+    approvalExercised,
+    finalAnswerHasEvidence,
+    finalAnswerUseful,
+    weakAnswerSignals,
+    failures,
+  };
+}
+
+function collectToolNames(timeline: ActivityEvent[]): Set<string> {
+  return new Set(
+    timeline
+      .map((event) => event.runtime?.["toolName"])
+      .filter((toolName): toolName is string => typeof toolName === "string" && toolName.length > 0)
+  );
+}
+
+function timelineUsesWorker(timeline: ActivityEvent[], workerType: string): boolean {
+  return timeline.some((event) => {
+    const callInput = event.runtime?.["callInput"];
+    if (typeof callInput !== "string") return false;
+    try {
+      const parsed = JSON.parse(callInput) as { agent_id?: unknown };
+      return parsed.agent_id === workerType;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function hasRuntimeEvent(timeline: ActivityEvent[], eventType: string): boolean {
+  return timeline.some((event) => event.runtime?.["eventType"] === eventType);
+}
+
+function hasRepeatedToolLoop(timeline: ActivityEvent[]): boolean {
+  const keys = new Map<string, number>();
+  for (const event of timeline) {
+    if (event.runtime?.["toolPhase"] !== "call" || typeof event.runtime?.["toolName"] !== "string") continue;
+    const key = `${event.runtime["toolName"]}:${String(event.runtime["callInput"] ?? "").slice(0, 300)}`;
+    const count = (keys.get(key) ?? 0) + 1;
+    keys.set(key, count);
+    if (count > 3) return true;
+  }
+  return false;
+}
+
+function findWeakAnswerSignals(text: string): string[] {
+  const patterns = [
+    { label: "tool unavailable fallback", pattern: /搜索工具.{0,12}(?:无法|不可用|没有返回)|(?:search|browser|tool).{0,24}(?:unavailable|not available|failed|not working|unable)/i },
+    { label: "model-knowledge fallback", pattern: /(?:based on|using) (?:my )?(?:knowledge|training data)|(?:基于|根据)我的(?:知识库|知识|训练数据)/i },
+    { label: "placeholder uncertainty", pattern: /\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|estimate|estimated|probably|maybe)\b|待确认|估算/i },
+    { label: "empty summary", pattern: /\b(?:I don't have enough information|unable to provide|cannot determine)\b|无法提供|不能确定/i },
+  ];
+  return patterns.flatMap((item) => (item.pattern.test(text) ? [item.label] : []));
+}
+
 export function formatMissionScenarioStart(input: {
   scenario: MissionE2eScenario;
   index: number;
@@ -1006,6 +1740,31 @@ export function formatMissionScenarioPass(input: {
     `tools=${input.result.metrics.tool.requested}/${input.result.metrics.tool.results}`,
     `sessions=${input.result.metrics.sessions.spawned}/${input.result.metrics.sessions.continued}`,
     `liveness=${input.result.metrics.liveness.active}/${input.result.metrics.liveness.waiting}/${input.result.metrics.liveness.stale}`,
+  ].join(" ");
+}
+
+export function formatNaturalMissionScenarioStart(input: {
+  scenario: NaturalMissionE2eScenario;
+  index: number;
+  total: number;
+}): string {
+  return `natural mission scenario starting: ${input.scenario} (${input.index}/${input.total})`;
+}
+
+export function formatNaturalMissionScenarioPass(input: {
+  result: NaturalMissionScenarioResult;
+  index: number;
+  total: number;
+  durationMs: number;
+}): string {
+  return [
+    `natural mission scenario passed: ${input.result.scenario} (${input.index}/${input.total}, ${input.durationMs}ms)`,
+    `mission-id=${input.result.mission.id}`,
+    `natural=${input.result.quality.status}`,
+    `tools=${input.result.metrics.tool.requested}/${input.result.metrics.tool.results}`,
+    `sessions=${input.result.metrics.sessions.spawned}/${input.result.metrics.sessions.continued}`,
+    `browser=${input.result.quality.browserUsed ? "yes" : "no"}`,
+    `stuck=${input.result.quality.stuckOrLoop ? "yes" : "no"}`,
   ].join(" ");
 }
 
@@ -1034,6 +1793,29 @@ function printScenarioResult(result: MissionScenarioResult): void {
   console.log(`mission-final-bullets: ${result.quality.bullets}`);
 }
 
+function printNaturalScenarioResult(result: NaturalMissionScenarioResult): void {
+  console.log("natural mission real llm e2e passed");
+  console.log(`natural-scenario: ${result.scenario}`);
+  console.log(`mission-id: ${result.mission.id}`);
+  console.log(`mission-status: ${result.mission.status}`);
+  console.log(`mission-thread-id: ${result.mission.threadId ?? ""}`);
+  console.log(`natural-status: ${result.quality.status}`);
+  console.log(`natural-stuck-or-loop: ${result.quality.stuckOrLoop}`);
+  console.log(`natural-reasonable-tool-use: ${result.quality.reasonableToolUse}`);
+  console.log(`natural-browser-used: ${result.quality.browserUsed}`);
+  console.log(`natural-sub-agent-completed: ${result.quality.subAgentCompleted}`);
+  console.log(`natural-approval-exercised: ${result.quality.approvalExercised}`);
+  console.log(`natural-final-evidence: ${result.quality.finalAnswerHasEvidence}`);
+  console.log(`natural-final-useful: ${result.quality.finalAnswerUseful}`);
+  console.log(`natural-weak-answer-signals: ${result.quality.weakAnswerSignals.join(",") || "none"}`);
+  console.log(`mission-metrics-tools: ${result.metrics.tool.requested}/${result.metrics.tool.results}`);
+  console.log(`mission-metrics-sessions: ${result.metrics.sessions.spawned}/${result.metrics.sessions.continued}`);
+  console.log(
+    `mission-metrics-liveness: ${result.metrics.liveness.active}/${result.metrics.liveness.waiting}/${result.metrics.liveness.stale}`
+  );
+  console.log(`mission-final-bytes: ${Buffer.byteLength(result.final.text, "utf8")}`);
+}
+
 export function buildMissionE2eJsonReport(input: {
   startedAt: number;
   completedAt: number;
@@ -1043,6 +1825,22 @@ export function buildMissionE2eJsonReport(input: {
   return {
     kind: "turnkeyai.mission-e2e.report",
     status: scenarios.every(isPassingMissionScenarioReport) ? "passed" : "failed",
+    startedAt: new Date(input.startedAt).toISOString(),
+    completedAt: new Date(input.completedAt).toISOString(),
+    durationMs: Math.max(0, input.completedAt - input.startedAt),
+    scenarios,
+  };
+}
+
+export function buildNaturalMissionE2eJsonReport(input: {
+  startedAt: number;
+  completedAt: number;
+  results: NaturalMissionScenarioResult[];
+}): NaturalMissionE2eJsonReport {
+  const scenarios = input.results.map(summarizeNaturalMissionScenarioResult);
+  return {
+    kind: "turnkeyai.natural-mission-e2e.report",
+    status: scenarios.every((scenario) => scenario.natural.status === "passed") ? "passed" : "failed",
     startedAt: new Date(input.startedAt).toISOString(),
     completedAt: new Date(input.completedAt).toISOString(),
     durationMs: Math.max(0, input.completedAt - input.startedAt),
@@ -1092,6 +1890,66 @@ export function summarizeMissionScenarioResult(result: MissionScenarioResult): M
       ...summarizeCloseout(result.final),
     },
   };
+}
+
+export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScenarioResult): NaturalMissionScenarioReport {
+  return {
+    scenario: result.scenario,
+    missionId: result.mission.id,
+    status: result.mission.status,
+    ...(result.mission.threadId ? { threadId: result.mission.threadId } : {}),
+    timelineEvents: result.timeline.length,
+    toolEvents: result.timeline.filter((event) => event.kind === "tool").length,
+    qualityGate: result.metrics.qualityGate.status,
+    metrics: {
+      tools: {
+        requested: result.metrics.tool.requested,
+        results: result.metrics.tool.results,
+        failed: result.metrics.tool.failed,
+        cancelled: result.metrics.tool.cancelled,
+        timeouts: result.metrics.tool.timeouts,
+      },
+      sessions: {
+        spawned: result.metrics.sessions.spawned,
+        continued: result.metrics.sessions.continued,
+      },
+      approvals: {
+        requested: result.metrics.approvals.requested,
+        decided: result.metrics.approvals.decided,
+        applied: result.metrics.approvals.applied,
+      },
+      liveness: {
+        active: result.metrics.liveness.active,
+        waiting: result.metrics.liveness.waiting,
+        stale: result.metrics.liveness.stale,
+      },
+      qualityChecks: summarizeQualityChecks(result.metrics.qualityGate.checks),
+      evidenceEvents: result.metrics.qualityGate.evidenceEvents,
+      recoveryEvents: result.metrics.recovery.events,
+    },
+    natural: {
+      status: result.quality.status,
+      completed: result.quality.completed,
+      stuckOrLoop: result.quality.stuckOrLoop,
+      reasonableToolUse: result.quality.reasonableToolUse,
+      browserUsed: result.quality.browserUsed,
+      subAgentCompleted: result.quality.subAgentCompleted,
+      approvalExercised: result.quality.approvalExercised,
+      finalAnswerHasEvidence: result.quality.finalAnswerHasEvidence,
+      finalAnswerUseful: result.quality.finalAnswerUseful,
+      weakAnswerSignals: [...result.quality.weakAnswerSignals],
+      failures: [...result.quality.failures],
+    },
+    final: {
+      bytes: Buffer.byteLength(result.final.text, "utf8"),
+      excerpt: compactExcerpt(result.final.text, 500),
+    },
+  };
+}
+
+function compactExcerpt(text: string, maxLength: number): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function summarizeCloseout(final: ActivityEvent): Pick<MissionE2eScenarioReport["final"], "closeout"> {
@@ -1155,6 +2013,12 @@ function summarizeQualityChecks(
 }
 
 function writeMissionE2eJsonReport(jsonPath: string, report: MissionE2eJsonReport): void {
+  const resolvedPath = path.resolve(jsonPath);
+  mkdirSync(path.dirname(resolvedPath), { recursive: true });
+  writeFileSync(resolvedPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+}
+
+function writeNaturalMissionE2eJsonReport(jsonPath: string, report: NaturalMissionE2eJsonReport): void {
   const resolvedPath = path.resolve(jsonPath);
   mkdirSync(path.dirname(resolvedPath), { recursive: true });
   writeFileSync(resolvedPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");

@@ -4,6 +4,11 @@ import type {
   LLMToolCall,
   LLMToolDefinition,
 } from "@turnkeyai/llm-adapter/index";
+import {
+  getInstructions,
+  getRecentMessages,
+  getRelayBrief,
+} from "@turnkeyai/core-types/team";
 import type {
   RoleActivationInput,
   RuntimeProgressRecorder,
@@ -886,9 +891,10 @@ async function executeSessionsSpawn(
   }
   const approvalProgress = gate?.progress ?? [];
   const label = requiredString(input.call.input.label);
+  const delegatedTaskPrompt = buildDelegatedTaskPrompt(task, input.activation.handoff.payload);
   const packet = {
     ...input.packet,
-    taskPrompt: task,
+    taskPrompt: delegatedTaskPrompt,
     preferredWorkerKinds: [agentId],
     continuityMode: "fresh" as const,
     workerSession: {
@@ -1009,6 +1015,86 @@ function scopeWorkerActivationToToolCall(activation: RoleActivationInput, toolCa
       taskId: `${activation.handoff.taskId}:${toolCallId}`,
     },
   };
+}
+
+function buildDelegatedTaskPrompt(
+  task: string,
+  payload: RoleActivationInput["handoff"]["payload"]
+): string {
+  if (/https?:\/\//i.test(task)) {
+    return task;
+  }
+  const parentContext = extractDelegationParentContext(task, payload);
+  if (!parentContext) {
+    return task;
+  }
+  return [
+    task,
+    "",
+    "Parent mission context relevant to this delegated task:",
+    parentContext,
+  ].join("\n");
+}
+
+function extractDelegationParentContext(
+  task: string,
+  payload: RoleActivationInput["handoff"]["payload"]
+): string | null {
+  const sourceLines = [
+    getInstructions(payload),
+    getRelayBrief(payload),
+    ...getRecentMessages(payload).map((item) => item.content),
+  ]
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .flatMap((item) => item.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+  const entries = sourceLines.flatMap((line, index) =>
+    Array.from(line.matchAll(/https?:\/\/[^\s)]+/gi)).map((match) => ({
+      line,
+      index,
+      url: sanitizeDelegationUrl(match[0] ?? ""),
+      score: scoreDelegationContextLine(task, `${line} ${match[0] ?? ""}`),
+    }))
+  ).filter((entry) => entry.url.length > 0);
+  if (entries.length === 0) {
+    return null;
+  }
+  const selected = entries
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, 6)
+    .map((entry) => entry.line.includes(entry.url) ? entry.line : `${entry.line} ${entry.url}`);
+  return [...new Set(selected)].join("\n");
+}
+
+function scoreDelegationContextLine(task: string, line: string): number {
+  const normalizedLine = line.toLowerCase();
+  const keywords = task
+    .toLowerCase()
+    .match(/[a-z0-9][a-z0-9_-]{2,}/g)
+    ?.filter((word) => !DELEGATION_CONTEXT_STOP_WORDS.has(word)) ?? [];
+  return keywords.reduce((score, word) => score + (normalizedLine.includes(word) ? 1 : 0), 0);
+}
+
+const DELEGATION_CONTEXT_STOP_WORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "this",
+  "that",
+  "source",
+  "sources",
+  "page",
+  "pages",
+  "review",
+  "research",
+  "compare",
+  "summarize",
+  "vendor",
+]);
+
+function sanitizeDelegationUrl(raw: string): string {
+  return raw.replace(/["'`,;:.!?。，“”‘’！？：]+$/g, "");
 }
 
 async function executeSessionsSend(
