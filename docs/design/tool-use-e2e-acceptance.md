@@ -132,6 +132,10 @@ By default the run is written to `<dataDir>/validation-ops-runs`, where
 isolated experiment that should not affect the operator release gate.
 Use `--mission-json <path>` to override the mission report path, or
 `--no-mission-json` for a scratch run that should not write the artifact.
+When validation-ops recording is enabled, the gate requires mission and natural
+mission JSON artifacts so a passed run always has inspectable mission ids,
+quality summaries, and capability evidence. Scratch runs that intentionally
+skip artifacts must also pass `--no-record-validation-ops`.
 
 For environments without Chrome/CDP, the combined gate can skip only the
 provider-native browser/direct-CDP leg while still running the mission route

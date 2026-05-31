@@ -4,6 +4,7 @@ import test from "node:test";
 import { DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS } from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
 
 import {
+  assertRealAcceptanceArtifactIntegrity,
   buildRealAcceptanceHelpResult,
   buildRealAcceptanceHelpText,
   buildRealAcceptancePlan,
@@ -141,5 +142,147 @@ test("real acceptance rejects tool-use scenarios when tool-use is skipped", () =
   assert.throws(
     () => parseRealAcceptanceArgs(["--skip-natural-mission", "--natural-mission-scenarios", "natural-comparison-research"]),
     /--natural-mission-scenarios cannot be combined with --skip-natural-mission/
+  );
+});
+
+test("real acceptance requires artifacts for recorded validation-ops gates", () => {
+  assert.throws(
+    () => parseRealAcceptanceArgs(["--no-mission-json"]),
+    /--no-mission-json cannot be combined with validation-ops recording/
+  );
+  assert.throws(
+    () => parseRealAcceptanceArgs(["--no-natural-mission-json"]),
+    /--no-natural-mission-json cannot be combined with validation-ops recording/
+  );
+  assert.equal(parseRealAcceptanceArgs(["--no-record-validation-ops", "--no-mission-json"]).writeMissionJson, false);
+  assert.equal(
+    parseRealAcceptanceArgs(["--skip-natural-mission", "--no-natural-mission-json"]).writeNaturalMissionJson,
+    false
+  );
+});
+
+test("real acceptance integrity rejects missing or non-passing report summaries before recording passed", () => {
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
+        naturalMissionScenarios: [],
+        missionJsonPresent: false,
+        naturalMissionJsonPresent: false,
+        missionReport: null,
+        naturalMissionReport: null,
+      }),
+    /passed without a mission E2E report artifact/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
+        naturalMissionScenarios: [],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: false,
+        missionReport: {
+          status: "passed",
+          scenarioCount: 1,
+          passedScenarios: 1,
+          failedScenarios: 0,
+          qualityFailures: 0,
+          toolRequested: 1,
+          toolResults: 1,
+          toolFailed: 0,
+          toolCancelled: 0,
+          toolTimeouts: 0,
+          sessionsSpawned: 1,
+          sessionsContinued: 0,
+          browserProfileFallbacks: 0,
+          approvalsRequested: 0,
+          approvalsDecided: 0,
+          approvalsApplied: 0,
+          livenessActive: 0,
+          livenessWaiting: 1,
+          livenessStale: 0,
+          qualityCheckWarnings: 0,
+          qualityCheckFailures: 0,
+          sourceCoverageWarnings: 0,
+          sourceCoverageFailures: 0,
+          evidenceEvents: 1,
+          recoveryEvents: 0,
+        },
+        naturalMissionReport: null,
+      }),
+    /mission E2E report does not prove/
+  );
+});
+
+test("real acceptance integrity accepts passing mission and natural summaries", () => {
+  assert.doesNotThrow(() =>
+    assertRealAcceptanceArtifactIntegrity({
+      status: "passed",
+      missionScenarios: ["comparison"],
+      naturalMissionScenarios: ["natural-comparison-research"],
+      missionJsonPresent: true,
+      naturalMissionJsonPresent: true,
+      missionReport: {
+        status: "passed",
+        scenarioCount: 1,
+        passedScenarios: 1,
+        failedScenarios: 0,
+        qualityFailures: 0,
+        toolRequested: 1,
+        toolResults: 1,
+        toolFailed: 0,
+        toolCancelled: 0,
+        toolTimeouts: 0,
+        sessionsSpawned: 1,
+        sessionsContinued: 0,
+        browserProfileFallbacks: 0,
+        approvalsRequested: 0,
+        approvalsDecided: 0,
+        approvalsApplied: 0,
+        livenessActive: 0,
+        livenessWaiting: 0,
+        livenessStale: 0,
+        qualityCheckWarnings: 0,
+        qualityCheckFailures: 0,
+        sourceCoverageWarnings: 0,
+        sourceCoverageFailures: 0,
+        evidenceEvents: 1,
+        recoveryEvents: 0,
+      },
+      naturalMissionReport: {
+        status: "passed",
+        scenarioCount: 1,
+        passedScenarios: 1,
+        failedScenarios: 0,
+        completed: 1,
+        stuckOrLoop: 0,
+        reasonableToolUse: 1,
+        browserUsed: 0,
+        subAgentCompleted: 1,
+        approvalExercised: 0,
+        finalAnswerHasEvidence: 1,
+        finalAnswerUseful: 1,
+        weakAnswerSignals: 0,
+        toolRequested: 1,
+        toolResults: 1,
+        toolFailed: 0,
+        toolCancelled: 0,
+        toolTimeouts: 0,
+        sessionsSpawned: 1,
+        sessionsContinued: 0,
+        browserProfileFallbacks: 0,
+        approvalsRequested: 0,
+        approvalsDecided: 0,
+        approvalsApplied: 0,
+        livenessActive: 0,
+        livenessWaiting: 0,
+        livenessStale: 0,
+        evidenceEvents: 1,
+        recoveryEvents: 0,
+      },
+    })
   );
 });
