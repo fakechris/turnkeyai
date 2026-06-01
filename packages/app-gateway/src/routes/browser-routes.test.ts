@@ -202,6 +202,48 @@ test("browser expert routes return 409 when raw CDP lane is unavailable", async 
   });
 });
 
+test("browser expert routes do not inherit general browser mission context", async () => {
+  const response = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "GET",
+      url: "/browser-sessions/session-1/expert/targets?threadId=thread-1&missionId=",
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/expert/targets?threadId=thread-1&missionId="),
+    deps: createDeps({
+      browserExpert: {
+        expertLane: createExpertLane(),
+      },
+      missionContext: {
+        validator: {
+          missionStore: {
+            async get() {
+              throw new Error("general browser mission context should not validate expert routes");
+            },
+          },
+          workItemStore: {
+            async listByMission() {
+              throw new Error("general browser mission context should not validate expert routes");
+            },
+          },
+        },
+        recorder: {
+          async recordSuccess() {
+            throw new Error("general browser mission context should not record expert routes");
+          },
+          async recordFailure() {
+            throw new Error("general browser mission context should not record expert routes");
+          },
+        },
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.deepEqual(response.json, [{ browserSessionId: "session-1", targetId: "raw-target-1", type: "page", attached: false }]);
+});
+
 test("browser expert routes attach and send through the raw CDP lane", async () => {
   const expertLane = createExpertLane();
 

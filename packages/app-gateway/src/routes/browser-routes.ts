@@ -985,6 +985,7 @@ async function resolveBrowserExpertMissionContext(input: {
   | { statusCode: number; body: { error: string; code: string } }
 > {
   const missionDeps = input.deps.browserExpert?.missionContext;
+  if (!missionDeps) return { context: null };
   return resolveBrowserMissionContext({
     deps: input.deps,
     missionId: input.missionId,
