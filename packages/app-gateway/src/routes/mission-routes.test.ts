@@ -7,7 +7,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 
 import type { ActivityEvent, ApprovalRequest, Mission } from "@turnkeyai/core-types/mission";
-import type { RuntimeProgressEvent, TeamMessage } from "@turnkeyai/core-types/team";
+import type { RoleRunState, RuntimeProgressEvent, TeamMessage } from "@turnkeyai/core-types/team";
 
 import { composeMissionDeps } from "../composition/mission-deps";
 import { createMissionThreadBridge } from "../mission-thread-bridge";
@@ -1615,6 +1615,102 @@ describe("mission-routes", () => {
           code: "mission_active",
           status: "working",
         });
+      } finally {
+        t.cleanup();
+      }
+    });
+
+    it("POST /missions/:id/cancel cancels an active role run before any tool call exists", async () => {
+      const t = tmpDir();
+      try {
+        const deps = composeMissionDeps({ dataDir: t.dir, clock });
+        await deps.missionStore.putRaw({
+          id: "msn.cancel",
+          shortId: "MSN-CANCEL",
+          title: "cancel mission",
+          desc: "cancel while the lead is still planning",
+          status: "working",
+          mode: "custom",
+          modeLabel: "Custom",
+          owner: "operator",
+          ownerLabel: "Operator",
+          createdAt: new Date(clock.now()).toISOString(),
+          createdAtMs: clock.now(),
+          agents: ["role-lead"],
+          progress: 0.2,
+          pendingApprovals: 0,
+          blockers: 0,
+          contextSummary: [],
+          threadId: "thread-cancel",
+        });
+        const run: RoleRunState = {
+          runKey: "role:lead:thread-cancel",
+          threadId: "thread-cancel",
+          roleId: "role-lead",
+          mode: "group",
+          status: "running",
+          iterationCount: 1,
+          maxIterations: 128,
+          inbox: [],
+          lastActiveAt: clock.now(),
+        };
+        const cancelledRuns: Array<{ runKey: string; reason?: string }> = [];
+        const response = createResponse();
+
+        await handleMissionRoutes({
+          req: createRequest({
+            method: "POST",
+            url: "/missions/msn.cancel/cancel",
+            body: { reason: "operator stopped the mission before tool execution" },
+          }),
+          res: response.res,
+          url: new URL("http://127.0.0.1/missions/msn.cancel/cancel"),
+          deps: {
+            ...deps,
+            roleRunStore: {
+              async listByThread(threadId) {
+                return threadId === "thread-cancel" ? [run] : [];
+              },
+            },
+            roleLoopRunner: {
+              async cancel(runKey, reason) {
+                cancelledRuns.push({ runKey, ...(reason ? { reason } : {}) });
+                return true;
+              },
+            },
+            teamMessageStore: {
+              async append() {},
+              async list() {
+                return [];
+              },
+              async get() {
+                return null;
+              },
+            },
+          },
+        });
+
+        assert.equal(response.getStatus(), 200);
+        assert.deepEqual(cancelledRuns, [
+          {
+            runKey: "role:lead:thread-cancel",
+            reason: "operator stopped the mission before tool execution",
+          },
+        ]);
+        assert.deepEqual(response.getJson(), {
+          cancelled: true,
+          missionId: "msn.cancel",
+          threadId: "thread-cancel",
+          roleRuns: { requested: 1, cancelled: 1 },
+          toolCalls: { messages: 0, requested: 0, cancelled: 0 },
+          workerSessions: { requested: 0, cancelled: 0 },
+        });
+        const updated = await deps.missionStore.get("msn.cancel");
+        assert.equal(updated?.status, "blocked");
+        assert.equal(updated?.blockers, 1);
+        const timeline = await deps.activityStore.listByMission("msn.cancel");
+        assert.equal(timeline.some((event) => event.runtime?.eventType === "mission.cancelled"), true);
+        assert.equal(timeline.at(-1)?.runtime?.roleRunsCancelled, "1");
       } finally {
         t.cleanup();
       }

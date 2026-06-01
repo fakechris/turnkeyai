@@ -358,6 +358,37 @@ describe("MissionCompletionEvaluator", () => {
     }
   });
 
+  it("accepts complete denied approval safe closeout even when the provider reports max tokens", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Submit the local form only if approval is granted.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          metadata: { stopReason: "max_tokens" },
+          content: [
+            "**Approval denied - task closed safely.**",
+            "Safe fallback: No form submission was or will be performed.",
+            "The dry-run submission is cancelled.",
+            "No further browser work is queued. Flow FLOW-1 is complete.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
   it("blocks unresolved lead tool turn when no role run is active", () => {
     const stalled = {
       ...message("a-tool", "assistant", 100),

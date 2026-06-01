@@ -14,6 +14,7 @@
 //   POST /mission-context-sources           → register manual ContextSource
 //   POST /missions/reconcile                → force mission/thread mirror pass
 //   POST /missions/:id/reconcile            → force one mission/thread mirror pass
+//   POST /missions/:id/cancel               → cancel the active linked runtime
 //   POST /missions/:id/archive              → archive a terminal mission
 //   POST /missions/bootstrap-demo           → upsert design fixtures
 //
@@ -41,12 +42,21 @@ import type {
   MissionStore,
   WorkItemStore,
 } from "@turnkeyai/core-types/mission";
-import type { RuntimeProgressStore } from "@turnkeyai/core-types/team";
+import type {
+  RoleLoopRunner,
+  RoleRunStore,
+  RuntimeProgressStore,
+  TeamMessage,
+  TeamMessageStore,
+  WorkerRuntime,
+} from "@turnkeyai/core-types/team";
+import type { ToolCancellationRegistry } from "@turnkeyai/role-runtime/tool-cancellation-registry";
 import type { ToolPermissionService } from "@turnkeyai/role-runtime/tool-permission-service";
 
 import {
   parsePositiveLimit,
   readJsonBodySafe,
+  readOptionalJsonBodySafe,
   sendJson,
 } from "../http-helpers";
 import {
@@ -57,6 +67,7 @@ import { buildDemoFixtures } from "../mission-demo-fixtures";
 import { buildMissionObservabilitySnapshot } from "../mission-observability";
 import type { MissionThreadBridge } from "../mission-thread-bridge";
 import { recordApprovalDecision } from "../tool-permission-service";
+import { cancelToolCallsOnMessage } from "./workflow-routes";
 
 /**
  * Optional bundle that turns the read-mostly Mission Control routes
@@ -128,6 +139,11 @@ export interface MissionRouteDeps {
   };
   toolPermissionService?: Pick<ToolPermissionService, "apply">;
   runtimeProgressStore?: Pick<RuntimeProgressStore, "listByThread">;
+  teamMessageStore?: TeamMessageStore;
+  roleRunStore?: Pick<RoleRunStore, "listByThread">;
+  roleLoopRunner?: Pick<RoleLoopRunner, "cancel">;
+  workerRuntime?: Pick<WorkerRuntime, "cancel" | "listSessions">;
+  toolCancellationRegistry?: ToolCancellationRegistry;
 }
 
 const DEFAULT_TIMELINE_LIMIT = 200;
@@ -611,6 +627,51 @@ export async function handleMissionRoutes(input: {
     });
   }
 
+  const cancelMissionMatch = pathname.match(/^\/missions\/([^/]+)\/cancel$/);
+  if (method === "POST" && cancelMissionMatch) {
+    let missionId: string;
+    try {
+      missionId = decodeURIComponent(cancelMissionMatch[1]!);
+    } catch {
+      sendJson(res, 400, { error: "invalid mission id encoding" });
+      return true;
+    }
+    const mission = await deps.missionStore.get(missionId);
+    if (!mission) {
+      sendJson(res, 404, { error: "mission not found" });
+      return true;
+    }
+    if (!mission.threadId) {
+      sendJson(res, 409, {
+        error: "mission has no linked thread",
+        code: "mission_thread_missing",
+      });
+      return true;
+    }
+    const bodyResult = await readOptionalJsonBodySafe<{ reason?: unknown }>(req);
+    if (!bodyResult.ok) {
+      sendJson(res, 400, { error: bodyResult.error });
+      return true;
+    }
+    const reason = readNonEmptyString(bodyResult.value?.reason) ?? "mission cancelled by operator";
+    if (reason.length > 1_000) {
+      sendJson(res, 400, { error: "reason must be at most 1000 characters" });
+      return true;
+    }
+    const threadId = mission.threadId;
+    return runIdempotently({
+      req,
+      res,
+      store: deps.idempotencyStore,
+      scope: `missions:${mission.id}:cancel`,
+      fingerprint: { missionId: mission.id, reason },
+      execute: async () => {
+        const result = await cancelMissionRuntime({ deps, mission, threadId, reason });
+        return { statusCode: 200, body: result };
+      },
+    });
+  }
+
   const archiveMissionMatch = pathname.match(/^\/missions\/([^/]+)\/archive$/);
   if (method === "POST" && archiveMissionMatch) {
     let missionId: string;
@@ -752,6 +813,155 @@ export async function handleMissionRoutes(input: {
   }
 
   return false;
+}
+
+async function cancelMissionRuntime(input: {
+  deps: MissionRouteDeps;
+  mission: Mission;
+  threadId: string;
+  reason: string;
+}): Promise<{
+  cancelled: boolean;
+  missionId: string;
+  threadId: string;
+  roleRuns: { requested: number; cancelled: number };
+  toolCalls: { messages: number; requested: number; cancelled: number };
+  workerSessions: { requested: number; cancelled: number };
+}> {
+  const { deps, mission, threadId, reason } = input;
+  const now = deps.clock.now();
+  const [roleRuns, messages, workerSessions] = await Promise.all([
+    deps.roleRunStore ? deps.roleRunStore.listByThread(threadId).catch(() => []) : Promise.resolve([]),
+    deps.teamMessageStore ? deps.teamMessageStore.list(threadId, 500).catch(() => []) : Promise.resolve([]),
+    deps.workerRuntime?.listSessions ? deps.workerRuntime.listSessions().catch(() => []) : Promise.resolve([]),
+  ]);
+
+  const activeRoleRuns = (roleRuns ?? []).filter((run) =>
+    run.status === "queued" ||
+    run.status === "running" ||
+    run.status === "waiting_worker" ||
+    run.status === "resuming"
+  );
+  const roleCancelResults = await Promise.all(
+    activeRoleRuns.map((run) =>
+      deps.roleLoopRunner?.cancel
+        ? deps.roleLoopRunner.cancel(run.runKey, reason).catch(() => false)
+        : Promise.resolve(false)
+    )
+  );
+
+  let toolMessages = 0;
+  let requestedToolCalls = 0;
+  let cancelledToolCalls = 0;
+  if (deps.teamMessageStore) {
+    for (const message of findCancellableAssistantToolMessages(messages ?? [])) {
+      const cancellableIds = findCancellableToolCallIds(message);
+      if (cancellableIds.length === 0) continue;
+      toolMessages += 1;
+      requestedToolCalls += cancellableIds.length;
+      const result = await cancelToolCallsOnMessage({
+        teamMessageStore: deps.teamMessageStore,
+        now,
+        messageId: message.id,
+        requestedThreadId: threadId,
+        toolCallIds: cancellableIds,
+        reason,
+        ...(deps.toolCancellationRegistry ? { toolCancellationRegistry: deps.toolCancellationRegistry } : {}),
+        ...(deps.workerRuntime ? { workerRuntime: deps.workerRuntime } : {}),
+      });
+      if (result.statusCode === 200 && isCancelledToolBody(result.body)) {
+        cancelledToolCalls += result.body.toolCallIds.length;
+      }
+    }
+  }
+
+  const activeWorkerSessions = (workerSessions ?? []).filter(
+    (session) =>
+      session.context?.threadId === threadId &&
+      !["done", "failed", "cancelled"].includes(session.state.status)
+  );
+  const workerCancelResults = await Promise.all(
+    activeWorkerSessions.map((session) =>
+      deps.workerRuntime?.cancel
+        ? deps.workerRuntime
+            .cancel({ workerRunKey: session.workerRunKey, reason })
+            .then((state) => Boolean(state))
+            .catch(() => false)
+        : Promise.resolve(false)
+    )
+  );
+
+  const currentMission = (await deps.missionStore.get(mission.id)) ?? mission;
+  const updatedMission: Mission = {
+    ...currentMission,
+    status: "blocked",
+    blockers: Math.max(currentMission.blockers, 1),
+  };
+  await deps.missionStore.putRaw(updatedMission);
+  await deps.activityStore.append({
+    id: `mission-cancelled:${mission.id}:${now}`,
+    missionId: mission.id,
+    tMs: now,
+    kind: "recovery",
+    actor: "system",
+    text:
+      "Mission cancelled by the operator. Active work was stopped before completion; verified evidence may be incomplete, unverified source checks remain, and the user can continue later if they want to resume.",
+    emph: "warn",
+    tags: ["mission_cancelled"],
+    runtime: {
+      eventType: "mission.cancelled",
+      threadId,
+      reason,
+      roleRunsRequested: String(activeRoleRuns.length),
+      roleRunsCancelled: String(roleCancelResults.filter(Boolean).length),
+      toolCallsRequested: String(requestedToolCalls),
+      toolCallsCancelled: String(cancelledToolCalls),
+      workerSessionsRequested: String(activeWorkerSessions.length),
+      workerSessionsCancelled: String(workerCancelResults.filter(Boolean).length),
+    },
+  });
+
+  return {
+    cancelled: true,
+    missionId: mission.id,
+    threadId,
+    roleRuns: {
+      requested: activeRoleRuns.length,
+      cancelled: roleCancelResults.filter(Boolean).length,
+    },
+    toolCalls: {
+      messages: toolMessages,
+      requested: requestedToolCalls,
+      cancelled: cancelledToolCalls,
+    },
+    workerSessions: {
+      requested: activeWorkerSessions.length,
+      cancelled: workerCancelResults.filter(Boolean).length,
+    },
+  };
+}
+
+function findCancellableAssistantToolMessages(messages: TeamMessage[]): TeamMessage[] {
+  return messages.filter((message) => message.role === "assistant" && findCancellableToolCallIds(message).length > 0);
+}
+
+function findCancellableToolCallIds(message: TeamMessage): string[] {
+  const toolCalls = message.toolCalls ?? [];
+  if (toolCalls.length === 0) return [];
+  const terminalIds = new Set(
+    (message.toolProgress ?? [])
+      .filter((event) => event.phase === "completed" || event.phase === "failed" || event.phase === "cancelled")
+      .map((event) => event.toolCallId)
+  );
+  return toolCalls.map((call) => call.id).filter((id) => !terminalIds.has(id));
+}
+
+function isCancelledToolBody(value: unknown): value is { toolCallIds: string[] } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as { toolCallIds?: unknown }).toolCallIds)
+  );
 }
 
 async function reopenDoneMissionForFollowUp(

@@ -5,10 +5,12 @@ import { ModelRegistry } from "./registry";
 export class LLMGateway {
   private readonly registry: ModelRegistry;
   private readonly clients: ProtocolClient[];
+  private readonly requestTimeoutMs: number;
 
-  constructor(options: { registry: ModelRegistry; clients: ProtocolClient[] }) {
+  constructor(options: { registry: ModelRegistry; clients: ProtocolClient[]; requestTimeoutMs?: number }) {
     this.registry = options.registry;
     this.clients = options.clients;
+    this.requestTimeoutMs = resolveRequestTimeoutMs(options.requestTimeoutMs);
   }
 
   async listModels() {
@@ -50,10 +52,19 @@ export class LLMGateway {
           throw new Error(`no protocol client for ${model.protocol}`);
         }
 
-        const result = await client.generate(model, {
-          ...input,
-          modelId,
-        });
+        const result = await runWithRequestTimeout(
+          (signal) =>
+            client.generate(model, {
+              ...input,
+              modelId,
+              signal,
+            }),
+          {
+            timeoutMs: this.requestTimeoutMs,
+            ...(input.signal ? { signal: input.signal } : {}),
+            modelId,
+          }
+        );
         return {
           ...result,
           requestEnvelope,
@@ -66,5 +77,57 @@ export class LLMGateway {
     }
 
     throw lastError ?? new Error("model generation failed without an error");
+  }
+}
+
+function resolveRequestTimeoutMs(value: number | undefined): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.trunc(value);
+  }
+  const envValue = process.env.TURNKEYAI_LLM_REQUEST_TIMEOUT_MS;
+  if (envValue) {
+    const parsed = Number(envValue);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.trunc(parsed);
+    }
+  }
+  return 120_000;
+}
+
+async function runWithRequestTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  input: { timeoutMs: number; signal?: AbortSignal; modelId: string }
+): Promise<T> {
+  if (input.signal?.aborted) {
+    throw input.signal.reason ?? new Error("LLM request aborted");
+  }
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
+  const timeoutError = new Error(`llm_request_timeout: model ${input.modelId} did not respond within ${input.timeoutMs}ms`);
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, input.timeoutMs);
+  });
+  const externalSignal = input.signal;
+  const abortPromise =
+    externalSignal &&
+    new Promise<never>((_, reject) => {
+      abortListener = () => {
+        const reason = externalSignal.reason ?? new Error("LLM request aborted");
+        controller.abort(reason);
+        reject(reason);
+      };
+      externalSignal.addEventListener("abort", abortListener, { once: true });
+    });
+  try {
+    return await Promise.race([operation(controller.signal), timeoutPromise, ...(abortPromise ? [abortPromise] : [])]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    if (abortListener && externalSignal) {
+      externalSignal.removeEventListener("abort", abortListener);
+    }
   }
 }
