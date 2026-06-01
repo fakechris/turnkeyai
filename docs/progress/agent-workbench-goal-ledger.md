@@ -4902,3 +4902,67 @@ Convergence question:
   a CDP command timeout, produce a useful terminal answer with partial evidence,
   and leave no stuck work.
 - If no, next required gate:
+
+## 2026-06-01 17:51 CST - Natural Browser Detached Target Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added `natural-browser-detached-target-closeout` to the natural mission
+  matrix. The scenario uses the existing E2E-only browser failure injection
+  path to force repeated `detached_target` evidence during rendered-page
+  capture.
+- Normal browser execution remains unchanged; the injection path is gated by
+  explicit `TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_*` variables.
+
+Result Quality:
+- The new natural gate requires browser use, a `detached_target` browser bucket,
+  useful final synthesis, no weak fallback signals, and no stuck worker
+  liveness.
+- The expected answer shape is user-natural rather than marker-based: it must
+  separate verified and unverified scope and give the operator a next action
+  after the browser target detaches.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The Workbench can now rely on a real natural mission artifact for detached
+  browser-target failures instead of only unit-level bucket classification.
+
+Browser Reliability:
+- This closes another H4 browser failure row under natural prompts: target or
+  tab detachment during browser capture now has a focused natural acceptance
+  gate and a passing real mission artifact.
+- Remaining browser reliability row still needing equivalent natural proof:
+  attach failure.
+
+Acceptance Evidence:
+- Focused tests: `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts
+  packages/qc-runtime/src/real-llm-acceptance-defaults.test.ts
+  scripts/real-llm-acceptance.test.ts`: passed.
+- `npm run typecheck`: passed.
+- `git diff --check`: passed.
+- Focused natural real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-detached-target-closeout
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-browser-detached-target-closeout.json`: passed.
+- Natural report:
+  `/tmp/turnkeyai-natural-browser-detached-target-closeout.json`, kind
+  `turnkeyai.natural-mission-e2e.report`, evidence mode `natural-real-llm`,
+  status `passed`.
+- Natural mission: `msn.mpv12336.1`, status `done`, natural `passed`, tools
+  `1/1`, sessions `1/0`, browser `yes`, profile fallbacks `0`, browser
+  buckets `detached_target=1`, stuck `no`, final bytes `1176`.
+
+Regression Risk:
+- The natural matrix is longer by one browser reliability case. Focused
+  acceptance remains selectable for local debugging.
+- The same production-code E2E injection hook now backs both timeout and detach
+  scenarios, so future changes to the hook can affect multiple natural gates;
+  report tests pin each required bucket separately.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a real natural LLM mission now proves the browser layer can surface
+  target detachment, produce a useful terminal answer, and leave no stuck work.
+- If no, next required gate:
