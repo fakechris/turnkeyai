@@ -38,6 +38,7 @@ export const DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS = [
   "natural-memory-recall",
   "natural-approval-dry-run-action",
   "natural-approval-denied-safe-closeout",
+  "natural-approval-pending-state",
   "natural-browser-unavailable-closeout",
   "natural-timeout-partial-closeout",
   "natural-timeout-followup-continuation",

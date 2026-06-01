@@ -291,6 +291,82 @@ describe("mission tool-use e2e report", () => {
     );
   });
 
+  it("accepts pending approval as a natural paused state without decision or permission application", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-approval-pending-state", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.scenario = "natural-approval-pending-state";
+    result.mission.status = "needs_approval";
+    result.metrics.status = "needs_approval";
+    result.metrics.tool.requested = 1;
+    result.metrics.tool.results = 0;
+    result.metrics.sessions.spawned = 0;
+    result.metrics.approvals = { requested: 1, decided: 0, applied: 0 };
+    result.metrics.liveness.active = 1;
+    result.metrics.qualityGate.evidenceEvents = 0;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "sessions_spawn call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "submit local approval form" }),
+        },
+      },
+      {
+        kind: "approval",
+        text: "Requested approval · <b>browser.form.submit</b> · approval required before side effect; operator decision is pending before any form submission can run.",
+        tMs: 1200,
+        approvalId: "approval-1",
+        runtime: { eventType: "permission.query", status: "pending", approvalId: "approval-1" },
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.completed, true);
+    assert.equal(quality.stuckOrLoop, false);
+    assert.equal(quality.approvalExercised, true);
+
+    result.timeline.push({
+      kind: "approval",
+      text: "Approved browser.form.submit.",
+      tMs: 1500,
+      approvalId: "approval-1",
+      runtime: { eventType: "permission.result", status: "approved", approvalId: "approval-1" },
+    });
+    result.metrics.approvals.decided = 1;
+
+    const invalidQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(
+      invalidQuality.failures.includes("approval pending scenario did not stop at query without result/applied")
+    );
+  });
+
   it("formats per-scenario progress lines for long matrix runs", () => {
     const result = fakeResult();
 

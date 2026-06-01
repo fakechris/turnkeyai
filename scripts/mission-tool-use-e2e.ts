@@ -72,6 +72,7 @@ export type NaturalMissionE2eScenario =
   | "natural-memory-recall"
   | "natural-approval-dry-run-action"
   | "natural-approval-denied-safe-closeout"
+  | "natural-approval-pending-state"
   | "natural-browser-unavailable-closeout"
   | "natural-timeout-partial-closeout"
   | "natural-timeout-followup-continuation"
@@ -89,6 +90,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-memory-recall",
   "natural-approval-dry-run-action",
   "natural-approval-denied-safe-closeout",
+  "natural-approval-pending-state",
   "natural-browser-unavailable-closeout",
   "natural-timeout-partial-closeout",
   "natural-timeout-followup-continuation",
@@ -326,7 +328,8 @@ export interface NaturalScenarioSpec {
   minContinuedSessions?: number;
   requiresBrowser: boolean;
   requiresApproval: boolean;
-  approvalDecision?: "approved" | "denied";
+  approvalDecision?: "approved" | "denied" | "pending";
+  expectedMissionStatus?: "done" | "needs_approval";
   requiresCancellation?: boolean;
   requiresTimeout?: boolean;
   allowToolFailure: boolean;
@@ -1321,6 +1324,9 @@ async function runNaturalMissionScenario(input: {
   if (input.scenario === "natural-approval-denied-safe-closeout") {
     return runNaturalApprovalDeniedScenario(input);
   }
+  if (input.scenario === "natural-approval-pending-state") {
+    return runNaturalApprovalPendingScenario(input);
+  }
   if (input.scenario === "natural-browser-unavailable-closeout") {
     return runNaturalBrowserUnavailableScenario(input);
   }
@@ -1968,6 +1974,42 @@ async function runNaturalApprovalDeniedScenario(input: {
   return scenarioResult;
 }
 
+async function runNaturalApprovalPendingScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+}): Promise<NaturalMissionScenarioResult> {
+  const spec = buildNaturalScenarioSpec("natural-approval-pending-state", input.fixture);
+  assertNaturalPromptAllowed(spec.desc);
+  const mission = await createNaturalMission({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    spec,
+  });
+  assert.ok(mission.threadId, "natural approval-pending mission requires a linked team thread");
+  const result = await waitForNaturalApprovalPendingState({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: input.timeoutMs,
+  });
+  const final = findLatestApprovalQueryEvent(result.timeline);
+  assert.ok(final, "natural approval-pending mission must include a permission.query event");
+  const quality = evaluateNaturalMissionQuality({
+    spec,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics: result.metrics,
+    final,
+  });
+  const scenarioResult = { scenario: "natural-approval-pending-state" as const, mission: result.mission, timeline: result.timeline, metrics: result.metrics, final, quality };
+  assertNaturalMissionQualityPassed(scenarioResult, "natural mission approval-pending quality failures");
+  return scenarioResult;
+}
+
 async function runNaturalCancelScenario(input: {
   baseUrl: string;
   token: string;
@@ -2612,6 +2654,43 @@ export function buildNaturalScenarioSpec(
       ],
     };
   }
+  if (scenario === "natural-approval-pending-state") {
+    return {
+      scenario,
+      title: "Natural approval pending state",
+      desc: [
+        "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+        `Form: ${fixture.approvalUrl}`,
+        "The dry-run action under review is the form submission, not just opening the page.",
+        "Request approval before applying the browser action. Stop at the approval request and wait for the operator decision; do not imply the form was submitted before approval.",
+        "Treat the page as isolated local test data, but keep the approval gate authoritative.",
+      ].join("\n"),
+      minBytes: 90,
+      minToolResults: 0,
+      maxToolResults: 1,
+      minSpawnedSessions: 0,
+      maxSpawnedSessions: 1,
+      requiresBrowser: false,
+      requiresApproval: true,
+      approvalDecision: "pending",
+      expectedMissionStatus: "needs_approval",
+      allowToolFailure: false,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["Requested approval", "browser.form.submit"],
+      requiredAnswerPatterns: [
+        { label: "pending approval request", pattern: /Requested approval/i },
+        { label: "blocked before side effect", pattern: /browser\.form\.submit/i },
+      ],
+      forbiddenPatterns: [
+        {
+          label: "pending submit claimed complete",
+          pattern:
+            /\b(?:successfully submitted|submission completed|form submission completed|action completed|form was submitted|submitted locally after approval|submitted to the page)\b/i,
+        },
+        { label: "approval decided while pending", pattern: /\bpermission\.(?:result|applied)\b/i },
+      ],
+    };
+  }
   if (scenario === "natural-browser-unavailable-closeout") {
     const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
     return {
@@ -2854,19 +2933,36 @@ export function evaluateNaturalMissionQuality(input: {
   final: ActivityEvent;
 }): NaturalMissionQuality {
   const failures: string[] = [];
-  const completed = input.mission.status === "done" && input.metrics.status === "done";
+  const expectedMissionStatus = input.spec.expectedMissionStatus ?? "done";
+  const completed = input.mission.status === expectedMissionStatus && input.metrics.status === expectedMissionStatus;
   const weakAnswerSignals = findWeakAnswerSignals(input.final.text);
   const blockingWeakAnswerSignals = weakAnswerSignals.filter(
     (signal) => !(input.spec.allowedWeakAnswerSignals ?? []).includes(signal)
   );
   const toolNames = collectToolNames(input.timeline);
   const evidenceText = collectTimelineEvidenceText(input.timeline);
+  const effectiveEvidenceEvents =
+    expectedMissionStatus === "needs_approval" && hasRuntimeEvent(input.timeline, "permission.query")
+      ? Math.max(input.metrics.qualityGate.evidenceEvents, 1)
+      : input.metrics.qualityGate.evidenceEvents;
   const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
   const profileFallbackCount = input.metrics.browser?.profileFallbacks ?? 0;
   const profileFallbackFree = profileFallbackCount === 0;
-  const subAgentCompleted = input.metrics.sessions.spawned >= input.spec.minSpawnedSessions && input.metrics.liveness.active === 0 && input.metrics.liveness.waiting === 0;
+  const subAgentCompleted =
+    expectedMissionStatus === "needs_approval"
+      ? input.metrics.sessions.spawned >= input.spec.minSpawnedSessions
+      : input.metrics.sessions.spawned >= input.spec.minSpawnedSessions &&
+        input.metrics.liveness.active === 0 &&
+        input.metrics.liveness.waiting === 0;
   const approvalExercised =
-    input.spec.approvalDecision === "denied"
+    input.spec.approvalDecision === "pending"
+      ? input.metrics.approvals.requested > 0 &&
+        input.metrics.approvals.decided === 0 &&
+        input.metrics.approvals.applied === 0 &&
+        hasRuntimeEvent(input.timeline, "permission.query") &&
+        !hasRuntimeEvent(input.timeline, "permission.result") &&
+        !hasRuntimeEvent(input.timeline, "permission.applied")
+      : input.spec.approvalDecision === "denied"
       ? input.metrics.approvals.requested > 0 &&
         input.metrics.approvals.decided > 0 &&
         input.metrics.approvals.applied === 0 &&
@@ -2886,21 +2982,21 @@ export function evaluateNaturalMissionQuality(input: {
     input.metrics.sessions.spawned <= input.spec.maxSpawnedSessions &&
     input.metrics.sessions.continued >= (input.spec.minContinuedSessions ?? 0);
   const finalAnswerHasEvidence =
-    input.metrics.qualityGate.evidenceEvents >= input.spec.minEvidenceEvents &&
+    effectiveEvidenceEvents >= input.spec.minEvidenceEvents &&
     input.spec.requiredAnswerTerms.every((term) => input.final.text.toLowerCase().includes(term.toLowerCase())) &&
     (input.spec.requiredAnswerPatterns ?? []).every((item) => item.pattern.test(input.final.text));
   const finalAnswerUseful =
     Buffer.byteLength(input.final.text, "utf8") >= input.spec.minBytes &&
-    /\b(recommend|next action|risk|owner|tradeoff|continue|verified|approved|submitted|confirmed|complete)\b/i.test(
+    /\b(recommend|next action|risk|owner|tradeoff|continue|verified|approval|approved|submitted|confirmed|complete)\b/i.test(
       input.final.text
     );
   const stuckOrLoop =
-    input.metrics.liveness.active > 0 ||
-    input.metrics.liveness.waiting > 0 ||
+    (expectedMissionStatus !== "needs_approval" &&
+      (input.metrics.liveness.active > 0 || input.metrics.liveness.waiting > 0)) ||
     input.metrics.liveness.stale > 0 ||
     hasRepeatedToolLoop(input.timeline);
 
-  if (!completed) failures.push("mission did not complete with done status");
+  if (!completed) failures.push(`mission did not reach expected status ${expectedMissionStatus}`);
   if (stuckOrLoop) failures.push("mission appears stuck, looping, or retains live runtime subjects");
   if (!reasonableToolUse) {
     failures.push(
@@ -2918,6 +3014,8 @@ export function evaluateNaturalMissionQuality(input: {
     failures.push(
       input.spec.approvalDecision === "denied"
         ? "approval denied scenario did not complete query/result without permission.applied"
+        : input.spec.approvalDecision === "pending"
+        ? "approval pending scenario did not stop at query without result/applied"
         : "approval scenario did not complete query/result/applied loop"
     );
   }
@@ -5508,6 +5606,71 @@ async function driveNaturalApprovalDecisionsUntilComplete(input: {
   );
 }
 
+async function waitForNaturalApprovalPendingState(input: {
+  baseUrl: string;
+  token: string;
+  missionId: string;
+  timeoutMs: number;
+}): Promise<{ mission: Mission; timeline: ActivityEvent[]; metrics: MissionObservabilitySnapshot }> {
+  const startedAt = Date.now();
+  let latestMission: Mission | null = null;
+  let latestTimeline: ActivityEvent[] = [];
+  let latestMetrics: MissionObservabilitySnapshot | null = null;
+  let latestApprovals: ApprovalRecord[] = [];
+  while (Date.now() - startedAt < input.timeoutMs) {
+    latestMission = await requestJson<Mission>({
+      method: "GET",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}`,
+      token: input.token,
+    });
+    latestTimeline = await requestJson<ActivityEvent[]>({
+      method: "GET",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}/timeline?limit=300`,
+      token: input.token,
+    });
+    latestMetrics = await requestJson<MissionObservabilitySnapshot>({
+      method: "GET",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}/metrics`,
+      token: input.token,
+    });
+    latestApprovals = await requestJson<ApprovalRecord[]>({
+      method: "GET",
+      url: `${input.baseUrl}/approvals`,
+      token: input.token,
+    });
+    const pending = latestApprovals.filter((item) => item.missionId === input.missionId && item.decision == null);
+    const hasPendingQuery =
+      pending.length > 0 &&
+      latestMission.status === "needs_approval" &&
+      latestMetrics.status === "needs_approval" &&
+      latestMetrics.approvals.requested > 0 &&
+      latestMetrics.approvals.decided === 0 &&
+      latestMetrics.approvals.applied === 0 &&
+      hasRuntimeEvent(latestTimeline, "permission.query") &&
+      !hasRuntimeEvent(latestTimeline, "permission.result") &&
+      !hasRuntimeEvent(latestTimeline, "permission.applied");
+    if (hasPendingQuery) {
+      return { mission: latestMission, timeline: latestTimeline, metrics: latestMetrics };
+    }
+    if (latestMission.status === "blocked" || latestMission.status === "done") {
+      throw new Error(
+        `mission reached ${latestMission.status} before staying pending approval:\n${summarizeMissionState(
+          latestMission,
+          latestTimeline
+        )}`
+      );
+    }
+    await sleep(500);
+  }
+  throw new Error(
+    `mission did not expose pending approval state within ${input.timeoutMs}ms: ${JSON.stringify({
+      mission: latestMission,
+      metrics: latestMetrics,
+      approvals: latestApprovals,
+    })}`
+  );
+}
+
 function findLatestApprovalResultIndex(timeline: ActivityEvent[], decidedIds: Set<string>): number {
   for (let index = timeline.length - 1; index >= 0; index -= 1) {
     const event = timeline[index]!;
@@ -5520,6 +5683,16 @@ function findLatestApprovalResultIndex(timeline: ActivityEvent[], decidedIds: Se
     }
   }
   return -1;
+}
+
+function findLatestApprovalQueryEvent(timeline: ActivityEvent[]): ActivityEvent | null {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index]!;
+    if (event.runtime?.["eventType"] === "permission.query") {
+      return event;
+    }
+  }
+  return null;
 }
 
 function findLatestApprovalAppliedIndex(timeline: ActivityEvent[], approvedIds: Set<string>): number {
