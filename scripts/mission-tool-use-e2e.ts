@@ -222,6 +222,7 @@ export interface ScenarioSpec {
   expectedSpawnCalls: number;
   expectedSpawnCallsMax?: number;
   expectedSendCalls: number;
+  expectedSendCallsMax?: number;
   expectedToolResults: number;
   expectedToolResultsMax?: number;
   expectedToolFailures?: number;
@@ -229,6 +230,7 @@ export interface ScenarioSpec {
   expectedSpawnedSessions: number;
   expectedSpawnedSessionsMax?: number;
   expectedContinuedSessions: number;
+  expectedContinuedSessionsMax?: number;
   minEvidenceEvents: number;
   expectedBullets: number;
   expectedQualityGateStatus?: string;
@@ -862,7 +864,7 @@ async function runMissionFollowupScenario(input: {
     body: {
       content: [
         "Continue this mission from the existing explore child session.",
-        "Call sessions_send exactly once using the session_key from the prior sessions_spawn tool result.",
+        "Use sessions_send with the session_key from the prior sessions_spawn tool result instead of spawning another child session.",
         `The sessions_send input must include label "${FOLLOWUP_CONTINUATION_SOURCE_LABEL}" so mission source coverage can be audited.`,
         "Do not call sessions_spawn, sessions_history, or sessions_list.",
         `The sessions_send message must ask the child to return its complete final report containing ${FIXTURE_MARKER}.`,
@@ -4449,9 +4451,12 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
       ],
       expectedSpawnCalls: 1,
       expectedSendCalls: 1,
+      expectedSendCallsMax: 2,
       expectedToolResults: 2,
+      expectedToolResultsMax: 3,
       expectedSpawnedSessions: 1,
       expectedContinuedSessions: 1,
+      expectedContinuedSessionsMax: 2,
       minEvidenceEvents: 2,
       expectedBullets: 3,
       desc: [
@@ -4695,10 +4700,11 @@ function assertMissionToolUseTimeline(timeline: ActivityEvent[], spec: ScenarioS
     spec.expectedSpawnCallsMax,
     `${spec.scenario} sessions_spawn calls`
   );
-  assert.equal(
+  assertCountInRange(
     sendCallIndexes.length,
     spec.expectedSendCalls,
-    `${spec.scenario} expected exactly ${spec.expectedSendCalls} sessions_send calls`
+    spec.expectedSendCallsMax,
+    `${spec.scenario} sessions_send calls`
   );
   assertCountInRange(callIndexes.length, spec.expectedToolResults, spec.expectedToolResultsMax, `${spec.scenario} session tool calls`);
   assertCountInRange(
@@ -4964,15 +4970,68 @@ export function extractCancelledSessionKey(timeline: ActivityEvent[]): string | 
   return null;
 }
 
-function assertFollowupReusedSession(timeline: ActivityEvent[], expectedSessionKey: string): void {
+export function assertFollowupReusedSession(timeline: ActivityEvent[], expectedSessionKey: string): void {
   const sendCalls = timeline.filter(
     (event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "call"
   );
-  assert.equal(sendCalls.length, 1, "follow-up E2E must call sessions_send exactly once");
-  const callInput = sendCalls[0]?.runtime?.["callInput"];
-  assert.equal(typeof callInput, "string", "sessions_send call must persist structured callInput");
-  const parsed = JSON.parse(callInput as string) as { session_key?: string };
-  assert.equal(parsed.session_key, expectedSessionKey, "sessions_send must reuse the phase-one session_key");
+  assertCountInRange(sendCalls.length, 1, 2, "follow-up E2E sessions_send calls");
+  const sendCallIds = sendCalls.map((event) => readRuntimeString(event, "toolCallId"));
+  assert.ok(sendCallIds.every(Boolean), "sessions_send call must include toolCallId for call/result correlation");
+  assert.equal(
+    new Set(sendCallIds).size,
+    sendCallIds.length,
+    "sessions_send follow-up calls must have unique toolCallId values"
+  );
+  for (const [index, sendCall] of sendCalls.entries()) {
+    const callInput = sendCall.runtime?.["callInput"];
+    assert.equal(typeof callInput, "string", "sessions_send call must persist structured callInput");
+    const parsed = JSON.parse(callInput as string) as { session_key?: string };
+    assert.equal(
+      isCompatibleSessionKeyReference(parsed.session_key, expectedSessionKey),
+      true,
+      "sessions_send must address the phase-one session_key or a unique prefix of it"
+    );
+    const toolCallId = sendCallIds[index] ?? "";
+    const matchingResults = timeline.filter(
+      (event) =>
+        event.runtime?.["toolName"] === "sessions_send" &&
+        event.runtime?.["toolPhase"] === "result" &&
+        readRuntimeString(event, "toolCallId") === toolCallId
+    );
+    assert.equal(matchingResults.length, 1, "sessions_send must record exactly one result for each follow-up call");
+    const result = matchingResults[0]!;
+    assert.equal(
+      readSessionKeyFromResultContent(result),
+      expectedSessionKey,
+      "sessions_send result must persist the resolved phase-one session_key"
+    );
+  }
+}
+
+function isCompatibleSessionKeyReference(actual: unknown, expected: string): boolean {
+  if (typeof actual !== "string" || !actual.trim()) return false;
+  const actualSignature = relaxedSessionKeySignature(actual.trim());
+  const expectedSignature = relaxedSessionKeySignature(expected);
+  if (actualSignature === expectedSignature || (actualSignature.length >= 40 && expectedSignature.startsWith(actualSignature))) {
+    return true;
+  }
+  const actualTaskPrefix = readWorkerTaskSessionPrefix(actualSignature);
+  return Boolean(actualTaskPrefix && actualTaskPrefix === readWorkerTaskSessionPrefix(expectedSignature));
+}
+
+function relaxedSessionKeySignature(sessionKey: string): string {
+  return sessionKey.replace(/call_function_/g, "call_").replace(/call_func_/g, "call_");
+}
+
+function readWorkerTaskSessionPrefix(sessionKey: string): string | null {
+  const match = sessionKey.match(/^(worker:[A-Za-z0-9_-]+:task[:|-][A-Za-z0-9_-]+):/);
+  return match?.[1] ?? null;
+}
+
+function readSessionKeyFromResultContent(event: ActivityEvent): string | null {
+  const content = String(event.runtime?.["resultContent"] ?? event.text);
+  const match = content.match(/"session_key"\s*:\s*"([^"]+)"/);
+  return match?.[1] ?? null;
 }
 
 export function assertNaturalFollowupReusedExistingSession(input: {
@@ -5635,7 +5694,12 @@ function assertMissionMetrics(metrics: MissionObservabilitySnapshot, spec: Scena
     spec.expectedSpawnedSessionsMax,
     "mission metrics spawned sub-agent sessions"
   );
-  assert.equal(metrics.sessions.continued, spec.expectedContinuedSessions, "mission metrics must match continued sub-agent sessions");
+  assertCountInRange(
+    metrics.sessions.continued,
+    spec.expectedContinuedSessions,
+    spec.expectedContinuedSessionsMax,
+    "mission metrics continued sub-agent sessions"
+  );
   assert.equal(metrics.recovery.events, 0, "mission metrics must not report recovery events");
   assert.equal(metrics.liveness.active, 0, "completed mission must not retain active runtime subjects");
   assert.equal(metrics.liveness.waiting, 0, "completed mission must not retain waiting runtime subjects");

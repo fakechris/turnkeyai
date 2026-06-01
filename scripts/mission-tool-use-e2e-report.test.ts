@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   assertNaturalPromptAllowed,
+  assertFollowupReusedSession,
   assertNaturalFollowupReusedExistingSession,
   assertNaturalScenarioPromptsAllowed,
   buildNaturalScenarioSpec,
@@ -295,6 +296,131 @@ describe("mission tool-use e2e report", () => {
         }),
       /reuse the phase-one session_key/
     );
+  });
+
+  it("allows bounded contract follow-up sends when they reuse the same child session", () => {
+    const sessionKey = "worker:explore:task:TASK-1780270980576-6:call_function_tjy4fgvtsps9_1";
+    const timeline: Parameters<typeof assertFollowupReusedSession>[0] = [
+      {
+        kind: "tool",
+        text: "send call 1",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send-1",
+          callInput: JSON.stringify({ session_key: sessionKey, message: "continue" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "send result 1",
+        tMs: 1500,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send-1",
+          resultContent: JSON.stringify({ session_key: sessionKey, final_content: "continued" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "send call 2",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send-2",
+          callInput: JSON.stringify({ session_key: "worker:explore:task:TASK-1780270980576-6:call_function_tj", message: "complete final report" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "send result 2",
+        tMs: 2500,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send-2",
+          resultContent: JSON.stringify({ session_key: sessionKey, final_content: "complete" }),
+        },
+      },
+    ];
+
+    assert.doesNotThrow(() => assertFollowupReusedSession(timeline, sessionKey));
+  });
+
+  it("rejects contract follow-up sends that switch child sessions", () => {
+    const timeline: Parameters<typeof assertFollowupReusedSession>[0] = [
+      {
+        kind: "tool",
+        text: "send call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send",
+          callInput: JSON.stringify({ session_key: "worker:explore:other", message: "continue" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "send result",
+        tMs: 1500,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send",
+          resultContent: JSON.stringify({ session_key: "worker:explore:other" }),
+        },
+      },
+    ];
+
+    assert.throws(
+      () => assertFollowupReusedSession(timeline, "worker:explore:alpha"),
+      /address the phase-one session_key/
+    );
+  });
+
+  it("rejects contract follow-up sends without unique call/result correlation ids", () => {
+    const sessionKey = "worker:explore:task:TASK-1780270980576-6:call_function_tjy4fgvtsps9_1";
+    const timeline: Parameters<typeof assertFollowupReusedSession>[0] = [
+      {
+        kind: "tool",
+        text: "send call 1",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send",
+          callInput: JSON.stringify({ session_key: sessionKey, message: "continue" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "send call 2",
+        tMs: 1100,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "call",
+          toolCallId: "call-send",
+          callInput: JSON.stringify({ session_key: sessionKey, message: "continue again" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "send result",
+        tMs: 1500,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          toolCallId: "call-send",
+          resultContent: JSON.stringify({ session_key: sessionKey, final_content: "continued" }),
+        },
+      },
+    ];
+
+    assert.throws(() => assertFollowupReusedSession(timeline, sessionKey), /unique toolCallId/);
   });
 
   it("builds a distinct natural E2E report envelope", () => {

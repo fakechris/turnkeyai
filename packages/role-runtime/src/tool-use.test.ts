@@ -2446,6 +2446,158 @@ test("sessions_send resolves unique ellipsized session_key against same-thread s
   assert.equal(body.final_content, "Verified continuation evidence.");
 });
 
+test("sessions_send resolves a unique clean truncated session_key prefix against same-thread sessions", async () => {
+  let resumedKey: string | null = null;
+  const fullSessionKey = "worker:explore:task:TASK-1780270698619-6:call_function_bk9x7m4q2p_1";
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: fullSessionKey,
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: fullSessionKey,
+            workerType: "explore",
+            status: "cancelled",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState(workerRunKey: string) {
+      assert.equal(workerRunKey, fullSessionKey);
+      return {
+        workerRunKey,
+        workerType: "explore" as const,
+        status: "cancelled" as const,
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async resume(input: { workerRunKey: string }) {
+      resumedKey = input.workerRunKey;
+      return {
+        workerType: "explore" as const,
+        status: "completed" as const,
+        summary: "Continuation evidence gathered.",
+        payload: { mode: "llm_sub_agent", workerType: "explore", content: "Verified continuation evidence." },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-follow-up",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:task:TASK-1780270698619-6:call_function_bk",
+        message: "Continue the existing research task with fresh evidence.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { session_key: string; final_content: string };
+  assert.equal(result.isError, undefined);
+  assert.equal(resumedKey, fullSessionKey);
+  assert.equal(body.session_key, fullSessionKey);
+  assert.equal(body.final_content, "Verified continuation evidence.");
+});
+
+test("sessions_send resolves a unique same-task session_key with a corrupted tool-call suffix", async () => {
+  let resumedKey: string | null = null;
+  const fullSessionKey = "worker:explore:task:TASK-1780271315378-107:call_function_tjy4fgvtsps9_1";
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: fullSessionKey,
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "TASK-1780271315378-107",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: fullSessionKey,
+            workerType: "explore",
+            status: "cancelled",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState(workerRunKey: string) {
+      assert.equal(workerRunKey, fullSessionKey);
+      return {
+        workerRunKey,
+        workerType: "explore" as const,
+        status: "cancelled" as const,
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async resume(input: { workerRunKey: string }) {
+      resumedKey = input.workerRunKey;
+      return {
+        workerType: "explore" as const,
+        status: "completed" as const,
+        summary: "Continuation evidence gathered.",
+        payload: { mode: "llm_sub_agent", workerType: "explore", content: "Verified continuation evidence." },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-follow-up",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:task:TASK-1780271315378-107:call_function_sessions_spawn_1780271315380_107",
+        message: "Continue the existing research task with fresh evidence.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { session_key: string; final_content: string };
+  assert.equal(result.isError, undefined);
+  assert.equal(resumedKey, fullSessionKey);
+  assert.equal(body.session_key, fullSessionKey);
+  assert.equal(body.final_content, "Verified continuation evidence.");
+});
+
 test("sessions_send resolves a malformed continuation key when one same-thread session exists", async () => {
   let resumedKey: string | null = null;
   const workerRuntime = {
@@ -2577,6 +2729,85 @@ test("sessions_send does not resolve an unrelated clean session_key to the only 
 
   assert.equal(result.isError, true);
   assert.equal(result.content, "session not found: worker:explore:task:TASK-2:call_abc123_1");
+  assert.equal(resumeCalled, false);
+});
+
+test("sessions_send does not resolve an ambiguous clean truncated session_key prefix", async () => {
+  let resumeCalled = false;
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:task:TASK-1780270698619-6:call_function_bk111111_1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous-a",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:task:TASK-1780270698619-6:call_function_bk111111_1",
+            workerType: "explore",
+            status: "cancelled",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+        {
+          workerRunKey: "worker:explore:task:TASK-1780270698619-6:call_function_bk222222_1",
+          executionToken: 2,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous-b",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:explore:task:TASK-1780270698619-6:call_function_bk222222_1",
+            workerType: "explore",
+            status: "cancelled",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      assert.fail("getState should not be called for an ambiguous clean prefix");
+    },
+    async resume() {
+      resumeCalled = true;
+      assert.fail("resume should not be called for an ambiguous clean prefix");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-follow-up",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:task:TASK-1780270698619-6:call_function_bk",
+        message: "Continue the existing research task with fresh evidence.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(result.content, "session not found: worker:explore:task:TASK-1780270698619-6:call_function_bk");
   assert.equal(resumeCalled, false);
 });
 
