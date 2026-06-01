@@ -1983,6 +1983,7 @@ function validationOpsFixture() {
           missionReport: {
             status: "passed",
             scenarioCount: 4,
+            scenarioIds: ["basic", "comparison", "browser-dashboard", "realistic-brief"],
             passedScenarios: 4,
             failedScenarios: 0,
             qualityFailures: 0,

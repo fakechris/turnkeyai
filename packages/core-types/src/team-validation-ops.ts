@@ -102,6 +102,7 @@ export interface ValidationOpsRealAcceptanceDetails {
   missionReport?: {
     status: "passed" | "failed";
     scenarioCount: number;
+    scenarioIds: string[];
     passedScenarios: number;
     failedScenarios: number;
     qualityFailures: number;
@@ -129,6 +130,7 @@ export interface ValidationOpsRealAcceptanceDetails {
   naturalMissionReport?: {
     status: "passed" | "failed";
     scenarioCount: number;
+    scenarioIds: string[];
     passedScenarios: number;
     failedScenarios: number;
     completed: number;
