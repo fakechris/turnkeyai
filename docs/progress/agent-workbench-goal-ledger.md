@@ -4708,3 +4708,69 @@ Convergence question:
   the focused natural run now passes with that bucket present.
 - Next required gate: broaden the same proof to another browser failure row
   such as attach failure, command timeout, or detached target.
+
+## 2026-06-01 15:39 CST - Browser Session Lifecycle Bucket Gate
+
+Direction: converging
+
+Execution Kernel:
+- Browser session revoke now accepts optional mission/work-item context and
+  validates it before recording mission activity.
+- When a mission-bound browser session is revoked, the route records a recovery
+  event with the `session_not_found` bucket. The route still closes the session
+  through the existing browser bridge path and keeps public response semantics
+  compatible for callers that do not pass mission context.
+
+Result Quality:
+- Final-answer prompting did not change.
+- The natural browser cold-recreation scenario can no longer pass on final text
+  alone. It must also show that the system recorded why browser continuity was
+  broken before the follow-up recovered.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The mission timeline/metrics now contain a machine-readable lifecycle bucket
+  that the Workbench can surface when explaining why a browser sub-agent had to
+  recreate its session.
+
+Browser Reliability:
+- Browser recovery mechanics did not change.
+- This improves reliability evidence: operator/session lifecycle loss is now
+  visible as `session_not_found` instead of being hidden behind a successful
+  follow-up answer.
+
+Acceptance Evidence:
+- Focused deterministic tests:
+  `npx tsx --test packages/app-gateway/src/routes/browser-routes.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts`: passed, 62 tests.
+- `npm run typecheck`: passed.
+- Focused natural real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-cold-recreation-continuation
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-browser-cold-recreation-bucket.json`: passed.
+- Natural mission id: `msn.mpuwconq.1`.
+- Report artifact:
+  `/tmp/turnkeyai-natural-browser-cold-recreation-bucket.json`.
+- The passing run reported
+  `browserBuckets=session_not_found=1`, `natural=passed`, `stuck=no`,
+  `mission-status=done`, `tools=3/3`, and `sessions=1/1`.
+
+Regression Risk:
+- Low route risk: mission context is optional and existing revoke callers keep
+  the same no-context response shape.
+- Medium idempotency/observability risk: mission/work-item context is now part
+  of the revoke idempotency fingerprint so two distinct mission-bound revokes do
+  not share cached timeline results.
+- Remaining risk: this proves lifecycle-loss visibility and cold recreation for
+  one browser reliability row; attach failure, command timeout, and detached
+  target still need equivalent natural gates.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes, for
+  browser session lifecycle loss during follow-up continuation.
+- Evidence: the natural cold-recreation gate now requires and produced the
+  `session_not_found` bucket while still completing with useful
+  browser-backed output.
+- Next required gate: broaden the same proof to another browser failure row
+  such as attach failure, command timeout, or detached target.

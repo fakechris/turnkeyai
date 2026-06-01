@@ -715,6 +715,13 @@ const server = http.createServer(async (req, res) => {
               recorder: bridgeMissionRecorder,
             },
           },
+          missionContext: {
+            validator: {
+              missionStore: missionDeps.missionStore,
+              workItemStore: missionDeps.workItemStore,
+            },
+            recorder: bridgeMissionRecorder,
+          },
           idGenerator,
           clock,
           idempotencyStore: routeIdempotencyStore,
