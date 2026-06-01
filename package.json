@@ -42,7 +42,7 @@
     "daemon:status": "tsx packages/cli/src/cli.ts daemon status",
     "daemon:stop": "tsx packages/cli/src/cli.ts daemon stop",
     "daemon": "tsx packages/app-gateway/src/daemon.ts",
-    "tui": "tsx packages/tui/src/tui.ts"
+    "tui": "tsx packages/cli/src/cli.ts tui"
   },
   "engines": {
     "node": ">=24"

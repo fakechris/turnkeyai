@@ -6001,3 +6001,66 @@ Convergence question:
   completed with browser use, sub-agent completion, and no liveness residue.
 - If no, next required gate: run timeout-continuation and browser continuation
   gates.
+
+## 2026-06-01 21:39 CST - TUI Auto-Start Entry
+
+Direction: converging
+
+Execution Kernel:
+- Agent, tool, session, and browser execution semantics are unchanged.
+- The local TUI entry now ensures the daemon is running before it opens the
+  interactive mission surface, matching the installed app entry's daemon
+  readiness behavior.
+
+Result Quality:
+- This does not improve answer synthesis directly.
+- It reduces a local-entry failure mode where a user could open the TUI from a
+  source checkout and immediately hit daemon-down startup diagnostics before
+  reaching mission work.
+
+Workbench UX:
+- `turnkeyai tui` and `npm run tui` now auto-start the local daemon when needed.
+- `turnkeyai tui --no-start` preserves the old diagnostics-only behavior for
+  debugging stuck ports or daemon processes.
+- Help text documents the source-checkout command and the opt-out flag.
+
+Browser Reliability:
+- Browser/session reliability is unchanged.
+- The entry path now reaches the same daemon-owned browser and diagnostics
+  surfaces as the app launcher sooner, instead of requiring users to know the
+  separate daemon start command first.
+
+Acceptance Evidence:
+- Focused CLI/TUI tests:
+  `npx tsx --test packages/cli/src/tui-command.test.ts
+  packages/cli/src/cli-help.test.ts packages/tui/src/tui-entry.test.ts
+  packages/tui/src/tui-startup.test.ts`: passed, 18 tests.
+- Command smoke: `npm run tui -- --help`: passed and documented auto-start plus
+  `--no-start`.
+- Typecheck: `npm run typecheck`: passed.
+- Build: `npm run build`: passed.
+- Full test suite: `npm test -- --runInBand`: passed, 1447 tests.
+- Whitespace: `git diff --check`: passed.
+- Real natural follow-up gate:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-followup-continuation --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-tui-autostart-20260601.json`: passed.
+- Mission: `msn.mpv9a5dv.1`, status `done`, natural `passed`, tools `2/2`,
+  sessions `1/1`, browser used, profile fallbacks `0`, browser buckets `none`,
+  liveness `0/0/0`, final bytes `2640`.
+
+Regression Risk:
+- Auto-start could mask daemon-start problems if failures were swallowed; the
+  command instead exits before launching the TUI and prints the daemon base URL
+  plus log file path.
+- Existing diagnostics workflows are preserved by `--no-start`.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes
+- Evidence: the local TUI entry now reaches a daemon-backed workbench without
+  requiring a separate daemon command, while the current build still completed a
+  real browser-backed follow-up mission with clean tool/session liveness.
+- If no, next required gate: run timeout-continuation and browser continuation
+  gates before claiming deeper runtime convergence.

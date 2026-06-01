@@ -5,7 +5,7 @@ import { runAppCommand } from "./app-command";
 import { runBridgeNamespace } from "./bridge";
 import { runDaemonNamespace } from "./daemon-commands";
 import { runDoctor } from "./doctor";
-import { spawnLegacyEntry } from "./legacy-entry";
+import { runTuiCommand } from "./tui-command";
 
 type CliCommand = "daemon" | "tui" | "doctor" | "bridge" | "app";
 
@@ -44,7 +44,7 @@ async function runCommand(command: CliCommand, commandArgs: string[]): Promise<v
     case "doctor":
       return runDoctor(commandArgs);
     case "tui":
-      return spawnLegacyEntry("tui", commandArgs, path.dirname(fileURLToPath(import.meta.url)));
+      return runTuiCommand(commandArgs, { currentDir: path.dirname(fileURLToPath(import.meta.url)) });
     case "app":
       return runAppCommand(commandArgs);
   }
@@ -69,7 +69,7 @@ function printHelp(exitCode: number): never {
     "  npm run app -- --no-open     Source-tree launcher when turnkeyai is not on PATH",
     "  npm run daemon:status        Source-tree status check when turnkeyai is not on PATH",
     "  turnkeyai doctor",
-    "  turnkeyai tui",
+    "  turnkeyai tui [--no-start]",
     "",
     "Files:",
     "  ~/.turnkeyai/config.json          Token + port + transport (0600)",

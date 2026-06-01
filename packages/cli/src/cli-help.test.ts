@@ -12,6 +12,7 @@ describe("cli help", () => {
     assert.match(result.stdout, /turnkeyai app \[--route onboarding\|missions\|approvals\|agents\|context\|agent-connect\|runtime\|settings\]/);
     assert.match(result.stdout, /turnkeyai daemon service install\|restart\|uninstall\|status/);
     assert.match(result.stdout, /turnkeyai app install-launcher \[--path <file>\]/);
+    assert.match(result.stdout, /turnkeyai tui \[--no-start\]/);
     assert.match(result.stdout, /npx @turnkeyai\/cli app/);
     assert.match(result.stdout, /npx @turnkeyai\/cli daemon status/);
     assert.match(result.stdout, /npm run install:local-cli/);
@@ -55,6 +56,14 @@ describe("cli help", () => {
     assert.equal(result.code, 0);
     assert.match(result.stdout, /TurnkeyAI Mission Control launcher installer/);
     assert.match(result.stdout, /--path <file>/);
+  });
+
+  it("prints TUI help without starting the daemon", async () => {
+    const result = await runCliHelp(["tui", "--help"]);
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /TurnkeyAI TUI/);
+    assert.match(result.stdout, /turnkeyai tui \[--no-start\]/);
+    assert.match(result.stdout, /Starts the local daemon when needed/);
   });
 
   it("prints daemon service help", async () => {
