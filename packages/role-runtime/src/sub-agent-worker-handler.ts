@@ -1,6 +1,7 @@
 import type {
   BrowserBridge,
   BrowserSideEffectApprovalContext,
+  BrowserSessionOwnerType,
   BrowserTaskAction,
   BrowserTaskResult,
   Clock,
@@ -42,6 +43,7 @@ const BROWSER_FAILURE_BUCKETS = [
   "owner_mismatch",
   "lease_conflict",
 ] as const;
+let fallbackWorkerRunKeyCounter = 0;
 
 export interface LLMSubAgentWorkerHandlerOptions {
   kind: WorkerKind;
@@ -99,17 +101,18 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
       return abortedResult(this.kind);
     }
 
+    const executor = new SubAgentToolExecutor({
+      kind: this.kind,
+      innerHandler: this.innerHandler,
+      parentInput: input,
+      ...(this.browserBridge ? { browserBridge: this.browserBridge } : {}),
+    });
     const generator = new LLMRoleResponseGenerator({
       gateway: this.gateway,
       ...(this.runtimeProgressRecorder ? { runtimeProgressRecorder: this.runtimeProgressRecorder } : {}),
       clock: this.clock,
       toolLoop: {
-        executor: new SubAgentToolExecutor({
-          kind: this.kind,
-          innerHandler: this.innerHandler,
-          parentInput: input,
-          ...(this.browserBridge ? { browserBridge: this.browserBridge } : {}),
-        }),
+        executor,
         maxRounds: this.maxRounds,
         maxWallClockMs: this.maxWallClockMs,
         maxParallelToolCalls: 1,
@@ -162,6 +165,19 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
       if (input.signal?.aborted) {
         return abortedResult(this.kind);
       }
+      const fallback =
+        this.kind === "browser" && this.browserBridge && executor.executedToolCount() === 0 && isPlannerBootstrapFailure(error)
+          ? await runReadOnlyBrowserPlannerFallback({
+              input,
+              browserBridge: this.browserBridge,
+              error,
+              now: this.clock.now(),
+              workerRunKey: executor.workerRunKey(),
+            })
+          : null;
+      if (fallback) {
+        return fallback;
+      }
       return {
         workerType: this.kind,
         status: "failed",
@@ -189,7 +205,9 @@ class SubAgentToolExecutor implements RoleToolExecutor {
   private readonly innerHandler: WorkerHandler;
   private readonly parentInput: WorkerInvocationInput;
   private readonly browserBridge: BrowserBridge | undefined;
+  private readonly fallbackWorkerRunKey: string;
   private innerSessionState: WorkerSessionState | undefined;
+  private toolExecutionCount = 0;
 
   constructor(options: {
     kind: WorkerKind;
@@ -201,6 +219,17 @@ class SubAgentToolExecutor implements RoleToolExecutor {
     this.innerHandler = options.innerHandler;
     this.parentInput = options.parentInput;
     this.browserBridge = options.browserBridge;
+    this.fallbackWorkerRunKey =
+      options.parentInput.sessionState?.workerRunKey ??
+      `sub-agent:${options.kind}:${options.parentInput.activation.handoff.taskId}:${++fallbackWorkerRunKeyCounter}`;
+  }
+
+  executedToolCount(): number {
+    return this.toolExecutionCount;
+  }
+
+  workerRunKey(): string {
+    return this.innerSessionState?.workerRunKey ?? this.parentInput.sessionState?.workerRunKey ?? this.fallbackWorkerRunKey;
   }
 
   definitions(): LLMToolDefinition[] {
@@ -227,6 +256,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
   }
 
   async execute(input: RoleToolExecutionInput): Promise<RoleToolExecutionResult> {
+    this.toolExecutionCount += 1;
     if (SESSION_TOOL_NAME_SET.has(input.call.name)) {
       return {
         toolCallId: input.call.id,
@@ -287,6 +317,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
       kind: this.kind,
       previous: this.innerSessionState,
       result,
+      workerRunKey: this.workerRunKey(),
     });
     const content = JSON.stringify(
       {
@@ -340,16 +371,20 @@ class SubAgentToolExecutor implements RoleToolExecutor {
       this.innerSessionState?.lastResult?.payload ??
       this.parentInput.sessionState?.lastResult?.payload;
     const previous = decodeBrowserSessionPayload(previousPayload);
+    const workerRunKey = this.workerRunKey();
+    const useWorkerOwnedBrowserSession = Boolean(this.innerSessionState) || !previous?.sessionId;
+    const ownerType: BrowserSessionOwnerType = useWorkerOwnedBrowserSession ? "worker" : "thread";
+    const ownerId = useWorkerOwnedBrowserSession ? workerRunKey : this.parentInput.activation.thread.threadId;
     const request = {
       taskId: `${this.parentInput.activation.handoff.taskId}:${input.call.id}`,
       threadId: this.parentInput.activation.thread.threadId,
       instructions: actionPlan.instructions,
       actions: actionPlan.actions,
-      ownerType: "thread" as const,
-      ownerId: this.parentInput.activation.thread.threadId,
+      ownerType,
+      ownerId,
       profileOwnerType: "thread" as const,
       profileOwnerId: this.parentInput.activation.thread.threadId,
-      ...(this.innerSessionState?.workerRunKey ? { leaseHolderRunKey: this.innerSessionState.workerRunKey } : {}),
+      leaseHolderRunKey: workerRunKey,
       ...(previous?.sessionId ? { browserSessionId: previous.sessionId } : {}),
       ...(previous?.targetId ? { targetId: previous.targetId } : {}),
     };
@@ -386,12 +421,28 @@ class SubAgentToolExecutor implements RoleToolExecutor {
         ],
       };
     }
-    const workerResult = browserToolWorkerResult(result);
+    let workerResult = browserToolWorkerResult(result);
+    if (shouldRetryReadOnlyBrowserPartial(actionPlan.actions, workerResult)) {
+      try {
+        result = await browserBridge.spawnSession({
+          ...request,
+          taskId: `${request.taskId}:retry-1`,
+          ownerType: "worker",
+          ownerId: workerRunKey,
+          leaseHolderRunKey: workerRunKey,
+        });
+        workerResult = browserToolWorkerResult(result);
+      } catch {
+        // Keep the original partial evidence. The retry is a best-effort
+        // recovery for read-only transient transport failures only.
+      }
+    }
     this.innerSessionState = buildInnerSessionState({
       parentInput: this.parentInput,
       kind: this.kind,
       previous: this.innerSessionState,
       result: workerResult,
+      workerRunKey,
     });
 
     return {
@@ -731,6 +782,189 @@ function browserToolWorkerResult(result: BrowserTaskResult): WorkerExecutionResu
   };
 }
 
+function shouldRetryReadOnlyBrowserPartial(actions: BrowserTaskAction[], result: WorkerExecutionResult): boolean {
+  if (result.status !== "partial") {
+    return false;
+  }
+  if (!actions.length || !actions.every(isReadOnlyBrowserPrivateAction)) {
+    return false;
+  }
+  return readBrowserFailureBucketNames(result.payload).some((bucket) =>
+    bucket === "transport_failure" || bucket === "browser_cdp_unavailable"
+  );
+}
+
+function isReadOnlyBrowserPrivateAction(action: BrowserTaskAction): boolean {
+  return (
+    action.kind === "open" ||
+    action.kind === "snapshot" ||
+    action.kind === "scroll" ||
+    action.kind === "console" ||
+    action.kind === "screenshot"
+  );
+}
+
+function readBrowserFailureBucketNames(payload: unknown): string[] {
+  if (!isRecord(payload)) {
+    return [];
+  }
+  const buckets = payload["failureBuckets"];
+  if (!Array.isArray(buckets)) {
+    return [];
+  }
+  return buckets
+    .map((entry) => (isRecord(entry) && typeof entry["bucket"] === "string" ? entry["bucket"] : null))
+    .filter((bucket): bucket is string => Boolean(bucket));
+}
+
+async function runReadOnlyBrowserPlannerFallback(input: {
+  input: WorkerInvocationInput;
+  browserBridge: BrowserBridge;
+  error: unknown;
+  now: number;
+  workerRunKey: string;
+}): Promise<WorkerExecutionResult | null> {
+  const url = extractFirstHttpUrl(input.input.packet.taskPrompt);
+  if (!url) {
+    return null;
+  }
+  const promptWithoutUrl = input.input.packet.taskPrompt.replace(url, "");
+  if (hasBrowserMutationIntent(promptWithoutUrl)) {
+    return null;
+  }
+
+  let result: BrowserTaskResult;
+  try {
+    result = await input.browserBridge.spawnSession({
+      taskId: `${input.input.activation.handoff.taskId}:browser-planner-fallback`,
+      threadId: input.input.activation.thread.threadId,
+      instructions: [
+        "The browser sub-agent planner failed before producing a private browser tool call.",
+        "Capture read-only page evidence from the delegated URL without interacting with account state.",
+      ].join(" "),
+      actions: [
+        { kind: "open", url },
+        { kind: "snapshot", note: "planner-timeout-fallback" },
+        { kind: "screenshot", label: "planner-timeout-fallback" },
+      ],
+      ownerType: "worker",
+      ownerId: input.workerRunKey,
+      profileOwnerType: "thread",
+      profileOwnerId: input.input.activation.thread.threadId,
+      leaseHolderRunKey: input.workerRunKey,
+    });
+  } catch (fallbackError) {
+    const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+    const bucket = classifyBrowserPrivateToolFailureBucket(message);
+    return {
+      workerType: "browser",
+      status: "failed",
+      summary: `Browser planner fallback failed: ${bucket}: ${message}`,
+      payload: {
+        mode: "browser_planner_fallback",
+        workerType: "browser",
+        error: message,
+        plannerError: errorMessage(input.error),
+        failureBuckets: [{ bucket, count: 1 }],
+      },
+    };
+  }
+
+  const workerResult = browserToolWorkerResult(result);
+  const content = buildBrowserPlannerFallbackContent({
+    result,
+    plannerError: errorMessage(input.error),
+  });
+  const payload = isRecord(workerResult.payload)
+    ? {
+        ...workerResult.payload,
+        mode: "browser_planner_fallback",
+        workerType: "browser",
+        plannerError: errorMessage(input.error),
+        content,
+      }
+    : {
+        mode: "browser_planner_fallback",
+        workerType: "browser",
+        plannerError: errorMessage(input.error),
+        content,
+      };
+  return {
+    workerType: "browser",
+    status: workerResult.status,
+    summary: [
+      "Browser planner fallback captured read-only evidence after the sub-agent planner failed.",
+      workerResult.summary,
+    ].join(" "),
+    payload,
+    sessionHistoryEntries: [
+      {
+        id: `sub-agent-transcript:browser:${input.input.activation.handoff.taskId}:planner-fallback-tool-result:${input.now}`,
+        role: "tool",
+        content,
+        createdAt: input.now,
+        taskId: input.input.activation.handoff.taskId,
+        toolName: "browser_planner_fallback",
+        status: workerResult.status,
+        payload,
+        metadata: {
+          kind: "tool_result",
+          fallback: "browser_planner_fallback",
+        },
+      },
+      {
+        id: `sub-agent-transcript:browser:${input.input.activation.handoff.taskId}:planner-fallback-final:${input.now}`,
+        role: "assistant",
+        content,
+        createdAt: input.now + 1,
+        taskId: input.input.activation.handoff.taskId,
+        status: workerResult.status,
+        metadata: {
+          kind: "assistant_final",
+          fallback: "browser_planner_fallback",
+        },
+      },
+    ],
+  };
+}
+
+function isPlannerBootstrapFailure(error: unknown): boolean {
+  const message = errorMessage(error);
+  return /\b(llm_request_timeout|did not respond|request timeout|gateway timeout|planner|bootstrap)\b/i.test(message);
+}
+
+function buildBrowserPlannerFallbackContent(input: { result: BrowserTaskResult; plannerError: string }): string {
+  return [
+    `Browser planner fallback used after planner error: ${input.plannerError}`,
+    `Final URL: ${input.result.page.finalUrl}`,
+    input.result.page.title ? `Page title: ${input.result.page.title}` : null,
+    input.result.page.textExcerpt ? `Visible text excerpt: ${truncateBrowserTextExcerpt(input.result.page.textExcerpt)}` : null,
+    input.result.artifactIds.length ? `Artifact IDs: ${input.result.artifactIds.join(", ")}` : null,
+    input.result.screenshotPaths.length ? `Screenshots: ${input.result.screenshotPaths.join(", ")}` : null,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+function extractFirstHttpUrl(text: string): string | null {
+  const match = /\bhttps?:\/\/[^\s<>"')\]]+/i.exec(text);
+  if (!match) {
+    return null;
+  }
+  const candidate = match[0].replace(/[.,;:!?]+$/g, "");
+  return isHttpUrl(candidate) ? candidate : null;
+}
+
+function hasBrowserMutationIntent(text: string): boolean {
+  return /\b(submit|send|save|publish|delete|remove|checkout|purchase|buy|order|book|reserve|approve|accept|reject|cancel|sign in|login|upload|deploy|release|go live)\b/i.test(
+    text
+  );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function summarizeBrowserToolResult(result: BrowserTaskResult): string {
   const failed = result.trace.filter((step) => step.status === "failed");
   const failureBuckets = collectBrowserFailureBucketsFromTrace(result.trace);
@@ -770,11 +1004,13 @@ function buildInnerSessionState(input: {
   kind: WorkerKind;
   previous: WorkerSessionState | undefined;
   result: WorkerExecutionResult;
+  workerRunKey?: string;
 }): WorkerSessionState {
   const now = Date.now();
   const workerRunKey =
     input.previous?.workerRunKey ??
     input.parentInput.sessionState?.workerRunKey ??
+    input.workerRunKey ??
     `sub-agent:${input.kind}:${input.parentInput.activation.handoff.taskId}`;
   return {
     workerRunKey,

@@ -1503,9 +1503,14 @@ test("sessions_spawn cancels the active worker when the tool call is cancelled",
     toolCallIds: ["call-cancel"],
     reason: "operator stopped browser work",
   });
-  resolveSend();
 
-  const result = await executePromise;
+  const result = await Promise.race([
+    executePromise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("cancelled sessions_spawn did not return before worker send unwound")), 50)
+    ),
+  ]);
+  resolveSend();
   assert.equal(cancelledReason, "operator stopped browser work");
   assert.equal(result.isError, true);
   assert.equal(result.cancelled, true);
@@ -1648,6 +1653,112 @@ test("sessions_send returns cancelled when the worker session was cancelled outs
   assert.equal(result.isError, true);
   assert.equal(body.status, "cancelled");
   assert.equal(body.result, "operator cancelled browser work");
+});
+
+test("sessions_send cancels the active resumed worker before the worker send unwinds", async () => {
+  let resolveResume!: () => void;
+  let resumeStarted!: () => void;
+  let cancelledReason: string | null = null;
+  const resumeStartedPromise = new Promise<void>((resolve) => {
+    resumeStarted = resolve;
+  });
+  const releaseResumePromise = new Promise<void>((resolve) => {
+    resolveResume = resolve;
+  });
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:task-1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-1",
+            roleId: "role-lead",
+            parentSpanId: "role:lead",
+          },
+          state: {
+            workerRunKey: "worker:browser:task-1",
+            workerType: "browser",
+            status: "running",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:browser:task-1",
+        workerType: "browser",
+        status: "running",
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    },
+    async resume() {
+      resumeStarted();
+      await releaseResumePromise;
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Should not be used after cancellation.",
+        payload: null,
+      };
+    },
+    async send() {
+      throw new Error("sessions_send should resume the existing session instead of starting a bare send");
+    },
+    async cancel(input: { reason?: string }) {
+      cancelledReason = input.reason ?? null;
+      return null;
+    },
+  } as unknown as WorkerRuntime;
+  const toolCancellationRegistry = new InMemoryToolCancellationRegistry();
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"], toolCancellationRegistry });
+
+  const executePromise = executor.execute({
+    call: {
+      id: "call-send-cancel",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:browser:task-1",
+        message: "Continue the slow browser page.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue the slow browser page.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  await resumeStartedPromise;
+  await toolCancellationRegistry.cancel({
+    threadId: "thread-1",
+    toolCallIds: ["call-send-cancel"],
+    reason: "operator stopped resumed browser work",
+  });
+
+  const result = await Promise.race([
+    executePromise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("cancelled sessions_send did not return before worker resume unwound")), 50)
+    ),
+  ]);
+  resolveResume();
+  const body = JSON.parse(result.content) as { status?: string; result?: string };
+  assert.equal(cancelledReason, "operator stopped resumed browser work");
+  assert.equal(result.cancelled, true);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "cancelled");
+  assert.equal(body.result, "operator stopped resumed browser work");
 });
 
 test("sessions_spawn interrupts the worker and returns a resumable timeout result", async () => {

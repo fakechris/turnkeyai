@@ -227,7 +227,16 @@ test("LLMSubAgentWorkerHandler bounds default explore wall-clock before more pri
 
 test("LLMSubAgentWorkerHandler exposes structured browser private tools when a browser bridge is wired", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
-  const bridgeCalls: Array<{ mode: "spawn" | "send"; input: { actions?: Array<{ kind: string }>; browserSessionId?: string } }> = [];
+  const bridgeCalls: Array<{
+    mode: "spawn" | "send";
+    input: {
+      actions?: Array<{ kind: string }>;
+      browserSessionId?: string;
+      ownerType?: string | undefined;
+      ownerId?: string | undefined;
+      leaseHolderRunKey?: string | undefined;
+    };
+  }> = [];
   let innerCalled = false;
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
@@ -294,9 +303,15 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /browser_open/);
   assert.equal(bridgeCalls.length, 2);
   assert.equal(bridgeCalls[0]?.mode, "spawn");
+  assert.equal(bridgeCalls[0]?.input.ownerType, "worker");
+  assert.match(bridgeCalls[0]?.input.ownerId ?? "", /^sub-agent:browser:task-1:\d+$/);
+  assert.equal(bridgeCalls[0]?.input.leaseHolderRunKey, bridgeCalls[0]?.input.ownerId);
   assert.deepEqual(bridgeCalls[0]?.input.actions?.map((action) => action.kind), ["open", "snapshot", "screenshot"]);
   assert.equal(bridgeCalls[1]?.mode, "send");
   assert.equal(bridgeCalls[1]?.input.browserSessionId, "browser-session-1");
+  assert.equal(bridgeCalls[1]?.input.ownerType, "worker");
+  assert.equal(bridgeCalls[1]?.input.ownerId, bridgeCalls[0]?.input.ownerId);
+  assert.equal(bridgeCalls[1]?.input.leaseHolderRunKey, bridgeCalls[0]?.input.ownerId);
   assert.deepEqual(bridgeCalls[1]?.input.actions?.map((action) => action.kind), ["snapshot"]);
   const firstToolContent = readToolContent(gatewayInputs[1]?.messages.find((message) => message.role === "tool")?.content ?? "");
   assert.match(firstToolContent, /Visible text excerpt: Example page text/);
@@ -313,6 +328,228 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   ]);
   assert.equal(transcript.filter((entry) => entry.metadata?.kind === "tool_progress").length, 6);
   assert.equal(transcript.at(-1)?.content, "Browser evidence captured.");
+});
+
+test("LLMSubAgentWorkerHandler retries read-only private browser partial transport evidence once", async () => {
+  const bridgeCalls: Array<{
+    mode: "spawn" | "send";
+    input: {
+      taskId: string;
+      actions?: Array<{ kind: string }>;
+      browserSessionId?: string;
+      ownerType?: string | undefined;
+      ownerId?: string | undefined;
+      leaseHolderRunKey?: string | undefined;
+    };
+  }> = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_open", {
+        url: "https://example.test/product-bridge",
+      });
+    }
+    return textResult("Recovered bridge evidence.");
+  };
+  const browserBridge = buildBrowserBridge({
+    async spawnSession(input) {
+      bridgeCalls.push({ mode: "spawn", input });
+      if (bridgeCalls.length === 1) {
+        return browserResult({
+          title: "Bridge Capability Evidence",
+          finalUrl: "https://example.test/product-bridge",
+          traceKinds: ["open", "snapshot"],
+          traceStatuses: ["failed", "ok"],
+          traceErrorMessages: ["transport_failure: net::ERR_ABORTED", ""],
+        });
+      }
+      return browserResult({
+        title: "Bridge Capability Evidence",
+        finalUrl: "https://example.test/product-bridge",
+        traceKinds: ["open", "snapshot"],
+      });
+    },
+  });
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge,
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalls.length, 2);
+  assert.equal(bridgeCalls[0]?.mode, "spawn");
+  assert.equal(bridgeCalls[1]?.mode, "spawn");
+  assert.match(bridgeCalls[1]?.input.taskId ?? "", /:retry-1$/);
+  assert.equal(bridgeCalls[1]?.input.browserSessionId, undefined);
+  assert.equal(bridgeCalls[1]?.input.ownerType, "worker");
+  assert.equal(bridgeCalls[1]?.input.ownerId, bridgeCalls[0]?.input.ownerId);
+  assert.equal(bridgeCalls[1]?.input.leaseHolderRunKey, bridgeCalls[0]?.input.ownerId);
+  const transcript = result?.sessionHistoryEntries ?? [];
+  const toolEntry = transcript.find((entry) => entry.role === "tool" && entry.toolName === "browser_open");
+  assert.match(toolEntry?.content ?? "", /Bridge Capability Evidence/);
+  assert.doesNotMatch(toolEntry?.content ?? "", /transport_failure/);
+});
+
+test("LLMSubAgentWorkerHandler does not retry mutating private browser partial transport evidence", async () => {
+  const bridgeCalls: Array<{ actions?: Array<{ kind: string }> }> = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_act", {
+        action: "hover",
+        text: "Details",
+      });
+    }
+    return textResult("Reported partial browser evidence.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession(input) {
+        bridgeCalls.push(input);
+        return browserResult({
+          traceKinds: ["hover", "snapshot"],
+          traceStatuses: ["failed", "ok"],
+          traceErrorMessages: ["transport_failure: target temporarily unavailable", ""],
+        });
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalls.length, 1);
+  assert.deepEqual(bridgeCalls[0]?.actions?.map((action) => action.kind), ["hover", "snapshot"]);
+});
+
+test("LLMSubAgentWorkerHandler captures read-only browser evidence when the browser planner fails before tool use", async () => {
+  const bridgeCalls: Array<{
+    actions: Array<{ kind: string }>;
+    instructions: string;
+    ownerType?: string | undefined;
+    ownerId?: string | undefined;
+    leaseHolderRunKey?: string | undefined;
+  }> = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => {
+    throw new Error("llm_request_timeout: model did not respond within 120000ms");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession(input) {
+        bridgeCalls.push(stripUndefined({
+          actions: input.actions,
+          instructions: input.instructions,
+          ownerType: input.ownerType,
+          ownerId: input.ownerId,
+          leaseHolderRunKey: input.leaseHolderRunKey,
+        }));
+        return browserResult({
+          title: "Product Signals",
+          finalUrl: "https://example.test/how-to-deploy-app",
+          traceKinds: input.actions.map((action) => action.kind),
+          screenshotPaths: ["/tmp/product-signals.png"],
+          artifactIds: ["browser-fallback:screenshot"],
+        });
+      },
+    }),
+  });
+  const input = buildInvocationInput("browser");
+  input.packet.taskPrompt = "Inspect the live browser page at https://example.test/how-to-deploy-app and report visible launch evidence.";
+
+  const result = await handler.run(input);
+
+  assert.equal(result?.status, "completed");
+  assert.equal(bridgeCalls.length, 1);
+  assert.deepEqual(bridgeCalls[0]?.actions.map((action) => action.kind), ["open", "snapshot", "screenshot"]);
+  assert.equal(bridgeCalls[0]?.ownerType, "worker");
+  assert.match(bridgeCalls[0]?.ownerId ?? "", /^sub-agent:browser:task-1:\d+$/);
+  assert.equal(bridgeCalls[0]?.leaseHolderRunKey, bridgeCalls[0]?.ownerId);
+  assert.match(bridgeCalls[0]?.instructions ?? "", /read-only page evidence/i);
+  assert.match(result?.summary ?? "", /Browser planner fallback captured read-only evidence/);
+  assert.match(result?.summary ?? "", /Product Signals/);
+  const payload = result?.payload as {
+    mode?: string;
+    content?: string;
+    artifactIds?: string[];
+    screenshotPaths?: string[];
+    plannerError?: string;
+  };
+  assert.equal(payload.mode, "browser_planner_fallback");
+  assert.match(payload.plannerError ?? "", /llm_request_timeout/);
+  assert.match(payload.content ?? "", /Visible text excerpt: Example page text/);
+  assert.deepEqual(payload.artifactIds, ["browser-fallback:screenshot"]);
+  assert.deepEqual(payload.screenshotPaths, ["/tmp/product-signals.png"]);
+  assert.deepEqual(result?.sessionHistoryEntries?.map((entry) => entry.role), ["tool", "assistant"]);
+  assert.match(result?.sessionHistoryEntries?.[0]?.content ?? "", /Final URL: https:\/\/example.test\/how-to-deploy-app/);
+});
+
+test("LLMSubAgentWorkerHandler does not use browser planner fallback for mutation-intent tasks", async () => {
+  let bridgeCalled = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => {
+    throw new Error("llm_request_timeout: model did not respond within 120000ms");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        bridgeCalled = true;
+        return browserResult({});
+      },
+    }),
+  });
+  const input = buildInvocationInput("browser");
+  input.packet.taskPrompt = "Open https://example.test/admin and click Submit to save the configuration.";
+
+  const result = await handler.run(input);
+
+  assert.equal(result?.status, "failed");
+  assert.equal(bridgeCalled, false);
+  assert.match(result?.summary ?? "", /Sub-agent failed: llm_request_timeout/);
+});
+
+test("LLMSubAgentWorkerHandler preserves partial status from browser planner fallback", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => {
+    throw new Error("llm_request_timeout: model did not respond within 120000ms");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession(input) {
+        return browserResult({
+          traceKinds: input.actions.map((action) => action.kind),
+          traceStatuses: ["ok", "failed", "ok"],
+          traceErrorMessages: ["", "snapshot failed after partial page evidence", ""],
+        });
+      },
+    }),
+  });
+  const input = buildInvocationInput("browser");
+  input.packet.taskPrompt = "Inspect https://example.test/product-signals and report visible evidence.";
+
+  const result = await handler.run(input);
+
+  assert.equal(result?.status, "partial");
+  assert.equal(result?.sessionHistoryEntries?.[0]?.status, "partial");
+  assert.equal(result?.sessionHistoryEntries?.[1]?.status, "partial");
 });
 
 test("LLMSubAgentWorkerHandler promotes browser private recovery metadata above final wording", async () => {
@@ -643,7 +880,13 @@ test("LLMSubAgentWorkerHandler rejects prompt-only browser approval claims witho
 });
 
 test("LLMSubAgentWorkerHandler reuses parent browser session on the first private browser tool call", async () => {
-  const bridgeCalls: Array<{ mode: "spawn" | "send"; browserSessionId?: string }> = [];
+  const bridgeCalls: Array<{
+    mode: "spawn" | "send";
+    browserSessionId?: string;
+    ownerType?: string | undefined;
+    ownerId?: string | undefined;
+    leaseHolderRunKey?: string | undefined;
+  }> = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
@@ -662,7 +905,13 @@ test("LLMSubAgentWorkerHandler reuses parent browser session on the first privat
         return browserResult({});
       },
       async sendSession(input) {
-        bridgeCalls.push({ mode: "send", browserSessionId: input.browserSessionId });
+        bridgeCalls.push(stripUndefined({
+          mode: "send",
+          browserSessionId: input.browserSessionId,
+          ownerType: input.ownerType,
+          ownerId: input.ownerId,
+          leaseHolderRunKey: input.leaseHolderRunKey,
+        }));
         return browserResult({});
       },
     }),
@@ -686,7 +935,15 @@ test("LLMSubAgentWorkerHandler reuses parent browser session on the first privat
   });
 
   assert.equal(result?.status, "completed");
-  assert.deepEqual(bridgeCalls, [{ mode: "send", browserSessionId: "browser-session-existing" }]);
+  assert.deepEqual(bridgeCalls, [
+    {
+      mode: "send",
+      browserSessionId: "browser-session-existing",
+      ownerType: "thread",
+      ownerId: "thread-1",
+      leaseHolderRunKey: "worker:browser:existing",
+    },
+  ]);
 });
 
 test("LLMSubAgentWorkerHandler returns a tool error for malformed private browser input", async () => {
@@ -1141,4 +1398,8 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error("condition was not met");
+}
+
+function stripUndefined<T extends Record<string, unknown>>(input: T): T {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) as T;
 }
