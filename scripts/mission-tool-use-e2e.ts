@@ -2723,6 +2723,7 @@ export function buildNaturalScenarioSpec(
         `Dashboard: ${dynamicUrl}`,
         "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
         "Summarize the operational state, escalation trigger, owner, and recommended next action for an operator.",
+        "Also state the residual risk or unverified scope that remains after the browser check.",
       ].join("\n"),
       minBytes: 320,
       minToolResults: 1,
@@ -3519,6 +3520,7 @@ export function evaluateNaturalMissionQuality(input: {
   if (!subAgentCompleted) failures.push("sub-agent work did not complete cleanly");
   if (!finalAnswerHasEvidence) failures.push("final answer lacks required source-backed evidence");
   if (!finalAnswerUseful) failures.push("final answer is too thin or not decision-useful");
+  if (!sourceCoverage.residualRiskVisible) failures.push("final answer does not make residual risk visible");
   if (blockingWeakAnswerSignals.length > 0) failures.push(`weak answer signals: ${blockingWeakAnswerSignals.join(", ")}`);
   for (const toolName of input.spec.requiredToolNames ?? []) {
     if (!toolNames.has(toolName)) failures.push(`missing required tool family evidence: ${toolName}`);
@@ -3809,6 +3811,8 @@ export function buildNaturalMissionE2eJsonReport(input: {
       "reasonable-tool-use",
       "clean-sub-agent-liveness",
       "source-backed-evidence",
+      "residual-risk-visible",
+      "no-unsupported-claims",
       "decision-useful-final-answer",
       "no-weak-answer-signals",
       "browser-profile-fallback-policy",
