@@ -614,6 +614,16 @@ try {
       savedModelCatalogContents[0]?.includes('"defaultModelId": "gpt-5"'),
       "settings should send the edited model catalog JSON"
     );
+    await page.getByRole("button", { name: "Open command palette" }).click();
+    await page.getByLabel("Search pages and missions").fill("Runtime");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => window.location.hash === "#/runtime");
+    assert(page.url().includes("#/runtime"), "command palette should navigate to core pages");
+    await page.getByRole("button", { name: "Open command palette" }).click();
+    await page.getByLabel("Search pages and missions").fill("UI smoke mission");
+    await page.locator(".command-palette-item", { hasText: "UI smoke mission" }).click();
+    await page.waitForFunction((id) => window.location.hash === `#/mission/${id}`, missionId);
+    assert(page.url().includes(`#/mission/${missionId}`), "command palette should open mission detail results");
 
     await page.goto(`http://127.0.0.1:${port}/app#/agent-connect`, {
       waitUntil: "domcontentloaded",

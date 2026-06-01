@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from "react";
 
+import { CommandPalette } from "./components/CommandPalette";
 import { Sidebar, type SidebarCounts } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
 import { Icon } from "./components/Icon";
@@ -46,6 +47,7 @@ export function App() {
   // to Mission Detail so the user can watch the coordination engine
   // pick the new mission up.
   const [newMissionOpen, setNewMissionOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   // K3.5: sidebar counts are LIVE (driven by the daemon stores) instead
   // of K1 mock fixtures. Each hook falls back to [] so the page renders
@@ -80,6 +82,16 @@ export function App() {
     }
   }, [onboarding.isLive, onboarding.value?.completedAt, state.route, state.scope, state.token]);
 
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "k" || (!event.metaKey && !event.ctrlKey)) return;
+      event.preventDefault();
+      setCommandPaletteOpen(true);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   if (state.token === null) {
     return (
       <div className="app">
@@ -98,7 +110,7 @@ export function App() {
     <div className="app">
       <Sidebar counts={counts} canCreateMission={canCreateMission} onNewMission={openNewMission} />
       <div className="main">
-        {state.route !== "mission" && <PageToolbar />}
+        {state.route !== "mission" && <PageToolbar onOpenCommandPalette={() => setCommandPaletteOpen(true)} />}
         <div className="content">
           <RoutedPage onNewMission={openNewMission} />
         </div>
@@ -111,38 +123,51 @@ export function App() {
           openMission(missionId);
         }}
       />
+      <CommandPalette
+        open={commandPaletteOpen}
+        missions={missions}
+        canCreateMission={canCreateMission}
+        onClose={() => setCommandPaletteOpen(false)}
+        onNewMission={openNewMission}
+      />
     </div>
   );
 }
 
-function PageToolbar() {
+function PageToolbar({ onOpenCommandPalette }: { onOpenCommandPalette: () => void }) {
   const { state } = useAppState();
   switch (state.route) {
     case "missions":
-      return <Toolbar crumbs="home" title="Missions" right={<SearchSlot />} />;
+      return <Toolbar crumbs="home" title="Missions" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
     case "onboarding":
-      return <Toolbar crumbs="home / first-run" right={<SearchSlot />} />;
+      return <Toolbar crumbs="home / first-run" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
     case "approvals":
-      return <Toolbar crumbs="home / approvals" right={<SearchSlot />} />;
+      return <Toolbar crumbs="home / approvals" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
     case "agents":
-      return <Toolbar crumbs="home / agents" right={<SearchSlot />} />;
+      return <Toolbar crumbs="home / agents" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
     case "context":
-      return <Toolbar crumbs="home / context" right={<SearchSlot />} />;
+      return <Toolbar crumbs="home / context" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
     case "agent-connect":
-      return <Toolbar crumbs="home / agent-connect" right={<SearchSlot />} />;
+      return <Toolbar crumbs="home / agent-connect" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
     case "runtime":
-      return <Toolbar crumbs="home / runtime" right={<SearchSlot />} />;
+      return <Toolbar crumbs="home / runtime" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
     case "settings":
-      return <Toolbar crumbs="home / settings" right={<SearchSlot />} />;
+      return <Toolbar crumbs="home / settings" right={<SearchSlot onOpen={onOpenCommandPalette} />} />;
     default:
       return null;
   }
 }
 
-function SearchSlot() {
+function SearchSlot({ onOpen }: { onOpen: () => void }) {
   return (
     <div className="row" style={{ gap: 6 }}>
-      <button type="button" className="btn ghost" style={{ padding: "3px 8px" }}>
+      <button
+        type="button"
+        className="btn ghost"
+        style={{ padding: "3px 8px" }}
+        aria-label="Open command palette"
+        onClick={onOpen}
+      >
         <Icon name="search" size={12} /> Search
       </button>
       <span className="kbd">⌘K</span>
