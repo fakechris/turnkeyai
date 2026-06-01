@@ -632,7 +632,7 @@ describe("mission tool-use e2e report", () => {
     assert.equal(report.promptPolicy.forbidsContractGateLanguage, true);
     assert.ok(report.promptPolicy.forbiddenPatterns.some((pattern) => pattern.includes("exactly once")));
     assert.ok(report.requiredQualitySignals.includes("source-backed-evidence"));
-    assert.ok(report.requiredQualitySignals.includes("no-browser-profile-fallback"));
+    assert.ok(report.requiredQualitySignals.includes("browser-profile-fallback-policy"));
     assert.equal(report.status, "passed");
     assert.equal(report.durationMs, 5000);
     assert.equal(report.scenarios[0]?.scenario, "natural-browser-dynamic-page");
@@ -1134,6 +1134,85 @@ describe("mission tool-use e2e report", () => {
 
     assert.equal(quality.profileFallbackFree, false);
     assert.ok(quality.failures.includes("browser profile fallback occurred 1 time(s)"));
+  });
+
+  it("accepts profile fallback only for the natural profile-lock recovery gate", () => {
+    const result = fakeNaturalResult();
+    result.scenario = "natural-browser-profile-lock-recovery";
+    result.metrics.tool.requested = 3;
+    result.metrics.tool.results = 3;
+    result.metrics.sessions.continued = 1;
+    result.metrics.browser.profileFallbacks = 1;
+    result.metrics.browser.latestProfileFallback = {
+      sessionId: "browser-session-profile-fallback",
+      fallbackDir: ".daemon-data/browser/_runtime-fallback/browser-session-profile-fallback/123",
+    };
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "browser call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "review dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser result",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "Queue depth: 11. SLA breaches: 3. Recommended owner: Incident Commander.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "browser continuation",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          resultContent:
+            "Profile fallback: profile_locked (.daemon-data/browser/_runtime-fallback/browser-session-profile-fallback/123). Rendered evidence shows Queue depth: 11, SLA breaches: 3, and owner Incident Commander.",
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "The browser recovered through a profile fallback using an isolated browser context, then rechecked the rendered dashboard.",
+          "Queue depth remains 11 with 3 SLA breaches, so Incident Commander should keep ownership.",
+          "The next action is to keep the escalation active, clear the queue bottleneck, and note residual risk from the temporary profile recovery.",
+          "This is still bounded evidence: the rendered dashboard was verified after fallback, while profile availability should be restored before relying on long-lived browser continuity.",
+          "Recommendation: keep the incident owner assigned now, then retry with the persistent profile after the operator clears the lock.",
+        ].join(" "),
+        tMs: 4000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+    const quality = evaluateNaturalMissionQuality({
+      spec: buildNaturalScenarioSpec("natural-browser-profile-lock-recovery", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+
+    assert.equal(quality.profileFallbackFree, false);
+    assert.deepEqual(quality.failures, []);
   });
 
 

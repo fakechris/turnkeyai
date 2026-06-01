@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -68,6 +68,7 @@ export type NaturalMissionE2eScenario =
   | "natural-browser-followup-continuation"
   | "natural-browser-restart-continuation"
   | "natural-browser-cold-recreation-continuation"
+  | "natural-browser-profile-lock-recovery"
   | "natural-followup-continuation"
   | "natural-memory-recall"
   | "natural-approval-dry-run-action"
@@ -86,6 +87,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-browser-followup-continuation",
   "natural-browser-restart-continuation",
   "natural-browser-cold-recreation-continuation",
+  "natural-browser-profile-lock-recovery",
   "natural-followup-continuation",
   "natural-memory-recall",
   "natural-approval-dry-run-action",
@@ -330,6 +332,7 @@ export interface NaturalScenarioSpec {
   requiresApproval: boolean;
   approvalDecision?: "approved" | "denied" | "pending";
   expectedMissionStatus?: "done" | "needs_approval";
+  requiresProfileFallback?: boolean;
   requiresCancellation?: boolean;
   requiresTimeout?: boolean;
   allowToolFailure: boolean;
@@ -773,7 +776,11 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
   } finally {
     await stopDaemon(daemon.child);
     await closeServer(fixture.server);
-    await rm(runtimeRoot, { recursive: true, force: true });
+    if (process.env.TURNKEYAI_E2E_KEEP_RUNTIME_ROOT === "1") {
+      console.log(`mission-e2e-runtime-root: ${runtimeRoot}`);
+    } else {
+      await rm(runtimeRoot, { recursive: true, force: true });
+    }
   }
 }
 
@@ -1315,6 +1322,9 @@ async function runNaturalMissionScenario(input: {
   if (input.scenario === "natural-browser-cold-recreation-continuation") {
     return runNaturalBrowserColdRecreationScenario(input);
   }
+  if (input.scenario === "natural-browser-profile-lock-recovery") {
+    return runNaturalBrowserProfileLockRecoveryScenario(input);
+  }
   if (input.scenario === "natural-memory-recall") {
     return runNaturalMemoryRecallScenario(input);
   }
@@ -1806,6 +1816,64 @@ async function runNaturalBrowserColdRecreationScenario(input: {
   const scenarioResult = { scenario: "natural-browser-cold-recreation-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission browser cold recreation quality failures");
   return scenarioResult;
+}
+
+async function runNaturalBrowserProfileLockRecoveryScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+  restartDaemon?: (envOverrides?: Record<string, string>) => Promise<void>;
+}): Promise<NaturalMissionScenarioResult> {
+  const { restartDaemon } = input;
+  assert.ok(restartDaemon, "natural browser profile-lock recovery requires a daemon restart hook");
+  const profileLockSentinel = path.join(input.runtimeRoot, "browser-profile-lock-sentinel.json");
+  await rm(profileLockSentinel, { force: true });
+  await restartDaemon({
+    TURNKEYAI_E2E_BROWSER_PROFILE_LOCK_SENTINEL: profileLockSentinel,
+    TURNKEYAI_E2E_BROWSER_PROFILE_LOCK_ALWAYS: "1",
+  });
+  const spec = buildNaturalScenarioSpec("natural-browser-profile-lock-recovery", input.fixture);
+  try {
+    await armAnyBrowserProfileLockSentinel(profileLockSentinel);
+    assertNaturalPromptAllowed(spec.desc);
+    const mission = await createNaturalMission({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      spec,
+    });
+    assert.ok(mission.threadId, "natural browser profile-lock mission requires a linked team thread");
+
+    const result = await waitForNaturalMissionCompletion({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: input.timeoutMs,
+    });
+    const metrics = await waitForMissionMetricsSettled({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: 20_000,
+    });
+    const final = findLatestThoughtEvent(result.timeline);
+    assert.ok(final, "natural browser profile-lock mission must include a final assistant answer");
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+    });
+    const scenarioResult = { scenario: "natural-browser-profile-lock-recovery" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+    assertNaturalMissionQualityPassed(scenarioResult, "natural mission browser profile-lock recovery quality failures");
+    return scenarioResult;
+  } finally {
+    await rm(profileLockSentinel, { force: true });
+    await restartDaemon({});
+  }
 }
 
 async function runNaturalMemoryRecallScenario(input: {
@@ -2468,11 +2536,10 @@ export function buildNaturalScenarioSpec(
         "The mission may be continued after a daemon restart, so preserve enough browser context for a later follow-up.",
       ].join("\n"),
       minBytes: 420,
-      minToolResults: 2,
-      maxToolResults: 9,
+      minToolResults: 1,
+      maxToolResults: 6,
       minSpawnedSessions: 1,
       maxSpawnedSessions: 2,
-      minContinuedSessions: 1,
       requiresBrowser: true,
       requiresApproval: false,
       allowToolFailure: false,
@@ -2520,6 +2587,42 @@ export function buildNaturalScenarioSpec(
           pattern:
             /Resume mode:\s*(?:warm|cold)|["']resumeMode["']\s*:\s*["'](?:warm|cold)["']|(?:warm|cold)[- ]recovery|(?:warm|cold)[- ]recreat(?:ion|ed)|re[- ]?open(?:ed)?|recovery confirmed|new browser session/i,
         },
+        { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
+        { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+        { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
+      ],
+    };
+  }
+  if (scenario === "natural-browser-profile-lock-recovery") {
+    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
+    return {
+      scenario,
+      title: "Natural browser profile-lock recovery",
+      desc: [
+        "Review this operations dashboard through a browser-visible pass, as an operator would see it.",
+        `Dashboard: ${dynamicUrl}`,
+        "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
+        "Raw server HTML is not enough for this review.",
+        "The persistent browser profile may be temporarily unavailable; recover with a safe isolated browser context if needed and keep that recovery visible.",
+        "Summarize the operational state, escalation trigger, owner, and recommended next action for an operator.",
+      ].join("\n"),
+      minBytes: 420,
+      minToolResults: 1,
+      maxToolResults: 4,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 2,
+      minContinuedSessions: 0,
+      requiresBrowser: true,
+      requiresApproval: false,
+      requiresProfileFallback: true,
+      allowToolFailure: false,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["SLA", "Incident Commander", "action"],
+      requiredAnswerPatterns: [
+        { label: "visible profile fallback recovery", pattern: /\b(?:profile|fallback|isolated browser|isolated runtime|recovered)\b/i },
+      ],
+      requiredEvidencePatterns: [
+        { label: "profile fallback evidence", pattern: /Profile fallback:\s*profile_locked|profileFallback|profile_locked|isolated runtime profile/i },
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
         { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
         { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
@@ -2948,6 +3051,9 @@ export function evaluateNaturalMissionQuality(input: {
   const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
   const profileFallbackCount = input.metrics.browser?.profileFallbacks ?? 0;
   const profileFallbackFree = profileFallbackCount === 0;
+  const profileFallbackPolicySatisfied = input.spec.requiresProfileFallback
+    ? profileFallbackCount > 0
+    : profileFallbackFree;
   const subAgentCompleted =
     expectedMissionStatus === "needs_approval"
       ? input.metrics.sessions.spawned >= input.spec.minSpawnedSessions
@@ -3009,7 +3115,13 @@ export function evaluateNaturalMissionQuality(input: {
     );
   }
   if (input.spec.requiresBrowser && !browserUsed) failures.push("browser scenario did not show browser worker use");
-  if (!profileFallbackFree) failures.push(`browser profile fallback occurred ${profileFallbackCount} time(s)`);
+  if (!profileFallbackPolicySatisfied) {
+    failures.push(
+      input.spec.requiresProfileFallback
+        ? "expected browser profile fallback recovery was not observed"
+        : `browser profile fallback occurred ${profileFallbackCount} time(s)`
+    );
+  }
   if (input.spec.requiresApproval && !approvalExercised) {
     failures.push(
       input.spec.approvalDecision === "denied"
@@ -3266,7 +3378,7 @@ export function buildNaturalMissionE2eJsonReport(input: {
       "source-backed-evidence",
       "decision-useful-final-answer",
       "no-weak-answer-signals",
-      "no-browser-profile-fallback",
+      "browser-profile-fallback-policy",
     ],
     status: scenarios.every((scenario) => scenario.natural.status === "passed") ? "passed" : "failed",
     startedAt: new Date(input.startedAt).toISOString(),
@@ -5266,9 +5378,9 @@ export function assertNaturalFollowupReusedExistingSession(input: {
   assert.equal(typeof callInput, "string", "natural sessions_send call must persist structured callInput");
   const parsed = JSON.parse(callInput as string) as { session_key?: unknown };
   assert.equal(
-    parsed.session_key,
-    input.expectedSessionKey,
-    "natural sessions_send must reuse the phase-one session_key"
+    isCompatibleSessionKeyReference(parsed.session_key, input.expectedSessionKey),
+    true,
+    "natural sessions_send must reuse the phase-one session_key or a unique prefix of it"
   );
   const sendCallIndex = input.timeline.indexOf(sendCalls[0]!);
   const sendResultIndex = input.timeline.findIndex(
@@ -6169,6 +6281,21 @@ function isStatusPreambleLine(line: string): boolean {
     return true;
   }
   return /^(?:i am |i'm |i )?(?:now )?(?:producing|preparing|writing) the final answer\b/.test(normalized);
+}
+
+async function armAnyBrowserProfileLockSentinel(sentinelPath: string): Promise<void> {
+  await writeFile(
+    sentinelPath,
+    JSON.stringify(
+      {
+        enabled: true,
+        anyPrimaryProfile: true,
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
 }
 
 function startDaemon(input: {

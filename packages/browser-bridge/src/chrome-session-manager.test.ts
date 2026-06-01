@@ -261,6 +261,69 @@ test("chrome session manager falls back to an isolated runtime profile when Chro
   assert.equal(closeCount, 1);
 });
 
+test("chrome session manager honors the E2E profile-lock sentinel", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "browser-profile-lock-sentinel-"));
+  const previousSentinel = process.env.TURNKEYAI_E2E_BROWSER_PROFILE_LOCK_SENTINEL;
+  const sentinelPath = path.join(tempDir, "profile-lock.json");
+  const primaryProfileDir = path.join(tempDir, "primary", "chrome-profile");
+  const launchedDirs: string[] = [];
+  const fakeContext = {
+    on() {
+      return this;
+    },
+    async close() {
+      return undefined;
+    },
+  } as unknown as BrowserContext;
+
+  process.env.TURNKEYAI_E2E_BROWSER_PROFILE_LOCK_SENTINEL = sentinelPath;
+  await writeFile(
+    sentinelPath,
+    JSON.stringify({ enabled: true, persistentDir: primaryProfileDir }),
+    "utf8"
+  );
+
+  try {
+    const manager = new ChromeSessionManager({
+      artifactRootDir: ".daemon-data/test-browser-artifacts",
+      browserSessionManager: {
+        async closeSession() {
+          return undefined;
+        },
+      } as never,
+      launchPersistentContext: async (persistentDir) => {
+        launchedDirs.push(persistentDir);
+        return fakeContext;
+      },
+      createEphemeralContext: async () => fakeContext,
+    });
+
+    const internal = manager as unknown as {
+      createContext(lease: {
+        session: { browserSessionId: string };
+        profile: { persistentDir: string };
+      }): Promise<InternalContextHandle>;
+    };
+
+    const contextHandle = await internal.createContext({
+      session: { browserSessionId: "browser-session-sentinel" },
+      profile: { persistentDir: primaryProfileDir },
+    });
+
+    assert.equal(contextHandle.context, fakeContext);
+    assert.match(launchedDirs[0] ?? "", /_runtime-fallback\/browser-session-sentinel\//);
+    assert.equal(contextHandle.profileFallback?.persistentDir, primaryProfileDir);
+    assert.equal(contextHandle.profileFallback?.fallbackDir, launchedDirs[0]);
+  } finally {
+    if (previousSentinel === undefined) {
+      delete process.env.TURNKEYAI_E2E_BROWSER_PROFILE_LOCK_SENTINEL;
+    } else {
+      process.env.TURNKEYAI_E2E_BROWSER_PROFILE_LOCK_SENTINEL = previousSentinel;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("chrome session manager surfaces profile fallback in task result and history", async () => {
   const historyEntries: Array<Record<string, unknown>> = [];
   const primaryProfileDir = "/tmp/locked-profile-result/chrome-profile";

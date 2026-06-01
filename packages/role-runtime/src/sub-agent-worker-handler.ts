@@ -664,6 +664,7 @@ function browserToolWorkerResult(result: BrowserTaskResult): WorkerExecutionResu
       ...(result.resumeMode ? { resumeMode: result.resumeMode } : {}),
       transportMode: result.transportMode,
       transportLabel: result.transportLabel,
+      ...(result.profileFallback ? { profileFallback: result.profileFallback } : {}),
       page: {
         finalUrl: result.page.finalUrl,
         title: result.page.title,
@@ -685,9 +686,23 @@ function summarizeBrowserToolResult(result: BrowserTaskResult): string {
   const failed = result.trace.filter((step) => step.status === "failed");
   const title = result.page.title || result.page.finalUrl || "browser page";
   if (failed.length > 0) {
-    return `Browser observed ${title}; ${failed.length} action(s) failed.`;
+    return [
+      `Browser observed ${title}; ${failed.length} action(s) failed.`,
+      result.profileFallback
+        ? `Profile fallback: ${result.profileFallback.reason}; persistent profile was unavailable, used ${result.profileFallback.fallbackDir}.`
+        : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n");
   }
-  return `Browser observed ${title}.`;
+  return [
+    `Browser observed ${title}.`,
+    result.profileFallback
+      ? `Profile fallback: ${result.profileFallback.reason}; persistent profile was unavailable, used ${result.profileFallback.fallbackDir}.`
+      : null,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 }
 
 function buildInnerSessionState(input: {
@@ -819,6 +834,7 @@ function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
       resumeMode: NonNullable<BrowserTaskResult["resumeMode"]>;
       sessionId: string;
       summary: string;
+      profileFallback?: NonNullable<BrowserTaskResult["profileFallback"]>;
       targetId?: string;
     }
   | null {
@@ -827,6 +843,7 @@ function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
     | {
         resumeMode: NonNullable<BrowserTaskResult["resumeMode"]>;
         sessionId: string;
+        profileFallback?: NonNullable<BrowserTaskResult["profileFallback"]>;
         targetId?: string;
       }
     | null = null;
@@ -847,7 +864,14 @@ function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
   }
   return {
     ...latest,
-    summary: `Browser recovery metadata: Resume mode: ${latest.resumeMode}. Session ID: ${latest.sessionId}.`,
+    summary: [
+      `Browser recovery metadata: Resume mode: ${latest.resumeMode}. Session ID: ${latest.sessionId}.`,
+      latest.profileFallback
+        ? `Profile fallback: ${latest.profileFallback.reason}; persistent profile was unavailable, used ${latest.profileFallback.fallbackDir}.`
+        : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join(" "),
   };
 }
 
@@ -855,6 +879,7 @@ function parseBrowserPrivateToolResult(content: string):
   | {
       resumeMode: NonNullable<BrowserTaskResult["resumeMode"]>;
       sessionId: string;
+      profileFallback?: NonNullable<BrowserTaskResult["profileFallback"]>;
       targetId?: string;
     }
   | null {
@@ -871,14 +896,29 @@ function parseBrowserPrivateToolResult(content: string):
   const resumeMode = payload["resumeMode"];
   const sessionId = payload["sessionId"];
   const targetId = payload["targetId"];
+  const profileFallback = parseBrowserPrivateProfileFallback(payload["profileFallback"]);
   if ((resumeMode !== "hot" && resumeMode !== "warm" && resumeMode !== "cold") || typeof sessionId !== "string") {
     return null;
   }
   return {
     resumeMode,
     sessionId,
+    ...(profileFallback ? { profileFallback } : {}),
     ...(typeof targetId === "string" ? { targetId } : {}),
   };
+}
+
+function parseBrowserPrivateProfileFallback(value: unknown): NonNullable<BrowserTaskResult["profileFallback"]> | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const reason = value["reason"];
+  const persistentDir = value["persistentDir"];
+  const fallbackDir = value["fallbackDir"];
+  if (reason !== "profile_locked" || typeof persistentDir !== "string" || typeof fallbackDir !== "string") {
+    return null;
+  }
+  return { reason, persistentDir, fallbackDir };
 }
 
 function buildSubAgentPromptPacket(input: {
