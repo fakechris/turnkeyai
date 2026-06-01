@@ -748,7 +748,7 @@ function summarizeBrowserToolResult(result: BrowserTaskResult): string {
   }
   return [
     `Browser observed ${title}.`,
-    result.page.textExcerpt ? `Visible text excerpt: ${truncateBrowserTextExcerpt(result.page.textExcerpt)}.` : null,
+    result.page?.textExcerpt ? `Visible text excerpt: ${truncateBrowserTextExcerpt(result.page.textExcerpt)}.` : null,
     result.profileFallback
       ? `Profile fallback: ${result.profileFallback.reason}; persistent profile was unavailable, used ${result.profileFallback.fallbackDir}.`
       : null,
