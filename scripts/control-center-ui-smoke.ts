@@ -753,6 +753,10 @@ try {
       "runtime page should show release acceptance gates"
     );
     assert(
+      await page.locator(".card", { hasText: "gates 4 passed · 0 failed · 1 missing" }).isVisible(),
+      "release acceptance should not mark focused real LLM coverage as a full release pass"
+    );
+    assert(
       await page.locator(".card", { hasText: "Mission route real LLM matrix" }).isVisible(),
       "release acceptance should show the latest gate title"
     );
@@ -779,6 +783,10 @@ try {
     assert(
       await page.locator(".card", { hasText: "natural 2/20 (missing 18)" }).isVisible(),
       "release acceptance should surface missing natural release coverage"
+    );
+    assert(
+      await page.locator(".card", { hasText: "only focused coverage is recorded" }).isVisible(),
+      "release acceptance should explain why the real LLM gate remains missing"
     );
     assert(
       await page.locator(".card", { hasText: "quality failures 0" }).isVisible(),
@@ -2203,12 +2211,12 @@ function validationOpsFixture() {
     ],
     activeIssues: [],
     readiness: {
-      status: "passed",
-      summary: "Phase 1 exit gates have passing recorded validation runs.",
-      passedGates: 5,
+      status: "missing",
+      summary: "Phase 1 exit gates need attention: failed=0 missing=1.",
+      passedGates: 4,
       failedGates: 0,
-      missingGates: 0,
-      nextCommand: "validation-ops",
+      missingGates: 1,
+      nextCommand: "npm run acceptance:real -- --model-catalog models.local.json",
       gates: [
         {
           gateId: "phase1-e2e-profile",
@@ -2222,8 +2230,9 @@ function validationOpsFixture() {
         {
           gateId: "real-llm-acceptance",
           title: "Real LLM acceptance",
-          status: "passed",
-          summary: "Real LLM acceptance passed with 0 issue(s).",
+          status: "missing",
+          summary:
+            "Real LLM acceptance passed, but only focused coverage is recorded (tool-use 5/5; mission 4/12 missing 8; natural 2/20 missing 18).",
           commandHint: "npm run acceptance:real -- --model-catalog models.local.json",
           latestRunId: "real-llm-acceptance-run-ui",
           recordedAt: completedAt - 2_000,

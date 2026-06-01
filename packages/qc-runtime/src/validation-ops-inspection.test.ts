@@ -297,8 +297,9 @@ test("validation ops inspection marks phase1 readiness passed when all exit gate
     startedAt: 150,
     completedAt: 190,
     status: "passed",
-    tooluseScenarios: ["basic", "approval", "followup"],
-    missionScenarios: ["basic", "comparison", "browser-dynamic"],
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
     browserTooluseEnabled: true,
   });
 
@@ -311,7 +312,88 @@ test("validation ops inspection marks phase1 readiness passed when all exit gate
   assert.equal(report.readiness.nextCommand, "validation-ops");
   assert.equal(report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance")?.latestRunId, "real-llm-pass");
   assert.equal(report.closedLoop.measuredRuns, 1);
-  assert.equal(report.closedLoop.totalCases, 6);
+  assert.equal(report.closedLoop.totalCases, 37);
+});
+
+test("validation ops inspection does not let focused real LLM acceptance satisfy the release gate", () => {
+  const realLlmRecord = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-focused-pass",
+    startedAt: 150,
+    completedAt: 190,
+    status: "passed",
+    tooluseScenarios: ["basic", "approval", "followup"],
+    missionScenarios: ["basic", "comparison", "browser-dynamic"],
+    naturalMissionScenarios: ["natural-comparison-research"],
+    browserTooluseEnabled: true,
+  });
+
+  const report = buildValidationOpsReport([realLlmRecord], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realLlmRecord.status, "passed");
+  assert.equal(report.readiness.status, "missing");
+  assert.equal(realGate?.status, "missing");
+  assert.equal(realGate?.latestRunId, "real-llm-focused-pass");
+  assert.match(realGate?.summary ?? "", /only focused coverage is recorded/);
+  assert.match(realGate?.summary ?? "", /tool-use 3\/5 missing 2/);
+  assert.match(realGate?.summary ?? "", /mission 3\/12 missing 9/);
+  assert.match(realGate?.summary ?? "", /natural 1\/20 missing 19/);
+});
+
+test("validation ops inspection keeps the latest full real LLM acceptance as the release gate record", () => {
+  const fullRecord = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-full-pass",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+  });
+  const laterFocusedRecord = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-focused-debug-pass",
+    startedAt: 200,
+    completedAt: 240,
+    status: "passed",
+    tooluseScenarios: ["basic"],
+    missionScenarios: ["comparison"],
+    naturalMissionScenarios: ["natural-comparison-research"],
+    browserTooluseEnabled: true,
+  });
+
+  const report = buildValidationOpsReport([fullRecord, laterFocusedRecord], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "passed");
+  assert.equal(realGate?.latestRunId, "real-llm-full-pass");
+  assert.match(realGate?.summary ?? "", /full release coverage/);
+});
+
+test("validation ops inspection treats partial real LLM release coverage metadata as missing", () => {
+  const partialCoverageRecord = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-partial-metadata",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+  });
+  partialCoverageRecord.realAcceptance!.releaseCoverage = {
+    status: "full",
+    tooluse: { status: "full", requested: 5, expected: 5, missing: 0 },
+  } as any;
+
+  const report = buildValidationOpsReport([partialCoverageRecord], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "missing");
+  assert.equal(realGate?.latestRunId, "real-llm-partial-metadata");
+  assert.match(realGate?.summary ?? "", /tool-use 5\/5/);
+  assert.match(realGate?.summary ?? "", /mission 0\/0/);
+  assert.match(realGate?.summary ?? "", /natural 0\/0/);
 });
 
 test("validation ops inspection records failed real LLM acceptance as actionable", () => {

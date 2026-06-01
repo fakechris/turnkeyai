@@ -452,13 +452,7 @@ function buildPhase1ReadinessReport(records: ValidationOpsRunRecord[]): Validati
       ),
       missingSummary: "No phase1-e2e validation profile run has been recorded.",
     }),
-    buildReadinessGate({
-      gateId: "real-llm-acceptance",
-      title: "Real LLM acceptance",
-      commandHint: "npm run acceptance:real -- --model-catalog models.local.json",
-      record: findLatestRecord(records, (record) => record.runType === "real-llm-acceptance"),
-      missingSummary: "No real LLM acceptance run has been recorded.",
-    }),
+    buildRealLlmAcceptanceReadinessGate(records),
     buildReadinessGate({
       gateId: "release-readiness",
       title: "Release readiness",
@@ -511,6 +505,90 @@ function buildPhase1ReadinessReport(records: ValidationOpsRunRecord[]): Validati
         : `Phase 1 exit gates need attention: failed=${failedGates} missing=${missingGates}.`,
     gates,
   };
+}
+
+function buildRealLlmAcceptanceReadinessGate(records: ValidationOpsRunRecord[]): ValidationOpsReport["readiness"]["gates"][number] {
+  const commandHint = "npm run acceptance:real -- --model-catalog models.local.json";
+  const latestRecord = findLatestRecord(records, (record) => record.runType === "real-llm-acceptance");
+  const latestFullCoverageRecord = findLatestRecord(
+    records,
+    (record) =>
+      record.runType === "real-llm-acceptance" &&
+      record.realAcceptance?.releaseCoverage?.status === "full" &&
+      hasCompleteReleaseCoverage(record.realAcceptance.releaseCoverage)
+  );
+
+  if (!latestRecord) {
+    return {
+      gateId: "real-llm-acceptance",
+      title: "Real LLM acceptance",
+      status: "missing",
+      summary: "No real LLM acceptance run has been recorded.",
+      commandHint,
+    };
+  }
+  const record = latestFullCoverageRecord ?? latestRecord;
+  if (record.status === "failed") {
+    return buildReadinessGate({
+      gateId: "real-llm-acceptance",
+      title: "Real LLM acceptance",
+      commandHint,
+      record,
+      missingSummary: "No real LLM acceptance run has been recorded.",
+    });
+  }
+
+  const coverage = record.realAcceptance?.releaseCoverage;
+  if (coverage?.status === "full" && hasCompleteReleaseCoverage(coverage)) {
+    return {
+      gateId: "real-llm-acceptance",
+      title: "Real LLM acceptance",
+      status: "passed",
+      summary: `${record.title} passed with full release coverage (${formatReleaseCoverageSummary(coverage)}).`,
+      commandHint,
+      latestRunId: record.runId,
+      recordedAt: record.completedAt,
+    };
+  }
+
+  return {
+    gateId: "real-llm-acceptance",
+    title: "Real LLM acceptance",
+    status: "missing",
+    summary: coverage
+      ? `${record.title} passed, but only ${coverage.status} coverage is recorded (${formatReleaseCoverageSummary(coverage)}).`
+      : `${record.title} passed, but release coverage metadata is missing.`,
+    commandHint,
+    latestRunId: record.runId,
+    recordedAt: record.completedAt,
+  };
+}
+
+function hasCompleteReleaseCoverage(
+  coverage: ValidationOpsRealAcceptanceDetails["releaseCoverage"] | undefined
+): coverage is NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]> {
+  return Boolean(coverage?.tooluse && coverage.mission && coverage.naturalMission);
+}
+
+function formatReleaseCoverageSummary(
+  coverage: NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]> | undefined
+): string {
+  if (!coverage) return "no coverage";
+  return [
+    `tool-use ${formatScenarioCoverageSummary(coverage.tooluse)}`,
+    `mission ${formatScenarioCoverageSummary(coverage.mission)}`,
+    `natural ${formatScenarioCoverageSummary(coverage.naturalMission)}`,
+  ].join("; ");
+}
+
+function formatScenarioCoverageSummary(
+  coverage: NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]>["tooluse"] | undefined
+): string {
+  if (!coverage) return "0/0";
+  const requested = Number.isFinite(coverage.requested) ? coverage.requested : 0;
+  const expected = Number.isFinite(coverage.expected) ? coverage.expected : 0;
+  const missing = Number.isFinite(coverage.missing) ? coverage.missing : 0;
+  return `${requested}/${expected}${missing > 0 ? ` missing ${missing}` : ""}`;
 }
 
 function buildPhase1BaselineReport(records: ValidationOpsRunRecord[], now: number): ValidationOpsReport["baseline"] {
