@@ -251,6 +251,8 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
         title: "Example",
         finalUrl: "https://example.test/",
         traceKinds: input.actions.map((action) => action.kind),
+        screenshotPaths: ["/tmp/browser-session-1/open.png"],
+        artifactIds: ["task-open:screenshot"],
       });
     },
     async sendSession(input) {
@@ -259,6 +261,7 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
         title: "Example",
         finalUrl: "https://example.test/",
         traceKinds: input.actions.map((action) => action.kind),
+        artifactIds: ["task-snapshot:artifact"],
       });
     },
   });
@@ -295,6 +298,9 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   assert.equal(bridgeCalls[1]?.mode, "send");
   assert.equal(bridgeCalls[1]?.input.browserSessionId, "browser-session-1");
   assert.deepEqual(bridgeCalls[1]?.input.actions?.map((action) => action.kind), ["snapshot"]);
+  const payload = result?.payload as Record<string, unknown>;
+  assert.deepEqual(payload.artifactIds, ["task-open:screenshot", "task-snapshot:artifact"]);
+  assert.deepEqual(payload.screenshotPaths, ["/tmp/browser-session-1/open.png"]);
   const transcript = result?.sessionHistoryEntries ?? [];
   assert.deepEqual(transcript.filter((entry) => entry.role !== "system").map((entry) => [entry.role, entry.toolName ?? null]), [
     ["assistant", "browser_open"],
@@ -972,6 +978,8 @@ function browserResult(input: {
   traceKinds?: string[];
   traceStatuses?: Array<"ok" | "failed">;
   traceErrorMessages?: string[];
+  screenshotPaths?: string[];
+  artifactIds?: string[];
 }): BrowserTaskResult {
   return {
     sessionId: input.sessionId ?? "browser-session-1",
@@ -988,8 +996,8 @@ function browserResult(input: {
       statusCode: 200,
       interactives: [{ refId: "ref-1", tagName: "A", role: "link", label: "More" }],
     },
-    screenshotPaths: [],
-    artifactIds: [],
+    screenshotPaths: input.screenshotPaths ?? [],
+    artifactIds: input.artifactIds ?? [],
     trace: (input.traceKinds ?? ["snapshot"]).map((kind, index) => ({
       stepId: `step-${index}`,
       kind: kind as BrowserTaskResult["trace"][number]["kind"],

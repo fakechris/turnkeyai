@@ -1401,12 +1401,40 @@ function compactToolResultTraceContent(content: string): { content: string; comp
     final_content: typeof parsed.final_content === "string" ? sliceUtf8(parsed.final_content, 6 * 1024) : null,
     result: typeof parsed.result === "string" ? sliceUtf8(parsed.result, 1600) : "",
     tool_chain: parsed.tool_chain,
+    ...compactSessionPayloadArtifactRefs(parsed.payload),
   };
   const compactContent = JSON.stringify(compacted, null, 2);
   return {
     content: compactContent,
     compacted: compactContent !== content,
   };
+}
+
+function compactSessionPayloadArtifactRefs(payload: unknown):
+  | { payload: { artifactIds?: string[]; screenshotPaths?: string[] } }
+  | Record<string, never> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return {};
+  }
+  const record = payload as Record<string, unknown>;
+  const artifactIds = readStringArray(record.artifactIds);
+  const screenshotPaths = readStringArray(record.screenshotPaths);
+  if (artifactIds.length === 0 && screenshotPaths.length === 0) {
+    return {};
+  }
+  return {
+    payload: {
+      ...(artifactIds.length ? { artifactIds } : {}),
+      ...(screenshotPaths.length ? { screenshotPaths } : {}),
+    },
+  };
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
 function toNativeToolProgressTrace(

@@ -3916,6 +3916,8 @@ test("llm role response generator stores evidence-first trace content for oversi
             mode: "llm_sub_agent",
             workerType: "explore",
             content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+            artifactIds: ["artifact-browser-snapshot", "artifact-browser-screenshot"],
+            screenshotPaths: ["/tmp/browser-artifacts/final.png"],
             rawHtml: "<html>".repeat(5000),
           },
         }),
@@ -3943,6 +3945,9 @@ test("llm role response generator stores evidence-first trace content for oversi
   assert.match(traceResult.content, /Release Captain/);
   assert.match(traceResult.content, /runbook gap/);
   assert.match(traceResult.content, /rollback rehearsal/);
+  const compacted = JSON.parse(traceResult.content) as { payload?: { artifactIds?: string[]; screenshotPaths?: string[] } };
+  assert.deepEqual(compacted.payload?.artifactIds, ["artifact-browser-snapshot", "artifact-browser-screenshot"]);
+  assert.deepEqual(compacted.payload?.screenshotPaths, ["/tmp/browser-artifacts/final.png"]);
   assert.doesNotMatch(traceResult.content, /<html><html>/);
 });
 
