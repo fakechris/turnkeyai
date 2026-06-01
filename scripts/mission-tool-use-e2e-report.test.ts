@@ -294,6 +294,99 @@ describe("mission tool-use e2e report", () => {
     );
   });
 
+  it("accepts compact denied approval closeout when it proves no form submission executed", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-approval-denied-safe-closeout", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.scenario = "natural-approval-denied-safe-closeout";
+    result.metrics.tool.results = 1;
+    result.metrics.tool.failed = 1;
+    result.metrics.sessions.spawned = 0;
+    result.metrics.approvals = { requested: 1, decided: 1, applied: 0 };
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.timeline = [
+      {
+        kind: "approval",
+        text: "Requested approval for browser.form.submit.",
+        tMs: 1200,
+        approvalId: "approval-1",
+        runtime: { eventType: "permission.query", status: "pending", approvalId: "approval-1" },
+      },
+      {
+        kind: "approval",
+        text: "Denied approval for browser.form.submit.",
+        tMs: 1500,
+        approvalId: "approval-1",
+        runtime: { eventType: "permission.result", status: "denied", approvalId: "approval-1" },
+      },
+      {
+        kind: "tool",
+        text: "sessions_spawn result",
+        tMs: 1600,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "Permission request approval-1 was denied; blocked_before_side_effect: true.",
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "Safe closeout - action not performed.",
+          "Requested action: browser.form.submit dry-run.",
+          "Decision: Denied by natural-mission-e2e.",
+          "The dry-run browser form submission was not executed due to the denial, no approval was applied, and no external state was affected.",
+          "The approval decision is authoritative for this isolated local test data.",
+          "The flow is complete; the safe next action is to request a new approval only if the operator wants to retry the dry-run submission.",
+        ].join("\n"),
+        tMs: 2000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.approvalExercised, true);
+
+    result.timeline[result.timeline.length - 1] = {
+      kind: "thought",
+      text: [
+        "Approval denied. The operator denied the dry-run form submission. The action will not be performed.",
+        "Safe fallback: No browser action taken. The form remains untouched.",
+        "No side effects occurred because execution stopped at the approval gate before the browser action could run.",
+        "To retry, request a new approval with adjusted scope.",
+      ].join("\n"),
+      tMs: 2100,
+    };
+    result.final = result.timeline.at(-1)!;
+    const alternateQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.deepEqual(alternateQuality.failures, []);
+  });
+
   it("accepts pending approval as a natural paused state without decision or permission application", () => {
     const result = fakeNaturalResult();
     const spec = buildNaturalScenarioSpec("natural-approval-pending-state", {
@@ -790,6 +883,167 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.failures.includes("final answer does not make residual risk visible"));
   });
 
+  it("accepts a plural risks section as visible residual-risk disclosure", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-comparison-research", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.final.text = [
+      "Alpha is $19 per seat and Beta is $29 per workspace.",
+      "Alpha has browser automation and Beta has approval workflow.",
+      "Risks: Alpha's API integration catalog is limited; Beta requires a separate browser connector.",
+      "What was verified: no additional details about scale or update cadence were present.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.sourceCoverage.residualRiskVisible, true);
+    assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
+  });
+
+  it("accepts degraded fallback wording as visible residual-risk disclosure", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-profile-lock-recovery", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.final.text = [
+      "Operational state: degraded / escalation active.",
+      "Queue depth is 11 and SLA breaches are 3.",
+      "Browser continuity: persistent browser profile was locked; recovered via warm isolated fallback session.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.sourceCoverage.residualRiskVisible, true);
+    assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
+  });
+
+  it("accepts approval dry-run safety-boundary wording as residual-risk disclosure", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-approval-dry-run-action", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.final.text = [
+      "Dry-run form submission completed successfully.",
+      "Permission chain evidence: permission_query and permission_applied ran before browser action.",
+      "No external mutation occurred; the fixture confirms isolated local execution.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.sourceCoverage.residualRiskVisible, true);
+    assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
+  });
+
+  it("accepts approval denial safety-boundary wording as residual-risk disclosure", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-approval-denied-safe-closeout", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.final.text = [
+      "The operator denied approval.",
+      "The side effect did not run, and the browser action must not be applied without a new approval decision.",
+      "Safest next action: request a new approval if the user still wants to proceed.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.sourceCoverage.residualRiskVisible, true);
+    assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
+  });
+
+  it("accepts pending approval safety-boundary wording as residual-risk disclosure", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-approval-pending-state", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.final.text = [
+      "Requested approval for browser.form.submit.",
+      "No persistent changes were made; the action remains pending operator decision and must not continue without approval.",
+      "The dry-run request is scoped without side effects.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.sourceCoverage.residualRiskVisible, true);
+    assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
+  });
+
   it("requires mission artifact lifecycle evidence for natural browser dynamic page", () => {
     const result = fakeNaturalResult();
     result.artifacts = [];
@@ -1014,6 +1268,20 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(quality.failures, []);
+
+    result.timeline[1]!.runtime = {
+      ...result.timeline[1]!.runtime,
+      resultContent:
+        "The browser_console and browser_screenshot probes succeeded, but CDP snapshot and scroll commands timed out while extracting full DOM evidence.",
+    };
+    const naturalTimeoutWordingQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(naturalTimeoutWordingQuality.failures, []);
   });
 
   it("requires browser detached-target natural closeout to carry the detached bucket", () => {
@@ -1063,6 +1331,19 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(quality.failures, []);
+
+    result.timeline[1]!.runtime = {
+      ...result.timeline[1]!.runtime,
+      resultContent: "The browser target detached 11 times during this session while capturing rendered evidence.",
+    };
+    const countedDetachQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(countedDetachQuality.failures, []);
   });
 
   it("requires browser attach-failed natural closeout to carry the attach bucket", () => {
@@ -1111,6 +1392,47 @@ describe("mission tool-use e2e report", () => {
       metrics: result.metrics,
       final: result.final,
     });
+    assert.deepEqual(quality.failures, []);
+  });
+
+  it("accepts attach-failed closeout when failure wording precedes attach-stage evidence", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-attach-failed-closeout", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.metrics.tool.failed = 1;
+    result.metrics.browser = {
+      ...result.metrics.browser,
+      failureBuckets: [{ bucket: "attach_failed", count: 1, latestAtMs: 2_000 }],
+    };
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: "attach_failed: browser target attach failed while resolving the browser target.",
+    };
+    result.final.text = [
+      "Target URL was attempted three times, all resulting in attach_failed.",
+      "The failure occurs at the browser-target-attach stage, before any page load or rendering.",
+      "What remains unverified: any content that would be rendered on that page.",
+      "Next action: verify that the browser environment is available before re-attempting.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+
     assert.deepEqual(quality.failures, []);
   });
 
@@ -1818,6 +2140,48 @@ describe("mission tool-use e2e report", () => {
     });
     assert.ok(missingSignalQuality.failures.includes("missing evidence product signals stuck missions"));
     assert.ok(missingSignalQuality.failures.includes("missing evidence product signals weak answer rate"));
+
+    result.timeline[2]!.runtime = {
+      ...result.timeline[2]!.runtime,
+      resultContent:
+        "Rendered dashboard evidence: Six stuck missions. Weak answer rate: 24%. Recommended next action: make Mission Control the default entry.",
+    };
+    const wordedSignalQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(wordedSignalQuality.failures, []);
+
+    result.timeline[2]!.runtime = {
+      ...result.timeline[2]!.runtime,
+      resultContent:
+        "Rendered dashboard evidence: Stuck missions: 6. Signal status: marginal ok with 24% weak-answer rate. Recommended next action: make Mission Control the default entry.",
+    };
+    const hyphenatedSignalQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(hyphenatedSignalQuality.failures, []);
+
+    result.timeline[2]!.runtime = {
+      ...result.timeline[2]!.runtime,
+      resultContent:
+        "Rendered dashboard evidence: Stuck missions: 6. Weak-answer 24%. Recommended next action: make Mission Control the default entry.",
+    };
+    const compactSignalQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(compactSignalQuality.failures, []);
   });
 
   it("passes natural memory recall only with memory tool evidence and recalled facts", () => {

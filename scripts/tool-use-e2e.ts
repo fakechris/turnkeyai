@@ -434,7 +434,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<RealToo
       assert.equal(toolCallNames.includes("sessions_send"), false, "timeout real LLM E2E must not follow up automatically");
       assert.equal(sessions.length, 1, `timeout real LLM E2E must leave one resumable session, got ${sessions.length}`);
       assert.match(reply.content, /timeout|timed out/i);
-      assert.match(reply.content, /not verified/i);
+      assert.match(reply.content, UNVERIFIED_SCOPE_PATTERN);
       quality = evaluateAnswerQuality({
         scenario: options.scenario,
         answer: reply.content,
@@ -598,7 +598,7 @@ function buildRealLlmScenarioPacket(input: {
     ? [
         "Run the bounded timeout recovery E2E.",
         "Ask the explore sub-agent to perform a deliberately slow verification with timeout_seconds=0.001.",
-        `Final answer must include ${input.targetMarker} exactly once inside the timeout-result bullet, explain that verification timed out, and mark missing evidence as not verified.`,
+        `Final answer must include ${input.targetMarker} exactly once inside the timeout-result bullet, explain that verification timed out, and mark missing evidence as unverified, unknown, or not complete.`,
       ].join("\n")
     : input.approvalScenario
     ? [
@@ -632,7 +632,7 @@ function buildRealLlmScenarioPacket(input: {
         `Final answer must include ${input.targetMarker}.`,
         "Use Markdown with a heading `Evidence` and at least three bullets: timeout result, attempted verification, residual risk.",
         `The first bullet must start with "- timeout result: ${input.targetMarker};" and must say the sub-agent timed out.`,
-        "State `not verified` for anything the timed-out worker did not prove.",
+        "State that anything the timed-out worker did not prove remains unverified, unknown, or not complete.",
         "Do not claim the underlying slow verification succeeded.",
       ].join("\n")
     : input.approvalScenario
@@ -809,7 +809,7 @@ function timeoutQualityGate(targetMarker: string): AnswerQualityGate {
       { label: "target success marker", pattern: new RegExp(escapeRegExp(targetMarker)) },
       { label: "evidence heading", pattern: /Evidence/i },
       { label: "timeout disclosure", pattern: /timeout|timed out/i },
-      { label: "not verified", pattern: /not verified/i },
+      { label: "unverified or unknown scope", pattern: UNVERIFIED_SCOPE_PATTERN },
       { label: "residual risk", pattern: /residual risk/i },
     ],
     forbiddenPatterns: [
@@ -817,6 +817,9 @@ function timeoutQualityGate(targetMarker: string): AnswerQualityGate {
     ],
   };
 }
+
+const UNVERIFIED_SCOPE_PATTERN =
+  /\b(?:not\s+verified|unverified|unknown|not\s+complete|incomplete|cannot\s+be\s+(?:marked\s+)?verified)\b/i;
 
 function approvalQualityGate(targetMarker: string): AnswerQualityGate {
   return {
@@ -1026,7 +1029,7 @@ function runMockAcceptanceQualitySuiteE2e(): {
         "## Evidence",
         "- Evidence: the worker returned a timeout summary with partial transcript before hard abort.",
         "- Source: available tool result was used for the final answer instead of inventing missing data.",
-        "- Residual risk: unresolved fields are listed as not verified until the user asks to continue.",
+        "- Residual risk: unresolved fields cannot be marked verified until the user asks to continue.",
         "",
         "Final: timeout recovery produced an evidence-only answer and preserved a continuation path.",
       ].join("\n"),
@@ -1036,7 +1039,7 @@ function runMockAcceptanceQualitySuiteE2e(): {
         minEvidenceSources: 2,
         requiredPatterns: [
           { label: "timeout summary", pattern: /timeout summary/i },
-          { label: "not verified", pattern: /not verified/i },
+          { label: "unverified or unknown scope", pattern: UNVERIFIED_SCOPE_PATTERN },
           { label: "continue path", pattern: /continu/i },
         ],
       },

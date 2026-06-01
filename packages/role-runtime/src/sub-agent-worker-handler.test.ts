@@ -298,6 +298,8 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   assert.equal(bridgeCalls[1]?.mode, "send");
   assert.equal(bridgeCalls[1]?.input.browserSessionId, "browser-session-1");
   assert.deepEqual(bridgeCalls[1]?.input.actions?.map((action) => action.kind), ["snapshot"]);
+  const firstToolContent = readToolContent(gatewayInputs[1]?.messages.find((message) => message.role === "tool")?.content ?? "");
+  assert.match(firstToolContent, /Visible text excerpt: Example page text/);
   const payload = result?.payload as Record<string, unknown>;
   assert.deepEqual(payload.artifactIds, ["task-open:screenshot", "task-snapshot:artifact"]);
   assert.deepEqual(payload.screenshotPaths, ["/tmp/browser-session-1/open.png"]);

@@ -748,12 +748,21 @@ function summarizeBrowserToolResult(result: BrowserTaskResult): string {
   }
   return [
     `Browser observed ${title}.`,
+    result.page.textExcerpt ? `Visible text excerpt: ${truncateBrowserTextExcerpt(result.page.textExcerpt)}.` : null,
     result.profileFallback
       ? `Profile fallback: ${result.profileFallback.reason}; persistent profile was unavailable, used ${result.profileFallback.fallbackDir}.`
       : null,
   ]
     .filter((line): line is string => Boolean(line))
     .join("\n");
+}
+
+function truncateBrowserTextExcerpt(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 500) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 497)}...`;
 }
 
 function buildInnerSessionState(input: {
