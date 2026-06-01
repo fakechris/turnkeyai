@@ -606,6 +606,28 @@ export function formatRealAcceptanceNaturalSummary(run: ValidationOpsReport["lat
   ].join(" · ");
 }
 
+export function formatRealAcceptanceCoverageSummary(run: ValidationOpsReport["latestRuns"][number]): string | null {
+  const coverage = run.realAcceptance?.releaseCoverage;
+  if (!coverage) {
+    return null;
+  }
+  return [
+    `${coverage.status} gate`,
+    `tool-use ${formatScenarioCoverage(coverage.tooluse)}`,
+    `mission ${formatScenarioCoverage(coverage.mission)}`,
+    `natural ${formatScenarioCoverage(coverage.naturalMission)}`,
+  ].join(" · ");
+}
+
+function formatScenarioCoverage(coverage: {
+  requested: number;
+  expected: number;
+  missing: number;
+}): string {
+  const base = `${coverage.requested}/${coverage.expected}`;
+  return coverage.missing > 0 ? `${base} (missing ${coverage.missing})` : base;
+}
+
 function countOrZero(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -788,6 +810,11 @@ function ValidationOpsCard({
                     {run.artifactPath ? (
                       <div className="runtime-health-action runtime-artifact-path">
                         artifact: <span className="mono">{run.artifactPath}</span>
+                      </div>
+                    ) : null}
+                    {formatRealAcceptanceCoverageSummary(run) ? (
+                      <div className="runtime-health-action">
+                        coverage: {formatRealAcceptanceCoverageSummary(run)}
                       </div>
                     ) : null}
                     {formatRealAcceptanceMissionSummary(run) ? (

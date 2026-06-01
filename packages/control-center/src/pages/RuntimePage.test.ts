@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ValidationOpsRunRecord } from "../api/types";
-import { formatRealAcceptanceNaturalSummary } from "./RuntimePage";
+import { formatRealAcceptanceCoverageSummary, formatRealAcceptanceNaturalSummary } from "./RuntimePage";
 
 function runWithNaturalReport(
   naturalMissionReport: NonNullable<NonNullable<ValidationOpsRunRecord["realAcceptance"]>["naturalMissionReport"]>
@@ -21,6 +21,12 @@ function runWithNaturalReport(
       naturalMissionScenarios: ["natural-browser-dynamic-page"],
       browserTooluseEnabled: true,
       totalCases: 3,
+      releaseCoverage: {
+        status: "focused",
+        tooluse: { status: "focused", requested: 1, expected: 5, missing: 4 },
+        mission: { status: "focused", requested: 1, expected: 12, missing: 11 },
+        naturalMission: { status: "focused", requested: 1, expected: 20, missing: 19 },
+      },
       naturalMissionReport,
     },
   };
@@ -119,4 +125,38 @@ test("formatRealAcceptanceNaturalSummary defaults missing source coverage fields
     "1/1 natural scenarios · evidence 1/1 · useful 1/1 · source terms 0/0 · source patterns 0/0 · evidence patterns 0/0 · missing 0 · unsupported 0 · risk 0/1"
   );
   assert.equal(summary?.includes("NaN"), false);
+});
+
+test("formatRealAcceptanceCoverageSummary distinguishes focused gates from release coverage", () => {
+  assert.equal(
+    formatRealAcceptanceCoverageSummary(runWithNaturalReport({
+      status: "passed",
+      scenarioCount: 1,
+      passedScenarios: 1,
+      finalAnswerHasEvidence: 1,
+      finalAnswerUseful: 1,
+    } as unknown as NonNullable<NonNullable<ValidationOpsRunRecord["realAcceptance"]>["naturalMissionReport"]>)),
+    "focused gate · tool-use 1/5 (missing 4) · mission 1/12 (missing 11) · natural 1/20 (missing 19)"
+  );
+});
+
+test("formatRealAcceptanceCoverageSummary stays hidden for legacy records", () => {
+  assert.equal(
+    formatRealAcceptanceCoverageSummary({
+      runId: "run.legacy.1",
+      runType: "real-llm-acceptance",
+      title: "Legacy real acceptance",
+      status: "passed",
+      completedAt: Date.now(),
+      durationMs: 10_000,
+      issueCount: 0,
+      realAcceptance: {
+        tooluseScenarios: ["basic"],
+        missionScenarios: ["realistic-brief"],
+        browserTooluseEnabled: true,
+        totalCases: 2,
+      },
+    }),
+    null
+  );
 });

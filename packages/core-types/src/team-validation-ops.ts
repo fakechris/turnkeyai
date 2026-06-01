@@ -92,12 +92,29 @@ export interface ValidationOpsBaselineRunDetails {
   failureReasons: string[];
 }
 
+export type ValidationOpsRealAcceptanceCoverageStatus = "full" | "focused" | "skipped";
+
+export interface ValidationOpsRealAcceptanceCoverage {
+  status: ValidationOpsRealAcceptanceCoverageStatus;
+  requested: number;
+  expected: number;
+  missing: number;
+}
+
+export interface ValidationOpsRealAcceptanceReleaseCoverage {
+  status: ValidationOpsRealAcceptanceCoverageStatus;
+  tooluse: ValidationOpsRealAcceptanceCoverage;
+  mission: ValidationOpsRealAcceptanceCoverage;
+  naturalMission: ValidationOpsRealAcceptanceCoverage;
+}
+
 export interface ValidationOpsRealAcceptanceDetails {
   tooluseScenarios: string[];
   missionScenarios: string[];
   naturalMissionScenarios?: string[];
   browserTooluseEnabled: boolean;
   totalCases: number;
+  releaseCoverage?: ValidationOpsRealAcceptanceReleaseCoverage;
   naturalArtifactPath?: string;
   missionReport?: {
     status: "passed" | "failed";

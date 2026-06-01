@@ -10,6 +10,11 @@ import {
   buildValidationOpsRecordFromValidationProfile,
   buildValidationOpsReport,
 } from "./validation-ops-inspection";
+import {
+  DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS,
+} from "./real-llm-acceptance-defaults";
 
 test("validation ops inspection derives operator-facing records and report counts", () => {
   const releaseRecord = buildValidationOpsRecordFromReleaseReadiness({
@@ -395,6 +400,12 @@ test("validation ops inspection preserves real LLM mission report summary", () =
     missionScenarios: ["realistic-brief", "browser-dashboard"],
     browserTooluseEnabled: true,
     totalCases: 4,
+    releaseCoverage: {
+      status: "focused",
+      tooluse: { status: "focused", requested: 2, expected: 5, missing: 3 },
+      mission: { status: "focused", requested: 2, expected: 12, missing: 10 },
+      naturalMission: { status: "skipped", requested: 0, expected: 20, missing: 20 },
+    },
     missionReport: {
       status: "passed",
       scenarioCount: 2,
@@ -492,9 +503,55 @@ test("validation ops inspection preserves natural mission acceptance summary", (
   ]);
   assert.equal(record.realAcceptance?.totalCases, 4);
   assert.equal(record.realAcceptance?.naturalArtifactPath, ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json");
+  assert.deepEqual(record.realAcceptance?.releaseCoverage, {
+    status: "focused",
+    tooluse: { status: "focused", requested: 1, expected: 5, missing: 4 },
+    mission: { status: "focused", requested: 1, expected: 12, missing: 11 },
+    naturalMission: { status: "focused", requested: 2, expected: 20, missing: 18 },
+  });
   assert.equal(record.realAcceptance?.naturalMissionReport?.finalAnswerUseful, 2);
   assert.equal(record.realAcceptance?.naturalMissionReport?.sourceEvidencePatternsCovered, 6);
   assert.ok(record.selectors?.includes("natural-mission:natural-browser-dynamic-page"));
+});
+
+test("validation ops inspection marks full real acceptance release coverage", () => {
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-full-pass",
+    startedAt: 10,
+    completedAt: 30,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+  });
+
+  assert.deepEqual(record.realAcceptance?.releaseCoverage, {
+    status: "full",
+    tooluse: { status: "full", requested: 5, expected: 5, missing: 0 },
+    mission: { status: "full", requested: 12, expected: 12, missing: 0 },
+    naturalMission: { status: "full", requested: 20, expected: 20, missing: 0 },
+  });
+});
+
+test("validation ops inspection counts only expected scenarios in release coverage", () => {
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-custom-pass",
+    startedAt: 10,
+    completedAt: 30,
+    status: "passed",
+    tooluseScenarios: ["basic", "basic", "custom-tooluse"],
+    missionScenarios: ["realistic-brief", "custom-mission"],
+    naturalMissionScenarios: ["natural-long-delegation", "custom-natural"],
+    browserTooluseEnabled: true,
+  });
+
+  assert.deepEqual(record.realAcceptance?.releaseCoverage, {
+    status: "focused",
+    tooluse: { status: "focused", requested: 1, expected: 5, missing: 4 },
+    mission: { status: "focused", requested: 1, expected: 12, missing: 11 },
+    naturalMission: { status: "focused", requested: 1, expected: 20, missing: 19 },
+  });
 });
 
 test("validation ops inspection surfaces fresh and stale baseline status", () => {
