@@ -71,6 +71,29 @@ interface NaturalScenarioReportShape {
     approvalExercised?: unknown;
     finalAnswerHasEvidence?: unknown;
     finalAnswerUseful?: unknown;
+    sourceCoverage?: {
+      answerTerms?: {
+        covered?: unknown;
+        total?: unknown;
+        missing?: unknown;
+      };
+      answerPatterns?: {
+        covered?: unknown;
+        total?: unknown;
+        missing?: unknown;
+      };
+      evidencePatterns?: {
+        covered?: unknown;
+        total?: unknown;
+        missing?: unknown;
+      };
+      evidenceEvents?: {
+        observed?: unknown;
+        required?: unknown;
+      };
+      residualRiskVisible?: unknown;
+      unsupportedClaims?: unknown;
+    };
     weakAnswerSignals?: unknown;
   };
   metrics?: MissionScenarioReportShape["metrics"];
@@ -226,6 +249,19 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       livenessWaiting: 0,
       livenessStale: 0,
       evidenceEvents: 0,
+      sourceAnswerTermsCovered: 0,
+      sourceAnswerTermsTotal: 0,
+      sourceAnswerTermsMissing: 0,
+      sourceAnswerPatternsCovered: 0,
+      sourceAnswerPatternsTotal: 0,
+      sourceAnswerPatternsMissing: 0,
+      sourceEvidencePatternsCovered: 0,
+      sourceEvidencePatternsTotal: 0,
+      sourceEvidencePatternsMissing: 0,
+      sourceEvidenceEventsObserved: 0,
+      sourceEvidenceEventsRequired: 0,
+      sourceResidualRiskVisible: 0,
+      sourceUnsupportedClaims: 0,
       recoveryEvents: 0,
     };
   }
@@ -264,6 +300,19 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       summary.livenessWaiting += readNumber(scenario.metrics?.liveness?.waiting);
       summary.livenessStale += readNumber(scenario.metrics?.liveness?.stale);
       summary.evidenceEvents += readNumber(scenario.metrics?.evidenceEvents);
+      summary.sourceAnswerTermsCovered += readNumber(scenario.natural?.sourceCoverage?.answerTerms?.covered);
+      summary.sourceAnswerTermsTotal += readNumber(scenario.natural?.sourceCoverage?.answerTerms?.total);
+      summary.sourceAnswerTermsMissing += readArrayLength(scenario.natural?.sourceCoverage?.answerTerms?.missing);
+      summary.sourceAnswerPatternsCovered += readNumber(scenario.natural?.sourceCoverage?.answerPatterns?.covered);
+      summary.sourceAnswerPatternsTotal += readNumber(scenario.natural?.sourceCoverage?.answerPatterns?.total);
+      summary.sourceAnswerPatternsMissing += readArrayLength(scenario.natural?.sourceCoverage?.answerPatterns?.missing);
+      summary.sourceEvidencePatternsCovered += readNumber(scenario.natural?.sourceCoverage?.evidencePatterns?.covered);
+      summary.sourceEvidencePatternsTotal += readNumber(scenario.natural?.sourceCoverage?.evidencePatterns?.total);
+      summary.sourceEvidencePatternsMissing += readArrayLength(scenario.natural?.sourceCoverage?.evidencePatterns?.missing);
+      summary.sourceEvidenceEventsObserved += readNumber(scenario.natural?.sourceCoverage?.evidenceEvents?.observed);
+      summary.sourceEvidenceEventsRequired += readNumber(scenario.natural?.sourceCoverage?.evidenceEvents?.required);
+      summary.sourceResidualRiskVisible += scenario.natural?.sourceCoverage?.residualRiskVisible === true ? 1 : 0;
+      summary.sourceUnsupportedClaims += readArrayLength(scenario.natural?.sourceCoverage?.unsupportedClaims);
       summary.recoveryEvents += readNumber(scenario.metrics?.recoveryEvents);
       return summary;
     },
@@ -298,6 +347,19 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       livenessWaiting: 0,
       livenessStale: 0,
       evidenceEvents: 0,
+      sourceAnswerTermsCovered: 0,
+      sourceAnswerTermsTotal: 0,
+      sourceAnswerTermsMissing: 0,
+      sourceAnswerPatternsCovered: 0,
+      sourceAnswerPatternsTotal: 0,
+      sourceAnswerPatternsMissing: 0,
+      sourceEvidencePatternsCovered: 0,
+      sourceEvidencePatternsTotal: 0,
+      sourceEvidencePatternsMissing: 0,
+      sourceEvidenceEventsObserved: 0,
+      sourceEvidenceEventsRequired: 0,
+      sourceResidualRiskVisible: 0,
+      sourceUnsupportedClaims: 0,
       recoveryEvents: 0,
     }
   );
@@ -375,6 +437,10 @@ function isNaturalScenarioReportShape(value: unknown): value is NaturalScenarioR
 
 function readNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function readArrayLength(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
 }
 
 function readString(value: unknown): string | null {

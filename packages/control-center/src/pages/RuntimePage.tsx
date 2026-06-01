@@ -568,7 +568,7 @@ function validationStatusDot(status: ValidationOpsStatus | "stale" | undefined):
   return "planning";
 }
 
-function formatRealAcceptanceMissionSummary(run: ValidationOpsReport["latestRuns"][number]): string | null {
+export function formatRealAcceptanceMissionSummary(run: ValidationOpsReport["latestRuns"][number]): string | null {
   const missionReport = run.realAcceptance?.missionReport;
   if (!missionReport) {
     return null;
@@ -581,6 +581,24 @@ function formatRealAcceptanceMissionSummary(run: ValidationOpsReport["latestRuns
     `liveness ${missionReport.livenessActive}/${missionReport.livenessWaiting}/${missionReport.livenessStale}`,
     `tools ${missionReport.toolResults}/${missionReport.toolRequested}`,
     `evidence ${missionReport.evidenceEvents}`,
+  ].join(" · ");
+}
+
+export function formatRealAcceptanceNaturalSummary(run: ValidationOpsReport["latestRuns"][number]): string | null {
+  const naturalReport = run.realAcceptance?.naturalMissionReport;
+  if (!naturalReport) {
+    return null;
+  }
+  return [
+    `${naturalReport.passedScenarios}/${naturalReport.scenarioCount} natural scenarios`,
+    `evidence ${naturalReport.finalAnswerHasEvidence}/${naturalReport.scenarioCount}`,
+    `useful ${naturalReport.finalAnswerUseful}/${naturalReport.scenarioCount}`,
+    `source terms ${naturalReport.sourceAnswerTermsCovered}/${naturalReport.sourceAnswerTermsTotal}`,
+    `source patterns ${naturalReport.sourceAnswerPatternsCovered}/${naturalReport.sourceAnswerPatternsTotal}`,
+    `evidence patterns ${naturalReport.sourceEvidencePatternsCovered}/${naturalReport.sourceEvidencePatternsTotal}`,
+    `missing ${naturalReport.sourceAnswerTermsMissing + naturalReport.sourceAnswerPatternsMissing + naturalReport.sourceEvidencePatternsMissing}`,
+    `unsupported ${naturalReport.sourceUnsupportedClaims}`,
+    `risk ${naturalReport.sourceResidualRiskVisible}/${naturalReport.scenarioCount}`,
   ].join(" · ");
 }
 
@@ -767,6 +785,11 @@ function ValidationOpsCard({
                     {formatRealAcceptanceMissionSummary(run) ? (
                       <div className="runtime-health-action">
                         mission report: {formatRealAcceptanceMissionSummary(run)}
+                      </div>
+                    ) : null}
+                    {formatRealAcceptanceNaturalSummary(run) ? (
+                      <div className="runtime-health-action">
+                        natural report: {formatRealAcceptanceNaturalSummary(run)}
                       </div>
                     ) : null}
                   </div>
