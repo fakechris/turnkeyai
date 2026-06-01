@@ -472,14 +472,19 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
     if (!input.missionJsonPresent || !input.missionReport) {
       throw new Error("real acceptance passed without a mission E2E report artifact");
     }
+    if (input.missionReport.scenarioCount !== input.missionScenarios.length) {
+      throw new Error("real acceptance mission E2E report does not cover all requested scenarios");
+    }
     if (
       input.missionReport.status !== "passed" ||
+      input.missionReport.passedScenarios !== input.missionReport.scenarioCount ||
       input.missionReport.failedScenarios > 0 ||
       input.missionReport.qualityFailures > 0 ||
       input.missionReport.qualityCheckFailures > 0 ||
       input.missionReport.livenessActive > 0 ||
       input.missionReport.livenessWaiting > 0 ||
-      input.missionReport.livenessStale > 0
+      input.missionReport.livenessStale > 0 ||
+      input.missionReport.evidenceEvents < input.missionReport.scenarioCount
     ) {
       throw new Error("real acceptance mission E2E report does not prove a passing capability gate");
     }
@@ -488,14 +493,26 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
     if (!input.naturalMissionJsonPresent || !input.naturalMissionReport) {
       throw new Error("real acceptance passed without a natural mission E2E report artifact");
     }
+    if (input.naturalMissionReport.scenarioCount !== input.naturalMissionScenarios.length) {
+      throw new Error("real acceptance natural mission report does not cover all requested scenarios");
+    }
     if (
       input.naturalMissionReport.status !== "passed" ||
+      input.naturalMissionReport.passedScenarios !== input.naturalMissionReport.scenarioCount ||
       input.naturalMissionReport.failedScenarios > 0 ||
       input.naturalMissionReport.completed !== input.naturalMissionReport.scenarioCount ||
+      input.naturalMissionReport.reasonableToolUse !== input.naturalMissionReport.scenarioCount ||
+      input.naturalMissionReport.subAgentCompleted !== input.naturalMissionReport.scenarioCount ||
+      input.naturalMissionReport.finalAnswerHasEvidence !== input.naturalMissionReport.scenarioCount ||
+      input.naturalMissionReport.finalAnswerUseful !== input.naturalMissionReport.scenarioCount ||
       input.naturalMissionReport.stuckOrLoop > 0 ||
+      // weakAnswerSignals may include scenario-allowed bounded closeouts;
+      // natural.status carries blocking weak-answer failures.
+      input.naturalMissionReport.browserProfileFallbacks > 0 ||
       input.naturalMissionReport.livenessActive > 0 ||
       input.naturalMissionReport.livenessWaiting > 0 ||
-      input.naturalMissionReport.livenessStale > 0
+      input.naturalMissionReport.livenessStale > 0 ||
+      input.naturalMissionReport.evidenceEvents < input.naturalMissionReport.scenarioCount
     ) {
       throw new Error("real acceptance natural mission report does not prove a passing capability gate");
     }

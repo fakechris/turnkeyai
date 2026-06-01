@@ -217,6 +217,68 @@ test("real acceptance integrity rejects missing or non-passing report summaries 
   );
 });
 
+test("real acceptance integrity rejects incomplete artifacts and weak natural quality summaries", () => {
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison", "realistic-brief"],
+        naturalMissionScenarios: [],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: false,
+        missionReport: passingMissionReport(),
+        naturalMissionReport: null,
+      }),
+    /mission E2E report does not cover all requested scenarios/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
+        naturalMissionScenarios: ["natural-comparison-research", "natural-long-delegation"],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: true,
+        missionReport: passingMissionReport(),
+        naturalMissionReport: passingNaturalMissionReport({ scenarioCount: 1 }),
+      }),
+    /natural mission report does not cover all requested scenarios/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
+        naturalMissionScenarios: ["natural-comparison-research"],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: true,
+        missionReport: passingMissionReport(),
+        naturalMissionReport: passingNaturalMissionReport({
+          finalAnswerUseful: 0,
+          reasonableToolUse: 0,
+          subAgentCompleted: 0,
+        }),
+      }),
+    /natural mission report does not prove/
+  );
+
+  assert.doesNotThrow(() =>
+    assertRealAcceptanceArtifactIntegrity({
+      status: "passed",
+      missionScenarios: ["comparison"],
+      naturalMissionScenarios: ["natural-browser-unavailable-closeout"],
+      missionJsonPresent: true,
+      naturalMissionJsonPresent: true,
+      missionReport: passingMissionReport(),
+      naturalMissionReport: passingNaturalMissionReport({
+        weakAnswerSignals: 1,
+      }),
+    })
+  );
+});
+
 test("real acceptance integrity accepts passing mission and natural summaries", () => {
   assert.doesNotThrow(() =>
     assertRealAcceptanceArtifactIntegrity({
@@ -286,3 +348,73 @@ test("real acceptance integrity accepts passing mission and natural summaries", 
     })
   );
 });
+
+function passingMissionReport(
+  overrides: Partial<NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["missionReport"]>> = {}
+): NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["missionReport"]> {
+  return {
+    status: "passed",
+    scenarioCount: 1,
+    passedScenarios: 1,
+    failedScenarios: 0,
+    qualityFailures: 0,
+    toolRequested: 1,
+    toolResults: 1,
+    toolFailed: 0,
+    toolCancelled: 0,
+    toolTimeouts: 0,
+    sessionsSpawned: 1,
+    sessionsContinued: 0,
+    browserProfileFallbacks: 0,
+    approvalsRequested: 0,
+    approvalsDecided: 0,
+    approvalsApplied: 0,
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    qualityCheckWarnings: 0,
+    qualityCheckFailures: 0,
+    sourceCoverageWarnings: 0,
+    sourceCoverageFailures: 0,
+    evidenceEvents: 1,
+    recoveryEvents: 0,
+    ...overrides,
+  };
+}
+
+function passingNaturalMissionReport(
+  overrides: Partial<NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["naturalMissionReport"]>> = {}
+): NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["naturalMissionReport"]> {
+  return {
+    status: "passed",
+    scenarioCount: 1,
+    passedScenarios: 1,
+    failedScenarios: 0,
+    completed: 1,
+    stuckOrLoop: 0,
+    reasonableToolUse: 1,
+    browserUsed: 0,
+    subAgentCompleted: 1,
+    approvalExercised: 0,
+    finalAnswerHasEvidence: 1,
+    finalAnswerUseful: 1,
+    weakAnswerSignals: 0,
+    toolRequested: 1,
+    toolResults: 1,
+    toolFailed: 0,
+    toolCancelled: 0,
+    toolTimeouts: 0,
+    sessionsSpawned: 1,
+    sessionsContinued: 0,
+    browserProfileFallbacks: 0,
+    approvalsRequested: 0,
+    approvalsDecided: 0,
+    approvalsApplied: 0,
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    evidenceEvents: 1,
+    recoveryEvents: 0,
+    ...overrides,
+  };
+}
