@@ -18,6 +18,7 @@ export function selectMissionFinalAnswer(input: {
     if (
       metricsCandidate &&
       metricsCandidateIndex > boundaryIndex &&
+      !hasUnresolvedToolCallBeforeAnswer(input.events, latestUserIndex, metricsCandidateIndex) &&
       isLeadThought(input.mission, metricsCandidate)
     ) {
       return metricsCandidate;
@@ -26,7 +27,10 @@ export function selectMissionFinalAnswer(input: {
 
   for (let index = input.events.length - 1; index > staleBeforeIndex; index -= 1) {
     const event = input.events[index]!;
-    if (isLeadThought(input.mission, event)) {
+    if (
+      isLeadThought(input.mission, event) &&
+      !hasUnresolvedToolCallBeforeAnswer(input.events, latestUserIndex, index)
+    ) {
       return event;
     }
   }
@@ -50,6 +54,26 @@ function latestToolActivityIndex(events: ActivityEvent[]): number {
     }
   }
   return -1;
+}
+
+function hasUnresolvedToolCallBeforeAnswer(
+  events: ActivityEvent[],
+  afterIndex: number,
+  answerIndex: number
+): boolean {
+  const pendingCallIds = new Set<string>();
+  for (let index = afterIndex + 1; index < answerIndex; index += 1) {
+    const event = events[index];
+    if (event?.kind !== "tool") continue;
+    const toolCallId = event.runtime?.toolCallId;
+    if (!toolCallId) continue;
+    if (event.runtime?.toolPhase === "call") {
+      pendingCallIds.add(toolCallId);
+    } else if (event.runtime?.toolPhase === "result") {
+      pendingCallIds.delete(toolCallId);
+    }
+  }
+  return pendingCallIds.size > 0;
 }
 
 function isLeadThought(mission: Mission, event: ActivityEvent): boolean {

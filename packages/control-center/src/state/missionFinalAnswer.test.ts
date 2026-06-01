@@ -99,6 +99,51 @@ test("selectMissionFinalAnswer falls back to the latest current lead answer", ()
   assert.equal(selected?.id, "thought.current");
 });
 
+test("selectMissionFinalAnswer fallback ignores a lead answer before a pending tool result", () => {
+  const selected = selectMissionFinalAnswer({
+    mission: mission({ status: "done", progress: 1 }),
+    metrics: null,
+    events: [
+      event("plan.initial", "plan", 1_000, "user", "Check the browser page."),
+      tool("tool.call", 2_000, "call", "sessions_spawn", "call-1", "Calling sessions_spawn."),
+      event("thought.early", "thought", 3_000, "role-lead", "Early final answer before the tool result."),
+    ],
+  });
+
+  assert.equal(selected, null);
+});
+
+test("selectMissionFinalAnswer fallback accepts a lead answer after prior tool results", () => {
+  const selected = selectMissionFinalAnswer({
+    mission: mission({ status: "done", progress: 1 }),
+    metrics: null,
+    events: [
+      event("plan.initial", "plan", 1_000, "user", "Check the browser page."),
+      tool("tool.call", 2_000, "call", "sessions_spawn", "call-1", "Calling sessions_spawn."),
+      tool("tool.result", 3_000, "result", "sessions_spawn", "call-1", "Browser evidence returned."),
+      event("thought.final", "thought", 4_000, "role-lead", "Final answer after the tool result."),
+    ],
+  });
+
+  assert.equal(selected?.id, "thought.final");
+});
+
+test("selectMissionFinalAnswer fallback scans every tool call before the answer", () => {
+  const selected = selectMissionFinalAnswer({
+    mission: mission({ status: "done", progress: 1 }),
+    metrics: null,
+    events: [
+      event("plan.initial", "plan", 1_000, "user", "Check two sources."),
+      tool("tool.call.one", 2_000, "call", "sessions_spawn", "call-1", "Calling first worker."),
+      tool("tool.result.one", 3_000, "result", "sessions_spawn", "call-1", "First worker returned."),
+      tool("tool.call.two", 4_000, "call", "sessions_spawn", "call-2", "Calling second worker."),
+      event("thought.early", "thought", 5_000, "role-lead", "Early final answer before the second result."),
+    ],
+  });
+
+  assert.equal(selected, null);
+});
+
 function mission(overrides: Partial<Mission> = {}): Mission {
   return {
     id: "msn.final.1",
