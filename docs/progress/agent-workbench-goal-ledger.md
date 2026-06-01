@@ -5334,3 +5334,79 @@ Convergence question:
 - If no, next required gate: run the focused natural browser dynamic-page E2E
   against a real LLM/browser session and record the mission id plus report
   artifact only if the run passes with lifecycle-bearing mission artifacts.
+
+## 2026-06-01 19:19 CST - Natural Browser Artifact Gate Proven
+
+Direction: converging
+
+Execution Kernel:
+- Root cause from the first real gate failure: browser private tools were
+  producing snapshot/screenshot artifact records, and the browser worker
+  session state retained them, but the outer sub-agent result did not expose
+  those artifact references to the durable `sessions_spawn` tool result.
+- The browser sub-agent now aggregates private browser tool artifact ids and
+  screenshot paths into the outer worker payload.
+- The native tool-result trace compaction now preserves small artifact
+  reference fields while still pruning large session payload bodies.
+
+Result Quality:
+- The passing run still used the browser sub-agent as evidence source rather
+  than model knowledge. The final answer remained evidence-backed, useful, and
+  free of weak-answer signals.
+- This improves durable evidence quality: the answer is no longer separated
+  from inspectable browser artifacts after tool-result compaction.
+
+Workbench UX:
+- Mission Detail can now receive real browser snapshot/screenshot artifacts
+  from natural browser sub-agent runs through the mission artifact route.
+- No UI code changed in this slice; the user-visible improvement depends on
+  the existing artifact panel receiving real runtime artifact records.
+
+Browser Reliability:
+- The validated run reported zero browser profile fallbacks and no browser
+  failure buckets.
+- The fix does not alter browser control behavior; it closes the artifact
+  propagation gap after successful browser execution.
+
+Acceptance Evidence:
+- Initial real gate failed as intended:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-browser-dynamic-page --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-browser-artifact-lifecycle-20260601.json`:
+  blocked on missing mission artifact lifecycle metadata.
+- Debug run with `TURNKEYAI_E2E_KEEP_RUNTIME_ROOT=1` confirmed browser artifact
+  records existed under browser-state, while the compacted durable tool result
+  had dropped payload artifact refs.
+- Focused regression:
+  `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts
+  packages/role-runtime/src/sub-agent-worker-handler.test.ts
+  packages/app-gateway/src/mission-thread-bridge.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts`: passed.
+- `npm run typecheck`: passed.
+- Real natural browser gate passed:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-browser-dynamic-page --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-browser-artifact-lifecycle-after-compact-fix-20260601.json`.
+- Natural mission: `msn.mpv47lvg.1`, status `done`, natural `passed`,
+  tools `1/1`, sessions `1/0`, browser used, profile fallbacks `0`, browser
+  buckets `none`, mission artifacts `7`, lifecycle-bearing artifacts `7`.
+
+Regression Risk:
+- Session tool-result compaction now retains bounded artifact reference arrays.
+  The large payload body remains pruned, so this should not reintroduce large
+  durable message writes.
+- A future risk remains if artifact references grow without bound; current
+  browser tool outputs are bounded by the sub-agent tool sequence and artifact
+  store budgets.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  converging
+- Evidence: a real LLM/browser natural task that previously failed the
+  artifact lifecycle gate now passes with durable mission artifacts and
+  lifecycle metadata.
+- If no, next required gate: broaden this from the focused dynamic-page run to
+  a multi-scenario natural matrix that includes browser follow-up and approval
+  so artifact propagation remains stable across continuation paths.

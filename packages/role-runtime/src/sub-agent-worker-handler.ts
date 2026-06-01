@@ -130,6 +130,8 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
       });
       const browserRecovery =
         this.kind === "browser" ? summarizeBrowserPrivateToolRecovery(reply.metadata ?? {}) : null;
+      const browserArtifacts =
+        this.kind === "browser" ? collectBrowserPrivateToolArtifacts(reply.metadata ?? {}) : null;
       const summary = browserRecovery
         ? `${browserRecovery.summary} ${summarizeReply(reply.content)}`
         : summarizeReply(reply.content);
@@ -145,6 +147,8 @@ export class LLMSubAgentWorkerHandler implements WorkerHandler {
           ...(browserRecovery ? { browserRecovery } : {}),
           content: reply.content,
           metadata: reply.metadata ?? {},
+          ...(browserArtifacts?.artifactIds.length ? { artifactIds: browserArtifacts.artifactIds } : {}),
+          ...(browserArtifacts?.screenshotPaths.length ? { screenshotPaths: browserArtifacts.screenshotPaths } : {}),
         },
         sessionHistoryEntries: buildSubAgentTranscriptEntries({
           kind: this.kind,
@@ -418,6 +422,8 @@ class SubAgentToolExecutor implements RoleToolExecutor {
             sessionId: result.sessionId,
             ...(result.targetId ? { targetId: result.targetId } : {}),
             actionKinds: actionPlan.actions.map((action) => action.kind),
+            ...(result.artifactIds.length ? { artifactIds: result.artifactIds } : {}),
+            ...(result.screenshotPaths.length ? { screenshotPaths: result.screenshotPaths } : {}),
           },
         },
       ],
@@ -874,6 +880,40 @@ function readNativeToolRounds(metadata: Record<string, unknown>): NativeToolRoun
   return Array.isArray(rounds) ? (rounds as NativeToolRoundTrace[]) : [];
 }
 
+function collectBrowserPrivateToolArtifacts(metadata: Record<string, unknown>):
+  | { artifactIds: string[]; screenshotPaths: string[] }
+  | null {
+  const artifactIds = new Set<string>();
+  const screenshotPaths = new Set<string>();
+  for (const round of readNativeToolRounds(metadata)) {
+    for (const progress of round.progress ?? []) {
+      if (!progress.toolName.startsWith("browser_") || !isRecord(progress.detail)) {
+        continue;
+      }
+      addStringArray(artifactIds, progress.detail.artifactIds);
+      addStringArray(screenshotPaths, progress.detail.screenshotPaths);
+    }
+    for (const result of round.results) {
+      if (!result.toolName.startsWith("browser_") || !result.content) {
+        continue;
+      }
+      const parsed = parseBrowserPrivateToolPayload(result.content);
+      if (!parsed) {
+        continue;
+      }
+      addStringArray(artifactIds, parsed.artifactIds);
+      addStringArray(screenshotPaths, parsed.screenshotPaths);
+    }
+  }
+  if (artifactIds.size === 0 && screenshotPaths.size === 0) {
+    return null;
+  }
+  return {
+    artifactIds: [...artifactIds],
+    screenshotPaths: [...screenshotPaths],
+  };
+}
+
 function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
   | {
       resumeMode?: NonNullable<BrowserTaskResult["resumeMode"]>;
@@ -902,7 +942,7 @@ function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
       for (const bucket of collectBrowserFailureBucketsFromText(result.content)) {
         failureBucketCounts.set(bucket, (failureBucketCounts.get(bucket) ?? 0) + 1);
       }
-      const parsed = parseBrowserPrivateToolResult(result.content);
+      const parsed = parseBrowserPrivateToolPayload(result.content);
       if (!parsed || parsed.resumeMode === "hot") {
         continue;
       }
@@ -932,12 +972,14 @@ function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
   };
 }
 
-function parseBrowserPrivateToolResult(content: string):
+function parseBrowserPrivateToolPayload(content: string):
   | {
       resumeMode: NonNullable<BrowserTaskResult["resumeMode"]>;
       sessionId: string;
       profileFallback?: NonNullable<BrowserTaskResult["profileFallback"]>;
       targetId?: string;
+      artifactIds?: string[];
+      screenshotPaths?: string[];
     }
   | null {
   let parsed: unknown;
@@ -954,6 +996,8 @@ function parseBrowserPrivateToolResult(content: string):
   const sessionId = payload["sessionId"];
   const targetId = payload["targetId"];
   const profileFallback = parseBrowserPrivateProfileFallback(payload["profileFallback"]);
+  const artifactIds = readStringArray(payload["artifactIds"]);
+  const screenshotPaths = readStringArray(payload["screenshotPaths"]);
   if ((resumeMode !== "hot" && resumeMode !== "warm" && resumeMode !== "cold") || typeof sessionId !== "string") {
     return null;
   }
@@ -962,7 +1006,27 @@ function parseBrowserPrivateToolResult(content: string):
     sessionId,
     ...(profileFallback ? { profileFallback } : {}),
     ...(typeof targetId === "string" ? { targetId } : {}),
+    ...(artifactIds.length ? { artifactIds } : {}),
+    ...(screenshotPaths.length ? { screenshotPaths } : {}),
   };
+}
+
+function addStringArray(target: Set<string>, value: unknown): void {
+  if (!Array.isArray(value)) {
+    return;
+  }
+  for (const item of value) {
+    if (typeof item === "string" && item.trim()) {
+      target.add(item.trim());
+    }
+  }
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
 function parseBrowserPrivateProfileFallback(value: unknown): NonNullable<BrowserTaskResult["profileFallback"]> | null {
