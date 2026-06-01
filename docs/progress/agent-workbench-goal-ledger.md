@@ -5936,3 +5936,68 @@ Convergence question:
   liveness residue.
 - If no, next required gate: run timeout-continuation and browser continuation
   gates.
+
+## 2026-06-01 21:23 CST - TUI Final Answer Guard
+
+Direction: converging
+
+Execution Kernel:
+- Runtime execution is unchanged. This checkpoint closes the local TUI mission
+  detail path that could label a lead thought as the latest final answer while a
+  prior tool call was still unresolved.
+- `formatMissionDetail` now applies the same tool-result-before-final ordering
+  check used by mission completion, observability, and Control Center final
+  answer selection.
+
+Result Quality:
+- This does not change answer synthesis. It prevents the local entry surface
+  from presenting a premature answer as complete before the evidence-producing
+  tool result exists.
+- Timeline replay remains transparent: the early thought still appears in the
+  recent timeline, but it is not promoted into the final answer section.
+
+Workbench UX:
+- TUI mission detail now respects backend-selected `finalAnswerEventId` only
+  when it is current and all prior visible tool calls have results.
+- The local non-web entry no longer has a weaker final-answer display rule than
+  the browser workbench.
+
+Browser Reliability:
+- Browser execution behavior is unchanged. Browser-backed missions benefit
+  because a pending browser/session tool call cannot be hidden by an early lead
+  answer in the TUI.
+
+Acceptance Evidence:
+- Focused TUI/runtime tests:
+  `npx tsx --test packages/tui/src/mission-tui.test.ts
+  packages/control-center/src/state/missionFinalAnswer.test.ts
+  packages/app-gateway/src/mission-observability.test.ts
+  packages/app-gateway/src/mission-completion-evaluator.test.ts`: passed.
+- Typecheck: `npm run typecheck`: passed.
+- Build: `npm run build`: passed.
+- Full test suite: `npm test -- --runInBand`: passed, 1441 tests.
+- Whitespace: `git diff --check`: passed.
+- Real natural follow-up gate:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-followup-continuation --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-tui-final-answer-guard-20260601.json`: passed.
+- Mission: `msn.mpv8nhgd.1`, status `done`, natural `passed`, tools `2/2`,
+  sessions `1/1`, browser used, profile fallbacks `0`, browser buckets `none`,
+  liveness `0/0/0`, final bytes `2244`.
+
+Regression Risk:
+- The guard depends on visible timeline tool events carrying both
+  `toolPhase=call/result` and `toolCallId`. Legacy events without call ids are
+  not retroactively reclassified.
+- This is a display invariant, not a new execution guarantee. Runtime behavior
+  remains covered by the completion evaluator and observability gates.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes
+- Evidence: all user-visible final-answer surfaces now share the same ordering
+  invariant, including the local TUI entry. A real follow-up mission still
+  completed with browser use, sub-agent completion, and no liveness residue.
+- If no, next required gate: run timeout-continuation and browser continuation
+  gates.

@@ -126,7 +126,7 @@ export function formatMissionDetail(input: {
   const events = Array.isArray(input.timeline)
     ? input.timeline.filter(isActivityEventRecord).sort((a, b) => a.tMs - b.tMs || a.id.localeCompare(b.id))
     : [];
-  const latestFinal = findLatestFinalAnswer(events);
+  const latestFinal = findLatestFinalAnswer(mission, metrics, events);
   const checks = metrics.qualityGate.checks.filter((check) => check.status !== "pass");
   const browserBuckets = metrics.browser.failureBuckets;
   const recent = events.slice(-timelineLimit);
@@ -228,14 +228,99 @@ export function parseMissionSendArgs(args: string, currentMissionId: string | nu
   };
 }
 
-function findLatestFinalAnswer(events: ActivityEvent[]): ActivityEvent | null {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
+function findLatestFinalAnswer(
+  mission: Mission,
+  metrics: TuiMissionMetrics,
+  events: ActivityEvent[]
+): ActivityEvent | null {
+  const latestUserIndex = latestUserPlanIndex(events);
+  const staleBeforeIndex = Math.max(latestUserIndex, latestToolActivityIndex(events));
+  const metricsFinalAnswerId = metrics.qualityGate.finalAnswerEventId;
+
+  if (metricsFinalAnswerId) {
+    const metricsCandidateIndex = events.findIndex((event) => event.id === metricsFinalAnswerId);
+    const metricsCandidate = events[metricsCandidateIndex];
+    const boundaryIndex = isTerminalMetrics(mission, metrics) ? latestUserIndex : staleBeforeIndex;
+    if (
+      metricsCandidate &&
+      metricsCandidateIndex > boundaryIndex &&
+      isLeadThought(mission, metricsCandidate) &&
+      !hasUnresolvedToolCallBeforeAnswer(events, latestUserIndex, metricsCandidateIndex)
+    ) {
+      return metricsCandidate;
+    }
+  }
+
+  for (let index = events.length - 1; index > staleBeforeIndex; index -= 1) {
     const event = events[index]!;
-    if (event.kind === "thought" && event.actor === "role-lead") {
+    if (isLeadThought(mission, event) && !hasUnresolvedToolCallBeforeAnswer(events, latestUserIndex, index)) {
       return event;
     }
   }
   return null;
+}
+
+function latestUserPlanIndex(events: ActivityEvent[]): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (event.kind === "plan" && (event.actor === "user" || event.runtime?.teamRole === "user")) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function latestToolActivityIndex(events: ActivityEvent[]): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.kind === "tool") {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function hasUnresolvedToolCallBeforeAnswer(
+  events: ActivityEvent[],
+  afterIndex: number,
+  answerIndex: number
+): boolean {
+  const pendingCallIds = new Set<string>();
+  for (let index = afterIndex + 1; index < answerIndex; index += 1) {
+    const event = events[index];
+    if (event?.kind !== "tool") {
+      continue;
+    }
+    const toolCallId = event.runtime?.toolCallId;
+    if (!toolCallId) {
+      continue;
+    }
+    if (event.runtime?.toolPhase === "call") {
+      pendingCallIds.add(toolCallId);
+    } else if (event.runtime?.toolPhase === "result") {
+      pendingCallIds.delete(toolCallId);
+    }
+  }
+  return pendingCallIds.size > 0;
+}
+
+function isLeadThought(mission: Mission, event: ActivityEvent): boolean {
+  if (event.kind !== "thought") {
+    return false;
+  }
+  if (event.text.trim().length === 0) {
+    return false;
+  }
+  if (event.runtime?.route === "lead-role") {
+    return true;
+  }
+  if (event.actor === "role-lead") {
+    return true;
+  }
+  return mission.agents[0] === event.actor;
+}
+
+function isTerminalMetrics(mission: Mission, metrics: TuiMissionMetrics): boolean {
+  return (mission.status === "done" || mission.status === "blocked") && metrics.status === mission.status;
 }
 
 function normalizeMissionMetrics(input: TuiMissionMetricsInput, mission: Mission): TuiMissionMetrics {
