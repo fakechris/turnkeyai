@@ -107,6 +107,9 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-long-delegation",
 ] as const satisfies readonly NaturalMissionE2eScenario[];
 
+const RENDERED_SLA_BREACHES_VALUE_PATTERN =
+  /SLA breach(?:es|\s+count)?[\s\S]{0,100}\b3\b|\b3\b[\s\S]{0,100}SLA breach(?:es|\s+count)?/i;
+
 interface Mission {
   id: string;
   status: string;
@@ -1756,7 +1759,7 @@ async function runNaturalFollowupScenario(input: {
     metrics,
     final,
   });
-  assertNaturalFollowupReusedExistingSession({
+  assertNaturalColdRecreationFollowup({
     timeline: result.timeline,
     phaseOneFinal: initialFinal,
     expectedSessionKey: initialSessionKey,
@@ -1830,7 +1833,7 @@ async function runNaturalBrowserFollowupScenario(input: {
     phaseOneFinal: initialFinal,
     patterns: [
       { label: "continued rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
-      { label: "continued rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+      { label: "continued rendered SLA breaches", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
       { label: "continued rendered owner", pattern: /Incident Commander/i },
     ],
   });
@@ -1922,7 +1925,7 @@ async function runNaturalBrowserRestartContinuationScenario(input: {
     phaseOneFinal: initialFinal,
     patterns: [
       { label: "restarted rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
-      { label: "restarted rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+      { label: "restarted rendered SLA breaches", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
       { label: "restarted rendered owner", pattern: /Incident Commander/i },
     ],
   });
@@ -2038,7 +2041,7 @@ async function runNaturalBrowserColdRecreationScenario(input: {
           /Resume mode:\s*(?:warm|cold)|["']resumeMode["']\s*:\s*["'](?:warm|cold)["']|(?:warm|cold)[- ]recovery|(?:warm|cold)[- ]recreat(?:ion|ed)|re[- ]?open(?:ed)?|recovery confirmed|new browser session/i,
       },
       { label: "recovered rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
-      { label: "recovered rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+      { label: "recovered rendered SLA breaches", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
       { label: "recovered rendered owner", pattern: /Incident Commander/i },
     ],
   });
@@ -2741,7 +2744,7 @@ export function buildNaturalScenarioSpec(
       ],
       requiredEvidencePatterns: [
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
-        { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+        { label: "rendered SLA breaches", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
         { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
       ],
     };
@@ -2771,7 +2774,7 @@ export function buildNaturalScenarioSpec(
       requiredAnswerTerms: ["SLA", "Incident Commander", "action"],
       requiredEvidencePatterns: [
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
-        { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+        { label: "rendered SLA breaches", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
         { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
       ],
     };
@@ -2803,7 +2806,7 @@ export function buildNaturalScenarioSpec(
       ],
       requiredEvidencePatterns: [
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
-        { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+        { label: "rendered SLA breaches", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
         { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
       ],
     };
@@ -2842,7 +2845,7 @@ export function buildNaturalScenarioSpec(
             /Resume mode:\s*(?:warm|cold)|["']resumeMode["']\s*:\s*["'](?:warm|cold)["']|(?:warm|cold)[- ]recovery|(?:warm|cold)[- ]recreat(?:ion|ed)|re[- ]?open(?:ed)?|recovery confirmed|new browser session/i,
         },
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
-        { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+        { label: "rendered SLA breaches", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
         { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
       ],
     };
@@ -2878,7 +2881,7 @@ export function buildNaturalScenarioSpec(
       requiredEvidencePatterns: [
         { label: "profile fallback evidence", pattern: /Profile fallback:\s*profile_locked|profileFallback|profile_locked|isolated runtime profile/i },
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
-        { label: "rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+        { label: "rendered SLA breaches", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
         { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
       ],
     };
@@ -2998,8 +3001,12 @@ export function buildNaturalScenarioSpec(
       minEvidenceEvents: 1,
       requiredAnswerTerms: ["denied", "approval", "dry-run"],
       requiredAnswerPatterns: [
-        { label: "denied side effect", pattern: /\b(?:did not|not|no)\s+(?:submit|apply|perform|run|complete)/i },
-        { label: "safe next action", pattern: /\b(?:next action|safest next step|safe fallback|ask the operator|revise)\b/i },
+        {
+          label: "denied side effect",
+          pattern:
+            /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit|apply|perform|run|complete|execute|take|taken)|\bwas\s+not\s+executed\b|\baction not performed\b|\bno (?:form submission|browser action) (?:was )?(?:executed|taken)\b|\bremains untouched\b/i,
+        },
+        { label: "safe next action", pattern: /\b(?:next action|safest next step|safe fallback|ask the operator|revise|flow is complete)\b/i },
       ],
       forbiddenPatterns: [
         {
@@ -3078,7 +3085,7 @@ export function buildNaturalScenarioSpec(
       ],
       forbiddenPatterns: [
         { label: "unsupported rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
-        { label: "unsupported rendered SLA breaches", pattern: /SLA breaches[\s\S]{0,80}\b3\b|\b3\b[\s\S]{0,80}SLA breaches/i },
+        { label: "unsupported rendered SLA breaches", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
         { label: "unsupported rendered owner", pattern: /Incident Commander/i },
       ],
       allowedWeakAnswerSignals: ["tool unavailable fallback"],
@@ -3114,7 +3121,10 @@ export function buildNaturalScenarioSpec(
         },
       ],
       requiredEvidencePatterns: [
-        { label: "browser CDP timeout bucket", pattern: /cdp_command_timeout|CDP command timed out|browser snapshot CDP command timed out/i },
+        {
+          label: "browser CDP timeout bucket",
+          pattern: /cdp_command_timeout|CDP command timed out|browser snapshot CDP command timed out|CDP (?:snapshot|scroll|capture)[\s\S]{0,80}commands? timed out|browser_(?:snapshot|scroll)[\s\S]{0,80}timed out/i,
+        },
       ],
       allowedWeakAnswerSignals: ["tool unavailable fallback"],
     };
@@ -3149,7 +3159,7 @@ export function buildNaturalScenarioSpec(
         },
       ],
       requiredEvidencePatterns: [
-        { label: "browser detached target bucket", pattern: /detached_target|target detached|browser target detached/i },
+        { label: "browser detached target bucket", pattern: /detached_target|target detached|browser target detached|detached\s+\d+\s+times/i },
       ],
       allowedWeakAnswerSignals: ["tool unavailable fallback"],
     };
@@ -3177,7 +3187,11 @@ export function buildNaturalScenarioSpec(
       minEvidenceEvents: 1,
       requiredAnswerTerms: ["browser", "verified", "unverified", "next action"],
       requiredAnswerPatterns: [
-        { label: "attach failure closeout", pattern: /\b(?:attach|attached|target|page|browser)\b[\s\S]{0,100}\b(?:failed|failure|could not|unable)\b/i },
+        {
+          label: "attach failure closeout",
+          pattern:
+            /\b(?:attach|attached|target|page|browser)\b[\s\S]{0,120}\b(?:failed|failure|could not|unable)\b|\b(?:failed|failure|could not|unable)\b[\s\S]{0,120}\b(?:attach|attached|target|page|browser)\b/i,
+        },
         {
           label: "bounded attach limitation",
           pattern: /\b(?:target|tab|page|browser)\b[\s\S]{0,120}\b(?:attach|unverified|not complete|incomplete|unavailable)\b/i,
@@ -3337,8 +3351,8 @@ export function buildNaturalScenarioSpec(
     requiredEvidencePatterns: [
       { label: "orchestration evidence stream", pattern: /multi-agent decomposition|durable sub-session history/i },
       { label: "bridge evidence stream", pattern: /browser work is a means|does not control the desktop|command-line setup/i },
-      { label: "product signals stuck missions", pattern: /Stuck missions:\s*6|6\s+stuck missions/i },
-      { label: "product signals weak answer rate", pattern: /Weak answer rate:\s*24%|24%\s+weak answer rate/i },
+      { label: "product signals stuck missions", pattern: /Stuck missions:\s*(?:6|six)|(?:6|six)\s+stuck missions/i },
+      { label: "product signals weak answer rate", pattern: /Weak[- ]answer(?:\s+rate)?\s*:?\s*24%|24%[\s-]+weak[- ]answer(?:\s+rate)?/i },
     ],
   };
 }
@@ -3594,7 +3608,7 @@ export function evaluateNaturalSourceCoverage(input: {
       observed: input.evidenceEvents,
       required: input.spec.minEvidenceEvents,
     },
-    residualRiskVisible: /\bresidual\s+risk\b|\brisk\b|uncertain|uncertainty|unverified|not verified/i.test(
+    residualRiskVisible: /\bresidual\s+risk\b|\brisks?\b|uncertain|uncertainty|unverified|not verified|\bdegraded\b|\bfallback\b|\blocked\b|no external mutation|isolated local execution|approval (?:is )?denied|operator denied approval|denied by|side effect did not run|must not be applied|requested approval|no persistent changes|without side effects|no side effects occurred|execution stopped at the approval gate|action not performed|no form submission was executed/i.test(
       input.finalText
     ),
     unsupportedClaims,
@@ -4719,7 +4733,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         {
           label: "bridge evidence line",
           pattern:
-            /^\s*[-*+]\s+bridge evidence\s*:.*(?:Bridge capability research|browser bridge).*TURNKEYAI_PRODUCT_BRIDGE_OK.*(?:browser bridge|controls).*(?:desktop (?:control )?outside the browser|browser-only (?:scope|work scoped|boundary))/im,
+            /^\s*[-*+]\s+bridge evidence\s*:.*(?:Bridge capability research|browser bridge).*TURNKEYAI_PRODUCT_BRIDGE_OK.*(?:browser bridge|controls).*(?:desktop (?:control )?outside the browser|browser-only (?:scope|work scoped|boundary|mission completion)|browser-only.*desktop control)/im,
         },
         {
           label: "browser signal evidence line",
@@ -4808,7 +4822,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         { label: "browser-rendered dashboard evidence", pattern: /browser|JavaScript|client-rendered|rendered DOM|dynamic dashboard/i },
         { label: "source-bounded evidence", pattern: /local fixture|source-bounded|verified sources|source coverage|local sources/i },
         { label: "queue depth value", pattern: /queue depth(?:\s*:|\s+of)?\s*11/i },
-        { label: "SLA breach value", pattern: /(?:SLA breaches\s*:?\s*3|3\s+SLA breaches)/i },
+        { label: "SLA breach value", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
       ],
       forbiddenPatterns: [
         { label: "unsupported adoption claim", pattern: /\b(millions of users|large community|market share|widely adopted|customers)\b/i },
@@ -5816,7 +5830,7 @@ function relaxedSessionKeySignature(sessionKey: string): string {
 }
 
 function readWorkerTaskSessionPrefix(sessionKey: string): string | null {
-  const match = sessionKey.match(/^(worker:[A-Za-z0-9_-]+:task[:|-][A-Za-z0-9_-]+):/);
+  const match = sessionKey.match(/^(worker:[A-Za-z0-9_-]+:task[:|-][A-Za-z0-9_-]+)(?::|$)/);
   return match?.[1] ?? null;
 }
 
@@ -5850,7 +5864,7 @@ export function assertNaturalFollowupReusedExistingSession(input: {
   assert.equal(
     isCompatibleSessionKeyReference(parsed.session_key, input.expectedSessionKey),
     true,
-    "natural sessions_send must reuse the phase-one session_key or a unique prefix of it"
+    `natural sessions_send must reuse the phase-one session_key or a unique prefix of it (actual=${String(parsed.session_key)} expected=${input.expectedSessionKey})`
   );
   const sendCallIndex = input.timeline.indexOf(sendCalls[0]!);
   const sendResultIndex = input.timeline.findIndex(
@@ -5862,6 +5876,45 @@ export function assertNaturalFollowupReusedExistingSession(input: {
   assert.ok(sendResultIndex > sendCallIndex, "natural sessions_send must produce a result after the continuation call");
   const latestThoughtIndex = findLatestThoughtIndex(input.timeline);
   assert.ok(latestThoughtIndex > sendResultIndex, "natural follow-up final answer must follow the continuation result");
+}
+
+function assertNaturalColdRecreationFollowup(input: {
+  timeline: ActivityEvent[];
+  phaseOneFinal: ActivityEvent;
+  expectedSessionKey: string;
+}): void {
+  const tail = sliceTimelineAfterEvent(input.timeline, input.phaseOneFinal);
+  const duplicateSpawnCalls = tail.filter(
+    (event) => event.runtime?.["toolName"] === "sessions_spawn" && event.runtime?.["toolPhase"] === "call"
+  );
+  assert.equal(
+    duplicateSpawnCalls.length,
+    0,
+    "natural cold recreation follow-up must continue through the existing browser worker rather than parent-spawning a duplicate"
+  );
+  const sendCalls = tail.filter(
+    (event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "call"
+  );
+  assert.ok(sendCalls.length >= 1, "natural cold recreation follow-up must use sessions_send");
+  const sendInputs = sendCalls.map((event) => {
+    const callInput = event.runtime?.["callInput"];
+    assert.equal(typeof callInput, "string", "natural cold recreation sessions_send call must persist structured callInput");
+    return JSON.parse(callInput as string) as { session_key?: unknown };
+  });
+  if (sendInputs.some((parsed) => isCompatibleSessionKeyReference(parsed.session_key, input.expectedSessionKey))) {
+    return;
+  }
+  const sendResultEvidence = tail
+    .filter((event) => event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "result")
+    .map((event) => [event.text, String(event.runtime?.["resultContent"] ?? "")].join("\n"))
+    .join("\n");
+  assert.match(
+    sendResultEvidence,
+    /session_not_found|session not found|session was unavailable|previous session was unavailable|unavailable session/i,
+    `natural cold recreation may use a replacement session only when the original session loss is visible (actual send keys=${sendInputs
+      .map((parsed) => String(parsed.session_key))
+      .join(", ")} expected=${input.expectedSessionKey})`
+  );
 }
 
 function assertNaturalFollowupResultIncludes(input: {

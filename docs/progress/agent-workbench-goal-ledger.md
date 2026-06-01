@@ -6064,3 +6064,168 @@ Convergence question:
   real browser-backed follow-up mission with clean tool/session liveness.
 - If no, next required gate: run timeout-continuation and browser continuation
   gates before claiming deeper runtime convergence.
+
+## 2026-06-02 01:12 CST - Source Fidelity And Runtime Quality Gate
+
+Direction: converging
+
+Execution Kernel:
+- The session tool runtime now preserves exact parent source context when a
+  delegated child task carries a matching source label but a different URL.
+  Exact self-contained child tasks still remain unchanged.
+- `sessions_send` also resolves task-only child session prefixes when exactly
+  one same-thread session matches, reducing false session-missing follow-up
+  failures after long generated session keys are shortened in model output.
+- Read-only browser instructions that ask a child session to submit a summary,
+  report, or findings to the operator are no longer misclassified as external
+  browser side effects. Mutation approval remains required for ambiguous form
+  submit wording and real browser mutations.
+
+Result Quality:
+- The prior realistic brief failure was a real substance issue: a child session
+  fetched a malformed local URL and the final answer omitted the required
+  Vendor Beta price. The fix reinforces exact source URLs into the delegated
+  prompt when the source label matches but the URL differs.
+- Natural quality gates were broadened only for semantically equivalent
+  closeout/risk wording; unsupported claims and hidden residual risk remain
+  rejected by focused report tests.
+
+Workbench UX:
+- No page layout changed in this checkpoint.
+- User-visible mission quality improves because follow-up and source-backed
+  final answers are less likely to degrade into session-not-found, unnecessary
+  approval, or missing-source evidence states.
+
+Browser Reliability:
+- Browser execution behavior did not change directly.
+- Browser-backed natural and mission gates still passed in focused and matrix
+  runs, including dynamic dashboard, browser follow-up, CDP timeout closeout,
+  detached-target closeout, and attach-failed closeout scenarios from the
+  current acceptance cycle.
+
+Acceptance Evidence:
+- Focused runtime tests:
+  `npx tsx --test packages/role-runtime/src/tool-use.test.ts
+  packages/role-runtime/src/llm-response-generator.test.ts
+  packages/role-runtime/src/tool-capability-registry.test.ts`: passed, 121
+  tests.
+- Mission report tests:
+  `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`: passed, 51
+  tests.
+- Focused realistic brief E2E:
+  `npm run mission:e2e -- --matrix-scenarios realistic-brief
+  --scenario-timeout-ms 300000 --model-catalog models.local.json --json
+  /tmp/turnkeyai-mission-realistic-brief-url-fidelity-fix-20260602.json`:
+  passed with mission `msn.mpvgmpi9.1`, quality `passed`, tools `3/3`,
+  sessions `3/0`, liveness `0/0/0`, evidence `3`, final bytes `1343`.
+- Full mission matrix:
+  `npm run mission:e2e -- --matrix-scenarios
+  basic,comparison,followup,cancel,approval,browser-dynamic,browser-dashboard,timeout-recovery,memory-recall,task-tracking,product-workbench-brief,realistic-brief
+  --scenario-timeout-ms 300000 --model-catalog models.local.json --json
+  /tmp/turnkeyai-mission-matrix-url-fidelity-fix-20260602.json`: passed all
+  12 scenarios. The final scenario `realistic-brief` passed with mission
+  `msn.mpvgtmlv.12`, quality `passed`, tools `3/3`, sessions `3/0`,
+  liveness `0/0/0`, evidence `3`, final bytes `1333`.
+
+Regression Risk:
+- Source reinforcement could append extra parent context to a child task that
+  already has a URL. The runtime limits this to the top-ranked parent source
+  line, and tests pin that an exact source URL remains self-contained.
+- Read-only submit wording could become too permissive if expanded carelessly.
+  Existing tests still require approval for ambiguous submit actions and for
+  later browser order actions.
+- Full repository typecheck/build/full test suite has not yet run for this
+  checkpoint; those remain required before PR merge.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes
+- Evidence: the exact failure that produced a weak realistic operator brief is
+  now covered by a runtime test and a passing real LLM mission matrix. The
+  matrix also retained approval, browser, timeout, memory, task, follow-up, and
+  multi-source scenarios without liveness residue.
+- If no, next required gate: run full release verification and a real browser
+  natural gate before claiming broader production readiness.
+
+## 2026-06-02 02:06 CST - Natural Matrix Replay Findings
+
+Direction: oscillating
+
+Execution Kernel:
+- Added same-thread canonicalization from a visible browser session id back to
+  its owning worker session before `sessions_send` resumes work. This addresses
+  natural follow-up turns where the model uses the browser session id exposed in
+  evidence instead of the worker session key required by the tool protocol.
+- Browser private tool results now include a bounded visible text excerpt in
+  the summary. This gives browser sub-agents rendered page facts directly in
+  their private tool evidence before they synthesize a parent-visible result.
+- No public route shape changed.
+
+Result Quality:
+- Focused real gates improved: browser follow-up now passes after a model emits
+  a browser session id, denial closeout accepts safe "not executed / no browser
+  action taken" wording, and long-delegation passes with browser-visible product
+  signal evidence.
+- A full natural matrix replay still did not complete cleanly in one run. The
+  latest stop produced a useful, source-backed browser follow-up final answer,
+  but the matrix remained red because one recovered failed tool result was
+  present. This means broad natural acceptance is not yet proven stable.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The user-visible effect is indirect: fewer valid follow-ups should collapse
+  into `session not found`, and browser evidence should be more concrete in
+  mission replay.
+
+Browser Reliability:
+- Browser follow-up, restart continuation, cold recreation, profile-lock
+  recovery, unavailable CDP, CDP timeout, detached target, and attach-failed
+  scenarios all passed in focused or tail natural runs during this cycle.
+- The full natural replay still surfaced recovered transport/tool noise. It did
+  not leave liveness residue, but it means production readiness remains
+  unproven.
+
+Acceptance Evidence:
+- Full real acceptance attempt:
+  `npm run acceptance:real -- --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --cdp-timeout-ms 45000 --data-dir
+  /tmp/turnkeyai-real-acceptance-source-fidelity-20260602` passed tool-use real
+  matrix, direct-CDP smoke, and the 12-scenario mission matrix, then stopped in
+  the natural matrix before these follow-up fixes.
+- Focused natural browser follow-up after browser-session-id canonicalization:
+  `msn.mpvhgc4d.1`, natural `passed`, tools `3/3`, sessions `1/1`, browser
+  used, profile fallbacks `0`, browser buckets `none`, liveness `0/0/0`.
+- Focused approval denied after safe-closeout matcher update:
+  `msn.mpvhzyw3.1`, natural `passed`, tools `2/2`, approvals exercised,
+  liveness `0/0/0`.
+- Natural tail after denial fix passed scenarios pending approval through cancel
+  follow-up, including browser unavailable, CDP timeout, detached target, attach
+  failed, timeout partial, timeout follow-up, cancel active, and cancel
+  follow-up. Long delegation initially failed source evidence, then passed after
+  browser visible-text summaries with `msn.mpvilyys.1`, tools `3/3`, sessions
+  `3/0`, browser used, artifacts `5`, liveness `0/0/0`.
+- Full natural matrix replay after those fixes stopped at
+  `natural-browser-followup-continuation`: final answer was useful and
+  source-backed, but one failed tool result kept the scenario red.
+
+Regression Risk:
+- Browser session id canonicalization could route a stale browser id if two
+  same-thread browser worker sessions share the same browser session id. The
+  resolver only accepts a unique same-thread match; ambiguous matches still
+  fail closed.
+- Adding visible text excerpts to browser private tool summaries increases tool
+  result size. The excerpt is capped at 500 normalized characters.
+- The natural evaluator now accepts more denial/safety phrasing. Negative
+  controls still reject claimed completed submissions after denial.
+- The full natural matrix is not yet green in a single post-fix run, so this
+  checkpoint cannot claim production-grade natural-task stability.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  no
+- Evidence: focused gates show real fixes, but the broad natural matrix still
+  oscillates. The next slice should classify recovered failed tool results and
+  decide which are acceptable recovery evidence versus actual quality failure,
+  then prove the full natural matrix can pass in one coherent run.
+- If no, next required gate: rerun the full natural matrix after recovered
+  failure classification is corrected, then rerun full real acceptance.

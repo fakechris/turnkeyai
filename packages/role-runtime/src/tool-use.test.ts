@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { RoleActivationInput, WorkerInvocationInput, WorkerRuntime, WorkerSessionState } from "@turnkeyai/core-types/team";
+import type {
+  RoleActivationInput,
+  WorkerInvocationInput,
+  WorkerMessageInput,
+  WorkerRuntime,
+  WorkerSessionState,
+} from "@turnkeyai/core-types/team";
 
 import type { TaskToolService } from "./task-tool-service";
 import type { RolePromptPacket } from "./prompt-policy";
@@ -225,7 +231,10 @@ test("sessions_spawn does not append parent URL context when the delegated task 
     threadId: "thread-1",
     intent: {
       relayBrief: "",
-      instructions: "Vendor Alpha source: http://127.0.0.1:4101/vendor-alpha",
+      instructions: [
+        "Vendor Alpha source: http://127.0.0.1:4101/vendor-alpha",
+        "Vendor Beta source: http://127.0.0.1:4101/vendor-beta",
+      ].join("\n"),
       recentMessages: [],
     },
   };
@@ -266,6 +275,63 @@ test("sessions_spawn does not append parent URL context when the delegated task 
   });
 
   assert.equal(capturedTaskPrompt, "Fetch http://127.0.0.1:4101/vendor-alpha and summarize pricing.");
+});
+
+test("sessions_spawn reinforces parent source URL when delegated task has a matching label but wrong URL", async () => {
+  let capturedTaskPrompt = "";
+  const activation = buildActivation();
+  activation.handoff.payload = {
+    threadId: "thread-1",
+    intent: {
+      relayBrief: "",
+      instructions: [
+        "Compare these source pages.",
+        "Vendor Alpha source: http://127.0.0.1:4101/vendor-alpha",
+        "Vendor Beta source: http://127.0.0.1:4101/vendor-beta",
+      ].join("\n"),
+      recentMessages: [],
+    },
+  };
+  const workerRuntime = {
+    async spawn(input: WorkerInvocationInput) {
+      capturedTaskPrompt = input.packet.taskPrompt;
+      return { workerType: "explore", workerRunKey: "worker:explore:task-1" };
+    },
+    async send() {
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Evidence gathered.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  await executor.execute({
+    call: {
+      id: "call-wrong-url",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "explore",
+        task: "Fetch http://127.0.0.0.1:4101/vendor-beta for Vendor Beta pricing and risk.",
+      },
+    },
+    activation,
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Compare vendors.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.match(capturedTaskPrompt, /http:\/\/127\.0\.0\.0\.1:4101\/vendor-beta/);
+  assert.match(capturedTaskPrompt, /Parent mission context relevant to this delegated task/);
+  assert.match(capturedTaskPrompt, /Vendor Beta source: http:\/\/127\.0\.0\.1:4101\/vendor-beta/);
+  assert.doesNotMatch(capturedTaskPrompt, /vendor-alpha[\s\S]*Parent mission context relevant/i);
 });
 
 test("sessions_spawn rejects worker kinds that were not advertised as executable", async () => {
@@ -988,6 +1054,66 @@ test("sessions_spawn does not require mutation approval for read-only submit fin
       input: {
         agent_id: "browser",
         task: "Open the dashboard, re-check the rendered values, and submit findings to the operator as a read-only report.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Review page.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(spawnCalled, true);
+  assert.equal(permissionRequested, false);
+  assert.equal(result.isError, undefined);
+});
+
+test("sessions_spawn does not require mutation approval for submitting a read-only summary to the operator", async () => {
+  let spawnCalled = false;
+  let permissionRequested = false;
+  const toolPermissionService: ToolPermissionService = {
+    async request() {
+      permissionRequested = true;
+      throw new Error("read-only browser summary should not request mutation approval");
+    },
+    async result() {
+      throw new Error("not used");
+    },
+    async apply() {
+      throw new Error("not used");
+    },
+  };
+  const workerRuntime = {
+    async spawn() {
+      spawnCalled = true;
+      return { workerType: "browser", workerRunKey: "worker:browser:task-summary" };
+    },
+    async send() {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Reviewed dashboard.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser"],
+    toolPermissionService,
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-readonly-submit-summary",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open the rendered dashboard, review the queue status, and submit a summary to the operator with owner and next action.",
       },
     },
     activation: buildActivation(),
@@ -3055,6 +3181,176 @@ test("sessions_send reuses a completed session for summary-only follow-ups", asy
   assert.equal(body.cached, true);
   assert.equal(body.final_content, "Full cached final report.");
   assert.equal(result.progress?.at(-1)?.detail?.cached, true);
+});
+
+test("sessions_send resolves a task-only session key prefix when one visible session matches", async () => {
+  const fullSessionKey = "worker:explore:task:TASK-1780322295338-120:call_function_abc123_1";
+  const lastResult = {
+    workerType: "explore" as const,
+    status: "completed" as const,
+    summary: "Research completed.",
+    payload: {
+      mode: "llm_sub_agent",
+      workerType: "explore",
+      content: "Full cached final report from the existing child session.",
+    },
+  };
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: fullSessionKey,
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-previous",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: fullSessionKey,
+            workerType: "explore",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult,
+          },
+        },
+      ];
+    },
+    async getState(workerRunKey: string) {
+      assert.equal(workerRunKey, fullSessionKey);
+      return {
+        workerRunKey: fullSessionKey,
+        workerType: "explore",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+        lastResult,
+      };
+    },
+    async send() {
+      throw new Error("summary-only continuation should reuse cached result");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["explore"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-task-prefix-summary",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:task:TASK-1780322295338-120",
+        message: "Please return your complete final report from the existing child session.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue from the existing child session.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { session_key: string; final_content?: string };
+  assert.equal(result.isError, undefined);
+  assert.equal(body.session_key, fullSessionKey);
+  assert.equal(body.final_content, "Full cached final report from the existing child session.");
+  assert.equal(result.progress?.at(-1)?.detail?.session_key, fullSessionKey);
+});
+
+test("sessions_send resolves a browser session id to its owning worker session", async () => {
+  const fullSessionKey = "worker:browser:task:TASK-1780334683757-6:call_function_browser_1";
+  const browserSessionId = "browser-session-1780334689255";
+  let sendWorkerRunKey = "";
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: fullSessionKey,
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "task-browser",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: fullSessionKey,
+            workerType: "browser",
+            status: "done",
+            createdAt: 1,
+            updatedAt: 2,
+            lastResult: {
+              workerType: "browser",
+              status: "completed",
+              summary: "Browser dashboard reviewed.",
+              payload: { sessionId: browserSessionId, targetId: "target-1" },
+            },
+          },
+        },
+      ];
+    },
+    async getState(workerRunKey: string) {
+      assert.equal(workerRunKey, fullSessionKey);
+      return {
+        workerRunKey: fullSessionKey,
+        workerType: "browser",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 2,
+        lastResult: {
+          workerType: "browser",
+          status: "completed",
+          summary: "Browser dashboard reviewed.",
+          payload: { sessionId: browserSessionId, targetId: "target-1" },
+        },
+      };
+    },
+    async resume(input: WorkerMessageInput) {
+      sendWorkerRunKey = input.workerRunKey;
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Re-checked rendered dashboard state.",
+        payload: { sessionId: browserSessionId, targetId: "target-1" },
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-browser-session-id",
+      name: "sessions_send",
+      input: {
+        session_key: browserSessionId,
+        message: "Re-check the rendered dashboard state from the same browser context.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue browser work.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { session_key: string; final_content?: string };
+  assert.equal(result.isError, undefined);
+  assert.equal(sendWorkerRunKey, fullSessionKey);
+  assert.equal(body.session_key, fullSessionKey);
+  assert.match(result.content, /Re-checked rendered dashboard state/);
 });
 
 test("sessions_send reuses a completed session for Chinese evidence extraction follow-ups", async () => {

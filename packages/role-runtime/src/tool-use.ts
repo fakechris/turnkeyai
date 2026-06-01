@@ -19,6 +19,7 @@ import type {
   WorkerKind,
   WorkerRuntime,
 } from "@turnkeyai/core-types/team";
+import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
 
 import type { RolePromptPacket } from "./prompt-policy";
 import {
@@ -917,6 +918,14 @@ function isReadOnlyBrowserActionVerbContext(input: string, verb: string, index: 
     const prefix = input.slice(Math.max(0, index - 40), index).toLowerCase();
     return /\b(?:priority|sort|sorted|display|list|ranking|ranked)\s+$/.test(prefix);
   }
+  if (verb === "submit") {
+    const suffix = input
+      .slice(Math.max(0, index + verb.length), Math.max(0, index + verb.length + 120))
+      .toLowerCase();
+    return /^\s+(?:a\s+|an\s+|the\s+|your\s+)?(?:answer|summary|summar(?:y|ies)|report|findings|review|recommendation|recommendations|result|results|evidence)\b[\s\S]{0,60}\b(?:to|for)\s+(?:the\s+)?(?:operator|user|lead|requester|product leader|product lead)\b/.test(
+      suffix
+    );
+  }
   return false;
 }
 
@@ -1123,9 +1132,11 @@ function buildDelegatedTaskPrompt(
 ): string {
   const hasUrl = /https?:\/\//i.test(task);
   const taskWithApproval = approvalContext ? appendBrowserApprovalContext(task, approvalContext) : task;
-  if (hasUrl) return taskWithApproval;
   const parentContext = extractDelegationParentContext(task, payload);
   if (!parentContext) {
+    return taskWithApproval;
+  }
+  if (hasUrl && !hasMissingParentSourceUrl(taskWithApproval, parentContext)) {
     return taskWithApproval;
   }
   return [
@@ -1201,6 +1212,19 @@ function extractDelegationParentContext(
     .slice(0, 6)
     .map((entry) => entry.line.includes(entry.url) ? entry.line : `${entry.line} ${entry.url}`);
   return [...new Set(selected)].join("\n");
+}
+
+function hasMissingParentSourceUrl(task: string, parentContext: string): boolean {
+  const taskUrls = new Set(
+    Array.from(task.matchAll(/https?:\/\/[^\s)]+/gi))
+      .map((match) => sanitizeDelegationUrl(match[0] ?? ""))
+      .filter(Boolean)
+  );
+  const primaryContextLine = parentContext.split(/\r?\n/).find((line) => /https?:\/\//i.test(line)) ?? "";
+  return Array.from(primaryContextLine.matchAll(/https?:\/\/[^\s)]+/gi)).some((match) => {
+    const url = sanitizeDelegationUrl(match[0] ?? "");
+    return url.length > 0 && !taskUrls.has(url);
+  });
 }
 
 function scoreDelegationContextLine(task: string, line: string): number {
@@ -1397,6 +1421,13 @@ function resolveWorkerSessionRecord(
   if (signatureMatches.length === 1) {
     return signatureMatches[0]!;
   }
+  const browserSessionMatches = visibleRecords.filter((record) => {
+    if (record.state.workerType !== "browser") return false;
+    return decodeBrowserSessionPayload(record.state.lastResult?.payload)?.sessionId === requestedSessionKey;
+  });
+  if (browserSessionMatches.length === 1) {
+    return browserSessionMatches[0]!;
+  }
   const truncatedPrefix = readTruncatedSessionKeyPrefix(requestedSignature);
   if (truncatedPrefix) {
     const prefixMatches = visibleRecords.filter((record) =>
@@ -1461,7 +1492,7 @@ function readCleanTruncatedSessionKeyPrefix(sessionKey: string): string | null {
 }
 
 function readWorkerTaskSessionPrefix(sessionKey: string): string | null {
-  const match = sessionKey.match(/^(worker:[A-Za-z0-9_-]+:task[:|-][A-Za-z0-9_-]+):/);
+  const match = sessionKey.match(/^(worker:[A-Za-z0-9_-]+:task[:|-][A-Za-z0-9_-]+)(?::|$)/);
   return match?.[1] ?? null;
 }
 

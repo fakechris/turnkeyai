@@ -98,7 +98,10 @@ test("native tool capability registry includes permission tools only when enable
     enabled.summaries().filter((summary) => summary.promptGroup === "permissions").map((summary) => summary.name),
     ["permission_query", "permission_result", "permission_applied"]
   );
-  assert.match(enabled.renderPromptHarness({ seat: "lead" }), /Permission Loop/);
+  const enabledHarness = enabled.renderPromptHarness({ seat: "lead" });
+  assert.match(enabledHarness, /Permission Loop/);
+  assert.match(enabledHarness, /Do not call permission_query for read-only browser navigation/);
+  assert.match(enabledHarness, /approval is only for actions that can mutate external or account state/);
 });
 
 test("native tool capability registry includes memory tools only when enabled", () => {

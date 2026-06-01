@@ -443,6 +443,7 @@ function renderPermissionSection(): string {
   return [
     "## Permission Loop",
     "- Before any side-effectful action, call permission_query with the exact action, scope, risk, and redacted payload. Do not perform the action first.",
+    "- Do not call permission_query for read-only browser navigation, re-checks, inspections, snapshots, screenshots, extraction, or dashboard reviews. Use sessions_spawn or sessions_send directly for those tasks; approval is only for actions that can mutate external or account state.",
     "- If permission_query returns pending, stop and tell the user the approval is waiting. Do not invent an approval result.",
     "- After the operator decides, call permission_result with the approval_id. If denied, explain the denied path and choose a safe fallback.",
     "- If approved, call permission_applied before continuing the approved action so runtime cache and audit state match the operator decision.",
