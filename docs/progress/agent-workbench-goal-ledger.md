@@ -5709,3 +5709,76 @@ Convergence question:
   then completed with residual risk and source coverage visible.
 - If no, next required gate: run a broader natural matrix subset covering
   comparison, approval, timeout, cancellation, and long delegation.
+
+## 2026-06-01 20:36 CST - Tool-Result-Before-Final Completion Guard
+
+Direction: converging
+
+Execution Kernel:
+- Mission completion reconciliation now refuses to mark a mission `done` when a
+  lead final answer appears after a pending tool call but before the linked
+  `role=tool` result is persisted.
+- A pending tool call can still complete normally when every tool call id has a
+  matching tool result message before the final answer. This keeps the canonical
+  order as: assistant tool call, tool result, then final answer.
+
+Result Quality:
+- This does not change answer synthesis. It prevents an early or malformed
+  answer from hiding incomplete tool evidence and falsely looking complete in
+  the workbench.
+- The focused natural long-delegation gate still produced a useful,
+  evidence-backed answer after the guard, so normal tool-result-backed
+  synthesis remains accepted.
+
+Workbench UX:
+- Users should see fewer falsely completed missions where the final answer card
+  exists but the thought process still has a pending tool call without a result.
+- No layout or page chrome changed.
+
+Browser Reliability:
+- Browser execution behavior is unchanged. The natural long-delegation run used
+  browser-backed sub-agent work, produced lifecycle-bearing artifacts, and had
+  zero profile fallbacks.
+- The run still reported two `transport_failure` browser buckets from recovered
+  sub-agent/browser activity; no active/waiting/stale runtime subjects remained
+  at completion.
+
+Acceptance Evidence:
+- Guard regression test first failed before the evaluator change, proving the
+  old behavior accepted an early final answer ahead of a pending tool result.
+- Focused contract tests:
+  `npx tsx --test packages/app-gateway/src/mission-completion-evaluator.test.ts
+  packages/app-gateway/src/mission-thread-bridge.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts
+  packages/qc-runtime/src/real-llm-acceptance-summary.test.ts`: passed.
+- Typecheck: `npm run typecheck`: passed.
+- Whitespace: `git diff --check`: passed.
+- Real natural gate:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-long-delegation --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-unresolved-tool-final-guard-20260601.json`: passed.
+- Mission: `msn.mpv6ys07.1`, status `done`, natural `passed`, tools `3/3`,
+  sessions `3/0`, browser used, artifacts `26`, lifecycle-bearing artifacts
+  `26`, profile fallbacks `0`, browser buckets `transport_failure=2`,
+  liveness `0/0/0`, final bytes `2088`.
+- Source coverage from the real artifact: answer terms `6/6`, evidence
+  patterns `4/4`, evidence events `3/3`, residual risk visible, unsupported
+  claims `0`.
+
+Regression Risk:
+- The guard intentionally tightens completion semantics for malformed or
+  partially persisted tool turns. If a provider emits stale `toolStatus=pending`
+  but all split tool-result messages are present, the mission can still finish.
+- This focused run proves normal long delegation remains viable, but the next
+  broader gate should include follow-up continuation and cancellation because
+  those flows depend heavily on terminal tool state.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes
+- Evidence: one false-completion path is now blocked at the canonical mission
+  completion layer, and a real long-delegation task still completed with
+  evidence-backed output after the stricter ordering rule.
+- If no, next required gate: run natural follow-up and cancellation scenarios to
+  verify terminal tool-state handling across continuation and interrupt paths.
