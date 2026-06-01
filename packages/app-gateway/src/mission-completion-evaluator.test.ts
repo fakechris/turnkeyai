@@ -260,6 +260,76 @@ describe("MissionCompletionEvaluator", () => {
     }
   });
 
+  it("does not mark done when a final answer appears before a pending tool result", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Check the browser page.",
+        },
+        {
+          ...message("a-tool", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+          toolStatus: "pending" as const,
+        },
+        {
+          ...message("a-final-early", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Final answer before the browser result arrived.",
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "stalled_tool_turn");
+      assert.deepEqual(decision.patch, { status: "blocked", blockers: 1 });
+      assert.equal(decision.recovery?.kind, "stalled_tool_turn");
+      assert.equal(decision.recovery?.status, "pending");
+    }
+  });
+
+  it("accepts a final answer after a pending tool call has a linked tool result", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Check the browser page.",
+        },
+        {
+          ...message("a-tool", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          toolCalls: [{ id: "call-1", name: "sessions_spawn", arguments: { agent_id: "browser" } }],
+          toolStatus: "pending" as const,
+        },
+        {
+          ...message("tool-1", "tool", 150),
+          name: "sessions_spawn",
+          toolCallId: "call-1",
+          content: "Browser evidence collected.",
+        },
+        {
+          ...message("a-final", "assistant", 200),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Final answer after browser evidence.",
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
   it("blocks incomplete final answer only when no role run is active", () => {
     const incomplete = {
       ...message("a-cut", "assistant", 100),

@@ -179,8 +179,12 @@ function hasFinalLeadAssistantMessage(
   mission: Mission,
   messages: TeamMessage[]
 ): boolean {
-  const latest = findLatestLeadAnswerCandidate(mission, messages);
-  return Boolean(latest && !isIncompleteLeadFinalAnswer(latest));
+  const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
+  return Boolean(
+    latest &&
+      !isIncompleteLeadFinalAnswer(latest.message) &&
+      !hasUnresolvedLeadToolTurnBeforeAnswer(mission, messages, latest.index)
+  );
 }
 
 function isLeadAssistantMessage(mission: Mission, message: TeamMessage): boolean {
@@ -195,19 +199,19 @@ function findIncompleteLeadFinalAnswer(
   mission: Mission,
   messages: TeamMessage[]
 ): { message: TeamMessage; reason: "max_tokens" | "truncated_markdown" } | null {
-  const latest = findLatestLeadAnswerCandidate(mission, messages);
-  return latest ? isIncompleteLeadFinalAnswer(latest) : null;
+  const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
+  return latest ? isIncompleteLeadFinalAnswer(latest.message) : null;
 }
 
-function findLatestLeadAnswerCandidate(
+function findLatestLeadAnswerCandidateWithIndex(
   mission: Mission,
   messages: TeamMessage[]
-): TeamMessage | null {
+): { message: TeamMessage; index: number } | null {
   const staleBeforeIndex = Math.max(
     findLatestUserMessageIndex(messages),
     findLatestLeadToolMessageIndex(mission, messages)
   );
-  let latest: TeamMessage | null = null;
+  let latest: { message: TeamMessage; index: number } | null = null;
   for (const [index, message] of messages.entries()) {
     if (message.role !== "assistant") continue;
     const content = message.content.trim();
@@ -217,9 +221,39 @@ function findLatestLeadAnswerCandidate(
     if (message.toolStatus === "pending") continue;
     if (index <= staleBeforeIndex) continue;
     if (/@\{[^}]+\}/.test(content)) continue;
-    latest = message;
+    latest = { message, index };
   }
   return latest;
+}
+
+function hasUnresolvedLeadToolTurnBeforeAnswer(
+  mission: Mission,
+  messages: TeamMessage[],
+  answerIndex: number
+): boolean {
+  const latestToolIndex = findLatestLeadToolMessageIndex(mission, messages);
+  if (latestToolIndex < 0 || latestToolIndex >= answerIndex) return false;
+  const latestTool = messages[latestToolIndex];
+  if (!latestTool || latestTool.toolStatus !== "pending") return false;
+  const toolCalls = latestTool.toolCalls ?? [];
+  if (toolCalls.length === 0) return false;
+  return !hasToolResultMessagesForAllCalls(messages, latestToolIndex, answerIndex, toolCalls.map((call) => call.id));
+}
+
+function hasToolResultMessagesForAllCalls(
+  messages: TeamMessage[],
+  afterIndex: number,
+  beforeIndex: number,
+  toolCallIds: string[]
+): boolean {
+  const remaining = new Set(toolCallIds);
+  for (let index = afterIndex + 1; index < beforeIndex; index += 1) {
+    const message = messages[index];
+    if (message?.role !== "tool" || !message.toolCallId) continue;
+    remaining.delete(message.toolCallId);
+    if (remaining.size === 0) break;
+  }
+  return remaining.size === 0;
 }
 
 function findLatestUserMessageIndex(messages: TeamMessage[]): number {
