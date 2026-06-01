@@ -91,6 +91,8 @@ const pageNetworkBlockHandlers = new WeakMap<Page, (route: Route) => void>();
 const pageNetworkMockHandlers = new WeakMap<Page, Set<(route: Route) => Promise<void>>>();
 let browserE2eFailureInjected = false;
 
+type BrowserE2eFailureStage = BrowserTaskAction["kind"] | "target_attach";
+
 interface LivePersistentContextRecord {
   context: Promise<BrowserContext>;
   sessionIds: Set<string>;
@@ -1009,6 +1011,10 @@ export class ChromeSessionManager {
     actions: BrowserTaskAction[];
   }): Promise<{ page: Page; resumeMode: BrowserResumeMode; targetResolution: NonNullable<BrowserTaskResult["targetResolution"]> }> {
     const { context, sessionId, liveReuse, currentTargetId, actions } = input;
+    const injectedAttachFailure = maybeInjectBrowserE2eFailure("target_attach");
+    if (injectedAttachFailure) {
+      throw injectedAttachFailure;
+    }
     const pages = context.pages();
 
     if (!this.browserSessionManager || !currentTargetId) {
@@ -3250,29 +3256,30 @@ function summarizeBrowserFailureSummary(error: unknown): FailureSummary {
   };
 }
 
-function maybeInjectBrowserE2eFailure(actionKind: BrowserTaskAction["kind"]): Error | null {
+function maybeInjectBrowserE2eFailure(stage: BrowserE2eFailureStage): Error | null {
   const bucket = process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_BUCKET?.trim();
   if (!bucket) {
     browserE2eFailureInjected = false;
     return null;
   }
   const targetAction = process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_ACTION?.trim() || "snapshot";
-  if (targetAction !== actionKind) {
+  if (targetAction !== stage) {
     return null;
   }
   if (process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_REPEAT !== "1" && browserE2eFailureInjected) {
     return null;
   }
   browserE2eFailureInjected = true;
+  const context = stage === "target_attach" ? "while resolving the browser target" : "while capturing rendered page evidence";
   switch (bucket) {
     case "cdp_command_timeout":
-      return new Error(`cdp_command_timeout: browser ${actionKind} CDP command timed out while capturing rendered page evidence`);
+      return new Error(`cdp_command_timeout: browser ${stage} CDP command timed out ${context}`);
     case "detached_target":
-      return new Error(`detached_target: browser target detached while capturing rendered page evidence`);
+      return new Error(`detached_target: browser target detached ${context}`);
     case "attach_failed":
-      return new Error(`attach_failed: browser target attach failed while capturing rendered page evidence`);
+      return new Error(`attach_failed: browser target attach failed ${context}`);
     default:
-      return new Error(`${bucket}: injected browser E2E failure while capturing rendered page evidence`);
+      return new Error(`${bucket}: injected browser E2E failure ${context}`);
   }
 }
 

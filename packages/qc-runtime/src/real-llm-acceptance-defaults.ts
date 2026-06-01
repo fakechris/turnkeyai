@@ -43,6 +43,7 @@ export const DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS = [
   "natural-browser-unavailable-closeout",
   "natural-browser-cdp-timeout-closeout",
   "natural-browser-detached-target-closeout",
+  "natural-browser-attach-failed-closeout",
   "natural-timeout-partial-closeout",
   "natural-timeout-followup-continuation",
   "natural-cancel-active-tool",

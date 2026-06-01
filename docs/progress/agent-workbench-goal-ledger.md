@@ -4966,3 +4966,137 @@ Convergence question:
 - Evidence: a real natural LLM mission now proves the browser layer can surface
   target detachment, produce a useful terminal answer, and leave no stuck work.
 - If no, next required gate:
+
+## 2026-06-01 17:55 CST - 24-Hour Goal Review
+
+Direction: converging
+
+Repeated Issue Classes:
+- Browser failure closeouts were the dominant repeated class in this 24-hour
+  window: unavailable CDP, command timeout, detached target, and profile
+  fallback each needed natural gates rather than only route-level bucket tests.
+- Follow-up and continuation issues also repeated earlier in the window, but
+  the latest browser reliability work is tied to named natural matrix rows
+  instead of ad hoc single-failure patches.
+
+E2E Trend:
+- The trend improved from structural/browser bucket visibility to natural real
+  LLM evidence. Recent browser reliability checkpoints produced mission IDs and
+  reports for profile fallback recovery, unavailable CDP closeout, CDP timeout
+  closeout, and detached target closeout.
+- Attach failure was still the known open browser failure row at this review
+  boundary and required a dedicated natural gate before being claimed proven.
+
+Decision:
+- Continue with the attach failure gate next, but require a real natural LLM
+  report artifact before marking that row as proven.
+- Do not start another outward-facing UI or diagnostics arc until remaining
+  runtime reliability gates have explicit natural evidence or are deliberately
+  marked unproven.
+
+Methodology Review Trigger:
+- Not triggered in this review window. The repeated browser failure items moved
+  from route/unit visibility toward natural E2E artifacts rather than cycling
+  through unrelated local patches.
+
+## 2026-06-01 18:06 CST - Natural Browser Attach Failure Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added `natural-browser-attach-failed-closeout` to the natural mission
+  matrix. The scenario forces an E2E-only `attach_failed` browser bucket during
+  target resolution rather than during rendered-page snapshot capture.
+- The browser failure injection helper now supports a `target_attach` stage,
+  while normal runtime remains gated by explicit
+  `TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_*` variables.
+
+Result Quality:
+- The new natural gate requires browser use, an `attach_failed` bucket, useful
+  final synthesis, verified/unverified separation, and no stuck worker
+  liveness.
+- The gate explicitly allows the generic "tool unavailable fallback" weak
+  signal only for bucket-gated browser failure closeouts, because the expected
+  user-facing answer must name that browser attach failed. Normal browser
+  success scenarios still reject that signal.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The user-visible value is reliability truth: attach failures now have a real
+  natural mission artifact and can be surfaced as bounded browser evidence
+  instead of leaving the task spinning or hiding behind a generic tool failure.
+
+Browser Reliability:
+- This closes the remaining H4 browser failure row under natural prompts:
+  browser target attach failure now has a focused natural acceptance gate and a
+  passing real mission artifact.
+- Timeout, detached target, unavailable CDP endpoint, profile-lock recovery,
+  and attach failure now all have natural browser reliability coverage.
+
+Acceptance Evidence:
+- Focused tests: `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts
+  packages/qc-runtime/src/real-llm-acceptance-defaults.test.ts
+  scripts/real-llm-acceptance.test.ts`: passed.
+- `npm run typecheck`: passed.
+- Focused natural real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-attach-failed-closeout
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-browser-attach-failed-closeout.json`: passed.
+- Natural report:
+  `/tmp/turnkeyai-natural-browser-attach-failed-closeout.json`, kind
+  `turnkeyai.natural-mission-e2e.report`, evidence mode `natural-real-llm`,
+  status `passed`.
+- Natural mission: `msn.mpv1moiv.1`, status `done`, natural `passed`, tools
+  `1/1`, sessions `1/0`, browser `yes`, profile fallbacks `0`, browser
+  buckets `attach_failed=1`, stuck `no`, final bytes `917`.
+
+Regression Risk:
+- The failure hook is still production code behind explicit E2E-only
+  environment variables. The main risk remains accidental activation in a
+  non-test daemon configuration.
+- The weak-answer allowance is limited to browser failure closeout specs that
+  also require an explicit browser failure bucket; this avoids weakening normal
+  natural browser success gates.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a real natural LLM mission now proves attach failure can terminate
+  with a useful answer, bucketed evidence, and no stuck work.
+- If no, next required gate:
+
+## 2026-06-01 18:10 CST - 24-Hour Goal Review
+
+Direction: converging
+
+Repeated Issue Classes:
+- Browser failure closeouts were the dominant repeated class in this 24-hour
+  window: unavailable CDP, command timeout, detached target, profile fallback,
+  and attach failure all needed natural gates rather than only route-level
+  bucket tests.
+- Follow-up and continuation issues also repeated, but the latest browser
+  failure work is no longer changing generic runtime policy after each single
+  failed mission; each gate is now tied to a specific matrix row and artifact.
+
+E2E Trend:
+- The trend improved from structural/browser bucket visibility to natural real
+  LLM evidence. Recent browser reliability checkpoints produced mission IDs and
+  reports for profile fallback recovery, unavailable CDP closeout, CDP timeout
+  closeout, detached target closeout, and attach failure closeout.
+- The attach failure gate still exposed a broad weak-answer signal in the
+  evaluator. The adjustment is scoped to bucket-gated browser failure closeouts,
+  so the trend is convergence with a known evaluator-policy caveat rather than
+  unrestricted quality relaxation.
+
+Decision:
+- Continue core runtime and natural browser reliability work only when each PR
+  maps to a named matrix row and produces a real natural LLM report artifact.
+- Do not start another outward-facing UI or diagnostics arc until the remaining
+  runtime reliability gates have explicit natural evidence or are deliberately
+  marked unproven.
+
+Methodology Review Trigger:
+- Not triggered in this review window. The repeated browser failure items moved
+  from route/unit visibility toward natural E2E artifacts, and the latest
+  failure did not require a new runtime patch; it required aligning the negative
+  closeout evaluator with the expected bucketed failure class.
