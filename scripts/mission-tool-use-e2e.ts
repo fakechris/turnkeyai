@@ -125,6 +125,24 @@ export interface ActivityEvent {
   approvalId?: string;
 }
 
+export interface MissionArtifact {
+  id: string;
+  kind: string;
+  label: string;
+  path: string;
+  sizeBytes?: number;
+  lifecycle?: {
+    storageBackend?: string;
+    refType?: string;
+    retentionMs?: number;
+    expiresAtMs?: number;
+    maxArtifactBytes?: number;
+    sessionBudgetBytes?: number;
+    cleanupOnSessionClose?: boolean;
+    orphanReconciliation?: string;
+  };
+}
+
 interface MissionObservabilitySnapshot {
   status: string;
   tool: {
@@ -360,6 +378,7 @@ export interface NaturalScenarioSpec {
   requiredToolNames?: string[];
   forbiddenPatterns?: Array<{ label: string; pattern: RegExp }>;
   allowedWeakAnswerSignals?: string[];
+  requiresArtifactLifecycle?: boolean;
 }
 
 export interface NaturalMissionScenarioResult {
@@ -367,6 +386,7 @@ export interface NaturalMissionScenarioResult {
   mission: Mission;
   timeline: ActivityEvent[];
   metrics: MissionObservabilitySnapshot;
+  artifacts?: MissionArtifact[];
   final: ActivityEvent;
   quality: NaturalMissionQuality;
 }
@@ -395,6 +415,11 @@ export interface NaturalMissionScenarioReport {
   toolEvents: number;
   qualityGate: string;
   metrics: MissionE2eScenarioReport["metrics"];
+  artifacts: {
+    count: number;
+    withLifecycle: number;
+    kinds: string[];
+  };
   natural: {
     status: "passed" | "failed";
     completed: boolean;
@@ -1396,6 +1421,13 @@ async function runNaturalMissionScenario(input: {
     missionId: mission.id,
     timeoutMs: 20_000,
   });
+  const artifacts = await waitForMissionArtifactsSettled({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    missionId: mission.id,
+    timeoutMs: spec.requiresArtifactLifecycle ? 20_000 : 1_000,
+    requireLifecycle: spec.requiresArtifactLifecycle === true,
+  });
   const final = findLatestThoughtEvent(result.timeline);
   assert.ok(final, "natural mission timeline must include a final assistant answer");
   const quality = evaluateNaturalMissionQuality({
@@ -1403,9 +1435,10 @@ async function runNaturalMissionScenario(input: {
     mission: result.mission,
     timeline: result.timeline,
     metrics,
+    artifacts,
     final,
   });
-  const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, artifacts, final, quality };
   assertNaturalMissionQualityPassed(scenarioResult, `natural mission ${input.scenario} quality failures`);
   return scenarioResult;
 }
@@ -2671,6 +2704,7 @@ export function buildNaturalScenarioSpec(
       minSpawnedSessions: 1,
       maxSpawnedSessions: 4,
       requiresBrowser: true,
+      requiresArtifactLifecycle: true,
       requiresApproval: false,
       allowToolFailure: false,
       minEvidenceEvents: 1,
@@ -3332,6 +3366,7 @@ export function evaluateNaturalMissionQuality(input: {
   mission: Mission;
   timeline: ActivityEvent[];
   metrics: MissionObservabilitySnapshot;
+  artifacts?: MissionArtifact[];
   final: ActivityEvent;
 }): NaturalMissionQuality {
   const failures: string[] = [];
@@ -3348,6 +3383,7 @@ export function evaluateNaturalMissionQuality(input: {
       ? Math.max(input.metrics.qualityGate.evidenceEvents, 1)
       : input.metrics.qualityGate.evidenceEvents;
   const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
+  const artifactLifecycleVisible = (input.artifacts ?? []).some(hasArtifactLifecycleEvidence);
   const profileFallbackCount = input.metrics.browser?.profileFallbacks ?? 0;
   const browserFailureBuckets = input.metrics.browser?.failureBuckets ?? [];
   const profileFallbackFree = profileFallbackCount === 0;
@@ -3415,6 +3451,9 @@ export function evaluateNaturalMissionQuality(input: {
     );
   }
   if (input.spec.requiresBrowser && !browserUsed) failures.push("browser scenario did not show browser worker use");
+  if (input.spec.requiresArtifactLifecycle && !artifactLifecycleVisible) {
+    failures.push("browser scenario did not register artifact lifecycle metadata on the mission artifact route");
+  }
   if (!profileFallbackPolicySatisfied) {
     failures.push(
       input.spec.requiresProfileFallback
@@ -3590,6 +3629,7 @@ export function formatNaturalMissionScenarioPass(input: {
     `tools=${input.result.metrics.tool.requested}/${input.result.metrics.tool.results}`,
     `sessions=${input.result.metrics.sessions.spawned}/${input.result.metrics.sessions.continued}`,
     `browser=${input.result.quality.browserUsed ? "yes" : "no"}`,
+    `artifacts=${input.result.artifacts?.length ?? 0}`,
     `profileFallbacks=${input.result.metrics.browser?.profileFallbacks ?? 0}`,
     `browserBuckets=${formatBrowserFailureBuckets(input.result.metrics.browser?.failureBuckets ?? [])}`,
     `stuck=${input.result.quality.stuckOrLoop ? "yes" : "no"}`,
@@ -3637,6 +3677,8 @@ function printNaturalScenarioResult(result: NaturalMissionScenarioResult): void 
   console.log(`natural-final-evidence: ${result.quality.finalAnswerHasEvidence}`);
   console.log(`natural-final-useful: ${result.quality.finalAnswerUseful}`);
   console.log(`natural-weak-answer-signals: ${result.quality.weakAnswerSignals.join(",") || "none"}`);
+  console.log(`mission-artifacts: ${result.artifacts?.length ?? 0}`);
+  console.log(`mission-artifacts-with-lifecycle: ${(result.artifacts ?? []).filter(hasArtifactLifecycleEvidence).length}`);
   console.log(`mission-metrics-tools: ${result.metrics.tool.requested}/${result.metrics.tool.results}`);
   console.log(`mission-metrics-sessions: ${result.metrics.sessions.spawned}/${result.metrics.sessions.continued}`);
   console.log(`mission-metrics-browser-profile-fallbacks: ${result.metrics.browser?.profileFallbacks ?? 0}`);
@@ -3801,6 +3843,7 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
       evidenceEvents: result.metrics.qualityGate.evidenceEvents,
       recoveryEvents: result.metrics.recovery.events,
     },
+    artifacts: summarizeMissionArtifacts(result.artifacts),
     natural: {
       status: result.quality.status,
       completed: result.quality.completed,
@@ -3819,6 +3862,17 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
       bytes: Buffer.byteLength(result.final.text, "utf8"),
       excerpt: compactExcerpt(result.final.text, 500),
     },
+  };
+}
+
+function summarizeMissionArtifacts(
+  artifacts: MissionArtifact[] | undefined
+): NaturalMissionScenarioReport["artifacts"] {
+  const items = artifacts ?? [];
+  return {
+    count: items.length,
+    withLifecycle: items.filter(hasArtifactLifecycleEvidence).length,
+    kinds: [...new Set(items.map((artifact) => artifact.kind).filter((kind) => kind.length > 0))].sort(),
   };
 }
 
@@ -6399,6 +6453,42 @@ async function waitForMissionMetricsSettled(input: {
     await sleep(500);
   }
   throw new Error(`mission metrics did not settle after terminal completion: ${JSON.stringify(latest)}`);
+}
+
+async function waitForMissionArtifactsSettled(input: {
+  baseUrl: string;
+  token: string;
+  missionId: string;
+  timeoutMs: number;
+  requireLifecycle: boolean;
+}): Promise<MissionArtifact[]> {
+  const startedAt = Date.now();
+  let latest: MissionArtifact[] = [];
+  while (Date.now() - startedAt < input.timeoutMs) {
+    latest = await requestJson<MissionArtifact[]>({
+      method: "GET",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}/artifacts`,
+      token: input.token,
+    });
+    if (!input.requireLifecycle || latest.some(hasArtifactLifecycleEvidence)) {
+      return latest;
+    }
+    await sleep(500);
+  }
+  return latest;
+}
+
+function hasArtifactLifecycleEvidence(artifact: MissionArtifact): boolean {
+  return Boolean(
+    artifact.lifecycle &&
+      artifact.lifecycle.storageBackend &&
+      artifact.lifecycle.refType &&
+      typeof artifact.lifecycle.retentionMs === "number" &&
+      typeof artifact.lifecycle.expiresAtMs === "number" &&
+      typeof artifact.lifecycle.maxArtifactBytes === "number" &&
+      typeof artifact.lifecycle.sessionBudgetBytes === "number" &&
+      artifact.lifecycle.orphanReconciliation
+  );
 }
 
 function findToolPhaseIndexes(

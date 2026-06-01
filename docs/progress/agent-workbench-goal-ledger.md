@@ -5273,3 +5273,64 @@ Convergence question:
 - If no, next required gate: run a natural browser artifact mission and confirm
   `/missions/:id/artifacts` plus Mission Detail show the runtime-produced
   browser artifact lifecycle fields.
+
+## 2026-06-01 19:01 CST - Natural Browser Artifact Gate Wiring
+
+Direction: unknown
+
+Execution Kernel:
+- The natural browser dynamic-page E2E gate now fetches
+  `/missions/:id/artifacts` after mission completion and waits briefly for
+  lifecycle-bearing artifact metadata when the scenario requires it.
+- The quality evaluator treats missing mission artifact lifecycle metadata as a
+  failure for the browser dynamic-page natural scenario, instead of accepting
+  timeline-only browser evidence.
+
+Result Quality:
+- This raises the acceptance bar for evidence-backed browser answers: a passing
+  dynamic-page run must now leave durable browser artifact evidence on the
+  mission artifact route.
+- No answer quality improvement is claimed from this wiring alone; it only
+  prevents a natural browser run from passing when artifact lifecycle evidence
+  is absent.
+
+Workbench UX:
+- Natural E2E JSON reports now summarize mission artifact count, artifact kinds,
+  and lifecycle-bearing artifact count so Workbench artifact visibility can be
+  audited from the same report.
+- This slice does not change Mission Detail UI; it verifies the backend/report
+  evidence path that the UI depends on.
+
+Browser Reliability:
+- Browser runtime behavior is unchanged. The gate specifically checks that
+  browser artifact evidence survives into the mission artifact route after the
+  browser worker has produced it.
+- The gate remains compatible with non-browser natural scenarios by only
+  requiring lifecycle metadata for scenarios that opt into the requirement.
+
+Acceptance Evidence:
+- Focused regression: `npx tsx --test
+  scripts/mission-tool-use-e2e-report.test.ts scripts/real-llm-acceptance.test.ts`:
+  passed.
+- `npm run typecheck`: passed.
+- `npm run ledger:check`: passed.
+- `git diff --check`: passed.
+- No natural real LLM E2E mission was run yet for this checkpoint, so this is a
+  structural gate/report improvement and not capability-proven.
+
+Regression Risk:
+- The new natural browser gate can fail existing real runs that used browser
+  evidence but did not register artifacts on the mission route. That is
+  intentional for the dynamic-page scenario because user-visible evidence must
+  be durable and inspectable.
+- The artifact polling window is bounded and only waits for lifecycle metadata
+  when explicitly required by the scenario spec.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? unknown
+- Evidence: the acceptance gate is stricter and can catch missing browser
+  artifact lifecycle evidence, but no real LLM run has shown improved stable
+  delivery yet.
+- If no, next required gate: run the focused natural browser dynamic-page E2E
+  against a real LLM/browser session and record the mission id plus report
+  artifact only if the run passes with lifecycle-bearing mission artifacts.

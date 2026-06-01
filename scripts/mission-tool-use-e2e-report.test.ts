@@ -266,6 +266,7 @@ describe("mission tool-use e2e report", () => {
       mission: result.mission,
       timeline: result.timeline,
       metrics: result.metrics,
+      artifacts: result.artifacts,
       final: result.final,
     });
     assert.deepEqual(quality.failures, []);
@@ -340,6 +341,7 @@ describe("mission tool-use e2e report", () => {
       mission: result.mission,
       timeline: result.timeline,
       metrics: result.metrics,
+      artifacts: result.artifacts,
       final: result.final,
     });
     assert.deepEqual(quality.failures, []);
@@ -638,6 +640,8 @@ describe("mission tool-use e2e report", () => {
     assert.equal(report.status, "passed");
     assert.equal(report.durationMs, 5000);
     assert.equal(report.scenarios[0]?.scenario, "natural-browser-dynamic-page");
+    assert.equal(report.scenarios[0]?.artifacts.count, 1);
+    assert.equal(report.scenarios[0]?.artifacts.withLifecycle, 1);
     assert.equal(report.scenarios[0]?.natural.profileFallbackFree, true);
     assert.equal(report.scenarios[0]?.metrics.browser.profileFallbacks, 0);
   });
@@ -675,6 +679,32 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.failures.some((failure) => failure.includes("browser")));
     assert.ok(quality.weakAnswerSignals.includes("tool unavailable fallback"));
     assert.ok(quality.weakAnswerSignals.includes("model-knowledge fallback"));
+  });
+
+  it("requires mission artifact lifecycle evidence for natural browser dynamic page", () => {
+    const result = fakeNaturalResult();
+    result.artifacts = [];
+    const quality = evaluateNaturalMissionQuality({
+      spec: buildNaturalScenarioSpec("natural-browser-dynamic-page", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.status, "failed");
+    assert.ok(quality.failures.some((failure) => failure.includes("artifact lifecycle metadata")));
   });
 
   it("flags unsupported vendor integration claims without rejecting unverified integration questions", () => {
@@ -1082,6 +1112,7 @@ describe("mission tool-use e2e report", () => {
       mission: result.mission,
       timeline: result.timeline,
       metrics: result.metrics,
+      artifacts: result.artifacts,
       final: result.final,
     });
 
@@ -2122,7 +2153,7 @@ describe("mission tool-use e2e report", () => {
     );
     assert.equal(
       formatNaturalMissionScenarioPass({ result, index: 2, total: 6, durationMs: 4321 }),
-      "natural mission scenario passed: natural-browser-dynamic-page (2/6, 4321ms) mission-id=msn.natural.1 natural=passed tools=2/2 sessions=1/0 browser=yes profileFallbacks=0 browserBuckets=none stuck=no"
+      "natural mission scenario passed: natural-browser-dynamic-page (2/6, 4321ms) mission-id=msn.natural.1 natural=passed tools=2/2 sessions=1/0 browser=yes artifacts=1 profileFallbacks=0 browserBuckets=none stuck=no"
     );
   });
 });
@@ -2301,6 +2332,25 @@ function fakeNaturalResult(): NaturalMissionScenarioResult {
         checks: [],
       },
     },
+    artifacts: [
+      {
+        id: "artifact-browser-screenshot",
+        kind: "screenshot",
+        label: "final.png",
+        path: "/tmp/browser-artifacts/browser-session-1/final.png",
+        sizeBytes: 12_345,
+        lifecycle: {
+          storageBackend: "file",
+          refType: "local-path",
+          retentionMs: 604_800_000,
+          expiresAtMs: 1_700_604_800_123,
+          maxArtifactBytes: 25 * 1024 * 1024,
+          sessionBudgetBytes: 100 * 1024 * 1024,
+          cleanupOnSessionClose: false,
+          orphanReconciliation: "delete_expired",
+        },
+      },
+    ],
     final: {
       kind: "thought",
       text: "Queue depth is 11 with 3 SLA breaches. Incident Commander should own the escalation. The recommended next action is to prioritize browser-visible operator evidence and call out residual risk.",
