@@ -786,6 +786,36 @@ test("buildMissionObservabilitySnapshot surfaces browser failure buckets as miss
   );
 });
 
+test("buildMissionObservabilitySnapshot does not infer browser buckets from unrelated text", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool(
+          "result-search-failed",
+          3_000,
+          "result",
+          "web_search",
+          "call-search",
+          "Tool web_search failed: connection refused while fetching a CDP documentation page."
+        ),
+        emph: "danger" as const,
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Final answer notes that an unrelated CDP page said target_not_found during background research."
+      ),
+    ],
+  });
+
+  assert.deepEqual(snapshot.browser.failureBuckets, []);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot flags budget-limited tool-loop closeout answers", () => {
   const finalAnswer = event(
     "final-1",

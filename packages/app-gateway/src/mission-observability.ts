@@ -680,6 +680,15 @@ const BROWSER_FAILURE_BUCKETS = new Set([
   "lease_conflict",
 ]);
 
+const BROWSER_SPECIFIC_FAILURE_BUCKETS = new Set([
+  "target_not_found",
+  "attach_failed",
+  "expert_session_detached",
+  "cdp_command_timeout",
+  "browser_cdp_unavailable",
+  "detached_target",
+]);
+
 function collectBrowserFailureBuckets(events: ActivityEvent[]): BrowserFailureBucketObservation[] {
   const byBucket = new Map<string, BrowserFailureBucketObservation>();
   for (const event of events) {
@@ -700,27 +709,76 @@ function collectBrowserFailureBuckets(events: ActivityEvent[]): BrowserFailureBu
 }
 
 function extractBrowserFailureBucket(event: ActivityEvent): string | null {
-  const candidates = [
-    event.runtime?.bucket,
-    event.runtime?.browserDiagnosticBucket,
-    event.runtime?.closeKind,
-    event.runtime?.failureBucket,
-  ];
-  for (const candidate of candidates) {
-    const normalized = normalizeBrowserFailureBucket(typeof candidate === "string" ? candidate : "");
-    if (normalized) return normalized;
+  const explicitBrowserBucket = normalizeBrowserFailureBucket(event.runtime?.browserDiagnosticBucket ?? "");
+  if (explicitBrowserBucket) return explicitBrowserBucket;
+
+  const isBrowserFailureEvidence = isBrowserFailureEvidenceEvent(event);
+  if (isBrowserFailureEvidence) {
+    const candidates = [event.runtime?.bucket, event.runtime?.closeKind, event.runtime?.failureBucket];
+    for (const candidate of candidates) {
+      const normalized = normalizeBrowserFailureBucket(typeof candidate === "string" ? candidate : "");
+      if (normalized) return normalized;
+    }
   }
+
+  if (!isFailureEvidenceEvent(event)) return null;
 
   const text = eventTextBlob(event);
   const directBucket = text.match(
     /\b(target_not_found|attach_failed|expert_session_detached|cdp_command_timeout|browser_cdp_unavailable|detached_target|session_not_found|transport_failure|owner_mismatch|lease_conflict)\b/i
   )?.[1];
   const normalizedDirect = normalizeBrowserFailureBucket(directBucket ?? "");
-  if (normalizedDirect) return normalizedDirect;
+  if (normalizedDirect && (BROWSER_SPECIFIC_FAILURE_BUCKETS.has(normalizedDirect) || isBrowserFailureEvidence)) {
+    return normalizedDirect;
+  }
+
+  if (!isBrowserFailureEvidence) return null;
   if (/\b(?:target detached|detached target|browser session detached)\b/i.test(text)) return "detached_target";
   if (/\b(?:session not found|browser session not found)\b/i.test(text)) return "session_not_found";
   if (/\b(?:cdp|transport|websocket|connection refused|ECONNREFUSED|fetch failed)\b/i.test(text)) return "transport_failure";
   return null;
+}
+
+function isBrowserFailureEvidenceEvent(event: ActivityEvent): boolean {
+  if (!isFailureEvidenceEvent(event)) return false;
+  if (event.kind === "browser") return true;
+  const runtime = event.runtime ?? {};
+  const structuralText = [
+    event.actor,
+    ...(event.tags ?? []),
+    runtime.toolName,
+    runtime.route,
+    runtime.sourceLabel,
+    runtime.transportLabel,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  if (/\b(?:browser|bridge|cdp|direct[-_\s]?cdp|chrome|expert)\b/i.test(structuralText)) return true;
+  if (event.kind === "recovery" && /\b(?:browser|cdp|direct[-_\s]?cdp|chrome)\b/i.test(eventTextBlob(event))) {
+    return true;
+  }
+  return false;
+}
+
+function isFailureEvidenceEvent(event: ActivityEvent): boolean {
+  if (event.emph === "danger") return true;
+  if (event.kind === "recovery") return true;
+  const runtime = event.runtime ?? {};
+  const candidates = [
+    runtime.isError,
+    runtime.phase,
+    runtime.status,
+    runtime.continuityState,
+    runtime.bucket,
+    runtime.closeKind,
+    runtime.failureBucket,
+    runtime.browserDiagnosticBucket,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeBrowserFailureBucket(typeof candidate === "string" ? candidate : "");
+    if (normalized) return true;
+  }
+  return /\b(?:true|failed|failure|cancelled|timeout|recoverable|unrecoverable)\b/i.test(candidates.join(" "));
 }
 
 function normalizeBrowserFailureBucket(value: string): string | null {

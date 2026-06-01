@@ -4618,6 +4618,7 @@ Acceptance Evidence:
   packages/control-center/src/state/missionProgress.test.ts`: passed,
   116 tests.
 - `npm run typecheck`: passed.
+- `npm run ledger:check`: passed.
 - `npm run build:control-center && npm run control-center:smoke`: passed,
   with screenshot-backed smoke output.
 - `npm run build`: passed.

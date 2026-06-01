@@ -150,6 +150,7 @@ try {
     });
     await operatorRuntimePage.waitForSelector("text=Runtime attention");
     await operatorRuntimePage.waitForSelector("text=Mission health");
+    await waitForReplayReady(operatorRuntimePage);
     assert(
       await operatorRuntimePage.locator(".card", { hasText: "Dashboard comparison mission" }).isVisible(),
       "operator runtime should surface mission health attention rows"
@@ -717,11 +718,7 @@ try {
     await page.waitForSelector("text=Runtime attention");
     await page.waitForSelector("text=Mission health");
     const openReplay = page.getByRole("button", { name: /Open replay/ });
-    await page.waitForFunction(() =>
-      Array.from(document.querySelectorAll("button")).some(
-        (button) => /Open replay/.test(button.textContent ?? "") && !button.disabled
-      )
-    );
+    await waitForReplayReady(page);
     assert(!(await openReplay.isDisabled()), "runtime replay action should open a mission-linked trace");
     assert(
       await page.locator("text=chain.browser.waiting").isVisible(),
@@ -2404,6 +2401,19 @@ async function assertTableScrollsInsideWrapper(page: Page, selector: string, mes
   assert(result !== null, `missing element for table scroll check: ${selector}`);
   assert(result.overflowX === "auto" || result.overflowX === "scroll", `${message}: ${JSON.stringify(result)}`);
   assert(result.scrollWidth > result.clientWidth, `${message}: ${JSON.stringify(result)}`);
+}
+
+async function waitForReplayReady(page: Page): Promise<void> {
+  const openReplay = page.getByRole("button", { name: /Open replay/ });
+  await openReplay.waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(
+    () =>
+      Array.from(document.querySelectorAll("button")).some(
+        (button) => /Open replay/i.test(button.textContent ?? "") && !button.disabled
+      ),
+    undefined,
+    { timeout: 30_000 }
+  );
 }
 
 function assert(condition: boolean, message: string): asserts condition {
