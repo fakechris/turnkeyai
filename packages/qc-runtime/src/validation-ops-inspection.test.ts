@@ -370,6 +370,32 @@ test("validation ops inspection keeps the latest full real LLM acceptance as the
   assert.match(realGate?.summary ?? "", /full release coverage/);
 });
 
+test("validation ops inspection treats partial real LLM release coverage metadata as missing", () => {
+  const partialCoverageRecord = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-partial-metadata",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+  });
+  partialCoverageRecord.realAcceptance!.releaseCoverage = {
+    status: "full",
+    tooluse: { status: "full", requested: 5, expected: 5, missing: 0 },
+  } as any;
+
+  const report = buildValidationOpsReport([partialCoverageRecord], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "missing");
+  assert.equal(realGate?.latestRunId, "real-llm-partial-metadata");
+  assert.match(realGate?.summary ?? "", /tool-use 5\/5/);
+  assert.match(realGate?.summary ?? "", /mission 0\/0/);
+  assert.match(realGate?.summary ?? "", /natural 0\/0/);
+});
+
 test("validation ops inspection records failed real LLM acceptance as actionable", () => {
   const record = buildValidationOpsRecordFromRealLlmAcceptance({
     runId: "real-llm-fail",

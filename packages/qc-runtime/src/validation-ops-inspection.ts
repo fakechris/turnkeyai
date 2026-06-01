@@ -512,7 +512,10 @@ function buildRealLlmAcceptanceReadinessGate(records: ValidationOpsRunRecord[]):
   const latestRecord = findLatestRecord(records, (record) => record.runType === "real-llm-acceptance");
   const latestFullCoverageRecord = findLatestRecord(
     records,
-    (record) => record.runType === "real-llm-acceptance" && record.realAcceptance?.releaseCoverage?.status === "full"
+    (record) =>
+      record.runType === "real-llm-acceptance" &&
+      record.realAcceptance?.releaseCoverage?.status === "full" &&
+      hasCompleteReleaseCoverage(record.realAcceptance.releaseCoverage)
   );
 
   if (!latestRecord) {
@@ -536,7 +539,7 @@ function buildRealLlmAcceptanceReadinessGate(records: ValidationOpsRunRecord[]):
   }
 
   const coverage = record.realAcceptance?.releaseCoverage;
-  if (coverage?.status === "full") {
+  if (coverage?.status === "full" && hasCompleteReleaseCoverage(coverage)) {
     return {
       gateId: "real-llm-acceptance",
       title: "Real LLM acceptance",
@@ -561,9 +564,16 @@ function buildRealLlmAcceptanceReadinessGate(records: ValidationOpsRunRecord[]):
   };
 }
 
+function hasCompleteReleaseCoverage(
+  coverage: ValidationOpsRealAcceptanceDetails["releaseCoverage"] | undefined
+): coverage is NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]> {
+  return Boolean(coverage?.tooluse && coverage.mission && coverage.naturalMission);
+}
+
 function formatReleaseCoverageSummary(
-  coverage: NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]>
+  coverage: NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]> | undefined
 ): string {
+  if (!coverage) return "no coverage";
   return [
     `tool-use ${formatScenarioCoverageSummary(coverage.tooluse)}`,
     `mission ${formatScenarioCoverageSummary(coverage.mission)}`,
@@ -572,9 +582,13 @@ function formatReleaseCoverageSummary(
 }
 
 function formatScenarioCoverageSummary(
-  coverage: NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]>["tooluse"]
+  coverage: NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]>["tooluse"] | undefined
 ): string {
-  return `${coverage.requested}/${coverage.expected}${coverage.missing > 0 ? ` missing ${coverage.missing}` : ""}`;
+  if (!coverage) return "0/0";
+  const requested = Number.isFinite(coverage.requested) ? coverage.requested : 0;
+  const expected = Number.isFinite(coverage.expected) ? coverage.expected : 0;
+  const missing = Number.isFinite(coverage.missing) ? coverage.missing : 0;
+  return `${requested}/${expected}${missing > 0 ? ` missing ${missing}` : ""}`;
 }
 
 function buildPhase1BaselineReport(records: ValidationOpsRunRecord[], now: number): ValidationOpsReport["baseline"] {
