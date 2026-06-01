@@ -114,9 +114,15 @@ interface BrowserExpertRouteDeps {
   };
 }
 
+interface BrowserMissionRouteDeps {
+  validator: BridgeMissionValidatorDeps;
+  recorder: BridgeMissionActivityRecorder;
+}
+
 export interface BrowserRouteDeps {
   browserBridge: BrowserBridgeDeps;
   browserExpert?: BrowserExpertRouteDeps | undefined;
+  missionContext?: BrowserMissionRouteDeps | undefined;
   idGenerator: IdGenerator;
   clock: Clock;
   /**
@@ -806,6 +812,8 @@ export async function handleBrowserRoutes(input: {
     const bodyResult = await readOptionalJsonBodySafe<{
       threadId?: string;
       reason?: string;
+      missionId?: unknown;
+      workItemId?: unknown;
     }>(req);
     if (!bodyResult.ok) {
       sendJson(res, 400, { error: bodyResult.error });
@@ -824,21 +832,42 @@ export async function handleBrowserRoutes(input: {
       sendJson(res, access.statusCode, { error: access.error });
       return true;
     }
+    const missionContext = await resolveBrowserMissionContext({
+      deps,
+      missionId: body.missionId,
+      workItemId: body.workItemId,
+    });
+    if ("statusCode" in missionContext) {
+      sendJson(res, missionContext.statusCode, missionContext.body);
+      return true;
+    }
     const reason = parseOptionalRouteString(body.reason) ?? "operator revoked browser session";
     return runIdempotently({
       req,
       res,
       store: deps.idempotencyStore,
       scope: "browser:revoke",
-      fingerprint: { sessionId: access.sessionId, reason },
+      fingerprint: {
+        sessionId: access.sessionId,
+        reason,
+        missionId: missionContext.context?.missionId ?? null,
+        workItemId: missionContext.context?.workItemId ?? null,
+      },
       execute: async () => {
         await deps.browserBridge.closeSession(access.sessionId, reason);
+        const timelineResult = await recordBrowserSessionRevoked({
+          deps,
+          context: missionContext.context,
+          sessionId: access.sessionId,
+          reason,
+        });
         return {
           statusCode: 200,
           body: {
             browserSessionId: access.sessionId,
             status: "closed",
             reason,
+            ...timelineResult,
           },
         };
       },
@@ -956,6 +985,24 @@ async function resolveBrowserExpertMissionContext(input: {
   | { statusCode: number; body: { error: string; code: string } }
 > {
   const missionDeps = input.deps.browserExpert?.missionContext;
+  return resolveBrowserMissionContext({
+    deps: input.deps,
+    missionId: input.missionId,
+    workItemId: input.workItemId,
+    ...(missionDeps ? { missionDeps } : {}),
+  });
+}
+
+async function resolveBrowserMissionContext(input: {
+  deps: BrowserRouteDeps;
+  missionId?: unknown;
+  workItemId?: unknown;
+  missionDeps?: BrowserMissionRouteDeps;
+}): Promise<
+  | { context: BridgeMissionContext | null }
+  | { statusCode: number; body: { error: string; code: string } }
+> {
+  const missionDeps = input.missionDeps ?? input.deps.missionContext ?? input.deps.browserExpert?.missionContext;
   if (!missionDeps) return { context: null };
   const validation = await validateBridgeMissionContext({
     context: parseBridgeMissionContext({
@@ -971,6 +1018,34 @@ async function resolveBrowserExpertMissionContext(input: {
   const context: BridgeMissionContext = { missionId: validation.missionId };
   if (validation.workItemId) context.workItemId = validation.workItemId;
   return { context };
+}
+
+async function recordBrowserSessionRevoked(input: {
+  deps: BrowserRouteDeps;
+  context: BridgeMissionContext | null;
+  sessionId: string;
+  reason: string;
+}): Promise<Record<string, unknown>> {
+  const recorder = input.deps.missionContext?.recorder ?? input.deps.browserExpert?.missionContext?.recorder;
+  if (!recorder || !input.context) return {};
+
+  const result = await recorder.recordFailure({
+    context: input.context,
+    replayed: false,
+    tool: "browser.revoke",
+    sessionId: input.sessionId,
+    bucket: "session_not_found",
+    message: `session_not_found: browser session revoked (${input.reason})`,
+  });
+  if (result.kind === "failed") {
+    return {
+      timelineRecorded: false,
+      timelineError: result.error,
+    };
+  }
+  return {
+    timelineRecorded: result.kind === "appended",
+  };
 }
 
 async function recordBrowserExpertFailure(input: {

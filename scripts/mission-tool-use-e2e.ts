@@ -1748,6 +1748,7 @@ async function runNaturalBrowserColdRecreationScenario(input: {
     token: input.token,
     body: {
       threadId: mission.threadId,
+      missionId: mission.id,
       reason: "natural cold recreation gate",
     },
   });
@@ -2587,6 +2588,7 @@ export function buildNaturalScenarioSpec(
       requiresBrowser: true,
       requiresApproval: false,
       allowToolFailure: false,
+      requiredBrowserFailureBuckets: ["session_not_found"],
       minEvidenceEvents: 2,
       requiredAnswerTerms: ["SLA", "Incident Commander", "action"],
       requiredAnswerPatterns: [

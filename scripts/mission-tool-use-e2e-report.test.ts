@@ -1290,6 +1290,10 @@ describe("mission tool-use e2e report", () => {
     result.metrics.tool.results = 2;
     result.metrics.sessions.spawned = 1;
     result.metrics.sessions.continued = 1;
+    result.metrics.browser = {
+      ...result.metrics.browser,
+      failureBuckets: [{ bucket: "session_not_found", count: 1, latestAtMs: 3500 }],
+    };
     result.metrics.qualityGate.evidenceEvents = 2;
     const phaseOneFinal = {
       id: "thought.browser.cold.phase-one",
@@ -1415,6 +1419,18 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(quality.failures, []);
+
+    const observedBuckets = result.metrics.browser?.failureBuckets ?? [];
+    result.metrics.browser = { ...result.metrics.browser, failureBuckets: [] };
+    const missingBucket = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(missingBucket.failures.includes("missing browser failure bucket session_not_found"));
+    result.metrics.browser = { ...result.metrics.browser, failureBuckets: observedBuckets };
 
     result.timeline[4]!.runtime = {
       ...result.timeline[4]!.runtime,

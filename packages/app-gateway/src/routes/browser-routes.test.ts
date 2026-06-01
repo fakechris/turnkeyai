@@ -1476,6 +1476,122 @@ test("browser session revoke route rejects blank reasons and trims explicit reas
   });
 });
 
+test("browser session revoke route records mission-scoped lifecycle recovery bucket", async () => {
+  const recorded: unknown[] = [];
+  const response = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/session-1/revoke",
+      body: {
+        threadId: "thread-1",
+        reason: " operator requested restart ",
+        missionId: "msn.1",
+        workItemId: "wrk.1",
+      },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/revoke"),
+    deps: createDeps({
+      missionContext: {
+        validator: {
+          missionStore: {
+            async get(id) {
+              return id === "msn.1" ? ({ id } as any) : null;
+            },
+          },
+          workItemStore: {
+            async listByMission(missionId) {
+              return missionId === "msn.1" ? [{ id: "wrk.1" } as any] : [];
+            },
+          },
+        },
+        recorder: {
+          async recordSuccess() {
+            return { kind: "skipped", reason: "no-mission" };
+          },
+          async recordFailure(input) {
+            recorded.push(input);
+            return { kind: "appended", eventId: "evt.1" };
+          },
+        },
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.deepEqual(response.json, {
+    browserSessionId: "session-1",
+    status: "closed",
+    reason: "operator requested restart",
+    timelineRecorded: true,
+  });
+  assert.deepEqual(recorded, [
+    {
+      context: { missionId: "msn.1", workItemId: "wrk.1" },
+      replayed: false,
+      tool: "browser.revoke",
+      sessionId: "session-1",
+      bucket: "session_not_found",
+      message: "session_not_found: browser session revoked (operator requested restart)",
+    },
+  ]);
+});
+
+test("browser session revoke route rejects invalid mission context before closing", async () => {
+  let closeCount = 0;
+  const response = createResponse();
+  await handleBrowserRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/browser-sessions/session-1/revoke",
+      body: {
+        threadId: "thread-1",
+        missionId: "   ",
+      },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/browser-sessions/session-1/revoke"),
+    deps: createDeps({
+      browserBridge: {
+        ...createDeps().browserBridge,
+        async closeSession() {
+          closeCount += 1;
+        },
+      },
+      missionContext: {
+        validator: {
+          missionStore: {
+            async get() {
+              return null;
+            },
+          },
+          workItemStore: {
+            async listByMission() {
+              return [];
+            },
+          },
+        },
+        recorder: {
+          async recordSuccess() {
+            return { kind: "skipped", reason: "no-mission" };
+          },
+          async recordFailure() {
+            throw new Error("should not record");
+          },
+        },
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 400);
+  assert.deepEqual(response.json, {
+    error: "missionId must be a non-empty string",
+    code: "invalid_mission_context",
+  });
+  assert.equal(closeCount, 0);
+});
+
 // P1.6a — idempotency contract for browser mutation routes. These tests
 // verify that an external agent retrying a POST (e.g. after a network blip)
 // gets the same response back and the underlying bridge action runs once.
