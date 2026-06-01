@@ -5570,3 +5570,69 @@ Convergence question:
   final synthesis or unsupported claims.
 - If no, next required gate: run the broader natural matrix and use the new
   source-coverage fields to guide the next root-cause slice.
+
+## 2026-06-01 20:18 CST - Runtime Shows Natural Source Coverage
+
+Direction: converging
+
+Execution Kernel:
+- Runtime execution did not change. The validation-ops summary now preserves
+  the structured natural source-coverage counters emitted by the natural E2E
+  artifact so they survive into the operator-facing release record.
+- The preserved counters include answer-term, answer-pattern, and
+  evidence-pattern coverage, observed versus required evidence events,
+  residual-risk visibility, and unsupported-claim count.
+
+Result Quality:
+- This reduces diagnosis time after a real natural E2E failure. Operators can
+  distinguish "the model missed a final-answer term" from "the tool evidence
+  never contained the source fact" without opening the raw JSON artifact first.
+- The pass/fail semantics remain unchanged; this checkpoint improves
+  visibility of why a gate passed or failed.
+
+Workbench UX:
+- Runtime -> Release acceptance now renders a natural report line beside the
+  existing mission report line. It shows natural scenario count, evidence/useful
+  answer counts, source terms, source patterns, evidence patterns, missing
+  coverage count, unsupported claims, and residual-risk visibility.
+- Control Center smoke now asserts these values are visible on the Runtime
+  page.
+
+Browser Reliability:
+- Browser execution behavior is unchanged. The smoke uses the existing Runtime
+  fixture and verifies the release acceptance surface can show browser-backed
+  natural source evidence counts.
+
+Acceptance Evidence:
+- Focused contract tests:
+  `npx tsx --test packages/qc-runtime/src/real-llm-acceptance-summary.test.ts
+  packages/qc-runtime/src/validation-ops-inspection.test.ts
+  packages/control-center/src/pages/RuntimePage.test.ts
+  scripts/real-llm-acceptance.test.ts`: passed.
+- Typecheck:
+  `npm run typecheck`: passed.
+- Build:
+  `npm run build`: passed.
+- Runtime UI smoke:
+  `npm run control-center:smoke -- --allow-missing-browser --artifact-dir
+  /tmp/turnkeyai-control-center-natural-source-coverage-smoke`: passed.
+- Smoke artifact summary:
+  `/tmp/turnkeyai-control-center-natural-source-coverage-smoke/control-center-ui-smoke-summary.json`.
+
+Regression Risk:
+- This expands the validation-ops real-acceptance summary schema and the
+  Control Center API type. Older records without natural summaries remain
+  hidden instead of rendering empty or misleading natural coverage rows.
+- The next real gate should record a full validation-ops run with natural
+  source-coverage counters so Runtime can show live data from a real artifact,
+  not only the UI smoke fixture.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  converging
+- Evidence: users can now inspect natural real-LLM source-coverage quality from
+  the workbench Runtime page, closing the visibility loop created by the
+  previous checkpoint.
+- If no, next required gate: run `npm run acceptance:real -- --model-catalog
+  models.local.json` and confirm the recorded validation-ops row includes the
+  natural source-coverage line.

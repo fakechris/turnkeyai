@@ -789,6 +789,22 @@ try {
       "release acceptance should surface real mission liveness summary"
     );
     assert(
+      await page.locator(".card", { hasText: "natural report: 2/2 natural scenarios" }).isVisible(),
+      "release acceptance should surface natural mission scenario summary"
+    );
+    assert(
+      await page.locator(".card", { hasText: "source terms 5/6" }).isVisible(),
+      "release acceptance should surface natural source term coverage"
+    );
+    assert(
+      await page.locator(".card", { hasText: "evidence patterns 4/5" }).isVisible(),
+      "release acceptance should surface natural evidence pattern coverage"
+    );
+    assert(
+      await page.locator(".card", { hasText: "unsupported 0" }).isVisible(),
+      "release acceptance should surface unsupported natural claim count"
+    );
+    assert(
       await page.locator(".card", { hasText: "validation-ops" }).isVisible(),
       "release acceptance should show the next validation command"
     );
@@ -2091,8 +2107,9 @@ function validationOpsFixture() {
         realAcceptance: {
           tooluseScenarios: ["basic", "approval", "followup", "timeout", "complex"],
           missionScenarios: ["basic", "comparison", "browser-dashboard", "realistic-brief"],
+          naturalMissionScenarios: ["natural-browser-dynamic-page", "natural-long-delegation"],
           browserTooluseEnabled: true,
-          totalCases: 9,
+          totalCases: 11,
           missionReport: {
             status: "passed",
             scenarioCount: 4,
@@ -2119,6 +2136,52 @@ function validationOpsFixture() {
             sourceCoverageWarnings: 1,
             sourceCoverageFailures: 0,
             evidenceEvents: 9,
+            recoveryEvents: 0,
+          },
+          naturalMissionReport: {
+            status: "passed",
+            scenarioCount: 2,
+            scenarioIds: ["natural-browser-dynamic-page", "natural-long-delegation"],
+            passedScenarios: 2,
+            failedScenarios: 0,
+            completed: 2,
+            stuckOrLoop: 0,
+            reasonableToolUse: 2,
+            browserUsed: 1,
+            subAgentCompleted: 2,
+            approvalExercised: 1,
+            finalAnswerHasEvidence: 2,
+            finalAnswerUseful: 2,
+            weakAnswerSignals: 0,
+            toolRequested: 4,
+            toolResults: 4,
+            toolFailed: 0,
+            toolCancelled: 0,
+            toolTimeouts: 0,
+            sessionsSpawned: 2,
+            sessionsContinued: 1,
+            browserProfileFallbacks: 0,
+            browserFailureBuckets: 0,
+            approvalsRequested: 1,
+            approvalsDecided: 1,
+            approvalsApplied: 1,
+            livenessActive: 0,
+            livenessWaiting: 0,
+            livenessStale: 0,
+            evidenceEvents: 3,
+            sourceAnswerTermsCovered: 5,
+            sourceAnswerTermsTotal: 6,
+            sourceAnswerTermsMissing: 1,
+            sourceAnswerPatternsCovered: 2,
+            sourceAnswerPatternsTotal: 2,
+            sourceAnswerPatternsMissing: 0,
+            sourceEvidencePatternsCovered: 4,
+            sourceEvidencePatternsTotal: 5,
+            sourceEvidencePatternsMissing: 1,
+            sourceEvidenceEventsObserved: 3,
+            sourceEvidenceEventsRequired: 2,
+            sourceResidualRiskVisible: 2,
+            sourceUnsupportedClaims: 0,
             recoveryEvents: 0,
           },
         },

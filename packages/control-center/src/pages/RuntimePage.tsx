@@ -568,7 +568,7 @@ function validationStatusDot(status: ValidationOpsStatus | "stale" | undefined):
   return "planning";
 }
 
-function formatRealAcceptanceMissionSummary(run: ValidationOpsReport["latestRuns"][number]): string | null {
+export function formatRealAcceptanceMissionSummary(run: ValidationOpsReport["latestRuns"][number]): string | null {
   const missionReport = run.realAcceptance?.missionReport;
   if (!missionReport) {
     return null;
@@ -582,6 +582,32 @@ function formatRealAcceptanceMissionSummary(run: ValidationOpsReport["latestRuns
     `tools ${missionReport.toolResults}/${missionReport.toolRequested}`,
     `evidence ${missionReport.evidenceEvents}`,
   ].join(" · ");
+}
+
+export function formatRealAcceptanceNaturalSummary(run: ValidationOpsReport["latestRuns"][number]): string | null {
+  const naturalReport = run.realAcceptance?.naturalMissionReport;
+  if (!naturalReport) {
+    return null;
+  }
+  const missingCoverage =
+    countOrZero(naturalReport.sourceAnswerTermsMissing) +
+    countOrZero(naturalReport.sourceAnswerPatternsMissing) +
+    countOrZero(naturalReport.sourceEvidencePatternsMissing);
+  return [
+    `${countOrZero(naturalReport.passedScenarios)}/${countOrZero(naturalReport.scenarioCount)} natural scenarios`,
+    `evidence ${countOrZero(naturalReport.finalAnswerHasEvidence)}/${countOrZero(naturalReport.scenarioCount)}`,
+    `useful ${countOrZero(naturalReport.finalAnswerUseful)}/${countOrZero(naturalReport.scenarioCount)}`,
+    `source terms ${countOrZero(naturalReport.sourceAnswerTermsCovered)}/${countOrZero(naturalReport.sourceAnswerTermsTotal)}`,
+    `source patterns ${countOrZero(naturalReport.sourceAnswerPatternsCovered)}/${countOrZero(naturalReport.sourceAnswerPatternsTotal)}`,
+    `evidence patterns ${countOrZero(naturalReport.sourceEvidencePatternsCovered)}/${countOrZero(naturalReport.sourceEvidencePatternsTotal)}`,
+    `missing ${missingCoverage}`,
+    `unsupported ${countOrZero(naturalReport.sourceUnsupportedClaims)}`,
+    `risk ${countOrZero(naturalReport.sourceResidualRiskVisible)}/${countOrZero(naturalReport.scenarioCount)}`,
+  ].join(" · ");
+}
+
+function countOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function readableRuntimeError(error: unknown): string {
@@ -767,6 +793,11 @@ function ValidationOpsCard({
                     {formatRealAcceptanceMissionSummary(run) ? (
                       <div className="runtime-health-action">
                         mission report: {formatRealAcceptanceMissionSummary(run)}
+                      </div>
+                    ) : null}
+                    {formatRealAcceptanceNaturalSummary(run) ? (
+                      <div className="runtime-health-action">
+                        natural report: {formatRealAcceptanceNaturalSummary(run)}
                       </div>
                     ) : null}
                   </div>

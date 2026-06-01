@@ -159,6 +159,19 @@ export interface ValidationOpsRealAcceptanceDetails {
     livenessWaiting: number;
     livenessStale: number;
     evidenceEvents: number;
+    sourceAnswerTermsCovered: number;
+    sourceAnswerTermsTotal: number;
+    sourceAnswerTermsMissing: number;
+    sourceAnswerPatternsCovered: number;
+    sourceAnswerPatternsTotal: number;
+    sourceAnswerPatternsMissing: number;
+    sourceEvidencePatternsCovered: number;
+    sourceEvidencePatternsTotal: number;
+    sourceEvidencePatternsMissing: number;
+    sourceEvidenceEventsObserved: number;
+    sourceEvidenceEventsRequired: number;
+    sourceResidualRiskVisible: number;
+    sourceUnsupportedClaims: number;
     recoveryEvents: number;
   };
 }

@@ -469,6 +469,19 @@ test("validation ops inspection preserves natural mission acceptance summary", (
       livenessWaiting: 0,
       livenessStale: 0,
       evidenceEvents: 5,
+      sourceAnswerTermsCovered: 7,
+      sourceAnswerTermsTotal: 8,
+      sourceAnswerTermsMissing: 1,
+      sourceAnswerPatternsCovered: 3,
+      sourceAnswerPatternsTotal: 3,
+      sourceAnswerPatternsMissing: 0,
+      sourceEvidencePatternsCovered: 6,
+      sourceEvidencePatternsTotal: 7,
+      sourceEvidencePatternsMissing: 1,
+      sourceEvidenceEventsObserved: 5,
+      sourceEvidenceEventsRequired: 2,
+      sourceResidualRiskVisible: 2,
+      sourceUnsupportedClaims: 0,
       recoveryEvents: 0,
     },
   });
@@ -480,6 +493,7 @@ test("validation ops inspection preserves natural mission acceptance summary", (
   assert.equal(record.realAcceptance?.totalCases, 4);
   assert.equal(record.realAcceptance?.naturalArtifactPath, ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json");
   assert.equal(record.realAcceptance?.naturalMissionReport?.finalAnswerUseful, 2);
+  assert.equal(record.realAcceptance?.naturalMissionReport?.sourceEvidencePatternsCovered, 6);
   assert.ok(record.selectors?.includes("natural-mission:natural-browser-dynamic-page"));
 });
 
