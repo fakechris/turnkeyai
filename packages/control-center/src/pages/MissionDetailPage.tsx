@@ -1896,7 +1896,7 @@ function SubAgentSessionRow({
                   {entry.toolName && <span className="mono">{entry.toolName}</span>}
                   <span className="mono faint">{formatTimeOfDay(entry.createdAt)}</span>
                 </div>
-                <div>{entry.content}</div>
+                <Markdown text={entry.content ?? ""} className="subagent-session-history-content" />
               </div>
             ))
           )}

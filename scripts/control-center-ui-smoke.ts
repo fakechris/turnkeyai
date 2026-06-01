@@ -431,6 +431,21 @@ try {
       await page.locator(".browser-continuity-card", { hasText: "reopen" }).isVisible(),
       "browser continuity should show target resolution"
     );
+    const sessionRow = page.locator(".subagent-session-row", { hasText: "Browser evidence" }).first();
+    await sessionRow.locator("summary").click();
+    await sessionRow.locator(".subagent-session-history-content h2", { hasText: "Captured evidence" }).waitFor();
+    assert(
+      await sessionRow.locator(".subagent-session-history-content h2", { hasText: "Captured evidence" }).isVisible(),
+      "sub-agent session history should render markdown headings"
+    );
+    assert(
+      await sessionRow.locator(".subagent-session-history-content li", { hasText: "Live browser snapshot" }).isVisible(),
+      "sub-agent session history should render markdown list items"
+    );
+    assert(
+      await sessionRow.locator(".subagent-session-history-content code", { hasText: "snapshot" }).isVisible(),
+      "sub-agent session history should render inline code"
+    );
     assert(await page.locator(".mission-evidence-card").count() === 1, "expected one mission evidence card");
     assert(
       await page.locator(".mission-evidence-card", { hasText: "Browser evidence" }).isVisible(),
@@ -1859,7 +1874,7 @@ function workerSessionsFixture() {
           {
             id: "hist.1",
             role: "tool",
-            content: "Captured browser context evidence.",
+            content: "## Captured evidence\n\n- Live browser snapshot collected with `snapshot`.\n- The tab was reopened from the durable browser session.",
             createdAt: 1_779_984_004_000,
             toolCallId: "call-browser",
             toolName: "snapshot",

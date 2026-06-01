@@ -1553,7 +1553,6 @@ a { color: inherit; text-decoration: none; }
   color: var(--text-muted);
   font-size: 11.5px;
   line-height: 1.55;
-  white-space: pre-wrap;
   word-break: break-word;
 }
 .subagent-session-history-head {
@@ -1564,6 +1563,36 @@ a { color: inherit; text-decoration: none; }
   margin-bottom: 4px;
   font-size: 10.5px;
   color: var(--text-faint);
+}
+.subagent-session-history-content {
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: normal;
+}
+.subagent-session-history-content h2 {
+  margin: 8px 0 5px;
+  font-size: 13px;
+}
+.subagent-session-history-content h3 {
+  margin: 7px 0 4px;
+  font-size: 12px;
+}
+.subagent-session-history-content p,
+.subagent-session-history-content ul,
+.subagent-session-history-content ol {
+  margin: 5px 0;
+}
+.subagent-session-history-content pre {
+  margin: 6px 0;
+  padding: 7px;
+}
+.subagent-session-history-content table {
+  min-width: 320px;
+}
+.subagent-session-history-content th,
+.subagent-session-history-content td {
+  padding: 5px 6px;
+  font-size: 11px;
 }
 .role-run-card {
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
