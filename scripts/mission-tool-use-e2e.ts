@@ -76,6 +76,7 @@ export type NaturalMissionE2eScenario =
   | "natural-approval-pending-state"
   | "natural-browser-unavailable-closeout"
   | "natural-browser-cdp-timeout-closeout"
+  | "natural-browser-detached-target-closeout"
   | "natural-timeout-partial-closeout"
   | "natural-timeout-followup-continuation"
   | "natural-cancel-active-tool"
@@ -96,6 +97,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-approval-pending-state",
   "natural-browser-unavailable-closeout",
   "natural-browser-cdp-timeout-closeout",
+  "natural-browser-detached-target-closeout",
   "natural-timeout-partial-closeout",
   "natural-timeout-followup-continuation",
   "natural-cancel-active-tool",
@@ -1356,6 +1358,9 @@ async function runNaturalMissionScenario(input: {
   if (input.scenario === "natural-browser-cdp-timeout-closeout") {
     return runNaturalBrowserCdpTimeoutScenario(input);
   }
+  if (input.scenario === "natural-browser-detached-target-closeout") {
+    return runNaturalBrowserDetachedTargetScenario(input);
+  }
   if (input.scenario === "natural-cancel-active-tool") {
     return runNaturalCancelScenario(input);
   }
@@ -1504,6 +1509,61 @@ async function runNaturalBrowserCdpTimeoutScenario(input: {
     });
     const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
     assertNaturalMissionQualityPassed(scenarioResult, "natural mission natural-browser-cdp-timeout-closeout quality failures");
+    return scenarioResult;
+  } finally {
+    await restartDaemon({});
+  }
+}
+
+async function runNaturalBrowserDetachedTargetScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+  restartDaemon?: (envOverrides?: Record<string, string>) => Promise<void>;
+}): Promise<NaturalMissionScenarioResult> {
+  const { restartDaemon } = input;
+  assert.ok(restartDaemon, "natural browser detached-target closeout requires a daemon restart hook");
+  await restartDaemon({
+    TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_BUCKET: "detached_target",
+    TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_ACTION: "snapshot",
+    TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_REPEAT: "1",
+  });
+  try {
+    const spec = buildNaturalScenarioSpec("natural-browser-detached-target-closeout", input.fixture);
+    assertNaturalPromptAllowed(spec.desc);
+    const mission = await createNaturalMission({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      spec,
+    });
+    assert.ok(mission.threadId, "natural browser detached-target mission requires a linked team thread");
+    const result = await waitForNaturalMissionCompletion({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: input.timeoutMs,
+      allowBlocked: true,
+    });
+    const metrics = await waitForMissionMetricsSettled({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: 20_000,
+    });
+    const final = findLatestThoughtEvent(result.timeline);
+    assert.ok(final, "natural browser detached-target mission timeline must include a final assistant answer");
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+    });
+    const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+    assertNaturalMissionQualityPassed(scenarioResult, "natural mission natural-browser-detached-target-closeout quality failures");
     return scenarioResult;
   } finally {
     await restartDaemon({});
@@ -2934,6 +2994,40 @@ export function buildNaturalScenarioSpec(
       ],
       requiredEvidencePatterns: [
         { label: "browser CDP timeout bucket", pattern: /cdp_command_timeout|CDP command timed out|browser snapshot CDP command timed out/i },
+      ],
+    };
+  }
+  if (scenario === "natural-browser-detached-target-closeout") {
+    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
+    return {
+      scenario,
+      title: "Natural browser detached target closeout",
+      desc: [
+        "Review this operations dashboard as a user would see it in the browser.",
+        `Dashboard: ${dynamicUrl}`,
+        "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
+        "If the browser target detaches while capturing the rendered page, close out with what was verified, what remains unverified, and the next action an operator should take.",
+      ].join("\n"),
+      minBytes: 260,
+      minToolResults: 1,
+      maxToolResults: 5,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 3,
+      requiresBrowser: true,
+      requiresApproval: false,
+      allowToolFailure: true,
+      requiredBrowserFailureBuckets: ["detached_target"],
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["browser", "verified", "unverified", "next action"],
+      requiredAnswerPatterns: [
+        { label: "detached target closeout", pattern: /\b(?:target|tab|page|browser)\b[\s\S]{0,80}\bdetached\b|\bdetached\b[\s\S]{0,80}\b(?:target|tab|page|browser)\b/i },
+        {
+          label: "bounded target limitation",
+          pattern: /\b(?:target|tab|page|browser)\b[\s\S]{0,120}\b(?:detached|unverified|not complete|incomplete|unavailable)\b/i,
+        },
+      ],
+      requiredEvidencePatterns: [
+        { label: "browser detached target bucket", pattern: /detached_target|target detached|browser target detached/i },
       ],
     };
   }
