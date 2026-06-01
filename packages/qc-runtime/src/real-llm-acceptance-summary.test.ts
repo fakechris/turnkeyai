@@ -87,6 +87,75 @@ test("summarizeMissionE2eReportForValidationOps rejects unrelated artifacts", ()
   assert.equal(summarizeMissionE2eReportForValidationOps(null), null);
 });
 
+test("summarizeMissionE2eReportForValidationOps treats expected timeout attention as passing evidence", () => {
+  const summary = summarizeMissionE2eReportForValidationOps({
+    kind: "turnkeyai.mission-e2e.report",
+    status: "passed",
+    scenarios: [
+      {
+        scenario: "timeout-recovery",
+        status: "done",
+        qualityGate: "blocked",
+        metrics: {
+          tools: { requested: 1, results: 1, failed: 1, cancelled: 0, timeouts: 1 },
+          sessions: { spawned: 1, continued: 0 },
+          browser: { profileFallbacks: 0 },
+          approvals: { requested: 0, decided: 0, applied: 0 },
+          liveness: { active: 0, waiting: 0, stale: 0 },
+          qualityChecks: [
+            { name: "failure_free", status: "fail" },
+            { name: "tool_loop_closeout", status: "warn" },
+          ],
+          evidenceEvents: 1,
+          recoveryEvents: 0,
+        },
+        final: {
+          qualityFailures: [],
+          closeout: { reason: "sub_agent_timeout" },
+        },
+      },
+    ],
+  });
+
+  assert.equal(summary?.passedScenarios, 1);
+  assert.equal(summary?.failedScenarios, 0);
+  assert.equal(summary?.qualityCheckFailures, 0);
+  assert.equal(summary?.toolFailed, 1);
+  assert.equal(summary?.toolTimeouts, 1);
+});
+
+test("summarizeMissionE2eReportForValidationOps rejects unexpected forced closeout on cancel", () => {
+  const summary = summarizeMissionE2eReportForValidationOps({
+    kind: "turnkeyai.mission-e2e.report",
+    status: "failed",
+    scenarios: [
+      {
+        scenario: "cancel",
+        status: "done",
+        qualityGate: "blocked",
+        metrics: {
+          tools: { requested: 1, results: 1, failed: 1, cancelled: 1, timeouts: 0 },
+          sessions: { spawned: 1, continued: 0 },
+          browser: { profileFallbacks: 0 },
+          approvals: { requested: 0, decided: 0, applied: 0 },
+          liveness: { active: 0, waiting: 0, stale: 0 },
+          qualityChecks: [{ name: "failure_free", status: "fail" }],
+          evidenceEvents: 1,
+          recoveryEvents: 0,
+        },
+        final: {
+          qualityFailures: [],
+          closeout: { reason: "sub_agent_timeout" },
+        },
+      },
+    ],
+  });
+
+  assert.equal(summary?.passedScenarios, 0);
+  assert.equal(summary?.failedScenarios, 1);
+  assert.equal(summary?.qualityCheckFailures, 0);
+});
+
 test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capability signals", () => {
   const summary = summarizeNaturalMissionE2eReportForValidationOps({
     kind: "turnkeyai.natural-mission-e2e.report",

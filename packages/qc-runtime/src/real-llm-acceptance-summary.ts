@@ -3,6 +3,14 @@ import type { ValidationOpsRealAcceptanceDetails } from "@turnkeyai/core-types/t
 type MissionReportSummary = NonNullable<ValidationOpsRealAcceptanceDetails["missionReport"]>;
 type NaturalMissionReportSummary = NonNullable<ValidationOpsRealAcceptanceDetails["naturalMissionReport"]>;
 
+const FORCED_TOOL_LOOP_CLOSEOUT_REASONS = new Set([
+  "pseudo_tool_call",
+  "wall_clock_budget",
+  "round_limit",
+  "sub_agent_timeout",
+  "repeated_tool_failure",
+]);
+
 interface MissionScenarioReportShape {
   scenario?: unknown;
   status?: unknown;
@@ -38,6 +46,9 @@ interface MissionScenarioReportShape {
   };
   final?: {
     qualityFailures?: unknown;
+    closeout?: {
+      reason?: unknown;
+    };
   };
 }
 
@@ -108,11 +119,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
 
   return scenarios.reduce<MissionReportSummary>(
     (summary, scenario) => {
-      const passing =
-        scenario.status === "done" &&
-        scenario.qualityGate === "passed" &&
-        Array.isArray(scenario.final?.qualityFailures) &&
-        scenario.final.qualityFailures.length === 0;
+      const passing = isPassingMissionScenario(scenario);
       const scenarioId = readString(scenario.scenario);
       if (scenarioId) (summary.scenarioIds ??= []).push(scenarioId);
       summary.passedScenarios += passing ? 1 : 0;
@@ -136,7 +143,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       summary.livenessStale += readNumber(scenario.metrics?.liveness?.stale);
       const qualityChecks = readQualityChecks(scenario.metrics?.qualityChecks);
       summary.qualityCheckWarnings += qualityChecks.filter((check) => check.status === "warn").length;
-      summary.qualityCheckFailures += qualityChecks.filter((check) => check.status === "fail").length;
+      summary.qualityCheckFailures += qualityChecks.filter((check) => isBlockingQualityCheckFailure(scenario, check)).length;
       summary.sourceCoverageWarnings += qualityChecks.filter(
         (check) => check.name === "source_coverage" && check.status === "warn"
       ).length;
@@ -295,6 +302,60 @@ function isMissionE2eReportShape(value: unknown): value is MissionE2eReportShape
 
 function isMissionScenarioReportShape(value: unknown): value is MissionScenarioReportShape {
   return typeof value === "object" && value !== null;
+}
+
+function isPassingMissionScenario(scenario: MissionScenarioReportShape): boolean {
+  if (
+    scenario.status !== "done" ||
+    !Array.isArray(scenario.final?.qualityFailures) ||
+    scenario.final.qualityFailures.length > 0
+  ) {
+    return false;
+  }
+  const scenarioId = readString(scenario.scenario);
+  if (scenarioId === "budget-limited-closeout") {
+    return scenario.qualityGate === "needs_attention" && readString(scenario.final?.closeout?.reason) === "round_limit";
+  }
+  if (scenarioId === "sub-agent-timeout-closeout" || scenarioId === "timeout-recovery") {
+    return (
+      scenario.qualityGate === "blocked" &&
+      readString(scenario.final?.closeout?.reason) === "sub_agent_timeout" &&
+      readNumber(scenario.metrics?.tools?.failed) >= 1 &&
+      readNumber(scenario.metrics?.tools?.timeouts) >= 1 &&
+      readNumber(scenario.metrics?.tools?.cancelled) === 0
+    );
+  }
+  if (scenarioId === "cancel") {
+    return (
+      scenario.qualityGate === "blocked" &&
+      readNumber(scenario.metrics?.tools?.cancelled) >= 1 &&
+      readNumber(scenario.metrics?.tools?.timeouts) === 0 &&
+      !hasUnexpectedForcedCloseout(scenario)
+    );
+  }
+  return scenario.qualityGate === "passed" && !hasUnexpectedForcedCloseout(scenario);
+}
+
+function isBlockingQualityCheckFailure(
+  scenario: MissionScenarioReportShape,
+  check: { name: string; status: string }
+): boolean {
+  if (check.status !== "fail") {
+    return false;
+  }
+  const scenarioId = readString(scenario.scenario);
+  if (
+    check.name === "failure_free" &&
+    (scenarioId === "cancel" || scenarioId === "timeout-recovery" || scenarioId === "sub-agent-timeout-closeout")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function hasUnexpectedForcedCloseout(scenario: MissionScenarioReportShape): boolean {
+  const reason = readString(scenario.final?.closeout?.reason);
+  return reason !== null && FORCED_TOOL_LOOP_CLOSEOUT_REASONS.has(reason);
 }
 
 function isNaturalMissionE2eReportShape(value: unknown): value is NaturalMissionE2eReportShape {

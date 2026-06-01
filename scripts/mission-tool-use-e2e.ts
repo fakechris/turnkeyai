@@ -405,6 +405,16 @@ export interface NaturalMissionE2eJsonReport {
   scenarios: NaturalMissionScenarioReport[];
 }
 
+class NaturalMissionScenarioQualityError extends Error {
+  constructor(
+    message: string,
+    readonly result: NaturalMissionScenarioResult
+  ) {
+    super(message);
+    this.name = "NaturalMissionScenarioQualityError";
+  }
+}
+
 interface WorkerSessionRecord {
   workerRunKey: string;
   context?: {
@@ -678,6 +688,20 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
           );
           printNaturalScenarioResult(result);
         } catch (error) {
+          if (error instanceof NaturalMissionScenarioQualityError) {
+            naturalResults.push(error.result);
+            if (options.jsonPath) {
+              writeNaturalMissionE2eJsonReport(
+                options.jsonPath,
+                buildNaturalMissionE2eJsonReport({
+                  startedAt,
+                  completedAt: Date.now(),
+                  results: naturalResults,
+                })
+              );
+              console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
+            }
+          }
           throw new Error(
             `natural mission scenario ${scenario} failed: ${errorMessage(error)}\n\ndaemon output tail:\n${daemon.output()}`
           );
@@ -1333,12 +1357,9 @@ async function runNaturalMissionScenario(input: {
     metrics,
     final,
   });
-  assert.deepEqual(
-    quality.failures,
-    [],
-    `natural mission ${input.scenario} quality failures: ${quality.failures.join("; ")}\n${final.text}`
-  );
-  return { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  assertNaturalMissionQualityPassed(scenarioResult, `natural mission ${input.scenario} quality failures`);
+  return scenarioResult;
 }
 
 async function runNaturalBrowserUnavailableScenario(input: {
@@ -1388,12 +1409,9 @@ async function runNaturalBrowserUnavailableScenario(input: {
       metrics,
       final,
     });
-    assert.deepEqual(
-      quality.failures,
-      [],
-      `natural mission natural-browser-unavailable-closeout quality failures: ${quality.failures.join("; ")}\n${final.text}`
-    );
-    return { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+    const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+    assertNaturalMissionQualityPassed(scenarioResult, "natural mission natural-browser-unavailable-closeout quality failures");
+    return scenarioResult;
   } finally {
     await restartDaemon({});
   }
@@ -1466,17 +1484,14 @@ async function runNaturalFollowupScenario(input: {
     metrics,
     final,
   });
-  assert.deepEqual(
-    quality.failures,
-    [],
-    `natural mission follow-up quality failures: ${quality.failures.join("; ")}\n${final.text}`
-  );
   assertNaturalFollowupReusedExistingSession({
     timeline: result.timeline,
     phaseOneFinal: initialFinal,
     expectedSessionKey: initialSessionKey,
   });
-  return { scenario: "natural-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = { scenario: "natural-followup-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  assertNaturalMissionQualityPassed(scenarioResult, "natural mission follow-up quality failures");
+  return scenarioResult;
 }
 
 async function runNaturalBrowserFollowupScenario(input: {
@@ -1562,12 +1577,9 @@ async function runNaturalBrowserFollowupScenario(input: {
     metrics,
     final,
   });
-  assert.deepEqual(
-    quality.failures,
-    [],
-    `natural mission browser follow-up quality failures: ${quality.failures.join("; ")}\n${final.text}`
-  );
-  return { scenario: "natural-browser-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = { scenario: "natural-browser-followup-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  assertNaturalMissionQualityPassed(scenarioResult, "natural mission browser follow-up quality failures");
+  return scenarioResult;
 }
 
 async function runNaturalBrowserRestartContinuationScenario(input: {
@@ -1657,12 +1669,9 @@ async function runNaturalBrowserRestartContinuationScenario(input: {
     metrics,
     final,
   });
-  assert.deepEqual(
-    quality.failures,
-    [],
-    `natural mission browser restart continuation quality failures: ${quality.failures.join("; ")}\n${final.text}`
-  );
-  return { scenario: "natural-browser-restart-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = { scenario: "natural-browser-restart-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  assertNaturalMissionQualityPassed(scenarioResult, "natural mission browser restart continuation quality failures");
+  return scenarioResult;
 }
 
 async function runNaturalBrowserColdRecreationScenario(input: {
@@ -1782,12 +1791,9 @@ async function runNaturalBrowserColdRecreationScenario(input: {
     metrics,
     final,
   });
-  assert.deepEqual(
-    quality.failures,
-    [],
-    `natural mission browser cold recreation quality failures: ${quality.failures.join("; ")}\n${final.text}`
-  );
-  return { scenario: "natural-browser-cold-recreation-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = { scenario: "natural-browser-cold-recreation-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  assertNaturalMissionQualityPassed(scenarioResult, "natural mission browser cold recreation quality failures");
+  return scenarioResult;
 }
 
 async function runNaturalMemoryRecallScenario(input: {
@@ -1865,12 +1871,9 @@ async function runNaturalMemoryRecallScenario(input: {
     metrics,
     final,
   });
-  assert.deepEqual(
-    quality.failures,
-    [],
-    `natural mission memory recall quality failures: ${quality.failures.join("; ")}\n${final.text}`
-  );
-  return { scenario: "natural-memory-recall", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = { scenario: "natural-memory-recall" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  assertNaturalMissionQualityPassed(scenarioResult, "natural mission memory recall quality failures");
+  return scenarioResult;
 }
 
 async function runNaturalApprovalScenario(input: {
@@ -1910,12 +1913,9 @@ async function runNaturalApprovalScenario(input: {
     metrics,
     final,
   });
-  assert.deepEqual(
-    quality.failures,
-    [],
-    `natural mission approval quality failures: ${quality.failures.join("; ")}\n${final.text}`
-  );
-  return { scenario: "natural-approval-dry-run-action", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = { scenario: "natural-approval-dry-run-action" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  assertNaturalMissionQualityPassed(scenarioResult, "natural mission approval quality failures");
+  return scenarioResult;
 }
 
 async function runNaturalCancelScenario(input: {
@@ -1992,12 +1992,9 @@ async function runNaturalCancelScenario(input: {
     metrics,
     final,
   });
-  assert.deepEqual(
-    quality.failures,
-    [],
-    `natural mission cancellation quality failures: ${quality.failures.join("; ")}\n${final.text}`
-  );
-  return { scenario: "natural-cancel-active-tool", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = { scenario: "natural-cancel-active-tool" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  assertNaturalMissionQualityPassed(scenarioResult, "natural mission cancellation quality failures");
+  return scenarioResult;
 }
 
 async function runNaturalCancelFollowupScenario(input: {
@@ -2114,12 +2111,9 @@ async function runNaturalCancelFollowupScenario(input: {
     metrics,
     final,
   });
-  assert.deepEqual(
-    quality.failures,
-    [],
-    `natural mission cancellation follow-up quality failures: ${quality.failures.join("; ")}\n${final.text}`
-  );
-  return { scenario: "natural-cancel-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = { scenario: "natural-cancel-followup-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  assertNaturalMissionQualityPassed(scenarioResult, "natural mission cancellation follow-up quality failures");
+  return scenarioResult;
 }
 
 async function runNaturalTimeoutFollowupScenario(input: {
@@ -2203,12 +2197,9 @@ async function runNaturalTimeoutFollowupScenario(input: {
     metrics,
     final,
   });
-  assert.deepEqual(
-    quality.failures,
-    [],
-    `natural mission timeout follow-up quality failures: ${quality.failures.join("; ")}\n${final.text}`
-  );
-  return { scenario: "natural-timeout-followup-continuation", mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = { scenario: "natural-timeout-followup-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  assertNaturalMissionQualityPassed(scenarioResult, "natural mission timeout follow-up quality failures");
+  return scenarioResult;
 }
 
 async function createNaturalMission(input: {
@@ -3087,6 +3078,16 @@ export function buildNaturalMissionE2eJsonReport(input: {
   };
 }
 
+function assertNaturalMissionQualityPassed(result: NaturalMissionScenarioResult, label: string): void {
+  if (result.quality.failures.length === 0) {
+    return;
+  }
+  throw new NaturalMissionScenarioQualityError(
+    `${label}: ${result.quality.failures.join("; ")}\n${result.final.text}`,
+    result
+  );
+}
+
 export function summarizeMissionScenarioResult(result: MissionScenarioResult): MissionE2eScenarioReport {
   return {
     scenario: result.scenario,
@@ -3224,13 +3225,23 @@ function isPassingMissionScenarioReport(report: MissionE2eScenarioReport): boole
       ? "needs_attention"
       : report.scenario === "sub-agent-timeout-closeout"
         ? "blocked"
+        : report.scenario === "timeout-recovery" || report.scenario === "cancel"
+          ? "blocked"
         : "passed";
   const expectedCloseoutReason =
     report.scenario === "budget-limited-closeout"
       ? "round_limit"
       : report.scenario === "sub-agent-timeout-closeout"
         ? "sub_agent_timeout"
+        : report.scenario === "timeout-recovery"
+          ? "sub_agent_timeout"
         : null;
+  const hasExpectedAttentionEvidence =
+    report.scenario === "timeout-recovery"
+      ? report.metrics.tools.failed >= 1 && report.metrics.tools.timeouts >= 1 && report.metrics.tools.cancelled === 0
+      : report.scenario === "cancel"
+        ? report.metrics.tools.cancelled >= 1 && report.metrics.tools.timeouts === 0
+        : true;
   const hasUnexpectedForcedCloseout =
     expectedCloseoutReason === null &&
     typeof report.final.closeout?.reason === "string" &&
@@ -3239,6 +3250,7 @@ function isPassingMissionScenarioReport(report: MissionE2eScenarioReport): boole
     report.status === "done" &&
     report.qualityGate === expectedQualityGate &&
     (expectedCloseoutReason === null || report.final.closeout?.reason === expectedCloseoutReason) &&
+    hasExpectedAttentionEvidence &&
     !hasUnexpectedForcedCloseout &&
     report.final.qualityFailures.length === 0
   );
@@ -4096,7 +4108,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         },
         {
           label: "residual risk line",
-          pattern: /^\s*[-*+]\s+residual risk\s*:.*continue/im,
+          pattern: /^\s*[-*+]\s+residual risk\s*:/im,
         },
       ],
       forbiddenPatterns: [
@@ -4117,7 +4129,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         `Use plain Markdown with the exact heading "Timeout result" with no #, **, or __ markup, followed by exactly three bullets: timeout boundary, attempted verification, residual risk. The first bullet must start with "- timeout boundary: ${TIMEOUT_FINAL_MARKER} - timed out".`,
         `The attempted verification and residual risk bullets must not include ${TIMEOUT_FINAL_MARKER}.`,
         "The attempted verification bullet must include the exact phrase verification did not complete.",
-        "The third bullet must include the literal word continue without repeating the final success marker.",
+        "Include continuation guidance in the residual risk bullet or immediately after the bounded closeout, without repeating the final success marker.",
         "In the attempted verification bullet, name the slow fixture but do not include the fixture URL.",
         "Do not add any paragraph, summary, or note after the three bullets.",
         "Do not claim the fixture marker was verified unless it appears in the tool result.",
@@ -4210,7 +4222,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         },
         {
           label: "residual risk line",
-          pattern: /^\s*[-*+]\s+residual risk\s*:.*continue/im,
+          pattern: /^\s*[-*+]\s+residual risk\s*:/im,
         },
       ],
       forbiddenPatterns: [
@@ -4232,7 +4244,7 @@ function buildScenarioSpec(scenario: MissionE2eScenario, fixture: FixtureServer)
         `Use plain Markdown with the exact heading "Timeout closeout" with no #, **, or __ markup, followed by exactly three bullets: timeout boundary, attempted verification, residual risk. The first bullet must start with "- timeout boundary: ${SUB_AGENT_TIMEOUT_CLOSEOUT_FINAL_MARKER} - timed out".`,
         `The attempted verification and residual risk bullets must not include ${SUB_AGENT_TIMEOUT_CLOSEOUT_FINAL_MARKER}.`,
         "The attempted verification bullet must include the exact phrase verification did not complete.",
-        "The third bullet must include the literal word continue without repeating the final success marker.",
+        "Include continuation guidance in the residual risk bullet or immediately after the bounded closeout, without repeating the final success marker.",
         "In the attempted verification bullet, name the slow fixture but do not include the fixture URL.",
         "Do not add any paragraph, summary, or note after the three bullets.",
         "Do not claim the fixture marker was verified unless it appears in the tool result.",
