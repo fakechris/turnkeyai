@@ -142,7 +142,7 @@ export function formatMissionDetail(input: {
     `  liveness active/waiting/stale=${metrics.liveness.active}/${metrics.liveness.waiting}/${metrics.liveness.stale}`,
   ];
 
-  if (metrics.browser.profileFallbacks > 0 || browserBuckets.length > 0) {
+  if (metrics.browser.profileFallbacks > 0 || browserBuckets.length > 0 || metrics.browser.latestProfileFallback) {
     lines.push("Browser attention:");
     for (const bucket of browserBuckets.slice(0, 5)) {
       lines.push(
@@ -291,9 +291,9 @@ function normalizeLatestProfileFallback(value: unknown): Pick<TuiMissionMetrics[
     return {};
   }
   const record = value as { sessionId?: unknown; fallbackDir?: unknown };
-  const sessionId = typeof record.sessionId === "string" && record.sessionId.trim() ? record.sessionId.trim() : undefined;
+  const sessionId = typeof record.sessionId === "string" ? sanitizeTerminalText(record.sessionId) : undefined;
   const fallbackDir =
-    typeof record.fallbackDir === "string" && record.fallbackDir.trim() ? record.fallbackDir.trim() : undefined;
+    typeof record.fallbackDir === "string" ? sanitizeTerminalText(record.fallbackDir) : undefined;
   if (!sessionId && !fallbackDir) {
     return {};
   }
@@ -312,11 +312,11 @@ function normalizeBrowserFailureBuckets(input: unknown): TuiMissionMetrics["brow
   return input
     .filter(isBrowserFailureBucketRecord)
     .map((bucket) => ({
-      bucket: bucket.bucket.trim(),
+      bucket: sanitizeTerminalText(bucket.bucket),
       count: asNonNegativeNumber(bucket.count),
       latestAtMs: asNonNegativeNumber(bucket.latestAtMs),
     }))
-    .filter((bucket) => bucket.bucket && bucket.count > 0)
+    .filter((bucket): bucket is TuiMissionMetrics["browser"]["failureBuckets"][number] => Boolean(bucket.bucket) && bucket.count > 0)
     .sort((left, right) => right.latestAtMs - left.latestAtMs || right.count - left.count || left.bucket.localeCompare(right.bucket));
 }
 
@@ -353,8 +353,25 @@ function browserFailureBucketLabel(bucket: string): string {
     case "lease_conflict":
       return "Lease conflict";
     default:
-      return bucket.replace(/_/g, " ");
+      return sentenceCase(bucket.replace(/_/g, " "));
   }
+}
+
+function sanitizeTerminalText(value: string): string | undefined {
+  const cleaned = value
+    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "")
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || undefined;
+}
+
+function sentenceCase(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
 }
 
 function truncateOneLine(value: string, maxLength: number): string {

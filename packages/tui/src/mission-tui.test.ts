@@ -126,6 +126,29 @@ describe("mission-tui", () => {
     assert.match(output, /latest profile fallback: session=browser\.session\.1 dir=\/tmp\/turnkeyai-profile/);
   });
 
+  it("sanitizes browser-provided terminal text before formatting mission detail", () => {
+    const lines = formatMissionDetail({
+      mission: mission({ id: "msn.browser-safe", shortId: "MSN-BS", title: "Browser safe mission" }),
+      metrics: metrics({
+        browser: {
+          profileFallbacks: 0,
+          latestProfileFallback: {
+            sessionId: "session\n\x1B[31mred\x1B[0m",
+            fallbackDir: "/tmp/profile\rspoof",
+          },
+          failureBuckets: [{ bucket: "custom_bucket\n\x1B[31m", count: 1, latestAtMs: 1000 }],
+        },
+      }),
+      timeline: [],
+    });
+
+    const output = lines.join("\n");
+    assert.match(output, /Browser attention:/);
+    assert.match(output, /Custom bucket \(custom_bucket\): 1 at 1970-01-01T00:00:01.000Z/);
+    assert.match(output, /latest profile fallback: session=session red dir=\/tmp\/profile spoof/);
+    assert.doesNotMatch(output, /\x1B|\r/);
+  });
+
   it("formats malformed mission metrics and events with safe defaults", () => {
     const lines = formatMissionDetail({
       mission: mission({ id: "msn.safe", shortId: "MSN-S", title: "Safe", createdAtMs: Number.MAX_VALUE }),
