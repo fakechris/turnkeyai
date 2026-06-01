@@ -134,6 +134,29 @@ describe("mission tool-use e2e report", () => {
     assert.equal(wrongGate.status, "failed");
   });
 
+  it("treats bounded timeout recovery as a passing negative-control scenario", () => {
+    const timeout = fakeCloseoutResult("timeout-recovery", "blocked", "sub_agent_timeout");
+    timeout.metrics.tool.failed = 1;
+    timeout.metrics.tool.timeouts = 1;
+    timeout.metrics.qualityGate.checks = [
+      { name: "failure_free", status: "fail", detail: "Expected timeout attention." },
+      { name: "tool_loop_closeout", status: "warn", detail: "Final answer was forced after a sub-agent timeout." },
+    ];
+
+    const report = buildMissionE2eJsonReport({
+      startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
+      completedAt: Date.UTC(2026, 4, 30, 12, 0, 3),
+      results: [timeout],
+    });
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.scenarios[0]?.qualityGate, "blocked");
+    assert.deepEqual(report.scenarios[0]?.final.closeout, {
+      reason: "sub_agent_timeout",
+      evidenceAvailable: "true",
+    });
+  });
+
   it("rejects forced closeout reasons in normal long brief scenarios", () => {
     const forcedCloseout = buildMissionE2eJsonReport({
       startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
@@ -1709,7 +1732,7 @@ function longDelegationFinalWithoutFixtureLabels(): string {
 }
 
 function fakeCloseoutResult(
-  scenario: "budget-limited-closeout" | "sub-agent-timeout-closeout",
+  scenario: "budget-limited-closeout" | "sub-agent-timeout-closeout" | "timeout-recovery",
   qualityGate: string,
   reason: string
 ): MissionScenarioResult {
