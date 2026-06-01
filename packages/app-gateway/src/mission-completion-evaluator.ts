@@ -270,6 +270,9 @@ function isIncompleteLeadFinalAnswer(
 ): { message: TeamMessage; reason: "max_tokens" | "truncated_markdown" } | null {
   const stopReason = readStringMetadata(message.metadata, "stopReason");
   if (isMaxTokensStopReason(stopReason)) {
+    if (looksLikeCompleteDeniedApprovalCloseout(message.content)) {
+      return null;
+    }
     return { message, reason: "max_tokens" };
   }
   if (looksLikeTruncatedMarkdown(message.content)) {
@@ -301,6 +304,17 @@ function looksLikeTruncatedMarkdown(content: string): boolean {
   const pipeCount = (lastNonEmpty.match(/\|/g) ?? []).length;
   if (lastNonEmpty.trimStart().startsWith("|") && pipeCount < 2) return true;
   return /(\*\*|__|\[)$/.test(lastNonEmpty.trim());
+}
+
+function looksLikeCompleteDeniedApprovalCloseout(content: string): boolean {
+  return (
+    /\bdenied\b/i.test(content) &&
+    /\b(?:safe closeout|safe fallback|closed safely|task closed safely)\b/i.test(content) &&
+    /\b(?:no mutation was performed|no side effects? (?:occurred|were applied)|no form submission was (?:or will be )?performed|side effect did not run|action not performed)\b/i.test(
+      content
+    ) &&
+    /\b(?:complete|closed out|closes cleanly|no further browser work is queued)\b/i.test(content)
+  );
 }
 
 function findStalledLeadToolTurn(

@@ -55,6 +55,21 @@ class SuccessProtocolClient implements ProtocolClient {
   }
 }
 
+class HangingProtocolClient implements ProtocolClient {
+  signal: AbortSignal | null = null;
+
+  supports(protocol: ModelProtocol): boolean {
+    return protocol === "openai-compatible";
+  }
+
+  async generate(_model: ResolvedModelConfig, input: GenerateTextInput): Promise<GenerateTextResult> {
+    this.signal = input.signal ?? null;
+    return new Promise<GenerateTextResult>(() => {
+      // Intentionally unresolved; the gateway must enforce the timeout.
+    });
+  }
+}
+
 test("llm gateway retries through configured model fallbacks", async () => {
   const previousPrimaryKey = process.env.TEST_PRIMARY_KEY;
   const previousFallbackKey = process.env.TEST_FALLBACK_KEY;
@@ -185,6 +200,49 @@ test("llm gateway reports only actually attempted models when the primary succee
       delete process.env.TEST_FALLBACK_KEY;
     } else {
       process.env.TEST_FALLBACK_KEY = previousFallbackKey;
+    }
+  }
+});
+
+test("llm gateway aborts provider requests that exceed the configured timeout", async () => {
+  const previousPrimaryKey = process.env.TEST_PRIMARY_KEY;
+  process.env.TEST_PRIMARY_KEY = "primary-key";
+  const client = new HangingProtocolClient();
+
+  try {
+    const gateway = new LLMGateway({
+      registry: new ModelRegistry(
+        new InMemoryCatalogSource({
+          models: {
+            "primary-model": {
+              label: "Primary",
+              providerId: "openai",
+              protocol: "openai-compatible",
+              model: "primary-model",
+              baseURL: "https://primary.example/v1",
+              apiKeyEnv: "TEST_PRIMARY_KEY",
+            },
+          },
+        })
+      ),
+      clients: [client],
+      requestTimeoutMs: 5,
+    });
+
+    await assert.rejects(
+      () =>
+        gateway.generate({
+          modelId: "primary-model",
+          messages: [{ role: "user", content: "Hang forever." }],
+        }),
+      /llm_request_timeout: model primary-model did not respond within 5ms/
+    );
+    assert.equal(client.signal?.aborted, true);
+  } finally {
+    if (previousPrimaryKey == null) {
+      delete process.env.TEST_PRIMARY_KEY;
+    } else {
+      process.env.TEST_PRIMARY_KEY = previousPrimaryKey;
     }
   }
 });

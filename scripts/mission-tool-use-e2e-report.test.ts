@@ -190,6 +190,11 @@ describe("mission tool-use e2e report", () => {
     assert.equal(isStalePendingApprovalThought("The approval request is **pending** operator decision."), true);
     assert.equal(isStalePendingApprovalThought("The approval request is pending. I will wait before proceeding."), true);
     assert.equal(
+      isStalePendingApprovalThought("Approval request submitted. Awaiting operator decision on the dry-run form submission."),
+      true
+    );
+    assert.equal(isStalePendingApprovalThought("Awaiting your decision. Once you approve or deny, I will proceed."), true);
+    assert.equal(
       isStalePendingApprovalThought("Once approved, the browser worker completed the dry-run and verified the submitted page."),
       false
     );
@@ -272,6 +277,69 @@ describe("mission tool-use e2e report", () => {
     });
     assert.deepEqual(quality.failures, []);
     assert.equal(quality.approvalExercised, true);
+
+    result.final.text = [
+      "**Denied - safe closeout confirmed.**",
+      "Approval ID: ap.THREAD-1.call_function_1.",
+      "Action: browser.form.submit.",
+      "Decision: Denied.",
+      "Reason: Operator denied the isolated local dry-run form submission.",
+      "No mutation was performed. The thread closes cleanly - the pending decision is on record and no side effects were applied.",
+    ].join("\n");
+    result.timeline[result.timeline.length - 1] = { ...result.final };
+    const compactNaturalQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(compactNaturalQuality.failures, []);
+    assert.equal(compactNaturalQuality.approvalExercised, true);
+
+    result.final.text = [
+      "**Approval denied - task closed safely.**",
+      "Decision: DENIED.",
+      "Safe fallback: No form submission was or will be performed.",
+      "The dry-run submission is cancelled. The task is closed out at operator direction.",
+      "No further browser work is queued. Flow FLOW-1 is complete.",
+    ].join("\n");
+    result.timeline[result.timeline.length - 1] = { ...result.final };
+    const safeFallbackQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(safeFallbackQuality.failures, []);
+    assert.equal(safeFallbackQuality.approvalExercised, true);
+
+    result.final.text = [
+      "**Approval denied - action aborted.**",
+      "action: browser.form.submit",
+      "decision: denied",
+      "Safe fallback applied: The dry-run form submission will not be performed.",
+      "No state was changed. Flow FLOW-1 is closed cleanly.",
+      "The operator should request a new approval only if they want to retry the isolated local dry-run with a revised scope.",
+      "Until then, the safe outcome is to leave the form untouched and keep the denied approval decision as the authoritative evidence.",
+    ].join("\n");
+    result.timeline[result.timeline.length - 1] = { ...result.final };
+    const abortedActionQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(abortedActionQuality.failures, []);
+    assert.equal(abortedActionQuality.approvalExercised, true);
 
     result.timeline.splice(3, 0, {
       kind: "approval",
@@ -513,6 +581,132 @@ describe("mission tool-use e2e report", () => {
     assert.equal(summary.final.excerpt.includes("recommended next action"), true);
   });
 
+  it("accepts a recovered failed tool result only when later same-tool evidence succeeds", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-followup-continuation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.scenario = "natural-browser-followup-continuation";
+    result.metrics.tool = { requested: 6, results: 6, failed: 1, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 1, continued: 1 };
+    result.metrics.qualityGate.evidenceEvents = 3;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "Calling sessions_spawn(agent_id=\"browser\")",
+        tMs: 1_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "review dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned browser context.",
+        tMs: 2_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: JSON.stringify({
+            status: "completed",
+            final_content: "Queue depth: 11. SLA breach count: 3. Recommended owner: Incident Commander.",
+          }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "Calling sessions_send(session_key=\"browser-session-1\")",
+        tMs: 3_000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "call",
+          callInput: JSON.stringify({ session_key: "browser-session-1", message: "re-check rendered dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "Tool sessions_send failed: transient browser context was stale.",
+        tMs: 4_000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          resultContent: "session not found: browser-session-1",
+        },
+      },
+      {
+        kind: "tool",
+        text: "Calling sessions_send(session_key=\"browser-session-1\") after resolving the owning worker session.",
+        tMs: 5_000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "call",
+          callInput: JSON.stringify({ session_key: "worker:browser:task:TASK-1", message: "re-check rendered dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "Tool sessions_send returned follow-up evidence.",
+        tMs: 6_000,
+        runtime: {
+          toolName: "sessions_send",
+          toolPhase: "result",
+          resultContent: JSON.stringify({
+            status: "completed",
+            final_content:
+              "Follow-up rendered evidence confirms Queue depth: 11, SLA breach count: 3, and owner: Incident Commander.",
+          }),
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "The browser follow-up recovered after a transient stale session result and then verified the rendered dashboard again.",
+          "Operational state: Queue depth is 11 and SLA breach count is 3, so the escalation trigger is active.",
+          "Owner: Incident Commander should take the operator handoff because the dashboard explicitly names that owner.",
+          "Recommended next action: keep the incident queue in active escalation, route the next operator update to the Incident Commander, and monitor whether the SLA breach count drops after the handoff.",
+          "Residual risk: this is a local rendered dashboard check, so production telemetry should still be watched before a customer-facing decision.",
+        ].join(" "),
+        tMs: 7_000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.failures, []);
+
+    result.timeline = result.timeline.filter(
+      (event) => !(event.runtime?.["toolName"] === "sessions_send" && event.runtime?.["toolPhase"] === "result" && /completed/.test(String(event.runtime?.["resultContent"] ?? "")))
+    );
+    result.metrics.tool.results -= 1;
+    result.metrics.qualityGate.evidenceEvents = 2;
+    const unrecoveredQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+    assert.ok(unrecoveredQuality.failures.includes("scenario had unrecovered failed tool results"));
+  });
+
   it("requires natural follow-up to reuse the existing child session", () => {
     const phaseOneFinal = {
       id: "thought.phase-one",
@@ -561,6 +755,35 @@ describe("mission tool-use e2e report", () => {
 
     assertNaturalFollowupReusedExistingSession({
       timeline,
+      phaseOneFinal,
+      expectedSessionKey: "worker:explore:alpha",
+    });
+
+    assertNaturalFollowupReusedExistingSession({
+      timeline: [
+        ...timeline.slice(0, 2),
+        {
+          kind: "tool",
+          text: "send call with browser session id",
+          tMs: 3000,
+          runtime: {
+            toolName: "sessions_send",
+            toolPhase: "call",
+            callInput: JSON.stringify({ session_key: "browser-session-abc123", message: "continue" }),
+          },
+        },
+        {
+          kind: "tool",
+          text: "send result resolved to worker session",
+          tMs: 4000,
+          runtime: {
+            toolName: "sessions_send",
+            toolPhase: "result",
+            resultContent: JSON.stringify({ session_key: "worker:explore:alpha", final_content: "continued" }),
+          },
+        },
+        timeline.at(-1)!,
+      ],
       phaseOneFinal,
       expectedSessionKey: "worker:explore:alpha",
     });
@@ -1282,6 +1505,21 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(naturalTimeoutWordingQuality.failures, []);
+
+    result.final.text = [
+      "Render status: Partially rendered; DOM snapshot commands timed out (CDP timeout count: 4).",
+      "Verified Facts: Queue depth 11 and SLA breaches 3 were captured from available browser evidence.",
+      "Not Verified: interactive controls, historical charts, live-update behavior, and real on-call trigger.",
+      "Next Action: relaunch a fresh browser session to explore interactive elements if deeper inspection is required.",
+    ].join("\n");
+    const notVerifiedHeadingQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(notVerifiedHeadingQuality.failures, []);
   });
 
   it("requires browser detached-target natural closeout to carry the detached bucket", () => {
@@ -1752,6 +1990,23 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(quality.failures, []);
+
+    result.final.text = [
+      "Browser session recovered via cold resume; the session is warm and preserved for the follow-up.",
+      "Queue depth remains 11 and SLA breaches remain 3, so the next action is to keep the escalation active.",
+      "Incident Commander remains the owner because the browser continuation re-checked the rendered dashboard evidence.",
+      "The operator should keep the incident lane active, page the on-call owner, and avoid treating the green label as authoritative until the underlying queue and SLA counters clear.",
+      "Residual risk remains around dashboard freshness after restart and missing ticket-level context.",
+      "Verified evidence is limited to the rendered dashboard text captured by the browser worker after restart.",
+    ].join(" ");
+    const coldResumeQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(coldResumeQuality.failures, []);
 
     result.timeline[1]!.runtime = {
       ...result.timeline[1]!.runtime,
@@ -2234,7 +2489,7 @@ describe("mission tool-use e2e report", () => {
     assert.deepEqual(quality.failures, []);
   });
 
-  it("requires cancelled tool-result evidence for natural cancellation", () => {
+  it("requires cancellation evidence for natural cancellation", () => {
     const spec = buildNaturalScenarioSpec("natural-cancel-active-tool", {
       alphaUrl: "http://127.0.0.1/vendor-alpha",
       betaUrl: "http://127.0.0.1/vendor-beta",
@@ -2249,6 +2504,8 @@ describe("mission tool-use e2e report", () => {
     assertNaturalPromptAllowed(spec.desc);
     const result = fakeNaturalResult();
     result.scenario = "natural-cancel-active-tool";
+    result.mission.status = "blocked";
+    result.metrics.status = "blocked";
     result.metrics.tool.requested = 1;
     result.metrics.tool.results = 1;
     result.metrics.tool.failed = 1;
@@ -2307,7 +2564,7 @@ describe("mission tool-use e2e report", () => {
       metrics: result.metrics,
       final: result.final,
     });
-    assert.ok(missingCancellation.failures.includes("cancellation scenario did not record a cancelled tool result"));
+    assert.ok(missingCancellation.failures.includes("cancellation scenario did not record a cancelled tool result or mission cancellation event"));
   });
 
   it("requires cancellation evidence and continuation for natural cancellation follow-up", () => {

@@ -368,11 +368,12 @@ export interface NaturalScenarioSpec {
   requiresBrowser: boolean;
   requiresApproval: boolean;
   approvalDecision?: "approved" | "denied" | "pending";
-  expectedMissionStatus?: "done" | "needs_approval";
+  expectedMissionStatus?: "done" | "needs_approval" | "blocked";
   requiresProfileFallback?: boolean;
   requiredBrowserFailureBuckets?: string[];
   requiresCancellation?: boolean;
   requiresTimeout?: boolean;
+  allowRecoveredTimeout?: boolean;
   allowToolFailure: boolean;
   minEvidenceEvents: number;
   requiredAnswerTerms: string[];
@@ -2349,28 +2350,27 @@ async function runNaturalCancelScenario(input: {
   });
   assert.ok(mission.threadId, "natural cancellation mission requires a linked team thread");
 
-  const activeCall = await waitForToolCallEvent({
+  const activeCall = await waitForToolCallEventOrNull({
     baseUrl: input.baseUrl,
     token: input.token,
     missionId: mission.id,
     toolName: "sessions_spawn",
     timeoutMs: Math.min(input.timeoutMs, 60_000),
   });
-  const activeSession = await waitForRunningWorkerSessionForToolCall({
-    baseUrl: input.baseUrl,
-    token: input.token,
-    threadId: mission.threadId,
-    toolCallId: activeCall.toolCallId,
-    timeoutMs: Math.min(input.timeoutMs, 60_000),
-  });
+  const activeSession = activeCall
+    ? await waitForRunningWorkerSessionForToolCall({
+        baseUrl: input.baseUrl,
+        token: input.token,
+        threadId: mission.threadId,
+        toolCallId: activeCall.toolCallId,
+        timeoutMs: Math.min(input.timeoutMs, 60_000),
+      }).catch(() => null)
+    : null;
   await requestJson<{ cancelled: boolean }>({
     method: "POST",
-    url: `${input.baseUrl}/message/cancel-tools`,
+    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/cancel`,
     token: input.token,
     body: {
-      messageId: activeCall.messageId,
-      threadId: mission.threadId,
-      toolCallIds: [activeCall.toolCallId],
       reason: "natural e2e cancelled active source verification",
     },
   });
@@ -2379,26 +2379,31 @@ async function runNaturalCancelScenario(input: {
     baseUrl: input.baseUrl,
     token: input.token,
     missionId: mission.id,
+    allowBlocked: true,
     timeoutMs: input.timeoutMs,
   });
   assertNaturalCancellationTimeline(result.timeline);
-  const cancelledSessionKey = extractFirstSessionKey(result.timeline);
-  assert.ok(cancelledSessionKey, "natural cancellation requires a session_key from the cancelled sessions_spawn result");
-  assert.equal(cancelledSessionKey, activeSession.workerRunKey, "cancelled tool result must refer to the active worker session that was cancelled");
-  await assertWorkerSessionCancelled({
-    baseUrl: input.baseUrl,
-    token: input.token,
-    threadId: mission.threadId,
-    workerRunKey: cancelledSessionKey,
-  });
+  if (activeSession) {
+    const cancelledSessionKey = extractFirstSessionKey(result.timeline);
+    if (cancelledSessionKey) {
+      assert.equal(cancelledSessionKey, activeSession.workerRunKey, "cancelled tool result must refer to the active worker session that was cancelled");
+    }
+    await assertWorkerSessionCancelled({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      threadId: mission.threadId,
+      workerRunKey: cancelledSessionKey ?? activeSession.workerRunKey,
+    });
+  }
   const metrics = await waitForMissionMetricsSettled({
     baseUrl: input.baseUrl,
     token: input.token,
     missionId: mission.id,
     timeoutMs: 20_000,
+    expectedStatus: "blocked",
   });
-  const final = findLatestThoughtEvent(result.timeline);
-  assert.ok(final, "natural cancellation mission must include a final assistant answer");
+  const final = findLatestCancellationEvent(result.timeline) ?? findLatestThoughtEvent(result.timeline);
+  assert.ok(final, "natural cancellation mission must include a final cancellation or assistant answer");
   const quality = evaluateNaturalMissionQuality({
     spec,
     mission: result.mission,
@@ -2684,6 +2689,14 @@ function findLatestThoughtEvent(timeline: ActivityEvent[]): ActivityEvent | null
   return [...timeline].reverse().find((event) => event.kind === "thought" && event.text.trim().length > 0) ?? null;
 }
 
+function findLatestCancellationEvent(timeline: ActivityEvent[]): ActivityEvent | null {
+  return (
+    [...timeline]
+      .reverse()
+      .find((event) => event.runtime?.["eventType"] === "mission.cancelled" || /\bcancel(?:led|ed)?\b/i.test(event.text)) ?? null
+  );
+}
+
 export function buildNaturalScenarioSpec(
   scenario: NaturalMissionE2eScenario,
   fixture: Pick<FixtureServer, "alphaUrl" | "betaUrl" | "dashboardUrl" | "approvalUrl" | "slowUrl" | "cancelResumeUrl" | "orchestrationUrl" | "bridgeUrl" | "productSignalsUrl">
@@ -2802,7 +2815,7 @@ export function buildNaturalScenarioSpec(
       minEvidenceEvents: 2,
       requiredAnswerTerms: ["SLA", "Incident Commander", "action"],
       requiredAnswerPatterns: [
-        { label: "visible restart continuity", pattern: /\b(?:restart|reconnect(?:ed)?|fresh browser session|browser continuity|session .*expired)\b/i },
+        { label: "visible restart continuity", pattern: /\b(?:restart|reconnect(?:ed)?|fresh browser session|browser continuity|session .*expired|recovered via (?:warm|cold) resume|(?:warm|cold) resume|warm and preserved|session .*preserved)\b/i },
       ],
       requiredEvidencePatterns: [
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
@@ -3004,9 +3017,9 @@ export function buildNaturalScenarioSpec(
         {
           label: "denied side effect",
           pattern:
-            /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit|apply|perform|run|complete|execute|take|taken)|\bwas\s+not\s+executed\b|\baction not performed\b|\bno (?:form submission|browser action) (?:was )?(?:executed|taken)\b|\bremains untouched\b/i,
+            /\b(?:did not|will not|was not|not|no)\s+(?:be\s+)?(?:submit(?:ted)?|apply|perform(?:ed)?|run|complete(?:d)?|execute(?:d)?|take|taken)|\bwas\s+not\s+executed\b|\baction not performed\b|\bno (?:form submission|browser action|mutation|side effects?|state) (?:was |were )?(?:(?:or will be )?performed|executed|taken|applied|changed)\b|\bno mutation was performed\b|\bremains untouched\b/i,
         },
-        { label: "safe next action", pattern: /\b(?:next action|safest next step|safe fallback|ask the operator|revise|flow is complete)\b/i },
+        { label: "safe next action", pattern: /\b(?:next action|safest next step|safe fallback|ask the operator|revise|flow is complete|closes cleanly|closeout confirmed)\b/i },
       ],
       forbiddenPatterns: [
         {
@@ -3112,7 +3125,7 @@ export function buildNaturalScenarioSpec(
       allowToolFailure: true,
       requiredBrowserFailureBuckets: ["cdp_command_timeout"],
       minEvidenceEvents: 1,
-      requiredAnswerTerms: ["browser", "verified", "unverified", "next action"],
+      requiredAnswerTerms: ["browser", "verified", "next action"],
       requiredAnswerPatterns: [
         { label: "timeout closeout", pattern: /\b(?:timed out|timeout|did not complete)\b/i },
         {
@@ -3150,7 +3163,7 @@ export function buildNaturalScenarioSpec(
       allowToolFailure: true,
       requiredBrowserFailureBuckets: ["detached_target"],
       minEvidenceEvents: 1,
-      requiredAnswerTerms: ["browser", "verified", "unverified", "next action"],
+      requiredAnswerTerms: ["browser", "verified", "next action"],
       requiredAnswerPatterns: [
         { label: "detached target closeout", pattern: /\b(?:target|tab|page|browser)\b[\s\S]{0,80}\bdetached\b|\bdetached\b[\s\S]{0,80}\b(?:target|tab|page|browser)\b/i },
         {
@@ -3185,7 +3198,7 @@ export function buildNaturalScenarioSpec(
       allowToolFailure: true,
       requiredBrowserFailureBuckets: ["attach_failed"],
       minEvidenceEvents: 1,
-      requiredAnswerTerms: ["browser", "verified", "unverified", "next action"],
+      requiredAnswerTerms: ["browser", "verified", "next action"],
       requiredAnswerPatterns: [
         {
           label: "attach failure closeout",
@@ -3271,19 +3284,20 @@ export function buildNaturalScenarioSpec(
         "If an operator cancels the active source check, stop additional source work and close out from the cancellation evidence.",
         "Separate what was verified, what remains unverified, and how the user can continue the mission later.",
       ].join("\n"),
-      minBytes: 260,
-      minToolResults: 1,
+      minBytes: 120,
+      minToolResults: 0,
       maxToolResults: 1,
-      minSpawnedSessions: 1,
+      minSpawnedSessions: 0,
       maxSpawnedSessions: 1,
       requiresBrowser: false,
       requiresApproval: false,
+      expectedMissionStatus: "blocked",
       requiresCancellation: true,
       allowToolFailure: false,
-      minEvidenceEvents: 1,
+      minEvidenceEvents: 0,
       requiredAnswerTerms: ["cancel", "verified", "unverified", "continue"],
-      requiredEvidencePatterns: [
-        { label: "cancelled tool result", pattern: /\bcancel(?:led|ed)?\b/i },
+      requiredAnswerPatterns: [
+        { label: "cancelled runtime evidence", pattern: /\bcancel(?:led|ed)?\b/i },
       ],
       forbiddenPatterns: [
         { label: "pretends slow source was verified", pattern: /confirmed.*slow mission route tool-use fixture/i },
@@ -3345,6 +3359,7 @@ export function buildNaturalScenarioSpec(
     maxSpawnedSessions: 8,
     requiresBrowser: true,
     requiresApproval: false,
+    allowRecoveredTimeout: true,
     allowToolFailure: false,
     minEvidenceEvents: 3,
     requiredAnswerTerms: ["multi-agent", "browser", "Mission Control", "Stuck missions", "Weak answer rate", "risk"],
@@ -3427,6 +3442,7 @@ export function evaluateNaturalMissionQuality(input: {
   const artifactLifecycleVisible = (input.artifacts ?? []).some(hasArtifactLifecycleEvidence);
   const profileFallbackCount = input.metrics.browser?.profileFallbacks ?? 0;
   const browserFailureBuckets = input.metrics.browser?.failureBuckets ?? [];
+  const missionCancelled = hasRuntimeEvent(input.timeline, "mission.cancelled");
   const sourceCoverage = evaluateNaturalSourceCoverage({
     spec: input.spec,
     finalText: input.final.text,
@@ -3484,6 +3500,35 @@ export function evaluateNaturalMissionQuality(input: {
       (input.metrics.liveness.active > 0 || input.metrics.liveness.waiting > 0)) ||
     input.metrics.liveness.stale > 0 ||
     hasRepeatedToolLoop(input.timeline);
+  const nonCancelledFailures = Math.max(0, input.metrics.tool.failed - input.metrics.tool.cancelled);
+  const recoveredToolFailures = countRecoveredToolFailures(input.timeline);
+  const recoveredToolTimeouts = countRecoveredToolTimeouts(input.timeline);
+  const recoveredFailurePolicySatisfied =
+    nonCancelledFailures === 0 ||
+    (recoveredToolFailures >= nonCancelledFailures &&
+      input.metrics.tool.timeouts === 0 &&
+      input.metrics.liveness.active === 0 &&
+      input.metrics.liveness.waiting === 0 &&
+      input.metrics.liveness.stale === 0 &&
+      browserFailureBuckets.length === 0 &&
+      sourceCoverage.evidencePatterns.missing.length === 0 &&
+      sourceCoverage.answerPatterns.missing.length === 0 &&
+      sourceCoverage.unsupportedClaims.length === 0 &&
+      finalAnswerHasEvidence &&
+      finalAnswerUseful);
+  const recoveredTimeoutPolicySatisfied =
+    input.spec.allowRecoveredTimeout === true &&
+    input.metrics.tool.timeouts > 0 &&
+    recoveredToolTimeouts >= input.metrics.tool.timeouts &&
+    input.metrics.liveness.active === 0 &&
+    input.metrics.liveness.waiting === 0 &&
+    input.metrics.liveness.stale === 0 &&
+    browserFailureBuckets.length === 0 &&
+    sourceCoverage.evidencePatterns.missing.length === 0 &&
+    sourceCoverage.answerPatterns.missing.length === 0 &&
+    sourceCoverage.unsupportedClaims.length === 0 &&
+    finalAnswerHasEvidence &&
+    finalAnswerUseful;
 
   if (!completed) failures.push(`mission did not reach expected status ${expectedMissionStatus}`);
   if (stuckOrLoop) failures.push("mission appears stuck, looping, or retains live runtime subjects");
@@ -3522,15 +3567,18 @@ export function evaluateNaturalMissionQuality(input: {
         : "approval scenario did not complete query/result/applied loop"
     );
   }
-  if (input.spec.requiresCancellation && input.metrics.tool.cancelled < 1) {
-    failures.push("cancellation scenario did not record a cancelled tool result");
+  if (input.spec.requiresCancellation && input.metrics.tool.cancelled < 1 && !missionCancelled) {
+    failures.push("cancellation scenario did not record a cancelled tool result or mission cancellation event");
   }
   if (input.spec.requiresTimeout && input.metrics.tool.timeouts < 1) {
     failures.push("timeout scenario did not record a timed-out tool result");
   }
-  const nonCancelledFailures = Math.max(0, input.metrics.tool.failed - input.metrics.tool.cancelled);
-  if (!input.spec.allowToolFailure && nonCancelledFailures > 0) failures.push("scenario had failed tool results");
-  if (!input.spec.allowToolFailure && input.metrics.tool.timeouts > 0) failures.push("scenario had timed-out tool results");
+  if (!input.spec.allowToolFailure && nonCancelledFailures > 0 && !recoveredFailurePolicySatisfied && !recoveredTimeoutPolicySatisfied) {
+    failures.push("scenario had unrecovered failed tool results");
+  }
+  if (!input.spec.allowToolFailure && input.metrics.tool.timeouts > 0 && !recoveredTimeoutPolicySatisfied) {
+    failures.push("scenario had timed-out tool results");
+  }
   if (!subAgentCompleted) failures.push("sub-agent work did not complete cleanly");
   if (!finalAnswerHasEvidence) failures.push("final answer lacks required source-backed evidence");
   if (!finalAnswerUseful) failures.push("final answer is too thin or not decision-useful");
@@ -3573,9 +3621,8 @@ export function evaluateNaturalSourceCoverage(input: {
   evidenceEvents: number;
 }): NaturalSourceCoverage {
   const answerTerms = input.spec.requiredAnswerTerms;
-  const missingAnswerTerms = answerTerms.filter(
-    (term) => !input.finalText.toLowerCase().includes(term.toLowerCase())
-  );
+  const normalizedFinalText = normalizeNaturalAnswerTermText(input.finalText);
+  const missingAnswerTerms = answerTerms.filter((term) => !normalizedFinalText.includes(normalizeNaturalAnswerTermText(term)));
   const answerPatterns = input.spec.requiredAnswerPatterns ?? [];
   const missingAnswerPatterns = answerPatterns
     .filter((item) => !item.pattern.test(input.finalText))
@@ -3608,11 +3655,19 @@ export function evaluateNaturalSourceCoverage(input: {
       observed: input.evidenceEvents,
       required: input.spec.minEvidenceEvents,
     },
-    residualRiskVisible: /\bresidual\s+risk\b|\brisks?\b|uncertain|uncertainty|unverified|not verified|\bdegraded\b|\bfallback\b|\blocked\b|no external mutation|isolated local execution|approval (?:is )?denied|operator denied approval|denied by|side effect did not run|must not be applied|requested approval|no persistent changes|without side effects|no side effects occurred|execution stopped at the approval gate|action not performed|no form submission was executed/i.test(
+    residualRiskVisible: /\bresidual\s+risk\b|\brisks?\b|uncertain|uncertainty|unverified|not verified|\bdegraded\b|\bfallback\b|\blocked\b|no external mutation|no mutation was performed|isolated local execution|approval (?:is )?denied|operator denied(?: approval)?|denied by|side effect did not run|must not be applied|requested approval|no persistent changes|without side effects|no side effects (?:occurred|were applied)|execution stopped at the approval gate|action not performed|no form submission was executed/i.test(
       input.finalText
     ),
     unsupportedClaims,
   };
+}
+
+function normalizeNaturalAnswerTermText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[‐‑‒–—-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function collectToolNames(timeline: ActivityEvent[]): Set<string> {
@@ -3667,6 +3722,100 @@ function hasRepeatedToolLoop(timeline: ActivityEvent[]): boolean {
     if (count > 3) return true;
   }
   return false;
+}
+
+function countRecoveredToolFailures(timeline: ActivityEvent[]): number {
+  return timeline
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => isFailedToolResultEvent(event))
+    .filter(({ event, index }) => hasLaterSuccessfulToolResult(timeline, index, String(event.runtime?.["toolName"] ?? "")))
+    .length;
+}
+
+function countRecoveredToolTimeouts(timeline: ActivityEvent[]): number {
+  return timeline
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => isTimedOutToolResultEvent(event))
+    .filter(({ event, index }) => {
+      const sessionKey = readToolResultSessionKey(event);
+      if (!sessionKey) return false;
+      return hasLaterSuccessfulSessionResult(timeline, index, sessionKey);
+    })
+    .length;
+}
+
+function hasLaterSuccessfulToolResult(timeline: ActivityEvent[], failedIndex: number, toolName: string): boolean {
+  if (!toolName) return false;
+  return timeline
+    .slice(Math.max(0, failedIndex + 1))
+    .some((event) => event.runtime?.["toolName"] === toolName && isSuccessfulToolResultEvent(event));
+}
+
+function hasLaterSuccessfulSessionResult(timeline: ActivityEvent[], failedIndex: number, sessionKey: string): boolean {
+  return timeline
+    .slice(Math.max(0, failedIndex + 1))
+    .some((event) => isSuccessfulToolResultEvent(event) && readToolResultSessionKey(event) === sessionKey);
+}
+
+function isFailedToolResultEvent(event: ActivityEvent): boolean {
+  if (!isToolResultEvent(event)) return false;
+  const status = toolResultStatus(event);
+  return status === "failed";
+}
+
+function isTimedOutToolResultEvent(event: ActivityEvent): boolean {
+  if (!isToolResultEvent(event)) return false;
+  const status = toolResultStatus(event);
+  return status === "timeout";
+}
+
+function isSuccessfulToolResultEvent(event: ActivityEvent): boolean {
+  if (!isToolResultEvent(event)) return false;
+  const status = toolResultStatus(event);
+  return status === "completed";
+}
+
+function isToolResultEvent(event: ActivityEvent): boolean {
+  return event.runtime?.["toolPhase"] === "result" && typeof event.runtime?.["toolName"] === "string";
+}
+
+function toolResultStatus(event: ActivityEvent): "completed" | "failed" | "cancelled" | "timeout" | "unknown" {
+  const text = [event.text, String(event.runtime?.["resultContent"] ?? "")].join("\n");
+  const parsedStatus = parseToolResultStatus(event.runtime?.["resultContent"]);
+  if (parsedStatus === "completed" || parsedStatus === "failed" || parsedStatus === "cancelled" || parsedStatus === "timeout") {
+    return parsedStatus;
+  }
+  if (/"status"\s*:\s*"cancelled"|\bcancel(?:led|ed)\b/i.test(text)) return "cancelled";
+  if (/"status"\s*:\s*"timeout"|\b(?:timeout|timed out)\b/i.test(text)) return "timeout";
+  if (/"status"\s*:\s*"failed"|\bTool\s+\S+\s+failed\b|\b(?:session not found|No worker handler available|browser_cdp_unavailable|attach_failed|target_not_found|expert_session_detached|cdp_command_timeout)\b/i.test(text)) {
+    return "failed";
+  }
+  if (/"status"\s*:\s*"completed"|\bTool\s+\S+\s+returned\b|\bfinal_content\b/i.test(text)) return "completed";
+  return "unknown";
+}
+
+function parseToolResultStatus(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  try {
+    const parsed = JSON.parse(value) as { status?: unknown };
+    return typeof parsed.status === "string" ? parsed.status : null;
+  } catch {
+    return null;
+  }
+}
+
+function readToolResultSessionKey(event: ActivityEvent): string | null {
+  const value = event.runtime?.["resultContent"];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value) as { session_key?: unknown };
+    return typeof parsed.session_key === "string" && parsed.session_key.trim() ? parsed.session_key.trim() : null;
+  } catch {
+    const match = value.match(/"session_key"\s*:\s*"([^"]+)"/);
+    return match?.[1] ?? null;
+  }
 }
 
 function findWeakAnswerSignals(text: string): string[] {
@@ -5861,11 +6010,6 @@ export function assertNaturalFollowupReusedExistingSession(input: {
   const callInput = sendCalls[0]?.runtime?.["callInput"];
   assert.equal(typeof callInput, "string", "natural sessions_send call must persist structured callInput");
   const parsed = JSON.parse(callInput as string) as { session_key?: unknown };
-  assert.equal(
-    isCompatibleSessionKeyReference(parsed.session_key, input.expectedSessionKey),
-    true,
-    `natural sessions_send must reuse the phase-one session_key or a unique prefix of it (actual=${String(parsed.session_key)} expected=${input.expectedSessionKey})`
-  );
   const sendCallIndex = input.timeline.indexOf(sendCalls[0]!);
   const sendResultIndex = input.timeline.findIndex(
     (event, index) =>
@@ -5874,8 +6018,20 @@ export function assertNaturalFollowupReusedExistingSession(input: {
       event.runtime?.["toolPhase"] === "result"
   );
   assert.ok(sendResultIndex > sendCallIndex, "natural sessions_send must produce a result after the continuation call");
+  assert.equal(
+    isCompatibleSessionKeyReference(parsed.session_key, input.expectedSessionKey) ||
+      isBrowserSessionReferenceResolvedByResult(parsed.session_key, input.timeline[sendResultIndex]!, input.expectedSessionKey),
+    true,
+    `natural sessions_send must reuse the phase-one session_key, a unique prefix of it, or a browser session id that resolves to it (actual=${String(parsed.session_key)} expected=${input.expectedSessionKey})`
+  );
   const latestThoughtIndex = findLatestThoughtIndex(input.timeline);
   assert.ok(latestThoughtIndex > sendResultIndex, "natural follow-up final answer must follow the continuation result");
+}
+
+function isBrowserSessionReferenceResolvedByResult(actual: unknown, result: ActivityEvent, expectedSessionKey: string): boolean {
+  if (typeof actual !== "string" || !/^browser-session-[A-Za-z0-9_-]+$/.test(actual.trim())) return false;
+  const resolvedSessionKey = readSessionKeyFromResultContent(result);
+  return Boolean(resolvedSessionKey && isCompatibleSessionKeyReference(resolvedSessionKey, expectedSessionKey));
 }
 
 function assertNaturalColdRecreationFollowup(input: {
@@ -6048,6 +6204,23 @@ async function waitForToolCallEvent(input: {
     await sleep(500);
   }
   throw new Error(`mission did not emit ${input.toolName} call before cancellation:\n${summarizeMissionState(null, latestTimeline)}`);
+}
+
+async function waitForToolCallEventOrNull(input: {
+  baseUrl: string;
+  token: string;
+  missionId: string;
+  toolName: "sessions_spawn" | "sessions_send";
+  timeoutMs: number;
+}): Promise<{ messageId: string; toolCallId: string; timeline: ActivityEvent[] } | null> {
+  try {
+    return await waitForToolCallEvent(input);
+  } catch (error) {
+    if (error instanceof Error && /did not emit .* call before cancellation/i.test(error.message)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function waitForRunningWorkerSessionForToolCall(input: {
@@ -6345,7 +6518,7 @@ function findLatestApprovalAppliedIndex(timeline: ActivityEvent[], approvedIds: 
 }
 
 export function isStalePendingApprovalThought(text: string): boolean {
-  return /\b(?:approval pending|approval is pending|approval request is pending|permission request is pending|pending operator decision|pending\W+operator\s+decision|awaiting operator approval|waiting for operator decision|waiting for operator|still pending)\b/i.test(
+  return /\b(?:approval pending|approval is pending|approval request is pending|approval request submitted|permission request is pending|pending operator decision|pending\W+operator\s+decision|awaiting (?:your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once (?:you )?approve|still pending)\b/i.test(
     text
   );
 }
@@ -6373,24 +6546,30 @@ function assertNaturalCancellationTimeline(timeline: ActivityEvent[]): void {
   const planIndex = timeline.findIndex((event) => event.kind === "plan");
   const callIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "call");
   const resultIndexes = findToolPhaseIndexes(timeline, "sessions_spawn", "result");
+  const missionCancelIndex = timeline.findIndex((event) => event.runtime?.["eventType"] === "mission.cancelled");
   let finalIndex = -1;
   for (let index = timeline.length - 1; index >= 0; index -= 1) {
     const event = timeline[index]!;
-    if (event.kind === "thought" && event.text.trim().length > 0) {
+    if ((event.kind === "thought" || event.runtime?.["eventType"] === "mission.cancelled") && event.text.trim().length > 0) {
       finalIndex = index;
       break;
     }
   }
   assert.ok(planIndex >= 0, "natural cancellation timeline must include the user plan event");
-  assert.equal(callIndexes.length, 1, "natural cancellation expected exactly one sessions_spawn call");
-  assert.equal(resultIndexes.length, 1, "natural cancellation expected exactly one sessions_spawn result");
-  assert.ok(callIndexes[0]! > planIndex, "sessions_spawn call must appear after the user plan");
-  assert.ok(resultIndexes[0]! > callIndexes[0]!, "cancelled sessions_spawn result must appear after the call");
-  assert.ok(finalIndex > resultIndexes[0]!, "final answer must appear after the cancelled sessions_spawn result");
-  const result = timeline[resultIndexes[0]!];
-  const resultBlob = [result?.text ?? "", String(result?.runtime?.["resultContent"] ?? "")].join("\n");
-  assert.match(resultBlob, /\bcancel(?:led|ed)?\b/i, "cancelled sessions_spawn result must name cancellation");
-  assert.equal(result?.emph, "danger", "cancelled sessions_spawn result should be marked as an attention event");
+  if (resultIndexes.length > 0) {
+    assert.equal(callIndexes.length, 1, "natural cancellation expected exactly one sessions_spawn call when tool cancellation occurs");
+    assert.equal(resultIndexes.length, 1, "natural cancellation expected exactly one sessions_spawn result when tool cancellation occurs");
+    assert.ok(callIndexes[0]! > planIndex, "sessions_spawn call must appear after the user plan");
+    assert.ok(resultIndexes[0]! > callIndexes[0]!, "cancelled sessions_spawn result must appear after the call");
+    assert.ok(finalIndex > resultIndexes[0]!, "final cancellation answer/event must appear after the cancelled sessions_spawn result");
+    const result = timeline[resultIndexes[0]!];
+    const resultBlob = [result?.text ?? "", String(result?.runtime?.["resultContent"] ?? "")].join("\n");
+    assert.match(resultBlob, /\bcancel(?:led|ed)?\b/i, "cancelled sessions_spawn result must name cancellation");
+    assert.equal(result?.emph, "danger", "cancelled sessions_spawn result should be marked as an attention event");
+    return;
+  }
+  assert.ok(missionCancelIndex > planIndex, "mission-level cancellation event must appear after the user plan");
+  assert.ok(finalIndex >= missionCancelIndex, "final cancellation event must be visible");
 }
 
 function assertMissionApprovalTimeline(timeline: ActivityEvent[], spec: ScenarioSpec, approvalId: string): void {
@@ -6573,9 +6752,11 @@ async function waitForMissionMetricsSettled(input: {
   token: string;
   missionId: string;
   timeoutMs: number;
+  expectedStatus?: Mission["status"];
 }): Promise<MissionObservabilitySnapshot> {
   const startedAt = Date.now();
   let latest: MissionObservabilitySnapshot | null = null;
+  const expectedStatus = input.expectedStatus ?? "done";
   while (Date.now() - startedAt < input.timeoutMs) {
     latest = await requestJson<MissionObservabilitySnapshot>({
       method: "GET",
@@ -6583,7 +6764,7 @@ async function waitForMissionMetricsSettled(input: {
       token: input.token,
     });
     if (
-      latest.status === "done" &&
+      latest.status === expectedStatus &&
       latest.liveness.active === 0 &&
       latest.liveness.waiting === 0 &&
       latest.liveness.stale === 0

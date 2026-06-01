@@ -64,6 +64,14 @@ interface SessionContinuationLookupDirective {
   messageHint: string;
 }
 
+interface SubAgentToolTimeoutSignal {
+  toolName: string;
+  sessionKey: string;
+  agentId: string;
+  timeoutSeconds?: number | null;
+  evidenceAvailable: boolean;
+}
+
 const SESSION_TOOL_RESULT_PROTOCOL = "turnkeyai.session_tool_result.v1";
 
 export class LLMRoleResponseGenerator implements RoleResponseGenerator {
@@ -135,6 +143,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
 
     const toolTrace: NativeToolRoundTrace[] = [];
     let messages: LLMMessage[] = initialGatewayInput.messages;
+    let nextToolChoice: GenerateTextInput["toolChoice"] | undefined;
     const toolLoopStartedAtMs = this.clock.now();
     let toolLoopCloseout: ToolLoopCloseoutMetadata | undefined;
     for (let round = 0; ; round++) {
@@ -154,12 +163,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         gatewayInput: {
           ...initialGatewayInput,
           messages: gatewayMessages,
+          ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
           envelope: {
             ...(initialGatewayInput.envelope ?? {}),
             ...deriveToolResultEnvelope(gatewayMessages),
           },
         },
       });
+      nextToolChoice = undefined;
       throwIfAborted(input.signal);
       result = generated.result;
       if (generated.reduction) {
@@ -271,6 +282,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             content: buildMissingApprovalGateRepairPrompt(),
           },
         ];
+        nextToolChoice = { type: "tool", name: "permission_query" };
         continue;
       }
       if (
@@ -294,6 +306,55 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             content: buildStalePendingApprovalRepairPrompt(),
           },
         ];
+        nextToolChoice = { type: "tool", name: "sessions_spawn" };
+        continue;
+      }
+      if (
+        activeToolLoop &&
+        toolCalls.length === 0 &&
+        shouldRepairStaleDeniedApproval({
+          taskPrompt: input.packet.taskPrompt,
+          resultText: result.text,
+          messages,
+          toolTrace,
+        })
+      ) {
+        messages = [
+          ...messages,
+          {
+            role: "assistant",
+            content: result.text,
+          },
+          {
+            role: "user",
+            content: buildStaleDeniedApprovalRepairPrompt(),
+          },
+        ];
+        nextToolChoice = "none";
+        continue;
+      }
+      if (
+        activeToolLoop &&
+        toolCalls.length === 0 &&
+        shouldRepairIncompleteApprovedBrowserAction({
+          taskPrompt: input.packet.taskPrompt,
+          resultText: result.text,
+          messages,
+          toolTrace,
+        })
+      ) {
+        messages = [
+          ...messages,
+          {
+            role: "assistant",
+            content: result.text,
+          },
+          {
+            role: "user",
+            content: buildIncompleteApprovedBrowserActionRepairPrompt(),
+          },
+        ];
+        nextToolChoice = { type: "tool", name: "sessions_spawn" };
         continue;
       }
       if (activeToolLoop && toolCalls.length === 0 && containsAnyToolCallForm(result)) {
@@ -489,6 +550,28 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       messages = appendToolResultMessages(messages, toolResults);
 
       const completedSession = findCompletedSessionEvidence(toolResults);
+      const timeoutSignal = findSubAgentToolTimeout(toolResults);
+      if (
+        completedSession &&
+        timeoutSignal &&
+        shouldContinueTimedOutSiblingSession({
+          taskPrompt: input.packet.taskPrompt,
+          messages,
+          toolTrace,
+          timeoutSignal,
+          tools: initialGatewayInput.tools,
+        })
+      ) {
+        messages = [
+          ...messages,
+          {
+            role: "user",
+            content: buildCoverageTimeoutContinuationPrompt(timeoutSignal),
+          },
+        ];
+        nextToolChoice = { type: "tool", name: "sessions_send" };
+        continue;
+      }
       if (completedSession) {
         if (
           shouldRepairMissingApprovalGate({
@@ -562,10 +645,30 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         if (generated.memoryFlush) {
           memoryFlushes.push(generated.memoryFlush);
         }
+        if (
+          shouldRepairMissingRequestedNextAction({
+            taskPrompt: input.packet.taskPrompt,
+            resultText: result.text,
+            messages,
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.text,
+            },
+            {
+              role: "user",
+              content: buildMissingRequestedNextActionRepairPrompt(),
+            },
+          ];
+          nextToolChoice = "none";
+          continue;
+        }
         break;
       }
 
-      const timeoutSignal = findSubAgentToolTimeout(toolResults);
       if (timeoutSignal) {
         toolLoopCloseout = {
           reason: "sub_agent_timeout",
@@ -1461,13 +1564,7 @@ function toNativeToolProgressTrace(
   };
 }
 
-function findSubAgentToolTimeout(results: RoleToolExecutionResult[]):
-  | {
-      toolName: string;
-      timeoutSeconds?: number | null;
-      evidenceAvailable: boolean;
-    }
-  | null {
+function findSubAgentToolTimeout(results: RoleToolExecutionResult[]): SubAgentToolTimeoutSignal | null {
   for (const result of results) {
     if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
       continue;
@@ -1480,6 +1577,8 @@ function findSubAgentToolTimeout(results: RoleToolExecutionResult[]):
     const evidenceAvailable = parsed.evidence_available === true || typeof parsed.evidence_summary === "string";
     return {
       toolName: result.toolName,
+      sessionKey: parsed.session_key,
+      agentId: parsed.agent_id,
       timeoutSeconds: typeof timeoutSeconds === "number" ? timeoutSeconds : null,
       evidenceAvailable,
     };
@@ -1516,8 +1615,70 @@ function findCompletedSessionEvidence(results: RoleToolExecutionResult[]): {
         browserRecoverySummaries.push(browserRecoverySummary);
       }
     }
+    const inlineBrowserRecoverySummary = readInlineBrowserRecoverySummary(
+      [parsed.evidence_summary, parsed.result].filter((item): item is string => typeof item === "string")
+    );
+    if (inlineBrowserRecoverySummary) {
+      browserRecoverySummaries.push(inlineBrowserRecoverySummary);
+    }
   }
   return toolName && finalContents.length > 0 ? { toolName, finalContents, browserRecoverySummaries } : null;
+}
+
+function shouldContinueTimedOutSiblingSession(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  timeoutSignal: SubAgentToolTimeoutSignal;
+  tools?: GenerateTextInput["tools"];
+}): boolean {
+  if (!hasToolDefinition(input.tools, "sessions_send")) {
+    return false;
+  }
+  if (!input.timeoutSignal.sessionKey) {
+    return false;
+  }
+  if (hasExecutedSessionsSend(input.toolTrace, input.timeoutSignal.sessionKey)) {
+    return false;
+  }
+  if (hasCoverageTimeoutContinuationPrompt(input.messages)) {
+    return false;
+  }
+  return isCoverageCriticalDelegationTask(input.taskPrompt);
+}
+
+function isCoverageCriticalDelegationTask(taskPrompt: string): boolean {
+  const text = taskPrompt.toLowerCase();
+  const sourceCount = [
+    (taskPrompt.match(/https?:\/\/\S+/g) ?? []).length,
+    (text.match(/\b(?:source|evidence stream|child session|marker)\b/g) ?? []).length,
+  ].filter((count) => count >= 3).length;
+  if (sourceCount === 0) {
+    return false;
+  }
+  return (
+    /\bdo not finalize until\b/i.test(taskPrompt) ||
+    /\ball (?:three|3|\d+) (?:child session tool results|sources|source checks|evidence streams|markers)\b/i.test(taskPrompt) ||
+    /\b(?:three|3|\d+) independent evidence streams\b/i.test(taskPrompt) ||
+    /\bsource coverage\b/i.test(taskPrompt)
+  );
+}
+
+function hasCoverageTimeoutContinuationPrompt(messages: LLMMessage[]): boolean {
+  return messages.some((message) =>
+    readMessageContentText(message.content).includes("Runtime correction: a required delegated evidence stream timed out.")
+  );
+}
+
+function buildCoverageTimeoutContinuationPrompt(timeoutSignal: SubAgentToolTimeoutSignal): string {
+  return [
+    "Runtime correction: a required delegated evidence stream timed out.",
+    `The timed-out ${timeoutSignal.agentId} session is resumable with session_key ${timeoutSignal.sessionKey}.`,
+    "Do not finalize while the task requires all source coverage and one required stream is still missing.",
+    "Call sessions_send exactly once for that session_key to continue the missing source check.",
+    "Ask the child session to return only the missing source evidence needed for the final answer.",
+    "If the continued session still cannot verify the source, then close out as incomplete/resumable and keep the missing source unverified.",
+  ].join("\n");
 }
 
 function readCompletedSessionEvidence(parsed: NonNullable<ReturnType<typeof parseSessionToolResult>>): string | null {
@@ -1559,6 +1720,19 @@ function readBrowserRecoverySummary(payload: Record<string, unknown>): string | 
   return null;
 }
 
+function readInlineBrowserRecoverySummary(values: string[]): string | null {
+  const joined = values.join("\n").trim();
+  if (!joined) return null;
+  if (
+    !/\b(?:browser_cdp_unavailable|cdp_command_timeout|detached_target|attach_failed|target_not_found|expert_session_detached|CDP command timed out|browser target detached|target attach failed)\b/i.test(
+      joined
+    )
+  ) {
+    return null;
+  }
+  return sliceUtf8(joined, 600);
+}
+
 function maybeAppendBrowserRecoveryVisibility(input: {
   result: GenerateTextResult;
   taskPrompt: string;
@@ -1567,19 +1741,20 @@ function maybeAppendBrowserRecoveryVisibility(input: {
   if (input.browserRecoverySummaries.length === 0) {
     return input.result;
   }
-  if (!/continue|recover|reopen|reconnect|restart|unavailable|previous browser session/i.test(input.taskPrompt)) {
+  if (!/continue|recover|reopen|reconnect|restart|unavailable|previous browser session|times? out|timed? out|timeout|detach(?:ed|es)?|attach(?:ed)?|CDP/i.test(input.taskPrompt)) {
     return input.result;
   }
-  if (/\b(recovered|recovery|reopen(?:ed)?|reconnect(?:ed)?|warm|cold|session was unavailable|new browser session)\b/i.test(input.result.text)) {
+  if (/\b(recovered|recovery|reopen(?:ed)?|reconnect(?:ed)?|warm|cold|session was unavailable|new browser session|timed? out|timeout|cdp_command_timeout|detached|attach(?:ed)? failed|browser_cdp_unavailable)\b/i.test(input.result.text)) {
     return input.result;
   }
   if (expectsExactFinalAnswerShape(input.taskPrompt, input.result.text)) {
     return input.result;
   }
-  const resumeMode = input.browserRecoverySummaries.join("\n").match(/Resume mode:\s*(warm|cold)/i)?.[1]?.toLowerCase();
+  const joinedSummaries = input.browserRecoverySummaries.join("\n");
+  const resumeMode = joinedSummaries.match(/Resume mode:\s*(warm|cold)/i)?.[1]?.toLowerCase();
   const continuity = resumeMode
     ? `Browser continuity: browser context was recovered before the page was rechecked (resume mode: ${resumeMode}).`
-    : "Browser continuity: browser context was recovered before the page was rechecked.";
+    : `Browser continuity: ${sliceUtf8(joinedSummaries, 600)}`;
   return {
     ...input.result,
     text: `${input.result.text.trim()}\n\n${continuity}`.trim(),
@@ -1670,6 +1845,57 @@ function shouldRepairStalePendingApproval(input: {
   return latestPermissionToolName(input.toolTrace) === "permission_applied";
 }
 
+function shouldRepairIncompleteApprovedBrowserAction(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (hasIncompleteApprovedBrowserActionRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (!requestsApprovalGatedBrowserAction(input.taskPrompt)) {
+    return false;
+  }
+  if (latestPermissionToolName(input.toolTrace) !== "permission_applied") {
+    return false;
+  }
+  return /\b(?:tools? (?:are )?(?:disabled|unavailable)|tool[- ]disabled|final synthesis|browser_act|could not be called|cannot call|could not execute|action blocked|not executed|not completed)\b/i.test(
+    input.resultText
+  );
+}
+
+function shouldRepairMissingRequestedNextAction(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+}): boolean {
+  if (hasMissingRequestedNextActionRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (!/\b(?:next action|next step|operator should|should take|safe fallback|fallback action)\b/i.test(input.taskPrompt)) {
+    return false;
+  }
+  return !/\b(?:next action|next step|recommended action|recommend(?:ed)?|operator should|should (?:retry|reopen|check|watch|escalate|preserve|request|continue|stop|avoid)|safe fallback|fallback action)\b/i.test(
+    input.resultText
+  );
+}
+
+function shouldRepairStaleDeniedApproval(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (hasStaleDeniedApprovalRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (!mentionsPendingApproval(input.resultText) || !requestsApprovalGatedBrowserAction(input.taskPrompt)) {
+    return false;
+  }
+  return latestPermissionResultStatus(input.toolTrace) === "denied";
+}
+
 function latestPermissionToolName(toolTrace: NativeToolRoundTrace[]): string | null {
   for (let roundIndex = toolTrace.length - 1; roundIndex >= 0; roundIndex -= 1) {
     const round = toolTrace[roundIndex]!;
@@ -1678,6 +1904,27 @@ function latestPermissionToolName(toolTrace: NativeToolRoundTrace[]): string | n
       if (name.startsWith("permission_")) {
         return name;
       }
+    }
+  }
+  return null;
+}
+
+function latestPermissionResultStatus(toolTrace: NativeToolRoundTrace[]): string | null {
+  for (let roundIndex = toolTrace.length - 1; roundIndex >= 0; roundIndex -= 1) {
+    const round = toolTrace[roundIndex]!;
+    for (let progressIndex = (round.progress?.length ?? 0) - 1; progressIndex >= 0; progressIndex -= 1) {
+      const progress = round.progress![progressIndex]!;
+      if (progress.toolName === "permission_result" && progress.detail?.["eventType"] === "permission.result") {
+        const status = progress.detail["status"];
+        if (typeof status === "string") return status;
+      }
+    }
+    for (let resultIndex = round.results.length - 1; resultIndex >= 0; resultIndex -= 1) {
+      const result = round.results[resultIndex]!;
+      if (result.toolName !== "permission_result") continue;
+      const parsed = parseJsonObject(result.content);
+      const status = parsed?.["status"];
+      if (typeof status === "string") return status;
     }
   }
   return null;
@@ -1714,8 +1961,32 @@ function hasStalePendingApprovalRepairPrompt(messages: LLMMessage[]): boolean {
   );
 }
 
+function hasStaleDeniedApprovalRepairPrompt(messages: LLMMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes("Runtime correction: approval was denied")
+  );
+}
+
+function hasIncompleteApprovedBrowserActionRepairPrompt(messages: LLMMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes("Runtime correction: approved browser action has not executed")
+  );
+}
+
+function hasMissingRequestedNextActionRepairPrompt(messages: LLMMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes("Runtime correction: requested next action is missing")
+  );
+}
+
 function mentionsPendingApproval(text: string): boolean {
-  return /\b(?:approval pending|approval request is pending|permission request is pending|pending operator decision|awaiting operator approval|waiting for operator decision|waiting for operator|once approved|before (?:the )?(?:browser worker )?can|still pending)\b/i.test(
+  return /\b(?:approval pending|approval request is pending|permission request is pending|pending operator decision|awaiting (?:your decision|operator approval)|waiting for (?:your|operator) decision|waiting for operator|once (?:you )?approve|once approved|before (?:the )?(?:browser worker )?can|still pending)\b/i.test(
     text
   );
 }
@@ -1745,6 +2016,42 @@ function buildStalePendingApprovalRepairPrompt(): string {
     "Do not wait again. Continue from the applied approval point now.",
     "Use native tools for the approved scoped action, preferably sessions_spawn with agent_id=browser, then summarize the concrete browser result.",
   ].join("\n");
+}
+
+function buildStaleDeniedApprovalRepairPrompt(): string {
+  return [
+    "Runtime correction: approval was denied, but the assistant tried to finalize as if the approval were still pending.",
+    "Do not wait again and do not call browser or permission tools.",
+    "Write the final safe closeout now from the denied permission.result evidence: name the requested browser.form.submit action, state that no form submission or side effect ran, and give the safe fallback or next action.",
+  ].join("\n");
+}
+
+function buildIncompleteApprovedBrowserActionRepairPrompt(): string {
+  return [
+    "Runtime correction: approved browser action has not executed.",
+    "The approval is already applied and native tools are still available in this loop.",
+    "Do not finalize with a tool-unavailable or final-synthesis explanation.",
+    "Call sessions_spawn with agent_id=browser for the approved scoped browser action.",
+    "The delegated browser task must include the approved submit/action, the local form URL when available, and a requirement to verify the resulting page state before final synthesis.",
+  ].join("\n");
+}
+
+function buildMissingRequestedNextActionRepairPrompt(): string {
+  return [
+    "Runtime correction: requested next action is missing from the final answer.",
+    "Do not call tools. Revise the final answer using only the delegated session evidence already present.",
+    "Include a concise next action or safe fallback for the operator, and keep any unverified scope explicit.",
+  ].join("\n");
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
 }
 
 function readMessageContentText(content: LLMMessage["content"]): string {

@@ -524,7 +524,7 @@ export async function handleWorkflowRoutes(input: {
   return false;
 }
 
-async function cancelToolCallsOnMessage(input: {
+export async function cancelToolCallsOnMessage(input: {
   teamMessageStore: TeamMessageStore;
   toolCancellationRegistry?: ToolCancellationRegistry;
   workerRuntime?: Pick<WorkerRuntime, "cancel" | "listSessions">;

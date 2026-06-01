@@ -670,6 +670,11 @@ const server = http.createServer(async (req, res) => {
           idempotencyStore: routeIdempotencyStore,
           toolPermissionService,
           runtimeProgressStore,
+          teamMessageStore,
+          roleRunStore,
+          roleLoopRunner,
+          workerRuntime,
+          toolCancellationRegistry,
         },
       })
     ) {

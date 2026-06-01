@@ -6229,3 +6229,375 @@ Convergence question:
   then prove the full natural matrix can pass in one coherent run.
 - If no, next required gate: rerun the full natural matrix after recovered
   failure classification is corrected, then rerun full real acceptance.
+
+## 2026-06-02 02:38 CST - Recovered Tool Failure Gate
+
+Direction: converging
+
+Execution Kernel:
+- No production runtime route or worker behavior changed in this checkpoint.
+- The natural acceptance evaluator now distinguishes unrecovered failed tool
+  results from failed tool results that are followed by a later successful
+  result from the same tool, with clean liveness, no timeout, no browser
+  failure bucket, and source-backed final evidence.
+- This does not hide runtime attention: mission observability can still mark
+  `failure_free` as failing or blocked when a failed tool event exists. The
+  natural capability gate separately asks whether the user task recovered and
+  delivered useful evidence.
+
+Result Quality:
+- The previous full natural replay stop condition is now represented directly:
+  a browser follow-up can pass natural acceptance when a transient failed
+  `sessions_send` is followed by successful `sessions_send` evidence and a
+  useful final answer.
+- The negative control still fails when the later successful same-tool result
+  is removed, so the gate is not a blanket "ignore failed tools" rule.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- Replay remains honest because the failed tool result stays visible in mission
+  metrics and timeline; the acceptance report can still explain that the user
+  outcome recovered.
+
+Browser Reliability:
+- Focused browser follow-up real LLM E2E passed with browser use, one
+  recovered failed tool result, no browser failure bucket, no profile fallback,
+  and no active/waiting/stale liveness residue.
+- Full natural matrix remains to be rerun in one coherent pass before broader
+  browser reliability can be called proven.
+
+Acceptance Evidence:
+- Report test:
+  `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`: passed, 52
+  tests.
+- Typecheck:
+  `npm run typecheck`: passed.
+- Diff hygiene:
+  `git diff --check`: passed.
+- Focused real natural browser follow-up:
+  `npx tsx scripts/mission-tool-use-e2e.ts --natural --natural-scenario
+  natural-browser-followup-continuation --scenario-timeout-ms 300000
+  --model-catalog models.local.json --json
+  /tmp/turnkeyai-natural-browser-followup-recovered-failure-gate-20260602.json`
+  passed with mission `msn.mpvjfrim.1`, natural `passed`, tools `6/6`,
+  failed tools `1`, sessions `1/1`, browser used, profile fallbacks `0`,
+  browser buckets `none`, liveness `0/0/0`, final bytes `1427`.
+
+Regression Risk:
+- The recovered-failure gate could become too permissive if it accepted a later
+  unrelated tool result. The implementation requires the later result to come
+  from the same tool name and also requires clean liveness, no timeout, no
+  browser failure bucket, complete evidence patterns, no unsupported claims,
+  and a useful final answer.
+- Mission observability still reports the failed tool event; this is intentional
+  but means acceptance `natural=passed` can coexist with mission
+  `qualityGate=blocked` until observability learns recovered-failure severity.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes
+- Evidence: the exact full-matrix stop condition now has a conservative
+  positive and negative test, plus a real LLM browser follow-up mission that
+  completed usefully with one recovered failed tool result.
+- If no, next required gate: rerun the full natural matrix in one pass, then
+  rerun full real acceptance if the matrix remains green.
+
+## 2026-06-02 03:25 CST - Natural Runtime Closeout Reality Check
+
+Direction: unknown
+
+Execution Kernel:
+- Added a provider request timeout guard in `LLMGateway` so a model request
+  that does not return is aborted and surfaced as `llm_request_timeout` instead
+  of leaving the mission in `working` with only an initial plan event.
+- Added focused repair paths for approval closeout and browser recovery
+  visibility:
+  - approved browser action still not executed -> force the next
+    `sessions_spawn` attempt instead of accepting an unavailable-tool final;
+  - denied approval with stale pending language -> force no more tools and
+    require a safe closeout;
+  - completed sub-agent result missing the requested next action -> force a
+    synthesis-only repair;
+  - browser timeout/detach/attach/unavailable evidence is appended to the final
+    if the answer otherwise hides the recovery condition.
+- These are runtime stability repairs, not a claim that the full natural matrix
+  is capability-proven.
+
+Result Quality:
+- Focused real natural gates passed for approval approved-action repair,
+  denied approval safe closeout, browser unavailable closeout, CDP timeout
+  closeout, detached-target closeout after the LLM timeout guard, attach-failed
+  closeout, timeout partial closeout, and timeout follow-up continuation.
+- The latest tail matrix stopped at `natural-cancel-active-tool`: the mission
+  emitted only a plan event and did not produce a `sessions_spawn` call before
+  the cancellation window. That means active-tool cancellation remains
+  unproven under natural model timing.
+- One timeout-follow-up scenario passed but took 244 seconds. This is not a
+  product-quality latency profile even though it eventually completed.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The user-visible implication is mixed: more stuck missions should close out
+  instead of staying `working`, but natural cancellation and latency are still
+  not proven stable enough for a production claim.
+
+Browser Reliability:
+- Focused browser failure buckets now have passing real mission evidence for
+  `browser_cdp_unavailable`, `cdp_command_timeout`, `detached_target`, and
+  `attach_failed`.
+- Browser reliability is still not proven in a single full natural matrix run.
+  The current evidence is focused and tail-based, not broad end-to-end
+  acceptance.
+
+Acceptance Evidence:
+- Focused approval approved-action repair passed with mission `msn.mpvl064o.1`.
+- Focused denied approval safe closeout passed with missions `msn.mpvlsqyd.1`
+  and `msn.mpvmblu9.1`.
+- Focused browser unavailable closeout passed with mission `msn.mpvmg8ke.1`.
+- Focused CDP timeout closeout passed with missions `msn.mpvm8sqk.1` and
+  `msn.mpvmohjg.1`.
+- Focused detached-target closeout passed after the LLM timeout guard with
+  mission `msn.mpvn0jto.1`.
+- Tail run evidence:
+  - `natural-browser-attach-failed-closeout` passed with mission
+    `msn.mpvn1re9.1`;
+  - `natural-timeout-partial-closeout` passed with mission `msn.mpvn2bz0.1`;
+  - `natural-timeout-followup-continuation` passed with mission
+    `msn.mpvn4mrm.2`, but took 244 seconds;
+  - `natural-cancel-active-tool` failed because no `sessions_spawn` call was
+    emitted before cancellation.
+- Targeted tests, `npm run typecheck`, and `git diff --check` passed earlier in
+  this checkpoint before the failed tail natural run. They do not override the
+  failed natural gate.
+
+Regression Risk:
+- Appending browser recovery text can make a final answer more honest, but it
+  may still leave wording tension if the model's original final claimed a clean
+  closeout. A future slice should prefer regenerate-and-repair over append-only
+  correction when the original final contradicts runtime evidence.
+- The LLM request timeout prevents indefinite provider hangs, but a timeout is
+  not a successful user outcome. It converts a hidden liveness failure into a
+  visible failure that still needs product-level continuation behavior.
+- The natural cancellation gate currently depends on the model emitting an
+  active tool call inside the cancellation window. The latest failure means
+  either model first-token/tool-call latency, prompt/tool-selection discipline,
+  or runtime scheduling is still too weak to call cancellation capability
+  proven.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  unknown
+- Evidence: focused repairs moved several previously observed failures into
+  visible closeout paths, but the tail matrix still failed on a core
+  cancellation scenario and exposed unacceptable latency in a timeout
+  continuation scenario.
+- Next required gate: do not open a capability-complete PR from this state.
+  First classify `natural-cancel-active-tool` from the matrix rows, then prove
+  active-tool cancellation with a real natural mission where the tool actually
+  enters `running` before cancellation. After that, rerun the full natural
+  matrix in one coherent pass.
+
+## 2026-06-02 03:55 CST - Mission-Level Cancellation Entry
+
+Direction: unknown
+
+Execution Kernel:
+- Added a mission-level cancellation route: `POST /missions/:id/cancel`.
+- The route cancels across runtime phases instead of requiring the caller to
+  know internal IDs:
+  - active role run cancellation for LLM planning / generation phase;
+  - active assistant tool call cancellation when tool calls are visible;
+  - same-thread worker session cancellation as a fallback.
+- The route writes a user-visible `mission.cancelled` recovery event and marks
+  the mission `blocked` with at least one blocker so the Workbench no longer
+  leaves a cancelled mission looking like it is still working.
+- Natural cancellation acceptance now uses the mission-level entry. It still
+  validates active worker cancellation when a worker session exists, but it no
+  longer fails merely because the model had not emitted a tool call before the
+  cancellation window.
+
+Result Quality:
+- The prior `natural-cancel-active-tool` failure was not a proof that worker
+  cancellation was broken. It exposed a product boundary problem: the user
+  cancellation path depended on toolCallId discovery, while real users cancel a
+  mission, not an internal tool call.
+- Focused natural cancellation now closes out in seconds with explicit
+  cancelled / verified / unverified / continue wording.
+- This does not prove the full natural matrix. It proves one previously failing
+  row now has a user-level runtime path.
+
+Workbench UX:
+- This is a direct user-entry improvement even before UI wiring: the Workbench
+  can call one mission URL instead of reverse-engineering role run keys,
+  assistant message IDs, or tool call IDs.
+- The mission timeline now gets a visible cancellation event even when the
+  model is still planning and no assistant tool message exists yet.
+
+Browser Reliability:
+- No browser transport code changed in this checkpoint.
+- Browser-related focused gates from the prior checkpoint remain evidence, but
+  this checkpoint only addresses cancellation semantics.
+
+Acceptance Evidence:
+- Route/auth/report tests:
+  `npx tsx --test packages/app-gateway/src/routes/mission-routes.test.ts
+  packages/app-gateway/src/daemon-auth.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts` passed.
+- Runtime-focused tests:
+  `npx tsx --test packages/llm-adapter/src/gateway.test.ts
+  packages/role-runtime/src/llm-response-generator.test.ts
+  packages/app-gateway/src/mission-completion-evaluator.test.ts` passed.
+- Typecheck:
+  `npm run typecheck` passed.
+- Hygiene:
+  `git diff --check` passed.
+- Focused real natural cancellation:
+  `npx tsx scripts/mission-tool-use-e2e.ts --natural --natural-scenario
+  natural-cancel-active-tool --scenario-timeout-ms 300000 --model-catalog
+  models.local.json --json
+  /tmp/turnkeyai-natural-cancel-mission-level-20260602-final4.json` passed
+  with mission `msn.mpvo460h.1`, status `blocked`, natural `passed`, tools
+  `1/0`, sessions `1/0`, liveness `0/0/0`, final bytes `203`, duration
+  `6045ms`.
+- Tail matrix after the fix:
+  `npx tsx scripts/mission-tool-use-e2e.ts --natural-matrix-scenarios
+  natural-cancel-active-tool,natural-cancel-followup-continuation,natural-long-delegation
+  --scenario-timeout-ms 300000 --model-catalog models.local.json --json
+  /tmp/turnkeyai-natural-matrix-tail-cancel-delegation-20260602.json` passed
+  `natural-cancel-active-tool` with mission `msn.mpvo6o2i.1` and passed
+  `natural-cancel-followup-continuation` with mission `msn.mpvo6vtr.2`, but
+  stopped red on `natural-long-delegation`. The failed long-delegation answer
+  timed out on `product-signals` and lacked the required source-backed signal
+  evidence.
+
+Regression Risk:
+- Mission cancellation now sets `blocked`, not `done`. This is intentional:
+  the operator cancelled before the source check completed, so the mission
+  should not be presented as successfully completed.
+- A mission-level cancel can produce a visible cancellation event even when no
+  tool result exists. Replay/metrics consumers must treat `mission.cancelled`
+  as a valid cancellation closeout path, distinct from a completed answer.
+- The full natural matrix has not been rerun after this fix, so broader
+  stability remains unproven.
+- Long delegation remains unstable when one source times out. The answer was
+  partially useful but did not satisfy the required evidence coverage. This is
+  still a core runtime/result-quality issue, not a UI or diagnostics issue.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  unknown
+- Evidence: a previously failing natural cancellation row now passes through a
+  user-level cancellation path with clean liveness. However, the full matrix
+  still needs a coherent pass, the cancel-follow-up row still took 248s in the
+  tail run, and long delegation still fails when source coverage is incomplete
+  after a timeout.
+- Next required gate: fix long-delegation partial-evidence behavior so timeout
+  closeout either gathers enough source-backed evidence before synthesis or
+  produces a clearly failed/resumable mission instead of a weak partial brief.
+  Then rerun the tail matrix before any broader convergence claim.
+
+## 2026-06-02 05:04 CST - Long Delegation Evidence Coverage Repair
+
+Direction: converging
+
+Execution Kernel:
+- Changed the lead runtime ordering for coverage-critical delegated tasks. When
+  a required sibling evidence stream times out in the same round as completed
+  sibling evidence, the runtime no longer immediately finalizes from partial
+  completed evidence.
+- The repair is narrow:
+  - it requires explicit source-coverage language such as independent evidence
+    streams or "do not finalize until" all source results are present;
+  - it requires an available `sessions_send` tool;
+  - it continues the timed-out durable child session once by `session_key`;
+  - simple partial-evidence tasks still synthesize from completed sibling
+    evidence as before.
+- Natural quality scoring now recognizes a recovered timeout only when a later
+  successful result for the same durable child session appears and all evidence,
+  answer usefulness, unsupported-claim, and liveness checks pass.
+- Natural answer-term matching now normalizes hyphen/space variants so
+  "weak-answer rate" satisfies "Weak answer rate" without weakening the
+  source-backed regex evidence checks.
+
+Result Quality:
+- The previously red long-delegation row now completes with browser-rendered
+  signal evidence and no weak-answer signals.
+- This is a real capability improvement for multi-source delegated tasks:
+  partial sibling success no longer masks a missing required evidence stream.
+- It is not a full production-complete claim. The tail matrix still shows
+  unacceptable latency in cancellation follow-up continuation.
+
+Workbench UX:
+- No new UI polish shipped in this checkpoint.
+- The user-visible effect is better mission closeout: complex briefs are less
+  likely to show a partial answer as complete when required source coverage is
+  missing.
+- Mission timeline/tool replay remains the evidence path used by the gate.
+
+Browser Reliability:
+- The focused and tail long-delegation runs used the browser worker for the live
+  dashboard source and completed without browser profile fallback or browser
+  failure buckets.
+- No browser transport code changed in this checkpoint.
+
+Acceptance Evidence:
+- Focused tests:
+  `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts` passed.
+- Broader targeted regression slice:
+  `npx tsx --test packages/app-gateway/src/routes/mission-routes.test.ts
+  packages/app-gateway/src/daemon-auth.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts
+  packages/llm-adapter/src/gateway.test.ts
+  packages/role-runtime/src/llm-response-generator.test.ts
+  packages/app-gateway/src/mission-completion-evaluator.test.ts` passed with
+  183 tests.
+- Typecheck:
+  `npm run typecheck` passed.
+- Build:
+  `npm run build` passed.
+- Full unit/integration suite:
+  `npm test -- --runInBand` passed with 1467 tests.
+- Hygiene:
+  `git diff --check` passed.
+- Focused real natural long-delegation:
+  `npx tsx scripts/mission-tool-use-e2e.ts --natural --natural-scenario
+  natural-long-delegation --scenario-timeout-ms 300000 --model-catalog
+  models.local.json --json
+  /tmp/turnkeyai-natural-long-delegation-coverage-timeout-repair-20260602-rerun.json`
+  passed with mission `msn.mpvov6hq.1`, status `done`, natural `passed`,
+  tools `3/3`, sessions `3/0`, browser `yes`, artifacts `6`, liveness `0/0/0`,
+  no weak-answer signals, duration `43207ms`.
+- Tail real natural matrix:
+  `npx tsx scripts/mission-tool-use-e2e.ts --natural-matrix-scenarios
+  natural-cancel-active-tool,natural-cancel-followup-continuation,natural-long-delegation
+  --scenario-timeout-ms 300000 --model-catalog models.local.json --json
+  /tmp/turnkeyai-natural-matrix-tail-cancel-delegation-after-long-fix-20260602.json`
+  passed:
+  - `natural-cancel-active-tool`: mission `msn.mpvowgrl.1`, status `blocked`,
+    natural `passed`, duration `14059ms`;
+  - `natural-cancel-followup-continuation`: mission `msn.mpvowrm1.2`, status
+    `done`, natural `passed`, duration `239859ms`;
+  - `natural-long-delegation`: mission `msn.mpvp1wos.3`, status `done`,
+    natural `passed`, browser `yes`, artifacts `6`, duration `54302ms`.
+
+Regression Risk:
+- The coverage-timeout continuation prompt is intentionally narrow, but it is
+  still a runtime steering rule. Future tests should keep the boundary between
+  simple partial-evidence synthesis and coverage-critical continuation pinned.
+- Recovered timeout acceptance could hide a bad timeout only if the same child
+  session later reports completed evidence and all quality gates pass. This is
+  deliberate, but it should remain visible in reports.
+- Cancellation follow-up continuation passed but took almost four minutes. That
+  is too slow for the product target and remains a P0 runtime/prompt-harness
+  issue, not a UI issue.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes for multi-source delegated brief completion; not yet for overall
+  production-grade latency.
+- Evidence: the previously red long-delegation row now passes in both focused
+  and tail real natural E2E with browser evidence and clean liveness.
+- Next required gate: reduce cancellation follow-up continuation latency while
+  preserving the passed cancel and long-delegation gates, then rerun the same
+  tail matrix.

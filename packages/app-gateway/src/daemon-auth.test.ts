@@ -98,6 +98,7 @@ test("resolveDaemonRequestAccess classifies representative route matrix entries"
     { method: "POST", pathname: "/missions/msn.01/messages", expected: "operator" },
     { method: "POST", pathname: "/missions/reconcile", expected: "operator" },
     { method: "POST", pathname: "/missions/msn.01/reconcile", expected: "operator" },
+    { method: "POST", pathname: "/missions/msn.01/cancel", expected: "operator" },
     { method: "POST", pathname: "/missions/msn.01/archive", expected: "operator" },
   ] as const;
 
