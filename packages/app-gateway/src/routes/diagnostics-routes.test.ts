@@ -201,6 +201,7 @@ describe("diagnostics-routes", () => {
             },
             browser: {
               profileFallbacks: 0,
+              failureBuckets: [],
             },
             liveness: {
               active: 1,
@@ -219,6 +220,7 @@ describe("diagnostics-routes", () => {
                 toolFailures: 0,
                 toolTimeouts: 0,
                 browserProfileFallbacks: 0,
+                browserFailureBuckets: [],
                 recoveryEvents: 0,
                 staleRuntimeSubjects: 0,
                 wallClockMs: 12_000,

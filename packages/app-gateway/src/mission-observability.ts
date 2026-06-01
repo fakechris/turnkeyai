@@ -26,6 +26,11 @@ export interface MissionObservabilitySnapshot {
       sessionId?: string;
       fallbackDir?: string;
     };
+    failureBuckets: Array<{
+      bucket: string;
+      count: number;
+      latestAtMs: number;
+    }>;
   };
   approvals: {
     requested: number;
@@ -90,6 +95,7 @@ export function buildMissionObservabilitySnapshot(input: {
   const evidenceEvents = countEvidenceEvents(events);
   const sourceLabels = collectEvidenceSourceLabels(events);
   const browserProfileFallbacks = collectBrowserProfileFallbacks(events);
+  const browserFailureBuckets = collectBrowserFailureBuckets(events);
   const recoveryEvents = events.filter((event) => event.kind === "recovery");
   const liveness = summarizeRuntimeLiveness(input.progressEvents ?? [], input.nowMs, {
     ...(terminal && finalAnswer ? { terminalLivenessCutoffMs: finalAnswer.tMs + 1_000 } : {}),
@@ -101,6 +107,7 @@ export function buildMissionObservabilitySnapshot(input: {
     evidenceEvents,
     sourceLabels,
     browserProfileFallbacks,
+    browserFailureBuckets,
     failureEvents: recoveryEvents.length + toolFailures.length,
     staleRuntimeSubjects: liveness.stale,
   });
@@ -126,6 +133,7 @@ export function buildMissionObservabilitySnapshot(input: {
     },
     browser: {
       profileFallbacks: browserProfileFallbacks.length,
+      failureBuckets: browserFailureBuckets,
       ...(browserProfileFallbacks[0]
         ? {
             latestProfileFallback: {
@@ -160,6 +168,7 @@ function buildQualityChecks(input: {
   evidenceEvents: number;
   sourceLabels: string[];
   browserProfileFallbacks: BrowserProfileFallbackObservation[];
+  browserFailureBuckets: BrowserFailureBucketObservation[];
   failureEvents: number;
   staleRuntimeSubjects: number;
 }): MissionObservabilitySnapshot["qualityGate"]["checks"] {
@@ -257,6 +266,14 @@ function buildQualityChecks(input: {
         input.browserProfileFallbacks.length > 0
           ? browserProfileFallbackDetail(input.browserProfileFallbacks)
           : "Browser work did not report a persistent-profile fallback.",
+    },
+    {
+      name: "browser_failure_bucket",
+      status: input.browserFailureBuckets.length > 0 ? "warn" : "pass",
+      detail:
+        input.browserFailureBuckets.length > 0
+          ? browserFailureBucketDetail(input.browserFailureBuckets)
+          : "Browser work did not report CDP, target, attach, detach, or transport failure buckets.",
     },
     {
       name: "runtime_liveness",
@@ -642,6 +659,82 @@ function browserProfileFallbackDetail(observations: BrowserProfileFallbackObserv
     return `${countText} Latest fallback dir: ${latest.fallbackDir}.`;
   }
   return countText;
+}
+
+interface BrowserFailureBucketObservation {
+  bucket: string;
+  count: number;
+  latestAtMs: number;
+}
+
+const BROWSER_FAILURE_BUCKETS = new Set([
+  "target_not_found",
+  "attach_failed",
+  "expert_session_detached",
+  "cdp_command_timeout",
+  "browser_cdp_unavailable",
+  "detached_target",
+  "session_not_found",
+  "transport_failure",
+  "owner_mismatch",
+  "lease_conflict",
+]);
+
+function collectBrowserFailureBuckets(events: ActivityEvent[]): BrowserFailureBucketObservation[] {
+  const byBucket = new Map<string, BrowserFailureBucketObservation>();
+  for (const event of events) {
+    const bucket = extractBrowserFailureBucket(event);
+    if (!bucket) continue;
+    const existing = byBucket.get(bucket);
+    if (existing) {
+      byBucket.set(bucket, {
+        bucket,
+        count: existing.count + 1,
+        latestAtMs: Math.max(existing.latestAtMs, event.tMs),
+      });
+    } else {
+      byBucket.set(bucket, { bucket, count: 1, latestAtMs: event.tMs });
+    }
+  }
+  return [...byBucket.values()].sort((left, right) => right.latestAtMs - left.latestAtMs || left.bucket.localeCompare(right.bucket));
+}
+
+function extractBrowserFailureBucket(event: ActivityEvent): string | null {
+  const candidates = [
+    event.runtime?.bucket,
+    event.runtime?.browserDiagnosticBucket,
+    event.runtime?.closeKind,
+    event.runtime?.failureBucket,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeBrowserFailureBucket(typeof candidate === "string" ? candidate : "");
+    if (normalized) return normalized;
+  }
+
+  const text = eventTextBlob(event);
+  const directBucket = text.match(
+    /\b(target_not_found|attach_failed|expert_session_detached|cdp_command_timeout|browser_cdp_unavailable|detached_target|session_not_found|transport_failure|owner_mismatch|lease_conflict)\b/i
+  )?.[1];
+  const normalizedDirect = normalizeBrowserFailureBucket(directBucket ?? "");
+  if (normalizedDirect) return normalizedDirect;
+  if (/\b(?:target detached|detached target|browser session detached)\b/i.test(text)) return "detached_target";
+  if (/\b(?:session not found|browser session not found)\b/i.test(text)) return "session_not_found";
+  if (/\b(?:cdp|transport|websocket|connection refused|ECONNREFUSED|fetch failed)\b/i.test(text)) return "transport_failure";
+  return null;
+}
+
+function normalizeBrowserFailureBucket(value: string): string | null {
+  const normalized = value.trim().toLowerCase().replace(/[.\s-]+/g, "_");
+  if (!normalized) return null;
+  if (normalized === "browser_session_detached" || normalized === "browser_session_detached_target") return "detached_target";
+  if (normalized === "browser_session_not_found") return "session_not_found";
+  if (normalized === "transport_failed" || normalized === "browser_transport_failure") return "transport_failure";
+  return BROWSER_FAILURE_BUCKETS.has(normalized) ? normalized : null;
+}
+
+function browserFailureBucketDetail(observations: BrowserFailureBucketObservation[]): string {
+  const summary = observations.map((item) => `${item.bucket}=${item.count}`).join(", ");
+  return `Browser failure bucket(s): ${summary}. Use the trace and recovery events to decide whether to retry, reattach, or continue with bounded evidence.`;
 }
 
 function normalizeSourceLabel(value: string | undefined): string {

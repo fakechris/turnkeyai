@@ -363,7 +363,7 @@ describe("mission-routes", () => {
         wallClockMs: number;
         tool: { requested: number; results: number };
         sessions: { spawned: number };
-        browser: { profileFallbacks: number };
+        browser: { profileFallbacks: number; failureBuckets: Array<{ bucket: string; count: number; latestAtMs: number }> };
         liveness: { active: number; waiting: number; stale: number };
         qualityGate: { status: string; evidenceEvents: number };
       }>(deps, "GET", "/missions/msn.metrics/metrics");
@@ -380,6 +380,7 @@ describe("mission-routes", () => {
       });
       assert.equal(metrics.sessions.spawned, 1);
       assert.equal(metrics.browser.profileFallbacks, 0);
+      assert.deepEqual(metrics.browser.failureBuckets, []);
       assert.equal(metrics.liveness.active, 1);
       assert.equal(metrics.liveness.waiting, 0);
       assert.equal(metrics.liveness.stale, 1);

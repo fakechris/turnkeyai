@@ -78,6 +78,7 @@ test("buildDiagnosticsMissionHealthSnapshot aggregates mission quality, liveness
   assert.equal(snapshot.tool.timeouts, 1);
   assert.equal(snapshot.sessions.spawned, 1);
   assert.equal(snapshot.browser.profileFallbacks, 0);
+  assert.deepEqual(snapshot.browser.failureBuckets, []);
   assert.equal(snapshot.liveness.stale, 1);
   assert.equal(snapshot.snapshotErrorCount, 0);
   assert.equal(snapshot.attentionMissions[0]?.id, "msn.active");
@@ -181,6 +182,48 @@ test("buildDiagnosticsMissionHealthSnapshot aggregates browser profile fallback 
   assert.equal(snapshot.qualityGate.needsAttention, 1);
   assert.equal(snapshot.attentionMissions[0]?.id, "msn.profile");
   assert.equal(snapshot.attentionMissions[0]?.browserProfileFallbacks, 1);
+});
+
+test("buildDiagnosticsMissionHealthSnapshot aggregates browser failure bucket attention", async () => {
+  const nowMs = 8_000;
+  const missions = [mission("msn.browser-failure", "Browser failure mission", "blocked", 1_000)];
+  const failedResult = {
+    ...tool(
+      "ev.browser.result",
+      4_000,
+      "result",
+      "sessions_spawn",
+      "call.browser",
+      "browser_cdp_unavailable: connection refused before rendered dashboard evidence was captured."
+    ),
+    emph: "danger" as const,
+  };
+  const snapshot = await buildDiagnosticsMissionHealthSnapshot({
+    missionStore: { list: async () => missions },
+    activityStore: {
+      listByMission: async () => [
+        tool("ev.browser.call", 2_000, "call", "sessions_spawn", "call.browser", "Calling sessions_spawn."),
+        {
+          ...failedResult,
+          runtime: {
+            ...failedResult.runtime,
+            resultContent: failedResult.text,
+          },
+        },
+        event("ev.browser.final", "thought", 5_000, "role-lead", "Final answer with verified browser failure evidence and residual risk."),
+      ],
+    },
+    nowMs,
+  });
+
+  assert.deepEqual(snapshot.browser.failureBuckets, [
+    { bucket: "browser_cdp_unavailable", count: 1, latestAtMs: 4_000 },
+  ]);
+  assert.equal(snapshot.qualityGate.blocked, 1);
+  assert.equal(snapshot.attentionMissions[0]?.id, "msn.browser-failure");
+  assert.deepEqual(snapshot.attentionMissions[0]?.browserFailureBuckets, [
+    { bucket: "browser_cdp_unavailable", count: 1, latestAtMs: 4_000 },
+  ]);
 });
 
 function mission(

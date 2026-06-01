@@ -4575,3 +4575,70 @@ Convergence question:
 - Next required gate: broaden browser reliability failure injection under
   natural prompts, especially attach failure, command timeout, and target detach
   buckets.
+
+## 2026-06-01 14:17 CST - Browser Failure Bucket Visibility
+
+Direction: unknown
+
+Execution Kernel:
+- No agent execution semantics changed in this slice. Tool calls, browser
+  dispatch, session continuation, and recovery policy remain unchanged.
+- Mission observability now extracts browser failure buckets from tool result,
+  recovery, and runtime metadata so CDP/target/attach/detach/transport failures
+  are first-class mission health signals instead of only raw timeline text.
+
+Result Quality:
+- Final-answer generation was not changed.
+- This does not prove a model will produce a better answer after browser
+  failure. It makes the failure evidence more explicit for the workbench and
+  diagnostics surfaces that guide continuation or operator action.
+
+Workbench UX:
+- Mission Detail now shows a browser failure-bucket count and an attention
+  line naming the bucket counts.
+- Runtime mission health now aggregates browser failure buckets and includes
+  bucket counts on attention rows, so an operator can distinguish profile
+  fallback from CDP, target, attach, detach, or transport failures without
+  opening raw JSON.
+
+Browser Reliability:
+- No browser recovery behavior changed.
+- The change supports the browser reliability gate by making the next natural
+  browser-failure runs produce explicit operator-visible evidence. Actual
+  reliability convergence remains unproven until a natural browser failure gate
+  passes.
+
+Acceptance Evidence:
+- Focused backend/control-state tests:
+  `npx tsx --test packages/app-gateway/src/mission-observability.test.ts
+  packages/app-gateway/src/mission-health-diagnostics.test.ts
+  packages/app-gateway/src/routes/mission-routes.test.ts
+  packages/app-gateway/src/routes/diagnostics-routes.test.ts
+  packages/control-center/src/state/missionFinalAnswer.test.ts
+  packages/control-center/src/state/missionProgress.test.ts`: passed,
+  116 tests.
+- `npm run typecheck`: passed.
+- `npm run build:control-center && npm run control-center:smoke`: passed,
+  with screenshot-backed smoke output.
+- `npm run build`: passed.
+- `npm test -- --runInBand`: passed, 1400 tests.
+- `git diff --check`: passed.
+- No natural real LLM E2E ran for this visibility slice.
+
+Regression Risk:
+- API shape expands mission metrics and diagnostics mission health; typed
+  Control Center clients and route tests cover the expected shape.
+- Bucket extraction is conservative and known-bucket based. Unknown future
+  browser failure phrases may still require a runtime bucket field or a new
+  parser entry.
+- Remaining risk is interpretive rather than behavioral: this improves failure
+  visibility but does not make the browser worker more reliable by itself.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? no
+  capability claim yet.
+- Evidence: user-visible browser failure diagnosis is clearer, but no natural
+  real LLM browser-failure gate has proven improved task completion.
+- Next required gate: run or add a natural browser reliability scenario that
+  exercises one of the explicit browser failure rows and verifies a bounded,
+  evidence-backed user result.

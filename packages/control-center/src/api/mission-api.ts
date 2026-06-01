@@ -89,6 +89,11 @@ export interface MissionObservabilitySnapshot {
       sessionId?: string;
       fallbackDir?: string;
     };
+    failureBuckets: Array<{
+      bucket: string;
+      count: number;
+      latestAtMs: number;
+    }>;
   };
   approvals: {
     requested: number;

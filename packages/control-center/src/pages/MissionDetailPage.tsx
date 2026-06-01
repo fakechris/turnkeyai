@@ -1500,6 +1500,11 @@ function MissionMetricsCard({
               value={String(metrics.browser.profileFallbacks)}
               tone={metrics.browser.profileFallbacks > 0 ? "warn" : undefined}
             />
+            <MetricTile
+              label="browser buckets"
+              value={String(metrics.browser.failureBuckets.length)}
+              tone={metrics.browser.failureBuckets.length > 0 ? "warn" : undefined}
+            />
             <MetricTile label="skipped" value={String(metrics.tool.skipped)} tone={metrics.tool.skipped > 0 ? "warn" : undefined} />
             <MetricTile label="timeouts" value={String(metrics.tool.timeouts)} tone={metrics.tool.timeouts > 0 ? "warn" : undefined} />
             <MetricTile label="cancelled" value={String(metrics.tool.cancelled)} tone={metrics.tool.cancelled > 0 ? "warn" : undefined} />
@@ -1632,6 +1637,9 @@ function missionQualityAction(
   }
   if (visibleChecks.some((check) => check.name === "browser_profile_fallback")) {
     return "Inspect browser setup, close the conflicting profile if login state matters, then continue from captured evidence.";
+  }
+  if (visibleChecks.some((check) => check.name === "browser_failure_bucket")) {
+    return "Inspect browser failure buckets, then retry, reattach, or continue with bounded evidence.";
   }
   if (visibleChecks.some((check) => check.name === "answer_substance")) {
     return "Ask a follow-up for a fuller answer with concrete findings and next steps.";
