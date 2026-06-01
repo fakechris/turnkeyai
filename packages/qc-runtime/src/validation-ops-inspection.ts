@@ -15,6 +15,12 @@ import type { BrowserTransportSoakResult } from "./browser-transport-soak";
 import type { ValidationProfileIssue, ValidationProfileRunResult } from "./validation-profile";
 import type { ValidationSoakSeriesResult } from "./validation-soak-series";
 import { buildClosedLoopMetric, mergeClosedLoopMetrics } from "./closed-loop-metrics";
+import {
+  DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS,
+} from "./real-llm-acceptance-defaults";
 
 const PHASE1_BASELINE_STALE_AFTER_MS = 36 * 60 * 60 * 1000;
 
@@ -238,6 +244,12 @@ export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
   const naturalMissionScenarios = input.naturalMissionScenarios ?? [];
   const totalCases = input.tooluseScenarios.length + input.missionScenarios.length + naturalMissionScenarios.length;
   const commandHint = "npm run acceptance:real -- --model-catalog models.local.json";
+  const releaseCoverage = buildRealAcceptanceReleaseCoverage({
+    tooluseScenarios: input.tooluseScenarios,
+    missionScenarios: input.missionScenarios,
+    naturalMissionScenarios,
+    browserTooluseEnabled: input.browserTooluseEnabled,
+  });
   const issues = input.status === "failed"
     ? [
         buildValidationOpsIssue({
@@ -266,6 +278,7 @@ export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
       ...(naturalMissionScenarios.length ? { naturalMissionScenarios: [...naturalMissionScenarios] } : {}),
       browserTooluseEnabled: input.browserTooluseEnabled,
       totalCases,
+      releaseCoverage,
       ...(input.naturalArtifactPath ? { naturalArtifactPath: input.naturalArtifactPath } : {}),
       ...(input.missionReport ? { missionReport: input.missionReport } : {}),
       ...(input.naturalMissionReport ? { naturalMissionReport: input.naturalMissionReport } : {}),
@@ -289,6 +302,52 @@ export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
     }),
     issues,
   };
+}
+
+function buildRealAcceptanceReleaseCoverage(input: {
+  tooluseScenarios: string[];
+  missionScenarios: string[];
+  naturalMissionScenarios: string[];
+  browserTooluseEnabled: boolean;
+}): NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]> {
+  const tooluseExpected = input.browserTooluseEnabled
+    ? DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS
+    : DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS;
+  const tooluse = buildScenarioCoverage(input.tooluseScenarios, tooluseExpected);
+  const mission = buildScenarioCoverage(input.missionScenarios, DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS);
+  const naturalMission = buildScenarioCoverage(
+    input.naturalMissionScenarios,
+    DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS
+  );
+  return {
+    status: summarizeReleaseCoverageStatus([tooluse.status, mission.status, naturalMission.status]),
+    tooluse,
+    mission,
+    naturalMission,
+  };
+}
+
+function buildScenarioCoverage(
+  requested: readonly string[],
+  expected: readonly string[]
+): NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]>["tooluse"] {
+  const requestedSet = new Set(requested);
+  const missing = expected.filter((scenario) => !requestedSet.has(scenario)).length;
+  const covered = expected.length - missing;
+  return {
+    status: requested.length === 0 ? "skipped" : missing === 0 ? "full" : "focused",
+    requested: covered,
+    expected: expected.length,
+    missing,
+  };
+}
+
+function summarizeReleaseCoverageStatus(
+  statuses: Array<NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]>["status"]>
+): NonNullable<ValidationOpsRealAcceptanceDetails["releaseCoverage"]>["status"] {
+  if (statuses.every((status) => status === "full")) return "full";
+  if (statuses.every((status) => status === "skipped")) return "skipped";
+  return "focused";
 }
 
 function buildValidationProfileIssueCommandHint(

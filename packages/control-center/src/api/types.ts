@@ -363,6 +363,14 @@ export type ValidationOpsClosedLoopStatus =
   | "silent_failure"
   | "ambiguous_failure";
 export type ValidationOpsBaselineStatus = "fresh-passing" | "fresh-failing" | "stale" | "missing";
+export type ValidationOpsRealAcceptanceCoverageStatus = "full" | "focused" | "skipped";
+
+export interface ValidationOpsRealAcceptanceCoverage {
+  status: ValidationOpsRealAcceptanceCoverageStatus;
+  requested: number;
+  expected: number;
+  missing: number;
+}
 
 export interface ValidationOpsReadinessGate {
   gateId: "phase1-e2e-profile" | "real-llm-acceptance" | "release-readiness" | "transport-soak" | "soak-series";
@@ -395,6 +403,12 @@ export interface ValidationOpsRunRecord {
     naturalMissionScenarios?: string[];
     browserTooluseEnabled: boolean;
     totalCases: number;
+    releaseCoverage?: {
+      status: ValidationOpsRealAcceptanceCoverageStatus;
+      tooluse: ValidationOpsRealAcceptanceCoverage;
+      mission: ValidationOpsRealAcceptanceCoverage;
+      naturalMission: ValidationOpsRealAcceptanceCoverage;
+    };
     naturalArtifactPath?: string;
     missionReport?: {
       status: "passed" | "failed";

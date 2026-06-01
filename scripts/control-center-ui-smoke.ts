@@ -773,6 +773,14 @@ try {
       "release acceptance should surface real mission scenario summary"
     );
     assert(
+      await page.locator(".card", { hasText: "coverage: focused gate" }).isVisible(),
+      "release acceptance should distinguish focused gates from full release coverage"
+    );
+    assert(
+      await page.locator(".card", { hasText: "natural 2/20 (missing 18)" }).isVisible(),
+      "release acceptance should surface missing natural release coverage"
+    );
+    assert(
       await page.locator(".card", { hasText: "quality failures 0" }).isVisible(),
       "release acceptance should surface real mission quality failure count"
     );
@@ -2110,6 +2118,12 @@ function validationOpsFixture() {
           naturalMissionScenarios: ["natural-browser-dynamic-page", "natural-long-delegation"],
           browserTooluseEnabled: true,
           totalCases: 11,
+          releaseCoverage: {
+            status: "focused",
+            tooluse: { status: "full", requested: 5, expected: 5, missing: 0 },
+            mission: { status: "focused", requested: 4, expected: 12, missing: 8 },
+            naturalMission: { status: "focused", requested: 2, expected: 20, missing: 18 },
+          },
           missionReport: {
             status: "passed",
             scenarioCount: 4,
