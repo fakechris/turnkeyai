@@ -158,6 +158,50 @@ test("buildMissionObservabilitySnapshot accepts the current final answer after a
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "pass");
 });
 
+test("buildMissionObservabilitySnapshot does not accept a final answer before a pending tool result", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Check the browser page."),
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      event(
+        "final-early",
+        "thought",
+        3_000,
+        "role-lead",
+        "Final answer based on source evidence from the browser, with residual risk noted."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.finalAnswerEventId, undefined);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "fail");
+});
+
+test("buildMissionObservabilitySnapshot accepts a final answer after all prior tool calls have results", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 7_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Check the browser page."),
+      tool("call-1", 2_000, "call", "sessions_spawn", "call-a", "Calling sessions_spawn"),
+      tool("result-1", 3_000, "result", "sessions_spawn", "call-a", "Browser evidence collected."),
+      event(
+        "final-after-result",
+        "thought",
+        4_000,
+        "role-lead",
+        "Final answer based on source evidence from the browser tool result, with residual risk noted."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.finalAnswerEventId, "final-after-result");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot marks stale runtime progress as blocked", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "working" }),

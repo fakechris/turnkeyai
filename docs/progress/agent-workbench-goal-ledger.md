@@ -5782,3 +5782,79 @@ Convergence question:
   evidence-backed output after the stricter ordering rule.
 - If no, next required gate: run natural follow-up and cancellation scenarios to
   verify terminal tool-state handling across continuation and interrupt paths.
+
+## 2026-06-01 20:53 CST - Workbench Completion Visibility Alignment
+
+Direction: converging
+
+Execution Kernel:
+- Runtime execution is unchanged. This checkpoint aligns mission observability
+  with the tool-result-before-final completion rule from the previous
+  checkpoint.
+- `buildMissionObservabilitySnapshot` no longer selects a lead final answer
+  when an earlier visible tool-call event has no linked result event before that
+  answer.
+
+Result Quality:
+- This does not improve model synthesis directly. It prevents a weak or early
+  answer from looking like a healthy final answer in metrics when the tool
+  evidence chain is incomplete.
+- A final answer after all prior tool calls have result events remains accepted,
+  so normal split tool-result replay is not penalized.
+
+Workbench UX:
+- Mission Detail and API consumers now receive no `finalAnswerEventId` for an
+  early answer that skipped a pending tool result. The quality panel reports
+  `final_answer` as failed for terminal missions instead of showing the answer
+  card as complete.
+- This closes a visibility split where mission lifecycle could block a malformed
+  tool turn while workbench metrics still made the final answer look valid.
+
+Browser Reliability:
+- Browser execution behavior is unchanged. This is a replay/observability
+  consistency fix for browser and non-browser tool chains.
+
+Acceptance Evidence:
+- Focused observability regression first failed before the fix:
+  `npx tsx --test packages/app-gateway/src/mission-observability.test.ts`
+  accepted `final-early` as the final answer before the pending
+  `sessions_spawn` result.
+- After the fix, focused observability tests passed:
+  `npx tsx --test packages/app-gateway/src/mission-observability.test.ts`.
+- Focused runtime/UI-state tests:
+  `npx tsx --test packages/app-gateway/src/mission-observability.test.ts
+  packages/app-gateway/src/mission-thread-bridge.test.ts
+  packages/app-gateway/src/mission-completion-evaluator.test.ts
+  packages/control-center/src/state/missionFinalAnswer.test.ts
+  packages/control-center/src/state/missionProgress.test.ts`: passed.
+- Typecheck: `npm run typecheck`: passed.
+- Ledger check: `npm run ledger:check`: passed.
+- Whitespace: `git diff --check`: passed.
+- Real natural follow-up gate:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-followup-continuation --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-observability-final-answer-guard-20260601.json`:
+  passed.
+- Mission: `msn.mpv7nls4.1`, status `done`, natural `passed`, tools `6/6`,
+  sessions `1/1`, browser used, profile fallbacks `0`, browser buckets `none`,
+  liveness `0/0/0`, final bytes `2009`.
+- Source coverage from the real artifact: answer terms `4/4`, answer patterns
+  `1/1`, evidence events `6/2`, residual risk visible, unsupported claims `0`.
+
+Regression Risk:
+- The guard only tracks visible `toolPhase=call` events that carry a
+  `toolCallId`. Legacy tool events without call ids are not reclassified.
+- The real follow-up continuation gate passed. Cancellation remains the next
+  terminal-tool-state path to recheck because it depends on interrupted tool
+  result evidence rather than normal continuation.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes
+- Evidence: the user-facing metrics path now shares the same ordering invariant
+  as mission completion: tool calls must have results before the final answer is
+  considered complete. A real follow-up mission still completed with
+  `sessions_send`, tool results, and a useful final answer after the guard.
+- If no, next required gate: run natural cancellation and timeout-continuation
+  gates.
