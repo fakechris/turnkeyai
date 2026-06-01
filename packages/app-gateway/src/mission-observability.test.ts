@@ -83,6 +83,81 @@ test("buildMissionObservabilitySnapshot keeps active missions running while fina
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "pending");
 });
 
+test("buildMissionObservabilitySnapshot ignores a stale final answer after a follow-up", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "working" }),
+    nowMs: 6_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Initial task."),
+      event(
+        "final-old",
+        "thought",
+        2_000,
+        "role-lead",
+        "Initial final answer based on source evidence with residual risk."
+      ),
+      event("user-2", "plan", 5_000, "user", "Follow up."),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "running");
+  assert.equal(snapshot.qualityGate.finalAnswerEventId, undefined);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "pending");
+});
+
+test("buildMissionObservabilitySnapshot lets a later tool turn stale a prior final answer", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Initial task."),
+      tool("result-1", 1_500, "result", "sessions_spawn", "call-a", "Tool sessions_spawn returned evidence."),
+      event(
+        "final-old",
+        "thought",
+        2_000,
+        "role-lead",
+        "Initial final answer based on source evidence with residual risk."
+      ),
+      event("user-2", "plan", 3_000, "user", "Follow up."),
+      tool("call-2", 4_000, "call", "sessions_send", "call-b", "Calling sessions_send"),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.finalAnswerEventId, undefined);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "fail");
+});
+
+test("buildMissionObservabilitySnapshot accepts the current final answer after a follow-up", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      event("user-1", "plan", 1_000, "user", "Initial task."),
+      event(
+        "final-old",
+        "thought",
+        2_000,
+        "role-lead",
+        "Initial final answer based on source evidence with residual risk."
+      ),
+      event("user-2", "plan", 3_000, "user", "Follow up."),
+      tool("result-2", 4_000, "result", "sessions_send", "call-b", "Tool sessions_send returned evidence."),
+      event(
+        "final-new",
+        "thought",
+        5_000,
+        "role-lead",
+        "Follow-up final answer based on source evidence from the continuation result, with residual risk noted."
+      ),
+    ],
+  });
+
+  assert.equal(snapshot.qualityGate.finalAnswerEventId, "final-new");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "final_answer")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot marks stale runtime progress as blocked", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "working" }),
