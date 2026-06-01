@@ -844,14 +844,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         },
       });
       const repairedResult = containsAnyToolCallForm(repaired.result)
-        ? {
-            ...repaired.result,
-            text: [
-              "I can't safely complete the final answer from the current tool results.",
-              "The model attempted to emit another tool call after tools were disabled for final synthesis.",
-              "Please retry or continue the mission so the runtime can collect a clean final answer.",
-            ].join(" "),
-          }
+        ? maybeRedactForbiddenLocalUrls({
+            result:
+              buildLocalEvidenceCloseout({
+                messages: input.messages,
+                packet: input.packet,
+                selection: input.selection,
+                error: new Error("final synthesis emitted a tool call after repair"),
+              }) ?? {
+                ...repaired.result,
+                text: [
+                  "I can't safely complete the final answer from the current tool results.",
+                  "The model attempted to emit another tool call after tools were disabled for final synthesis.",
+                  "Please retry or continue the mission so the runtime can collect a clean final answer.",
+                ].join(" "),
+              },
+            packet: input.packet,
+          })
         : repaired.result;
       return {
         result: repairedResult,
@@ -2702,7 +2711,7 @@ function buildLocalEvidenceCloseout(input: {
       cancellationSeen
         ? "Risk: The earlier cancellation means the cancelled attempt should not be treated as verification; confidence comes from the resumed source result."
         : "Risk: Confidence is limited to the completed source result visible in this mission.",
-      "Next action: Use the verified source facts for the release-risk note, and continue the same session if broader verification is needed.",
+      "Next action: Use the verified source facts for the requested task, and continue the same session if broader verification is needed.",
     ].join("\n"),
     modelId: input.selection.modelId ?? "local-evidence-closeout",
     ...(input.selection.modelChainId ? { modelChainId: input.selection.modelChainId } : {}),

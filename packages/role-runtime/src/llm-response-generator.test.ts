@@ -4373,7 +4373,7 @@ test("llm role response generator repairs textual tool-call markup during final 
   assert.equal(closeout?.evidenceAvailable, true);
 });
 
-test("llm role response generator fails closed when final repair still emits tool-call markup", async () => {
+test("llm role response generator uses local evidence closeout when final repair still emits tool-call markup", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
@@ -4437,8 +4437,13 @@ test("llm role response generator fails closed when final repair still emits too
     packet: buildPacket(),
   });
 
-  assert.match(result.content, /can't safely complete the final answer/i);
+  assert.match(result.content, /Verified:/);
+  assert.match(result.content, /source A verifies the product positioning/);
+  assert.match(result.content, /source B verifies the repository/);
+  assert.match(result.content, /not verified/);
+  assert.match(result.content, /requested task/);
   assert.doesNotMatch(result.content, /<minimax:tool_call>/);
+  assert.equal(result.metadata?.adapterName, "local-evidence-closeout");
   assert.equal(gatewayInputs.length, 3);
   assert.ok(
     gatewayInputs[2]?.messages.some(

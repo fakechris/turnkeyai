@@ -5410,3 +5410,93 @@ Convergence question:
 - If no, next required gate: broaden this from the focused dynamic-page run to
   a multi-scenario natural matrix that includes browser follow-up and approval
   so artifact propagation remains stable across continuation paths.
+
+## 2026-06-01 19:41 CST - Evidence Closeout For Final Synthesis Repair
+
+Direction: converging
+
+Execution Kernel:
+- A broader natural matrix exposed a closeout gap after successful browser and
+  approval work: the final synthesis pass had tools disabled, the model still
+  attempted another tool call, and the repair pass fell back to a generic
+  retry/continue answer even though completed session evidence was already
+  durable in the tool result.
+- The repair path now uses deterministic local evidence closeout from completed
+  session tool results when the no-tools repair still emits tool-call markup.
+  If no usable completed evidence exists, it still fails closed with the
+  existing generic retry/continue message.
+- The local closeout wording was made task-neutral so it can support approval,
+  browser, research, and continuation results instead of assuming a
+  release-risk note.
+
+Result Quality:
+- This directly addresses weak terminal output after useful tool work. The
+  agent no longer discards verified evidence simply because the final synthesis
+  model violated the no-tools repair instruction.
+- Natural approval dry-run output regained source-backed evidence,
+  decision-useful content, and submitted-result language after the fix.
+
+Workbench UX:
+- No UI code changed. The user-visible effect is that the Mission Detail final
+  answer can now show evidence-backed closeout instead of a generic "retry or
+  continue" message after the runtime has already completed the relevant
+  approval/browser work.
+- The trace remains truthful: the runtime still records that the final answer
+  came from local evidence closeout through the existing adapter metadata.
+
+Browser Reliability:
+- Browser execution behavior is unchanged. The passing matrix still reported
+  browser use, zero profile fallbacks, no browser failure buckets, and no stuck
+  liveness.
+- Approval-gated browser work remains permission-controlled; this fix only
+  changes final answer synthesis after completed evidence exists.
+
+Acceptance Evidence:
+- Initial broader gate failed on `natural-approval-dry-run-action`:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-browser-dynamic-page,natural-browser-followup-continuation,natural-approval-dry-run-action
+  --model-catalog models.local.json --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-browser-continuation-approval-20260601.json`.
+- Failure mission: `msn.mpv4m1ty.3`, status `done`, approval exercised,
+  browser used, no stuck liveness, but natural quality failed because the final
+  answer lacked source-backed evidence, was not decision-useful, and missed the
+  submitted result.
+- Focused regression:
+  `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts`:
+  passed.
+- Focused natural approval gate passed:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-approval-dry-run-action --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-approval-final-synthesis-closeout-20260601.json`.
+- Focused mission: `msn.mpv4q4bo.1`, status `done`, natural `passed`,
+  tools `4/4`, sessions `1/0`, browser used, approval exercised, profile
+  fallbacks `0`, browser buckets `none`, liveness `0/0/0`.
+- Broader matrix passed after the fix:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-browser-dynamic-page,natural-browser-followup-continuation,natural-approval-dry-run-action
+  --model-catalog models.local.json --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-browser-continuation-approval-after-fix-20260601.json`.
+- Broader missions:
+  `natural-browser-dynamic-page` `msn.mpv4rj5s.1`, artifacts `4`,
+  lifecycle-bearing artifacts `4`;
+  `natural-browser-followup-continuation` `msn.mpv4s44x.2`, sessions `1/1`;
+  `natural-approval-dry-run-action` `msn.mpv4td6f.3`, approval exercised.
+
+Regression Risk:
+- The deterministic closeout can only use completed session evidence parsed
+  from durable tool results and remains disabled for exact final-answer shape
+  prompts.
+- If a future scenario requires domain-specific wording not present in the
+  completed evidence, this path may produce conservative wording rather than
+  rich prose. That is preferable to losing evidence or inventing claims.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  converging
+- Evidence: a real natural browser/continuation/approval matrix exposed a
+  terminal-answer failure and the same matrix now passes without weak-answer
+  signals or stuck liveness.
+- If no, next required gate: extend this from approval/browser to long
+  delegation and timeout closeout so final-synthesis repair cannot erase
+  completed evidence in those paths either.
