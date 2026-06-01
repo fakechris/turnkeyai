@@ -436,6 +436,77 @@ test("LLMSubAgentWorkerHandler reports failed private browser action traces as t
   assert.equal(metadata?.toolUse?.rounds?.[0]?.results?.[0]?.isError, true);
 });
 
+test("LLMSubAgentWorkerHandler promotes private browser failure buckets to parent-visible recovery metadata", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_open", { url: "http://127.0.0.1:1/ops-dashboard" });
+    }
+    return textResult("The browser endpoint is unavailable; dashboard facts remain unverified.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        return browserResult({
+          traceKinds: ["open"],
+          traceStatuses: ["failed"],
+          traceErrorMessages: ["browser_cdp_unavailable: connection refused before rendered dashboard evidence."],
+        });
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.match(result?.summary ?? "", /Browser failure buckets: browser_cdp_unavailable=1/);
+  assert.deepEqual((result?.payload as { browserRecovery?: { failureBuckets?: unknown } }).browserRecovery?.failureBuckets, [
+    { bucket: "browser_cdp_unavailable", count: 1 },
+  ]);
+  const toolMessage = gatewayInputs[1]?.messages.find((message) => message.role === "tool");
+  const toolPayload = JSON.parse(readToolContent(toolMessage?.content ?? "")) as {
+    payload?: { failureBuckets?: unknown };
+  };
+  assert.deepEqual(toolPayload.payload?.failureBuckets, [{ bucket: "browser_cdp_unavailable", count: 1 }]);
+});
+
+test("LLMSubAgentWorkerHandler buckets private browser bridge exceptions before parent closeout", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_open", { url: "http://127.0.0.1:1/ops-dashboard" });
+    }
+    return textResult("The browser endpoint is unavailable; dashboard facts remain unverified.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        throw new Error("browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9222");
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.match(result?.summary ?? "", /Browser failure buckets: browser_cdp_unavailable=1/);
+  assert.deepEqual((result?.payload as { browserRecovery?: { failureBuckets?: unknown } }).browserRecovery?.failureBuckets, [
+    { bucket: "browser_cdp_unavailable", count: 1 },
+  ]);
+  const toolMessage = gatewayInputs[1]?.messages.find((message) => message.role === "tool");
+  assert.match(readToolContent(toolMessage?.content ?? ""), /^browser_cdp_unavailable:/);
+});
+
 test("LLMSubAgentWorkerHandler refuses private browser submit actions before bridge execution", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   let bridgeCalled = false;
@@ -900,6 +971,7 @@ function browserResult(input: {
   finalUrl?: string;
   traceKinds?: string[];
   traceStatuses?: Array<"ok" | "failed">;
+  traceErrorMessages?: string[];
 }): BrowserTaskResult {
   return {
     sessionId: input.sessionId ?? "browser-session-1",
@@ -925,6 +997,7 @@ function browserResult(input: {
       completedAt: index + 1,
       status: input.traceStatuses?.[index] ?? "ok",
       input: {},
+      ...(input.traceErrorMessages?.[index] ? { errorMessage: input.traceErrorMessages[index] } : {}),
     })),
   };
 }

@@ -712,6 +712,10 @@ function extractBrowserFailureBucket(event: ActivityEvent): string | null {
   const explicitBrowserBucket = normalizeBrowserFailureBucket(event.runtime?.browserDiagnosticBucket ?? "");
   if (explicitBrowserBucket) return explicitBrowserBucket;
 
+  const text = eventTextBlob(event);
+  const sessionBrowserBucket = extractSessionBrowserRecoveryBucket(event, text);
+  if (sessionBrowserBucket) return sessionBrowserBucket;
+
   const isBrowserFailureEvidence = isBrowserFailureEvidenceEvent(event);
   if (isBrowserFailureEvidence) {
     const candidates = [event.runtime?.bucket, event.runtime?.closeKind, event.runtime?.failureBucket];
@@ -723,10 +727,7 @@ function extractBrowserFailureBucket(event: ActivityEvent): string | null {
 
   if (!isFailureEvidenceEvent(event)) return null;
 
-  const text = eventTextBlob(event);
-  const directBucket = text.match(
-    /\b(target_not_found|attach_failed|expert_session_detached|cdp_command_timeout|browser_cdp_unavailable|detached_target|session_not_found|transport_failure|owner_mismatch|lease_conflict)\b/i
-  )?.[1];
+  const directBucket = matchBrowserFailureBucket(text);
   const normalizedDirect = normalizeBrowserFailureBucket(directBucket ?? "");
   if (normalizedDirect && (BROWSER_SPECIFIC_FAILURE_BUCKETS.has(normalizedDirect) || isBrowserFailureEvidence)) {
     return normalizedDirect;
@@ -737,6 +738,24 @@ function extractBrowserFailureBucket(event: ActivityEvent): string | null {
   if (/\b(?:session not found|browser session not found)\b/i.test(text)) return "session_not_found";
   if (/\b(?:cdp|transport|websocket|connection refused|ECONNREFUSED|fetch failed)\b/i.test(text)) return "transport_failure";
   return null;
+}
+
+function extractSessionBrowserRecoveryBucket(event: ActivityEvent, text: string): string | null {
+  if (event.kind !== "tool" || event.runtime?.toolPhase !== "result") return null;
+  const toolName = event.runtime.toolName ?? "";
+  if (toolName !== "sessions_spawn" && toolName !== "sessions_send") return null;
+  if (!/"agent_id"\s*:\s*"browser"/i.test(text) && !/\bbrowserRecovery\b|\bfailureBuckets\b/i.test(text)) {
+    return null;
+  }
+  return normalizeBrowserFailureBucket(matchBrowserFailureBucket(text) ?? "");
+}
+
+function matchBrowserFailureBucket(text: string): string | null {
+  return (
+    text.match(
+      /\b(target_not_found|attach_failed|expert_session_detached|cdp_command_timeout|browser_cdp_unavailable|detached_target|session_not_found|transport_failure|owner_mismatch|lease_conflict)\b/i
+    )?.[1] ?? null
+  );
 }
 
 function isBrowserFailureEvidenceEvent(event: ActivityEvent): boolean {

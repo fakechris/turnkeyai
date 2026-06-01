@@ -52,6 +52,7 @@ describe("mission tool-use e2e report", () => {
         },
         browser: {
           profileFallbacks: 0,
+          failureBuckets: [],
         },
         approvals: {
           requested: 1,
@@ -633,6 +634,7 @@ describe("mission tool-use e2e report", () => {
     assert.ok(report.promptPolicy.forbiddenPatterns.some((pattern) => pattern.includes("exactly once")));
     assert.ok(report.requiredQualitySignals.includes("source-backed-evidence"));
     assert.ok(report.requiredQualitySignals.includes("browser-profile-fallback-policy"));
+    assert.ok(report.requiredQualitySignals.includes("browser-failure-bucket-policy"));
     assert.equal(report.status, "passed");
     assert.equal(report.durationMs, 5000);
     assert.equal(report.scenarios[0]?.scenario, "natural-browser-dynamic-page");
@@ -738,6 +740,10 @@ describe("mission tool-use e2e report", () => {
       productSignalsUrl: "http://127.0.0.1/product-signals",
     });
     result.metrics.tool.failed = 1;
+    result.metrics.browser = {
+      ...result.metrics.browser,
+      failureBuckets: [{ bucket: "browser_cdp_unavailable", count: 1, latestAtMs: 2_000 }],
+    };
     result.timeline[1]!.text = "browser result failed";
     result.timeline[1]!.runtime = {
       toolName: "sessions_spawn",
@@ -771,6 +777,55 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.ok(fallbackQuality.failures.some((failure) => failure.includes("model-knowledge fallback")));
+  });
+
+  it("requires browser-unavailable natural closeout to carry the browser failure bucket", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-unavailable-closeout", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.metrics.tool.failed = 1;
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: "browser_cdp_unavailable: connection refused before rendered dashboard evidence was captured.",
+    };
+    result.final.text = [
+      "The browser is unavailable, so the dashboard could not be visually verified.",
+      "Verified: the browser attempt failed while opening the dashboard.",
+      "Unverified: rendered queue depth, SLA breach count, and owner.",
+      "Next action: restore browser/CDP connectivity and rerun the dashboard review.",
+    ].join(" ");
+
+    const missingBucketQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(missingBucketQuality.failures.includes("missing browser failure bucket browser_cdp_unavailable"));
+
+    result.metrics.browser = {
+      ...result.metrics.browser,
+      failureBuckets: [{ bucket: "browser_cdp_unavailable", count: 1, latestAtMs: 2_000 }],
+    };
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
   });
 
   it("rejects browser-unavailable closeout that claims unsupported rendered dashboard facts", () => {
@@ -1904,7 +1959,7 @@ describe("mission tool-use e2e report", () => {
     );
     assert.equal(
       formatNaturalMissionScenarioPass({ result, index: 2, total: 6, durationMs: 4321 }),
-      "natural mission scenario passed: natural-browser-dynamic-page (2/6, 4321ms) mission-id=msn.natural.1 natural=passed tools=2/2 sessions=1/0 browser=yes profileFallbacks=0 stuck=no"
+      "natural mission scenario passed: natural-browser-dynamic-page (2/6, 4321ms) mission-id=msn.natural.1 natural=passed tools=2/2 sessions=1/0 browser=yes profileFallbacks=0 browserBuckets=none stuck=no"
     );
   });
 });

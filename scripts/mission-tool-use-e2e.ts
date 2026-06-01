@@ -138,6 +138,11 @@ interface MissionObservabilitySnapshot {
       sessionId?: string;
       fallbackDir?: string;
     };
+    failureBuckets?: Array<{
+      bucket: string;
+      count: number;
+      latestAtMs: number;
+    }>;
   };
   approvals: {
     requested: number;
@@ -279,6 +284,11 @@ export interface MissionE2eScenarioReport {
         sessionId?: string;
         fallbackDir?: string;
       };
+      failureBuckets: Array<{
+        bucket: string;
+        count: number;
+        latestAtMs: number;
+      }>;
     };
     approvals: {
       requested: number;
@@ -333,6 +343,7 @@ export interface NaturalScenarioSpec {
   approvalDecision?: "approved" | "denied" | "pending";
   expectedMissionStatus?: "done" | "needs_approval";
   requiresProfileFallback?: boolean;
+  requiredBrowserFailureBuckets?: string[];
   requiresCancellation?: boolean;
   requiresTimeout?: boolean;
   allowToolFailure: boolean;
@@ -2813,6 +2824,7 @@ export function buildNaturalScenarioSpec(
       requiresBrowser: true,
       requiresApproval: false,
       allowToolFailure: true,
+      requiredBrowserFailureBuckets: ["browser_cdp_unavailable"],
       minEvidenceEvents: 1,
       requiredAnswerTerms: ["browser", "verified", "next action"],
       requiredAnswerPatterns: [
@@ -3050,6 +3062,7 @@ export function evaluateNaturalMissionQuality(input: {
       : input.metrics.qualityGate.evidenceEvents;
   const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
   const profileFallbackCount = input.metrics.browser?.profileFallbacks ?? 0;
+  const browserFailureBuckets = input.metrics.browser?.failureBuckets ?? [];
   const profileFallbackFree = profileFallbackCount === 0;
   const profileFallbackPolicySatisfied = input.spec.requiresProfileFallback
     ? profileFallbackCount > 0
@@ -3121,6 +3134,11 @@ export function evaluateNaturalMissionQuality(input: {
         ? "expected browser profile fallback recovery was not observed"
         : `browser profile fallback occurred ${profileFallbackCount} time(s)`
     );
+  }
+  for (const bucket of input.spec.requiredBrowserFailureBuckets ?? []) {
+    if (!browserFailureBuckets.some((item) => item.bucket === bucket && item.count > 0)) {
+      failures.push(`missing browser failure bucket ${bucket}`);
+    }
   }
   if (input.spec.requiresApproval && !approvalExercised) {
     failures.push(
@@ -3286,6 +3304,7 @@ export function formatNaturalMissionScenarioPass(input: {
     `sessions=${input.result.metrics.sessions.spawned}/${input.result.metrics.sessions.continued}`,
     `browser=${input.result.quality.browserUsed ? "yes" : "no"}`,
     `profileFallbacks=${input.result.metrics.browser?.profileFallbacks ?? 0}`,
+    `browserBuckets=${formatBrowserFailureBuckets(input.result.metrics.browser?.failureBuckets ?? [])}`,
     `stuck=${input.result.quality.stuckOrLoop ? "yes" : "no"}`,
   ].join(" ");
 }
@@ -3335,6 +3354,9 @@ function printNaturalScenarioResult(result: NaturalMissionScenarioResult): void 
   console.log(`mission-metrics-sessions: ${result.metrics.sessions.spawned}/${result.metrics.sessions.continued}`);
   console.log(`mission-metrics-browser-profile-fallbacks: ${result.metrics.browser?.profileFallbacks ?? 0}`);
   console.log(
+    `mission-metrics-browser-buckets: ${formatBrowserFailureBuckets(result.metrics.browser?.failureBuckets ?? [])}`
+  );
+  console.log(
     `mission-metrics-liveness: ${result.metrics.liveness.active}/${result.metrics.liveness.waiting}/${result.metrics.liveness.stale}`
   );
   console.log(`mission-final-bytes: ${Buffer.byteLength(result.final.text, "utf8")}`);
@@ -3379,6 +3401,7 @@ export function buildNaturalMissionE2eJsonReport(input: {
       "decision-useful-final-answer",
       "no-weak-answer-signals",
       "browser-profile-fallback-policy",
+      "browser-failure-bucket-policy",
     ],
     status: scenarios.every((scenario) => scenario.natural.status === "passed") ? "passed" : "failed",
     startedAt: new Date(input.startedAt).toISOString(),
@@ -3421,6 +3444,7 @@ export function summarizeMissionScenarioResult(result: MissionScenarioResult): M
       },
       browser: {
         profileFallbacks: result.metrics.browser?.profileFallbacks ?? 0,
+        failureBuckets: summarizeBrowserFailureBuckets(result.metrics.browser?.failureBuckets),
         ...(result.metrics.browser?.latestProfileFallback
           ? { latestProfileFallback: result.metrics.browser.latestProfileFallback }
           : {}),
@@ -3471,6 +3495,7 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
       },
       browser: {
         profileFallbacks: result.metrics.browser?.profileFallbacks ?? 0,
+        failureBuckets: summarizeBrowserFailureBuckets(result.metrics.browser?.failureBuckets),
         ...(result.metrics.browser?.latestProfileFallback
           ? { latestProfileFallback: result.metrics.browser.latestProfileFallback }
           : {}),
@@ -3584,6 +3609,23 @@ function summarizeQualityChecks(
       },
     ];
   });
+}
+
+function summarizeBrowserFailureBuckets(
+  buckets: NonNullable<MissionObservabilitySnapshot["browser"]>["failureBuckets"] | undefined
+): MissionE2eScenarioReport["metrics"]["browser"]["failureBuckets"] {
+  if (!Array.isArray(buckets)) return [];
+  return buckets.flatMap((item) => {
+    if (typeof item.bucket !== "string" || typeof item.count !== "number" || typeof item.latestAtMs !== "number") {
+      return [];
+    }
+    return [{ bucket: item.bucket, count: item.count, latestAtMs: item.latestAtMs }];
+  });
+}
+
+function formatBrowserFailureBuckets(buckets: Array<{ bucket: string; count: number }> | undefined): string {
+  if (!buckets?.length) return "none";
+  return buckets.map((item) => `${item.bucket}=${item.count}`).join(",");
 }
 
 function writeMissionE2eJsonReport(jsonPath: string, report: MissionE2eJsonReport): void {

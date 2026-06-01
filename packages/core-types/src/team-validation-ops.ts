@@ -114,6 +114,7 @@ export interface ValidationOpsRealAcceptanceDetails {
     sessionsSpawned: number;
     sessionsContinued: number;
     browserProfileFallbacks: number;
+    browserFailureBuckets: number;
     approvalsRequested: number;
     approvalsDecided: number;
     approvalsApplied: number;
@@ -150,6 +151,7 @@ export interface ValidationOpsRealAcceptanceDetails {
     sessionsSpawned: number;
     sessionsContinued: number;
     browserProfileFallbacks: number;
+    browserFailureBuckets: number;
     approvalsRequested: number;
     approvalsDecided: number;
     approvalsApplied: number;

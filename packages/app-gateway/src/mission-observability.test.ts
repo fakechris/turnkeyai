@@ -786,6 +786,46 @@ test("buildMissionObservabilitySnapshot surfaces browser failure buckets as miss
   );
 });
 
+test("buildMissionObservabilitySnapshot surfaces browser recovery buckets from completed session tool results", () => {
+  const sessionResult = {
+    protocol: "turnkeyai.session_tool_result.v1",
+    status: "completed",
+    agent_id: "browser",
+    session_key: "worker:browser:1",
+    task_id: "task-browser",
+    result: "Browser failure buckets: browser_cdp_unavailable=1. The dashboard remains unverified.",
+    final_content: "The browser endpoint is unavailable, so rendered dashboard facts remain unverified.",
+    tool_chain: ["browser"],
+    payload: {
+      browserRecovery: {
+        summary: "Browser failure buckets: browser_cdp_unavailable=1.",
+        failureBuckets: [{ bucket: "browser_cdp_unavailable", count: 1 }],
+      },
+    },
+  };
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-browser", 2_000, "call", "sessions_spawn", "call-browser", "Calling sessions_spawn"),
+      tool("result-browser", 4_000, "result", "sessions_spawn", "call-browser", JSON.stringify(sessionResult)),
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Final answer reports the browser endpoint as unavailable and leaves dashboard facts unverified."
+      ),
+    ],
+  });
+
+  assert.deepEqual(snapshot.browser.failureBuckets, [
+    { bucket: "browser_cdp_unavailable", count: 1, latestAtMs: 4_000 },
+  ]);
+  assert.equal(snapshot.qualityGate.status, "needs_attention");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "warn");
+});
+
 test("buildMissionObservabilitySnapshot does not infer browser buckets from unrelated text", () => {
   const snapshot = buildMissionObservabilitySnapshot({
     mission: baseMission({ status: "done" }),

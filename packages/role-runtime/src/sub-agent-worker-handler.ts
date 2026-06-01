@@ -30,6 +30,18 @@ const DEFAULT_BROWSER_WALL_CLOCK_MS = 18 * 60 * 1000;
 const DEFAULT_EXPLORE_WALL_CLOCK_MS = 90 * 1000;
 const DEFAULT_GENERAL_WALL_CLOCK_MS = 3 * 60 * 1000;
 const SESSION_TOOL_NAME_SET = new Set<string>(SESSION_TOOL_NAMES);
+const BROWSER_FAILURE_BUCKETS = [
+  "target_not_found",
+  "attach_failed",
+  "expert_session_detached",
+  "cdp_command_timeout",
+  "browser_cdp_unavailable",
+  "detached_target",
+  "session_not_found",
+  "transport_failure",
+  "owner_mismatch",
+  "lease_conflict",
+] as const;
 
 export interface LLMSubAgentWorkerHandlerOptions {
   kind: WorkerKind;
@@ -338,9 +350,38 @@ class SubAgentToolExecutor implements RoleToolExecutor {
       ...(previous?.targetId ? { targetId: previous.targetId } : {}),
     };
 
-    const result = previous?.sessionId
-      ? await browserBridge.sendSession({ ...request, browserSessionId: previous.sessionId })
-      : await browserBridge.spawnSession(request);
+    let result: BrowserTaskResult;
+    try {
+      result = previous?.sessionId
+        ? await browserBridge.sendSession({ ...request, browserSessionId: previous.sessionId })
+        : await browserBridge.spawnSession(request);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const bucket = classifyBrowserPrivateToolFailureBucket(message);
+      const content = `${bucket}: ${message}`;
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content,
+        isError: true,
+        raw: {
+          status: "failed",
+          error: message,
+          failureBuckets: [{ bucket, count: 1 }],
+        },
+        progress: [
+          {
+            phase: "failed",
+            toolName: input.call.name,
+            summary: content,
+            detail: {
+              failureBuckets: [{ bucket, count: 1 }],
+              actionKinds: actionPlan.actions.map((action) => action.kind),
+            },
+          },
+        ],
+      };
+    }
     const workerResult = browserToolWorkerResult(result);
     this.innerSessionState = buildInnerSessionState({
       parentInput: this.parentInput,
@@ -648,6 +689,7 @@ function classifyBrowserPrivateSideEffectTarget(
 
 function browserToolWorkerResult(result: BrowserTaskResult): WorkerExecutionResult {
   const failedCount = result.trace.filter((step) => step.status === "failed").length;
+  const failureBuckets = collectBrowserFailureBucketsFromTrace(result.trace);
   const status =
     result.trace.length > 0 && failedCount === result.trace.length
       ? "failed"
@@ -665,6 +707,7 @@ function browserToolWorkerResult(result: BrowserTaskResult): WorkerExecutionResu
       transportMode: result.transportMode,
       transportLabel: result.transportLabel,
       ...(result.profileFallback ? { profileFallback: result.profileFallback } : {}),
+      ...(failureBuckets.length > 0 ? { failureBuckets } : {}),
       page: {
         finalUrl: result.page.finalUrl,
         title: result.page.title,
@@ -684,10 +727,12 @@ function browserToolWorkerResult(result: BrowserTaskResult): WorkerExecutionResu
 
 function summarizeBrowserToolResult(result: BrowserTaskResult): string {
   const failed = result.trace.filter((step) => step.status === "failed");
+  const failureBuckets = collectBrowserFailureBucketsFromTrace(result.trace);
   const title = result.page.title || result.page.finalUrl || "browser page";
   if (failed.length > 0) {
     return [
       `Browser observed ${title}; ${failed.length} action(s) failed.`,
+      failureBuckets.length > 0 ? `Browser failure buckets: ${formatBrowserFailureBuckets(failureBuckets)}.` : null,
       result.profileFallback
         ? `Profile fallback: ${result.profileFallback.reason}; persistent profile was unavailable, used ${result.profileFallback.fallbackDir}.`
         : null,
@@ -831,11 +876,12 @@ function readNativeToolRounds(metadata: Record<string, unknown>): NativeToolRoun
 
 function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
   | {
-      resumeMode: NonNullable<BrowserTaskResult["resumeMode"]>;
-      sessionId: string;
+      resumeMode?: NonNullable<BrowserTaskResult["resumeMode"]>;
+      sessionId?: string;
       summary: string;
       profileFallback?: NonNullable<BrowserTaskResult["profileFallback"]>;
       targetId?: string;
+      failureBuckets?: Array<{ bucket: string; count: number }>;
     }
   | null {
   const rounds = readNativeToolRounds(metadata);
@@ -847,10 +893,14 @@ function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
         targetId?: string;
       }
     | null = null;
+  const failureBucketCounts = new Map<string, number>();
   for (const round of rounds) {
     for (const result of round.results) {
       if (!result.toolName.startsWith("browser_") || !result.content) {
         continue;
+      }
+      for (const bucket of collectBrowserFailureBucketsFromText(result.content)) {
+        failureBucketCounts.set(bucket, (failureBucketCounts.get(bucket) ?? 0) + 1);
       }
       const parsed = parseBrowserPrivateToolResult(result.content);
       if (!parsed || parsed.resumeMode === "hot") {
@@ -859,14 +909,21 @@ function summarizeBrowserPrivateToolRecovery(metadata: Record<string, unknown>):
       latest = parsed;
     }
   }
-  if (!latest) {
+  const failureBuckets = [...failureBucketCounts.entries()]
+    .map(([bucket, count]) => ({ bucket, count }))
+    .sort((left, right) => left.bucket.localeCompare(right.bucket));
+  if (!latest && failureBuckets.length === 0) {
     return null;
   }
   return {
-    ...latest,
+    ...(latest ?? {}),
+    ...(failureBuckets.length > 0 ? { failureBuckets } : {}),
     summary: [
-      `Browser recovery metadata: Resume mode: ${latest.resumeMode}. Session ID: ${latest.sessionId}.`,
-      latest.profileFallback
+      latest
+        ? `Browser recovery metadata: Resume mode: ${latest.resumeMode}. Session ID: ${latest.sessionId}.`
+        : null,
+      failureBuckets.length > 0 ? `Browser failure buckets: ${formatBrowserFailureBuckets(failureBuckets)}.` : null,
+      latest?.profileFallback
         ? `Profile fallback: ${latest.profileFallback.reason}; persistent profile was unavailable, used ${latest.profileFallback.fallbackDir}.`
         : null,
     ]
@@ -919,6 +976,51 @@ function parseBrowserPrivateProfileFallback(value: unknown): NonNullable<Browser
     return null;
   }
   return { reason, persistentDir, fallbackDir };
+}
+
+function collectBrowserFailureBucketsFromTrace(
+  trace: BrowserTaskResult["trace"]
+): Array<{ bucket: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const step of trace) {
+    for (const bucket of collectBrowserFailureBucketsFromText(step.errorMessage ?? "")) {
+      counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([bucket, count]) => ({ bucket, count }))
+    .sort((left, right) => left.bucket.localeCompare(right.bucket));
+}
+
+function collectBrowserFailureBucketsFromText(text: string): string[] {
+  if (!text) return [];
+  const lower = text.toLowerCase();
+  return BROWSER_FAILURE_BUCKETS.filter((bucket) => lower.includes(bucket));
+}
+
+function classifyBrowserPrivateToolFailureBucket(message: string): string {
+  const direct = collectBrowserFailureBucketsFromText(message)[0];
+  if (direct) return direct;
+  if (/\b(?:cdp|devtools|websocket|ws:\/\/|browser endpoint|connectovercdp)\b/i.test(message)) {
+    return "browser_cdp_unavailable";
+  }
+  if (/\b(?:econnrefused|connection refused|fetch failed|network error)\b/i.test(message)) {
+    return "browser_cdp_unavailable";
+  }
+  if (/\b(?:target not found|no target)\b/i.test(message)) {
+    return "target_not_found";
+  }
+  if (/\b(?:attach failed|failed to attach)\b/i.test(message)) {
+    return "attach_failed";
+  }
+  if (/\b(?:detached|session closed)\b/i.test(message)) {
+    return "detached_target";
+  }
+  return "transport_failure";
+}
+
+function formatBrowserFailureBuckets(buckets: Array<{ bucket: string; count: number }>): string {
+  return buckets.map((bucket) => `${bucket.bucket}=${bucket.count}`).join(", ");
 }
 
 function buildSubAgentPromptPacket(input: {
