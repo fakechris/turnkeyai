@@ -496,6 +496,14 @@ try {
       "mission evidence should show saved artifacts"
     );
     assert(
+      await page.locator(".mission-evidence-card", { hasText: "retains 7d" }).isVisible(),
+      "mission evidence should show artifact retention"
+    );
+    assert(
+      await page.locator(".mission-evidence-card", { hasText: "expired files pruned" }).isVisible(),
+      "mission evidence should show artifact orphan reconciliation"
+    );
+    assert(
       await page.locator(".mission-evidence-card", { hasText: "browser.form.submit" }).isVisible(),
       "mission evidence should show approval actions"
     );
@@ -1789,6 +1797,16 @@ function artifactsFixture() {
       sizeBytes: 2480,
       sha: "sha256:ui-smoke",
       createdAtMs: 1_779_984_004_100,
+      lifecycle: {
+        storageBackend: "file",
+        refType: "local-path",
+        retentionMs: 7 * 24 * 60 * 60 * 1000,
+        expiresAtMs: 1_780_588_804_100,
+        maxArtifactBytes: 25 * 1024 * 1024,
+        sessionBudgetBytes: 100 * 1024 * 1024,
+        cleanupOnSessionClose: false,
+        orphanReconciliation: "delete_expired",
+      },
     },
   ];
 }

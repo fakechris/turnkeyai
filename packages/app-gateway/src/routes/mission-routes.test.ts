@@ -130,7 +130,7 @@ describe("mission-routes", () => {
       // Codex K2 #2: bootstrap MUST write artifacts so the timeline's
       // "Artifact registered" event isn't a lie. Verify the descriptor
       // landed in /missions/msn.01/artifacts.
-      const artifacts = await runJson<Array<{ id: string; label: string }>>(
+      const artifacts = await runJson<Array<{ id: string; label: string; lifecycle?: { orphanReconciliation?: string } }>>(
         deps,
         "GET",
         "/missions/msn.01/artifacts"
@@ -139,6 +139,10 @@ describe("mission-routes", () => {
       assert.ok(
         artifacts.some((a) => a.label.includes("notion_pricing")),
         "expected the notion_pricing.json artifact descriptor"
+      );
+      assert.ok(
+        artifacts.some((a) => a.lifecycle?.orphanReconciliation === "delete_expired"),
+        "expected artifact lifecycle metadata to survive the mission artifact route"
       );
 
       // Codex K2 #3: each approval should have a distinct

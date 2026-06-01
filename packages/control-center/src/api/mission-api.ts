@@ -467,6 +467,18 @@ export interface Artifact {
   sizeBytes?: number;
   sha?: string;
   createdAtMs: number;
+  lifecycle?: ArtifactLifecycle;
+}
+
+export interface ArtifactLifecycle {
+  storageBackend: "file" | "external" | "unknown";
+  refType: "local-path" | "url" | "logical-path" | "unknown";
+  retentionMs?: number;
+  expiresAtMs?: number;
+  maxArtifactBytes?: number;
+  sessionBudgetBytes?: number;
+  cleanupOnSessionClose?: boolean;
+  orphanReconciliation?: "delete_expired" | "manual" | "unknown";
 }
 
 // ── Bootstrap helper ──────────────────────────────────────────────────
