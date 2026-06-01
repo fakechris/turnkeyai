@@ -117,7 +117,97 @@ function passingRealLlmAcceptanceRecord(completedAt = 1_000): ValidationOpsRunRe
     missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
     naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
     browserTooluseEnabled: true,
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-acceptance-run-1-mission-e2e.json",
+    naturalArtifactPath:
+      ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-acceptance-run-1-natural-mission-e2e.json",
+    missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
+    naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
   });
+}
+
+function passingMissionAcceptanceReport(
+  scenarioIds: string[]
+): NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["missionReport"] {
+  return {
+    status: "passed",
+    scenarioCount: scenarioIds.length,
+    scenarioIds,
+    passedScenarios: scenarioIds.length,
+    failedScenarios: 0,
+    qualityFailures: 0,
+    toolRequested: scenarioIds.length,
+    toolResults: scenarioIds.length,
+    toolFailed: 0,
+    toolCancelled: 0,
+    toolTimeouts: 0,
+    sessionsSpawned: scenarioIds.length,
+    sessionsContinued: 0,
+    browserProfileFallbacks: 0,
+    browserFailureBuckets: 0,
+    approvalsRequested: 0,
+    approvalsDecided: 0,
+    approvalsApplied: 0,
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    qualityCheckWarnings: 0,
+    qualityCheckFailures: 0,
+    sourceCoverageWarnings: 0,
+    sourceCoverageFailures: 0,
+    evidenceEvents: scenarioIds.length,
+    recoveryEvents: 0,
+  };
+}
+
+function passingNaturalMissionAcceptanceReport(
+  scenarioIds: string[]
+): NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["naturalMissionReport"] {
+  return {
+    status: "passed",
+    scenarioCount: scenarioIds.length,
+    scenarioIds,
+    passedScenarios: scenarioIds.length,
+    failedScenarios: 0,
+    completed: scenarioIds.length,
+    stuckOrLoop: 0,
+    reasonableToolUse: scenarioIds.length,
+    browserUsed: scenarioIds.length,
+    subAgentCompleted: scenarioIds.length,
+    approvalExercised: 0,
+    finalAnswerHasEvidence: scenarioIds.length,
+    finalAnswerUseful: scenarioIds.length,
+    weakAnswerSignals: 0,
+    toolRequested: scenarioIds.length,
+    toolResults: scenarioIds.length,
+    toolFailed: 0,
+    toolCancelled: 0,
+    toolTimeouts: 0,
+    sessionsSpawned: scenarioIds.length,
+    sessionsContinued: 0,
+    browserProfileFallbacks: 0,
+    browserFailureBuckets: 0,
+    approvalsRequested: 0,
+    approvalsDecided: 0,
+    approvalsApplied: 0,
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    evidenceEvents: scenarioIds.length,
+    sourceAnswerTermsCovered: scenarioIds.length,
+    sourceAnswerTermsTotal: scenarioIds.length,
+    sourceAnswerTermsMissing: 0,
+    sourceAnswerPatternsCovered: scenarioIds.length,
+    sourceAnswerPatternsTotal: scenarioIds.length,
+    sourceAnswerPatternsMissing: 0,
+    sourceEvidencePatternsCovered: scenarioIds.length,
+    sourceEvidencePatternsTotal: scenarioIds.length,
+    sourceEvidencePatternsMissing: 0,
+    sourceEvidenceEventsObserved: scenarioIds.length,
+    sourceEvidenceEventsRequired: scenarioIds.length,
+    sourceResidualRiskVisible: scenarioIds.length,
+    sourceUnsupportedClaims: 0,
+    recoveryEvents: 0,
+  };
 }
 
 test("validation routes trim selectors for regression and validation suite runs", async () => {

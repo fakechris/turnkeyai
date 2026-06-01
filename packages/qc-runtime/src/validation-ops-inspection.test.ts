@@ -301,6 +301,10 @@ test("validation ops inspection marks phase1 readiness passed when all exit gate
     missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
     naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
     browserTooluseEnabled: true,
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-pass-mission-e2e.json",
+    naturalArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-pass-natural-mission-e2e.json",
+    missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
+    naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
   });
 
   const report = buildValidationOpsReport([releaseRecord, profileRecord, soakRecord, transportRecord, realLlmRecord], 10);
@@ -350,6 +354,11 @@ test("validation ops inspection keeps the latest full real LLM acceptance as the
     missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
     naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
     browserTooluseEnabled: true,
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-full-pass-mission-e2e.json",
+    naturalArtifactPath:
+      ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-full-pass-natural-mission-e2e.json",
+    missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
+    naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
   });
   const laterFocusedRecord = buildValidationOpsRecordFromRealLlmAcceptance({
     runId: "real-llm-focused-debug-pass",
@@ -368,6 +377,61 @@ test("validation ops inspection keeps the latest full real LLM acceptance as the
   assert.equal(realGate?.status, "passed");
   assert.equal(realGate?.latestRunId, "real-llm-full-pass");
   assert.match(realGate?.summary ?? "", /full release coverage/);
+});
+
+test("validation ops inspection does not pass full coverage without real report evidence", () => {
+  const fullCoverageOnlyRecord = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-full-without-report-proof",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+  });
+
+  const report = buildValidationOpsReport([fullCoverageOnlyRecord], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "missing");
+  assert.equal(realGate?.latestRunId, "real-llm-full-without-report-proof");
+  assert.match(realGate?.summary ?? "", /full release coverage is recorded, but mission report evidence is incomplete/);
+});
+
+test("validation ops inspection lets a newer failed real LLM acceptance invalidate an older proven full run", () => {
+  const fullRecord = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-full-pass",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-full-pass-mission-e2e.json",
+    naturalArtifactPath:
+      ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-full-pass-natural-mission-e2e.json",
+    missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
+    naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
+  });
+  const laterFailedRecord = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-failed-latest",
+    startedAt: 200,
+    completedAt: 240,
+    status: "failed",
+    tooluseScenarios: ["basic"],
+    missionScenarios: ["comparison"],
+    naturalMissionScenarios: ["natural-comparison-research"],
+    browserTooluseEnabled: true,
+    error: "natural comparison failed",
+  });
+
+  const report = buildValidationOpsReport([fullRecord, laterFailedRecord], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "failed");
+  assert.equal(realGate?.latestRunId, "real-llm-failed-latest");
 });
 
 test("validation ops inspection treats partial real LLM release coverage metadata as missing", () => {
@@ -822,3 +886,88 @@ test("validation ops inspection surfaces fresh and stale baseline status", () =>
   assert.equal(staleFailingReport.baseline.status, "stale");
   assert.match(staleFailingReport.baseline.summary, /previous run failed 2\/3 clean runs/);
 });
+
+function passingMissionAcceptanceReport(
+  scenarioIds: string[]
+): NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["missionReport"] {
+  return {
+    status: "passed",
+    scenarioCount: scenarioIds.length,
+    scenarioIds,
+    passedScenarios: scenarioIds.length,
+    failedScenarios: 0,
+    qualityFailures: 0,
+    toolRequested: scenarioIds.length,
+    toolResults: scenarioIds.length,
+    toolFailed: 0,
+    toolCancelled: 0,
+    toolTimeouts: 0,
+    sessionsSpawned: scenarioIds.length,
+    sessionsContinued: 0,
+    browserProfileFallbacks: 0,
+    browserFailureBuckets: 0,
+    approvalsRequested: 0,
+    approvalsDecided: 0,
+    approvalsApplied: 0,
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    qualityCheckWarnings: 0,
+    qualityCheckFailures: 0,
+    sourceCoverageWarnings: 0,
+    sourceCoverageFailures: 0,
+    evidenceEvents: scenarioIds.length,
+    recoveryEvents: 0,
+  };
+}
+
+function passingNaturalMissionAcceptanceReport(
+  scenarioIds: string[]
+): NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["naturalMissionReport"] {
+  return {
+    status: "passed",
+    scenarioCount: scenarioIds.length,
+    scenarioIds,
+    passedScenarios: scenarioIds.length,
+    failedScenarios: 0,
+    completed: scenarioIds.length,
+    stuckOrLoop: 0,
+    reasonableToolUse: scenarioIds.length,
+    browserUsed: scenarioIds.length,
+    subAgentCompleted: scenarioIds.length,
+    approvalExercised: 0,
+    finalAnswerHasEvidence: scenarioIds.length,
+    finalAnswerUseful: scenarioIds.length,
+    weakAnswerSignals: 0,
+    toolRequested: scenarioIds.length,
+    toolResults: scenarioIds.length,
+    toolFailed: 0,
+    toolCancelled: 0,
+    toolTimeouts: 0,
+    sessionsSpawned: scenarioIds.length,
+    sessionsContinued: 0,
+    browserProfileFallbacks: 0,
+    browserFailureBuckets: 0,
+    approvalsRequested: 0,
+    approvalsDecided: 0,
+    approvalsApplied: 0,
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    evidenceEvents: scenarioIds.length,
+    sourceAnswerTermsCovered: scenarioIds.length,
+    sourceAnswerTermsTotal: scenarioIds.length,
+    sourceAnswerTermsMissing: 0,
+    sourceAnswerPatternsCovered: scenarioIds.length,
+    sourceAnswerPatternsTotal: scenarioIds.length,
+    sourceAnswerPatternsMissing: 0,
+    sourceEvidencePatternsCovered: scenarioIds.length,
+    sourceEvidencePatternsTotal: scenarioIds.length,
+    sourceEvidencePatternsMissing: 0,
+    sourceEvidenceEventsObserved: scenarioIds.length,
+    sourceEvidenceEventsRequired: scenarioIds.length,
+    sourceResidualRiskVisible: scenarioIds.length,
+    sourceUnsupportedClaims: 0,
+    recoveryEvents: 0,
+  };
+}
