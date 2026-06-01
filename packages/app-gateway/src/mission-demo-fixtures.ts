@@ -463,6 +463,16 @@ export function buildDemoFixtures(now: number): {
   const artifacts = DEMO_ARTIFACTS.map((a) => ({
     ...a,
     createdAtMs: artifactRegisterMs,
+    lifecycle: {
+      storageBackend: "file" as const,
+      refType: "local-path" as const,
+      retentionMs: 7 * 24 * 60 * 60 * 1000,
+      expiresAtMs: artifactRegisterMs + 7 * 24 * 60 * 60 * 1000,
+      maxArtifactBytes: 25 * 1024 * 1024,
+      sessionBudgetBytes: 100 * 1024 * 1024,
+      cleanupOnSessionClose: false,
+      orphanReconciliation: "delete_expired" as const,
+    },
   }));
 
   return {

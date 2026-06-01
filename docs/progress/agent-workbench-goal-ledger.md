@@ -5160,3 +5160,60 @@ Convergence question:
 - If no, next required gate: add a natural or real browser artifact scenario
   that verifies screenshot/artifact lifecycle metadata is produced and remains
   usable in Mission Detail.
+
+## 2026-06-01 18:35 CST - Mission Artifact Lifecycle Visibility
+
+Direction: unknown
+
+Execution Kernel:
+- No runtime execution behavior changed in this checkpoint. The work maps
+  existing browser artifact lifecycle metadata into mission artifact records and
+  Control Center API types.
+- Demo mission fixtures now include lifecycle metadata so the Mission Detail
+  evidence surface can be exercised without requiring a live browser session.
+
+Result Quality:
+- This is visibility work, not a capability claim. It helps users interpret
+  browser evidence retention and cleanup policy, but it does not prove that
+  complex task answers are better.
+- Mission artifacts can now show retention duration, expiry, cleanup policy,
+  artifact byte caps, session budget, and expired-file reconciliation mode.
+
+Workbench UX:
+- Mission Detail now renders lifecycle chips beneath browser evidence artifacts.
+  The chips are secondary metadata, so they do not replace the artifact label,
+  kind, id, or size.
+- Desktop and mobile Control Center smoke checks verified the lifecycle text is
+  visible and the page still renders with screenshot artifacts enabled.
+
+Browser Reliability:
+- No new browser control path changed. This checkpoint only exposes lifecycle
+  metadata already persisted by the artifact store.
+- The visible retention and cleanup semantics should make future browser
+  evidence loss easier to diagnose, but scheduled cleanup behavior remains out
+  of scope for this slice.
+
+Acceptance Evidence:
+- Route regression: `npx tsx --test
+  packages/app-gateway/src/routes/mission-routes.test.ts`: passed.
+- Type/build checks: `npm run typecheck` and `npm run build --workspace
+  @turnkeyai/control-center`: passed.
+- UI smoke: `npm run control-center:smoke -- --artifact-dir
+  /tmp/turnkeyai-control-center-artifact-lifecycle-smoke`: passed, with
+  desktop and mobile screenshots recorded under `/tmp`.
+- No natural real LLM E2E was run for this visibility-only slice, so this
+  checkpoint must not be treated as capability-proven.
+
+Regression Risk:
+- Adding optional lifecycle fields to mission artifact types is backward
+  compatible with existing records that do not include the metadata.
+- The main UI risk is metadata crowding on small screens; the smoke path
+  captured both desktop and mobile Mission Detail screenshots to check this
+  surface.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? unknown
+- Evidence: users can now see artifact lifecycle semantics in Mission Detail,
+  but no natural E2E proves improved task completion.
+- If no, next required gate: run a natural browser artifact mission and verify
+  the resulting artifact lifecycle metadata remains visible on the mission.

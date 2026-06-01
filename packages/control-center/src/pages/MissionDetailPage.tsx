@@ -1181,6 +1181,7 @@ function ContextSourceLine({ source }: { source: ContextSource }) {
 }
 
 function ArtifactLine({ artifact }: { artifact: Artifact }) {
+  const lifecycle = formatArtifactLifecycle(artifact);
   return (
     <div className="mission-evidence-line">
       <div className="mission-evidence-line-main">
@@ -1191,6 +1192,13 @@ function ArtifactLine({ artifact }: { artifact: Artifact }) {
         <span className="mono">{artifact.id}</span>
         {typeof artifact.sizeBytes === "number" && <span>{formatBytes(artifact.sizeBytes)}</span>}
       </div>
+      {lifecycle.length > 0 && (
+        <div className="mission-evidence-line-meta mission-evidence-line-meta-secondary">
+          {lifecycle.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1237,6 +1245,49 @@ function formatBytes(bytes: number): string {
   if (kb < 1024) return `${kb.toFixed(kb >= 10 ? 0 : 1)} kB`;
   const mb = kb / 1024;
   return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
+}
+
+function formatArtifactLifecycle(artifact: Artifact): string[] {
+  const lifecycle = artifact.lifecycle;
+  if (!lifecycle) {
+    return [];
+  }
+  const parts: string[] = [];
+  if (typeof lifecycle.retentionMs === "number" && lifecycle.retentionMs > 0) {
+    parts.push(`retains ${formatDuration(lifecycle.retentionMs)}`);
+  }
+  if (typeof lifecycle.expiresAtMs === "number") {
+    parts.push(`expires ${formatTimeOfDay(lifecycle.expiresAtMs)}`);
+  }
+  if (lifecycle.cleanupOnSessionClose) {
+    parts.push("cleanup on session close");
+  }
+  if (typeof lifecycle.maxArtifactBytes === "number") {
+    parts.push(`max ${formatBytes(lifecycle.maxArtifactBytes)}`);
+  }
+  if (typeof lifecycle.sessionBudgetBytes === "number") {
+    parts.push(`session budget ${formatBytes(lifecycle.sessionBudgetBytes)}`);
+  }
+  if (lifecycle.orphanReconciliation === "delete_expired") {
+    parts.push("expired files pruned");
+  }
+  return parts;
+}
+
+function formatDuration(durationMs: number): string {
+  const days = durationMs / (24 * 60 * 60 * 1000);
+  if (days >= 1 && Number.isInteger(days)) {
+    return `${days}d`;
+  }
+  const hours = durationMs / (60 * 60 * 1000);
+  if (hours >= 1 && Number.isInteger(hours)) {
+    return `${hours}h`;
+  }
+  const minutes = durationMs / (60 * 1000);
+  if (minutes >= 1 && Number.isInteger(minutes)) {
+    return `${minutes}m`;
+  }
+  return `${Math.round(durationMs / 1000)}s`;
 }
 
 type BrowserContinuitySignal = {
