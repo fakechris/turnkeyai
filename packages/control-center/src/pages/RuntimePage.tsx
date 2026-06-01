@@ -350,6 +350,7 @@ function MissionHealthCard({
             <div className="runtime-health-action">
               inspected {health.inspected} · sessions spawned {health.sessions.spawned} · stale runtime {health.liveness.stale}
               {" · "}profile fallback {health.browser.profileFallbacks}
+              {health.browser.failureBuckets.length > 0 ? ` · browser buckets ${formatFailureBuckets(health.browser.failureBuckets)}` : ""}
               {" · "}longest active {formatDurationCompact(health.duration.longestActiveMs)}
             </div>
             {health.duration.longestActiveMissionTitle ? (
@@ -381,6 +382,7 @@ function MissionHealthCard({
                       {mission.pendingApprovals > 0 ? ` · ${mission.pendingApprovals} approval` : ""}
                       {mission.blockers > 0 ? ` · ${mission.blockers} blocker` : ""}
                       {mission.browserProfileFallbacks > 0 ? ` · ${mission.browserProfileFallbacks} profile fallback` : ""}
+                      {mission.browserFailureBuckets.length > 0 ? ` · ${formatFailureBuckets(mission.browserFailureBuckets)}` : ""}
                     </div>
                     <div className="runtime-health-action">
                       stale {mission.staleRuntimeSubjects} · failed {mission.toolFailures} · timeouts {mission.toolTimeouts}
@@ -430,6 +432,10 @@ function findReplayMissionId(summary: RuntimeSummaryReport | null, missions: Mis
     if (missionId) return missionId;
   }
   return null;
+}
+
+function formatFailureBuckets(buckets: Array<{ bucket: string; count: number }>): string {
+  return buckets.slice(0, 2).map((item) => `${item.bucket} ${item.count}`).join(", ");
 }
 
 function SetupHealthCard({

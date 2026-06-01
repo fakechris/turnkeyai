@@ -150,6 +150,7 @@ try {
     });
     await operatorRuntimePage.waitForSelector("text=Runtime attention");
     await operatorRuntimePage.waitForSelector("text=Mission health");
+    await waitForReplayReady(operatorRuntimePage);
     assert(
       await operatorRuntimePage.locator(".card", { hasText: "Dashboard comparison mission" }).isVisible(),
       "operator runtime should surface mission health attention rows"
@@ -163,8 +164,16 @@ try {
       "operator runtime should surface aggregate browser profile fallback count"
     );
     assert(
+      await operatorRuntimePage.locator(".card", { hasText: "browser buckets browser_cdp_unavailable 1" }).isVisible(),
+      "operator runtime should surface aggregate browser failure buckets"
+    );
+    assert(
       await operatorRuntimePage.locator(".runtime-health-row", { hasText: "1 profile fallback" }).isVisible(),
       "operator runtime should show mission-level browser profile fallback attention"
+    );
+    assert(
+      await operatorRuntimePage.locator(".runtime-health-row", { hasText: "browser_cdp_unavailable 1" }).isVisible(),
+      "operator runtime should show mission-level browser failure bucket attention"
     );
     assert(
       await operatorRuntimePage.locator(".runtime-health-row", { hasText: "running 2m 5s" }).isVisible(),
@@ -370,6 +379,10 @@ try {
       "mission health should show browser profile fallback count"
     );
     assert(
+      await page.locator(".mission-metric-tile", { hasText: "browser buckets" }).locator("b", { hasText: "1" }).isVisible(),
+      "mission health should show browser failure bucket count"
+    );
+    assert(
       await page.locator(".mission-metric-tile", { hasText: "requested" }).locator("b", { hasText: "3" }).isVisible(),
       "mission health should show requested tool count explicitly"
     );
@@ -384,6 +397,10 @@ try {
     assert(
       await page.locator(".mission-quality-action-panel", { hasText: "persistent profile was locked" }).isVisible(),
       "mission health should show browser profile fallback detail"
+    );
+    assert(
+      await page.locator(".mission-quality-action-panel", { hasText: "browser_cdp_unavailable=1" }).isVisible(),
+      "mission health should show browser failure bucket detail"
     );
     assert(
       await page.locator(".mission-quality-action-panel", { hasText: "Final answer is too brief for tool-backed work." }).isVisible(),
@@ -701,6 +718,7 @@ try {
     await page.waitForSelector("text=Runtime attention");
     await page.waitForSelector("text=Mission health");
     const openReplay = page.getByRole("button", { name: /Open replay/ });
+    await waitForReplayReady(page);
     assert(!(await openReplay.isDisabled()), "runtime replay action should open a mission-linked trace");
     assert(
       await page.locator("text=chain.browser.waiting").isVisible(),
@@ -1357,6 +1375,9 @@ function metricsFixture() {
         sessionId: "browser-session-profile-fallback-ui",
         fallbackDir: ".daemon-data/browser/_runtime-fallback/browser-session-profile-fallback-ui/123",
       },
+      failureBuckets: [
+        { bucket: "browser_cdp_unavailable", count: 1, latestAtMs: 1_779_984_004_200 },
+      ],
     },
     approvals: {
       requested: 1,
@@ -1402,6 +1423,12 @@ function metricsFixture() {
           status: "warn",
           detail:
             "Browser used an isolated runtime profile 1 time because the persistent profile was locked. Latest session browser-session-profile-fallback-ui.",
+        },
+        {
+          name: "browser_failure_bucket",
+          status: "warn",
+          detail:
+            "Browser failure bucket(s): browser_cdp_unavailable=1. Use the trace and recovery events to decide whether to retry, reattach, or continue with bounded evidence.",
         },
       ],
     },
@@ -1490,6 +1517,9 @@ function diagnosticsFixture() {
       },
       browser: {
         profileFallbacks: 1,
+        failureBuckets: [
+          { bucket: "browser_cdp_unavailable", count: 1, latestAtMs: Date.now() - 30_000 },
+        ],
       },
       liveness: {
         active: 1,
@@ -1508,6 +1538,9 @@ function diagnosticsFixture() {
           toolFailures: 0,
           toolTimeouts: 0,
           browserProfileFallbacks: 1,
+          browserFailureBuckets: [
+            { bucket: "browser_cdp_unavailable", count: 1, latestAtMs: Date.now() - 30_000 },
+          ],
           recoveryEvents: 0,
           staleRuntimeSubjects: 0,
           wallClockMs: 125_000,
@@ -2368,6 +2401,19 @@ async function assertTableScrollsInsideWrapper(page: Page, selector: string, mes
   assert(result !== null, `missing element for table scroll check: ${selector}`);
   assert(result.overflowX === "auto" || result.overflowX === "scroll", `${message}: ${JSON.stringify(result)}`);
   assert(result.scrollWidth > result.clientWidth, `${message}: ${JSON.stringify(result)}`);
+}
+
+async function waitForReplayReady(page: Page): Promise<void> {
+  const openReplay = page.getByRole("button", { name: /Open replay/ });
+  await openReplay.waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(
+    () =>
+      Array.from(document.querySelectorAll("button")).some(
+        (button) => /Open replay/i.test(button.textContent ?? "") && !button.disabled
+      ),
+    undefined,
+    { timeout: 30_000 }
+  );
 }
 
 function assert(condition: boolean, message: string): asserts condition {

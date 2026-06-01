@@ -119,6 +119,7 @@ function metrics(
     },
     browser: {
       profileFallbacks: 0,
+      failureBuckets: [],
     },
     approvals: {
       requested: 0,

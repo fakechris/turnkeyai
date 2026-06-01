@@ -172,6 +172,11 @@ export interface DiagnosticsMissionHealthSnapshot {
   };
   browser: {
     profileFallbacks: number;
+    failureBuckets: Array<{
+      bucket: string;
+      count: number;
+      latestAtMs: number;
+    }>;
   };
   liveness: {
     active: number;
@@ -189,6 +194,11 @@ export interface DiagnosticsMissionHealthSnapshot {
     toolFailures: number;
     toolTimeouts: number;
     browserProfileFallbacks: number;
+    browserFailureBuckets: Array<{
+      bucket: string;
+      count: number;
+      latestAtMs: number;
+    }>;
     recoveryEvents: number;
     staleRuntimeSubjects: number;
     wallClockMs: number;

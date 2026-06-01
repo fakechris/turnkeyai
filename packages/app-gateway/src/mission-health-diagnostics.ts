@@ -63,6 +63,11 @@ export interface DiagnosticsMissionHealthSnapshot {
   };
   browser: {
     profileFallbacks: number;
+    failureBuckets: Array<{
+      bucket: string;
+      count: number;
+      latestAtMs: number;
+    }>;
   };
   liveness: {
     active: number;
@@ -80,6 +85,11 @@ export interface DiagnosticsMissionHealthSnapshot {
     toolFailures: number;
     toolTimeouts: number;
     browserProfileFallbacks: number;
+    browserFailureBuckets: Array<{
+      bucket: string;
+      count: number;
+      latestAtMs: number;
+    }>;
     recoveryEvents: number;
     staleRuntimeSubjects: number;
     wallClockMs: number;
@@ -132,7 +142,7 @@ export async function buildDiagnosticsMissionHealthSnapshot(
   const qualityGate = { running: 0, passed: 0, needsAttention: 0, blocked: 0 };
   const tool = { requested: 0, executed: 0, failed: 0, cancelled: 0, timeouts: 0 };
   const sessions = { spawned: 0, continued: 0 };
-  const browser = { profileFallbacks: 0 };
+  const browser: DiagnosticsMissionHealthSnapshot["browser"] = { profileFallbacks: 0, failureBuckets: [] };
   const liveness = { active: 0, waiting: 0, stale: 0 };
   let recoveryEvents = 0;
 
@@ -148,6 +158,7 @@ export async function buildDiagnosticsMissionHealthSnapshot(
     sessions.spawned += snapshot.sessions.spawned;
     sessions.continued += snapshot.sessions.continued;
     browser.profileFallbacks += snapshot.browser.profileFallbacks;
+    browser.failureBuckets = mergeBrowserFailureBuckets(browser.failureBuckets, snapshot.browser.failureBuckets);
     liveness.active += snapshot.liveness.active;
     liveness.waiting += snapshot.liveness.waiting;
     liveness.stale += snapshot.liveness.stale;
@@ -165,6 +176,7 @@ export async function buildDiagnosticsMissionHealthSnapshot(
         toolFailures: snapshot.tool.failed,
         toolTimeouts: snapshot.tool.timeouts,
         browserProfileFallbacks: snapshot.browser.profileFallbacks,
+        browserFailureBuckets: snapshot.browser.failureBuckets,
         recoveryEvents: snapshot.recovery.events,
         staleRuntimeSubjects: snapshot.liveness.stale,
         wallClockMs: snapshot.wallClockMs,
@@ -219,6 +231,26 @@ export async function buildDiagnosticsMissionHealthSnapshot(
   };
 }
 
+function mergeBrowserFailureBuckets(
+  left: DiagnosticsMissionHealthSnapshot["browser"]["failureBuckets"],
+  right: DiagnosticsMissionHealthSnapshot["browser"]["failureBuckets"]
+): DiagnosticsMissionHealthSnapshot["browser"]["failureBuckets"] {
+  const merged = new Map<string, DiagnosticsMissionHealthSnapshot["browser"]["failureBuckets"][number]>();
+  for (const item of [...left, ...right]) {
+    const existing = merged.get(item.bucket);
+    if (existing) {
+      merged.set(item.bucket, {
+        bucket: item.bucket,
+        count: existing.count + item.count,
+        latestAtMs: Math.max(existing.latestAtMs, item.latestAtMs),
+      });
+    } else {
+      merged.set(item.bucket, { ...item });
+    }
+  }
+  return [...merged.values()].sort((a, b) => b.latestAtMs - a.latestAtMs || a.bucket.localeCompare(b.bucket));
+}
+
 function emptyStatusCounts(): Record<MissionStatus, number> {
   return Object.fromEntries(MISSION_STATUSES.map((status) => [status, 0])) as Record<MissionStatus, number>;
 }
@@ -270,6 +302,7 @@ function shouldSurfaceMissionAttention(mission: Mission, snapshot: MissionObserv
   if (snapshot.qualityGate.status === "blocked" || snapshot.qualityGate.status === "needs_attention") return true;
   if (snapshot.liveness.stale > 0) return true;
   if (snapshot.browser.profileFallbacks > 0) return true;
+  if (snapshot.browser.failureBuckets.length > 0) return true;
   if (snapshot.tool.failed > 0 || snapshot.tool.timeouts > 0 || snapshot.recovery.events > 0) return true;
   return false;
 }
@@ -280,6 +313,7 @@ function attentionRank(mission: DiagnosticsMissionHealthSnapshot["attentionMissi
     mission.toolTimeouts * 50 +
     mission.toolFailures * 40 +
     mission.browserProfileFallbacks * 35 +
+    mission.browserFailureBuckets.reduce((sum, item) => sum + item.count, 0) * 32 +
     mission.recoveryEvents * 30 +
     mission.blockers * 25 +
     mission.pendingApprovals * 20 +

@@ -144,6 +144,7 @@ function metrics(overrides: { status?: MissionObservabilitySnapshot["status"]; f
     },
     browser: {
       profileFallbacks: 0,
+      failureBuckets: [],
     },
     approvals: {
       requested: 0,

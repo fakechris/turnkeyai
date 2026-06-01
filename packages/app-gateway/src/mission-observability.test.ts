@@ -728,6 +728,94 @@ test("buildMissionObservabilitySnapshot surfaces browser profile fallback as mis
   assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_profile_fallback")?.status, "warn");
 });
 
+test("buildMissionObservabilitySnapshot surfaces browser failure buckets as mission attention", () => {
+  const failedResult = {
+    ...tool(
+      "result-browser-failed",
+      4_000,
+      "result",
+      "sessions_spawn",
+      "call-browser",
+      "browser_cdp_unavailable: connection refused before rendered dashboard evidence was captured."
+    ),
+    emph: "danger" as const,
+  };
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "blocked" }),
+    nowMs: 6_000,
+    events: [
+      tool("call-browser", 2_000, "call", "sessions_spawn", "call-browser", "Calling sessions_spawn"),
+      {
+        ...failedResult,
+        runtime: {
+          ...failedResult.runtime,
+          resultContent: failedResult.text,
+        },
+      },
+      {
+        ...event(
+          "recovery-detach",
+          "recovery",
+          4_500,
+          "agent.browser",
+          "Browser target detached while collecting evidence."
+        ),
+        runtime: {
+          browserDiagnosticBucket: "detached_target",
+        },
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Final answer based on verified evidence from the failed browser attempt, with residual risk noted for unverified rendered dashboard state."
+      ),
+    ],
+  });
+
+  assert.deepEqual(snapshot.browser.failureBuckets, [
+    { bucket: "detached_target", count: 1, latestAtMs: 4_500 },
+    { bucket: "browser_cdp_unavailable", count: 1, latestAtMs: 4_000 },
+  ]);
+  assert.equal(snapshot.qualityGate.status, "blocked");
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "warn");
+  assert.match(
+    snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.detail ?? "",
+    /detached_target=1, browser_cdp_unavailable=1/
+  );
+});
+
+test("buildMissionObservabilitySnapshot does not infer browser buckets from unrelated text", () => {
+  const snapshot = buildMissionObservabilitySnapshot({
+    mission: baseMission({ status: "done" }),
+    nowMs: 6_000,
+    events: [
+      {
+        ...tool(
+          "result-search-failed",
+          3_000,
+          "result",
+          "web_search",
+          "call-search",
+          "Tool web_search failed: connection refused while fetching a CDP documentation page."
+        ),
+        emph: "danger" as const,
+      },
+      event(
+        "final-1",
+        "thought",
+        5_000,
+        "role-lead",
+        "Final answer notes that an unrelated CDP page said target_not_found during background research."
+      ),
+    ],
+  });
+
+  assert.deepEqual(snapshot.browser.failureBuckets, []);
+  assert.equal(snapshot.qualityGate.checks.find((check) => check.name === "browser_failure_bucket")?.status, "pass");
+});
+
 test("buildMissionObservabilitySnapshot flags budget-limited tool-loop closeout answers", () => {
   const finalAnswer = event(
     "final-1",
