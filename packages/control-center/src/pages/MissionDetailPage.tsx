@@ -1491,7 +1491,9 @@ function MissionMetricsCard({
           <div className="mission-metrics-grid">
             <MetricTile label="wall clock" value={formatDurationMs(0, metrics.wallClockMs)} />
             <MetricTile label="events" value={String(metrics.timelineEventCount)} />
-            <MetricTile label="tool calls" value={`${metrics.tool.requested}/${metrics.tool.results}`} />
+            <MetricTile label="requested" value={String(metrics.tool.requested)} />
+            <MetricTile label="executed" value={String(metrics.tool.executed)} />
+            <MetricTile label="results" value={String(metrics.tool.results)} />
             <MetricTile label="sessions" value={`${metrics.sessions.spawned} spawned · ${metrics.sessions.continued} continued`} />
             <MetricTile
               label="profile fallback"
@@ -1500,6 +1502,7 @@ function MissionMetricsCard({
             />
             <MetricTile label="skipped" value={String(metrics.tool.skipped)} tone={metrics.tool.skipped > 0 ? "warn" : undefined} />
             <MetricTile label="timeouts" value={String(metrics.tool.timeouts)} tone={metrics.tool.timeouts > 0 ? "warn" : undefined} />
+            <MetricTile label="cancelled" value={String(metrics.tool.cancelled)} tone={metrics.tool.cancelled > 0 ? "warn" : undefined} />
             <MetricTile label="failed" value={String(metrics.tool.failed)} tone={metrics.tool.failed > 0 ? "danger" : undefined} />
             <MetricTile
               label="runtime"

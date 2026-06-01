@@ -370,6 +370,18 @@ try {
       "mission health should show browser profile fallback count"
     );
     assert(
+      await page.locator(".mission-metric-tile", { hasText: "requested" }).locator("b", { hasText: "3" }).isVisible(),
+      "mission health should show requested tool count explicitly"
+    );
+    assert(
+      await page.locator(".mission-metric-tile", { hasText: "executed" }).locator("b", { hasText: "2" }).isVisible(),
+      "mission health should show executed tool count explicitly"
+    );
+    assert(
+      await page.locator(".mission-metric-tile", { hasText: "cancelled" }).locator("b", { hasText: "1" }).isVisible(),
+      "mission health should show cancelled tool count explicitly"
+    );
+    assert(
       await page.locator(".mission-quality-action-panel", { hasText: "persistent profile was locked" }).isVisible(),
       "mission health should show browser profile fallback detail"
     );
@@ -1327,12 +1339,12 @@ function metricsFixture() {
     wallClockMs: 5_200,
     timelineEventCount: 6,
     tool: {
-      requested: 1,
+      requested: 3,
       results: 1,
-      executed: 1,
+      executed: 2,
       skipped: 0,
       failed: 0,
-      cancelled: 0,
+      cancelled: 1,
       timeouts: 0,
     },
     sessions: {
