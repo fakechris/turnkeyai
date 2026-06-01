@@ -5858,3 +5858,81 @@ Convergence question:
   `sessions_send`, tool results, and a useful final answer after the guard.
 - If no, next required gate: run natural cancellation and timeout-continuation
   gates.
+
+## 2026-06-01 21:04 CST - Final Answer Fallback Guard
+
+Direction: converging
+
+Execution Kernel:
+- Runtime execution is unchanged. This checkpoint closes the client-side fallback
+  path that could display a lead answer while mission metrics were still
+  loading.
+- `selectMissionFinalAnswer` now applies the same tool-result-before-final
+  ordering check when it falls back to timeline events, and when it validates a
+  backend-selected final answer id.
+
+Result Quality:
+- This does not improve answer synthesis directly. It prevents a premature
+  answer from being presented as the final user-visible result before the tool
+  evidence chain is complete.
+- The fallback still accepts a final answer after all preceding tool-call events
+  have matching result events.
+
+Workbench UX:
+- Mission Detail no longer briefly shows an early final answer card while
+  metrics are null or loading if an unresolved tool call is visible before that
+  answer.
+- This aligns all three visible paths: mission lifecycle, mission observability,
+  and Control Center fallback final-answer selection.
+
+Browser Reliability:
+- Browser execution behavior is unchanged. Browser-backed missions benefit
+  because pending browser/session tool calls cannot be hidden by an early answer
+  during metrics loading.
+
+Acceptance Evidence:
+- Focused Control Center state regression first failed before the fix:
+  `npx tsx --test packages/control-center/src/state/missionFinalAnswer.test.ts`
+  selected `thought.early` before the pending `sessions_spawn` result.
+- After the fix, the focused state test passed:
+  `npx tsx --test packages/control-center/src/state/missionFinalAnswer.test.ts`.
+- Focused runtime/workbench tests:
+  `npx tsx --test packages/control-center/src/state/missionFinalAnswer.test.ts
+  packages/control-center/src/state/missionProgress.test.ts
+  packages/control-center/src/state/toolReplay.test.ts
+  packages/app-gateway/src/mission-observability.test.ts
+  packages/app-gateway/src/mission-completion-evaluator.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts`: passed.
+- Typecheck: `npm run typecheck`: passed.
+- Ledger check: `npm run ledger:check`: passed.
+- Whitespace: `git diff --check`: passed.
+- Real natural cancellation follow-up gate:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-cancel-followup-continuation --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-final-answer-fallback-cancel-20260601.json`: passed.
+- Mission: `msn.mpv822b5.1`, status `done`, natural `passed`, tools `3/3`,
+  cancelled tools `3`, sessions `1/2`, profile fallbacks `0`, browser buckets
+  `none`, liveness `0/0/0`, final bytes `4124`.
+- Source coverage from the real artifact: answer terms `3/3`, answer patterns
+  `2/2`, evidence patterns `2/2`, evidence events `3/2`, residual risk
+  visible, unsupported claims `0`.
+
+Regression Risk:
+- The selector only reasons over visible timeline `toolPhase=call/result`
+  events with `toolCallId`. Older timeline shapes without ids remain governed by
+  the backend metrics path when available.
+- The real natural cancellation follow-up gate passed. It is long-running, so
+  future release gates should keep it optional/focused rather than running it on
+  every small UI-only change.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes
+- Evidence: the last known final-answer visibility bypass is now guarded in the
+  client fallback selector, so users should not see a premature answer card while
+  the tool result chain is incomplete. A real cancellation-follow-up mission
+  still completed with cancelled tool-result evidence, continuation, and no
+  liveness residue.
+- If no, next required gate: run timeout-continuation and browser continuation
+  gates.
