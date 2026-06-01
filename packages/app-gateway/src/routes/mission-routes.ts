@@ -831,9 +831,9 @@ async function cancelMissionRuntime(input: {
   const { deps, mission, threadId, reason } = input;
   const now = deps.clock.now();
   const [roleRuns, messages, workerSessions] = await Promise.all([
-    deps.roleRunStore?.listByThread(threadId).catch(() => []),
-    deps.teamMessageStore?.list(threadId, 500).catch(() => []),
-    deps.workerRuntime?.listSessions?.().catch(() => []),
+    deps.roleRunStore ? deps.roleRunStore.listByThread(threadId).catch(() => []) : Promise.resolve([]),
+    deps.teamMessageStore ? deps.teamMessageStore.list(threadId, 500).catch(() => []) : Promise.resolve([]),
+    deps.workerRuntime?.listSessions ? deps.workerRuntime.listSessions().catch(() => []) : Promise.resolve([]),
   ]);
 
   const activeRoleRuns = (roleRuns ?? []).filter((run) =>
@@ -843,7 +843,11 @@ async function cancelMissionRuntime(input: {
     run.status === "resuming"
   );
   const roleCancelResults = await Promise.all(
-    activeRoleRuns.map((run) => deps.roleLoopRunner?.cancel?.(run.runKey, reason).catch(() => false) ?? Promise.resolve(false))
+    activeRoleRuns.map((run) =>
+      deps.roleLoopRunner?.cancel
+        ? deps.roleLoopRunner.cancel(run.runKey, reason).catch(() => false)
+        : Promise.resolve(false)
+    )
   );
 
   let toolMessages = 0;
@@ -878,16 +882,20 @@ async function cancelMissionRuntime(input: {
   );
   const workerCancelResults = await Promise.all(
     activeWorkerSessions.map((session) =>
-      deps.workerRuntime?.cancel({ workerRunKey: session.workerRunKey, reason })
-        .then((state) => Boolean(state))
-        .catch(() => false) ?? Promise.resolve(false)
+      deps.workerRuntime?.cancel
+        ? deps.workerRuntime
+            .cancel({ workerRunKey: session.workerRunKey, reason })
+            .then((state) => Boolean(state))
+            .catch(() => false)
+        : Promise.resolve(false)
     )
   );
 
+  const currentMission = (await deps.missionStore.get(mission.id)) ?? mission;
   const updatedMission: Mission = {
-    ...mission,
+    ...currentMission,
     status: "blocked",
-    blockers: Math.max(mission.blockers, 1),
+    blockers: Math.max(currentMission.blockers, 1),
   };
   await deps.missionStore.putRaw(updatedMission);
   await deps.activityStore.append({

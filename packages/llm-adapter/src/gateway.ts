@@ -102,7 +102,7 @@ async function runWithRequestTimeout<T>(
     throw input.signal.reason ?? new Error("LLM request aborted");
   }
   const controller = new AbortController();
-  let timeout: NodeJS.Timeout | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   let abortListener: (() => void) | undefined;
   const timeoutError = new Error(`llm_request_timeout: model ${input.modelId} did not respond within ${input.timeoutMs}ms`);
   const timeoutPromise = new Promise<never>((_, reject) => {
