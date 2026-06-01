@@ -3170,7 +3170,7 @@ test("llm role response generator synthesizes immediately after completed sub-ag
     gatewayInputs[1]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("Source 1 final_content")
+        readToolContent(message.content).includes("Source 1 evidence")
     )
   );
   const synthesisPrompt = finalSynthesisPrompt(gatewayInputs[1]) ?? "";
@@ -3184,6 +3184,455 @@ test("llm role response generator synthesizes immediately after completed sub-ag
   assert.equal(closeout?.toolCallCount, 1);
   assert.equal(closeout?.roundCount, 1);
   assert.equal(closeout?.evidenceAvailable, true);
+});
+
+test("llm role response generator synthesizes immediately after completed browser session evidence", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  let executedTools = 0;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-browser", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Open the approved local form and verify TURNKEYAI_APPROVAL_FIXTURE_OK.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.equal(input.tools, undefined);
+    assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /completed delegated session evidence/);
+    assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /TURNKEYAI_APPROVAL_FIXTURE_OK/);
+    return {
+      text: "Final synthesized answer from browser evidence.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedTools += 1;
+      assert.equal(input.call.name, "sessions_spawn");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:browser:task-1:toolu-browser",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result:
+            "Browser worker completed session brw-1.\nFinal URL: http://127.0.0.1/approval-form.\nPage title: Local approval fixture.\nExcerpt: TURNKEYAI_APPROVAL_FIXTURE_OK no external mutation was performed.",
+          final_content: null,
+          payload: {
+            sessionId: "brw-1",
+            page: {
+              finalUrl: "http://127.0.0.1/approval-form",
+              title: "Local approval fixture",
+              textExcerpt: "TURNKEYAI_APPROVAL_FIXTURE_OK no external mutation was performed.",
+            },
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(result.content, "Final synthesized answer from browser evidence.");
+  assert.equal(executedTools, 1);
+  assert.equal(gatewayInputs.length, 2);
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "completed_sub_agent_final");
+  assert.equal(closeout?.toolName, "sessions_spawn");
+  assert.equal(closeout?.finalContentCount, 1);
+});
+
+test("llm role response generator executes one approval-gated browser spawn from duplicate same-round calls", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "I will run the approved browser step.",
+        toolCalls: [
+          {
+            id: "toolu-query",
+            name: "permission_query",
+            input: { action: "browser.form.submit", scope: "local dry-run form" },
+          },
+          { id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } },
+          { id: "toolu-applied", name: "permission_applied", input: { approval_id: "ap-1" } },
+          ...["a", "b", "c", "d"].map((id) => ({
+            id: `toolu-${id}`,
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              task: "Submit the approved local dry-run form and verify TURNKEYAI_APPROVAL_FIXTURE_OK.",
+            },
+          })),
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.equal(input.tools, undefined);
+    assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /TURNKEYAI_APPROVAL_FIXTURE_OK/);
+    return {
+      text: "The approved dry-run was submitted once and verified.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "permission_query",
+          description: "Request approval",
+          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+        },
+        {
+          name: "permission_result",
+          description: "Read approval",
+          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+        },
+        {
+          name: "permission_applied",
+          description: "Mark approval applied",
+          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+        },
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "permission_query") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "approved", approval_id: "ap-1" }),
+        };
+      }
+      if (input.call.name === "permission_result") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "approved", approval_id: "ap-1" }),
+        };
+      }
+      if (input.call.name === "permission_applied") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "applied", approval_id: "ap-1" }),
+        };
+      }
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-approval",
+          session_key: `worker:browser:task-approval:${input.call.id}`,
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "TURNKEYAI_APPROVAL_FIXTURE_OK submitted once.",
+          final_content: null,
+          payload: {
+            sessionId: "brw-approval",
+            page: {
+              finalUrl: "http://127.0.0.1/approval-form",
+              title: "Local approval fixture",
+              textExcerpt: "TURNKEYAI_APPROVAL_FIXTURE_OK submitted once.",
+            },
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+        "Actually carry the safe local dry-run through the approval gate.",
+        "Submit the approved local dry-run form and report the evidence.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "The approved dry-run was submitted once and verified.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["permission_query", "permission_result", "permission_applied", "sessions_spawn"]
+  );
+  assert.equal(executedCalls[3]?.id, "toolu-a");
+  assert.equal(gatewayInputs.length, 2);
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "completed_sub_agent_final");
+  assert.equal(closeout?.toolCallCount, 4);
+});
+
+test("llm role response generator preserves distinct approval-gated browser spawns in the same round", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "I will run two distinct approved browser checks.",
+        toolCalls: [
+          { id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit", scope: "local dry-run form" } },
+          {
+            id: "toolu-alpha",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              task: "Submit the approved local dry-run form and verify alpha evidence.",
+            },
+          },
+          {
+            id: "toolu-beta",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              task: "Submit the approved local dry-run form and verify beta evidence.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "none");
+    const finalPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
+    assert.match(finalPrompt, /alpha evidence/);
+    assert.match(finalPrompt, /beta evidence/);
+    return {
+      text: "Both distinct approved browser checks were preserved.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "permission_query",
+          description: "Request approval",
+          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+        },
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "permission_query") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "approved", approval_id: "ap-1" }),
+        };
+      }
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: `task-${input.call.id}`,
+          session_key: `worker:browser:task-${input.call.id}:${input.call.id}`,
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: `${input.call.input.task} completed.`,
+          final_content: null,
+          payload: { sessionId: `brw-${input.call.id}` },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: "Run approved browser.form.submit checks for two distinct local dry-run forms.",
+    },
+  });
+
+  assert.equal(result.content, "Both distinct approved browser checks were preserved.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.id),
+    ["toolu-query", "toolu-alpha", "toolu-beta"]
+  );
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.finalContentCount, 2);
+});
+
+test("llm role response generator treats runtime-gated browser permission progress as approval evidence", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-browser", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Open the local approval form after browser.form.submit approval and verify TURNKEYAI_APPROVAL_FIXTURE_OK.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    const finalPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
+    assert.match(finalPrompt, /completed delegated session evidence/);
+    assert.doesNotMatch(finalPrompt, /Runtime correction: approval-gated browser action/);
+    return {
+      text: "Final approval-gated browser evidence answer.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        progress: [
+          {
+            phase: "progress",
+            toolName: input.call.name,
+            summary: "Approval required before browser.form.submit.",
+            detail: { eventType: "permission.query", status: "pending" },
+          },
+          {
+            phase: "progress",
+            toolName: input.call.name,
+            summary: "Permission request was approved.",
+            detail: { eventType: "permission.result", status: "approved" },
+          },
+          {
+            phase: "progress",
+            toolName: input.call.name,
+            summary: "Permission request was applied.",
+            detail: { eventType: "permission.applied", status: "applied" },
+          },
+        ],
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-approval",
+          session_key: "worker:browser:task-approval:toolu-browser",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "TURNKEYAI_APPROVAL_FIXTURE_OK verified after runtime approval gate.",
+          final_content: null,
+          payload: {
+            sessionId: "brw-approval",
+            page: {
+              finalUrl: "http://127.0.0.1/approval-form",
+              title: "Local approval fixture",
+              textExcerpt: "TURNKEYAI_APPROVAL_FIXTURE_OK verified after runtime approval gate.",
+            },
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Run the mission route approval-gated browser E2E.",
+        "Call sessions_spawn with agent_id=browser exactly once.",
+        "Do not call permission_query, permission_result, or permission_applied directly; the runtime gate must emit those while handling sessions_spawn.",
+        "The browser task must include browser.form.submit and submit so the runtime approval gate is exercised.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final approval-gated browser evidence answer.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_spawn"]
+  );
+  assert.equal(gatewayInputs.length, 2);
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "completed_sub_agent_final");
+  assert.equal(closeout?.toolCallCount, 1);
 });
 
 test("llm role response generator keeps completed tool evidence when final synthesis is unavailable", async () => {
@@ -3280,6 +3729,77 @@ test("llm role response generator keeps completed tool evidence when final synth
   assert.match(result.content, /\bUnverified:/);
   assert.match(result.content, /\bRisk:/);
   assert.match(result.content, /cancel/i);
+  assert.doesNotMatch(result.content, /127\.0\.0\.1/);
+  assert.match(result.content, /local fixture source/);
+  assert.equal(result.metadata?.adapterName, "local-evidence-closeout");
+});
+
+test("llm role response generator uses completed browser evidence when final synthesis is unavailable", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let gatewayCalls = 0;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayCalls += 1;
+    if (gatewayCalls === 1) {
+      return toolCallResult("toolu-browser", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Open the local approval form and verify TURNKEYAI_APPROVAL_FIXTURE_OK.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    throw new Error("final synthesis provider unavailable");
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-browser",
+          session_key: "worker:browser:task-browser:toolu-browser",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "Browser summary did not include the marker.",
+          evidence_summary:
+            "Final URL: http://127.0.0.1/approval-form\nPage title: Local approval fixture\nExcerpt: TURNKEYAI_APPROVAL_FIXTURE_OK no external mutation was performed.",
+          final_content: null,
+          payload: {
+            sessionId: "brw-1",
+            page: {
+              finalUrl: "http://127.0.0.1/approval-form",
+              title: "Local approval fixture",
+              textExcerpt: "TURNKEYAI_APPROVAL_FIXTURE_OK no external mutation was performed.",
+            },
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+  const packet = buildPacket();
+  packet.outputContract = "Return a concise final answer. Do not include URLs.";
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet,
+  });
+
+  assert.equal(gatewayCalls, 2);
+  assert.match(result.content, /TURNKEYAI_APPROVAL_FIXTURE_OK/);
+  assert.match(result.content, /Local approval fixture/);
   assert.doesNotMatch(result.content, /127\.0\.0\.1/);
   assert.match(result.content, /local fixture source/);
   assert.equal(result.metadata?.adapterName, "local-evidence-closeout");
@@ -3748,7 +4268,7 @@ test("llm role response generator prefers completed sub-agent finals over siblin
     gatewayInputs[1]?.messages.some(
       (message) =>
         message.role === "user" &&
-        readToolContent(message.content).includes("completed sub-agent final_content result")
+        readToolContent(message.content).includes("completed delegated session evidence")
     )
   );
   assert.ok(

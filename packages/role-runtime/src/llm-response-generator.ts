@@ -177,12 +177,18 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         !sessionContinuationDirective && activeToolLoop
           ? findSessionContinuationLookupDirective(input.packet.taskPrompt, sessionContinuationContext)
           : null;
-      let toolCalls = normalizeSessionToolCalls(
-        applySessionContinuationLookupDirective(
-          applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective),
-          sessionContinuationLookupDirective
+      let toolCalls = normalizeApprovalGatedBrowserSpawnCalls(
+        normalizeSessionToolCalls(
+          applySessionContinuationLookupDirective(
+            applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective),
+            sessionContinuationLookupDirective
+          ),
+          sessionContinuationContext
         ),
-        sessionContinuationContext
+        {
+          taskPrompt: input.packet.taskPrompt,
+          sessionContext: sessionContinuationContext,
+        }
       );
       if (
         activeToolLoop &&
@@ -482,12 +488,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       });
       messages = appendToolResultMessages(messages, toolResults);
 
-      const completedSubAgent = findCompletedSubAgentFinal(toolResults);
-      if (completedSubAgent) {
+      const completedSession = findCompletedSessionEvidence(toolResults);
+      if (completedSession) {
         if (
           shouldRepairMissingApprovalGate({
             taskPrompt: input.packet.taskPrompt,
-            resultText: completedSubAgent.finalContents.join("\n\n"),
+            resultText: completedSession.finalContents.join("\n\n"),
             messages,
             toolTrace,
           })
@@ -504,8 +510,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         toolLoopCloseout = {
           reason: "completed_sub_agent_final",
           maxRounds,
-          toolName: completedSubAgent.toolName,
-          finalContentCount: completedSubAgent.finalContents.length,
+          toolName: completedSession.toolName,
+          finalContentCount: completedSession.finalContents.length,
           toolCallCount: countToolCalls(toolTrace),
           roundCount: toolTrace.length,
           evidenceAvailable: true,
@@ -519,23 +525,23 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           messages,
           maxRounds,
           reasonLines: [
-            `${completedSubAgent.toolName} returned a completed sub-agent final_content result.`,
+            `${completedSession.toolName} returned completed delegated session evidence.`,
             "Do not call sessions_history or sessions_list just to restate this completed result.",
-            "Use the completed sub-agent final_content below as the source of truth. Do not override it with memory, assumptions, or general product knowledge.",
+            "Use the completed delegated session evidence below as the source of truth. Do not override it with memory, assumptions, or general product knowledge.",
             "Do not add capabilities, target users, pricing, open-source claims, or product positioning unless they are stated in this source content.",
             "If a requested dimension is missing or uncertain in the source content, write not verified.",
             "Preserve uncertainty labels. Preserve source URLs only when the original user did not forbid links or source URLs.",
-            ...(completedSubAgent.browserRecoverySummaries.length
+            ...(completedSession.browserRecoverySummaries.length
               ? [
                   "The source also includes browser continuity metadata.",
                   "If the user asked to continue, recover, reopen, reconnect, or handle an unavailable browser session, include one concise user-visible continuity sentence in the final answer.",
-                  ...completedSubAgent.browserRecoverySummaries.map(
+                  ...completedSession.browserRecoverySummaries.map(
                     (summary, index) => `Browser continuity ${index + 1}: ${summary}`
                   ),
                 ]
               : []),
-            ...completedSubAgent.finalContents.map(
-              (content, index) => `Source ${index + 1} final_content:\n${sliceUtf8(content, 8 * 1024)}`
+            ...completedSession.finalContents.map(
+              (content, index) => `Source ${index + 1} evidence:\n${sliceUtf8(content, 8 * 1024)}`
             ),
           ],
         });
@@ -543,7 +549,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         result = maybeAppendBrowserRecoveryVisibility({
           result: generated.result,
           taskPrompt: input.packet.taskPrompt,
-          browserRecoverySummaries: completedSubAgent.browserRecoverySummaries,
+          browserRecoverySummaries: completedSession.browserRecoverySummaries,
         });
         result = maybeRedactForbiddenLocalUrls({
           result,
@@ -1444,7 +1450,7 @@ function findSubAgentToolTimeout(results: RoleToolExecutionResult[]):
   return null;
 }
 
-function findCompletedSubAgentFinal(results: RoleToolExecutionResult[]): {
+function findCompletedSessionEvidence(results: RoleToolExecutionResult[]): {
   toolName: string;
   finalContents: string[];
   browserRecoverySummaries: string[];
@@ -1460,25 +1466,43 @@ function findCompletedSubAgentFinal(results: RoleToolExecutionResult[]): {
     if (!parsed || parsed.status !== "completed") {
       continue;
     }
-    const finalContent = parsed.final_content;
-    if (typeof finalContent !== "string" || !finalContent.trim()) {
+    const finalContent = readCompletedSessionEvidence(parsed);
+    if (!finalContent) {
       continue;
     }
     const payload = parsed.payload;
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      continue;
-    }
-    if ((payload as Record<string, unknown>)["mode"] !== "llm_sub_agent") {
-      continue;
-    }
     toolName = toolName ?? result.toolName;
-    finalContents.push(finalContent.trim());
-    const browserRecoverySummary = readBrowserRecoverySummary(payload as Record<string, unknown>);
-    if (browserRecoverySummary) {
-      browserRecoverySummaries.push(browserRecoverySummary);
+    finalContents.push(finalContent);
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      const browserRecoverySummary = readBrowserRecoverySummary(payload as Record<string, unknown>);
+      if (browserRecoverySummary) {
+        browserRecoverySummaries.push(browserRecoverySummary);
+      }
     }
   }
   return toolName && finalContents.length > 0 ? { toolName, finalContents, browserRecoverySummaries } : null;
+}
+
+function readCompletedSessionEvidence(parsed: NonNullable<ReturnType<typeof parseSessionToolResult>>): string | null {
+  if (typeof parsed.final_content === "string" && parsed.final_content.trim()) {
+    const payload = parsed.payload;
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      const mode = (payload as Record<string, unknown>)["mode"];
+      if (mode === "llm_sub_agent") {
+        return parsed.final_content.trim();
+      }
+    }
+    if (parsed.agent_id === "browser") {
+      return parsed.final_content.trim();
+    }
+  }
+  if (parsed.agent_id !== "browser") {
+    return null;
+  }
+  const evidence = [parsed.result, parsed.evidence_summary]
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
+  return evidence.length > 0 ? [...new Set(evidence)].join("\n\n") : null;
 }
 
 function readBrowserRecoverySummary(payload: Record<string, unknown>): string | null {
@@ -1577,10 +1601,21 @@ function shouldRepairMissingApprovalGate(input: {
   if (hasMissingApprovalGateRepairPrompt(input.messages)) {
     return false;
   }
-  if (input.toolTrace.some((round) => round.calls.some((call) => call.name.startsWith("permission_")))) {
+  if (hasPermissionGateEvidence(input.toolTrace)) {
     return false;
   }
   return requestsApprovalGatedBrowserAction(input.taskPrompt);
+}
+
+function hasPermissionGateEvidence(toolTrace: NativeToolRoundTrace[]): boolean {
+  return toolTrace.some(
+    (round) =>
+      round.calls.some((call) => call.name.startsWith("permission_")) ||
+      (round.progress ?? []).some((progress) => {
+        const eventType = progress.detail?.["eventType"];
+        return typeof eventType === "string" && eventType.startsWith("permission.");
+      })
+  );
 }
 
 function shouldRepairStalePendingApproval(input: {
@@ -2057,6 +2092,60 @@ function normalizeSessionToolCalls(toolCalls: LLMToolCall[], sessionContext = ""
       },
     };
   });
+}
+
+function normalizeApprovalGatedBrowserSpawnCalls(
+  toolCalls: LLMToolCall[],
+  context: { taskPrompt: string; sessionContext: string }
+): LLMToolCall[] {
+  const browserSpawnCalls = toolCalls.filter(isBrowserSessionSpawn);
+  if (browserSpawnCalls.length <= 1) {
+    return toolCalls;
+  }
+  const contextText = [
+    context.taskPrompt,
+    context.sessionContext,
+    ...browserSpawnCalls.flatMap((call) => [
+      readStringInput(call.input, "task") ?? "",
+      readStringInput(call.input, "label") ?? "",
+      readStringInput(call.input, "action") ?? "",
+    ]),
+  ].join("\n");
+  if (!looksApprovalGatedBrowserSideEffect(contextText)) {
+    return toolCalls;
+  }
+  const seenSignatures = new Set<string>();
+  return toolCalls.filter((call) => {
+    if (!isBrowserSessionSpawn(call)) {
+      return true;
+    }
+    const signature = toolCallSignature(call);
+    if (!seenSignatures.has(signature)) {
+      seenSignatures.add(signature);
+      return true;
+    }
+    return false;
+  });
+}
+
+function isBrowserSessionSpawn(call: LLMToolCall): boolean {
+  return call.name === "sessions_spawn" && readStringInput(call.input, "agent_id") === "browser";
+}
+
+function looksApprovalGatedBrowserSideEffect(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return false;
+  }
+  const hasApprovalContext =
+    /\b(?:approval|approve|approved|permission|authorize|authorized|operator\s+review|gate|gated|dry-?run)\b/i.test(
+      normalized
+    ) || /\bbrowser\.[a-z0-9_.-]+\b/i.test(normalized);
+  const hasBrowserMutation =
+    /\b(?:submit|click|press|type|fill|select|upload|download|delete|save|apply|confirm|purchase|checkout|sign\s*in|log\s*in|form)\b/i.test(
+      normalized
+    ) || /\bbrowser\.(?:form\.submit|click|input|type|select|upload|download|permission)\b/i.test(normalized);
+  return hasApprovalContext && hasBrowserMutation;
 }
 
 function hasExecutedSessionsSend(toolTrace: NativeToolRoundTrace[], sessionKey: string): boolean {
@@ -2563,8 +2652,9 @@ function buildLocalEvidenceCloseout(input: {
     .map((message) => parseSessionToolResult(readToolResultContentText(message.content)))
     .filter((result): result is NonNullable<ReturnType<typeof parseSessionToolResult>> => Boolean(result));
   const completedEvidence = toolResults
-    .filter((result) => result.status === "completed" && typeof result.final_content === "string" && result.final_content.trim())
-    .map((result) => result.final_content!.trim());
+    .filter((result) => result.status === "completed")
+    .map((result) => readCompletedSessionEvidence(result))
+    .filter((evidence): evidence is string => Boolean(evidence));
   if (completedEvidence.length === 0) {
     return null;
   }

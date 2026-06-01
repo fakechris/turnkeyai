@@ -69,6 +69,32 @@ test("session tool result protocol preserves timeout evidence semantics", () => 
   assert.equal(parsed?.evidence_available, true);
 });
 
+test("session tool result protocol persists browser page evidence summary", () => {
+  const result = buildSessionToolResult({
+    taskId: "task-1",
+    sessionKey: "worker:browser:task-1",
+    agentId: "browser",
+    missingResultMessage: "missing",
+    result: {
+      workerType: "browser",
+      status: "completed",
+      summary: "Browser worker summary omitted the marker.",
+      payload: {
+        sessionId: "browser-session-1",
+        page: {
+          finalUrl: "http://127.0.0.1/approval-form",
+          title: "Approval Gate Fixture",
+          textExcerpt: "TURNKEYAI_APPROVAL_FIXTURE_OK no external mutation was performed.",
+        },
+      },
+    },
+  });
+
+  assert.match(result.evidence_summary ?? "", /TURNKEYAI_APPROVAL_FIXTURE_OK/);
+  const parsed = parseSessionToolResult(serializeSessionToolResult(result));
+  assert.match(parsed?.evidence_summary ?? "", /Approval Gate Fixture/);
+});
+
 test("session tool result protocol normalizes legacy session results", () => {
   const parsed = parseSessionToolResult(
     JSON.stringify({
