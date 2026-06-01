@@ -233,6 +233,21 @@ test("real acceptance integrity rejects incomplete artifacts and weak natural qu
     /mission E2E report does not cover all requested scenarios/
   );
 
+  const missionReportWithoutScenarioIds = passingMissionReport({ scenarioIds: undefined });
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
+        naturalMissionScenarios: [],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: false,
+        missionReport: missionReportWithoutScenarioIds,
+        naturalMissionReport: null,
+      }),
+    /mission E2E report does not cover all requested scenarios/
+  );
+
   assert.throws(
     () =>
       assertRealAcceptanceArtifactIntegrity({
@@ -259,6 +274,21 @@ test("real acceptance integrity rejects incomplete artifacts and weak natural qu
         naturalMissionJsonPresent: true,
         missionReport: passingMissionReport(),
         naturalMissionReport: passingNaturalMissionReport({ scenarioCount: 1 }),
+      }),
+    /natural mission report does not cover all requested scenarios/
+  );
+
+  const naturalReportWithoutScenarioIds = passingNaturalMissionReport({ scenarioIds: undefined });
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
+        naturalMissionScenarios: ["natural-comparison-research"],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: true,
+        missionReport: passingMissionReport(),
+        naturalMissionReport: naturalReportWithoutScenarioIds,
       }),
     /natural mission report does not cover all requested scenarios/
   );
