@@ -119,6 +119,7 @@ export class RelayBrowserAdapter implements BrowserTransportAdapter {
     });
     this.artifactStore = new FileBrowserArtifactStore({
       rootDir: path.join(stateRootDir, "artifacts"),
+      artifactRootDir: options.artifactRootDir,
     });
     this.gateway = new RelayGateway();
   }

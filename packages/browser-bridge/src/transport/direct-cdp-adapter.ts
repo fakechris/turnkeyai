@@ -114,6 +114,7 @@ export class DirectCdpBrowserAdapter implements BrowserTransportAdapter {
       }),
       browserArtifactStore: new FileBrowserArtifactStore({
         rootDir: path.join(stateRootDir, "artifacts"),
+        artifactRootDir: options.artifactRootDir,
       }),
       createEphemeralContext: async () => {
         const browser = await this.getOrConnectBrowser();

@@ -540,7 +540,20 @@ export interface BrowserArtifactRecord {
   type: "snapshot" | "screenshot" | "console-result" | "downloaded-file" | "upload-file" | "trace";
   path: string;
   createdAt: number;
+  sizeBytes?: number;
+  lifecycle?: BrowserArtifactLifecycle;
   metadata?: Record<string, unknown>;
+}
+
+export interface BrowserArtifactLifecycle {
+  storageBackend: "file";
+  refType: "local-path";
+  retentionMs: number;
+  expiresAt: number;
+  maxArtifactBytes: number;
+  sessionBudgetBytes: number;
+  cleanupOnSessionClose: boolean;
+  orphanReconciliation: "delete_expired";
 }
 
 export interface BrowserSessionHistoryEntry {

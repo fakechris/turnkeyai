@@ -5100,3 +5100,63 @@ Methodology Review Trigger:
   from route/unit visibility toward natural E2E artifacts, and the latest
   failure did not require a new runtime patch; it required aligning the negative
   closeout evaluator with the expected bucketed failure class.
+
+## 2026-06-01 18:19 CST - Browser Artifact Lifecycle Contract
+
+Direction: unknown
+
+Execution Kernel:
+- Added lifecycle metadata at the browser artifact store boundary. File-backed
+  artifact records now carry backend/ref type, retention duration, expiry time,
+  per-artifact byte limit, per-session byte budget, cleanup-on-session-close
+  policy, and orphan reconciliation mode.
+- The file artifact store now records file sizes when available, enforces
+  per-artifact and per-session budgets, lists session artifacts in stable
+  newest-first order, and can prune expired metadata plus managed artifact
+  files.
+
+Result Quality:
+- This is structural hardening, not a natural capability claim. It makes future
+  browser evidence safer to retain and inspect, but it does not by itself prove
+  better task answers.
+- Existing browser artifact-producing paths continue to return the same public
+  `artifactIds` and `screenshotPaths`; the lifecycle metadata is attached to
+  persisted artifact records.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- Future Workbench artifact views can now rely on explicit lifecycle fields
+  instead of inferring retention and cleanup behavior from path strings.
+
+Browser Reliability:
+- Artifact storage now has bounded retention and budget semantics for local,
+  relay, and direct-CDP transports through the shared file artifact store.
+- Expired artifact cleanup is available as a store operation, but no daemon
+  scheduled cleanup loop was added in this slice.
+
+Acceptance Evidence:
+- Focused tests: `npx tsx --test
+  packages/browser-bridge/src/artifacts/file-browser-artifact-store.test.ts
+  packages/browser-bridge/src/chrome-session-manager.test.ts
+  packages/browser-bridge/src/transport/relay-adapter.test.ts`: passed.
+- `npm run typecheck`: passed.
+- No real natural LLM E2E was run for this structural slice. Existing browser
+  artifact natural/real gates remain the capability evidence path; this
+  checkpoint should not be used as proof that complex browser tasks are more
+  reliable until a future natural artifact scenario cites a mission/report.
+
+Regression Risk:
+- Budget enforcement happens when artifact records are persisted. Extremely
+  large artifacts that previously would have been recorded may now fail earlier
+  with a storage budget error.
+- The defaults are intentionally high for normal screenshots/snapshots
+  (`25 MB` per artifact, `100 MB` per session) to avoid breaking typical
+  browser evidence capture.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? unknown
+- Evidence: storage semantics are stronger, but no natural E2E artifact proves
+  user-visible answer improvement in this slice.
+- If no, next required gate: add a natural or real browser artifact scenario
+  that verifies screenshot/artifact lifecycle metadata is produced and remains
+  usable in Mission Detail.
