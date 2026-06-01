@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 
 import type {
   ActivityEvent,
+  Artifact,
   Mission,
 } from "@turnkeyai/core-types/mission";
 import type {
+  BrowserArtifactRecord,
   RoleRunState,
   TeamMessage,
   WorkerSessionRecord,
@@ -22,6 +24,18 @@ function memActivityStore() {
     },
     async append(event: ActivityEvent): Promise<void> {
       events.push(event);
+    },
+  };
+}
+
+function memArtifactStore(artifacts: Artifact[] = []) {
+  return {
+    artifacts,
+    async listByMission(missionId: string): Promise<Artifact[]> {
+      return artifacts.filter((artifact) => artifact.missionId === missionId);
+    },
+    async put(artifact: Artifact): Promise<void> {
+      artifacts.push(artifact);
     },
   };
 }
@@ -138,6 +152,138 @@ describe("MissionThreadBridge", () => {
       activity.events.map((e) => e.tMs),
       [100, 200, 300]
     );
+  });
+
+  it("registers browser worker artifacts on the mission artifact surface", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const artifacts = memArtifactStore();
+    const browserArtifact: BrowserArtifactRecord = {
+      artifactId: "artifact-browser-1",
+      browserSessionId: "browser-session-1",
+      targetId: "target-1",
+      type: "screenshot",
+      path: "/tmp/browser-artifacts/browser-session-1/final.png",
+      createdAt: 1_700_000_000_123,
+      sizeBytes: 12_345,
+      lifecycle: {
+        storageBackend: "file",
+        refType: "local-path",
+        retentionMs: 7 * 24 * 60 * 60 * 1000,
+        expiresAt: 1_700_604_800_123,
+        maxArtifactBytes: 25 * 1024 * 1024,
+        sessionBudgetBytes: 100 * 1024 * 1024,
+        cleanupOnSessionClose: false,
+        orphanReconciliation: "delete_expired",
+      },
+    };
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([
+        {
+          ...baseMessage("m1", "assistant", 200),
+          metadata: {
+            workerPayload: {
+              artifactIds: ["artifact-browser-1"],
+            },
+          },
+        },
+      ]),
+      activityStore: activity,
+      artifactStore: artifacts,
+      browserArtifactStore: {
+        async get(artifactId: string) {
+          return artifactId === browserArtifact.artifactId ? browserArtifact : null;
+        },
+      },
+      newEventId,
+      clock,
+    });
+
+    assert.equal(await bridge.tickMission("msn.1"), 1);
+    assert.equal(await bridge.tickMission("msn.1"), 0);
+    assert.equal(artifacts.artifacts.length, 1);
+    assert.deepEqual(artifacts.artifacts[0], {
+      id: "artifact-browser-1",
+      missionId: "msn.1",
+      label: "final.png",
+      kind: "screenshot",
+      path: "/tmp/browser-artifacts/browser-session-1/final.png",
+      sizeBytes: 12_345,
+      createdAtMs: 1_700_000_000_123,
+      lifecycle: {
+        storageBackend: "file",
+        refType: "local-path",
+        retentionMs: 7 * 24 * 60 * 60 * 1000,
+        expiresAtMs: 1_700_604_800_123,
+        maxArtifactBytes: 25 * 1024 * 1024,
+        sessionBudgetBytes: 100 * 1024 * 1024,
+        cleanupOnSessionClose: false,
+        orphanReconciliation: "delete_expired",
+      },
+    });
+  });
+
+  it("registers browser artifacts from split native tool result messages", async () => {
+    counter = 0;
+    const activity = memActivityStore();
+    const artifacts = memArtifactStore();
+    const browserArtifact: BrowserArtifactRecord = {
+      artifactId: "artifact-browser-snapshot",
+      browserSessionId: "browser-session-1",
+      targetId: "target-1",
+      type: "snapshot",
+      path: "/tmp/browser-artifacts/browser-session-1/snapshot.json",
+      createdAt: 1_700_000_000_456,
+    };
+    const assistant = {
+      ...baseMessage("m1", "assistant", 200),
+      content: "",
+      metadata: { nativeToolUse: true },
+      toolCalls: [
+        {
+          id: "call-1",
+          name: "sessions_spawn",
+          arguments: { agent_id: "browser", prompt: "inspect dashboard" },
+        },
+      ],
+    } satisfies TeamMessage;
+    const tool = {
+      ...baseMessage("m2", "tool", 201),
+      name: "sessions_spawn",
+      toolCallId: "call-1",
+      content: JSON.stringify({
+        protocol: "turnkeyai.session_tool_result.v1",
+        task_id: "task-1",
+        session_key: "worker:browser:task:task-1",
+        agent_id: "browser",
+        status: "completed",
+        tool_chain: ["browser"],
+        result: "Browser captured snapshot evidence.",
+        final_content: null,
+        payload: {
+          artifactIds: ["artifact-browser-snapshot"],
+        },
+      }),
+    } satisfies TeamMessage;
+    const bridge = createMissionThreadBridge({
+      missionStore: memMissionStore([baseMission]),
+      teamMessageStore: memTeamMessageStore([assistant, tool]),
+      activityStore: activity,
+      artifactStore: artifacts,
+      browserArtifactStore: {
+        async get(artifactId: string) {
+          return artifactId === browserArtifact.artifactId ? browserArtifact : null;
+        },
+      },
+      newEventId,
+      clock,
+    });
+
+    assert.equal(await bridge.tickMission("msn.1"), 2);
+    assert.equal(artifacts.artifacts.length, 1);
+    assert.equal(artifacts.artifacts[0]?.id, "artifact-browser-snapshot");
+    assert.equal(artifacts.artifacts[0]?.kind, "snapshot");
   });
 
   it("is idempotent — a re-tick with the same messages appends nothing", async () => {
