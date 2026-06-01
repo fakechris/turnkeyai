@@ -46,6 +46,10 @@ import {
   type ResolvedTuiToken,
 } from "./tui-auth";
 import {
+  buildTuiStartupSnapshot,
+  formatTuiStartup,
+} from "./tui-startup";
+import {
   buildMissionCreatePayload,
   formatMissionDetail,
   formatMissionList,
@@ -64,14 +68,18 @@ const rl = readline.createInterface({ input, output });
 let currentThreadId: string | null = null;
 let currentMissionId: string | null = null;
 
-printBanner();
+await printBanner();
 
 while (true) {
   const contextLabel = currentMissionId ?? currentThreadId;
   const prompt = contextLabel ? `turnkeyai:${contextLabel}> ` : "turnkeyai> ";
   let line: string;
   try {
-    line = (await rl.question(prompt)).trim();
+    const answer = await readPromptLine(prompt);
+    if (answer === null) {
+      break;
+    }
+    line = answer.trim();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ERR_USE_AFTER_CLOSE") {
       break;
@@ -747,6 +755,28 @@ while (true) {
 
 await rl.close();
 
+function readPromptLine(prompt: string): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      rl.off("close", onClose);
+      resolve(value);
+    };
+    const onClose = () => settle(null);
+    rl.once("close", onClose);
+    rl.question(prompt)
+      .then((value) => settle(value))
+      .catch((error: unknown) => {
+        if (settled) return;
+        settled = true;
+        rl.off("close", onClose);
+        reject(error);
+      });
+  });
+}
+
 function wantsProcessHelp(args: string[]): boolean {
   return args.includes("--help") || args.includes("-h") || args.includes("help");
 }
@@ -774,16 +804,10 @@ function printTuiUsage(exitCode: number): never {
   process.exit(exitCode);
 }
 
-function printBanner(): void {
-  console.log("Runtime Lab TUI");
-  console.log(`daemon: ${baseUrl}`);
-  if (authToken) {
-    console.log(`auth: ${authToken.scope} token from ${authToken.source}`);
-    if (authToken.scope === "read") {
-      console.log("auth note: read token can inspect state; mutation commands may require operator/admin.");
-    }
-  } else {
-    console.log("auth: none (commands will fail if daemon auth is enabled)");
+async function printBanner(): Promise<void> {
+  printLines(formatTuiStartup(await buildTuiStartupSnapshot({ baseUrl, token: authToken })));
+  if (authToken?.scope === "read") {
+    console.log("auth note: read token can inspect state; mutation commands may require operator/admin.");
   }
   printHelp();
 }
