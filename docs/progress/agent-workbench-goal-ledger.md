@@ -4774,3 +4774,63 @@ Convergence question:
   browser-backed output.
 - Next required gate: broaden the same proof to another browser failure row
   such as attach failure, command timeout, or detached target.
+
+## 2026-06-01 17:05 CST - Mission Detail Smoke Artifact Evidence
+
+Direction: unknown
+
+Execution Kernel:
+- No runtime execution behavior changed. Mission scheduling, tool-use,
+  browser sessions, permissions, and completion evaluation are unchanged.
+- The Control Center smoke harness now has an optional artifact output mode for
+  durable UI review evidence.
+
+Result Quality:
+- Final-answer generation was not changed.
+- This checkpoint does not prove stronger answer quality. It makes the
+  existing Mission Detail UX proof easier to inspect after a run.
+
+Workbench UX:
+- `control-center-ui-smoke` can now write desktop and mobile Mission Detail
+  screenshots plus a compact JSON summary when `--artifact-dir` or
+  `TURNKEYAI_CONTROL_CENTER_SMOKE_ARTIFACT_DIR` is provided.
+- The JSON summary records whether the thought trace is expanded, whether the
+  final answer is visible, whether trace/timeline appear before the final
+  answer, whether trace and answer overlap, and whether the page has horizontal
+  overflow.
+
+Browser Reliability:
+- Browser runtime behavior did not change.
+- This supports browser-backed mission review by preserving the UI evidence
+  that browser progress, evidence, and final answer ordering remain readable.
+
+Acceptance Evidence:
+- `npm run typecheck`: passed.
+- `npm run build`: passed.
+- `git diff --check`: passed.
+- `npm run control-center:smoke -- --allow-missing-browser --artifact-dir
+  /tmp/turnkeyai-control-center-smoke-artifacts`: passed.
+- Smoke artifacts:
+  `/tmp/turnkeyai-control-center-smoke-artifacts/control-center-ui-smoke-summary.json`,
+  `/tmp/turnkeyai-control-center-smoke-artifacts/mission-detail-desktop.png`,
+  `/tmp/turnkeyai-control-center-smoke-artifacts/mission-detail-mobile.png`.
+- Screenshot bytes: desktop `132343`, mobile `54478`.
+- Summary reported `thinkingBeforeFinal=true`, `timelineBeforeFinal=true`,
+  `traceFinalOverlap=false`, and `horizontalOverflowPx=0` on both desktop and
+  mobile.
+- No natural real LLM E2E ran for this visibility slice.
+
+Regression Risk:
+- Low product risk: artifact writing is opt-in and normal smoke output remains
+  unchanged unless an artifact directory is configured.
+- Medium harness risk: the smoke script now writes files, so callers must point
+  artifact output at an ignored or temporary directory.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? no
+  capability claim yet.
+- Evidence: screenshot-backed UI review evidence is now durable, but no new
+  natural mission proves better runtime/result quality.
+- Next required gate: use this artifact path in future Workbench UX checkpoints
+  that touch Mission Detail replay, approval grouping, timeout display, or
+  browser evidence display.
