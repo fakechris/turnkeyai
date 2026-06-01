@@ -26,6 +26,18 @@ export interface TuiMissionMetrics {
   recovery: {
     events: number;
   };
+  browser: {
+    profileFallbacks: number;
+    latestProfileFallback?: {
+      sessionId?: string;
+      fallbackDir?: string;
+    };
+    failureBuckets: Array<{
+      bucket: string;
+      count: number;
+      latestAtMs: number;
+    }>;
+  };
   liveness: {
     active: number;
     waiting: number;
@@ -44,12 +56,15 @@ export interface TuiMissionMetrics {
 }
 
 type TuiMissionMetricsInput = Partial<
-  Omit<TuiMissionMetrics, "tool" | "sessions" | "approvals" | "recovery" | "liveness" | "qualityGate">
+  Omit<TuiMissionMetrics, "tool" | "sessions" | "approvals" | "recovery" | "browser" | "liveness" | "qualityGate">
 > & {
   tool?: Partial<TuiMissionMetrics["tool"]>;
   sessions?: Partial<TuiMissionMetrics["sessions"]>;
   approvals?: Partial<TuiMissionMetrics["approvals"]>;
   recovery?: Partial<TuiMissionMetrics["recovery"]>;
+  browser?: Partial<Omit<TuiMissionMetrics["browser"], "failureBuckets">> & {
+    failureBuckets?: TuiMissionMetrics["browser"]["failureBuckets"];
+  };
   liveness?: Partial<TuiMissionMetrics["liveness"]>;
   qualityGate?: Partial<Omit<TuiMissionMetrics["qualityGate"], "checks">> & {
     checks?: TuiMissionMetrics["qualityGate"]["checks"];
@@ -113,6 +128,7 @@ export function formatMissionDetail(input: {
     : [];
   const latestFinal = findLatestFinalAnswer(events);
   const checks = metrics.qualityGate.checks.filter((check) => check.status !== "pass");
+  const browserBuckets = metrics.browser.failureBuckets;
   const recent = events.slice(-timelineLimit);
   const lines = [
     `Mission ${mission.shortId} (${mission.id})`,
@@ -122,8 +138,26 @@ export function formatMissionDetail(input: {
     `  wallClock=${formatDuration(metrics.wallClockMs)} events=${metrics.timelineEventCount} evidence=${metrics.qualityGate.evidenceEvents}`,
     `  tools requested/results/executed/failed/timeouts=${metrics.tool.requested}/${metrics.tool.results}/${metrics.tool.executed}/${metrics.tool.failed}/${metrics.tool.timeouts}`,
     `  sessions spawned/continued=${metrics.sessions.spawned}/${metrics.sessions.continued} approvals requested/applied/decided=${metrics.approvals.requested}/${metrics.approvals.applied}/${metrics.approvals.decided}`,
+    `  browser profileFallbacks=${metrics.browser.profileFallbacks} failureBuckets=${browserBuckets.length}`,
     `  liveness active/waiting/stale=${metrics.liveness.active}/${metrics.liveness.waiting}/${metrics.liveness.stale}`,
   ];
+
+  if (metrics.browser.profileFallbacks > 0 || browserBuckets.length > 0) {
+    lines.push("Browser attention:");
+    for (const bucket of browserBuckets.slice(0, 5)) {
+      lines.push(
+        `- ${browserFailureBucketLabel(bucket.bucket)} (${bucket.bucket}): ${bucket.count} at ${formatDateTime(bucket.latestAtMs)}`
+      );
+    }
+    if (browserBuckets.length > 5) {
+      lines.push(`- ${browserBuckets.length - 5} more browser failure bucket(s) hidden`);
+    }
+    if (metrics.browser.latestProfileFallback) {
+      const sessionId = metrics.browser.latestProfileFallback.sessionId ?? "-";
+      const fallbackDir = metrics.browser.latestProfileFallback.fallbackDir ?? "-";
+      lines.push(`- latest profile fallback: session=${sessionId} dir=${fallbackDir}`);
+    }
+  }
 
   if (checks.length > 0) {
     lines.push("Attention:");
@@ -231,6 +265,11 @@ function normalizeMissionMetrics(input: TuiMissionMetricsInput, mission: Mission
     recovery: {
       events: asNonNegativeNumber(input.recovery?.events),
     },
+    browser: {
+      profileFallbacks: asNonNegativeNumber(input.browser?.profileFallbacks),
+      ...normalizeLatestProfileFallback(input.browser?.latestProfileFallback),
+      failureBuckets: normalizeBrowserFailureBuckets(input.browser?.failureBuckets),
+    },
     liveness: {
       active: asNonNegativeNumber(input.liveness?.active),
       waiting: asNonNegativeNumber(input.liveness?.waiting),
@@ -245,6 +284,77 @@ function normalizeMissionMetrics(input: TuiMissionMetricsInput, mission: Mission
       checks: Array.isArray(input.qualityGate?.checks) ? input.qualityGate.checks.filter(isQualityCheckRecord) : [],
     },
   };
+}
+
+function normalizeLatestProfileFallback(value: unknown): Pick<TuiMissionMetrics["browser"], "latestProfileFallback"> {
+  if (typeof value !== "object" || value === null) {
+    return {};
+  }
+  const record = value as { sessionId?: unknown; fallbackDir?: unknown };
+  const sessionId = typeof record.sessionId === "string" && record.sessionId.trim() ? record.sessionId.trim() : undefined;
+  const fallbackDir =
+    typeof record.fallbackDir === "string" && record.fallbackDir.trim() ? record.fallbackDir.trim() : undefined;
+  if (!sessionId && !fallbackDir) {
+    return {};
+  }
+  return {
+    latestProfileFallback: {
+      ...(sessionId ? { sessionId } : {}),
+      ...(fallbackDir ? { fallbackDir } : {}),
+    },
+  };
+}
+
+function normalizeBrowserFailureBuckets(input: unknown): TuiMissionMetrics["browser"]["failureBuckets"] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input
+    .filter(isBrowserFailureBucketRecord)
+    .map((bucket) => ({
+      bucket: bucket.bucket.trim(),
+      count: asNonNegativeNumber(bucket.count),
+      latestAtMs: asNonNegativeNumber(bucket.latestAtMs),
+    }))
+    .filter((bucket) => bucket.bucket && bucket.count > 0)
+    .sort((left, right) => right.latestAtMs - left.latestAtMs || right.count - left.count || left.bucket.localeCompare(right.bucket));
+}
+
+function isBrowserFailureBucketRecord(value: unknown): value is TuiMissionMetrics["browser"]["failureBuckets"][number] {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { bucket?: unknown }).bucket === "string" &&
+    typeof (value as { count?: unknown }).count === "number" &&
+    typeof (value as { latestAtMs?: unknown }).latestAtMs === "number"
+  );
+}
+
+function browserFailureBucketLabel(bucket: string): string {
+  switch (bucket) {
+    case "session_not_found":
+      return "Browser session unavailable";
+    case "browser_cdp_unavailable":
+      return "Browser CDP unavailable";
+    case "target_not_found":
+      return "Target disappeared";
+    case "attach_failed":
+      return "Target attach failed";
+    case "expert_session_detached":
+      return "Expert session detached";
+    case "cdp_command_timeout":
+      return "CDP command timed out";
+    case "detached_target":
+      return "Target detached";
+    case "transport_failure":
+      return "Transport failure";
+    case "owner_mismatch":
+      return "Owner mismatch";
+    case "lease_conflict":
+      return "Lease conflict";
+    default:
+      return bucket.replace(/_/g, " ");
+  }
 }
 
 function truncateOneLine(value: string, maxLength: number): string {
