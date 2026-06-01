@@ -362,6 +362,7 @@ test("validation ops inspection preserves real LLM mission report summary", () =
     missionReport: {
       status: "passed",
       scenarioCount: 2,
+      scenarioIds: ["realistic-brief", "browser-dashboard"],
       passedScenarios: 2,
       failedScenarios: 0,
       qualityFailures: 0,
@@ -396,6 +397,7 @@ test("validation ops inspection preserves real LLM mission report summary", () =
     missionReport: {
       status: "passed",
       scenarioCount: 2,
+      scenarioIds: ["realistic-brief", "browser-dashboard"],
       passedScenarios: 2,
       failedScenarios: 0,
       qualityFailures: 0,
@@ -437,6 +439,7 @@ test("validation ops inspection preserves natural mission acceptance summary", (
     naturalMissionReport: {
       status: "passed",
       scenarioCount: 2,
+      scenarioIds: ["natural-browser-dynamic-page", "natural-long-delegation"],
       passedScenarios: 2,
       failedScenarios: 0,
       completed: 2,

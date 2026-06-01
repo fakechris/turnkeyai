@@ -4,6 +4,7 @@ type MissionReportSummary = NonNullable<ValidationOpsRealAcceptanceDetails["miss
 type NaturalMissionReportSummary = NonNullable<ValidationOpsRealAcceptanceDetails["naturalMissionReport"]>;
 
 interface MissionScenarioReportShape {
+  scenario?: unknown;
   status?: unknown;
   qualityGate?: unknown;
   metrics?: {
@@ -47,6 +48,7 @@ interface MissionE2eReportShape {
 }
 
 interface NaturalScenarioReportShape {
+  scenario?: unknown;
   natural?: {
     status?: unknown;
     completed?: unknown;
@@ -77,6 +79,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
     return {
       status: report.status === "passed" ? "passed" : "failed",
       scenarioCount: 0,
+      scenarioIds: [],
       passedScenarios: 0,
       failedScenarios: 0,
       qualityFailures: 0,
@@ -110,6 +113,8 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
         scenario.qualityGate === "passed" &&
         Array.isArray(scenario.final?.qualityFailures) &&
         scenario.final.qualityFailures.length === 0;
+      const scenarioId = readString(scenario.scenario);
+      if (scenarioId) summary.scenarioIds.push(scenarioId);
       summary.passedScenarios += passing ? 1 : 0;
       summary.failedScenarios += passing ? 0 : 1;
       summary.qualityFailures += Array.isArray(scenario.final?.qualityFailures)
@@ -145,6 +150,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
     {
       status: report.status === "passed" ? "passed" : "failed",
       scenarioCount: scenarios.length,
+      scenarioIds: [],
       passedScenarios: 0,
       failedScenarios: 0,
       qualityFailures: 0,
@@ -181,6 +187,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
     return {
       status: report.status === "passed" ? "passed" : "failed",
       scenarioCount: 0,
+      scenarioIds: [],
       passedScenarios: 0,
       failedScenarios: 0,
       completed: 0,
@@ -214,6 +221,8 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
   return scenarios.reduce<NaturalMissionReportSummary>(
     (summary, scenario) => {
       const passing = scenario.natural?.status === "passed";
+      const scenarioId = readString(scenario.scenario);
+      if (scenarioId) summary.scenarioIds.push(scenarioId);
       summary.passedScenarios += passing ? 1 : 0;
       summary.failedScenarios += passing ? 0 : 1;
       summary.completed += scenario.natural?.completed === true ? 1 : 0;
@@ -248,6 +257,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
     {
       status: report.status === "passed" ? "passed" : "failed",
       scenarioCount: scenarios.length,
+      scenarioIds: [],
       passedScenarios: 0,
       failedScenarios: 0,
       completed: 0,
@@ -297,6 +307,10 @@ function isNaturalScenarioReportShape(value: unknown): value is NaturalScenarioR
 
 function readNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function readQualityChecks(value: unknown): Array<{ name: string; status: string }> {

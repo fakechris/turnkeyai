@@ -12,6 +12,7 @@ test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and 
     status: "failed",
     scenarios: [
       {
+        scenario: "comparison",
         status: "done",
         qualityGate: "passed",
         metrics: {
@@ -30,6 +31,7 @@ test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and 
         final: { qualityFailures: [] },
       },
       {
+        scenario: "realistic-brief",
         status: "blocked",
         qualityGate: "blocked",
         metrics: {
@@ -53,6 +55,7 @@ test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and 
   assert.deepEqual(summary, {
     status: "failed",
     scenarioCount: 2,
+    scenarioIds: ["comparison", "realistic-brief"],
     passedScenarios: 1,
     failedScenarios: 1,
     qualityFailures: 1,
@@ -90,6 +93,7 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
     status: "failed",
     scenarios: [
       {
+        scenario: "natural-browser-dynamic-page",
         natural: {
           status: "passed",
           completed: true,
@@ -113,6 +117,7 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
         },
       },
       {
+        scenario: "natural-long-delegation",
         natural: {
           status: "failed",
           completed: false,
@@ -141,6 +146,7 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
   assert.deepEqual(summary, {
     status: "failed",
     scenarioCount: 2,
+    scenarioIds: ["natural-browser-dynamic-page", "natural-long-delegation"],
     passedScenarios: 1,
     failedScenarios: 1,
     completed: 1,

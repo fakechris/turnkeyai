@@ -472,11 +472,10 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
     if (!input.missionJsonPresent || !input.missionReport) {
       throw new Error("real acceptance passed without a mission E2E report artifact");
     }
-    if (input.missionReport.scenarioCount !== input.missionScenarios.length) {
-      throw new Error("real acceptance mission E2E report does not cover all requested scenarios");
-    }
+    assertScenarioCoverage("mission E2E", input.missionScenarios, input.missionReport.scenarioIds);
     if (
       input.missionReport.status !== "passed" ||
+      input.missionReport.scenarioCount !== input.missionScenarios.length ||
       input.missionReport.passedScenarios !== input.missionReport.scenarioCount ||
       input.missionReport.failedScenarios > 0 ||
       input.missionReport.qualityFailures > 0 ||
@@ -493,11 +492,10 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
     if (!input.naturalMissionJsonPresent || !input.naturalMissionReport) {
       throw new Error("real acceptance passed without a natural mission E2E report artifact");
     }
-    if (input.naturalMissionReport.scenarioCount !== input.naturalMissionScenarios.length) {
-      throw new Error("real acceptance natural mission report does not cover all requested scenarios");
-    }
+    assertScenarioCoverage("natural mission", input.naturalMissionScenarios, input.naturalMissionReport.scenarioIds);
     if (
       input.naturalMissionReport.status !== "passed" ||
+      input.naturalMissionReport.scenarioCount !== input.naturalMissionScenarios.length ||
       input.naturalMissionReport.passedScenarios !== input.naturalMissionReport.scenarioCount ||
       input.naturalMissionReport.failedScenarios > 0 ||
       input.naturalMissionReport.completed !== input.naturalMissionReport.scenarioCount ||
@@ -517,6 +515,29 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
       throw new Error("real acceptance natural mission report does not prove a passing capability gate");
     }
   }
+}
+
+function assertScenarioCoverage(kind: string, requested: string[], reported: string[]): void {
+  if (reported.length !== requested.length || !sameScenarioMultiset(requested, reported)) {
+    throw new Error(`real acceptance ${kind} report does not cover all requested scenarios`);
+  }
+}
+
+function sameScenarioMultiset(left: string[], right: string[]): boolean {
+  const counts = new Map<string, number>();
+  for (const item of left) {
+    counts.set(item, (counts.get(item) ?? 0) + 1);
+  }
+  for (const item of right) {
+    const count = counts.get(item);
+    if (!count) return false;
+    if (count === 1) {
+      counts.delete(item);
+    } else {
+      counts.set(item, count - 1);
+    }
+  }
+  return counts.size === 0;
 }
 
 function summarizeMissionJson(missionJsonPath: string): ReturnType<typeof summarizeMissionE2eReportForValidationOps> {

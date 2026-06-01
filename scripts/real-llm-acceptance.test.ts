@@ -187,6 +187,7 @@ test("real acceptance integrity rejects missing or non-passing report summaries 
         missionReport: {
           status: "passed",
           scenarioCount: 1,
+          scenarioIds: ["comparison"],
           passedScenarios: 1,
           failedScenarios: 0,
           qualityFailures: 0,
@@ -237,6 +238,22 @@ test("real acceptance integrity rejects incomplete artifacts and weak natural qu
       assertRealAcceptanceArtifactIntegrity({
         status: "passed",
         missionScenarios: ["comparison"],
+        naturalMissionScenarios: [],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: false,
+        missionReport: passingMissionReport({
+          scenarioIds: ["realistic-brief"],
+        }),
+        naturalMissionReport: null,
+      }),
+    /mission E2E report does not cover all requested scenarios/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
         naturalMissionScenarios: ["natural-comparison-research", "natural-long-delegation"],
         missionJsonPresent: true,
         naturalMissionJsonPresent: true,
@@ -273,6 +290,7 @@ test("real acceptance integrity rejects incomplete artifacts and weak natural qu
       naturalMissionJsonPresent: true,
       missionReport: passingMissionReport(),
       naturalMissionReport: passingNaturalMissionReport({
+        scenarioIds: ["natural-browser-unavailable-closeout"],
         weakAnswerSignals: 1,
       }),
     })
@@ -290,6 +308,7 @@ test("real acceptance integrity accepts passing mission and natural summaries", 
       missionReport: {
         status: "passed",
         scenarioCount: 1,
+        scenarioIds: ["comparison"],
         passedScenarios: 1,
         failedScenarios: 0,
         qualityFailures: 0,
@@ -317,6 +336,7 @@ test("real acceptance integrity accepts passing mission and natural summaries", 
       naturalMissionReport: {
         status: "passed",
         scenarioCount: 1,
+        scenarioIds: ["natural-comparison-research"],
         passedScenarios: 1,
         failedScenarios: 0,
         completed: 1,
@@ -355,6 +375,7 @@ function passingMissionReport(
   return {
     status: "passed",
     scenarioCount: 1,
+    scenarioIds: ["comparison"],
     passedScenarios: 1,
     failedScenarios: 0,
     qualityFailures: 0,
@@ -388,6 +409,7 @@ function passingNaturalMissionReport(
   return {
     status: "passed",
     scenarioCount: 1,
+    scenarioIds: ["natural-comparison-research"],
     passedScenarios: 1,
     failedScenarios: 0,
     completed: 1,
