@@ -5217,3 +5217,59 @@ Convergence question:
   but no natural E2E proves improved task completion.
 - If no, next required gate: run a natural browser artifact mission and verify
   the resulting artifact lifecycle metadata remains visible on the mission.
+
+## 2026-06-01 18:46 CST - Browser Artifact Mission Registration
+
+Direction: unknown
+
+Execution Kernel:
+- Mission thread mirroring now registers browser artifact records from durable
+  worker results into the mission artifact store. This covers both legacy
+  assistant worker payloads and native split `role=tool` session result
+  messages.
+- The daemon wires the mission bridge to the browser artifact metadata store,
+  so real browser worker screenshots/snapshots can appear in
+  `/missions/:id/artifacts` instead of remaining only in worker payloads.
+
+Result Quality:
+- This fixes an evidence plumbing gap, not answer quality by itself. Final
+  answers still need natural real LLM gates to prove useful evidence-backed
+  output.
+- The mission artifact descriptor preserves artifact kind, path, byte size, and
+  lifecycle metadata from the browser artifact record.
+
+Workbench UX:
+- Mission Detail can now receive real browser artifacts through the same
+  artifact route that already renders lifecycle chips.
+- This slice does not add new UI controls; it makes the existing artifact panel
+  reflect runtime-produced browser evidence rather than only demo fixtures.
+
+Browser Reliability:
+- Browser transport behavior is unchanged. The improvement is post-execution
+  evidence registration after browser artifacts are already persisted.
+- Missing browser artifact records are skipped best-effort so timeline mirroring
+  does not block mission lifecycle reconciliation.
+
+Acceptance Evidence:
+- Focused regression: `npx tsx --test
+  packages/app-gateway/src/mission-thread-bridge.test.ts`: passed.
+- `npm run typecheck`: passed.
+- No natural real LLM E2E was run yet for this slice, so the capability remains
+  unproven until a real browser mission produces artifact records visible on
+  the mission route and Workbench page.
+
+Regression Risk:
+- The bridge now performs additional best-effort artifact-store reads during
+  mission mirroring when browser artifact ids are present. The read path is
+  bounded by the unique ids found in durable worker/tool messages.
+- Duplicate bridge ticks should not duplicate mission artifacts because the
+  registration path checks the existing mission artifact ids first.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? unknown
+- Evidence: real browser evidence can now flow into the mission artifact
+  surface, but no natural E2E has verified a full user-visible browser task
+  with registered lifecycle metadata.
+- If no, next required gate: run a natural browser artifact mission and confirm
+  `/missions/:id/artifacts` plus Mission Detail show the runtime-produced
+  browser artifact lifecycle fields.

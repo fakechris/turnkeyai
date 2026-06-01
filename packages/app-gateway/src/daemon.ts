@@ -31,6 +31,7 @@ import type {
 } from "@turnkeyai/core-types/team";
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 import { decodeBrowserSessionPayload } from "@turnkeyai/core-types/browser-session-payload";
+import { FileBrowserArtifactStore } from "@turnkeyai/browser-bridge/artifacts/file-browser-artifact-store";
 import {
   listBoundedRegressionCases,
   runBoundedRegressionSuite,
@@ -407,6 +408,11 @@ const missionThreadBridge = createMissionThreadBridge({
   workerSessionStore,
   teamMessageStore,
   activityStore: missionDeps.activityStore,
+  artifactStore: missionDeps.artifactStore,
+  browserArtifactStore: new FileBrowserArtifactStore({
+    rootDir: path.join(DATA_DIR, "browser-state", "artifacts"),
+    artifactRootDir: path.join(DATA_DIR, "browser-artifacts"),
+  }),
   newEventId: () => idGenerator.messageId(),
   clock,
 });

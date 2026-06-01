@@ -24,16 +24,22 @@
 // workloads keep these small. Revisit with per-thread indexes/cursors
 // when missions run long-form.
 
+import path from "node:path";
+
 import { KeyedAsyncMutex } from "@turnkeyai/shared-utils/async-mutex";
 
 import type {
   ActivityEvent,
   ActivityEventKind,
   ActivityEventStore,
+  Artifact,
+  ArtifactStore,
   Mission,
   MissionStore,
 } from "@turnkeyai/core-types/mission";
 import type {
+  BrowserArtifactRecord,
+  BrowserArtifactStore,
   Clock,
   RoleRunStore,
   TeamMessage,
@@ -56,6 +62,8 @@ export interface MissionThreadBridgeOptions {
   workerSessionStore?: Pick<WorkerSessionStore, "list">;
   teamMessageStore: Pick<TeamMessageStore, "list">;
   activityStore: Pick<ActivityEventStore, "append" | "listByMission">;
+  artifactStore?: Pick<ArtifactStore, "put" | "listByMission">;
+  browserArtifactStore?: Pick<BrowserArtifactStore, "get">;
   newEventId: () => string;
   clock: Clock;
   /** Max messages to scan per thread per tick. K3.5 demo threads stay
@@ -196,8 +204,53 @@ export function createMissionThreadBridge(
         }
       }
     }
+    await registerMissionArtifacts(mission, messages);
     await reconcileMissionLifecycle(mission, threadId, messages);
     return appended;
+  }
+
+  async function registerMissionArtifacts(
+    mission: Mission,
+    messages: TeamMessage[]
+  ): Promise<void> {
+    if (!options.artifactStore || !options.browserArtifactStore) {
+      return;
+    }
+    const artifactIds = collectBrowserArtifactIds(messages);
+    if (artifactIds.length === 0) {
+      return;
+    }
+    let existing: Artifact[];
+    try {
+      existing = await options.artifactStore.listByMission(mission.id);
+    } catch (error) {
+      logger.warn("mission artifact list failed", {
+        missionId: mission.id,
+        error: errorMessage(error),
+      });
+      return;
+    }
+    const existingIds = new Set(existing.map((artifact) => artifact.id));
+    await Promise.allSettled(
+      artifactIds
+        .filter((artifactId) => !existingIds.has(artifactId))
+        .map(async (artifactId) => {
+          const record = await options.browserArtifactStore!.get(artifactId);
+          if (!record) {
+            return;
+          }
+          await options.artifactStore!.put(toMissionArtifact(mission.id, record));
+        })
+    ).then((results) => {
+      for (const result of results) {
+        if (result.status === "rejected") {
+          logger.warn("mission artifact registration failed", {
+            missionId: mission.id,
+            error: errorMessage(result.reason),
+          });
+        }
+      }
+    });
   }
 
   async function reconcileMissionLifecycle(
@@ -1302,6 +1355,108 @@ function resolveActor(message: TeamMessage): string {
   if (message.roleId && message.roleId.length > 0) return message.roleId;
   if (message.name && message.name.length > 0) return message.name;
   return "agent.unknown";
+}
+
+function collectBrowserArtifactIds(messages: TeamMessage[]): string[] {
+  const artifactIds = new Set<string>();
+  for (const message of messages) {
+    addArtifactIds(artifactIds, readRecordMetadata(message.metadata, "workerPayload"));
+    addArtifactIds(artifactIds, readSessionToolPayload(message.content));
+    const toolUse = readRecordMetadata(message.metadata, "toolUse");
+    const rounds = Array.isArray(toolUse?.rounds) ? toolUse.rounds : [];
+    for (const round of rounds) {
+      if (!isRecord(round) || !Array.isArray(round.results)) {
+        continue;
+      }
+      for (const result of round.results) {
+        if (!isRecord(result) || typeof result.content !== "string") {
+          continue;
+        }
+        addArtifactIds(artifactIds, readSessionToolPayload(result.content));
+      }
+    }
+  }
+  return [...artifactIds];
+}
+
+function addArtifactIds(target: Set<string>, payload: Record<string, unknown> | null | undefined): void {
+  if (!payload || !Array.isArray(payload.artifactIds)) {
+    return;
+  }
+  for (const artifactId of payload.artifactIds) {
+    if (typeof artifactId === "string" && artifactId.trim()) {
+      target.add(artifactId.trim());
+    }
+  }
+}
+
+function readSessionToolPayload(content: string | undefined): Record<string, unknown> | null {
+  if (!content?.trim()) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || parsed.protocol !== "turnkeyai.session_tool_result.v1") {
+    return null;
+  }
+  return isRecord(parsed.payload) ? parsed.payload : null;
+}
+
+function toMissionArtifact(missionId: string, record: BrowserArtifactRecord): Artifact {
+  return {
+    id: record.artifactId,
+    missionId,
+    label: buildBrowserArtifactLabel(record),
+    kind: missionArtifactKind(record.type),
+    path: record.path,
+    ...(typeof record.sizeBytes === "number" ? { sizeBytes: record.sizeBytes } : {}),
+    createdAtMs: record.createdAt,
+    ...(record.lifecycle
+      ? {
+          lifecycle: {
+            storageBackend: record.lifecycle.storageBackend,
+            refType: record.lifecycle.refType,
+            retentionMs: record.lifecycle.retentionMs,
+            expiresAtMs: record.lifecycle.expiresAt,
+            maxArtifactBytes: record.lifecycle.maxArtifactBytes,
+            sessionBudgetBytes: record.lifecycle.sessionBudgetBytes,
+            cleanupOnSessionClose: record.lifecycle.cleanupOnSessionClose,
+            orphanReconciliation: record.lifecycle.orphanReconciliation,
+          },
+        }
+      : {}),
+  };
+}
+
+function buildBrowserArtifactLabel(record: BrowserArtifactRecord): string {
+  const label = readString(record.metadata?.label);
+  if (label) {
+    return label;
+  }
+  const filename = path.basename(record.path);
+  return filename || record.artifactId;
+}
+
+function missionArtifactKind(recordType: BrowserArtifactRecord["type"]): Artifact["kind"] {
+  switch (recordType) {
+    case "snapshot":
+      return "snapshot";
+    case "screenshot":
+      return "screenshot";
+    case "console-result":
+    case "trace":
+      return "json";
+    default:
+      return "other";
+  }
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function errorMessage(error: unknown): string {
