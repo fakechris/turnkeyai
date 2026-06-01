@@ -589,17 +589,25 @@ export function formatRealAcceptanceNaturalSummary(run: ValidationOpsReport["lat
   if (!naturalReport) {
     return null;
   }
+  const missingCoverage =
+    countOrZero(naturalReport.sourceAnswerTermsMissing) +
+    countOrZero(naturalReport.sourceAnswerPatternsMissing) +
+    countOrZero(naturalReport.sourceEvidencePatternsMissing);
   return [
-    `${naturalReport.passedScenarios}/${naturalReport.scenarioCount} natural scenarios`,
-    `evidence ${naturalReport.finalAnswerHasEvidence}/${naturalReport.scenarioCount}`,
-    `useful ${naturalReport.finalAnswerUseful}/${naturalReport.scenarioCount}`,
-    `source terms ${naturalReport.sourceAnswerTermsCovered}/${naturalReport.sourceAnswerTermsTotal}`,
-    `source patterns ${naturalReport.sourceAnswerPatternsCovered}/${naturalReport.sourceAnswerPatternsTotal}`,
-    `evidence patterns ${naturalReport.sourceEvidencePatternsCovered}/${naturalReport.sourceEvidencePatternsTotal}`,
-    `missing ${naturalReport.sourceAnswerTermsMissing + naturalReport.sourceAnswerPatternsMissing + naturalReport.sourceEvidencePatternsMissing}`,
-    `unsupported ${naturalReport.sourceUnsupportedClaims}`,
-    `risk ${naturalReport.sourceResidualRiskVisible}/${naturalReport.scenarioCount}`,
+    `${countOrZero(naturalReport.passedScenarios)}/${countOrZero(naturalReport.scenarioCount)} natural scenarios`,
+    `evidence ${countOrZero(naturalReport.finalAnswerHasEvidence)}/${countOrZero(naturalReport.scenarioCount)}`,
+    `useful ${countOrZero(naturalReport.finalAnswerUseful)}/${countOrZero(naturalReport.scenarioCount)}`,
+    `source terms ${countOrZero(naturalReport.sourceAnswerTermsCovered)}/${countOrZero(naturalReport.sourceAnswerTermsTotal)}`,
+    `source patterns ${countOrZero(naturalReport.sourceAnswerPatternsCovered)}/${countOrZero(naturalReport.sourceAnswerPatternsTotal)}`,
+    `evidence patterns ${countOrZero(naturalReport.sourceEvidencePatternsCovered)}/${countOrZero(naturalReport.sourceEvidencePatternsTotal)}`,
+    `missing ${missingCoverage}`,
+    `unsupported ${countOrZero(naturalReport.sourceUnsupportedClaims)}`,
+    `risk ${countOrZero(naturalReport.sourceResidualRiskVisible)}/${countOrZero(naturalReport.scenarioCount)}`,
   ].join(" · ");
+}
+
+function countOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function readableRuntimeError(error: unknown): string {

@@ -102,3 +102,21 @@ test("formatRealAcceptanceNaturalSummary stays hidden for legacy runs", () => {
     null
   );
 });
+
+test("formatRealAcceptanceNaturalSummary defaults missing source coverage fields to zero", () => {
+  const summary = formatRealAcceptanceNaturalSummary(
+    runWithNaturalReport({
+      status: "passed",
+      scenarioCount: 1,
+      passedScenarios: 1,
+      finalAnswerHasEvidence: 1,
+      finalAnswerUseful: 1,
+    } as unknown as NonNullable<NonNullable<ValidationOpsRunRecord["realAcceptance"]>["naturalMissionReport"]>)
+  );
+
+  assert.equal(
+    summary,
+    "1/1 natural scenarios · evidence 1/1 · useful 1/1 · source terms 0/0 · source patterns 0/0 · evidence patterns 0/0 · missing 0 · unsupported 0 · risk 0/1"
+  );
+  assert.equal(summary?.includes("NaN"), false);
+});
