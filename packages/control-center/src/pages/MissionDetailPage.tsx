@@ -58,6 +58,7 @@ import {
   type TimelineReplayItem,
   type ToolProcessItem,
 } from "../state/toolReplay";
+import { selectMissionFinalAnswer } from "../state/missionFinalAnswer";
 import { buildMissionProgressNow, type MissionProgressNow } from "../state/missionProgress";
 
 type TraceFilter = "all" | "agent" | "tools" | "approvals" | "recovery" | "evidence";
@@ -275,7 +276,7 @@ function LiveMissionView({ mission, onMissionUpdated }: { mission: Mission; onMi
     (count, item) => count + (item.kind === "tool-process" ? item.toolEvents.length : 0),
     0
   );
-  const finalAnswer = latestFinalAnswer(timeline.value);
+  const finalAnswer = selectMissionFinalAnswer({ mission, events: timeline.value, metrics: metrics.value });
   const progressNow = useMemo(
     () =>
       buildMissionProgressNow({
@@ -1907,16 +1908,6 @@ function SubAgentSessionRow({
 
 function isTerminalSession(session: WorkerSessionRecord): boolean {
   return ["done", "failed", "cancelled"].includes(session.state.status);
-}
-
-function latestFinalAnswer(events: ActivityEvent[]): ActivityEvent | null {
-  const candidates = events.filter(
-    (event) =>
-      event.kind === "thought" &&
-      event.text.trim().length > 0 &&
-      (event.runtime?.route === "lead-role" || event.actor === "role-lead")
-  );
-  return candidates.at(-1) ?? null;
 }
 
 function buildTraceFilterCounts(items: TimelineReplayItem[]): Record<TraceFilter, number> {
