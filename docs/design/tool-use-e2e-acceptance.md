@@ -121,8 +121,8 @@ The default natural mission leg is the production continuity matrix, covering
 multi-source comparison, browser-rendered evidence, browser follow-up, daemon
 restart continuation, cold browser-session recreation, non-browser follow-up,
 memory recall, approval-gated dry-run action, browser-unavailable closeout,
-denied approval safe closeout, timeout closeout, timeout follow-up, active
-cancellation, cancellation follow-up, and long delegation. Use
+denied approval safe closeout, pending approval state, timeout closeout,
+timeout follow-up, active cancellation, cancellation follow-up, and long delegation. Use
 `--natural-mission-scenarios` only for focused investigation; do not treat a
 focused subset as release evidence for the full continuity matrix.
 

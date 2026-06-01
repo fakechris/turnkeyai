@@ -4498,3 +4498,80 @@ Convergence question:
   runtime state.
 - Next required gate: pending approval / no-decision behavior and broader
   browser reliability failure injection remain separate P0 proof items.
+
+## 2026-06-01 12:02 CST - Natural Pending Approval State Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added a natural pending-approval scenario to the default natural mission
+  matrix. The scenario requests a browser form side effect and intentionally
+  leaves the operator decision unresolved.
+- The natural quality evaluator now supports an expected `needs_approval`
+  mission state. For this state, `permission.query` is the capability evidence:
+  `permission.result` and `permission.applied` must be absent, approvals must
+  be `requested=1, decided=0, applied=0`, and the mission must remain
+  `needs_approval`.
+- This closes the remaining no-decision branch of the approval state machine at
+  the acceptance level: approved, denied, and pending now each have explicit
+  natural gates.
+
+Result Quality:
+- The real run stopped before browser side-effect execution, exposed the
+  approval request in the mission timeline, and did not produce a fake final
+  answer that implied work had completed.
+- The scenario treats a paused approval state as successful only when it is
+  visible and bounded. It does not accept hidden decisions, permission
+  application, browser worker execution, or stale liveness.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The evidence supports the workbench expectation that users can see a mission
+  paused for approval instead of confusing it with a stuck `working` mission or
+  a completed result.
+
+Browser Reliability:
+- No browser runtime behavior changed.
+- The relevant safety property is non-execution: pending approval did not apply
+  permission and did not spawn browser work.
+
+Acceptance Evidence:
+- Focused deterministic checks:
+  `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts
+  packages/qc-runtime/src/real-llm-acceptance-defaults.test.ts`: passed,
+  37 tests.
+- Acceptance summary checks:
+  `npx tsx --test scripts/real-llm-acceptance.test.ts
+  packages/qc-runtime/src/real-llm-acceptance-summary.test.ts
+  packages/qc-runtime/src/validation-ops-inspection.test.ts`: passed,
+  23 tests.
+- `npm run typecheck`: passed.
+- Real LLM natural matrix:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-approval-pending-state
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-approval-pending-state.json`: passed.
+- Natural report: `/tmp/turnkeyai-natural-approval-pending-state.json`, kind
+  `turnkeyai.natural-mission-e2e.report`, evidence mode `natural-real-llm`,
+  status `passed`.
+- Natural mission: `msn.mpuollw5.1`, status `needs_approval`, natural
+  `passed`, approvals `1/0/0`, tools `0/0`, sessions `0/0`, browser `no`,
+  profile fallback `0`, liveness `0/0/0`, weak-answer signals `none`, final
+  bytes `188`.
+
+Regression Risk:
+- This broadens the meaning of natural scenario "completed" to include an
+  expected paused `needs_approval` state. The scope is explicit in the scenario
+  spec; normal scenarios still require `done`.
+- Full `acceptance:real` has not been rerun in this checkpoint. The focused
+  real gate proves pending approval behavior only.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes, for
+  permission-gated side-effect control.
+- Evidence: a natural prompt now proves the unresolved approval branch:
+  user-visible pending state, no decision, no permission application, no
+  browser side effect, and no stuck runtime liveness.
+- Next required gate: broaden browser reliability failure injection under
+  natural prompts, especially attach failure, command timeout, and target detach
+  buckets.
