@@ -67,6 +67,7 @@ export class LocalAutomationBrowserAdapter implements BrowserTransportAdapter {
       }),
       browserArtifactStore: new FileBrowserArtifactStore({
         rootDir: path.join(stateRootDir, "artifacts"),
+        artifactRootDir: options.artifactRootDir,
       }),
     });
   }
