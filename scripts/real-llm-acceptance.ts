@@ -472,7 +472,7 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
     if (!input.missionJsonPresent || !input.missionReport) {
       throw new Error("real acceptance passed without a mission E2E report artifact");
     }
-    assertScenarioCoverage("mission E2E", input.missionScenarios, input.missionReport.scenarioIds);
+    assertScenarioCoverage("mission E2E", input.missionScenarios, input.missionReport.scenarioIds ?? []);
     if (
       input.missionReport.status !== "passed" ||
       input.missionReport.scenarioCount !== input.missionScenarios.length ||
@@ -492,7 +492,7 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
     if (!input.naturalMissionJsonPresent || !input.naturalMissionReport) {
       throw new Error("real acceptance passed without a natural mission E2E report artifact");
     }
-    assertScenarioCoverage("natural mission", input.naturalMissionScenarios, input.naturalMissionReport.scenarioIds);
+    assertScenarioCoverage("natural mission", input.naturalMissionScenarios, input.naturalMissionReport.scenarioIds ?? []);
     if (
       input.naturalMissionReport.status !== "passed" ||
       input.naturalMissionReport.scenarioCount !== input.naturalMissionScenarios.length ||

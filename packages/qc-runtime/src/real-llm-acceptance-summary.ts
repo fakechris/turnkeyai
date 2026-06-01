@@ -114,7 +114,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
         Array.isArray(scenario.final?.qualityFailures) &&
         scenario.final.qualityFailures.length === 0;
       const scenarioId = readString(scenario.scenario);
-      if (scenarioId) summary.scenarioIds.push(scenarioId);
+      if (scenarioId) (summary.scenarioIds ??= []).push(scenarioId);
       summary.passedScenarios += passing ? 1 : 0;
       summary.failedScenarios += passing ? 0 : 1;
       summary.qualityFailures += Array.isArray(scenario.final?.qualityFailures)
@@ -222,7 +222,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
     (summary, scenario) => {
       const passing = scenario.natural?.status === "passed";
       const scenarioId = readString(scenario.scenario);
-      if (scenarioId) summary.scenarioIds.push(scenarioId);
+      if (scenarioId) (summary.scenarioIds ??= []).push(scenarioId);
       summary.passedScenarios += passing ? 1 : 0;
       summary.failedScenarios += passing ? 0 : 1;
       summary.completed += scenario.natural?.completed === true ? 1 : 0;
