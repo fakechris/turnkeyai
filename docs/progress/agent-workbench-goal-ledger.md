@@ -5636,3 +5636,76 @@ Convergence question:
 - If no, next required gate: run `npm run acceptance:real -- --model-catalog
   models.local.json` and confirm the recorded validation-ops row includes the
   natural source-coverage line.
+
+## 2026-06-01 20:26 CST - Natural Residual-Risk Gate
+
+Direction: converging
+
+Execution Kernel:
+- Runtime execution did not change. The natural mission acceptance evaluator now
+  treats missing residual-risk visibility as a quality failure instead of only
+  recording it as a passive counter.
+- The natural E2E report also declares `residual-risk-visible` and
+  `no-unsupported-claims` as required quality signals, so future artifacts state
+  the full answer-quality contract they enforce.
+
+Result Quality:
+- A focused real natural browser run initially failed because the model returned
+  a useful operational dashboard answer but omitted residual risk. That exposed
+  a real prompt-harness gap rather than a fixture-only issue.
+- The browser dynamic natural prompt now asks for residual risk or unverified
+  scope in natural product language. A rerun passed with residual-risk
+  visibility, complete source coverage, and zero unsupported claims.
+
+Workbench UX:
+- No UI changed. The user-visible benefit is that Runtime's existing natural
+  source-coverage line now reflects an enforced residual-risk gate, not only a
+  reported count.
+
+Browser Reliability:
+- Browser execution behavior is unchanged. The rerun used the browser worker,
+  produced lifecycle-bearing artifacts, had zero profile fallbacks, no browser
+  failure buckets, and no live runtime subjects at completion.
+
+Acceptance Evidence:
+- Initial focused real gate, before prompt-harness correction:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-browser-dynamic-page --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-residual-risk-gate-20260601.json`: failed on
+  `final answer does not make residual risk visible`.
+- Rerun after correction:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-browser-dynamic-page --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-residual-risk-gate-20260601-rerun.json`: passed.
+- Mission: `msn.mpv6m0p5.1`, status `done`, natural `passed`, tools `1/1`,
+  sessions `1/0`, browser used, artifacts `4`, lifecycle-bearing artifacts
+  `4`, profile fallbacks `0`, browser buckets `none`, liveness `0/0/0`.
+- Source coverage from the rerun artifact: answer terms `2/2`, answer patterns
+  `1/1`, evidence patterns `3/3`, evidence events `1/1`, residual risk
+  visible, unsupported claims `0`.
+- Focused report and validation tests:
+  `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts
+  scripts/real-llm-acceptance.test.ts
+  packages/qc-runtime/src/real-llm-acceptance-summary.test.ts`: passed.
+- Typecheck: `npm run typecheck`: passed.
+- Whitespace: `git diff --check`: passed.
+
+Regression Risk:
+- This intentionally tightens the natural E2E pass criteria. Scenarios that
+  previously passed while hiding residual risk will now fail and need prompt or
+  runtime evidence improvements.
+- Only a focused natural browser scenario ran for real LLM/browser acceptance.
+  The next broader gate should include comparison, approval, timeout,
+  cancellation, and long delegation to verify the stricter quality rule across
+  the full natural matrix.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes
+- Evidence: the stricter gate caught a real weak-answer class in a natural
+  browser task, the prompt harness was corrected, and the same real scenario
+  then completed with residual risk and source coverage visible.
+- If no, next required gate: run a broader natural matrix subset covering
+  comparison, approval, timeout, cancellation, and long delegation.

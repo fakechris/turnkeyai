@@ -255,6 +255,7 @@ describe("mission tool-use e2e report", () => {
           "The approval for the dry-run browser form submission was denied.",
           "The runtime did not submit or apply the browser action, so no side effect ran.",
           "Recommended next action: revise the request for operator approval or keep the safe fallback without submitting the form.",
+          "Residual risk remains that the form outcome is unverified until an operator approves a future dry run.",
         ].join(" "),
         tMs: 2000,
       },
@@ -328,7 +329,7 @@ describe("mission tool-use e2e report", () => {
       },
       {
         kind: "approval",
-        text: "Requested approval · <b>browser.form.submit</b> · approval required before side effect; operator decision is pending before any form submission can run.",
+        text: "Requested approval · <b>browser.form.submit</b> · approval required before side effect; operator decision is pending before any form submission can run. Residual risk remains until the operator decides.",
         tMs: 1200,
         approvalId: "approval-1",
         runtime: { eventType: "permission.query", status: "pending", approvalId: "approval-1" },
@@ -643,6 +644,8 @@ describe("mission tool-use e2e report", () => {
     assert.equal(report.promptPolicy.forbidsContractGateLanguage, true);
     assert.ok(report.promptPolicy.forbiddenPatterns.some((pattern) => pattern.includes("exactly once")));
     assert.ok(report.requiredQualitySignals.includes("source-backed-evidence"));
+    assert.ok(report.requiredQualitySignals.includes("residual-risk-visible"));
+    assert.ok(report.requiredQualitySignals.includes("no-unsupported-claims"));
     assert.ok(report.requiredQualitySignals.includes("browser-profile-fallback-policy"));
     assert.ok(report.requiredQualitySignals.includes("browser-failure-bucket-policy"));
     assert.equal(report.status, "passed");
@@ -749,6 +752,42 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.sourceCoverage.residualRiskVisible, true);
     assert.ok(quality.failures.includes("missing evidence rendered queue depth"));
     assert.ok(quality.failures.includes("forbidden unsupported rendered queue depth"));
+  });
+
+  it("fails natural quality when the final answer hides residual risk", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-dynamic-page", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      requiredAnswerTerms: ["Queue depth", "SLA breaches", "Incident Commander"],
+    };
+    result.final.text = [
+      "Queue depth is 11 with 3 SLA breaches.",
+      "Incident Commander should own the escalation.",
+      "The recommended next action is to prioritize browser-visible operator evidence and continue the incident follow-up with source-backed checks.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.status, "failed");
+    assert.equal(quality.sourceCoverage.residualRiskVisible, false);
+    assert.ok(quality.failures.includes("final answer does not make residual risk visible"));
   });
 
   it("requires mission artifact lifecycle evidence for natural browser dynamic page", () => {
