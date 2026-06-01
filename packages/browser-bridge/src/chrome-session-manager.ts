@@ -3248,11 +3248,7 @@ async function shouldInjectBrowserProfileLock(persistentDir: string): Promise<bo
   ) {
     return true;
   }
-  const sentinelPath =
-    process.env.TURNKEYAI_E2E_BROWSER_PROFILE_LOCK_SENTINEL?.trim() ||
-    (process.env.TURNKEYAI_HOME?.trim()
-      ? path.join(process.env.TURNKEYAI_HOME.trim(), "browser-profile-lock-sentinel.json")
-      : "");
+  const sentinelPath = process.env.TURNKEYAI_E2E_BROWSER_PROFILE_LOCK_SENTINEL?.trim() || "";
   if (!sentinelPath) {
     return false;
   }
