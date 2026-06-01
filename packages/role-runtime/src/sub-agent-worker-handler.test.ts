@@ -361,6 +361,48 @@ test("LLMSubAgentWorkerHandler promotes browser private recovery metadata above 
   });
 });
 
+test("LLMSubAgentWorkerHandler preserves browser profile fallback metadata from private tools", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_open", { url: "https://example.test" });
+    }
+    return textResult("Profile fallback was handled and page evidence was captured.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        return browserResult({
+          profileFallback: {
+            reason: "profile_locked",
+            persistentDir: "/tmp/primary-profile",
+            fallbackDir: "/tmp/fallback-profile",
+          },
+        });
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  const toolMessage = gatewayInputs[1]?.messages.find((message) => message.role === "tool");
+  const toolContent = readToolContent(toolMessage?.content ?? "");
+  assert.match(toolContent, /Profile fallback: profile_locked/);
+  assert.match(toolContent, /"profileFallback"/);
+  const toolPayload = JSON.parse(toolContent) as {
+    payload?: { profileFallback?: { reason?: string; fallbackDir?: string } };
+  };
+  assert.equal(toolPayload.payload?.profileFallback?.reason, "profile_locked");
+  assert.equal(toolPayload.payload?.profileFallback?.fallbackDir, "/tmp/fallback-profile");
+});
+
 test("LLMSubAgentWorkerHandler reports failed private browser action traces as tool errors", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -853,6 +895,7 @@ function browserResult(input: {
   sessionId?: string;
   targetId?: string;
   resumeMode?: BrowserTaskResult["resumeMode"];
+  profileFallback?: BrowserTaskResult["profileFallback"];
   title?: string;
   finalUrl?: string;
   traceKinds?: string[];
@@ -864,6 +907,7 @@ function browserResult(input: {
     transportMode: "direct-cdp",
     transportLabel: "direct-cdp",
     resumeMode: input.resumeMode ?? "hot",
+    ...(input.profileFallback ? { profileFallback: input.profileFallback } : {}),
     page: {
       requestedUrl: input.finalUrl ?? "https://example.test/",
       finalUrl: input.finalUrl ?? "https://example.test/",

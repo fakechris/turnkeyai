@@ -34,6 +34,7 @@ export const DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS = [
   "natural-browser-followup-continuation",
   "natural-browser-restart-continuation",
   "natural-browser-cold-recreation-continuation",
+  "natural-browser-profile-lock-recovery",
   "natural-followup-continuation",
   "natural-memory-recall",
   "natural-approval-dry-run-action",

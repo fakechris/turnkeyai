@@ -148,10 +148,12 @@ export function extractWorkerEvidenceSummary(result: WorkerExecutionResult | nul
     return null;
   }
   const payload = result.payload as Record<string, unknown>;
+  const browserProfileFallback = extractBrowserProfileFallbackSummary(payload);
   const page = payload["page"];
   if (page && typeof page === "object" && !Array.isArray(page)) {
     const pageRecord = page as Record<string, unknown>;
     const lines = [
+      browserProfileFallback,
       readString(pageRecord["finalUrl"]) ? `Final URL: ${readString(pageRecord["finalUrl"])}` : null,
       readString(pageRecord["title"]) ? `Page title: ${readString(pageRecord["title"])}` : null,
       readString(pageRecord["textExcerpt"]) ? `Excerpt: ${readString(pageRecord["textExcerpt"])}` : null,
@@ -161,7 +163,7 @@ export function extractWorkerEvidenceSummary(result: WorkerExecutionResult | nul
       return summary;
     }
   }
-  return sanitizeEvidenceSummary(readString(payload["content"]));
+  return sanitizeEvidenceSummary([browserProfileFallback, readString(payload["content"])].filter(Boolean).join("\n"));
 }
 
 export function sanitizeEvidenceSummary(value: string | null | undefined): string | null {
@@ -249,6 +251,23 @@ function readStatus(value: unknown): SessionToolResultStatus | null {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function extractBrowserProfileFallbackSummary(payload: Record<string, unknown>): string | null {
+  const browserRecovery = payload["browserRecovery"];
+  if (!isRecord(browserRecovery)) {
+    return null;
+  }
+  const profileFallback = browserRecovery["profileFallback"];
+  if (!isRecord(profileFallback)) {
+    return null;
+  }
+  const reason = readString(profileFallback["reason"]);
+  const fallbackDir = readString(profileFallback["fallbackDir"]);
+  if (reason !== "profile_locked" || !fallbackDir) {
+    return null;
+  }
+  return `Profile fallback: ${reason}; persistent profile was unavailable, used ${fallbackDir}.`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

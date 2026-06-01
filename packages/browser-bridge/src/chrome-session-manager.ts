@@ -1,4 +1,4 @@
-import { access, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { Buffer } from "node:buffer";
 import path from "node:path";
 
@@ -885,6 +885,19 @@ export class ChromeSessionManager {
     browserSessionId: string,
     persistentDir: string
   ): Promise<{ context: BrowserContext; profileFallback?: BrowserTaskResult["profileFallback"] }> {
+    if (await shouldInjectBrowserProfileLock(persistentDir)) {
+      const lockedProfile = this.livePersistentContexts.get(persistentDir);
+      if (lockedProfile && !lockedProfile.fallbackDir) {
+        const context = await lockedProfile.context.catch(() => null);
+        if (context) {
+          await safeClose(context);
+        }
+        this.forgetPersistentContext(persistentDir, lockedProfile);
+      }
+      this.liveContexts.delete(browserSessionId);
+      this.sessionPersistentDirs.delete(browserSessionId);
+    }
+
     const existing = this.liveContexts.get(browserSessionId);
     if (existing) {
       const context = await existing;
@@ -947,6 +960,9 @@ export class ChromeSessionManager {
     persistentDir: string
   ): Promise<{ context: BrowserContext; fallbackDir?: string }> {
     try {
+      if (await shouldInjectBrowserProfileLock(persistentDir)) {
+        throw new Error(`ProcessSingleton: profile is already in use: ${persistentDir}`);
+      }
       return { context: await this.launchPersistentContext(persistentDir) };
     } catch (error) {
       if (!isBrowserProfileLockError(error)) {
@@ -3223,6 +3239,38 @@ function summarizeBrowserFailureSummary(error: unknown): FailureSummary {
     message: error instanceof Error ? error.message : "browser execution failed",
     recommendedAction: "retry",
   };
+}
+
+async function shouldInjectBrowserProfileLock(persistentDir: string): Promise<boolean> {
+  if (
+    process.env.TURNKEYAI_E2E_BROWSER_PROFILE_LOCK_ALWAYS === "1" &&
+    !persistentDir.includes(`${path.sep}_runtime-fallback${path.sep}`)
+  ) {
+    return true;
+  }
+  const sentinelPath = process.env.TURNKEYAI_E2E_BROWSER_PROFILE_LOCK_SENTINEL?.trim() || "";
+  if (!sentinelPath) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+      anyPrimaryProfile?: unknown;
+      enabled?: unknown;
+      persistentDir?: unknown;
+    };
+    if (parsed.enabled !== true) {
+      return false;
+    }
+    if (parsed.anyPrimaryProfile === true && !persistentDir.includes(`${path.sep}_runtime-fallback${path.sep}`)) {
+      return true;
+    }
+    if (typeof parsed.persistentDir !== "string") {
+      return false;
+    }
+    return parsed.persistentDir === persistentDir || path.resolve(parsed.persistentDir) === path.resolve(persistentDir);
+  } catch {
+    return false;
+  }
 }
 
 function isBrowserProfileLockError(error: unknown): boolean {

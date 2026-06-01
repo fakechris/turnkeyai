@@ -95,6 +95,39 @@ test("session tool result protocol persists browser page evidence summary", () =
   assert.match(parsed?.evidence_summary ?? "", /Approval Gate Fixture/);
 });
 
+test("session tool result protocol lifts browser profile fallback into evidence summary", () => {
+  const result = buildSessionToolResult({
+    taskId: "task-1",
+    sessionKey: "worker:browser:task-1",
+    agentId: "browser",
+    missingResultMessage: "missing",
+    result: {
+      workerType: "browser",
+      status: "completed",
+      summary: "Browser sub-agent finished.",
+      payload: {
+        mode: "llm_sub_agent",
+        workerType: "browser",
+        browserRecovery: {
+          resumeMode: "warm",
+          sessionId: "browser-session-1",
+          profileFallback: {
+            reason: "profile_locked",
+            persistentDir: "/tmp/profile",
+            fallbackDir: "/tmp/profile-fallback",
+          },
+        },
+        content: "Verified dashboard queue depth 11.",
+      },
+    },
+  });
+
+  assert.match(result.evidence_summary ?? "", /Profile fallback: profile_locked/);
+  assert.match(result.evidence_summary ?? "", /Verified dashboard queue depth 11/);
+  const parsed = parseSessionToolResult(serializeSessionToolResult(result));
+  assert.match(parsed?.evidence_summary ?? "", /profile-fallback/);
+});
+
 test("session tool result protocol normalizes legacy session results", () => {
   const parsed = parseSessionToolResult(
     JSON.stringify({
