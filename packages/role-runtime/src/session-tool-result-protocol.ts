@@ -35,6 +35,7 @@ export function buildSessionToolResult(input: {
   parentSessionKey?: string | null;
   toolCallId?: string | null;
 }): SessionToolResultV1 {
+  const evidenceSummary = extractWorkerEvidenceSummary(input.result);
   return {
     protocol: SESSION_TOOL_RESULT_PROTOCOL,
     task_id: input.taskId,
@@ -45,6 +46,7 @@ export function buildSessionToolResult(input: {
     ...(input.toolCallId ? { tool_call_id: input.toolCallId } : {}),
     status: input.result?.status ?? "failed",
     ...(input.cached ? { cached: true } : {}),
+    ...(evidenceSummary ? { evidence_summary: evidenceSummary } : {}),
     tool_chain: input.result ? [input.result.workerType] : [],
     result: input.result?.summary ?? input.missingResultMessage,
     final_content: extractWorkerFinalContent(input.result),
@@ -139,6 +141,27 @@ export function extractWorkerFinalContent(result: WorkerExecutionResult | null):
   }
   const content = (result.payload as Record<string, unknown>).content;
   return typeof content === "string" && content.trim().length > 0 ? content : null;
+}
+
+export function extractWorkerEvidenceSummary(result: WorkerExecutionResult | null): string | null {
+  if (!result || !result.payload || typeof result.payload !== "object" || Array.isArray(result.payload)) {
+    return null;
+  }
+  const payload = result.payload as Record<string, unknown>;
+  const page = payload["page"];
+  if (page && typeof page === "object" && !Array.isArray(page)) {
+    const pageRecord = page as Record<string, unknown>;
+    const lines = [
+      readString(pageRecord["finalUrl"]) ? `Final URL: ${readString(pageRecord["finalUrl"])}` : null,
+      readString(pageRecord["title"]) ? `Page title: ${readString(pageRecord["title"])}` : null,
+      readString(pageRecord["textExcerpt"]) ? `Excerpt: ${readString(pageRecord["textExcerpt"])}` : null,
+    ].filter((line): line is string => Boolean(line));
+    const summary = sanitizeEvidenceSummary(lines.join("\n"));
+    if (summary) {
+      return summary;
+    }
+  }
+  return sanitizeEvidenceSummary(readString(payload["content"]));
 }
 
 export function sanitizeEvidenceSummary(value: string | null | undefined): string | null {
