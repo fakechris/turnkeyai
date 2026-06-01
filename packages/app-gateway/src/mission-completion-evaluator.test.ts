@@ -122,6 +122,10 @@ describe("MissionCompletionEvaluator", () => {
       mission,
       messages: [
         {
+          ...message("u-1", "user", 50),
+          content: "Please answer.",
+        },
+        {
           ...message("a-final", "assistant", 100),
           roleId: "role-lead",
           name: "Lead",
@@ -135,6 +139,125 @@ describe("MissionCompletionEvaluator", () => {
       reason: "final_answer",
       patch: { status: "done", progress: 1 },
     });
+  });
+
+  it("does not reuse a prior final answer after a newer user follow-up", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Initial task.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Initial final answer.",
+        },
+        {
+          ...message("u-2", "user", 200),
+          content: "Follow up with one more check.",
+        },
+      ],
+      roleRuns: [],
+    });
+    assert.deepEqual(decision, { action: "none", reason: "awaiting_work" });
+  });
+
+  it("uses message order rather than timestamps to detect stale follow-up answers", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 100),
+          content: "Initial task.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Initial final answer.",
+        },
+        {
+          ...message("u-2", "user", 100),
+          content: "Follow up in the same millisecond.",
+        },
+      ],
+      roleRuns: [],
+    });
+    assert.deepEqual(decision, { action: "none", reason: "awaiting_work" });
+  });
+
+  it("accepts a new final answer after the latest same-timestamp follow-up", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 100),
+          content: "Initial task.",
+        },
+        {
+          ...message("a-final-old", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Initial final answer.",
+        },
+        {
+          ...message("u-2", "user", 100),
+          content: "Follow up in the same millisecond.",
+        },
+        {
+          ...message("a-final-new", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Follow-up final answer with evidence.",
+        },
+      ],
+      roleRuns: [],
+    });
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
+  it("does not let a prior final answer hide a later stalled tool turn", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Initial task.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Initial final answer.",
+        },
+        {
+          ...message("u-2", "user", 200),
+          content: "Check the browser page again.",
+        },
+        {
+          ...message("a-tool", "assistant", 300),
+          roleId: "role-lead",
+          name: "Lead",
+          toolCalls: [{ id: "call-1", name: "sessions_send", arguments: { session_key: "worker:browser:1" } }],
+          toolStatus: "pending" as const,
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "stalled_tool_turn");
+      assert.deepEqual(decision.patch, { status: "blocked", blockers: 1 });
+      assert.equal(decision.recovery?.kind, "stalled_tool_turn");
+      assert.equal(decision.recovery?.status, "pending");
+    }
   });
 
   it("blocks incomplete final answer only when no role run is active", () => {

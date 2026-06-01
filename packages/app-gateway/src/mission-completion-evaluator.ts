@@ -203,18 +203,32 @@ function findLatestLeadAnswerCandidate(
   mission: Mission,
   messages: TeamMessage[]
 ): TeamMessage | null {
-  const candidates = messages
-    .filter((message) => {
-      if (message.role !== "assistant") return false;
-      const content = message.content.trim();
-      if (content.length === 0) return false;
-      if (!isLeadAssistantMessage(mission, message)) return false;
-      if (message.toolStatus === "pending") return false;
-      if (/@\{[^}]+\}/.test(content)) return false;
-      return true;
-    })
-    .sort((a, b) => a.createdAt - b.createdAt);
-  return candidates.at(-1) ?? null;
+  const staleBeforeIndex = Math.max(
+    findLatestUserMessageIndex(messages),
+    findLatestLeadToolMessageIndex(mission, messages)
+  );
+  let latest: TeamMessage | null = null;
+  for (const [index, message] of messages.entries()) {
+    if (message.role !== "assistant") continue;
+    const content = message.content.trim();
+    if (content.length === 0) continue;
+    if (!isLeadAssistantMessage(mission, message)) continue;
+    if ((message.toolCalls?.length ?? 0) > 0) continue;
+    if (message.toolStatus === "pending") continue;
+    if (index <= staleBeforeIndex) continue;
+    if (/@\{[^}]+\}/.test(content)) continue;
+    latest = message;
+  }
+  return latest;
+}
+
+function findLatestUserMessageIndex(messages: TeamMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function isIncompleteLeadFinalAnswer(
@@ -335,11 +349,22 @@ function findCompletedLeadToolTurnWithoutFinal(
 }
 
 function findLatestLeadToolMessage(mission: Mission, messages: TeamMessage[]): TeamMessage | null {
-  const leadMessages = messages
-    .filter((message) => message.role === "assistant" && isLeadAssistantMessage(mission, message))
-    .filter((message) => (message.toolCalls?.length ?? 0) > 0)
-    .sort((a, b) => a.createdAt - b.createdAt);
-  return leadMessages.at(-1) ?? null;
+  const index = findLatestLeadToolMessageIndex(mission, messages);
+  return index >= 0 ? messages[index]! : null;
+}
+
+function findLatestLeadToolMessageIndex(mission: Mission, messages: TeamMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (
+      message.role === "assistant" &&
+      isLeadAssistantMessage(mission, message) &&
+      (message.toolCalls?.length ?? 0) > 0
+    ) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function isTimeoutToolTurn(assistant: TeamMessage, messages: TeamMessage[]): boolean {
