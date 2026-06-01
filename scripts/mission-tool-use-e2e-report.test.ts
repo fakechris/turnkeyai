@@ -828,6 +828,55 @@ describe("mission tool-use e2e report", () => {
     assert.deepEqual(quality.failures, []);
   });
 
+  it("requires browser CDP timeout natural closeout to carry the timeout bucket", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-browser-cdp-timeout-closeout", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.metrics.tool.failed = 1;
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: "cdp_command_timeout: browser snapshot CDP command timed out while capturing rendered page evidence.",
+    };
+    result.final.text = [
+      "The browser snapshot timed out, so the rendered dashboard could not be fully verified.",
+      "Verified: the requested source was the operations dashboard URL and the browser attempt reached the snapshot stage.",
+      "Unverified: rendered queue depth, SLA breach count, owner, escalation trigger, and any client-side dashboard state.",
+      "Next action: retry the browser review after checking CDP health; do not make an operational decision from the incomplete rendered evidence.",
+    ].join(" ");
+
+    const missingBucketQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(missingBucketQuality.failures.includes("missing browser failure bucket cdp_command_timeout"));
+
+    result.metrics.browser = {
+      ...result.metrics.browser,
+      failureBuckets: [{ bucket: "cdp_command_timeout", count: 1, latestAtMs: 2_000 }],
+    };
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+  });
+
   it("rejects browser-unavailable closeout that claims unsupported rendered dashboard facts", () => {
     const result = fakeNaturalResult();
     const spec = buildNaturalScenarioSpec("natural-browser-unavailable-closeout", {

@@ -75,6 +75,7 @@ export type NaturalMissionE2eScenario =
   | "natural-approval-denied-safe-closeout"
   | "natural-approval-pending-state"
   | "natural-browser-unavailable-closeout"
+  | "natural-browser-cdp-timeout-closeout"
   | "natural-timeout-partial-closeout"
   | "natural-timeout-followup-continuation"
   | "natural-cancel-active-tool"
@@ -94,6 +95,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-approval-denied-safe-closeout",
   "natural-approval-pending-state",
   "natural-browser-unavailable-closeout",
+  "natural-browser-cdp-timeout-closeout",
   "natural-timeout-partial-closeout",
   "natural-timeout-followup-continuation",
   "natural-cancel-active-tool",
@@ -1351,6 +1353,9 @@ async function runNaturalMissionScenario(input: {
   if (input.scenario === "natural-browser-unavailable-closeout") {
     return runNaturalBrowserUnavailableScenario(input);
   }
+  if (input.scenario === "natural-browser-cdp-timeout-closeout") {
+    return runNaturalBrowserCdpTimeoutScenario(input);
+  }
   if (input.scenario === "natural-cancel-active-tool") {
     return runNaturalCancelScenario(input);
   }
@@ -1444,6 +1449,61 @@ async function runNaturalBrowserUnavailableScenario(input: {
     });
     const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
     assertNaturalMissionQualityPassed(scenarioResult, "natural mission natural-browser-unavailable-closeout quality failures");
+    return scenarioResult;
+  } finally {
+    await restartDaemon({});
+  }
+}
+
+async function runNaturalBrowserCdpTimeoutScenario(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  runtimeRoot: string;
+  scenario: NaturalMissionE2eScenario;
+  timeoutMs: number;
+  restartDaemon?: (envOverrides?: Record<string, string>) => Promise<void>;
+}): Promise<NaturalMissionScenarioResult> {
+  const { restartDaemon } = input;
+  assert.ok(restartDaemon, "natural browser CDP timeout closeout requires a daemon restart hook");
+  await restartDaemon({
+    TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_BUCKET: "cdp_command_timeout",
+    TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_ACTION: "snapshot",
+    TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_REPEAT: "1",
+  });
+  try {
+    const spec = buildNaturalScenarioSpec("natural-browser-cdp-timeout-closeout", input.fixture);
+    assertNaturalPromptAllowed(spec.desc);
+    const mission = await createNaturalMission({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      spec,
+    });
+    assert.ok(mission.threadId, "natural browser CDP timeout mission requires a linked team thread");
+    const result = await waitForNaturalMissionCompletion({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: input.timeoutMs,
+      allowBlocked: true,
+    });
+    const metrics = await waitForMissionMetricsSettled({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      missionId: mission.id,
+      timeoutMs: 20_000,
+    });
+    const final = findLatestThoughtEvent(result.timeline);
+    assert.ok(final, "natural browser CDP timeout mission timeline must include a final assistant answer");
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+    });
+    const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+    assertNaturalMissionQualityPassed(scenarioResult, "natural mission natural-browser-cdp-timeout-closeout quality failures");
     return scenarioResult;
   } finally {
     await restartDaemon({});
@@ -2841,6 +2901,40 @@ export function buildNaturalScenarioSpec(
         { label: "unsupported rendered owner", pattern: /Incident Commander/i },
       ],
       allowedWeakAnswerSignals: ["tool unavailable fallback"],
+    };
+  }
+  if (scenario === "natural-browser-cdp-timeout-closeout") {
+    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
+    return {
+      scenario,
+      title: "Natural browser CDP timeout closeout",
+      desc: [
+        "Review this operations dashboard as a user would see it in the browser.",
+        `Dashboard: ${dynamicUrl}`,
+        "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
+        "If the browser times out while capturing the rendered page, close out with what was verified, what remains unverified, and the next action an operator should take.",
+      ].join("\n"),
+      minBytes: 260,
+      minToolResults: 1,
+      maxToolResults: 5,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 3,
+      requiresBrowser: true,
+      requiresApproval: false,
+      allowToolFailure: true,
+      requiredBrowserFailureBuckets: ["cdp_command_timeout"],
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["browser", "verified", "unverified", "next action"],
+      requiredAnswerPatterns: [
+        { label: "timeout closeout", pattern: /\b(?:timed out|timeout|did not complete)\b/i },
+        {
+          label: "bounded CDP limitation",
+          pattern: /\b(?:CDP|snapshot|capture|browser)\b[\s\S]{0,120}\b(?:timeout|timed out|unverified|not complete|incomplete)\b/i,
+        },
+      ],
+      requiredEvidencePatterns: [
+        { label: "browser CDP timeout bucket", pattern: /cdp_command_timeout|CDP command timed out|browser snapshot CDP command timed out/i },
+      ],
     };
   }
   if (scenario === "natural-timeout-partial-closeout") {

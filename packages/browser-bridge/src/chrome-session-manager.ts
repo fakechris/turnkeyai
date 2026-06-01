@@ -89,6 +89,7 @@ interface LocalDownloadArtifact {
 
 const pageNetworkBlockHandlers = new WeakMap<Page, (route: Route) => void>();
 const pageNetworkMockHandlers = new WeakMap<Page, Set<(route: Route) => Promise<void>>>();
+let browserE2eFailureInjected = false;
 
 interface LivePersistentContextRecord {
   context: Promise<BrowserContext>;
@@ -1206,6 +1207,10 @@ export class ChromeSessionManager {
     }
 
     if (action.kind === "snapshot") {
+      const injectedFailure = maybeInjectBrowserE2eFailure(action.kind);
+      if (injectedFailure) {
+        throw injectedFailure;
+      }
       const snapshot = await this.captureSnapshot({
         page,
         requestedUrl: requestedUrl || page.url(),
@@ -1379,6 +1384,10 @@ export class ChromeSessionManager {
     }
 
     if (action.kind === "console") {
+      const injectedFailure = maybeInjectBrowserE2eFailure(action.kind);
+      if (injectedFailure) {
+        throw injectedFailure;
+      }
       const result = await executeConsoleProbe(page, action.probe);
 
       return {
@@ -3239,6 +3248,32 @@ function summarizeBrowserFailureSummary(error: unknown): FailureSummary {
     message: error instanceof Error ? error.message : "browser execution failed",
     recommendedAction: "retry",
   };
+}
+
+function maybeInjectBrowserE2eFailure(actionKind: BrowserTaskAction["kind"]): Error | null {
+  const bucket = process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_BUCKET?.trim();
+  if (!bucket) {
+    browserE2eFailureInjected = false;
+    return null;
+  }
+  const targetAction = process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_ACTION?.trim() || "snapshot";
+  if (targetAction !== actionKind) {
+    return null;
+  }
+  if (process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_REPEAT !== "1" && browserE2eFailureInjected) {
+    return null;
+  }
+  browserE2eFailureInjected = true;
+  switch (bucket) {
+    case "cdp_command_timeout":
+      return new Error(`cdp_command_timeout: browser ${actionKind} CDP command timed out while capturing rendered page evidence`);
+    case "detached_target":
+      return new Error(`detached_target: browser target detached while capturing rendered page evidence`);
+    case "attach_failed":
+      return new Error(`attach_failed: browser target attach failed while capturing rendered page evidence`);
+    default:
+      return new Error(`${bucket}: injected browser E2E failure while capturing rendered page evidence`);
+  }
 }
 
 async function shouldInjectBrowserProfileLock(persistentDir: string): Promise<boolean> {

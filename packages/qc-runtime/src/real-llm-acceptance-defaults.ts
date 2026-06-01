@@ -41,6 +41,7 @@ export const DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS = [
   "natural-approval-denied-safe-closeout",
   "natural-approval-pending-state",
   "natural-browser-unavailable-closeout",
+  "natural-browser-cdp-timeout-closeout",
   "natural-timeout-partial-closeout",
   "natural-timeout-followup-continuation",
   "natural-cancel-active-tool",
