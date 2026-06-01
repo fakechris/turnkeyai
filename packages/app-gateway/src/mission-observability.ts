@@ -449,13 +449,45 @@ function deriveQualityStatus(
 }
 
 function latestFinalAnswer(mission: Mission, events: ActivityEvent[]): ActivityEvent | null {
-  const candidates = events.filter((event) => {
-    if (event.kind !== "thought" || event.text.trim().length === 0) return false;
-    if (event.runtime?.route === "lead-role") return true;
-    if (event.actor === "role-lead") return true;
-    return mission.agents[0] === event.actor;
-  });
-  return candidates.at(-1) ?? null;
+  const staleBeforeIndex = Math.max(
+    latestUserPlanIndex(events),
+    latestToolActivityIndex(events)
+  );
+  let latest: ActivityEvent | null = null;
+  for (const [index, event] of events.entries()) {
+    if (event.kind !== "thought" || event.text.trim().length === 0) continue;
+    if (index <= staleBeforeIndex) continue;
+    if (
+      event.runtime?.route === "lead-role" ||
+      event.actor === "role-lead" ||
+      mission.agents[0] === event.actor
+    ) {
+      latest = event;
+    }
+  }
+  return latest;
+}
+
+function latestUserPlanIndex(events: ActivityEvent[]): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (
+      event.kind === "plan" &&
+      (event.actor === "user" || event.runtime?.teamRole === "user")
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function latestToolActivityIndex(events: ActivityEvent[]): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.kind === "tool") {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function countEvidenceEvents(events: ActivityEvent[]): number {
