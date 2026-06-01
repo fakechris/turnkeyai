@@ -402,8 +402,33 @@ export interface NaturalMissionQuality {
   approvalExercised: boolean;
   finalAnswerHasEvidence: boolean;
   finalAnswerUseful: boolean;
+  sourceCoverage: NaturalSourceCoverage;
   weakAnswerSignals: string[];
   failures: string[];
+}
+
+export interface NaturalSourceCoverage {
+  answerTerms: {
+    covered: number;
+    total: number;
+    missing: string[];
+  };
+  answerPatterns: {
+    covered: number;
+    total: number;
+    missing: string[];
+  };
+  evidencePatterns: {
+    covered: number;
+    total: number;
+    missing: string[];
+  };
+  evidenceEvents: {
+    observed: number;
+    required: number;
+  };
+  residualRiskVisible: boolean;
+  unsupportedClaims: string[];
 }
 
 export interface NaturalMissionScenarioReport {
@@ -431,6 +456,7 @@ export interface NaturalMissionScenarioReport {
     approvalExercised: boolean;
     finalAnswerHasEvidence: boolean;
     finalAnswerUseful: boolean;
+    sourceCoverage: NaturalSourceCoverage;
     weakAnswerSignals: string[];
     failures: string[];
   };
@@ -3386,6 +3412,12 @@ export function evaluateNaturalMissionQuality(input: {
   const artifactLifecycleVisible = (input.artifacts ?? []).some(hasArtifactLifecycleEvidence);
   const profileFallbackCount = input.metrics.browser?.profileFallbacks ?? 0;
   const browserFailureBuckets = input.metrics.browser?.failureBuckets ?? [];
+  const sourceCoverage = evaluateNaturalSourceCoverage({
+    spec: input.spec,
+    finalText: input.final.text,
+    evidenceText,
+    evidenceEvents: effectiveEvidenceEvents,
+  });
   const profileFallbackFree = profileFallbackCount === 0;
   const profileFallbackPolicySatisfied = input.spec.requiresProfileFallback
     ? profileFallbackCount > 0
@@ -3425,8 +3457,8 @@ export function evaluateNaturalMissionQuality(input: {
     input.metrics.sessions.continued >= (input.spec.minContinuedSessions ?? 0);
   const finalAnswerHasEvidence =
     effectiveEvidenceEvents >= input.spec.minEvidenceEvents &&
-    input.spec.requiredAnswerTerms.every((term) => input.final.text.toLowerCase().includes(term.toLowerCase())) &&
-    (input.spec.requiredAnswerPatterns ?? []).every((item) => item.pattern.test(input.final.text));
+    sourceCoverage.answerTerms.missing.length === 0 &&
+    sourceCoverage.answerPatterns.missing.length === 0;
   const finalAnswerUseful =
     Buffer.byteLength(input.final.text, "utf8") >= input.spec.minBytes &&
     /\b(recommend|next action|risk|owner|tradeoff|continue|verified|approval|approved|submitted|confirmed|complete)\b/i.test(
@@ -3491,14 +3523,14 @@ export function evaluateNaturalMissionQuality(input: {
   for (const toolName of input.spec.requiredToolNames ?? []) {
     if (!toolNames.has(toolName)) failures.push(`missing required tool family evidence: ${toolName}`);
   }
-  for (const item of input.spec.requiredEvidencePatterns ?? []) {
-    if (!item.pattern.test(evidenceText)) failures.push(`missing evidence ${item.label}`);
+  for (const label of sourceCoverage.evidencePatterns.missing) {
+    failures.push(`missing evidence ${label}`);
   }
-  for (const item of input.spec.forbiddenPatterns ?? []) {
-    if (item.pattern.test(input.final.text)) failures.push(`forbidden ${item.label}`);
+  for (const label of sourceCoverage.unsupportedClaims) {
+    failures.push(`forbidden ${label}`);
   }
-  for (const item of input.spec.requiredAnswerPatterns ?? []) {
-    if (!item.pattern.test(input.final.text)) failures.push(`missing ${item.label}`);
+  for (const label of sourceCoverage.answerPatterns.missing) {
+    failures.push(`missing ${label}`);
   }
 
   return {
@@ -3512,8 +3544,58 @@ export function evaluateNaturalMissionQuality(input: {
     approvalExercised,
     finalAnswerHasEvidence,
     finalAnswerUseful,
+    sourceCoverage,
     weakAnswerSignals,
     failures,
+  };
+}
+
+export function evaluateNaturalSourceCoverage(input: {
+  spec: NaturalScenarioSpec;
+  finalText: string;
+  evidenceText: string;
+  evidenceEvents: number;
+}): NaturalSourceCoverage {
+  const answerTerms = input.spec.requiredAnswerTerms;
+  const missingAnswerTerms = answerTerms.filter(
+    (term) => !input.finalText.toLowerCase().includes(term.toLowerCase())
+  );
+  const answerPatterns = input.spec.requiredAnswerPatterns ?? [];
+  const missingAnswerPatterns = answerPatterns
+    .filter((item) => !item.pattern.test(input.finalText))
+    .map((item) => item.label);
+  const evidencePatterns = input.spec.requiredEvidencePatterns ?? [];
+  const missingEvidencePatterns = evidencePatterns
+    .filter((item) => !item.pattern.test(input.evidenceText))
+    .map((item) => item.label);
+  const unsupportedClaims = (input.spec.forbiddenPatterns ?? [])
+    .filter((item) => item.pattern.test(input.finalText))
+    .map((item) => item.label);
+
+  return {
+    answerTerms: {
+      covered: answerTerms.length - missingAnswerTerms.length,
+      total: answerTerms.length,
+      missing: missingAnswerTerms,
+    },
+    answerPatterns: {
+      covered: answerPatterns.length - missingAnswerPatterns.length,
+      total: answerPatterns.length,
+      missing: missingAnswerPatterns,
+    },
+    evidencePatterns: {
+      covered: evidencePatterns.length - missingEvidencePatterns.length,
+      total: evidencePatterns.length,
+      missing: missingEvidencePatterns,
+    },
+    evidenceEvents: {
+      observed: input.evidenceEvents,
+      required: input.spec.minEvidenceEvents,
+    },
+    residualRiskVisible: /\bresidual\s+risk\b|\brisk\b|uncertain|uncertainty|unverified|not verified/i.test(
+      input.finalText
+    ),
+    unsupportedClaims,
   };
 }
 
@@ -3855,6 +3937,7 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
       approvalExercised: result.quality.approvalExercised,
       finalAnswerHasEvidence: result.quality.finalAnswerHasEvidence,
       finalAnswerUseful: result.quality.finalAnswerUseful,
+      sourceCoverage: result.quality.sourceCoverage,
       weakAnswerSignals: [...result.quality.weakAnswerSignals],
       failures: [...result.quality.failures],
     },

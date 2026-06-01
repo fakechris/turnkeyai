@@ -404,6 +404,14 @@ describe("mission tool-use e2e report", () => {
       approvalExercised: false,
       finalAnswerHasEvidence: true,
       finalAnswerUseful: true,
+      sourceCoverage: {
+        answerTerms: { covered: 2, total: 2, missing: [] },
+        answerPatterns: { covered: 0, total: 0, missing: [] },
+        evidencePatterns: { covered: 1, total: 1, missing: [] },
+        evidenceEvents: { observed: 1, required: 1 },
+        residualRiskVisible: true,
+        unsupportedClaims: [],
+      },
       weakAnswerSignals: [],
       failures: [],
     });
@@ -643,6 +651,14 @@ describe("mission tool-use e2e report", () => {
     assert.equal(report.scenarios[0]?.artifacts.count, 1);
     assert.equal(report.scenarios[0]?.artifacts.withLifecycle, 1);
     assert.equal(report.scenarios[0]?.natural.profileFallbackFree, true);
+    assert.deepEqual(report.scenarios[0]?.natural.sourceCoverage, {
+      answerTerms: { covered: 2, total: 2, missing: [] },
+      answerPatterns: { covered: 0, total: 0, missing: [] },
+      evidencePatterns: { covered: 1, total: 1, missing: [] },
+      evidenceEvents: { observed: 1, required: 1 },
+      residualRiskVisible: true,
+      unsupportedClaims: [],
+    });
     assert.equal(report.scenarios[0]?.metrics.browser.profileFallbacks, 0);
   });
 
@@ -679,6 +695,60 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.failures.some((failure) => failure.includes("browser")));
     assert.ok(quality.weakAnswerSignals.includes("tool unavailable fallback"));
     assert.ok(quality.weakAnswerSignals.includes("model-knowledge fallback"));
+  });
+
+  it("reports structured natural source coverage gaps for missing evidence and unsupported claims", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-dynamic-page", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      requiredAnswerTerms: ["Active users", "Queue depth", "owner", "residual risk"],
+      forbiddenPatterns: [
+        { label: "unsupported rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b/i },
+      ],
+    };
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: "Active users: 42. The page rendered only one dashboard metric.",
+    };
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.final.text = [
+      "Active users: 42 were verified in the browser.",
+      "Queue depth: 11 looks fine, and there is no residual risk.",
+      "This answer is long enough to isolate the source coverage failure from the usefulness failure.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.status, "failed");
+    assert.deepEqual(quality.sourceCoverage.answerTerms, {
+      covered: 3,
+      total: 4,
+      missing: ["owner"],
+    });
+    assert.equal(quality.sourceCoverage.evidencePatterns.total > 0, true);
+    assert.ok(quality.sourceCoverage.evidencePatterns.missing.includes("rendered queue depth"));
+    assert.ok(quality.sourceCoverage.unsupportedClaims.includes("unsupported rendered queue depth"));
+    assert.equal(quality.sourceCoverage.residualRiskVisible, true);
+    assert.ok(quality.failures.includes("missing evidence rendered queue depth"));
+    assert.ok(quality.failures.includes("forbidden unsupported rendered queue depth"));
   });
 
   it("requires mission artifact lifecycle evidence for natural browser dynamic page", () => {
@@ -2367,6 +2437,14 @@ function fakeNaturalResult(): NaturalMissionScenarioResult {
       approvalExercised: false,
       finalAnswerHasEvidence: true,
       finalAnswerUseful: true,
+      sourceCoverage: {
+        answerTerms: { covered: 2, total: 2, missing: [] },
+        answerPatterns: { covered: 0, total: 0, missing: [] },
+        evidencePatterns: { covered: 1, total: 1, missing: [] },
+        evidenceEvents: { observed: 1, required: 1 },
+        residualRiskVisible: true,
+        unsupportedClaims: [],
+      },
       weakAnswerSignals: [],
       failures: [],
     },

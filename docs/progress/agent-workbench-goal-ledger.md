@@ -5500,3 +5500,73 @@ Convergence question:
 - If no, next required gate: extend this from approval/browser to long
   delegation and timeout closeout so final-synthesis repair cannot erase
   completed evidence in those paths either.
+
+## 2026-06-01 19:58 CST - Structured Natural Source Coverage
+
+Direction: converging
+
+Execution Kernel:
+- No runtime execution path changed in this checkpoint. The implementation
+  tightens the natural E2E acceptance kernel so source coverage is evaluated
+  and reported as structured data instead of being compressed into a single
+  final-answer boolean.
+- The natural quality evaluator now records answer-term coverage,
+  answer-pattern coverage, evidence-pattern coverage, observed versus required
+  evidence events, residual-risk visibility, and unsupported-claim labels for
+  each natural scenario.
+
+Result Quality:
+- This makes weak real answers easier to diagnose. A failed natural scenario can
+  now show whether the answer missed required user-visible facts, whether the
+  evidence stream lacked the source fact, whether residual risk disappeared, or
+  whether the final answer invented an unsupported claim.
+- The existing pass/fail behavior remains: missing evidence and unsupported
+  claims still fail the gate. The difference is that the JSON artifact now
+  carries the breakdown needed to decide the next root-cause fix.
+
+Workbench UX:
+- No dashboard code changed. The user-visible benefit is indirect: future
+  Runtime and Release acceptance views can surface source-coverage counts from
+  the natural E2E artifact instead of only showing a coarse failure string.
+
+Browser Reliability:
+- Browser execution behavior is unchanged. The focused real browser scenario
+  still used a browser worker, produced lifecycle-bearing artifacts, had zero
+  profile fallbacks, no browser failure buckets, and no live runtime subjects at
+  completion.
+
+Acceptance Evidence:
+- Focused unit/report gate:
+  `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts
+  packages/app-gateway/src/mission-tool-use-e2e-quality.test.ts`: passed.
+- Typecheck:
+  `npm run typecheck`: passed.
+- Focused real natural browser gate:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-browser-dynamic-page --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-source-coverage-20260601.json`: passed.
+- Mission: `msn.mpv5aan5.1`, status `done`, natural `passed`, tools `1/1`,
+  sessions `1/0`, browser used, artifacts `6`, lifecycle-bearing artifacts
+  `6`, profile fallbacks `0`, browser buckets `none`, liveness `0/0/0`.
+- The JSON artifact recorded source coverage:
+  answer terms `2/2`, answer patterns `1/1`, evidence patterns `3/3`,
+  evidence events `1/1`, residual risk visible, unsupported claims `0`.
+
+Regression Risk:
+- This is an artifact/schema expansion for the natural E2E report. Consumers
+  that read only existing fields are unaffected; consumers with exact report
+  shape assumptions need to tolerate the new `sourceCoverage` object.
+- The next broader gate should include comparison research, follow-up
+  continuation, approval, timeout closeout, and long delegation so the
+  structured coverage fields prove useful across non-browser and multi-agent
+  failures, not just the dynamic browser scenario.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  converging
+- Evidence: a real natural browser scenario passed while producing structured
+  source-coverage evidence that can distinguish missing evidence from weak
+  final synthesis or unsupported claims.
+- If no, next required gate: run the broader natural matrix and use the new
+  source-coverage fields to guide the next root-cause slice.
