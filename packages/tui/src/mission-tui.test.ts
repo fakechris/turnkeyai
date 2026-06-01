@@ -99,6 +99,88 @@ describe("mission-tui", () => {
     assert.match(output, /Recent timeline \(2 of 2\):\n- .* tool\/role-lead: tool call\n- .* thought\/role-lead: Final answer/);
   });
 
+  it("does not surface a final answer before a pending tool result", () => {
+    const lines = formatMissionDetail({
+      mission: mission({ id: "msn.pending", shortId: "MSN-P", title: "Pending", status: "working" }),
+      metrics: metrics({
+        missionId: "msn.pending",
+        qualityGate: {
+          status: "blocked",
+          finalAnswerEventId: "ev.final",
+          evidenceEvents: 0,
+          checks: [{ name: "final_answer", status: "fail", detail: "waiting for tool result" }],
+        },
+      }),
+      timeline: [
+        event({ id: "ev.user", tMs: 500, kind: "plan", actor: "user", text: "Compare the dashboard sources." }),
+        event({
+          id: "ev.call",
+          tMs: 1000,
+          kind: "tool",
+          actor: "role-lead",
+          text: "tool call",
+          runtime: { toolPhase: "call", toolCallId: "call-1" },
+        }),
+        event({
+          id: "ev.final",
+          tMs: 1500,
+          kind: "thought",
+          actor: "role-lead",
+          text: "Premature final answer before evidence.",
+        }),
+      ],
+    });
+
+    const output = lines.join("\n");
+    assert.doesNotMatch(output, /Latest final answer:/);
+    assert.match(output, /final_answer \[fail\]: waiting for tool result/);
+    assert.match(output, /thought\/role-lead: Premature final answer before evidence\./);
+  });
+
+  it("surfaces a final answer after all prior tool calls have results", () => {
+    const lines = formatMissionDetail({
+      mission: mission({ id: "msn.resolved", shortId: "MSN-R", title: "Resolved", status: "done" }),
+      metrics: metrics({
+        missionId: "msn.resolved",
+        status: "done",
+        qualityGate: {
+          status: "passed",
+          finalAnswerEventId: "ev.final",
+          evidenceEvents: 1,
+          checks: [{ name: "final_answer", status: "pass", detail: "final answer exists" }],
+        },
+      }),
+      timeline: [
+        event({ id: "ev.user", tMs: 500, kind: "plan", actor: "user", text: "Compare the dashboard sources." }),
+        event({
+          id: "ev.call",
+          tMs: 1000,
+          kind: "tool",
+          actor: "role-lead",
+          text: "tool call",
+          runtime: { toolPhase: "call", toolCallId: "call-1" },
+        }),
+        event({
+          id: "ev.result",
+          tMs: 1500,
+          kind: "tool",
+          actor: "role-lead",
+          text: "tool result",
+          runtime: { toolPhase: "result", toolCallId: "call-1" },
+        }),
+        event({
+          id: "ev.final",
+          tMs: 2000,
+          kind: "thought",
+          actor: "role-lead",
+          text: "Final answer after evidence.",
+        }),
+      ],
+    });
+
+    assert.match(lines.join("\n"), /Latest final answer:\n  Final answer after evidence\./);
+  });
+
   it("formats browser recovery buckets and profile fallback context in mission detail", () => {
     const lines = formatMissionDetail({
       mission: mission({ id: "msn.browser", shortId: "MSN-B", title: "Browser mission" }),
