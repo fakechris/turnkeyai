@@ -165,22 +165,29 @@ export function createMissionToolPermissionService(
     },
 
     async result(input: ToolPermissionResultInput): Promise<ToolPermissionDecisionResult> {
-      const approval = await findApproval(options.approvalStore, input.approvalId);
+      const approval = await findApprovalByIdOrCacheKey({
+        approvalStore: options.approvalStore,
+        threadId: input.threadId,
+        approvalIdOrCacheKey: input.approvalId,
+      });
       if (!approval) {
         throw new Error(`approval not found: ${input.approvalId}`);
       }
       const toolPermission = readToolPermissionPayload(approval);
-      if (toolPermission?.threadId && toolPermission.threadId !== input.threadId) {
+      if (!toolPermission) {
+        throw new Error("approval is missing tool permission metadata");
+      }
+      if (toolPermission.threadId !== input.threadId) {
         throw new Error("approval does not belong to this thread");
       }
-      const decision = await options.approvalStore.getDecision(input.approvalId);
+      const decision = await options.approvalStore.getDecision(approval.id);
       if (!decision) {
         return {
           status: "pending",
-          approvalId: input.approvalId,
+          approvalId: approval.id,
           missionId: approval.missionId,
           action: approval.action,
-          message: `Permission request ${input.approvalId} is still pending.`,
+          message: `Permission request ${approval.id} is still pending.`,
         };
       }
       return decisionToResult(approval, decision);
@@ -204,8 +211,21 @@ export function createMissionToolPermissionService(
     },
 
     async apply(input: ToolPermissionAppliedInput): Promise<ToolPermissionAppliedResult> {
-      const approval = await findApproval(options.approvalStore, input.approvalId);
+      const approval = await findApprovalByIdOrCacheKey({
+        approvalStore: options.approvalStore,
+        threadId: input.threadId,
+        approvalIdOrCacheKey: input.approvalId,
+      });
       if (!approval) {
+        const cached = await resolveAppliedPermissionCache({
+          permissionCacheStore: options.permissionCacheStore,
+          threadId: input.threadId,
+          approvalIdOrCacheKey: input.approvalId,
+          now: options.clock.now(),
+        });
+        if (cached) {
+          return cached;
+        }
         throw new Error(`approval not found: ${input.approvalId}`);
       }
       const toolPermission = readToolPermissionPayload(approval);
@@ -215,19 +235,19 @@ export function createMissionToolPermissionService(
       if (toolPermission.threadId !== input.threadId) {
         throw new Error("approval does not belong to this thread");
       }
-      const decision = await options.approvalStore.getDecision(input.approvalId);
+      const decision = await options.approvalStore.getDecision(approval.id);
       if (!decision) {
         return {
           status: "pending",
-          approvalId: input.approvalId,
-          message: `Permission request ${input.approvalId} is still pending.`,
+          approvalId: approval.id,
+          message: `Permission request ${approval.id} is still pending.`,
         };
       }
       if (decision.decision === "denied") {
         return {
           status: "denied",
-          approvalId: input.approvalId,
-          message: decision.reason ?? `Permission request ${input.approvalId} was denied.`,
+          approvalId: approval.id,
+          message: decision.reason ?? `Permission request ${approval.id} was denied.`,
         };
       }
 
@@ -239,9 +259,9 @@ export function createMissionToolPermissionService(
       ) {
         return {
           status: "applied",
-          approvalId: input.approvalId,
+          approvalId: approval.id,
           cacheKey: toolPermission.requirement.cacheKey,
-          message: `Permission request ${input.approvalId} already applied.`,
+          message: `Permission request ${approval.id} already applied.`,
         };
       }
 
@@ -266,7 +286,7 @@ export function createMissionToolPermissionService(
         text: `Applied approval · <b>${approval.action}</b> · runtime permission cache updated.`,
         emph: "success",
         tags: ["approved", "permission.applied"],
-        approvalId: input.approvalId,
+        approvalId: approval.id,
         runtime: {
           eventType: "permission.applied",
           toolCallId: toolPermission.toolCallId,
@@ -275,9 +295,9 @@ export function createMissionToolPermissionService(
       });
       return {
         status: "applied",
-        approvalId: input.approvalId,
+        approvalId: approval.id,
         cacheKey: toolPermission.requirement.cacheKey,
-        message: `Permission request ${input.approvalId} applied.`,
+        message: `Permission request ${approval.id} applied.`,
       };
     },
   };
@@ -387,6 +407,72 @@ function decisionToResult(approval: ApprovalRequest, decision: ApprovalDecision)
 async function findApproval(store: ApprovalRequestStore, approvalId: string): Promise<ApprovalRequest | null> {
   const approvals = await store.list();
   return approvals.find((approval) => approval.id === approvalId) ?? null;
+}
+
+async function findApprovalByIdOrCacheKey(input: {
+  approvalStore: ApprovalRequestStore;
+  threadId: string;
+  approvalIdOrCacheKey: string;
+}): Promise<ApprovalRequest | null> {
+  const exact = await findApproval(input.approvalStore, input.approvalIdOrCacheKey);
+  if (exact) return exact;
+  // O(N): ApprovalRequestStore has no cache-key index yet. Permission approval
+  // volume per thread is bounded. Prefer an undecided approval so retries do not
+  // accidentally bind to historical granted/denied requests.
+  const approvals = await input.approvalStore.list();
+  const matches = approvals.filter((approval) => {
+    const toolPermission = readToolPermissionPayload(approval);
+    return toolPermission?.threadId === input.threadId && toolPermission.requirement.cacheKey === input.approvalIdOrCacheKey;
+  });
+  if (matches.length === 0) {
+    return null;
+  }
+  const withDecisions = await Promise.all(
+    matches.map(async (approval) => ({
+      approval,
+      decision: await input.approvalStore.getDecision(approval.id),
+    }))
+  );
+  const undecided = withDecisions.filter((entry) => !entry.decision).map((entry) => entry.approval);
+  if (undecided.length > 0) {
+    undecided.sort((left, right) => right.requestedAtMs - left.requestedAtMs || right.id.localeCompare(left.id));
+    return undecided[0]!;
+  }
+  matches.sort((left, right) => right.requestedAtMs - left.requestedAtMs || right.id.localeCompare(left.id));
+  return matches[0]!;
+}
+
+async function resolveAppliedPermissionCache(input: {
+  permissionCacheStore: PermissionCacheStore;
+  threadId: string;
+  approvalIdOrCacheKey: string;
+  now: number;
+}): Promise<ToolPermissionAppliedResult | null> {
+  const records =
+    input.approvalIdOrCacheKey === "already_granted" || input.approvalIdOrCacheKey === "granted"
+      ? await input.permissionCacheStore.listByThread(input.threadId)
+      : [await input.permissionCacheStore.get(input.approvalIdOrCacheKey)];
+  // O(N) only for generic already-granted acknowledgements; exact cache-key
+  // applications still use PermissionCacheStore.get above.
+  const granted = records.filter(
+    (record): record is PermissionCacheRecord =>
+      Boolean(
+        record &&
+          record.threadId === input.threadId &&
+          record.decision === "granted" &&
+          (!record.expiresAt || record.expiresAt > input.now)
+      )
+  );
+  if (granted.length === 0) {
+    return null;
+  }
+  granted.sort((left, right) => right.updatedAt - left.updatedAt || right.cacheKey.localeCompare(left.cacheKey));
+  return {
+    status: "applied",
+    approvalId: input.approvalIdOrCacheKey,
+    cacheKey: granted[0]!.cacheKey,
+    message: `Permission cache ${granted[0]!.cacheKey} is already granted.`,
+  };
 }
 
 async function findPendingApprovalByCacheKey(input: {

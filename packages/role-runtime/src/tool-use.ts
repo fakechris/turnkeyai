@@ -1406,6 +1406,24 @@ function resolveWorkerSessionRecord(
       return prefixMatches[0]!;
     }
   }
+  const cleanPrefix = readCleanTruncatedSessionKeyPrefix(requestedSignature);
+  if (cleanPrefix) {
+    const prefixMatches = visibleRecords.filter((record) =>
+      relaxedSessionKeySignature(record.workerRunKey).startsWith(cleanPrefix)
+    );
+    if (prefixMatches.length === 1) {
+      return prefixMatches[0]!;
+    }
+  }
+  const taskPrefix = readWorkerTaskSessionPrefix(requestedSignature);
+  if (taskPrefix) {
+    const taskMatches = visibleRecords.filter(
+      (record) => readWorkerTaskSessionPrefix(relaxedSessionKeySignature(record.workerRunKey)) === taskPrefix
+    );
+    if (taskMatches.length === 1) {
+      return taskMatches[0]!;
+    }
+  }
   if (isMalformedOrTruncatedSessionKey(requestedSessionKey) && visibleRecords.length === 1) {
     return visibleRecords[0]!;
   }
@@ -1427,6 +1445,24 @@ function readTruncatedSessionKeyPrefix(sessionKey: string): string | null {
   }
   const prefix = sessionKey.slice(0, ellipsisIndex);
   return prefix.length >= 24 ? prefix : null;
+}
+
+function readCleanTruncatedSessionKeyPrefix(sessionKey: string): string | null {
+  if (/…|\.{3}|\n|\|/.test(sessionKey)) {
+    return null;
+  }
+  if (!/^worker:[A-Za-z0-9_-]+:task[:|-][A-Za-z0-9_:-]+$/.test(sessionKey)) {
+    return null;
+  }
+  if (!/:call_[A-Za-z0-9]{2,}$/.test(sessionKey)) {
+    return null;
+  }
+  return sessionKey.length >= 40 ? sessionKey : null;
+}
+
+function readWorkerTaskSessionPrefix(sessionKey: string): string | null {
+  const match = sessionKey.match(/^(worker:[A-Za-z0-9_-]+:task[:|-][A-Za-z0-9_-]+):/);
+  return match?.[1] ?? null;
 }
 
 function isMalformedOrTruncatedSessionKey(sessionKey: string): boolean {
