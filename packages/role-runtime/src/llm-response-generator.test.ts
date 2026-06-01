@@ -2257,9 +2257,11 @@ test("llm role response generator forces sessions_send for explicit continuation
 });
 
 test("llm role response generator routes continuation follow-up to cancelled session", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
     if (executedCalls.length === 0 && input.toolChoice !== "none") {
       return toolCallResult("toolu-cancel-continue", "sessions_spawn", {
         agent_id: "explore",
@@ -2267,6 +2269,7 @@ test("llm role response generator routes continuation follow-up to cancelled ses
         timeout_seconds: 120,
       });
     }
+    assert.equal(input.toolChoice, "none");
     return {
       text: "Final answer from cancelled-session continuation.",
       modelId: "claude-test",
@@ -2331,6 +2334,15 @@ test("llm role response generator routes continuation follow-up to cancelled ses
   assert.equal(executedCalls[0]?.name, "sessions_send");
   assert.equal(executedCalls[0]?.input.session_key, "worker:explore:task-1:toolu-cancelled");
   assert.equal(executedCalls[0]?.input.timeout_seconds, undefined);
+  assert.equal(executedCalls.length, 1);
+  assert.equal(gatewayInputs.length, 2);
+  assert.match(readToolContent(gatewayInputs[1]!.messages.at(-1)!.content), /completed delegated session evidence/i);
+  assert.match(readToolContent(gatewayInputs[1]!.messages.at(-1)!.content), /Cancelled session resumed with source evidence/);
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "completed_sub_agent_final");
+  assert.equal(closeout?.toolName, "sessions_send");
+  assert.equal(closeout?.toolCallCount, 1);
+  assert.equal(closeout?.roundCount, 1);
 });
 
 test("llm role response generator routes explicit follow-up to completed session", async () => {
@@ -4137,6 +4149,68 @@ test("llm role response generator uses completed browser evidence when final syn
   assert.equal(result.metadata?.adapterName, "local-evidence-closeout");
 });
 
+test("llm role response generator preserves generic tool evidence when follow-up synthesis is unavailable", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let gatewayCalls = 0;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayCalls += 1;
+    if (gatewayCalls === 1) {
+      return toolCallResult("toolu-fetch", "explore_run", {
+        instruction: "Fetch the orchestration source.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.deepEqual(input.tools ?? [], []);
+    throw new Error("llm_request_timeout: model did not respond within 120000ms");
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "explore_run",
+          description: "Fetch one source",
+          inputSchema: { type: "object", properties: { instruction: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          status: "completed",
+          summary:
+            "Product Orchestration Evidence. Primary user story: a product lead starts one mission. Strength: multi-agent decomposition with durable sub-session history and follow-up. Gap: users need clearer entry points than a developer command line.",
+          payload: {
+            content:
+              "TURNKEYAI_PRODUCT_ORCHESTRATION_OK. Primary user story: a product lead starts one mission, then specialist agents watch documents, browser state, and work items until a decision-ready brief is produced.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(gatewayCalls, 2);
+  assert.match(result.content, /Product Orchestration Evidence/);
+  assert.match(result.content, /multi-agent decomposition/);
+  assert.match(result.content, /durable sub-session history/);
+  assert.match(result.content, /\bVerified:/);
+  assert.match(result.content, /\bRisk:/);
+  assert.equal(result.metadata?.adapterName, "local-evidence-closeout");
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.equal(closeout?.reason, "tool_evidence_fallback");
+  assert.equal(closeout?.evidenceAvailable, true);
+});
+
 test("llm role response generator does not use local evidence closeout for exact final shapes", async () => {
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   let gatewayCalls = 0;
@@ -4196,6 +4270,104 @@ test("llm role response generator does not use local evidence closeout for exact
         packet,
       }),
     /final synthesis provider unavailable/
+  );
+});
+
+test("llm role response generator does not use skipped generic tool output as local evidence", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let gatewayCalls = 0;
+  gateway.generate = async () => {
+    gatewayCalls += 1;
+    if (gatewayCalls === 1) {
+      return toolCallResult("toolu-fetch", "explore_run", {
+        instruction: "Fetch the orchestration source.",
+      });
+    }
+    throw new Error("llm_request_timeout: model did not respond within 120000ms");
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "explore_run",
+          description: "Fetch one source",
+          inputSchema: { type: "object", properties: { instruction: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: "tool_call_limit_exceeded: skipped extra source fetch",
+        skipped: true,
+        raw: { skipped: true },
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  await assert.rejects(
+    () =>
+      generator.generate({
+        activation: buildActivation(),
+        packet: buildPacket(),
+      }),
+    /llm_request_timeout/
+  );
+});
+
+test("llm role response generator rethrows abort errors instead of local evidence closeout", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let gatewayCalls = 0;
+  gateway.generate = async () => {
+    gatewayCalls += 1;
+    if (gatewayCalls === 1) {
+      return toolCallResult("toolu-fetch", "explore_run", {
+        instruction: "Fetch the orchestration source.",
+      });
+    }
+    const error = new Error("operation aborted");
+    error.name = "AbortError";
+    throw error;
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "explore_run",
+          description: "Fetch one source",
+          inputSchema: { type: "object", properties: { instruction: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          status: "completed",
+          summary: "Verified source evidence.",
+          payload: { content: "Verified source evidence." },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  await assert.rejects(
+    () =>
+      generator.generate({
+        activation: buildActivation(),
+        packet: buildPacket(),
+      }),
+    (error: unknown) => error instanceof Error && error.name === "AbortError"
   );
 });
 
@@ -4277,7 +4449,12 @@ test("llm role response generator stores evidence-first trace content for oversi
   assert.match(traceResult.content, /Release Captain/);
   assert.match(traceResult.content, /runbook gap/);
   assert.match(traceResult.content, /rollback rehearsal/);
-  const compacted = JSON.parse(traceResult.content) as { payload?: { artifactIds?: string[]; screenshotPaths?: string[] } };
+  const compacted = JSON.parse(traceResult.content) as {
+    evidence_excerpt?: string;
+    payload?: { artifactIds?: string[]; screenshotPaths?: string[] };
+  };
+  assert.match(compacted.evidence_excerpt ?? "", /Release Captain/);
+  assert.match(compacted.evidence_excerpt ?? "", /runbook gap/);
   assert.deepEqual(compacted.payload?.artifactIds, ["artifact-browser-snapshot", "artifact-browser-screenshot"]);
   assert.deepEqual(compacted.payload?.screenshotPaths, ["/tmp/browser-artifacts/final.png"]);
   assert.doesNotMatch(traceResult.content, /<html><html>/);

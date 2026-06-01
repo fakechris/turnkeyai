@@ -6601,3 +6601,173 @@ Convergence question:
 - Next required gate: reduce cancellation follow-up continuation latency while
   preserving the passed cancel and long-delegation gates, then rerun the same
   tail matrix.
+
+## Checkpoint 2026-06-02 05:45 CST — Active-I/O Cancellation Gate
+
+Direction: converging
+
+Execution Kernel:
+- Session tool cancellation now has a runtime completion signal. `sessions_spawn`
+  and `sessions_send` race worker execution against confirmed cancellation, so
+  the parent tool result can return `cancelled` without waiting for slow worker
+  unwind.
+- Completed session closeout no longer depends exclusively on `final_content`;
+  completed session `result` / `evidence_summary` also count as terminal
+  delegated evidence for final synthesis with tools disabled.
+- The natural cancellation follow-up gate now waits until the source fixture has
+  actually observed the first source request before cancelling. This prevents a
+  false slow pass where the follow-up became the first delayed source request.
+
+Result Quality:
+- Real natural follow-up still produced source-backed final evidence with no
+  weak-answer signals.
+- The final answer explicitly separated verified source facts from residual
+  cancellation confidence limits.
+- This is not a broad quality claim for all scenarios; it is scoped to
+  cancellation plus continuation.
+
+Workbench UX:
+- No UI changed.
+- The user-visible impact is faster closeout for cancelled active tool work and
+  a more honest cancellation-follow-up acceptance gate.
+
+Browser Reliability:
+- No browser transport code changed.
+- This checkpoint did not exercise browser use; browser reliability remains
+  covered by the long-delegation and browser-specific natural gates.
+
+Acceptance Evidence:
+- Focused role-runtime tests:
+  `npx tsx --test packages/role-runtime/src/tool-use.test.ts
+  packages/role-runtime/src/llm-response-generator.test.ts` passed with 121
+  tests.
+- Natural E2E report tests:
+  `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts` passed with 52
+  tests.
+- Typecheck:
+  `npm run typecheck` passed.
+- Focused real natural cancellation follow-up:
+  `npm run mission:e2e -- --natural-scenario
+  natural-cancel-followup-continuation --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-cancel-followup-after-active-io-gate-20260602.json`
+  passed with mission `msn.mpvqm20e.1`, status `done`, natural `passed`,
+  tools `4/4`, sessions `1/2`, liveness `0/0/0`, no weak-answer signals,
+  duration `67241ms`.
+- Previous same-gate baselines in this checkpoint were `251879ms` and
+  `238794ms`; the corrected active-I/O gate removes the artificial first-request
+  180s delay and proves the scenario is measuring active source cancellation.
+
+Regression Risk:
+- Cancellation now lets the parent tool return before a slow worker promise
+  unwinds. Late worker rejection is observed, but future changes must preserve
+  the worker state guard that prevents late completion from overwriting a
+  cancelled session.
+- The fixture gate is stricter. If a model fails to start source I/O before the
+  cancel window, the natural scenario should fail rather than passing a
+  misleading slow follow-up.
+- The scenario still uses two continuations in the observed run. That is within
+  the current quality gate, but a later prompt/runtime pass should reduce
+  unnecessary continuation calls without weakening source-backed output.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes for active cancellation/follow-up latency and measurement validity.
+- Remaining P0: rerun the tail natural matrix and keep reducing avoidable
+  continuation calls without replacing natural E2E evidence with fixture-only
+  assertions.
+
+## Checkpoint 2026-06-02 06:42 CST — Worker-Owned Browser Sessions
+
+Direction: converging
+
+Execution Kernel:
+- Browser sub-agents now keep their private browser sessions owned by the worker
+  run key from the first browser tool call. This prevents sibling browser
+  sub-agents in one parent tool round from sharing and racing the same
+  thread-owned browser session.
+- Parent-provided browser continuations still reuse the inherited thread-owned
+  session, so this does not break explicit browser follow-up.
+- Browser sub-agents now have a read-only planner fallback: if the sub-agent LLM
+  fails before producing any private browser tool call, URL-bearing read-only
+  tasks can still capture `open` + `snapshot` + `screenshot` evidence. The
+  fallback is blocked for mutation-intent tasks such as submit/save/delete.
+- Completed tool evidence is preserved more aggressively in parent synthesis:
+  generic completed tool results and evidence-first trace excerpts can close out
+  when the final LLM synthesis request fails.
+
+Result Quality:
+- The earlier long-delegation failure was not a prompt/round-count problem. The
+  concrete runtime failure was browser lease contention: sibling browser workers
+  produced useful evidence but also recorded `transport_failure` buckets from
+  lease conflicts.
+- The fix removes the concurrency fault instead of hiding it in the quality
+  gate. Natural E2E now reports browser bucket `none` for the same
+  long-delegation scenario.
+- The final answers are still model-dependent. This checkpoint proves the
+  runtime can deliver evidence-backed browser/sub-agent results under the tested
+  natural tasks; it is not a general claim that every complex prompt is solved.
+
+Workbench UX:
+- No UI changed.
+- User-visible impact is fewer missions that end with a useful answer plus
+  confusing browser transport residuals.
+
+Browser Reliability:
+- Focused long-delegation E2E passed with browser use, 3 spawned sub-agent
+  sessions, 5 artifacts, 5 artifact lifecycle records, and no browser failure
+  buckets.
+- Tail matrix long-delegation also passed with browser use and no failure
+  buckets, but produced 0 artifacts in that run. The evidence remained
+  sufficient through browser text/snapshot traces, so artifact production should
+  remain a separate quality dimension rather than being inferred from every
+  browser pass.
+
+Acceptance Evidence:
+- Focused unit/report tests:
+  `npx tsx --test packages/role-runtime/src/sub-agent-worker-handler.test.ts
+  packages/role-runtime/src/llm-response-generator.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts` passed with 138 tests.
+- Focused real natural long-delegation:
+  `npm run mission:e2e -- --natural-matrix-scenarios natural-long-delegation
+  --model-catalog models.local.json --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-long-after-worker-browser-isolation-20260602.json`
+  passed with mission `msn.mpvsby0j.1`, status `done`, natural `passed`,
+  tools `3/3`, sessions `3/0`, browser `yes`, artifacts `5`,
+  artifact lifecycle `5`, profile fallback `0`, browser buckets `none`,
+  liveness `0/0/0`, duration `55183ms`.
+- Tail real natural matrix:
+  `npm run mission:e2e -- --natural-matrix-scenarios
+  natural-cancel-active-tool,natural-cancel-followup-continuation,natural-long-delegation
+  --model-catalog models.local.json --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-tail-after-worker-browser-isolation-20260602.json`
+  passed.
+- Tail matrix missions:
+  `natural-cancel-active-tool`: mission `msn.mpvsdldi.1`, status `blocked`,
+  natural `passed`, tools `1/0`, sessions `1/0`, liveness `0/0/0`, duration
+  `6044ms`.
+- Tail matrix missions:
+  `natural-cancel-followup-continuation`: mission `msn.mpvsdq1b.2`, status
+  `done`, natural `passed`, tools `3/3`, sessions `1/2`, liveness `0/0/0`,
+  duration `170482ms`.
+- Tail matrix missions:
+  `natural-long-delegation`: mission `msn.mpvshdkx.3`, status `done`, natural
+  `passed`, tools `3/3`, sessions `3/0`, browser `yes`, browser buckets
+  `none`, liveness `0/0/0`, duration `60173ms`.
+
+Regression Risk:
+- Worker-owned browser sessions increase session count for parallel browser
+  delegation. This is intentional for correctness, but idle eviction and
+  profile cleanup must remain part of ongoing soak coverage.
+- The read-only planner fallback must stay narrow. It must not become an
+  implicit browser mutation path when planner LLM calls fail.
+- Cancellation follow-up still took `170482ms` in the tail matrix. That is a
+  passing capability gate, not an acceptable final latency target.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes for the tested P0 paths: active cancellation, cancellation continuation,
+  and parallel browser sub-agent delegation now pass natural real LLM E2E with
+  no stuck spans and no browser failure buckets.
+- Remaining P0: reduce cancellation-follow-up latency and run broader natural
+  E2E coverage before making a general production-readiness claim.

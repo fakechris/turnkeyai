@@ -28,7 +28,7 @@ import {
 } from "./tool-capability-registry";
 import type { MemoryHit, RoleMemoryResolver } from "./context/role-memory-resolver";
 import type { TaskToolService } from "./task-tool-service";
-import type { ToolCancellationRegistry } from "./tool-cancellation-registry";
+import type { ToolCancellationRegistration, ToolCancellationRegistry } from "./tool-cancellation-registry";
 import type {
   ToolPermissionAppliedResult,
   ToolPermissionDecisionResult,
@@ -96,6 +96,7 @@ const TOOL_PERMISSION_WAIT_MS = 15 * 60 * 1000;
 const DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS = 60_000;
 const DEFAULT_WORKER_TIMEOUT_SUMMARY_GRACE_MS = 60_000;
 const WORKER_TOOL_TIMEOUT = Symbol("worker_tool_timeout");
+const WORKER_TOOL_CANCELLED = Symbol("worker_tool_cancelled");
 
 export interface WorkerSessionConcurrencyLimits {
   maxPerParentConcurrent?: number;
@@ -1038,7 +1039,7 @@ async function executeSessionsSpawn(
   });
   let result: WorkerExecutionResult | null;
   try {
-    const sendResult = await sendWorkerWithOptionalTimeout(
+    const sendResult = await sendWorkerWithOptionalCancellation(
       workerRuntime,
       {
         workerRunKey: spawned.workerRunKey,
@@ -1048,8 +1049,20 @@ async function executeSessionsSpawn(
       },
       timeoutMs,
       `sessions_spawn timed out after ${formatTimeoutSeconds(timeoutMs)}.`,
-      hardTimeoutGraceMs
+      hardTimeoutGraceMs,
+      registration
     );
+    if (sendResult === WORKER_TOOL_CANCELLED) {
+      return cancelledSessionToolResult(input.call, {
+        taskId: input.activation.handoff.taskId,
+        sessionKey: spawned.workerRunKey,
+        agentId: spawned.workerType,
+        reason: registration?.cancellationReason() ?? "Tool call cancelled.",
+        label,
+        parentSessionKey: input.activation.runState.runKey,
+        toolCallId: input.call.id,
+      });
+    }
     if (sendResult === WORKER_TOOL_TIMEOUT) {
       const timeoutState = await getWorkerStateSafely(workerRuntime, spawned.workerRunKey);
       return timedOutResult(input.call, {
@@ -1333,7 +1346,7 @@ async function executeSessionsSend(
   });
   let result: WorkerExecutionResult | null;
   try {
-    const sendResult = await sendWorkerWithOptionalTimeout(
+    const sendResult = await sendWorkerWithOptionalCancellation(
       workerRuntime,
       {
         workerRunKey: sessionKey,
@@ -1344,8 +1357,20 @@ async function executeSessionsSend(
       },
       timeoutMs,
       `sessions_send timed out after ${formatTimeoutSeconds(timeoutMs)}.`,
-      hardTimeoutGraceMs
+      hardTimeoutGraceMs,
+      registration
     );
+    if (sendResult === WORKER_TOOL_CANCELLED) {
+      return cancelledSessionToolResult(input.call, {
+        taskId: input.activation.handoff.taskId,
+        sessionKey,
+        agentId: state.workerType,
+        reason: registration?.cancellationReason() ?? "Tool call cancelled.",
+        label,
+        parentSessionKey: record.context?.parentSessionKey ?? record.context?.parentSpanId ?? null,
+        toolCallId: input.call.id,
+      });
+    }
     if (sendResult === WORKER_TOOL_TIMEOUT) {
       const timeoutState = await getWorkerStateSafely(workerRuntime, sessionKey);
       return timedOutResult(input.call, {
@@ -2039,8 +2064,9 @@ async function sendWorkerWithOptionalTimeout(
   },
   timeoutMs: number | null,
   timeoutReason: string,
-  hardTimeoutGraceMs = DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS
-): Promise<WorkerExecutionResult | null | typeof WORKER_TOOL_TIMEOUT> {
+  hardTimeoutGraceMs = DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS,
+  cancellationPromise?: Promise<typeof WORKER_TOOL_CANCELLED>
+): Promise<WorkerExecutionResult | null | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> {
   const executeWorker = (): Promise<WorkerExecutionResult | null> =>
     input.resumeExisting
       ? workerRuntime.resume({
@@ -2050,8 +2076,14 @@ async function sendWorkerWithOptionalTimeout(
           ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
         })
       : workerRuntime.send(input);
+  const sendPromise = executeWorker();
+  sendPromise.catch(() => {
+    // The caller may already have received a timeout or cancellation result
+    // while the interrupted worker is still unwinding. Keep observing that
+    // original send so a later rejection cannot terminate the daemon.
+  });
   if (timeoutMs === null) {
-    return executeWorker();
+    return cancellationPromise ? Promise.race([sendPromise, cancellationPromise]) : sendPromise;
   }
   const graceMs =
     typeof hardTimeoutGraceMs === "number" && Number.isFinite(hardTimeoutGraceMs) && hardTimeoutGraceMs >= 0
@@ -2060,12 +2092,6 @@ async function sendWorkerWithOptionalTimeout(
   let softTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let hardTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let hardTimeoutFired = false;
-  const sendPromise = executeWorker();
-  sendPromise.catch(() => {
-    // The caller may already have received a timeout result while the
-    // interrupted worker is still unwinding. Keep observing that original
-    // send so a later rejection cannot terminate the daemon.
-  });
   const timeoutPromise = new Promise<WorkerExecutionResult | typeof WORKER_TOOL_TIMEOUT>((resolve) => {
     softTimeoutHandle = setTimeout(() => {
       hardTimeoutHandle = setTimeout(() => {
@@ -2085,7 +2111,11 @@ async function sendWorkerWithOptionalTimeout(
     }, timeoutMs);
   });
   try {
-    return await Promise.race([sendPromise, timeoutPromise]);
+    return await Promise.race([
+      sendPromise,
+      timeoutPromise,
+      ...(cancellationPromise ? [cancellationPromise] : []),
+    ]);
   } finally {
     if (!hardTimeoutFired) {
       if (softTimeoutHandle) {
@@ -2096,6 +2126,44 @@ async function sendWorkerWithOptionalTimeout(
       }
     }
   }
+}
+
+async function sendWorkerWithOptionalCancellation(
+  workerRuntime: WorkerRuntime,
+  input: {
+    workerRunKey: string;
+    activation: RoleActivationInput;
+    packet: RolePromptPacket;
+    toolCallId?: string;
+    resumeExisting?: boolean;
+  },
+  timeoutMs: number | null,
+  timeoutReason: string,
+  hardTimeoutGraceMs: number | undefined,
+  registration: ToolCancellationRegistration | undefined
+): Promise<WorkerExecutionResult | null | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> {
+  if (!registration) {
+    return sendWorkerWithOptionalTimeout(workerRuntime, input, timeoutMs, timeoutReason, hardTimeoutGraceMs);
+  }
+  const cancellationPromise: Promise<typeof WORKER_TOOL_CANCELLED> = registration
+    .cancelled()
+    .then(() => WORKER_TOOL_CANCELLED);
+  const sendPromise = sendWorkerWithOptionalTimeout(
+    workerRuntime,
+    input,
+    timeoutMs,
+    timeoutReason,
+    hardTimeoutGraceMs,
+    cancellationPromise
+  );
+  const result = await Promise.race([sendPromise, cancellationPromise]);
+  if (result === WORKER_TOOL_CANCELLED) {
+    sendPromise.catch(() => {
+      // The worker may still be unwinding after the parent tool result has
+      // already been cancelled. Observe late rejection to keep the daemon up.
+    });
+  }
+  return result;
 }
 
 async function runWorkerTimeoutSummaryPass(

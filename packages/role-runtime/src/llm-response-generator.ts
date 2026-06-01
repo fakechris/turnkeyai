@@ -40,7 +40,8 @@ type ToolLoopCloseoutReason =
   | "completed_sub_agent_final"
   | "sub_agent_timeout"
   | "operator_cancelled"
-  | "repeated_tool_failure";
+  | "repeated_tool_failure"
+  | "tool_evidence_fallback";
 
 interface ToolLoopCloseoutMetadata {
   reason: ToolLoopCloseoutReason;
@@ -156,20 +157,51 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           maxRounds,
         })
       );
-      const generated = await this.generateWithEnvelopeRetry({
-        activation: input.activation,
-        packet: input.packet,
-        selection,
-        gatewayInput: {
-          ...initialGatewayInput,
-          messages: gatewayMessages,
-          ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
-          envelope: {
-            ...(initialGatewayInput.envelope ?? {}),
-            ...deriveToolResultEnvelope(gatewayMessages),
+      let generated: Awaited<ReturnType<LLMRoleResponseGenerator["generateWithEnvelopeRetry"]>>;
+      try {
+        generated = await this.generateWithEnvelopeRetry({
+          activation: input.activation,
+          packet: input.packet,
+          selection,
+          gatewayInput: {
+            ...initialGatewayInput,
+            messages: gatewayMessages,
+            ...(nextToolChoice ? { toolChoice: nextToolChoice } : {}),
+            envelope: {
+              ...(initialGatewayInput.envelope ?? {}),
+              ...deriveToolResultEnvelope(gatewayMessages),
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        if (isAbortError(error)) {
+          throw error;
+        }
+        const localResult =
+          activeToolLoop && hasUsableEvidence(toolTrace)
+            ? buildLocalEvidenceCloseout({
+                messages,
+                packet: input.packet,
+                selection,
+                error,
+              })
+            : null;
+        if (!localResult) {
+          throw error;
+        }
+        toolLoopCloseout = {
+          reason: "tool_evidence_fallback",
+          maxRounds,
+          toolCallCount: countToolCalls(toolTrace),
+          roundCount: toolTrace.length,
+          evidenceAvailable: true,
+        };
+        result = maybeRedactForbiddenLocalUrls({
+          result: localResult,
+          packet: input.packet,
+        });
+        break;
+      }
       nextToolChoice = undefined;
       throwIfAborted(input.signal);
       result = generated.result;
@@ -1509,6 +1541,7 @@ function compactToolResultTraceContent(content: string): { content: string; comp
     ...(parsed.resumable ? { resumable: parsed.resumable } : {}),
     ...(parsed.timeout_seconds == null ? {} : { timeout_seconds: parsed.timeout_seconds }),
     ...(parsed.evidence_available == null ? {} : { evidence_available: parsed.evidence_available }),
+    ...compactSessionPayloadEvidenceExcerpt(parsed.payload),
     ...(typeof parsed.evidence_summary === "string" ? { evidence_summary: sliceUtf8(parsed.evidence_summary, 1600) } : {}),
     final_content: typeof parsed.final_content === "string" ? sliceUtf8(parsed.final_content, 6 * 1024) : null,
     result: typeof parsed.result === "string" ? sliceUtf8(parsed.result, 1600) : "",
@@ -1520,6 +1553,11 @@ function compactToolResultTraceContent(content: string): { content: string; comp
     content: compactContent,
     compacted: compactContent !== content,
   };
+}
+
+function compactSessionPayloadEvidenceExcerpt(payload: unknown): { evidence_excerpt: string } | Record<string, never> {
+  const evidence = readPayloadEvidenceExcerpt(payload);
+  return evidence ? { evidence_excerpt: sliceUtf8(evidence, 2 * 1024) } : {};
 }
 
 function compactSessionPayloadArtifactRefs(payload: unknown):
@@ -1540,6 +1578,25 @@ function compactSessionPayloadArtifactRefs(payload: unknown):
       ...(screenshotPaths.length ? { screenshotPaths } : {}),
     },
   };
+}
+
+function readPayloadEvidenceExcerpt(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  const page = record.page && typeof record.page === "object" && !Array.isArray(record.page)
+    ? (record.page as Record<string, unknown>)
+    : null;
+  const parts = [
+    readStringField(record.content),
+    readStringField(page?.title),
+    readStringField(page?.textExcerpt),
+  ]
+    .filter((part): part is string => Boolean(part))
+    .map((part) => part.trim());
+  const joined = dedupeStrings(parts).join("\n");
+  return joined || null;
 }
 
 function readStringArray(value: unknown): string[] {
@@ -1693,9 +1750,6 @@ function readCompletedSessionEvidence(parsed: NonNullable<ReturnType<typeof pars
     if (parsed.agent_id === "browser") {
       return parsed.final_content.trim();
     }
-  }
-  if (parsed.agent_id !== "browser") {
-    return null;
   }
   const evidence = [parsed.result, parsed.evidence_summary]
     .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
@@ -2999,7 +3053,19 @@ function buildLocalEvidenceCloseout(input: {
     .filter((result) => result.status === "completed")
     .map((result) => readCompletedSessionEvidence(result))
     .filter((evidence): evidence is string => Boolean(evidence));
-  if (completedEvidence.length === 0) {
+  const sessionToolResultMessages = new Set(
+    input.messages
+      .filter((message) => message.role === "tool")
+      .filter((message) => parseSessionToolResult(readToolResultContentText(message.content)) != null)
+  );
+  const genericToolEvidence = input.messages
+    .filter((message) => message.role === "tool" && !sessionToolResultMessages.has(message))
+    .map((message) => readToolResultContentText(message.content))
+    .filter((content) => !isLikelyFailedToolContent(content))
+    .map((content) => readGenericToolEvidence(content))
+    .filter((evidence): evidence is string => Boolean(evidence));
+  const allEvidence = [...completedEvidence, ...genericToolEvidence];
+  if (allEvidence.length === 0) {
     return null;
   }
   const cancellationSeen =
@@ -3010,7 +3076,7 @@ function buildLocalEvidenceCloseout(input: {
         ...input.messages.map((message) => readToolResultContentText(message.content)),
       ].join("\n")
     );
-  const evidence = completedEvidence.map((item, index) => `Source ${index + 1}: ${sliceUtf8(item, 4 * 1024)}`).join("\n");
+  const evidence = allEvidence.map((item, index) => `Source ${index + 1}: ${sliceUtf8(item, 4 * 1024)}`).join("\n");
   return {
     text: [
       `Verified: ${evidence}`,
@@ -3034,6 +3100,63 @@ function buildLocalEvidenceCloseout(input: {
 
 function hasUsableEvidence(rounds: NativeToolRoundTrace[]): boolean {
   return rounds.some((round) => round.results.some((result) => !result.isError && result.skipped !== true));
+}
+
+function readGenericToolEvidence(content: string): string | null {
+  const trimmed = content.trim();
+  if (!trimmed || isLikelyFailedToolContent(trimmed)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
+      const payload = record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)
+        ? (record.payload as Record<string, unknown>)
+        : null;
+      const payloadPage = payload?.page && typeof payload.page === "object" && !Array.isArray(payload.page)
+        ? (payload.page as Record<string, unknown>)
+        : null;
+      const parts = [
+        readStringField(record.summary),
+        readStringField(payload?.content),
+        readStringField(payloadPage?.title),
+        readStringField(payloadPage?.textExcerpt),
+      ]
+        .filter((part): part is string => Boolean(part))
+        .map((part) => part.trim());
+      const joined = dedupeStrings(parts).join("\n");
+      if (joined) {
+        return sliceUtf8(joined, 4 * 1024);
+      }
+    }
+  } catch {
+    // Fall back to the textual content below.
+  }
+  return sliceUtf8(summarizeToolResultContent(trimmed), 4 * 1024);
+}
+
+function isLikelyFailedToolContent(content: string): boolean {
+  return /\b(status"\s*:\s*"failed|isError"\s*:\s*true|missing required|timed out|timeout|failed:|error:|skipped)\b/i.test(content) ||
+    /^tool_call_.*(?:skipp|error|fail)/i.test(content.trim());
+}
+
+function readStringField(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value.replace(/\s+/g, " ").trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(value);
+  }
+  return result;
 }
 
 function formatDurationMs(ms: number): string {

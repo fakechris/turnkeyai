@@ -9,6 +9,7 @@ export interface ToolCancellationRegistration {
   unregister(): void;
   isCancelled(): boolean;
   cancellationReason(): string | null;
+  cancelled(): Promise<string>;
 }
 
 export interface ToolCancellationRegistry {
@@ -27,16 +28,24 @@ interface ActiveToolCancellationEntry {
   cancel(reason: string): Promise<void>;
   cancelled: boolean;
   cancellationReason: string | null;
+  resolveCancelled(reason: string): void;
+  cancelledPromise: Promise<string>;
 }
 
 export class InMemoryToolCancellationRegistry implements ToolCancellationRegistry {
   private readonly active = new Map<string, ActiveToolCancellationEntry>();
 
   register(input: ToolCancellationInput): ToolCancellationRegistration {
+    let resolveCancelled!: (reason: string) => void;
+    const cancelledPromise = new Promise<string>((resolve) => {
+      resolveCancelled = resolve;
+    });
     const entry: ActiveToolCancellationEntry = {
       ...input,
       cancelled: false,
       cancellationReason: null,
+      resolveCancelled,
+      cancelledPromise,
     };
     const key = cancellationKey(input.threadId, input.toolCallId);
     this.active.set(key, entry);
@@ -48,6 +57,7 @@ export class InMemoryToolCancellationRegistry implements ToolCancellationRegistr
       },
       isCancelled: () => entry.cancelled,
       cancellationReason: () => entry.cancellationReason,
+      cancelled: () => entry.cancelledPromise,
     };
   }
 
@@ -63,10 +73,11 @@ export class InMemoryToolCancellationRegistry implements ToolCancellationRegistr
         results.push({ toolCallId, active: false, cancelled: false });
         continue;
       }
-      entry.cancelled = true;
-      entry.cancellationReason = input.reason;
       try {
         await entry.cancel(input.reason);
+        entry.cancelled = true;
+        entry.cancellationReason = input.reason;
+        entry.resolveCancelled(input.reason);
         results.push({ toolCallId, active: true, cancelled: true });
       } catch (error) {
         results.push({

@@ -234,6 +234,7 @@ interface FixtureServer {
   betaUrl: string;
   slowUrl: string;
   cancelResumeUrl: string;
+  cancelResumeStateUrl: string;
   approvalUrl: string;
   dynamicUrl: string;
   dashboardUrl: string;
@@ -2447,6 +2448,10 @@ async function runNaturalCancelFollowupScenario(input: {
     toolCallId: activeCall.toolCallId,
     timeoutMs: Math.min(input.timeoutMs, 60_000),
   });
+  await waitForCancelResumeFixtureRequest({
+    fixture: input.fixture,
+    timeoutMs: Math.min(input.timeoutMs, 60_000),
+  });
   await requestJson<{ cancelled: boolean }>({
     method: "POST",
     url: `${input.baseUrl}/message/cancel-tools`,
@@ -3362,11 +3367,24 @@ export function buildNaturalScenarioSpec(
     allowRecoveredTimeout: true,
     allowToolFailure: false,
     minEvidenceEvents: 3,
-    requiredAnswerTerms: ["multi-agent", "browser", "Mission Control", "Stuck missions", "Weak answer rate", "risk"],
+    requiredAnswerTerms: ["browser", "Mission Control", "Stuck missions", "Weak answer rate", "risk"],
+    requiredAnswerPatterns: [
+      {
+        label: "multi-agent coordination",
+        pattern: /\bmulti[- ]agent\b|multiple agents|specialist agents|delegated agents|agent coordination/i,
+      },
+    ],
     requiredEvidencePatterns: [
       { label: "orchestration evidence stream", pattern: /multi-agent decomposition|durable sub-session history/i },
-      { label: "bridge evidence stream", pattern: /browser work is a means|does not control the desktop|command-line setup/i },
-      { label: "product signals stuck missions", pattern: /Stuck missions:\s*(?:6|six)|(?:6|six)\s+stuck missions/i },
+      {
+        label: "bridge evidence stream",
+        pattern:
+          /(?:browser bridge|bridge capability|bridge controls)[\s\S]{0,240}(?:command-line|provider configuration|desktop|DOM|screenshots|artifacts)|browser work is a means|does not control (?:the )?desktop|command-line setup[\s\S]{0,120}provider configuration/i,
+      },
+      {
+        label: "product signals stuck missions",
+        pattern: /(?:Stuck missions|stuckMissions|stuck_missions)\s*:?\s*(?:6|six)|(?:6|six)\s+stuck\s+missions/i,
+      },
       { label: "product signals weak answer rate", pattern: /Weak[- ]answer(?:\s+rate)?\s*:?\s*24%|24%[\s-]+weak[- ]answer(?:\s+rate)?/i },
     ],
   };
@@ -3408,6 +3426,7 @@ export function assertNaturalScenarioPromptsAllowed(): void {
     approvalUrl: "http://127.0.0.1/approval-form",
     slowUrl: "http://127.0.0.1/slow-fixture",
     cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+    cancelResumeStateUrl: "http://127.0.0.1/__cancel-resume-state",
     orchestrationUrl: "http://127.0.0.1/product-orchestration",
     bridgeUrl: "http://127.0.0.1/product-bridge",
     productSignalsUrl: "http://127.0.0.1/product-signals",
@@ -3552,6 +3571,9 @@ export function evaluateNaturalMissionQuality(input: {
         ? "expected browser profile fallback recovery was not observed"
         : `browser profile fallback occurred ${profileFallbackCount} time(s)`
     );
+  }
+  if (!input.spec.requiresProfileFallback && (input.spec.requiredBrowserFailureBuckets ?? []).length === 0 && browserFailureBuckets.length > 0) {
+    failures.push(`unexpected browser failure bucket(s): ${formatBrowserFailureBuckets(browserFailureBuckets)}`);
   }
   for (const bucket of input.spec.requiredBrowserFailureBuckets ?? []) {
     if (!browserFailureBuckets.some((item) => item.bucket === bucket && item.count > 0)) {
@@ -4318,6 +4340,11 @@ async function startFixtureServer(): Promise<FixtureServer> {
       writeCancelResumeFixture(res);
       return;
     }
+    if (pathname === "/__cancel-resume-state") {
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ cancelResumeRequestCount }));
+      return;
+    }
     if (pathname === "/vendor-alpha") {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(`<!doctype html>
@@ -4591,6 +4618,7 @@ async function startFixtureServer(): Promise<FixtureServer> {
     betaUrl: `http://127.0.0.1:${port}/vendor-beta`,
     slowUrl: `http://127.0.0.1:${port}/slow-fixture`,
     cancelResumeUrl: `http://127.0.0.1:${port}/cancel-resume-fixture`,
+    cancelResumeStateUrl: `http://127.0.0.1:${port}/__cancel-resume-state`,
     approvalUrl: `http://127.0.0.1:${port}/approval-form`,
     dynamicUrl: `http://127.0.0.1:${port}/dynamic-dashboard`,
     dashboardUrl: `http://127.0.0.1:${port}/ops-dashboard`,
@@ -6271,6 +6299,45 @@ async function waitForRunningWorkerSessionForToolCall(input: {
       null,
       2
     )}`
+  );
+}
+
+async function waitForCancelResumeFixtureRequest(input: {
+  fixture: FixtureServer;
+  timeoutMs: number;
+}): Promise<void> {
+  const startedAt = Date.now();
+  let latestCount = 0;
+  while (Date.now() - startedAt < input.timeoutMs) {
+    const remainingMs = input.timeoutMs - (Date.now() - startedAt);
+    const perPollTimeoutMs = Math.max(1, Math.min(remainingMs, 1000));
+    let response: Awaited<ReturnType<typeof fetch>>;
+    try {
+      response = await fetch(input.fixture.cancelResumeStateUrl, {
+        signal: AbortSignal.timeout(perPollTimeoutMs),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+        await sleep(250);
+        continue;
+      }
+      throw error;
+    }
+    if (!response.ok) {
+      throw new Error(`cancel-resume fixture state returned HTTP ${response.status}`);
+    }
+    const state = (await response.json()) as { cancelResumeRequestCount?: unknown };
+    latestCount =
+      typeof state.cancelResumeRequestCount === "number" && Number.isFinite(state.cancelResumeRequestCount)
+        ? state.cancelResumeRequestCount
+        : 0;
+    if (latestCount > 0) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `cancel-resume fixture did not observe the first source request before cancellation; latest request count ${latestCount}`
   );
 }
 
