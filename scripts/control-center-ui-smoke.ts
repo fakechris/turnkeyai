@@ -717,6 +717,11 @@ try {
     await page.waitForSelector("text=Runtime attention");
     await page.waitForSelector("text=Mission health");
     const openReplay = page.getByRole("button", { name: /Open replay/ });
+    await page.waitForFunction(() =>
+      Array.from(document.querySelectorAll("button")).some(
+        (button) => /Open replay/.test(button.textContent ?? "") && !button.disabled
+      )
+    );
     assert(!(await openReplay.isDisabled()), "runtime replay action should open a mission-linked trace");
     assert(
       await page.locator("text=chain.browser.waiting").isVisible(),
