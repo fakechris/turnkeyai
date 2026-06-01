@@ -4834,3 +4834,71 @@ Convergence question:
 - Next required gate: use this artifact path in future Workbench UX checkpoints
   that touch Mission Detail replay, approval grouping, timeout display, or
   browser evidence display.
+
+## 2026-06-01 17:38 CST - Natural Browser CDP Timeout Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added an E2E-only browser failure injection hook for forced browser snapshot
+  failure buckets. The new natural scenario uses it to exercise repeated
+  `cdp_command_timeout` evidence instead of only classifying a static string.
+- The hook is opt-in through test environment variables and leaves normal
+  browser execution unchanged.
+
+Result Quality:
+- Added `natural-browser-cdp-timeout-closeout` to the natural mission matrix.
+  The quality gate requires browser use, the `cdp_command_timeout` bucket,
+  useful final synthesis, no stuck liveness, and a bounded answer that names
+  what remained incomplete.
+- The first real run failed usefully because the model used partial browser
+  evidence after the timeout but the evaluator treated that like a fully
+  unavailable browser. The gate was corrected to allow partial visual evidence
+  while still requiring explicit CDP/snapshot limitation and next action.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- The user-visible value is diagnostic truth: future mission surfaces can show
+  `cdp_command_timeout` as a real natural failure class with a terminal answer,
+  not only as a synthetic route/test bucket.
+
+Browser Reliability:
+- This closes one browser reliability row for natural prompts: persistent CDP
+  command timeout during browser snapshot capture now produces a failure bucket,
+  finishes the mission, and does not leave active worker liveness.
+- Remaining browser reliability rows still needing equivalent natural gates:
+  attach failure and target/session detach.
+
+Acceptance Evidence:
+- Focused tests: `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts
+  packages/qc-runtime/src/real-llm-acceptance-defaults.test.ts
+  scripts/real-llm-acceptance.test.ts`: passed.
+- `npm run typecheck`: passed.
+- Focused natural real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-cdp-timeout-closeout
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-browser-cdp-timeout-closeout-final.json`: passed.
+- Natural report:
+  `/tmp/turnkeyai-natural-browser-cdp-timeout-closeout-final.json`, kind
+  `turnkeyai.natural-mission-e2e.report`, evidence mode `natural-real-llm`,
+  status `passed`.
+- Natural mission: `msn.mpv0lzmu.1`, status `done`, natural `passed`,
+  tools `1/1`, sessions `1/0`, browser `yes`, profile fallbacks `0`,
+  browser buckets `cdp_command_timeout=1`, stuck `no`, final bytes `1433`.
+
+Regression Risk:
+- The injection hook is production code guarded by explicit E2E env vars, so
+  the main risk is accidental activation in a non-test daemon environment.
+  Focused tests and the variable names keep it scoped, but operators should not
+  set `TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_*` in normal runtime configs.
+- Adding the scenario to the default natural matrix lengthens full release
+  acceptance. Focused runs can still select a smaller natural set during
+  debugging.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: a real natural LLM mission now proves the browser layer can surface
+  a CDP command timeout, produce a useful terminal answer with partial evidence,
+  and leave no stuck work.
+- If no, next required gate:
