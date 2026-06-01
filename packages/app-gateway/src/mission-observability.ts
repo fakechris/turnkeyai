@@ -466,14 +466,13 @@ function deriveQualityStatus(
 }
 
 function latestFinalAnswer(mission: Mission, events: ActivityEvent[]): ActivityEvent | null {
-  const staleBeforeIndex = Math.max(
-    latestUserPlanIndex(events),
-    latestToolActivityIndex(events)
-  );
+  const latestUserIndex = latestUserPlanIndex(events);
+  const staleBeforeIndex = Math.max(latestUserIndex, latestToolActivityIndex(events));
   let latest: ActivityEvent | null = null;
   for (const [index, event] of events.entries()) {
     if (event.kind !== "thought" || event.text.trim().length === 0) continue;
     if (index <= staleBeforeIndex) continue;
+    if (hasUnresolvedToolCallBeforeAnswer(events, latestUserIndex, index)) continue;
     if (
       event.runtime?.route === "lead-role" ||
       event.actor === "role-lead" ||
@@ -483,6 +482,26 @@ function latestFinalAnswer(mission: Mission, events: ActivityEvent[]): ActivityE
     }
   }
   return latest;
+}
+
+function hasUnresolvedToolCallBeforeAnswer(
+  events: ActivityEvent[],
+  afterIndex: number,
+  answerIndex: number
+): boolean {
+  const pendingCallIds = new Set<string>();
+  for (let index = afterIndex + 1; index < answerIndex; index += 1) {
+    const event = events[index];
+    if (event?.kind !== "tool") continue;
+    const toolCallId = event.runtime?.toolCallId;
+    if (!toolCallId) continue;
+    if (event.runtime?.toolPhase === "call") {
+      pendingCallIds.add(toolCallId);
+    } else if (event.runtime?.toolPhase === "result") {
+      pendingCallIds.delete(toolCallId);
+    }
+  }
+  return pendingCallIds.size > 0;
 }
 
 function latestUserPlanIndex(events: ActivityEvent[]): number {
