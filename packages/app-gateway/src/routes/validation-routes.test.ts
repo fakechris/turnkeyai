@@ -3,6 +3,12 @@ import { Readable } from "node:stream";
 import test from "node:test";
 
 import type { ValidationOpsRunRecord } from "@turnkeyai/core-types/team";
+import {
+  DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS,
+} from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
+import { buildValidationOpsRecordFromRealLlmAcceptance } from "@turnkeyai/qc-runtime/validation-ops-inspection";
 
 import { createRouteIdempotencyStore } from "../idempotency-store";
 import { handleValidationRoutes, type ValidationRouteDeps } from "./validation-routes";
@@ -102,29 +108,16 @@ function createDeps(
 }
 
 function passingRealLlmAcceptanceRecord(completedAt = 1_000): ValidationOpsRunRecord {
-  return {
+  return buildValidationOpsRecordFromRealLlmAcceptance({
     runId: "real-llm-acceptance-run-1",
-    runType: "real-llm-acceptance",
-    title: "Real LLM acceptance",
     status: "passed",
     startedAt: completedAt - 100,
     completedAt,
-    durationMs: 100,
-    issueCount: 0,
-    selectors: ["tooluse:basic", "mission:comparison", "browser-tooluse"],
-    closedLoop: {
-      closedLoopStatus: "completed",
-      totalCases: 2,
-      completedCases: 2,
-      actionableCases: 0,
-      silentFailureCases: 0,
-      ambiguousFailureCases: 0,
-      closedLoopCases: 2,
-      closedLoopRate: 1,
-      rerunCommand: "npm run acceptance:real -- --model-catalog models.local.json",
-    },
-    issues: [],
-  };
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+  });
 }
 
 test("validation routes trim selectors for regression and validation suite runs", async () => {
