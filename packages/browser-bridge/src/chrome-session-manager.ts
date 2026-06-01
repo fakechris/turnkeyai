@@ -3253,6 +3253,7 @@ function summarizeBrowserFailureSummary(error: unknown): FailureSummary {
 function maybeInjectBrowserE2eFailure(actionKind: BrowserTaskAction["kind"]): Error | null {
   const bucket = process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_BUCKET?.trim();
   if (!bucket) {
+    browserE2eFailureInjected = false;
     return null;
   }
   const targetAction = process.env.TURNKEYAI_E2E_BROWSER_FORCE_FAILURE_ACTION?.trim() || "snapshot";
