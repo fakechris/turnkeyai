@@ -60,6 +60,7 @@ import {
 } from "../state/toolReplay";
 import { selectMissionFinalAnswer } from "../state/missionFinalAnswer";
 import { buildMissionProgressNow, type MissionProgressNow } from "../state/missionProgress";
+import { selectBrowserFailureBucketRows } from "../state/browserFailureBuckets";
 
 type TraceFilter = "all" | "agent" | "tools" | "approvals" | "recovery" | "evidence";
 
@@ -1517,6 +1518,9 @@ function MissionMetricsCard({
             <MetricTile label="stale" value={String(metrics.liveness.stale)} tone={metrics.liveness.stale > 0 ? "danger" : undefined} />
             <MetricTile label="evidence" value={String(metrics.qualityGate.evidenceEvents)} />
           </div>
+          {(metrics.browser?.failureBuckets?.length ?? 0) > 0 && (
+            <BrowserFailureBucketPanel metrics={metrics} />
+          )}
           {metrics.liveness.staleSubjects.length > 0 && (
             <div className="mission-liveness-alert" role="alert">
               {metrics.liveness.staleSubjects.slice(0, 3).map((subject) => (
@@ -1539,6 +1543,35 @@ function MissionMetricsCard({
         </>
       )}
     </section>
+  );
+}
+
+function BrowserFailureBucketPanel({ metrics }: { metrics: MissionObservabilitySnapshot }) {
+  const rows = selectBrowserFailureBucketRows(metrics.browser?.failureBuckets);
+  const visibleRows = rows.slice(0, 4);
+  const hiddenBucketCount = rows.length - visibleRows.length;
+  return (
+    <div className="browser-failure-bucket-panel" role="region" aria-label="Browser recovery buckets">
+      <div className="browser-failure-bucket-head">
+        <span>Browser recovery buckets</span>
+        <span>{rows.length} bucket{rows.length === 1 ? "" : "s"}</span>
+      </div>
+      <div className="browser-failure-bucket-list">
+        {visibleRows.map((row) => (
+          <div key={row.bucket} className="browser-failure-bucket-row">
+            <span>{row.label}</span>
+            <span className="mono">{row.bucket}</span>
+            <span>{row.countLabel}</span>
+            <span>{formatTimeOfDay(row.latestAtMs)}</span>
+          </div>
+        ))}
+        {hiddenBucketCount > 0 && (
+          <div className="browser-failure-bucket-more">
+            + {hiddenBucketCount} more
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
