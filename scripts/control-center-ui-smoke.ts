@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
@@ -10,6 +10,7 @@ const args = process.argv.slice(2);
 let explicitBrowserPath: string | undefined;
 let headful = false;
 let allowMissingBrowser = false;
+let artifactDir: string | undefined = process.env.TURNKEYAI_CONTROL_CENTER_SMOKE_ARTIFACT_DIR;
 
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
@@ -19,6 +20,15 @@ for (let index = 0; index < args.length; index += 1) {
       throw new Error("missing value for --browser-path");
     }
     explicitBrowserPath = value;
+    index += 1;
+    continue;
+  }
+  if (arg === "--artifact-dir") {
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) {
+      throw new Error("missing value for --artifact-dir");
+    }
+    artifactDir = value;
     index += 1;
     continue;
   }
@@ -53,6 +63,7 @@ const savedModelCatalogContents: string[] = [];
 let onboardingState = onboardingStateFixture();
 const browserConsoleErrors: string[] = [];
 const browserPageErrors: string[] = [];
+const smokeArtifactDir = artifactDir?.trim() ? path.resolve(process.cwd(), artifactDir.trim()) : undefined;
 const port = await resolveFreePort();
 const sockets = new Set<net.Socket>();
 const server = createServer((req, res) => {
@@ -571,6 +582,7 @@ try {
 
     const screenshot = await page.screenshot({ fullPage: true });
     assert(screenshot.byteLength > 20_000, `expected non-trivial screenshot, got ${screenshot.byteLength} bytes`);
+    const desktopLayoutEvidence = await collectMissionLayoutEvidence(page);
 
     await page.getByRole("button", { name: "Archive" }).click();
     await page.waitForFunction(() => window.location.hash === "#/missions");
@@ -891,6 +903,7 @@ try {
       mobileScreenshot.byteLength > 15_000,
       `expected non-trivial mobile screenshot, got ${mobileScreenshot.byteLength} bytes`
     );
+    const mobileLayoutEvidence = await collectMissionLayoutEvidence(mobilePage);
     await mobilePage.close();
     assert(
       requestedPaths.some((value) => value.startsWith(`/missions/${missionId}/timeline`)),
@@ -956,6 +969,18 @@ try {
       browserPageErrors.length === 0,
       `browser page errors should stay clean:\n${browserPageErrors.join("\n")}`
     );
+    if (smokeArtifactDir) {
+      const artifact = await writeSmokeArtifacts({
+        artifactDir: smokeArtifactDir,
+        desktopScreenshot: screenshot,
+        mobileScreenshot,
+        desktopLayoutEvidence,
+        mobileLayoutEvidence,
+      });
+      console.log(`control-center-ui-smoke: artifact-summary ${artifact.summaryPath}`);
+      console.log(`control-center-ui-smoke: desktop-screenshot ${artifact.desktopScreenshotPath}`);
+      console.log(`control-center-ui-smoke: mobile-screenshot ${artifact.mobileScreenshotPath}`);
+    }
     console.log("control-center-ui-smoke: passed");
     console.log(`control-center-ui-smoke: screenshot-bytes ${screenshot.byteLength}`);
     console.log(`control-center-ui-smoke: mobile-screenshot-bytes ${mobileScreenshot.byteLength}`);
@@ -2374,6 +2399,102 @@ async function assertWithinViewport(page: Page, selector: string, message: strin
   assert(result !== null, `missing element for viewport check: ${selector}`);
   assert(result.left >= -1, `${message}: ${JSON.stringify(result)}`);
   assert(result.right <= result.viewportWidth + 1, `${message}: ${JSON.stringify(result)}`);
+}
+
+interface MissionLayoutEvidence {
+  viewport: {
+    width: number;
+    height: number;
+  };
+  traceExpanded: boolean;
+  finalAnswerVisible: boolean;
+  thinkingBeforeFinal: boolean;
+  timelineBeforeFinal: boolean;
+  traceFinalOverlap: boolean | null;
+  horizontalOverflowPx: number;
+  missingSelectors: string[];
+}
+
+interface SmokeArtifactInput {
+  artifactDir: string;
+  desktopScreenshot: Buffer;
+  mobileScreenshot: Buffer;
+  desktopLayoutEvidence: MissionLayoutEvidence;
+  mobileLayoutEvidence: MissionLayoutEvidence;
+}
+
+async function collectMissionLayoutEvidence(page: Page): Promise<MissionLayoutEvidence> {
+  return page.evaluate(() => {
+    const thinking = document.querySelector(".thinking-card")?.getBoundingClientRect() ?? null;
+    const timeline = document.querySelector("#thinking-record-timeline")?.getBoundingClientRect() ?? null;
+    const finalAnswer = document.querySelector(".final-answer-card")?.getBoundingClientRect() ?? null;
+    const missingSelectors = [
+      ...(thinking ? [] : [".thinking-card"]),
+      ...(timeline ? [] : ["#thinking-record-timeline"]),
+      ...(finalAnswer ? [] : [".final-answer-card"]),
+    ];
+    const overlaps =
+      thinking && finalAnswer
+        ? !(thinking.right <= finalAnswer.left || finalAnswer.right <= thinking.left || thinking.bottom <= finalAnswer.top || finalAnswer.bottom <= thinking.top)
+        : null;
+    const clientWidth = document.documentElement.clientWidth;
+    return {
+      viewport: {
+        width: clientWidth,
+        height: document.documentElement.clientHeight,
+      },
+      traceExpanded: Boolean(document.querySelector("#thinking-record-timeline")),
+      finalAnswerVisible: Boolean(document.querySelector(".final-answer-card")),
+      thinkingBeforeFinal: Boolean(thinking && finalAnswer && thinking.bottom <= finalAnswer.top + 1),
+      timelineBeforeFinal: Boolean(timeline && finalAnswer && timeline.bottom <= finalAnswer.top + 1),
+      traceFinalOverlap: overlaps,
+      horizontalOverflowPx: Math.max(0, Math.max(document.body.scrollWidth, document.documentElement.scrollWidth) - clientWidth),
+      missingSelectors,
+    };
+  });
+}
+
+async function writeSmokeArtifacts(input: SmokeArtifactInput): Promise<{
+  summaryPath: string;
+  desktopScreenshotPath: string;
+  mobileScreenshotPath: string;
+}> {
+  await mkdir(input.artifactDir, { recursive: true });
+  const desktopScreenshotPath = path.join(input.artifactDir, "mission-detail-desktop.png");
+  const mobileScreenshotPath = path.join(input.artifactDir, "mission-detail-mobile.png");
+  const summaryPath = path.join(input.artifactDir, "control-center-ui-smoke-summary.json");
+  await Promise.all([
+    writeFile(desktopScreenshotPath, input.desktopScreenshot),
+    writeFile(mobileScreenshotPath, input.mobileScreenshot),
+    writeFile(
+      summaryPath,
+      `${JSON.stringify(
+        {
+          kind: "turnkeyai.control-center-ui-smoke.v1",
+          missionId,
+          generatedAt: new Date().toISOString(),
+          screenshots: {
+            desktop: {
+              path: desktopScreenshotPath,
+              bytes: input.desktopScreenshot.byteLength,
+            },
+            mobile: {
+              path: mobileScreenshotPath,
+              bytes: input.mobileScreenshot.byteLength,
+            },
+          },
+          layout: {
+            desktop: input.desktopLayoutEvidence,
+            mobile: input.mobileLayoutEvidence,
+          },
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    ),
+  ]);
+  return { summaryPath, desktopScreenshotPath, mobileScreenshotPath };
 }
 
 async function assertNoPageHorizontalOverflow(page: Page, message: string): Promise<void> {
