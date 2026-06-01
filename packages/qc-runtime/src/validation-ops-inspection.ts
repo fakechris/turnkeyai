@@ -510,13 +510,6 @@ function buildPhase1ReadinessReport(records: ValidationOpsRunRecord[]): Validati
 function buildRealLlmAcceptanceReadinessGate(records: ValidationOpsRunRecord[]): ValidationOpsReport["readiness"]["gates"][number] {
   const commandHint = "npm run acceptance:real -- --model-catalog models.local.json";
   const latestRecord = findLatestRecord(records, (record) => record.runType === "real-llm-acceptance");
-  const latestFullCoverageRecord = findLatestRecord(
-    records,
-    (record) =>
-      record.runType === "real-llm-acceptance" &&
-      record.realAcceptance?.releaseCoverage?.status === "full" &&
-      hasCompleteReleaseCoverage(record.realAcceptance.releaseCoverage)
-  );
 
   if (!latestRecord) {
     return {
@@ -527,19 +520,24 @@ function buildRealLlmAcceptanceReadinessGate(records: ValidationOpsRunRecord[]):
       commandHint,
     };
   }
-  const record = latestFullCoverageRecord ?? latestRecord;
-  if (record.status === "failed") {
+  if (latestRecord.status === "failed") {
     return buildReadinessGate({
       gateId: "real-llm-acceptance",
       title: "Real LLM acceptance",
       commandHint,
-      record,
+      record: latestRecord,
       missingSummary: "No real LLM acceptance run has been recorded.",
     });
   }
 
+  const latestProvenFullRecord = findLatestRecord(
+    records,
+    (record) => record.runType === "real-llm-acceptance" && hasProvenFullRealAcceptance(record)
+  );
+  const record = latestProvenFullRecord ?? latestRecord;
+
   const coverage = record.realAcceptance?.releaseCoverage;
-  if (coverage?.status === "full" && hasCompleteReleaseCoverage(coverage)) {
+  if (hasProvenFullRealAcceptance(record)) {
     return {
       gateId: "real-llm-acceptance",
       title: "Real LLM acceptance",
@@ -551,17 +549,98 @@ function buildRealLlmAcceptanceReadinessGate(records: ValidationOpsRunRecord[]):
     };
   }
 
+  const evidenceGap = coverage?.status === "full" && hasCompleteReleaseCoverage(coverage)
+    ? "full release coverage is recorded, but mission report evidence is incomplete"
+    : coverage
+      ? `only ${coverage.status} coverage is recorded`
+      : "release coverage metadata is missing";
   return {
     gateId: "real-llm-acceptance",
     title: "Real LLM acceptance",
     status: "missing",
     summary: coverage
-      ? `${record.title} passed, but only ${coverage.status} coverage is recorded (${formatReleaseCoverageSummary(coverage)}).`
-      : `${record.title} passed, but release coverage metadata is missing.`,
+      ? `${record.title} passed, but ${evidenceGap} (${formatReleaseCoverageSummary(coverage)}).`
+      : `${record.title} passed, but ${evidenceGap}.`,
     commandHint,
     latestRunId: record.runId,
     recordedAt: record.completedAt,
   };
+}
+
+function hasProvenFullRealAcceptance(record: ValidationOpsRunRecord): boolean {
+  if (record.status !== "passed") return false;
+  const details = record.realAcceptance;
+  if (!details?.releaseCoverage || details.releaseCoverage.status !== "full") return false;
+  if (!hasCompleteReleaseCoverage(details.releaseCoverage)) return false;
+  if (!hasProvenMissionAcceptanceReport(record, details)) return false;
+  if (!hasProvenNaturalMissionAcceptanceReport(details)) return false;
+  return true;
+}
+
+function hasProvenMissionAcceptanceReport(
+  record: ValidationOpsRunRecord,
+  details: ValidationOpsRealAcceptanceDetails
+): boolean {
+  const scenarios = details.missionScenarios;
+  if (scenarios.length === 0) return true;
+  const report = details.missionReport;
+  if (!record.artifactPath || !report) return false;
+  return (
+    report.status === "passed" &&
+    report.scenarioCount === scenarios.length &&
+    report.passedScenarios === report.scenarioCount &&
+    report.failedScenarios === 0 &&
+    report.qualityFailures === 0 &&
+    report.qualityCheckFailures === 0 &&
+    report.livenessActive === 0 &&
+    report.livenessWaiting === 0 &&
+    report.livenessStale === 0 &&
+    report.evidenceEvents >= report.scenarioCount &&
+    sameStringMultiset(scenarios, report.scenarioIds ?? [])
+  );
+}
+
+function hasProvenNaturalMissionAcceptanceReport(details: ValidationOpsRealAcceptanceDetails): boolean {
+  const scenarios = details.naturalMissionScenarios ?? [];
+  if (scenarios.length === 0) return true;
+  const report = details.naturalMissionReport;
+  if (!details.naturalArtifactPath || !report) return false;
+  return (
+    report.status === "passed" &&
+    report.scenarioCount === scenarios.length &&
+    report.passedScenarios === report.scenarioCount &&
+    report.failedScenarios === 0 &&
+    report.completed === report.scenarioCount &&
+    report.reasonableToolUse === report.scenarioCount &&
+    report.subAgentCompleted === report.scenarioCount &&
+    report.finalAnswerHasEvidence === report.scenarioCount &&
+    report.finalAnswerUseful === report.scenarioCount &&
+    report.stuckOrLoop === 0 &&
+    report.browserProfileFallbacks === 0 &&
+    report.livenessActive === 0 &&
+    report.livenessWaiting === 0 &&
+    report.livenessStale === 0 &&
+    report.evidenceEvents >= report.scenarioCount &&
+    sameStringMultiset(scenarios, report.scenarioIds ?? [])
+  );
+}
+
+function sameStringMultiset(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const counts = new Map<string, number>();
+  for (const value of left) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  for (const value of right) {
+    const count = counts.get(value);
+    if (!count) return false;
+    if (count === 1) {
+      counts.delete(value);
+    } else {
+      counts.set(value, count - 1);
+    }
+  }
+  return counts.size === 0;
 }
 
 function hasCompleteReleaseCoverage(
