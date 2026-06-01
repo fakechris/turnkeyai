@@ -29,6 +29,7 @@ interface MissionScenarioReportShape {
     };
     browser?: {
       profileFallbacks?: unknown;
+      failureBuckets?: unknown;
     };
     approvals?: {
       requested?: unknown;
@@ -102,6 +103,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       sessionsSpawned: 0,
       sessionsContinued: 0,
       browserProfileFallbacks: 0,
+      browserFailureBuckets: 0,
       approvalsRequested: 0,
       approvalsDecided: 0,
       approvalsApplied: 0,
@@ -135,6 +137,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       summary.sessionsSpawned += readNumber(scenario.metrics?.sessions?.spawned);
       summary.sessionsContinued += readNumber(scenario.metrics?.sessions?.continued);
       summary.browserProfileFallbacks += readNumber(scenario.metrics?.browser?.profileFallbacks);
+      summary.browserFailureBuckets += readBrowserFailureBucketCount(scenario.metrics?.browser?.failureBuckets);
       summary.approvalsRequested += readNumber(scenario.metrics?.approvals?.requested);
       summary.approvalsDecided += readNumber(scenario.metrics?.approvals?.decided);
       summary.approvalsApplied += readNumber(scenario.metrics?.approvals?.applied);
@@ -169,6 +172,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       sessionsSpawned: 0,
       sessionsContinued: 0,
       browserProfileFallbacks: 0,
+      browserFailureBuckets: 0,
       approvalsRequested: 0,
       approvalsDecided: 0,
       approvalsApplied: 0,
@@ -214,6 +218,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       sessionsSpawned: 0,
       sessionsContinued: 0,
       browserProfileFallbacks: 0,
+      browserFailureBuckets: 0,
       approvalsRequested: 0,
       approvalsDecided: 0,
       approvalsApplied: 0,
@@ -251,6 +256,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       summary.sessionsSpawned += readNumber(scenario.metrics?.sessions?.spawned);
       summary.sessionsContinued += readNumber(scenario.metrics?.sessions?.continued);
       summary.browserProfileFallbacks += readNumber(scenario.metrics?.browser?.profileFallbacks);
+      summary.browserFailureBuckets += readBrowserFailureBucketCount(scenario.metrics?.browser?.failureBuckets);
       summary.approvalsRequested += readNumber(scenario.metrics?.approvals?.requested);
       summary.approvalsDecided += readNumber(scenario.metrics?.approvals?.decided);
       summary.approvalsApplied += readNumber(scenario.metrics?.approvals?.applied);
@@ -284,6 +290,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       sessionsSpawned: 0,
       sessionsContinued: 0,
       browserProfileFallbacks: 0,
+      browserFailureBuckets: 0,
       approvalsRequested: 0,
       approvalsDecided: 0,
       approvalsApplied: 0,
@@ -372,6 +379,18 @@ function readNumber(value: unknown): number {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readBrowserFailureBucketCount(value: unknown): number {
+  if (!Array.isArray(value)) {
+    return 0;
+  }
+  return value.reduce((total, item) => {
+    if (typeof item !== "object" || item === null) {
+      return total;
+    }
+    return total + readNumber((item as { count?: unknown }).count);
+  }, 0);
 }
 
 function readQualityChecks(value: unknown): Array<{ name: string; status: string }> {

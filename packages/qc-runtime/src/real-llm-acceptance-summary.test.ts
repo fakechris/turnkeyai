@@ -37,7 +37,7 @@ test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and 
         metrics: {
           tools: { requested: 1, results: 1, failed: 1, cancelled: 0, timeouts: 1 },
           sessions: { spawned: 1, continued: 0 },
-          browser: { profileFallbacks: 1 },
+          browser: { profileFallbacks: 1, failureBuckets: [{ bucket: "browser_cdp_unavailable", count: 2 }] },
           approvals: { requested: 0, decided: 0, applied: 0 },
           liveness: { active: 0, waiting: 1, stale: 1 },
           qualityChecks: [
@@ -67,6 +67,7 @@ test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and 
     sessionsSpawned: 3,
     sessionsContinued: 1,
     browserProfileFallbacks: 1,
+    browserFailureBuckets: 2,
     approvalsRequested: 1,
     approvalsDecided: 1,
     approvalsApplied: 1,
@@ -202,7 +203,7 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
         metrics: {
           tools: { requested: 3, results: 1, failed: 1, cancelled: 1, timeouts: 1 },
           sessions: { spawned: 2, continued: 1 },
-          browser: { profileFallbacks: 2 },
+          browser: { profileFallbacks: 2, failureBuckets: [{ bucket: "browser_cdp_unavailable", count: 3 }] },
           approvals: { requested: 1, decided: 1, applied: 1 },
           liveness: { active: 1, waiting: 1, stale: 0 },
           evidenceEvents: 0,
@@ -235,6 +236,7 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
     sessionsSpawned: 3,
     sessionsContinued: 1,
     browserProfileFallbacks: 2,
+    browserFailureBuckets: 3,
     approvalsRequested: 1,
     approvalsDecided: 1,
     approvalsApplied: 1,

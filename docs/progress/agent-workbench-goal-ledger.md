@@ -184,7 +184,7 @@ Methodology Review Trigger:
 
 ## 2026-05-30 17:55 CST - Post-Acceptance Product Entry And Recovery Visibility
 
-Direction: unknown
+Direction: converging
 
 Execution Kernel:
 - No kernel semantics changed in this checkpoint. Recent kernel work already
@@ -4643,3 +4643,68 @@ Convergence question:
 - Next required gate: run or add a natural browser reliability scenario that
   exercises one of the explicit browser failure rows and verifies a bounded,
   evidence-backed user result.
+
+## 2026-06-01 14:50 CST - Browser Failure Bucket Gate Tightening
+
+Direction: unknown
+
+Execution Kernel:
+- No runtime execution behavior changed. Tool scheduling, browser session
+  dispatch, retry policy, and closeout behavior are unchanged.
+- The existing natural browser-unavailable scenario now requires the
+  `browser_cdp_unavailable` bucket to appear in mission browser metrics, not
+  only in free-form failure text.
+
+Result Quality:
+- Final-answer generation was not changed.
+- This prevents a false pass where the model writes a plausible bounded
+  browser-unavailable answer but the runtime never records the browser failure
+  bucket needed for operator follow-up.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- Acceptance summaries now preserve aggregate browser failure-bucket counts so
+  validation surfaces can distinguish natural runs with explicit browser
+  failure evidence from text-only closeouts.
+
+Browser Reliability:
+- No browser recovery or profile/session behavior changed.
+- This is an acceptance-contract step toward the browser reliability gate. It
+  does not prove the browser worker is more reliable.
+
+Acceptance Evidence:
+- Focused deterministic tests:
+  `npx tsx --test packages/app-gateway/src/mission-observability.test.ts
+  packages/role-runtime/src/sub-agent-worker-handler.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts`: passed, 91 tests.
+- `npm run typecheck`: passed.
+- `npm run ledger:check`: passed.
+- `npm run build`: passed.
+- `npm test -- --runInBand`: passed, 1405 tests.
+- `git diff --check`: passed.
+- Focused natural real LLM E2E:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-browser-unavailable-closeout
+  --scenario-timeout-ms 300000 --json
+  /tmp/turnkeyai-natural-browser-unavailable-bucket.json`: passed.
+- Natural mission id: `msn.mpuv7k3a.1`.
+- Report artifact:
+  `/tmp/turnkeyai-natural-browser-unavailable-bucket.json`.
+- The passing run reported
+  `browserBuckets=browser_cdp_unavailable=1`, `natural=passed`,
+  `stuck=no`, and `mission-status=done`.
+
+Regression Risk:
+- Low runtime risk because no production execution path changed.
+- Report-shape risk is covered by summary and validation-op type checks. Any
+  downstream fixture that assumes browser metrics only contain profile fallback
+  counts must now tolerate explicit failure bucket counts.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes, for
+  bounded browser-unavailable closeout evidence.
+- Evidence: the next browser-unavailable natural run can no longer pass without
+  the mission metrics bucket that explains why browser evidence is missing, and
+  the focused natural run now passes with that bucket present.
+- Next required gate: broaden the same proof to another browser failure row
+  such as attach failure, command timeout, or detached target.
