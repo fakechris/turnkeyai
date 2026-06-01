@@ -46,6 +46,7 @@ test("real LLM acceptance defaults include the product-level mission matrix", ()
     "natural-followup-continuation",
     "natural-memory-recall",
     "natural-approval-dry-run-action",
+    "natural-approval-denied-safe-closeout",
     "natural-browser-unavailable-closeout",
     "natural-timeout-partial-closeout",
     "natural-timeout-followup-continuation",
@@ -59,6 +60,6 @@ test("real LLM acceptance defaults include the product-level mission matrix", ()
   );
   assert.equal(
     joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS),
-    "natural-comparison-research,natural-browser-dynamic-page,natural-browser-followup-continuation,natural-browser-restart-continuation,natural-browser-cold-recreation-continuation,natural-followup-continuation,natural-memory-recall,natural-approval-dry-run-action,natural-browser-unavailable-closeout,natural-timeout-partial-closeout,natural-timeout-followup-continuation,natural-cancel-active-tool,natural-cancel-followup-continuation,natural-long-delegation"
+    "natural-comparison-research,natural-browser-dynamic-page,natural-browser-followup-continuation,natural-browser-restart-continuation,natural-browser-cold-recreation-continuation,natural-followup-continuation,natural-memory-recall,natural-approval-dry-run-action,natural-approval-denied-safe-closeout,natural-browser-unavailable-closeout,natural-timeout-partial-closeout,natural-timeout-followup-continuation,natural-cancel-active-tool,natural-cancel-followup-continuation,natural-long-delegation"
   );
 });

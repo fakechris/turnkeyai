@@ -194,6 +194,103 @@ describe("mission tool-use e2e report", () => {
     );
   });
 
+  it("accepts denied approval as a completed natural approval loop without permission application", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-approval-denied-safe-closeout", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.scenario = "natural-approval-denied-safe-closeout";
+    result.metrics.tool.results = 1;
+    result.metrics.tool.failed = 1;
+    result.metrics.sessions.spawned = 0;
+    result.metrics.approvals = { requested: 1, decided: 1, applied: 0 };
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "sessions_spawn call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "submit local approval form" }),
+        },
+      },
+      {
+        kind: "approval",
+        text: "Requested approval for browser.form.submit.",
+        tMs: 1200,
+        approvalId: "approval-1",
+        runtime: { eventType: "permission.query", status: "pending", approvalId: "approval-1" },
+      },
+      {
+        kind: "approval",
+        text: "Denied approval for browser.form.submit.",
+        tMs: 1500,
+        approvalId: "approval-1",
+        runtime: { eventType: "permission.result", status: "denied", approvalId: "approval-1" },
+      },
+      {
+        kind: "tool",
+        text: "sessions_spawn result",
+        tMs: 1600,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "Permission request approval-1 was denied; blocked_before_side_effect: true.",
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "The approval for the dry-run browser form submission was denied.",
+          "The runtime did not submit or apply the browser action, so no side effect ran.",
+          "Recommended next action: revise the request for operator approval or keep the safe fallback without submitting the form.",
+        ].join(" "),
+        tMs: 2000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.approvalExercised, true);
+
+    result.timeline.splice(3, 0, {
+      kind: "approval",
+      text: "Applied approval despite denial.",
+      tMs: 1550,
+      approvalId: "approval-1",
+      runtime: { eventType: "permission.applied", status: "applied", approvalId: "approval-1" },
+    });
+    result.metrics.approvals.applied = 1;
+
+    const invalidQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(
+      invalidQuality.failures.includes("approval denied scenario did not complete query/result without permission.applied")
+    );
+  });
+
   it("formats per-scenario progress lines for long matrix runs", () => {
     const result = fakeResult();
 
