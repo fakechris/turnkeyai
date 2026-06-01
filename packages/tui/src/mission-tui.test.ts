@@ -99,12 +99,48 @@ describe("mission-tui", () => {
     assert.match(output, /Recent timeline \(2 of 2\):\n- .* tool\/role-lead: tool call\n- .* thought\/role-lead: Final answer/);
   });
 
+  it("formats browser recovery buckets and profile fallback context in mission detail", () => {
+    const lines = formatMissionDetail({
+      mission: mission({ id: "msn.browser", shortId: "MSN-B", title: "Browser mission" }),
+      metrics: metrics({
+        browser: {
+          profileFallbacks: 1,
+          latestProfileFallback: {
+            sessionId: "browser.session.1",
+            fallbackDir: "/tmp/turnkeyai-profile",
+          },
+          failureBuckets: [
+            { bucket: "session_not_found", count: 1, latestAtMs: 1000 },
+            { bucket: "browser_cdp_unavailable", count: 2, latestAtMs: 2000 },
+          ],
+        },
+      }),
+      timeline: [],
+    });
+
+    const output = lines.join("\n");
+    assert.match(output, /browser profileFallbacks=1 failureBuckets=2/);
+    assert.match(output, /Browser attention:/);
+    assert.match(output, /Browser CDP unavailable \(browser_cdp_unavailable\): 2 at 1970-01-01T00:00:02.000Z/);
+    assert.match(output, /Browser session unavailable \(session_not_found\): 1 at 1970-01-01T00:00:01.000Z/);
+    assert.match(output, /latest profile fallback: session=browser\.session\.1 dir=\/tmp\/turnkeyai-profile/);
+  });
+
   it("formats malformed mission metrics and events with safe defaults", () => {
     const lines = formatMissionDetail({
       mission: mission({ id: "msn.safe", shortId: "MSN-S", title: "Safe", createdAtMs: Number.MAX_VALUE }),
       metrics: {
         wallClockMs: Number.NaN,
         tool: { requested: -1 },
+        browser: {
+          profileFallbacks: -1,
+          latestProfileFallback: { sessionId: "", fallbackDir: "" },
+          failureBuckets: [
+            { bucket: "", count: 2, latestAtMs: 1000 },
+            { bucket: "cdp_command_timeout", count: -1, latestAtMs: 1000 },
+            { bucket: "bad", count: "2", latestAtMs: 1000 } as unknown as TuiMissionMetrics["browser"]["failureBuckets"][number],
+          ],
+        },
         qualityGate: {
           status: "not-real" as unknown as TuiMissionMetrics["qualityGate"]["status"],
           checks: [{ name: "bad", status: "bad" as "pass", detail: "ignored" }],
@@ -117,6 +153,8 @@ describe("mission-tui", () => {
     assert.match(output, /quality=running/);
     assert.match(output, /wallClock=0ms events=0 evidence=0/);
     assert.match(output, /tools requested\/results\/executed\/failed\/timeouts=0\/0\/0\/0\/0/);
+    assert.match(output, /browser profileFallbacks=0 failureBuckets=0/);
+    assert.doesNotMatch(output, /Browser attention:/);
     assert.match(output, /Recent timeline \(0 of 0\):\n  no timeline events/);
   });
 });
@@ -181,6 +219,10 @@ function metrics(overrides: Partial<TuiMissionMetrics>): TuiMissionMetrics {
     },
     recovery: {
       events: 0,
+    },
+    browser: {
+      profileFallbacks: 0,
+      failureBuckets: [],
     },
     liveness: {
       active: 0,
