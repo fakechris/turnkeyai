@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildRealLlmAbMarkdownReport,
   detectControlledPromptLanguage,
   REAL_LLM_AB_CORE_SUITE_REQUIREMENTS,
   summarizeRealLlmAbAcceptanceReport,
@@ -74,6 +75,19 @@ test("real LLM A/B acceptance keeps focused reports separate from core-suite evi
   assert.equal(coreValidation.status, "failed");
   assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: comparison-research/);
   assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: long-delegation/);
+});
+
+test("real LLM A/B markdown conclusion downgrades unvalidated capability claims", () => {
+  const focusedReport = buildReport();
+
+  const markdown = buildRealLlmAbMarkdownReport(focusedReport, { requiredSuite: "core" });
+
+  assert.match(markdown, /- Capability: unproven/);
+  assert.match(markdown, /- Stability: unstable/);
+  assert.match(markdown, /- Status: failed/);
+  assert.match(markdown, /- Reported capability: capability proven/);
+  assert.match(markdown, /- Reported stability: stable/);
+  assert.match(markdown, /core suite missing required scenario: comparison-research/);
 });
 
 test("real LLM A/B acceptance validates the full core suite when requested", () => {
