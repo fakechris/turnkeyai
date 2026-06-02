@@ -1072,6 +1072,8 @@ describe("mission tool-use e2e report", () => {
     assert.equal(report.scenarios[0]?.scenario, "natural-browser-dynamic-page");
     assert.equal(report.scenarios[0]?.durationMs, 3210);
     assert.equal(report.scenarios[0]?.prompt, "Review this operations dashboard as a user would see it in the browser.");
+    assert.equal(report.scenarios[0]?.qualityGate, "passed");
+    assert.equal(report.scenarios[0]?.missionQualityGate, "passed");
     assert.equal(report.scenarios[0]?.artifacts.count, 1);
     assert.equal(report.scenarios[0]?.artifacts.withLifecycle, 1);
     assert.equal(report.scenarios[0]?.natural.profileFallbackFree, true);
@@ -3115,6 +3117,36 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.ok(missingContinuation.failures.some((failure) => failure.includes("tool use was outside")));
+  });
+
+  it("keeps natural capability and mission attention gates distinct for timeout continuation", () => {
+    const result = fakeNaturalResult();
+    result.scenario = "natural-timeout-followup-continuation";
+    result.metrics.tool.failed = 1;
+    result.metrics.tool.timeouts = 1;
+    result.metrics.sessions.continued = 1;
+    result.metrics.qualityGate.status = "blocked";
+    result.metrics.qualityGate.checks = [
+      { name: "failure_free", status: "fail", detail: "Timeout remains visible for operator attention." },
+      { name: "tool_loop_closeout", status: "warn", detail: "Closeout used recovered evidence." },
+    ];
+    result.quality.status = "passed";
+    result.quality.failures = [];
+
+    const summary = summarizeNaturalMissionScenarioResult(result);
+
+    assert.equal(summary.qualityGate, "passed");
+    assert.equal(summary.missionQualityGate, "blocked");
+    assert.equal(summary.metrics.tools.failed, 1);
+    assert.equal(summary.metrics.tools.timeouts, 1);
+    assert.deepEqual(summary.natural.failures, []);
+    assert.deepEqual(
+      summary.metrics.qualityChecks.map((check) => [check.name, check.status]),
+      [
+        ["failure_free", "fail"],
+        ["tool_loop_closeout", "warn"],
+      ]
+    );
   });
 
   it("extracts the timed-out session key instead of the first spawned session", () => {

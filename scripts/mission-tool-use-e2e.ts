@@ -476,6 +476,7 @@ export interface NaturalMissionScenarioReport {
   timelineEvents: number;
   toolEvents: number;
   qualityGate: string;
+  missionQualityGate: string;
   metrics: MissionE2eScenarioReport["metrics"];
   artifacts: {
     count: number;
@@ -4986,7 +4987,8 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
     ...(result.mission.threadId ? { threadId: result.mission.threadId } : {}),
     timelineEvents: result.timeline.length,
     toolEvents: result.timeline.filter((event) => event.kind === "tool").length,
-    qualityGate: result.metrics.qualityGate.status,
+    qualityGate: result.quality.status,
+    missionQualityGate: result.metrics.qualityGate.status,
     metrics: {
       tools: {
         requested: result.metrics.tool.requested,
