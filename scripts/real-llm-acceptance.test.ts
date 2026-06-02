@@ -523,6 +523,31 @@ test("real acceptance integrity rejects incomplete artifacts and weak natural qu
       assertRealAcceptanceArtifactIntegrity({
         status: "passed",
         missionScenarios: ["comparison"],
+        naturalMissionScenarios: ["natural-browser-dashboard-task"],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: true,
+        missionReport: passingMissionReport(),
+        naturalMissionReport: passingNaturalMissionReport({
+          scenarioIds: ["natural-browser-dashboard-task"],
+          browserUsed: 1,
+          sessionsSpawned: 0,
+          scenarioProofs: [
+            {
+              ...passingNaturalMissionScenarioProof("natural-browser-dashboard-task"),
+              browserUsed: true,
+              sessionsSpawned: 0,
+            },
+          ],
+        }),
+      }),
+    /natural mission report does not prove/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
         naturalMissionScenarios: ["natural-browser-dynamic-page"],
         missionJsonPresent: true,
         naturalMissionJsonPresent: true,
