@@ -2,6 +2,7 @@ import type { ValidationOpsRealAcceptanceDetails } from "@turnkeyai/core-types/t
 
 type MissionReportSummary = NonNullable<ValidationOpsRealAcceptanceDetails["missionReport"]>;
 type NaturalMissionReportSummary = NonNullable<ValidationOpsRealAcceptanceDetails["naturalMissionReport"]>;
+type ToolUseReportSummary = NonNullable<ValidationOpsRealAcceptanceDetails["tooluseReport"]>;
 
 const FORCED_TOOL_LOOP_CLOSEOUT_REASONS = new Set([
   "pseudo_tool_call",
@@ -103,6 +104,63 @@ interface NaturalMissionE2eReportShape {
   kind?: unknown;
   status?: unknown;
   scenarios?: unknown;
+}
+
+interface ToolUseScenarioReportShape {
+  scenario?: unknown;
+  status?: unknown;
+  finalBytes?: unknown;
+  evidenceBullets?: unknown;
+  qualityFailures?: unknown;
+  toolCallNames?: unknown;
+  spawnedSessionCount?: unknown;
+  childTranscriptMessages?: unknown;
+  permissionEvents?: unknown;
+}
+
+interface ToolUseE2eReportShape {
+  kind?: unknown;
+  status?: unknown;
+  scenarios?: unknown;
+}
+
+export function summarizeToolUseE2eReportForValidationOps(report: unknown): ToolUseReportSummary | null {
+  if (!isToolUseE2eReportShape(report) || report.kind !== "turnkeyai.tool-use-e2e.report") {
+    return null;
+  }
+  const scenarios = Array.isArray(report.scenarios) ? report.scenarios.filter(isToolUseScenarioReportShape) : [];
+  return scenarios.reduce<ToolUseReportSummary>(
+    (summary, scenario) => {
+      const scenarioId = readString(scenario.scenario);
+      const qualityFailures = readNumber(scenario.qualityFailures);
+      const passing = scenario.status === "passed" && qualityFailures === 0;
+      if (scenarioId) (summary.scenarioIds ??= []).push(scenarioId);
+      summary.passedScenarios += passing ? 1 : 0;
+      summary.failedScenarios += passing ? 0 : 1;
+      summary.qualityFailures += qualityFailures;
+      summary.finalBytes += readNumber(scenario.finalBytes);
+      summary.evidenceBullets += readNumber(scenario.evidenceBullets);
+      summary.toolCalls += readArrayLength(scenario.toolCallNames);
+      summary.sessionsSpawned += readNumber(scenario.spawnedSessionCount);
+      summary.childTranscriptMessages += readNumber(scenario.childTranscriptMessages);
+      summary.permissionEvents += readArrayLength(scenario.permissionEvents);
+      return summary;
+    },
+    {
+      status: report.status === "passed" ? "passed" : "failed",
+      scenarioCount: scenarios.length,
+      scenarioIds: [],
+      passedScenarios: 0,
+      failedScenarios: 0,
+      qualityFailures: 0,
+      finalBytes: 0,
+      evidenceBullets: 0,
+      toolCalls: 0,
+      sessionsSpawned: 0,
+      childTranscriptMessages: 0,
+      permissionEvents: 0,
+    }
+  );
 }
 
 export function summarizeMissionE2eReportForValidationOps(report: unknown): MissionReportSummary | null {
@@ -432,6 +490,14 @@ function isNaturalMissionE2eReportShape(value: unknown): value is NaturalMission
 }
 
 function isNaturalScenarioReportShape(value: unknown): value is NaturalScenarioReportShape {
+  return typeof value === "object" && value !== null;
+}
+
+function isToolUseE2eReportShape(value: unknown): value is ToolUseE2eReportShape {
+  return typeof value === "object" && value !== null;
+}
+
+function isToolUseScenarioReportShape(value: unknown): value is ToolUseScenarioReportShape {
   return typeof value === "object" && value !== null;
 }
 

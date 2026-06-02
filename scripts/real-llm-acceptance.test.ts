@@ -15,6 +15,7 @@ test("real acceptance help documents full and focused gates", () => {
   const help = buildRealAcceptanceHelpText();
 
   assert.match(help, /TurnkeyAI real LLM acceptance gate/);
+  assert.match(help, /--tooluse-json <path>\s+Write the tool-use E2E report/);
   assert.match(help, /--skip-tooluse\s+Omit the standalone tool-use matrix/);
   assert.match(help, /--skip-browser-tooluse\s+Keep tool-use matrix/);
   assert.match(help, /--skip-natural-mission\s+Omit natural mission E2E scenarios/);
@@ -53,8 +54,14 @@ test("real acceptance plan keeps full release gate by default", () => {
   assert.ok(plan.missionScenarios.includes("realistic-brief"));
   assert.deepEqual(plan.naturalMissionScenarios, [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]);
   assert.equal(plan.browserTooluseEnabled, true);
+  assert.match(plan.tooluseJsonPath ?? "", /tool-use-e2e/);
   assert.match(plan.missionJsonPath ?? "", /real-llm-acceptance/);
   assert.match(plan.naturalMissionJsonPath ?? "", /natural-mission-e2e/);
+  assert.ok(plan.steps[0]?.args.includes("--json"));
+  assert.equal(
+    plan.steps[0]?.args.at(-1),
+    "/tmp/turnkeyai-acceptance-plan/validation-artifacts/real-llm-acceptance/validation-ops%3Areal-llm-acceptance%3Atest-tool-use-e2e.json"
+  );
 });
 
 test("real acceptance plan can run focused mission-only source coverage gate", () => {
@@ -81,6 +88,7 @@ test("real acceptance plan can run focused mission-only source coverage gate", (
   assert.deepEqual(plan.missionScenarios, ["comparison", "realistic-brief"]);
   assert.deepEqual(plan.naturalMissionScenarios, []);
   assert.equal(plan.browserTooluseEnabled, false);
+  assert.equal(plan.tooluseJsonPath, null);
   assert.deepEqual(plan.steps[0]?.args, [
     "run",
     "mission:e2e",
@@ -154,10 +162,66 @@ test("real acceptance requires artifacts for recorded validation-ops gates", () 
     () => parseRealAcceptanceArgs(["--no-natural-mission-json"]),
     /--no-natural-mission-json cannot be combined with validation-ops recording/
   );
+  assert.throws(
+    () => parseRealAcceptanceArgs(["--no-tooluse-json"]),
+    /--no-tooluse-json cannot be combined with validation-ops recording/
+  );
+  assert.equal(parseRealAcceptanceArgs(["--no-record-validation-ops", "--no-tooluse-json"]).writeTooluseJson, false);
   assert.equal(parseRealAcceptanceArgs(["--no-record-validation-ops", "--no-mission-json"]).writeMissionJson, false);
   assert.equal(
     parseRealAcceptanceArgs(["--skip-natural-mission", "--no-natural-mission-json"]).writeNaturalMissionJson,
     false
+  );
+});
+
+test("real acceptance integrity requires passing tool-use report summaries when tool-use is enabled", () => {
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        tooluseScenarios: ["basic"],
+        missionScenarios: [],
+        naturalMissionScenarios: [],
+        tooluseJsonPresent: false,
+        missionJsonPresent: false,
+        naturalMissionJsonPresent: false,
+        tooluseReport: null,
+        missionReport: null,
+        naturalMissionReport: null,
+      }),
+    /passed without a tool-use E2E report artifact/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        tooluseScenarios: ["basic"],
+        missionScenarios: [],
+        naturalMissionScenarios: [],
+        tooluseJsonPresent: true,
+        missionJsonPresent: false,
+        naturalMissionJsonPresent: false,
+        tooluseReport: passingTooluseReport({ qualityFailures: 1 }),
+        missionReport: null,
+        naturalMissionReport: null,
+      }),
+    /tool-use E2E report does not prove/
+  );
+
+  assert.doesNotThrow(() =>
+    assertRealAcceptanceArtifactIntegrity({
+      status: "passed",
+      tooluseScenarios: ["basic"],
+      missionScenarios: [],
+      naturalMissionScenarios: [],
+      tooluseJsonPresent: true,
+      missionJsonPresent: false,
+      naturalMissionJsonPresent: false,
+      tooluseReport: passingTooluseReport(),
+      missionReport: null,
+      naturalMissionReport: null,
+    })
   );
 });
 
@@ -429,6 +493,26 @@ function passingMissionReport(
     sourceCoverageFailures: 0,
     evidenceEvents: 1,
     recoveryEvents: 0,
+    ...overrides,
+  };
+}
+
+function passingTooluseReport(
+  overrides: Partial<NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["tooluseReport"]>> = {}
+): NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["tooluseReport"]> {
+  return {
+    status: "passed",
+    scenarioCount: 1,
+    scenarioIds: ["basic"],
+    passedScenarios: 1,
+    failedScenarios: 0,
+    qualityFailures: 0,
+    finalBytes: 220,
+    evidenceBullets: 3,
+    toolCalls: 1,
+    sessionsSpawned: 1,
+    childTranscriptMessages: 4,
+    permissionEvents: 0,
     ...overrides,
   };
 }

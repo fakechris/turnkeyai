@@ -235,8 +235,10 @@ export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
   missionScenarios: string[];
   naturalMissionScenarios?: string[];
   browserTooluseEnabled: boolean;
+  tooluseArtifactPath?: string;
   artifactPath?: string;
   naturalArtifactPath?: string;
+  tooluseReport?: ValidationOpsRealAcceptanceDetails["tooluseReport"];
   missionReport?: ValidationOpsRealAcceptanceDetails["missionReport"];
   naturalMissionReport?: ValidationOpsRealAcceptanceDetails["naturalMissionReport"];
   error?: string;
@@ -279,7 +281,9 @@ export function buildValidationOpsRecordFromRealLlmAcceptance(input: {
       browserTooluseEnabled: input.browserTooluseEnabled,
       totalCases,
       releaseCoverage,
+      ...(input.tooluseArtifactPath ? { tooluseArtifactPath: input.tooluseArtifactPath } : {}),
       ...(input.naturalArtifactPath ? { naturalArtifactPath: input.naturalArtifactPath } : {}),
+      ...(input.tooluseReport ? { tooluseReport: input.tooluseReport } : {}),
       ...(input.missionReport ? { missionReport: input.missionReport } : {}),
       ...(input.naturalMissionReport ? { naturalMissionReport: input.naturalMissionReport } : {}),
     },
@@ -550,7 +554,7 @@ function buildRealLlmAcceptanceReadinessGate(records: ValidationOpsRunRecord[]):
   }
 
   const evidenceGap = coverage?.status === "full" && hasCompleteReleaseCoverage(coverage)
-    ? "full release coverage is recorded, but mission report evidence is incomplete"
+    ? "full release coverage is recorded, but acceptance report evidence is incomplete"
     : coverage
       ? `only ${coverage.status} coverage is recorded`
       : "release coverage metadata is missing";
@@ -572,9 +576,26 @@ function hasProvenFullRealAcceptance(record: ValidationOpsRunRecord): boolean {
   const details = record.realAcceptance;
   if (!details?.releaseCoverage || details.releaseCoverage.status !== "full") return false;
   if (!hasCompleteReleaseCoverage(details.releaseCoverage)) return false;
+  if (!hasProvenToolUseAcceptanceReport(details)) return false;
   if (!hasProvenMissionAcceptanceReport(record, details)) return false;
   if (!hasProvenNaturalMissionAcceptanceReport(details)) return false;
   return true;
+}
+
+function hasProvenToolUseAcceptanceReport(details: ValidationOpsRealAcceptanceDetails): boolean {
+  const scenarios = details.tooluseScenarios;
+  if (scenarios.length === 0) return true;
+  const report = details.tooluseReport;
+  if (!details.tooluseArtifactPath || !report) return false;
+  return (
+    report.status === "passed" &&
+    report.scenarioCount === scenarios.length &&
+    report.passedScenarios === report.scenarioCount &&
+    report.failedScenarios === 0 &&
+    report.qualityFailures === 0 &&
+    report.toolCalls >= report.scenarioCount &&
+    sameStringMultiset(scenarios, report.scenarioIds ?? [])
+  );
 }
 
 function hasProvenMissionAcceptanceReport(

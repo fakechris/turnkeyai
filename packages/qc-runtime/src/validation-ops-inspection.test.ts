@@ -301,8 +301,10 @@ test("validation ops inspection marks phase1 readiness passed when all exit gate
     missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
     naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
     browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-pass-tool-use-e2e.json",
     artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-pass-mission-e2e.json",
     naturalArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-pass-natural-mission-e2e.json",
+    tooluseReport: passingToolUseAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS]),
     missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
     naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
   });
@@ -354,9 +356,11 @@ test("validation ops inspection keeps the latest full real LLM acceptance as the
     missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
     naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
     browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-full-pass-tool-use-e2e.json",
     artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-full-pass-mission-e2e.json",
     naturalArtifactPath:
       ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-full-pass-natural-mission-e2e.json",
+    tooluseReport: passingToolUseAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS]),
     missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
     naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
   });
@@ -396,7 +400,7 @@ test("validation ops inspection does not pass full coverage without real report 
 
   assert.equal(realGate?.status, "missing");
   assert.equal(realGate?.latestRunId, "real-llm-full-without-report-proof");
-  assert.match(realGate?.summary ?? "", /full release coverage is recorded, but mission report evidence is incomplete/);
+  assert.match(realGate?.summary ?? "", /full release coverage is recorded, but acceptance report evidence is incomplete/);
 });
 
 test("validation ops inspection lets a newer failed real LLM acceptance invalidate an older proven full run", () => {
@@ -409,9 +413,11 @@ test("validation ops inspection lets a newer failed real LLM acceptance invalida
     missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
     naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
     browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-full-pass-tool-use-e2e.json",
     artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-full-pass-mission-e2e.json",
     naturalArtifactPath:
       ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-full-pass-natural-mission-e2e.json",
+    tooluseReport: passingToolUseAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS]),
     missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
     naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
   });
@@ -495,10 +501,44 @@ test("validation ops inspection preserves real LLM acceptance artifact path", ()
     tooluseScenarios: ["basic"],
     missionScenarios: ["realistic-brief"],
     browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/tool-use.json",
     artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/report.json",
   });
 
   assert.equal(record.artifactPath, ".turnkeyai/data/validation-artifacts/real-llm-acceptance/report.json");
+  assert.equal(record.realAcceptance?.tooluseArtifactPath, ".turnkeyai/data/validation-artifacts/real-llm-acceptance/tool-use.json");
+});
+
+test("validation ops inspection preserves real LLM tool-use report summary", () => {
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-tooluse-pass",
+    startedAt: 10,
+    completedAt: 30,
+    status: "passed",
+    tooluseScenarios: ["basic", "approval"],
+    missionScenarios: ["realistic-brief"],
+    browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/tool-use.json",
+    tooluseReport: {
+      status: "passed",
+      scenarioCount: 2,
+      scenarioIds: ["basic", "approval"],
+      passedScenarios: 2,
+      failedScenarios: 0,
+      qualityFailures: 0,
+      finalBytes: 500,
+      evidenceBullets: 6,
+      toolCalls: 4,
+      sessionsSpawned: 2,
+      childTranscriptMessages: 8,
+      permissionEvents: 3,
+    },
+  });
+
+  assert.equal(record.realAcceptance?.tooluseArtifactPath, ".turnkeyai/data/validation-artifacts/real-llm-acceptance/tool-use.json");
+  assert.equal(record.realAcceptance?.tooluseReport?.scenarioCount, 2);
+  assert.equal(record.realAcceptance?.tooluseReport?.toolCalls, 4);
+  assert.equal(record.realAcceptance?.tooluseReport?.permissionEvents, 3);
 });
 
 test("validation ops inspection preserves real LLM mission report summary", () => {
@@ -918,6 +958,25 @@ function passingMissionAcceptanceReport(
     sourceCoverageFailures: 0,
     evidenceEvents: scenarioIds.length,
     recoveryEvents: 0,
+  };
+}
+
+function passingToolUseAcceptanceReport(
+  scenarioIds: string[]
+): NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["tooluseReport"] {
+  return {
+    status: "passed",
+    scenarioCount: scenarioIds.length,
+    scenarioIds,
+    passedScenarios: scenarioIds.length,
+    failedScenarios: 0,
+    qualityFailures: 0,
+    finalBytes: scenarioIds.length * 220,
+    evidenceBullets: scenarioIds.length * 3,
+    toolCalls: scenarioIds.length,
+    sessionsSpawned: scenarioIds.length,
+    childTranscriptMessages: scenarioIds.length * 4,
+    permissionEvents: 0,
   };
 }
 

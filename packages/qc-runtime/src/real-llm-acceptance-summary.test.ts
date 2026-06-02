@@ -4,7 +4,58 @@ import test from "node:test";
 import {
   summarizeMissionE2eReportForValidationOps,
   summarizeNaturalMissionE2eReportForValidationOps,
+  summarizeToolUseE2eReportForValidationOps,
 } from "./real-llm-acceptance-summary";
+
+test("summarizeToolUseE2eReportForValidationOps aggregates real tool-use matrix proof", () => {
+  const summary = summarizeToolUseE2eReportForValidationOps({
+    kind: "turnkeyai.tool-use-e2e.report",
+    status: "passed",
+    scenarios: [
+      {
+        status: "passed",
+        scenario: "basic",
+        finalBytes: 240,
+        evidenceBullets: 3,
+        qualityFailures: 0,
+        toolCallNames: ["sessions_spawn"],
+        spawnedSessionCount: 1,
+        childTranscriptMessages: 4,
+      },
+      {
+        status: "passed",
+        scenario: "approval",
+        finalBytes: 320,
+        evidenceBullets: 4,
+        qualityFailures: 0,
+        toolCallNames: ["permission_query", "permission_result", "permission_applied", "sessions_spawn"],
+        spawnedSessionCount: 1,
+        childTranscriptMessages: 4,
+        permissionEvents: ["query:browser.form.submit", "result:allow", "applied:browser.form.submit"],
+      },
+    ],
+  });
+
+  assert.deepEqual(summary, {
+    status: "passed",
+    scenarioCount: 2,
+    scenarioIds: ["basic", "approval"],
+    passedScenarios: 2,
+    failedScenarios: 0,
+    qualityFailures: 0,
+    finalBytes: 560,
+    evidenceBullets: 7,
+    toolCalls: 5,
+    sessionsSpawned: 2,
+    childTranscriptMessages: 8,
+    permissionEvents: 3,
+  });
+});
+
+test("summarizeToolUseE2eReportForValidationOps rejects unrelated artifacts", () => {
+  assert.equal(summarizeToolUseE2eReportForValidationOps({ kind: "other", scenarios: [] }), null);
+  assert.equal(summarizeToolUseE2eReportForValidationOps(null), null);
+});
 
 test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and liveness", () => {
   const summary = summarizeMissionE2eReportForValidationOps({

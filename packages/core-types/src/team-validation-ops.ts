@@ -115,7 +115,22 @@ export interface ValidationOpsRealAcceptanceDetails {
   browserTooluseEnabled: boolean;
   totalCases: number;
   releaseCoverage?: ValidationOpsRealAcceptanceReleaseCoverage;
+  tooluseArtifactPath?: string;
   naturalArtifactPath?: string;
+  tooluseReport?: {
+    status: "passed" | "failed";
+    scenarioCount: number;
+    scenarioIds?: string[];
+    passedScenarios: number;
+    failedScenarios: number;
+    qualityFailures: number;
+    finalBytes: number;
+    evidenceBullets: number;
+    toolCalls: number;
+    sessionsSpawned: number;
+    childTranscriptMessages: number;
+    permissionEvents: number;
+  };
   missionReport?: {
     status: "passed" | "failed";
     scenarioCount: number;

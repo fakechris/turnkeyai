@@ -14,6 +14,7 @@ import {
 import {
   summarizeMissionE2eReportForValidationOps,
   summarizeNaturalMissionE2eReportForValidationOps,
+  summarizeToolUseE2eReportForValidationOps,
 } from "@turnkeyai/qc-runtime/real-llm-acceptance-summary";
 import { buildValidationOpsRecordFromRealLlmAcceptance } from "@turnkeyai/qc-runtime/validation-ops-inspection";
 import { FileValidationOpsRunStore } from "@turnkeyai/team-store/ops/file-validation-ops-run-store";
@@ -21,6 +22,7 @@ import { FileValidationOpsRunStore } from "@turnkeyai/team-store/ops/file-valida
 export interface RealAcceptanceOptions {
   modelCatalogPath?: string;
   dataDir?: string;
+  tooluseJsonPath?: string;
   missionJsonPath?: string;
   naturalMissionJsonPath?: string;
   cdpTimeoutMs: number;
@@ -29,6 +31,7 @@ export interface RealAcceptanceOptions {
   skipBrowserTooluse: boolean;
   skipNaturalMission: boolean;
   recordValidationOps: boolean;
+  writeTooluseJson: boolean;
   writeMissionJson: boolean;
   writeNaturalMissionJson: boolean;
   tooluseScenarios?: string;
@@ -44,6 +47,7 @@ export interface RealAcceptanceCommandStep {
 export interface RealAcceptancePlan {
   runId: string;
   startedAt: number;
+  tooluseJsonPath: string | null;
   missionJsonPath: string | null;
   naturalMissionJsonPath: string | null;
   tooluseScenarios: string[];
@@ -83,12 +87,14 @@ export async function runRealAcceptanceCli(args: string[]): Promise<void> {
   console.log(`mission-scenarios: ${plan.missionScenarios.join(",")}`);
   console.log(`natural-mission-scenarios: ${plan.naturalMissionScenarios.length > 0 ? plan.naturalMissionScenarios.join(",") : "skipped"}`);
   console.log(`validation-ops-record: ${plan.validationOpsDataDir ?? "disabled"}`);
+  console.log(`tooluse-json-report: ${plan.tooluseJsonPath ?? "disabled"}`);
   console.log(`mission-json-report: ${plan.missionJsonPath ?? "disabled"}`);
   console.log(`natural-mission-json-report: ${plan.naturalMissionJsonPath ?? "disabled"}`);
 
   try {
-    ensureMissionJsonParentDirectory(plan.missionJsonPath);
-    ensureMissionJsonParentDirectory(plan.naturalMissionJsonPath);
+    ensureJsonParentDirectory(plan.tooluseJsonPath);
+    ensureJsonParentDirectory(plan.missionJsonPath);
+    ensureJsonParentDirectory(plan.naturalMissionJsonPath);
     for (const step of plan.steps) {
       await runCommand(step.label, step.args);
     }
@@ -117,6 +123,7 @@ export function parseRealAcceptanceArgs(args: string[]): RealAcceptanceOptions {
     skipBrowserTooluse: false,
     skipNaturalMission: false,
     recordValidationOps: true,
+    writeTooluseJson: true,
     writeMissionJson: true,
     writeNaturalMissionJson: true,
   };
@@ -140,6 +147,12 @@ export function parseRealAcceptanceArgs(args: string[]): RealAcceptanceOptions {
     if (arg === "--mission-json") {
       options.missionJsonPath = readValue(args, index, arg);
       options.writeMissionJson = true;
+      index += 1;
+      continue;
+    }
+    if (arg === "--tooluse-json") {
+      options.tooluseJsonPath = readValue(args, index, arg);
+      options.writeTooluseJson = true;
       index += 1;
       continue;
     }
@@ -190,6 +203,11 @@ export function parseRealAcceptanceArgs(args: string[]): RealAcceptanceOptions {
       options.missionJsonPath = undefined;
       continue;
     }
+    if (arg === "--no-tooluse-json") {
+      options.writeTooluseJson = false;
+      options.tooluseJsonPath = undefined;
+      continue;
+    }
     if (arg === "--no-natural-mission-json") {
       options.writeNaturalMissionJson = false;
       options.naturalMissionJsonPath = undefined;
@@ -205,6 +223,11 @@ export function parseRealAcceptanceArgs(args: string[]): RealAcceptanceOptions {
   }
   if (options.recordValidationOps && !options.writeMissionJson) {
     throw new Error("--no-mission-json cannot be combined with validation-ops recording; add --no-record-validation-ops for scratch runs");
+  }
+  if (options.recordValidationOps && !options.skipTooluse && !options.writeTooluseJson) {
+    throw new Error(
+      "--no-tooluse-json cannot be combined with validation-ops recording while tool-use E2E is enabled; add --no-record-validation-ops for scratch runs"
+    );
   }
   if (options.recordValidationOps && !options.skipNaturalMission && !options.writeNaturalMissionJson) {
     throw new Error(
@@ -232,8 +255,10 @@ export function buildRealAcceptanceHelpText(): string {
     "Options:",
     "  --model-catalog <path>         Model catalog path. Also reads the underlying mission/tool-use defaults",
     "  --data-dir <path>              Runtime data dir for validation-ops and generated artifacts",
+    "  --tooluse-json <path>          Write the tool-use E2E report to a specific path",
     "  --mission-json <path>          Write the mission E2E report to a specific path",
     "  --natural-mission-json <path>  Write the natural mission E2E report to a specific path",
+    "  --no-tooluse-json             Do not write the tool-use E2E report artifact",
     "  --no-mission-json             Do not write the mission E2E report artifact",
     "  --no-natural-mission-json     Do not write the natural mission E2E report artifact",
     "  --no-record-validation-ops    Do not record a validation-ops run",
@@ -265,11 +290,13 @@ export function buildRealAcceptancePlan(
   input: { startedAt: number; runId?: string }
 ): RealAcceptancePlan {
   const runId = input.runId ?? buildRealAcceptanceRunId(input.startedAt);
+  const tooluseJsonPath = resolveTooluseJsonPath(options, runId);
   const missionJsonPath = resolveMissionJsonPath(options, runId);
   const naturalMissionJsonPath = resolveNaturalMissionJsonPath(options, runId);
   return {
     runId,
     startedAt: input.startedAt,
+    tooluseJsonPath,
     missionJsonPath,
     naturalMissionJsonPath,
     tooluseScenarios: options.skipTooluse ? [] : splitScenarios(resolveTooluseScenarios(options)),
@@ -280,7 +307,7 @@ export function buildRealAcceptancePlan(
     browserTooluseEnabled: !options.skipTooluse && !options.skipBrowserTooluse,
     validationOpsDataDir: options.recordValidationOps ? resolveValidationOpsDataDir(options) : null,
     steps: [
-      ...(options.skipTooluse ? [] : [{ label: "tool-use real matrix", args: buildTooluseArgs(options) }]),
+      ...(options.skipTooluse ? [] : [{ label: "tool-use real matrix", args: buildTooluseArgs(options, tooluseJsonPath) }]),
       { label: "mission real matrix", args: buildMissionArgs(options, missionJsonPath) },
       ...(options.skipNaturalMission
         ? []
@@ -289,7 +316,7 @@ export function buildRealAcceptancePlan(
   };
 }
 
-export function buildTooluseArgs(options: RealAcceptanceOptions): string[] {
+export function buildTooluseArgs(options: RealAcceptanceOptions, tooluseJsonPath: string | null = null): string[] {
   const args = [
     "run",
     "tooluse:e2e:real-matrix",
@@ -304,6 +331,9 @@ export function buildTooluseArgs(options: RealAcceptanceOptions): string[] {
   }
   if (options.modelCatalogPath) {
     args.push("--model-catalog", options.modelCatalogPath);
+  }
+  if (tooluseJsonPath) {
+    args.push("--json", tooluseJsonPath);
   }
   return args;
 }
@@ -414,6 +444,9 @@ async function recordValidationOps(
   if (!options.recordValidationOps) return;
   const dataDir = plan.validationOpsDataDir ?? resolveValidationOpsDataDir(options);
   const store = new FileValidationOpsRunStore({ rootDir: path.join(dataDir, "validation-ops-runs") });
+  const tooluseReport = plan.tooluseJsonPath && existsSync(plan.tooluseJsonPath)
+    ? summarizeTooluseJson(plan.tooluseJsonPath)
+    : null;
   const missionReport = plan.missionJsonPath && existsSync(plan.missionJsonPath)
     ? summarizeMissionJson(plan.missionJsonPath)
     : null;
@@ -422,10 +455,13 @@ async function recordValidationOps(
     : null;
   assertRealAcceptanceArtifactIntegrity({
     status: result.status,
+    tooluseScenarios: plan.tooluseScenarios,
     missionScenarios: plan.missionScenarios,
     naturalMissionScenarios: plan.naturalMissionScenarios,
+    tooluseJsonPresent: Boolean(plan.tooluseJsonPath && existsSync(plan.tooluseJsonPath)),
     missionJsonPresent: Boolean(plan.missionJsonPath && existsSync(plan.missionJsonPath)),
     naturalMissionJsonPresent: Boolean(plan.naturalMissionJsonPath && existsSync(plan.naturalMissionJsonPath)),
+    tooluseReport,
     missionReport,
     naturalMissionReport,
   });
@@ -438,6 +474,12 @@ async function recordValidationOps(
     missionScenarios: plan.missionScenarios,
     naturalMissionScenarios: plan.naturalMissionScenarios,
     browserTooluseEnabled: plan.browserTooluseEnabled,
+    ...(plan.tooluseJsonPath && existsSync(plan.tooluseJsonPath)
+      ? {
+          tooluseArtifactPath: path.relative(process.cwd(), plan.tooluseJsonPath),
+          ...(tooluseReport ? { tooluseReport } : {}),
+        }
+      : {}),
     ...(plan.missionJsonPath && existsSync(plan.missionJsonPath)
       ? {
           artifactPath: path.relative(process.cwd(), plan.missionJsonPath),
@@ -458,15 +500,35 @@ async function recordValidationOps(
 
 export function assertRealAcceptanceArtifactIntegrity(input: {
   status: "passed" | "failed";
+  tooluseScenarios?: string[];
   missionScenarios: string[];
   naturalMissionScenarios: string[];
+  tooluseJsonPresent?: boolean;
   missionJsonPresent: boolean;
   naturalMissionJsonPresent: boolean;
+  tooluseReport?: ReturnType<typeof summarizeToolUseE2eReportForValidationOps>;
   missionReport: ReturnType<typeof summarizeMissionE2eReportForValidationOps>;
   naturalMissionReport: ReturnType<typeof summarizeNaturalMissionE2eReportForValidationOps>;
 }): void {
   if (input.status !== "passed") {
     return;
+  }
+  const tooluseScenarios = input.tooluseScenarios ?? [];
+  if (tooluseScenarios.length > 0) {
+    if (!input.tooluseJsonPresent || !input.tooluseReport) {
+      throw new Error("real acceptance passed without a tool-use E2E report artifact");
+    }
+    assertScenarioCoverage("tool-use E2E", tooluseScenarios, input.tooluseReport.scenarioIds ?? []);
+    if (
+      input.tooluseReport.status !== "passed" ||
+      input.tooluseReport.scenarioCount !== tooluseScenarios.length ||
+      input.tooluseReport.passedScenarios !== input.tooluseReport.scenarioCount ||
+      input.tooluseReport.failedScenarios > 0 ||
+      input.tooluseReport.qualityFailures > 0 ||
+      input.tooluseReport.toolCalls < input.tooluseReport.scenarioCount
+    ) {
+      throw new Error("real acceptance tool-use E2E report does not prove a passing capability gate");
+    }
   }
   if (input.missionScenarios.length > 0) {
     if (!input.missionJsonPresent || !input.missionReport) {
@@ -540,6 +602,14 @@ function sameScenarioMultiset(left: string[], right: string[]): boolean {
   return counts.size === 0;
 }
 
+function summarizeTooluseJson(tooluseJsonPath: string): ReturnType<typeof summarizeToolUseE2eReportForValidationOps> {
+  try {
+    return summarizeToolUseE2eReportForValidationOps(JSON.parse(readFileSync(tooluseJsonPath, "utf8")) as unknown);
+  } catch {
+    return null;
+  }
+}
+
 function summarizeMissionJson(missionJsonPath: string): ReturnType<typeof summarizeMissionE2eReportForValidationOps> {
   try {
     return summarizeMissionE2eReportForValidationOps(JSON.parse(readFileSync(missionJsonPath, "utf8")) as unknown);
@@ -573,6 +643,16 @@ function resolveValidationOpsDataDir(options: RealAcceptanceOptions): string {
   return path.join(rootDir, "data");
 }
 
+function resolveTooluseJsonPath(options: RealAcceptanceOptions, runId: string): string | null {
+  if (options.skipTooluse || !options.writeTooluseJson) return null;
+  if (options.tooluseJsonPath?.trim()) {
+    return path.resolve(process.cwd(), options.tooluseJsonPath.trim());
+  }
+  if (!options.recordValidationOps) return null;
+  const filename = `${encodeURIComponent(runId)}-tool-use-e2e.json`;
+  return path.join(resolveValidationOpsDataDir(options), "validation-artifacts", "real-llm-acceptance", filename);
+}
+
 function resolveMissionJsonPath(options: RealAcceptanceOptions, runId: string): string | null {
   if (!options.writeMissionJson) return null;
   if (options.missionJsonPath?.trim()) {
@@ -593,9 +673,9 @@ function resolveNaturalMissionJsonPath(options: RealAcceptanceOptions, runId: st
   return path.join(resolveValidationOpsDataDir(options), "validation-artifacts", "real-llm-acceptance", filename);
 }
 
-function ensureMissionJsonParentDirectory(missionJsonPath: string | null): void {
-  if (!missionJsonPath) return;
-  mkdirSync(path.dirname(missionJsonPath), { recursive: true });
+function ensureJsonParentDirectory(jsonPath: string | null): void {
+  if (!jsonPath) return;
+  mkdirSync(path.dirname(jsonPath), { recursive: true });
 }
 
 function readRuntimeConfig(configFile: string): RuntimeConfig | null {
