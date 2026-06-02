@@ -2241,10 +2241,22 @@ function mentionsPendingApproval(text: string): boolean {
 }
 
 function requestsApprovalGatedBrowserAction(taskPrompt: string): boolean {
+  if (disclaimsApprovalGatedBrowserAction(taskPrompt)) {
+    return false;
+  }
   return (
     /\bapproval\b/i.test(taskPrompt) &&
     /\bbrowser\b/i.test(taskPrompt) &&
     /\b(?:submit|submission|form|mutat(?:e|ion)|side[- ]effect|dry[- ]run action|approved scoped action)\b/i.test(taskPrompt)
+  );
+}
+
+function disclaimsApprovalGatedBrowserAction(taskPrompt: string): boolean {
+  if (!/\bread[- ]only\b/i.test(taskPrompt)) {
+    return false;
+  }
+  return /\bno\b[^.\n]{0,180}\b(?:browser\s+)?(?:form|click|navigation|submit|submission|mutation|side[- ]effect|approval[- ]gated action)\b[^.\n]{0,120}\b(?:needed|required|necessary|will be performed|should run|is needed)\b/i.test(
+    taskPrompt
   );
 }
 
