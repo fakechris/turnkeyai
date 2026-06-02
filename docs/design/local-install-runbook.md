@@ -227,8 +227,9 @@ Real LLM acceptance needs a model catalog and provider key:
 npm run acceptance:real -- --model-catalog models.local.json --scenario-timeout-ms 240000 --cdp-timeout-ms 45000
 ```
 
-`turnkeyai daemon status` and the Control Center Runtime page surface missing
-model keys, failed real-LLM validation runs, and browser transport warnings.
+`turnkeyai daemon status` and the Control Center Runtime page surface the
+redacted auth token source, missing model keys, failed real-LLM validation runs,
+and browser transport warnings.
 
 ## First-Run Diagnostics
 
