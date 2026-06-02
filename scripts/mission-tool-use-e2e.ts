@@ -23,6 +23,7 @@ interface MissionToolUseE2eOptions {
   naturalScenario: NaturalMissionE2eScenario;
   naturalMatrix: boolean;
   naturalMatrixScenarios?: NaturalMissionE2eScenario[];
+  threadEntry: boolean;
   jsonPath?: string;
 }
 
@@ -519,6 +520,68 @@ export interface NaturalMissionE2eJsonReport {
   scenarios: NaturalMissionScenarioReport[];
 }
 
+type ThreadEntryScenario = "thread-entry-private-comparison" | "thread-entry-private-followup";
+
+interface TeamThread {
+  threadId: string;
+}
+
+interface ThreadMessage {
+  id?: string;
+  role?: string;
+  content?: unknown;
+  createdAt?: number;
+  agentId?: string;
+  toolStatus?: string;
+  toolCalls?: Array<{ id?: string; name?: string; toolName?: string }>;
+}
+
+interface ThreadEntryScenarioReport {
+  scenario: ThreadEntryScenario;
+  threadId: string;
+  status: "passed" | "failed";
+  durationMs: number;
+  timedOut: boolean;
+  metrics: {
+    messages: number;
+    assistantMessages: number;
+    toolCalls: number;
+    toolResults: number;
+    pendingToolCalls: number;
+  };
+  quality: {
+    expectedHits: string[];
+    expectedTotal: number;
+    blockedSourceCloseout: boolean;
+    useful: boolean;
+    failures: string[];
+  };
+  final: {
+    bytes: number;
+    excerpt: string;
+  };
+}
+
+interface ThreadEntryE2eJsonReport {
+  kind: "turnkeyai.thread-entry-e2e.report";
+  evidenceMode: "natural-real-llm";
+  progressClaim: "natural-evidence";
+  capabilityClaim: "unproven-without-comparative-evidence";
+  daemonSafetyMode: {
+    loopbackExploreAllowed: false;
+    browserFallbackRequiredForPrivateSources: true;
+  };
+  status: "passed" | "failed";
+  scenarioCount: number;
+  scenarioIds: ThreadEntryScenario[];
+  passedScenarios: number;
+  failedScenarios: number;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  scenarios: ThreadEntryScenarioReport[];
+}
+
 class NaturalMissionScenarioQualityError extends Error {
   constructor(
     message: string,
@@ -565,6 +628,7 @@ function parseOptions(args: string[]): MissionToolUseE2eOptions {
     natural: false,
     naturalScenario: "natural-comparison-research",
     naturalMatrix: false,
+    threadEntry: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -590,6 +654,10 @@ function parseOptions(args: string[]): MissionToolUseE2eOptions {
     if (arg === "--natural-matrix") {
       options.natural = true;
       options.naturalMatrix = true;
+      continue;
+    }
+    if (arg === "--thread-entry") {
+      options.threadEntry = true;
       continue;
     }
     if (arg === "--model-catalog") {
@@ -709,6 +777,7 @@ function printHelp(exitCode: number): never {
     "  npm run mission:e2e -- [options]",
     "  npm run mission:e2e:matrix -- [options]",
     "  npm run mission:e2e:natural -- [options]",
+    "  npm run mission:e2e:thread-entry -- [options]",
     "",
     "Options:",
     "  --scenario <name>              Run one scenario. Default: basic",
@@ -718,6 +787,7 @@ function printHelp(exitCode: number): never {
     "  --natural-matrix               Run the natural mission acceptance matrix",
     "  --natural-scenario <name>      Run one natural mission scenario",
     "  --natural-matrix-scenarios <a,b,...> Run a comma-separated natural scenario matrix",
+    "  --thread-entry                 Run natural /threads + /messages real-entry scenarios",
     "  --scenario-timeout-ms <ms>     Per-scenario timeout. Default: 180000",
     "  --model-catalog <path>         Model catalog path. Also reads TURNKEYAI_MODEL_CATALOG, models.local.json, models.json",
     "  --json <path>                  Write a structured acceptance evidence report",
@@ -750,12 +820,15 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
   const scenarios = options.matrixScenarios ?? (options.matrix ? [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS] : [options.scenario]);
   assertSupportedScenarioMix(scenarios);
   const shouldUseBudgetLimitedDaemon = !options.natural && scenarios.includes("budget-limited-closeout");
-  let daemonEnvOverrides: Record<string, string> = {};
+  let daemonEnvOverrides: Record<string, string> = options.threadEntry
+    ? { TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE: "0" }
+    : {};
   let daemon = startDaemon({
     runtimeRoot,
     port,
     token,
     modelCatalogPath,
+    extraEnv: daemonEnvOverrides,
     ...(shouldUseBudgetLimitedDaemon ? { agentToolMaxRounds: 1 } : {}),
   });
   const restartDaemon = async (envOverrides?: Record<string, string>) => {
@@ -773,6 +846,28 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
   };
   try {
     await waitForDaemonHealth({ baseUrl, daemon, timeoutMs: 20_000 });
+    if (options.threadEntry) {
+      const results = await runThreadEntryScenarios({
+        baseUrl,
+        token,
+        fixture,
+        timeoutMs: options.scenarioTimeoutMs,
+      });
+      if (options.jsonPath) {
+        const completedAt = Date.now();
+        writeThreadEntryE2eJsonReport(
+          options.jsonPath,
+          buildThreadEntryE2eJsonReport({
+            startedAt,
+            completedAt,
+            results,
+          })
+        );
+        console.log(`thread-entry-e2e-json: ${path.resolve(options.jsonPath)}`);
+      }
+      console.log(`thread entry real llm scenarios passed: ${results.map((result) => result.scenario).join(",")}`);
+      return;
+    }
     if (options.natural) {
       const naturalScenarios =
         options.naturalMatrixScenarios ??
@@ -2675,6 +2770,282 @@ async function createNaturalMission(input: {
       ownerLabel: "Natural E2E",
     },
   });
+}
+
+async function runThreadEntryScenarios(input: {
+  baseUrl: string;
+  token: string;
+  fixture: FixtureServer;
+  timeoutMs: number;
+}): Promise<ThreadEntryScenarioReport[]> {
+  const scenarios: Array<{
+    scenario: ThreadEntryScenario;
+    variant: string;
+    prompt: string;
+    followup?: string;
+    expectedTerms: string[];
+    minToolResults: number;
+  }> = [
+    {
+      scenario: "thread-entry-private-comparison",
+      variant: "pricing",
+      prompt: [
+        "一个产品负责人正在决定下周 agent workbench 投入方向。",
+        `请检查这两个来源并比较 Vendor Alpha 和 Vendor Beta：`,
+        `来源 A: ${input.fixture.alphaUrl}`,
+        `来源 B: ${input.fixture.betaUrl}`,
+        "请给出结论、关键证据、适用场景、主要风险，以及你建议选哪一个；不确定的地方请明确说明。",
+      ].join("\n"),
+      expectedTerms: ["Alpha", "Beta", "$19", "$29"],
+      minToolResults: 2,
+    },
+    {
+      scenario: "thread-entry-private-followup",
+      variant: "pricing",
+      prompt: [
+        `先检查 Vendor Alpha 这个来源：${input.fixture.alphaUrl}`,
+        "请为产品负责人整理一个有证据的简短判断，重点关注价格、优势和风险，并保留后续继续比较的上下文。",
+      ].join("\n"),
+      followup: "继续，把刚才最不确定的部分补齐，并更新结论。",
+      expectedTerms: ["Alpha", "$19", "risk"],
+      minToolResults: 2,
+    },
+  ];
+
+  const results: ThreadEntryScenarioReport[] = [];
+  for (const [index, scenario] of scenarios.entries()) {
+    const startedAt = Date.now();
+    console.log(`thread entry scenario starting: ${scenario.scenario} (${index + 1}/${scenarios.length})`);
+    const thread = await requestJson<TeamThread>({
+      method: "POST",
+      url: `${input.baseUrl}/threads/bootstrap-demo`,
+      token: input.token,
+      body: { variant: scenario.variant },
+    });
+    await requestJson<{ accepted: boolean; threadId: string }>({
+      method: "POST",
+      url: `${input.baseUrl}/messages`,
+      token: input.token,
+      body: { threadId: thread.threadId, content: scenario.prompt },
+    });
+    const firstTurn = await waitForThreadEntryTurn({
+      baseUrl: input.baseUrl,
+      token: input.token,
+      threadId: thread.threadId,
+      afterMs: startedAt,
+      timeoutMs: input.timeoutMs,
+    });
+    let finalTurn = firstTurn;
+    if (scenario.followup) {
+      const followupStartedAt = Date.now();
+      await requestJson<{ accepted: boolean; threadId: string }>({
+        method: "POST",
+        url: `${input.baseUrl}/messages`,
+        token: input.token,
+        body: { threadId: thread.threadId, content: scenario.followup },
+      });
+      finalTurn = await waitForThreadEntryTurn({
+        baseUrl: input.baseUrl,
+        token: input.token,
+        threadId: thread.threadId,
+        afterMs: followupStartedAt,
+        timeoutMs: input.timeoutMs,
+      });
+    }
+
+    const report = buildThreadEntryScenarioReport({
+      scenario: scenario.scenario,
+      threadId: thread.threadId,
+      startedAt,
+      completedAt: Date.now(),
+      timedOut: finalTurn.timedOut,
+      summary: finalTurn.summary,
+      expectedTerms: scenario.expectedTerms,
+      minToolResults: scenario.minToolResults,
+    });
+    if (report.status !== "passed") {
+      throw new Error(
+        `thread entry scenario ${scenario.scenario} failed: ${report.quality.failures.join("; ")}\n${report.final.excerpt}`
+      );
+    }
+    results.push(report);
+    console.log(
+      `thread entry scenario passed: ${scenario.scenario} thread-id=${thread.threadId} tools=${report.metrics.toolCalls}/${report.metrics.toolResults} final-bytes=${report.final.bytes}`
+    );
+  }
+  return results;
+}
+
+async function waitForThreadEntryTurn(input: {
+  baseUrl: string;
+  token: string;
+  threadId: string;
+  afterMs: number;
+  timeoutMs: number;
+}): Promise<{ timedOut: boolean; summary: ThreadEntrySummary }> {
+  const startedAt = Date.now();
+  let lastMessages: ThreadMessage[] = [];
+  let lastCount = -1;
+  let stableSince = Date.now();
+  while (Date.now() - startedAt < input.timeoutMs) {
+    lastMessages = await requestJson<ThreadMessage[]>({
+      method: "GET",
+      url: `${input.baseUrl}/messages?threadId=${encodeURIComponent(input.threadId)}`,
+      token: input.token,
+    });
+    if (lastMessages.length !== lastCount) {
+      lastCount = lastMessages.length;
+      stableSince = Date.now();
+    }
+    const summary = summarizeThreadEntryMessages(lastMessages);
+    const latestAssistant = [...lastMessages]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === "assistant" &&
+          (typeof message.createdAt !== "number" || message.createdAt >= input.afterMs) &&
+          readThreadMessageText(message).trim().length > 0
+      );
+    if (latestAssistant && summary.pendingToolCalls === 0 && Date.now() - stableSince >= 10_000) {
+      return { timedOut: false, summary };
+    }
+    await sleep(1_000);
+  }
+  return { timedOut: true, summary: summarizeThreadEntryMessages(lastMessages) };
+}
+
+interface ThreadEntrySummary {
+  messages: number;
+  assistantMessages: number;
+  toolCalls: number;
+  toolResults: number;
+  pendingToolCalls: number;
+  finalText: string;
+}
+
+function summarizeThreadEntryMessages(messages: ThreadMessage[]): ThreadEntrySummary {
+  const assistantMessages = messages.filter((message) => message.role === "assistant");
+  const toolResults = messages.filter((message) => message.role === "tool");
+  const latestAssistant =
+    [...assistantMessages].reverse().find((message) => readThreadMessageText(message).trim().length > 0) ?? null;
+  return {
+    messages: messages.length,
+    assistantMessages: assistantMessages.length,
+    toolCalls: assistantMessages.reduce((sum, message) => sum + (message.toolCalls?.length ?? 0), 0),
+    toolResults: toolResults.length,
+    pendingToolCalls: assistantMessages.filter(hasPendingThreadToolCalls).length,
+    finalText: latestAssistant ? readThreadMessageText(latestAssistant) : "",
+  };
+}
+
+function hasPendingThreadToolCalls(message: ThreadMessage): boolean {
+  return (
+    message.role === "assistant" &&
+    (message.toolCalls?.length ?? 0) > 0 &&
+    message.toolStatus !== "completed" &&
+    message.toolStatus !== "failed" &&
+    message.toolStatus !== "cancelled"
+  );
+}
+
+function readThreadMessageText(message: ThreadMessage): string {
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+  if (Array.isArray(message.content)) {
+    return message.content.map((item) => (typeof item === "string" ? item : JSON.stringify(item))).join("\n");
+  }
+  return message.content == null ? "" : JSON.stringify(message.content);
+}
+
+function buildThreadEntryScenarioReport(input: {
+  scenario: ThreadEntryScenario;
+  threadId: string;
+  startedAt: number;
+  completedAt: number;
+  timedOut: boolean;
+  summary: ThreadEntrySummary;
+  expectedTerms: string[];
+  minToolResults: number;
+}): ThreadEntryScenarioReport {
+  const expectedHits = input.expectedTerms.filter((term) => input.summary.finalText.toLowerCase().includes(term.toLowerCase()));
+  const blockedSourceCloseout = isBlockedSourceCloseout(input.summary.finalText);
+  const failures: string[] = [];
+  if (input.timedOut) {
+    failures.push("thread entry turn timed out");
+  }
+  if (input.summary.toolResults < input.minToolResults) {
+    failures.push(`expected at least ${input.minToolResults} tool results, saw ${input.summary.toolResults}`);
+  }
+  if (expectedHits.length < Math.max(2, input.expectedTerms.length - 1)) {
+    failures.push(`missing expected answer evidence: ${input.expectedTerms.filter((term) => !expectedHits.includes(term)).join(", ")}`);
+  }
+  if (blockedSourceCloseout) {
+    failures.push("final answer closed out as blocked source instead of using browser fallback evidence");
+  }
+  const useful = failures.length === 0;
+  return {
+    scenario: input.scenario,
+    threadId: input.threadId,
+    status: useful ? "passed" : "failed",
+    durationMs: Math.max(0, input.completedAt - input.startedAt),
+    timedOut: input.timedOut,
+    metrics: {
+      messages: input.summary.messages,
+      assistantMessages: input.summary.assistantMessages,
+      toolCalls: input.summary.toolCalls,
+      toolResults: input.summary.toolResults,
+      pendingToolCalls: input.summary.pendingToolCalls,
+    },
+    quality: {
+      expectedHits,
+      expectedTotal: input.expectedTerms.length,
+      blockedSourceCloseout,
+      useful,
+      failures,
+    },
+    final: {
+      bytes: Buffer.byteLength(input.summary.finalText, "utf8"),
+      excerpt: compactExcerpt(input.summary.finalText, 700),
+    },
+  };
+}
+
+function isBlockedSourceCloseout(text: string): boolean {
+  return /blocked explore URL host|安全策略.{0,16}拦截|无法访问.{0,32}(?:127\.0\.0\.1|localhost)|source URL.{0,16}blocked/i.test(text);
+}
+
+function buildThreadEntryE2eJsonReport(input: {
+  startedAt: number;
+  completedAt: number;
+  results: ThreadEntryScenarioReport[];
+}): ThreadEntryE2eJsonReport {
+  const failedScenarios = input.results.filter((result) => result.status !== "passed").length;
+  const passedScenarios = input.results.length - failedScenarios;
+  return {
+    kind: "turnkeyai.thread-entry-e2e.report",
+    evidenceMode: "natural-real-llm",
+    progressClaim: "natural-evidence",
+    capabilityClaim: "unproven-without-comparative-evidence",
+    daemonSafetyMode: {
+      loopbackExploreAllowed: false,
+      browserFallbackRequiredForPrivateSources: true,
+    },
+    status: failedScenarios === 0 ? "passed" : "failed",
+    scenarioCount: input.results.length,
+    scenarioIds: input.results.map((result) => result.scenario),
+    passedScenarios,
+    failedScenarios,
+    startedAt: new Date(input.startedAt).toISOString(),
+    completedAt: new Date(input.completedAt).toISOString(),
+    durationMs: Math.max(0, input.completedAt - input.startedAt),
+    scenarios: input.results,
+  };
+}
+
+function writeThreadEntryE2eJsonReport(pathname: string, report: ThreadEntryE2eJsonReport): void {
+  mkdirSync(path.dirname(pathname), { recursive: true });
+  writeFileSync(pathname, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 }
 
 async function waitForNaturalMissionCompletion(input: {

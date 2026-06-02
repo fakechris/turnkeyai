@@ -24,6 +24,7 @@
     "mission:e2e": "tsx scripts/mission-tool-use-e2e.ts",
     "mission:e2e:matrix": "tsx scripts/mission-tool-use-e2e.ts --matrix",
     "mission:e2e:natural": "tsx scripts/mission-tool-use-e2e.ts --natural-matrix",
+    "mission:e2e:thread-entry": "tsx scripts/mission-tool-use-e2e.ts --thread-entry",
     "acceptance:real": "tsx scripts/real-llm-acceptance.ts",
     "ledger:check": "tsx scripts/agent-workbench-ledger-check.ts",
     "control-center:smoke": "tsx scripts/control-center-ui-smoke.ts",
