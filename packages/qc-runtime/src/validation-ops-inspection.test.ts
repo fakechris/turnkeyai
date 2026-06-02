@@ -318,7 +318,7 @@ test("validation ops inspection marks phase1 readiness passed when all exit gate
   assert.equal(report.readiness.nextCommand, "validation-ops");
   assert.equal(report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance")?.latestRunId, "real-llm-pass");
   assert.equal(report.closedLoop.measuredRuns, 1);
-  assert.equal(report.closedLoop.totalCases, 37);
+  assert.equal(report.closedLoop.totalCases, 38);
 });
 
 test("validation ops inspection does not let focused real LLM acceptance satisfy the release gate", () => {
@@ -343,7 +343,7 @@ test("validation ops inspection does not let focused real LLM acceptance satisfy
   assert.match(realGate?.summary ?? "", /only focused coverage is recorded/);
   assert.match(realGate?.summary ?? "", /tool-use 3\/5 missing 2/);
   assert.match(realGate?.summary ?? "", /mission 3\/12 missing 9/);
-  assert.match(realGate?.summary ?? "", /natural 1\/20 missing 19/);
+  assert.match(realGate?.summary ?? "", /natural 1\/21 missing 20/);
 });
 
 test("validation ops inspection keeps the latest full real LLM acceptance as the release gate record", () => {
@@ -855,7 +855,7 @@ test("validation ops inspection preserves real LLM mission report summary", () =
       status: "focused",
       tooluse: { status: "focused", requested: 2, expected: 5, missing: 3 },
       mission: { status: "focused", requested: 2, expected: 12, missing: 10 },
-      naturalMission: { status: "skipped", requested: 0, expected: 20, missing: 20 },
+      naturalMission: { status: "skipped", requested: 0, expected: 21, missing: 21 },
     },
     missionReport: {
       status: "passed",
@@ -958,7 +958,7 @@ test("validation ops inspection preserves natural mission acceptance summary", (
     status: "focused",
     tooluse: { status: "focused", requested: 1, expected: 5, missing: 4 },
     mission: { status: "focused", requested: 1, expected: 12, missing: 11 },
-    naturalMission: { status: "focused", requested: 2, expected: 20, missing: 18 },
+    naturalMission: { status: "focused", requested: 2, expected: 21, missing: 19 },
   });
   assert.equal(record.realAcceptance?.naturalMissionReport?.finalAnswerUseful, 2);
   assert.equal(record.realAcceptance?.naturalMissionReport?.sourceEvidencePatternsCovered, 6);
@@ -981,7 +981,7 @@ test("validation ops inspection marks full real acceptance release coverage", ()
     status: "full",
     tooluse: { status: "full", requested: 5, expected: 5, missing: 0 },
     mission: { status: "full", requested: 12, expected: 12, missing: 0 },
-    naturalMission: { status: "full", requested: 20, expected: 20, missing: 0 },
+    naturalMission: { status: "full", requested: 21, expected: 21, missing: 0 },
   });
 });
 
@@ -1001,7 +1001,7 @@ test("validation ops inspection counts only expected scenarios in release covera
     status: "focused",
     tooluse: { status: "focused", requested: 1, expected: 5, missing: 4 },
     mission: { status: "focused", requested: 1, expected: 12, missing: 11 },
-    naturalMission: { status: "focused", requested: 1, expected: 20, missing: 19 },
+    naturalMission: { status: "focused", requested: 1, expected: 21, missing: 20 },
   });
 });
 

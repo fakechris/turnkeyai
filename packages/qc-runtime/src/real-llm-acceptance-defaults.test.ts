@@ -40,6 +40,7 @@ test("real LLM acceptance defaults include the product-level mission matrix", ()
   assert.deepEqual([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS], [
     "natural-comparison-research",
     "natural-browser-dynamic-page",
+    "natural-browser-dashboard-task",
     "natural-browser-followup-continuation",
     "natural-browser-restart-continuation",
     "natural-browser-cold-recreation-continuation",
@@ -65,6 +66,6 @@ test("real LLM acceptance defaults include the product-level mission matrix", ()
   );
   assert.equal(
     joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS),
-    "natural-comparison-research,natural-browser-dynamic-page,natural-browser-followup-continuation,natural-browser-restart-continuation,natural-browser-cold-recreation-continuation,natural-browser-profile-lock-recovery,natural-followup-continuation,natural-memory-recall,natural-approval-dry-run-action,natural-approval-denied-safe-closeout,natural-approval-pending-state,natural-browser-unavailable-closeout,natural-browser-cdp-timeout-closeout,natural-browser-detached-target-closeout,natural-browser-attach-failed-closeout,natural-timeout-partial-closeout,natural-timeout-followup-continuation,natural-cancel-active-tool,natural-cancel-followup-continuation,natural-long-delegation"
+    "natural-comparison-research,natural-browser-dynamic-page,natural-browser-dashboard-task,natural-browser-followup-continuation,natural-browser-restart-continuation,natural-browser-cold-recreation-continuation,natural-browser-profile-lock-recovery,natural-followup-continuation,natural-memory-recall,natural-approval-dry-run-action,natural-approval-denied-safe-closeout,natural-approval-pending-state,natural-browser-unavailable-closeout,natural-browser-cdp-timeout-closeout,natural-browser-detached-target-closeout,natural-browser-attach-failed-closeout,natural-timeout-partial-closeout,natural-timeout-followup-continuation,natural-cancel-active-tool,natural-cancel-followup-continuation,natural-long-delegation"
   );
 });

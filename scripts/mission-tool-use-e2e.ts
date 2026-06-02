@@ -65,6 +65,7 @@ const MISSION_E2E_SCENARIOS = [
 export type NaturalMissionE2eScenario =
   | "natural-comparison-research"
   | "natural-browser-dynamic-page"
+  | "natural-browser-dashboard-task"
   | "natural-browser-followup-continuation"
   | "natural-browser-restart-continuation"
   | "natural-browser-cold-recreation-continuation"
@@ -87,6 +88,7 @@ export type NaturalMissionE2eScenario =
 export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-comparison-research",
   "natural-browser-dynamic-page",
+  "natural-browser-dashboard-task",
   "natural-browser-followup-continuation",
   "natural-browser-restart-continuation",
   "natural-browser-cold-recreation-continuation",
@@ -2764,6 +2766,60 @@ export function buildNaturalScenarioSpec(
         { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
         { label: "rendered SLA breaches", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
         { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
+      ],
+    };
+  }
+  if (scenario === "natural-browser-dashboard-task") {
+    const dashboardUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
+    return {
+      scenario,
+      title: "Natural browser dashboard operator task",
+      desc: [
+        "An operator asks for help reading a live operations dashboard in the browser before paging anyone.",
+        `Dashboard: ${dashboardUrl}`,
+        "The important state may appear only after client-side rendering finishes.",
+        "Explain the current operational state, whether the escalation policy is triggered, who should own the next action, and what risk remains after your check.",
+        "Use only evidence gathered during this mission, and separate verified dashboard facts from anything still unverified.",
+      ].join("\n"),
+      minBytes: 360,
+      minToolResults: 1,
+      maxToolResults: 8,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 4,
+      requiresBrowser: true,
+      requiresArtifactLifecycle: true,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["SLA", "Incident Commander", "escalation", "residual risk"],
+      requiredAnswerPatterns: [
+        {
+          label: "visible queue depth",
+          pattern:
+            /Queue depth[\s\S]{0,80}\b11\b|\bqueue(?: depth)?[\s\S]{0,40}\b11\b|\bdepth[\s\S]{0,40}\b11\b|\b11\b[\s\S]{0,40}(?:queue|backlog)/i,
+        },
+        {
+          label: "visible SLA breaches",
+          pattern: /SLA breach(?:es|\s+count)?[\s\S]{0,100}\b3\b|\b3\b[\s\S]{0,100}SLA breach(?:es|\s+count)?/i,
+        },
+        {
+          label: "actionable escalation policy",
+          pattern: /(?:page|notify|escalat)[\s\S]{0,120}(?:on-call|Incident Commander|owner)/i,
+        },
+      ],
+      requiredEvidencePatterns: [
+        { label: "rendered queue depth", pattern: /Queue depth[\s\S]{0,80}\b11\b|\b11\b[\s\S]{0,80}Queue depth/i },
+        { label: "rendered SLA breaches", pattern: RENDERED_SLA_BREACHES_VALUE_PATTERN },
+        { label: "rendered owner", pattern: /owner[\s\S]{0,80}Incident Commander|Incident Commander[\s\S]{0,80}owner/i },
+        {
+          label: "rendered escalation policy",
+          pattern:
+            /Escalation threshold[\s\S]{0,120}(?:queue depth above 5|SLA breaches above 0)|(?:queue depth above 5|SLA breaches above 0)[\s\S]{0,120}Escalation threshold/i,
+        },
+      ],
+      forbiddenPatterns: [
+        { label: "unsupported external incident claim", pattern: /\b(real outage|production outage|customer impact confirmed)\b/i },
+        { label: "unresolved placeholder", pattern: /\b(TBD|to be confirmed|needs confirmation|待确认|估算)\b/i },
       ],
     };
   }
