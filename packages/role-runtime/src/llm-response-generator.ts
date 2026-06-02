@@ -1861,7 +1861,7 @@ function inferIndependentEvidenceStreamCount(taskPrompt: string): number {
 }
 
 function countCompletedSessionEvidenceResults(toolTrace: NativeToolRoundTrace[]): number {
-  let count = 0;
+  const completedSessionKeys = new Set<string>();
   for (const round of toolTrace) {
     for (const result of round.results) {
       if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
@@ -1874,16 +1874,18 @@ function countCompletedSessionEvidenceResults(toolTrace: NativeToolRoundTrace[])
       if (!parsed || parsed.status !== "completed" || !readCompletedSessionEvidence(parsed)) {
         continue;
       }
-      count += 1;
+      completedSessionKeys.add(parsed.session_key);
     }
   }
-  return count;
+  return completedSessionKeys.size;
 }
 
 function hasIndependentEvidenceStreamContinuationPrompt(messages: LLMMessage[]): boolean {
-  return messages.some((message) =>
-    readMessageContentText(message.content).includes("Runtime correction: this task declares multiple independent evidence streams.")
-  );
+  const latestMessage = messages.at(-1);
+  if (!latestMessage) {
+    return false;
+  }
+  return readMessageContentText(latestMessage.content).includes("Runtime correction: this task declares multiple independent evidence streams.");
 }
 
 function buildIndependentEvidenceStreamContinuationPrompt(input: { requiredStreams: number; completedSessions: number }): string {

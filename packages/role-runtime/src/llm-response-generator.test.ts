@@ -1613,6 +1613,222 @@ test("llm role response generator does not finalize multi-stream delegation afte
   assert.equal(gatewayInputs.length, 3);
 });
 
+test("llm role response generator keeps correcting multi-stream delegation until enough unique streams complete", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-one", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Check source one.",
+        label: "source-one",
+      });
+    }
+    if (gatewayInputs.length === 2) {
+      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
+      return toolCallResult("toolu-two", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Check source two.",
+        label: "source-two",
+      });
+    }
+    if (gatewayInputs.length === 3) {
+      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
+      return toolCallResult("toolu-three", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Check source three.",
+        label: "source-three",
+      });
+    }
+    return {
+      text: "Final answer after three unique streams.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: `task-${input.call.id}`,
+          session_key: `worker:${input.call.input.agent_id}:task-${input.call.id}`,
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          result: `${input.call.input.label} evidence complete.`,
+          final_content: `${input.call.input.label} verified evidence.`,
+          payload: { mode: "llm_sub_agent", content: `${input.call.input.label} verified evidence.` },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Prepare a product-ready brief about the next release.",
+        "These are three independent evidence streams.",
+        "Research source: http://127.0.0.1/source-one",
+        "Capability source: http://127.0.0.1/source-two",
+        "Live signal dashboard: http://127.0.0.1/source-three",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer after three unique streams.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.id),
+    ["toolu-one", "toolu-two", "toolu-three"]
+  );
+  assert.equal(
+    gatewayInputs.filter((input) => readToolContent(input.messages.at(-1)?.content ?? "").includes("multiple independent evidence streams"))
+      .length,
+    2
+  );
+  assert.equal(gatewayInputs.length, 4);
+});
+
+test("llm role response generator does not count a continued session as a new independent stream", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-one", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Check source one.",
+        label: "source-one",
+      });
+    }
+    if (gatewayInputs.length === 2) {
+      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
+      return {
+        text: "Continuing one session and starting another.",
+        toolCalls: [
+          {
+            id: "toolu-one-continue",
+            name: "sessions_send",
+            input: { session_key: "worker:explore:task-toolu-one", message: "Add one more detail for source one." },
+          },
+          {
+            id: "toolu-two",
+            name: "sessions_spawn",
+            input: { agent_id: "explore", task: "Check source two.", label: "source-two" },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 3) {
+      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
+      return toolCallResult("toolu-three", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Check source three.",
+        label: "source-three",
+      });
+    }
+    return {
+      text: "Final answer after deduped session evidence.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      const sessionKey =
+        input.call.name === "sessions_send"
+          ? String(input.call.input.session_key)
+          : `worker:${input.call.input.agent_id}:task-${input.call.id}`;
+      const label = input.call.name === "sessions_send" ? "source-one continued" : input.call.input.label;
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: `task-${input.call.id}`,
+          session_key: sessionKey,
+          agent_id: input.call.input.agent_id ?? "explore",
+          status: "completed",
+          result: `${label} evidence complete.`,
+          final_content: `${label} verified evidence.`,
+          payload: { mode: "llm_sub_agent", content: `${label} verified evidence.` },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Prepare a product-ready brief about the next release.",
+        "These are three independent evidence streams.",
+        "Research source: http://127.0.0.1/source-one",
+        "Capability source: http://127.0.0.1/source-two",
+        "Live signal dashboard: http://127.0.0.1/source-three",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer after deduped session evidence.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.id),
+    ["toolu-one", "toolu-one-continue", "toolu-two", "toolu-three"]
+  );
+  assert.equal(gatewayInputs.length, 4);
+});
+
 test("llm role response generator prunes aggregate tool result budget before final synthesis", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const largeA = "A".repeat(8_000);
