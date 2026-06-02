@@ -44,7 +44,9 @@ test("native tool capability registry drives schemas and prompt harness from the
   assert.match(harness, /Do not append guessed categories/);
   assert.match(harness, /emit at most five session tool calls total/);
   assert.match(harness, /exactly two focused calls/);
+  assert.match(harness, /three or more independent evidence streams/);
   assert.match(harness, /Do not downgrade the task to read-only inspection/);
+  assert.match(harness, /preserve the original task's decision criteria/i);
   assert.match(harness, /use explore first/);
   assert.match(harness, /Use browser first for localhost, loopback, private-network/);
   assert.match(harness, /use browser after explore\/static extraction is blocked/);
