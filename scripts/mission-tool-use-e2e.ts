@@ -501,13 +501,18 @@ export interface NaturalMissionScenarioReport {
 export interface NaturalMissionE2eJsonReport {
   kind: "turnkeyai.natural-mission-e2e.report";
   evidenceMode: "natural-real-llm";
-  progressClaim: "capability";
+  progressClaim: "natural-evidence";
+  capabilityClaim: "unproven-without-comparative-evidence";
   promptPolicy: {
     forbidsContractGateLanguage: boolean;
     forbiddenPatterns: string[];
   };
   requiredQualitySignals: string[];
   status: "passed" | "failed";
+  scenarioCount: number;
+  scenarioIds: NaturalMissionE2eScenario[];
+  passedScenarios: number;
+  failedScenarios: number;
   startedAt: string;
   completedAt: string;
   durationMs: number;
@@ -4266,10 +4271,13 @@ export function buildNaturalMissionE2eJsonReport(input: {
   results: NaturalMissionScenarioResult[];
 }): NaturalMissionE2eJsonReport {
   const scenarios = input.results.map(summarizeNaturalMissionScenarioResult);
+  const passedScenarios = scenarios.filter((scenario) => scenario.natural.status === "passed").length;
+  const failedScenarios = scenarios.length - passedScenarios;
   return {
     kind: "turnkeyai.natural-mission-e2e.report",
     evidenceMode: "natural-real-llm",
-    progressClaim: "capability",
+    progressClaim: "natural-evidence",
+    capabilityClaim: "unproven-without-comparative-evidence",
     promptPolicy: {
       forbidsContractGateLanguage: true,
       forbiddenPatterns: NATURAL_PROMPT_FORBIDDEN_PATTERNS.map((pattern) => pattern.source),
@@ -4289,7 +4297,11 @@ export function buildNaturalMissionE2eJsonReport(input: {
       "root-cause-dimension-scores",
       "failure-bucket-attribution",
     ],
-    status: scenarios.every((scenario) => scenario.natural.status === "passed") ? "passed" : "failed",
+    status: failedScenarios === 0 ? "passed" : "failed",
+    scenarioCount: scenarios.length,
+    scenarioIds: scenarios.map((scenario) => scenario.scenario),
+    passedScenarios,
+    failedScenarios,
     startedAt: new Date(input.startedAt).toISOString(),
     completedAt: new Date(input.completedAt).toISOString(),
     durationMs: Math.max(0, input.completedAt - input.startedAt),
