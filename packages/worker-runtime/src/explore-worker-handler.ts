@@ -64,21 +64,54 @@ export class ExploreWorkerHandler implements WorkerHandler {
     try {
       safeUrl = validatePublicHttpUrl(target.url, { allowLoopbackHosts: this.allowLoopbackHosts });
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "invalid target URL";
+      const browserFallbackAllowed = canUseBrowserFallback(input);
+      if (isBlockedExploreHostError(errorMessage) && this.browserBridge && browserFallbackAllowed) {
+        return this.runBrowserFallback(
+          input,
+          target,
+          apiAttempt,
+          { errorMessage },
+          preferredOrder
+        );
+      }
+
+      if (isBlockedExploreHostError(errorMessage) && this.browserBridge && !browserFallbackAllowed) {
+        return {
+          workerType: this.kind,
+          status: "failed",
+          summary: `Explore worker failed to fetch ${target.label}: browser fallback is not allowed for this activation`,
+          payload: {
+            trace: [],
+            transportAudit: buildTransportAudit({
+              preferredOrder,
+              attemptedTransports: [],
+              fallbackReason: "browser fallback blocked by capability inspection",
+              trustLevel: "observational",
+            }),
+            apiAttempt: {
+              ...apiAttempt,
+              errorMessage,
+            },
+          },
+        };
+      }
+
       return {
         workerType: this.kind,
         status: "failed",
-        summary: `Explore worker failed to fetch ${target.label}: ${error instanceof Error ? error.message : "invalid target URL"}`,
+        summary: `Explore worker failed to fetch ${target.label}: ${errorMessage}`,
         payload: {
           trace: [],
           transportAudit: buildTransportAudit({
             preferredOrder,
             attemptedTransports: [],
-            fallbackReason: error instanceof Error ? error.message : "invalid target URL",
+            fallbackReason: errorMessage,
             trustLevel: "observational",
           }),
           apiAttempt: {
             ...apiAttempt,
-            errorMessage: error instanceof Error ? error.message : "invalid target URL",
+            errorMessage,
           },
         },
       };
@@ -513,6 +546,10 @@ function canUseBrowserFallback(input: WorkerInvocationInput): boolean {
   }
 
   return availableWorkers.includes("browser");
+}
+
+function isBlockedExploreHostError(message: string): boolean {
+  return /\bblocked explore URL host:/i.test(message);
 }
 
 function buildTransportAudit(input: {
