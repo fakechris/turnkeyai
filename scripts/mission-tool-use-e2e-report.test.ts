@@ -45,6 +45,7 @@ describe("mission tool-use e2e report", () => {
           failed: 0,
           cancelled: 0,
           timeouts: 0,
+          names: [],
         },
         sessions: {
           spawned: 2,
