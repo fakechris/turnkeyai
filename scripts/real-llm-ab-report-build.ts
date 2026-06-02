@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  buildRealLlmAbMarkdownReport,
   REAL_LLM_AB_CORE_SUITE_REQUIREMENTS,
   REAL_LLM_AB_DIMENSION_KEYS,
   validateRealLlmAbAcceptanceReport,
@@ -19,6 +20,7 @@ export interface RealLlmAbReportBuildOptions {
   outPath: string;
   check: boolean;
   requiredSuite?: RealLlmAbRequiredSuite;
+  markdownOutPath?: string;
 }
 
 export interface RealLlmAbReportBuildSpec {
@@ -156,6 +158,7 @@ export function parseRealLlmAbReportBuildArgs(args: string[]): RealLlmAbReportBu
   let outPath: string | undefined;
   let check = false;
   let requiredSuite: RealLlmAbRequiredSuite | undefined;
+  let markdownOutPath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--spec") {
@@ -170,6 +173,11 @@ export function parseRealLlmAbReportBuildArgs(args: string[]): RealLlmAbReportBu
     }
     if (arg === "--check") {
       check = true;
+      continue;
+    }
+    if (arg === "--markdown-out") {
+      markdownOutPath = readValue(args, index, arg);
+      index += 1;
       continue;
     }
     if (arg === "--suite") {
@@ -189,7 +197,13 @@ export function parseRealLlmAbReportBuildArgs(args: string[]): RealLlmAbReportBu
   if (!outPath) {
     throw new Error("missing required --out <path>");
   }
-  return { specPath, outPath, check, ...(requiredSuite ? { requiredSuite } : {}) };
+  return {
+    specPath,
+    outPath,
+    check,
+    ...(requiredSuite ? { requiredSuite } : {}),
+    ...(markdownOutPath ? { markdownOutPath } : {}),
+  };
 }
 
 export async function runRealLlmAbReportBuildCli(args: string[]): Promise<void> {
@@ -202,9 +216,20 @@ export async function runRealLlmAbReportBuildCli(args: string[]): Promise<void> 
   const report = buildRealLlmAbAcceptanceReport(spec, {
     specDir: path.dirname(path.resolve(options.specPath)),
   });
-  mkdirSync(path.dirname(path.resolve(options.outPath)), { recursive: true });
-  writeFileSync(options.outPath, `${JSON.stringify(report, null, 2)}\n`);
-  console.log(`real LLM A/B report written: ${options.outPath}`);
+  const resolvedOutPath = path.resolve(options.outPath);
+  const resolvedMarkdownOutPath = options.markdownOutPath ? path.resolve(options.markdownOutPath) : undefined;
+  if (resolvedMarkdownOutPath && resolvedMarkdownOutPath === resolvedOutPath) {
+    throw new Error("--markdown-out must differ from --out");
+  }
+  mkdirSync(path.dirname(resolvedOutPath), { recursive: true });
+  writeFileSync(resolvedOutPath, `${JSON.stringify(report, null, 2)}\n`);
+  console.log(`real LLM A/B report written: ${resolvedOutPath}`);
+  if (resolvedMarkdownOutPath) {
+    const markdown = buildRealLlmAbMarkdownReport(report, { requiredSuite: options.requiredSuite });
+    mkdirSync(path.dirname(resolvedMarkdownOutPath), { recursive: true });
+    writeFileSync(resolvedMarkdownOutPath, markdown.endsWith("\n") ? markdown : `${markdown}\n`);
+    console.log(`real LLM A/B markdown report written: ${resolvedMarkdownOutPath}`);
+  }
   if (options.check) {
     const validation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: options.requiredSuite });
     if (validation.status !== "passed") {
@@ -227,10 +252,11 @@ export function buildRealLlmAbReportBuildHelpText(): string {
     "TurnkeyAI real LLM A/B report builder",
     "",
     "Usage:",
-    "  npm run acceptance:ab:build -- --spec <path> --out <path> [--check] [--suite core]",
+    "  npm run acceptance:ab:build -- --spec <path> --out <path> [--check] [--suite core] [--markdown-out <path>]",
     "",
     "The spec points at a TurnkeyAI natural mission report and same-scenario reference artifacts.",
     "--suite core requires the full core scenario set when --check is used.",
+    "--markdown-out writes the same conclusion-first Markdown report as acceptance:ab:check.",
     "The generated report can be validated with npm run acceptance:ab:check.",
   ].join("\n");
 }
