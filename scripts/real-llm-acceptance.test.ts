@@ -523,6 +523,30 @@ test("real acceptance integrity rejects incomplete artifacts and weak natural qu
       assertRealAcceptanceArtifactIntegrity({
         status: "passed",
         missionScenarios: ["comparison"],
+        naturalMissionScenarios: ["natural-comparison-research"],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: true,
+        missionReport: passingMissionReport(),
+        naturalMissionReport: passingNaturalMissionReport({
+          scenarioProofs: [
+            {
+              ...passingNaturalMissionScenarioProof("natural-comparison-research"),
+              dimensionScores: {
+                ...passingNaturalDimensionScores(),
+                evidenceQuality: 1,
+              },
+            },
+          ],
+        }),
+      }),
+    /natural mission report does not prove/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
         naturalMissionScenarios: ["natural-browser-dashboard-task"],
         missionJsonPresent: true,
         naturalMissionJsonPresent: true,
@@ -930,6 +954,8 @@ function passingNaturalMissionScenarioProof(
     sourceAnswerTermsMissing: 0,
     sourceAnswerPatternsMissing: 0,
     sourceEvidencePatternsMissing: 0,
+    dimensionScores: passingNaturalDimensionScores(),
+    failureBuckets: [],
   };
   if (scenario === "natural-approval-dry-run-action") {
     return {
@@ -962,4 +988,17 @@ function passingNaturalMissionScenarioProof(
     };
   }
   return base;
+}
+
+function passingNaturalDimensionScores() {
+  return {
+    taskCompletion: 2,
+    evidenceQuality: 2,
+    toolUseAppropriateness: 2,
+    browserAuthenticity: 2,
+    subAgentIndependence: 2,
+    continuationBehavior: 2,
+    permissionCorrectness: 2,
+    timeoutCloseoutQuality: 2,
+  };
 }

@@ -240,6 +240,10 @@ export interface ValidationOpsRealAcceptanceDetails {
     sourceResidualRiskVisible: number;
     sourceUnsupportedClaims: number;
     recoveryEvents: number;
+    dimensionScoreTotal?: number;
+    dimensionScoreMax?: number;
+    lowDimensionScores?: number;
+    failureBuckets?: string[];
     scenarioProofs?: Array<{
       scenario: string;
       passed: boolean;
@@ -272,6 +276,17 @@ export interface ValidationOpsRealAcceptanceDetails {
       sourceAnswerTermsMissing: number;
       sourceAnswerPatternsMissing: number;
       sourceEvidencePatternsMissing: number;
+      dimensionScores?: {
+        taskCompletion: number;
+        evidenceQuality: number;
+        toolUseAppropriateness: number;
+        browserAuthenticity: number;
+        subAgentIndependence: number;
+        continuationBehavior: number;
+        permissionCorrectness: number;
+        timeoutCloseoutQuality: number;
+      };
+      failureBuckets?: string[];
     }>;
   };
 }

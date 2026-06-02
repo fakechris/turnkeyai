@@ -411,6 +411,8 @@ function passingNaturalMissionScenarioProof(
     sourceAnswerTermsMissing: 0,
     sourceAnswerPatternsMissing: 0,
     sourceEvidencePatternsMissing: 0,
+    dimensionScores: passingNaturalDimensionScores(),
+    failureBuckets: [],
   };
   if (scenario === "natural-approval-dry-run-action") {
     return {
@@ -443,6 +445,19 @@ function passingNaturalMissionScenarioProof(
     };
   }
   return base;
+}
+
+function passingNaturalDimensionScores() {
+  return {
+    taskCompletion: 2,
+    evidenceQuality: 2,
+    toolUseAppropriateness: 2,
+    browserAuthenticity: 2,
+    subAgentIndependence: 2,
+    continuationBehavior: 2,
+    permissionCorrectness: 2,
+    timeoutCloseoutQuality: 2,
+  };
 }
 
 test("validation routes trim selectors for regression and validation suite runs", async () => {

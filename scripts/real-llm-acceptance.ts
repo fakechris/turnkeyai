@@ -745,11 +745,13 @@ function hasProvenNaturalMissionScenario(
     | NonNullable<NonNullable<ReturnType<typeof summarizeNaturalMissionE2eReportForValidationOps>>["scenarioProofs"]>[number]
     | undefined
 ): boolean {
-  if (
-    !proof?.passed ||
-    !proof.completed ||
-    proof.stuckOrLoop ||
-    !proof.reasonableToolUse ||
+    if (
+      !proof?.passed ||
+      !proof.completed ||
+      proof.stuckOrLoop ||
+      !hasCompleteNaturalDimensionScores(proof) ||
+      (proof.failureBuckets?.length ?? 0) > 0 ||
+      !proof.reasonableToolUse ||
     !proof.subAgentCompleted ||
     !proof.finalAnswerHasEvidence ||
     !proof.finalAnswerUseful ||
@@ -811,6 +813,23 @@ function hasProvenNaturalMissionScenario(
     }
   }
   return true;
+}
+
+function hasCompleteNaturalDimensionScores(
+  proof: NonNullable<NonNullable<ReturnType<typeof summarizeNaturalMissionE2eReportForValidationOps>>["scenarioProofs"]>[number]
+): boolean {
+  const scores = proof.dimensionScores;
+  return Boolean(
+    scores &&
+      scores.taskCompletion === 2 &&
+      scores.evidenceQuality === 2 &&
+      scores.toolUseAppropriateness === 2 &&
+      scores.browserAuthenticity === 2 &&
+      scores.subAgentIndependence === 2 &&
+      scores.continuationBehavior === 2 &&
+      scores.permissionCorrectness === 2 &&
+      scores.timeoutCloseoutQuality === 2
+  );
 }
 
 function buildNaturalProofQueues(
