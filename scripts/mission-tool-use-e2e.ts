@@ -304,6 +304,7 @@ export interface MissionE2eScenarioReport {
       failed: number;
       cancelled: number;
       timeouts: number;
+      names: string[];
     };
     sessions: {
       spawned: number;
@@ -4713,6 +4714,7 @@ export function summarizeMissionScenarioResult(result: MissionScenarioResult): M
         failed: result.metrics.tool.failed,
         cancelled: result.metrics.tool.cancelled,
         timeouts: result.metrics.tool.timeouts,
+        names: [...collectToolNames(result.timeline)].sort(),
       },
       sessions: {
         spawned: result.metrics.sessions.spawned,
@@ -4764,6 +4766,7 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
         failed: result.metrics.tool.failed,
         cancelled: result.metrics.tool.cancelled,
         timeouts: result.metrics.tool.timeouts,
+        names: [...collectToolNames(result.timeline)].sort(),
       },
       sessions: {
         spawned: result.metrics.sessions.spawned,

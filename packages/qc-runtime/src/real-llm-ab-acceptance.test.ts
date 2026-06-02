@@ -85,6 +85,62 @@ test("real LLM A/B acceptance validates the full core suite when requested", () 
   assert.equal(validation.summary?.scenarioCount, REAL_LLM_AB_CORE_SUITE_REQUIREMENTS.length);
 });
 
+test("real LLM A/B acceptance requires concrete TurnkeyAI browser proof", () => {
+  const report = buildReport({
+    turnkeyaiBrowserEvidence: {
+      required: true,
+      used: true,
+      rendered: false,
+      screenshotCount: 0,
+      snapshotCount: 0,
+    },
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report);
+
+  assert.equal(validation.status, "failed");
+  assert.match(validation.failures.join("\n"), /did not record rendered browser evidence/);
+  assert.match(validation.failures.join("\n"), /has no browser artifact evidence/);
+});
+
+test("real LLM A/B acceptance requires concrete continuation, timeout, delegation, memory, and approval proof", () => {
+  const report = buildCoreSuiteReport({
+    weaken: {
+      "followup-continuation": (run) => ({
+        ...run,
+        continuation: { required: true, sessionsContinued: 0, usedSessionsSend: false, reusedPriorContext: false },
+        toolSequence: [],
+      }),
+      "timeout-closeout": (run) => ({
+        ...run,
+        timeout: { required: true, timedOut: false, partialCloseout: false, hardAborted: false },
+      }),
+      "long-delegation": (run) => ({
+        ...run,
+        subAgentCount: 1,
+        completedSubAgentCount: 1,
+      }),
+      "memory-recall": (run) => ({
+        ...run,
+        toolSequence: ["memory_search"],
+      }),
+      "approval-dry-run-action": (run) => ({
+        ...run,
+        approval: { required: true, requested: true, decided: true, applied: true, sideEffectPreventedBeforeApproval: false },
+      }),
+    },
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "core" });
+
+  assert.equal(validation.status, "failed");
+  assert.match(validation.failures.join("\n"), /followup-continuation: TurnkeyAI did not record continuation reuse evidence/);
+  assert.match(validation.failures.join("\n"), /timeout-closeout: TurnkeyAI did not record timeout partial-closeout evidence/);
+  assert.match(validation.failures.join("\n"), /long-delegation: TurnkeyAI did not record independent long-delegation/);
+  assert.match(validation.failures.join("\n"), /memory-recall: TurnkeyAI did not record memory_search and memory_get evidence/);
+  assert.match(validation.failures.join("\n"), /approval-dry-run-action: TurnkeyAI did not record approval pre-side-effect safety evidence/);
+});
+
 test("real LLM A/B acceptance forces root-cause review when TurnkeyAI loses core dimensions", () => {
   const report = buildReport({
     status: "failed",
@@ -151,6 +207,7 @@ function buildReport(
     referenceScores?: Partial<Record<keyof typeof FULL_SCORES, RealLlmAbDimensionScore>>;
     turnkeyaiArtifactPath?: string | undefined;
     turnkeyaiMissionId?: string | undefined;
+    turnkeyaiBrowserEvidence?: RealLlmAbScenarioRun["browserEvidence"];
   } = {}
 ): RealLlmAbAcceptanceReport {
   return {
@@ -180,6 +237,7 @@ function buildReport(
               : "artifacts/evals/run/turnkeyai/browser.json",
           missionId: "turnkeyaiMissionId" in overrides ? overrides.turnkeyaiMissionId : "msn.local.1",
           dimensionScores: { ...FULL_SCORES, ...overrides.turnkeyaiScores },
+          browserEvidence: overrides.turnkeyaiBrowserEvidence,
         }),
         reference: buildRun({
           system: "reference",
@@ -191,7 +249,9 @@ function buildReport(
   };
 }
 
-function buildCoreSuiteReport(): RealLlmAbAcceptanceReport {
+function buildCoreSuiteReport(input: {
+  weaken?: Partial<Record<string, (run: RealLlmAbScenarioRun) => RealLlmAbScenarioRun>>;
+} = {}): RealLlmAbAcceptanceReport {
   return {
     kind: "turnkeyai.real-llm-ab-acceptance.report",
     status: "passed",
@@ -202,6 +262,19 @@ function buildCoreSuiteReport(): RealLlmAbAcceptanceReport {
       const scenarioId = requirement.acceptedScenarioIds[0]!;
       const requiresBrowser = scenarioId === "browser-dynamic-page";
       const requiresApproval = scenarioId === "approval-dry-run-action";
+      const requiresContinuation = scenarioId === "followup-continuation";
+      const requiresTimeoutCloseout = scenarioId === "timeout-closeout";
+      const turnkeyai = buildRun({
+        system: "turnkeyai",
+        artifactPath: `artifacts/evals/run/turnkeyai/${scenarioId}.json`,
+        missionId: `msn.${scenarioId}.1`,
+        dimensionScores: FULL_SCORES,
+        requiresBrowser,
+        requiresApproval,
+        requiresContinuation,
+        requiresTimeoutCloseout,
+        scenarioId,
+      });
       return {
         scenarioId,
         prompt: `请完成 ${scenarioId} 场景，给出结论、证据和风险。`,
@@ -213,22 +286,18 @@ function buildCoreSuiteReport(): RealLlmAbAcceptanceReport {
         },
         ...(requiresBrowser ? { requiresBrowser: true } : {}),
         ...(requiresApproval ? { requiresApproval: true } : {}),
-        ...(scenarioId === "followup-continuation" ? { requiresContinuation: true } : {}),
-        ...(scenarioId === "timeout-closeout" ? { requiresTimeoutCloseout: true } : {}),
-        turnkeyai: buildRun({
-          system: "turnkeyai",
-          artifactPath: `artifacts/evals/run/turnkeyai/${scenarioId}.json`,
-          missionId: `msn.${scenarioId}.1`,
-          dimensionScores: FULL_SCORES,
-          requiresBrowser,
-          requiresApproval,
-        }),
+        ...(requiresContinuation ? { requiresContinuation: true } : {}),
+        ...(requiresTimeoutCloseout ? { requiresTimeoutCloseout: true } : {}),
+        turnkeyai: input.weaken?.[scenarioId]?.(turnkeyai) ?? turnkeyai,
         reference: buildRun({
           system: "reference",
           artifactPath: `artifacts/evals/run/reference/${scenarioId}.json`,
           dimensionScores: FULL_SCORES,
           requiresBrowser,
           requiresApproval,
+          requiresContinuation,
+          requiresTimeoutCloseout,
+          scenarioId,
         }),
       };
     }),
@@ -242,7 +311,20 @@ function buildRun(input: {
   dimensionScores: RealLlmAbScenarioRun["dimensionScores"];
   requiresBrowser?: boolean;
   requiresApproval?: boolean;
+  requiresContinuation?: boolean;
+  requiresTimeoutCloseout?: boolean;
+  browserEvidence?: RealLlmAbScenarioRun["browserEvidence"];
+  scenarioId?: string;
 }): RealLlmAbScenarioRun {
+  const scenarioId = input.scenarioId ?? "browser-dynamic-page";
+  const subAgentCount = scenarioId === "long-delegation" ? 2 : 1;
+  const completedSubAgentCount = subAgentCount;
+  const toolSequence =
+    scenarioId === "memory-recall"
+      ? ["memory_search", "memory_get"]
+      : input.requiresContinuation
+        ? ["sessions_send"]
+        : [];
   return {
     system: input.system,
     ...(input.artifactPath ? { artifactPath: input.artifactPath } : {}),
@@ -250,9 +332,22 @@ function buildRun(input: {
     wallClockMs: 42_000,
     toolCallCount: 2,
     toolResultCount: 2,
-    subAgentCount: 1,
-    completedSubAgentCount: 1,
-    browserEvidence: {
+    toolSequence,
+    subAgentCount,
+    completedSubAgentCount,
+    continuation: {
+      required: input.requiresContinuation ?? false,
+      sessionsContinued: input.requiresContinuation ? 1 : 0,
+      usedSessionsSend: input.requiresContinuation ?? false,
+      reusedPriorContext: input.requiresContinuation ?? false,
+    },
+    timeout: {
+      required: input.requiresTimeoutCloseout ?? false,
+      timedOut: input.requiresTimeoutCloseout ?? false,
+      partialCloseout: input.requiresTimeoutCloseout ?? false,
+      hardAborted: false,
+    },
+    browserEvidence: input.browserEvidence ?? {
       required: input.requiresBrowser ?? true,
       used: true,
       rendered: true,

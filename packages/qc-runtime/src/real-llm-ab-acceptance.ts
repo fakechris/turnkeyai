@@ -37,6 +37,18 @@ export interface RealLlmAbScenarioRun {
   toolSequence?: string[];
   subAgentCount?: number;
   completedSubAgentCount?: number;
+  continuation?: {
+    required?: boolean;
+    sessionsContinued?: number;
+    usedSessionsSend?: boolean;
+    reusedPriorContext?: boolean;
+  };
+  timeout?: {
+    required?: boolean;
+    timedOut?: boolean;
+    partialCloseout?: boolean;
+    hardAborted?: boolean;
+  };
   browserEvidence?: {
     required?: boolean;
     used?: boolean;
@@ -277,8 +289,35 @@ export function validateRealLlmAbAcceptanceReport(
     if (scenario.requiresBrowser && !scenario.turnkeyai.browserEvidence?.used) {
       failures.push(`${scenario.scenarioId}: TurnkeyAI did not record browser evidence for a browser-required scenario`);
     }
+    if (scenario.requiresBrowser && scenario.turnkeyai.browserEvidence?.rendered !== true) {
+      failures.push(`${scenario.scenarioId}: TurnkeyAI did not record rendered browser evidence for a browser-required scenario`);
+    }
+    if (
+      scenario.requiresBrowser &&
+      readCount(scenario.turnkeyai.browserEvidence?.screenshotCount) +
+        readCount(scenario.turnkeyai.browserEvidence?.snapshotCount) +
+        readCount(scenario.turnkeyai.browserEvidence?.logCount) ===
+        0
+    ) {
+      failures.push(`${scenario.scenarioId}: TurnkeyAI browser-required scenario has no browser artifact evidence`);
+    }
     if (scenario.requiresApproval && !scenario.turnkeyai.approval?.requested) {
       failures.push(`${scenario.scenarioId}: TurnkeyAI did not record approval evidence for an approval-required scenario`);
+    }
+    if (scenario.requiresApproval && scenario.turnkeyai.approval?.sideEffectPreventedBeforeApproval !== true) {
+      failures.push(`${scenario.scenarioId}: TurnkeyAI did not record approval pre-side-effect safety evidence`);
+    }
+    if (scenario.requiresContinuation && !hasTurnkeyAiContinuationEvidence(scenario.turnkeyai)) {
+      failures.push(`${scenario.scenarioId}: TurnkeyAI did not record continuation reuse evidence`);
+    }
+    if (scenario.requiresTimeoutCloseout && !hasTurnkeyAiTimeoutCloseoutEvidence(scenario.turnkeyai)) {
+      failures.push(`${scenario.scenarioId}: TurnkeyAI did not record timeout partial-closeout evidence`);
+    }
+    if (isLongDelegationScenario(scenario.scenarioId) && !hasTurnkeyAiLongDelegationEvidence(scenario.turnkeyai)) {
+      failures.push(`${scenario.scenarioId}: TurnkeyAI did not record independent long-delegation sub-agent evidence`);
+    }
+    if (isMemoryRecallScenario(scenario.scenarioId) && !hasToolSequence(scenario.turnkeyai, ["memory_search", "memory_get"])) {
+      failures.push(`${scenario.scenarioId}: TurnkeyAI did not record memory_search and memory_get evidence`);
     }
   });
   for (const comparison of summary.comparisons) {
@@ -390,6 +429,40 @@ function hasWeakTurnkeyAiAnswer(run: RealLlmAbScenarioRun): boolean {
     (run.weakAnswerSignals?.length ?? 0) > 0 ||
     (run.unsupportedClaims?.length ?? 0) > 0
   );
+}
+
+function hasTurnkeyAiContinuationEvidence(run: RealLlmAbScenarioRun): boolean {
+  return (
+    readCount(run.continuation?.sessionsContinued) > 0 ||
+    run.continuation?.usedSessionsSend === true ||
+    run.continuation?.reusedPriorContext === true ||
+    hasToolSequence(run, ["sessions_send"])
+  );
+}
+
+function hasTurnkeyAiTimeoutCloseoutEvidence(run: RealLlmAbScenarioRun): boolean {
+  return run.timeout?.timedOut === true && run.timeout?.partialCloseout === true && run.timeout?.hardAborted !== true;
+}
+
+function hasTurnkeyAiLongDelegationEvidence(run: RealLlmAbScenarioRun): boolean {
+  return readCount(run.subAgentCount) >= 2 && readCount(run.completedSubAgentCount) >= 2;
+}
+
+function hasToolSequence(run: RealLlmAbScenarioRun, requiredTools: readonly string[]): boolean {
+  const observed = new Set((run.toolSequence ?? []).map((tool) => tool.trim()).filter((tool) => tool.length > 0));
+  return requiredTools.every((tool) => observed.has(tool));
+}
+
+function isLongDelegationScenario(scenarioId: string): boolean {
+  return /\blong-delegation\b|natural-long-delegation/.test(scenarioId);
+}
+
+function isMemoryRecallScenario(scenarioId: string): boolean {
+  return /\bmemory-recall\b|natural-memory-recall/.test(scenarioId);
+}
+
+function readCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
 }
 
 function isRealLlmAbAcceptanceReport(value: unknown): value is RealLlmAbAcceptanceReport {

@@ -85,6 +85,7 @@ interface MissionMetricsShape {
     failed?: unknown;
     cancelled?: unknown;
     timeouts?: unknown;
+    names?: unknown;
   };
   sessions?: {
     spawned?: unknown;
@@ -258,6 +259,9 @@ export function buildRealLlmAbAcceptanceReport(
         artifactPath: spec.turnkeyaiNaturalReportPath,
         scenario: naturalScenario,
         requiresBrowser: scenarioSpec.requiresBrowser === true,
+        requiresApproval: scenarioSpec.requiresApproval === true,
+        requiresContinuation: scenarioSpec.requiresContinuation === true,
+        requiresTimeoutCloseout: scenarioSpec.requiresTimeoutCloseout === true,
       }),
       reference: buildReferenceRun({
         artifactPath: scenarioSpec.referenceArtifactPath,
@@ -298,9 +302,15 @@ function buildTurnkeyAiRun(input: {
   artifactPath: string;
   scenario: NaturalMissionScenarioShape;
   requiresBrowser: boolean;
+  requiresApproval: boolean;
+  requiresContinuation: boolean;
+  requiresTimeoutCloseout: boolean;
 }): RealLlmAbScenarioRun {
   const metrics = input.scenario.metrics ?? {};
   const dimensionScores = readTurnkeyAiDimensionScores(input.scenario);
+  const toolSequence = readStringArray(metrics.tools?.names);
+  const sessionsContinued = readNumber(metrics.sessions?.continued);
+  const toolTimeouts = readNumber(metrics.tools?.timeouts);
   return {
     system: "turnkeyai",
     artifactPath: input.artifactPath,
@@ -308,8 +318,25 @@ function buildTurnkeyAiRun(input: {
     ...(readString(input.scenario.threadId) ? { transcriptPath: `thread:${readString(input.scenario.threadId)!}` } : {}),
     toolCallCount: readNumber(metrics.tools?.requested),
     toolResultCount: readNumber(metrics.tools?.results),
+    toolSequence,
     subAgentCount: readNumber(metrics.sessions?.spawned),
     completedSubAgentCount: input.scenario.natural?.subAgentCompleted === true ? readNumber(metrics.sessions?.spawned) : 0,
+    continuation: {
+      required: input.requiresContinuation,
+      sessionsContinued,
+      usedSessionsSend: toolSequence.includes("sessions_send"),
+      reusedPriorContext: sessionsContinued > 0,
+    },
+    timeout: {
+      required: input.requiresTimeoutCloseout,
+      timedOut: toolTimeouts > 0,
+      partialCloseout:
+        toolTimeouts > 0 &&
+        input.scenario.natural?.completed === true &&
+        input.scenario.natural?.finalAnswerHasEvidence === true &&
+        input.scenario.natural?.finalAnswerUseful === true,
+      hardAborted: input.scenario.natural?.stuckOrLoop === true,
+    },
     browserEvidence: {
       required: input.requiresBrowser,
       used: input.scenario.natural?.browserUsed === true,
@@ -318,10 +345,14 @@ function buildTurnkeyAiRun(input: {
       snapshotCount: countArtifacts(input.scenario.artifacts, "snapshot"),
     },
     approval: {
-      required: readNumber(metrics.approvals?.requested) > 0,
+      required: input.requiresApproval || readNumber(metrics.approvals?.requested) > 0,
       requested: readNumber(metrics.approvals?.requested) > 0,
       decided: readNumber(metrics.approvals?.decided) > 0,
       applied: readNumber(metrics.approvals?.applied) > 0,
+      sideEffectPreventedBeforeApproval:
+        input.requiresApproval === true && input.scenario.natural?.approvalExercised === true
+          ? true
+          : undefined,
     },
     completed: input.scenario.natural?.completed === true,
     stuckOrLoop: input.scenario.natural?.stuckOrLoop === true,
@@ -350,6 +381,7 @@ function buildReferenceRun(input: {
   const toolResultCount = readNumber(first?.toolResultCount) + readNumber(followup?.toolResultCount);
   const useful = input.artifact.score?.useful === true;
   const weak = input.artifact.score?.weak === true;
+  const hasFollowup = Boolean(input.artifact.followup);
   return {
     system: "reference",
     artifactPath: input.artifactPath,
@@ -363,8 +395,21 @@ function buildReferenceRun(input: {
     wallClockMs: readNumber(input.artifact.durationMs),
     toolCallCount,
     toolResultCount,
+    toolSequence: [],
     subAgentCount: toolCallCount,
     completedSubAgentCount: toolResultCount,
+    continuation: {
+      required: input.requiresContinuation,
+      sessionsContinued: hasFollowup && toolResultCount > 0 ? 1 : 0,
+      usedSessionsSend: false,
+      reusedPriorContext: hasFollowup && useful,
+    },
+    timeout: {
+      required: input.requiresTimeoutCloseout,
+      timedOut: input.artifact.timedOut === true,
+      partialCloseout: input.requiresTimeoutCloseout ? input.artifact.timedOut === true && useful : undefined,
+      hardAborted: input.artifact.timedOut === true && !useful,
+    },
     browserEvidence: {
       required: input.requiresBrowser,
       used: input.requiresBrowser && toolResultCount > 0,
@@ -375,6 +420,7 @@ function buildReferenceRun(input: {
       requested: input.requiresApproval && toolCallCount > 0,
       decided: false,
       applied: false,
+      sideEffectPreventedBeforeApproval: input.requiresApproval ? toolCallCount > 0 : undefined,
     },
     completed: useful,
     stuckOrLoop: input.artifact.timedOut === true || readNumber(first?.pendingToolCount) + readNumber(followup?.pendingToolCount) > 0,
