@@ -335,6 +335,43 @@ test("real acceptance integrity rejects missing or non-passing report summaries 
       }),
     /mission E2E report does not prove/
   );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
+        naturalMissionScenarios: [],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: false,
+        missionReport: passingMissionReport({ scenarioProofs: [] }),
+        naturalMissionReport: null,
+      }),
+    /mission E2E report does not prove/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison", "comparison"],
+        naturalMissionScenarios: [],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: false,
+        missionReport: passingMissionReport({
+          scenarioCount: 2,
+          scenarioIds: ["comparison", "comparison"],
+          passedScenarios: 2,
+          evidenceEvents: 2,
+          scenarioProofs: [
+            passingMissionScenarioProof("comparison"),
+            { ...passingMissionScenarioProof("comparison"), passed: false },
+          ],
+        }),
+        naturalMissionReport: null,
+      }),
+    /mission E2E report does not prove/
+  );
 });
 
 test("real acceptance integrity rejects incomplete artifacts and weak natural quality summaries", () => {
@@ -535,6 +572,7 @@ test("real acceptance integrity accepts passing mission and natural summaries", 
         sessionsSpawned: 1,
         sessionsContinued: 0,
         browserProfileFallbacks: 0,
+        browserFailureBuckets: 0,
         approvalsRequested: 0,
         approvalsDecided: 0,
         approvalsApplied: 0,
@@ -547,6 +585,7 @@ test("real acceptance integrity accepts passing mission and natural summaries", 
         sourceCoverageFailures: 0,
         evidenceEvents: 1,
         recoveryEvents: 0,
+        scenarioProofs: [passingMissionScenarioProof("comparison")],
       },
       naturalMissionReport: {
         ...passingNaturalMissionReport(),
@@ -558,21 +597,24 @@ test("real acceptance integrity accepts passing mission and natural summaries", 
 function passingMissionReport(
   overrides: Partial<NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["missionReport"]>> = {}
 ): NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["missionReport"]> {
+  const scenarioIds = overrides.scenarioIds ?? ["comparison"];
+  const scenarioProofs = overrides.scenarioProofs ?? scenarioIds.map((scenario) => passingMissionScenarioProof(scenario));
   return {
     status: "passed",
-    scenarioCount: 1,
-    scenarioIds: ["comparison"],
-    passedScenarios: 1,
+    scenarioCount: scenarioIds.length,
+    scenarioIds,
+    passedScenarios: scenarioIds.length,
     failedScenarios: 0,
     qualityFailures: 0,
-    toolRequested: 1,
-    toolResults: 1,
+    toolRequested: scenarioIds.length,
+    toolResults: scenarioIds.length,
     toolFailed: 0,
     toolCancelled: 0,
     toolTimeouts: 0,
-    sessionsSpawned: 1,
+    sessionsSpawned: scenarioIds.length,
     sessionsContinued: 0,
     browserProfileFallbacks: 0,
+    browserFailureBuckets: 0,
     approvalsRequested: 0,
     approvalsDecided: 0,
     approvalsApplied: 0,
@@ -583,9 +625,41 @@ function passingMissionReport(
     qualityCheckFailures: 0,
     sourceCoverageWarnings: 0,
     sourceCoverageFailures: 0,
+    evidenceEvents: scenarioIds.length,
+    recoveryEvents: 0,
+    scenarioProofs,
+    ...overrides,
+  };
+}
+
+function passingMissionScenarioProof(
+  scenario: string
+): NonNullable<
+  NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["missionReport"]>["scenarioProofs"]
+>[number] {
+  return {
+    scenario,
+    passed: true,
+    qualityFailures: 0,
+    toolRequested: 1,
+    toolResults: 1,
+    toolFailed: 0,
+    toolCancelled: 0,
+    toolTimeouts: 0,
+    sessionsSpawned: 1,
+    sessionsContinued: 0,
+    browserProfileFallbacks: 0,
+    browserFailureBuckets: 0,
+    approvalsRequested: 0,
+    approvalsDecided: 0,
+    approvalsApplied: 0,
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    qualityCheckFailures: 0,
+    sourceCoverageFailures: 0,
     evidenceEvents: 1,
     recoveryEvents: 0,
-    ...overrides,
   };
 }
 

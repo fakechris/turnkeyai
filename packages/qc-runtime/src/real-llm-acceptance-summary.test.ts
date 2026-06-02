@@ -155,6 +155,56 @@ test("summarizeMissionE2eReportForValidationOps aggregates scenario quality and 
     sourceCoverageFailures: 0,
     evidenceEvents: 4,
     recoveryEvents: 2,
+    scenarioProofs: [
+      {
+        scenario: "comparison",
+        passed: true,
+        qualityFailures: 0,
+        toolRequested: 2,
+        toolResults: 2,
+        toolFailed: 0,
+        toolCancelled: 0,
+        toolTimeouts: 0,
+        sessionsSpawned: 2,
+        sessionsContinued: 1,
+        browserProfileFallbacks: 0,
+        browserFailureBuckets: 0,
+        approvalsRequested: 1,
+        approvalsDecided: 1,
+        approvalsApplied: 1,
+        livenessActive: 0,
+        livenessWaiting: 0,
+        livenessStale: 0,
+        qualityCheckFailures: 0,
+        sourceCoverageFailures: 0,
+        evidenceEvents: 3,
+        recoveryEvents: 0,
+      },
+      {
+        scenario: "realistic-brief",
+        passed: false,
+        qualityFailures: 1,
+        toolRequested: 1,
+        toolResults: 1,
+        toolFailed: 1,
+        toolCancelled: 0,
+        toolTimeouts: 1,
+        sessionsSpawned: 1,
+        sessionsContinued: 0,
+        browserProfileFallbacks: 1,
+        browserFailureBuckets: 2,
+        approvalsRequested: 0,
+        approvalsDecided: 0,
+        approvalsApplied: 0,
+        livenessActive: 0,
+        livenessWaiting: 1,
+        livenessStale: 1,
+        qualityCheckFailures: 1,
+        sourceCoverageFailures: 0,
+        evidenceEvents: 1,
+        recoveryEvents: 2,
+      },
+    ],
   });
 });
 
@@ -198,6 +248,7 @@ test("summarizeMissionE2eReportForValidationOps treats expected timeout attentio
   assert.equal(summary?.qualityCheckFailures, 0);
   assert.equal(summary?.toolFailed, 1);
   assert.equal(summary?.toolTimeouts, 1);
+  assert.equal(summary?.scenarioProofs?.[0]?.passed, true);
 });
 
 test("summarizeMissionE2eReportForValidationOps rejects unexpected forced closeout on cancel", () => {
@@ -230,6 +281,7 @@ test("summarizeMissionE2eReportForValidationOps rejects unexpected forced closeo
   assert.equal(summary?.passedScenarios, 0);
   assert.equal(summary?.failedScenarios, 1);
   assert.equal(summary?.qualityCheckFailures, 0);
+  assert.equal(summary?.scenarioProofs?.[0]?.passed, false);
 });
 
 test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capability signals", () => {

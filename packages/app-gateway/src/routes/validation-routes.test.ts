@@ -195,6 +195,7 @@ function passingToolUseScenarioProof(
 function passingMissionAcceptanceReport(
   scenarioIds: string[]
 ): NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["missionReport"] {
+  const scenarioProofs = scenarioIds.map((scenario) => passingMissionScenarioProof(scenario));
   return {
     status: "passed",
     scenarioCount: scenarioIds.length,
@@ -222,6 +223,40 @@ function passingMissionAcceptanceReport(
     sourceCoverageWarnings: 0,
     sourceCoverageFailures: 0,
     evidenceEvents: scenarioIds.length,
+    recoveryEvents: 0,
+    scenarioProofs,
+  };
+}
+
+function passingMissionScenarioProof(
+  scenario: string
+): NonNullable<
+  NonNullable<
+    NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["missionReport"]
+  >["scenarioProofs"]
+>[number] {
+  return {
+    scenario,
+    passed: true,
+    qualityFailures: 0,
+    toolRequested: 1,
+    toolResults: 1,
+    toolFailed: 0,
+    toolCancelled: 0,
+    toolTimeouts: 0,
+    sessionsSpawned: 1,
+    sessionsContinued: 0,
+    browserProfileFallbacks: 0,
+    browserFailureBuckets: 0,
+    approvalsRequested: 0,
+    approvalsDecided: 0,
+    approvalsApplied: 0,
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    qualityCheckFailures: 0,
+    sourceCoverageFailures: 0,
+    evidenceEvents: 1,
     recoveryEvents: 0,
   };
 }

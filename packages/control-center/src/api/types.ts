@@ -439,6 +439,7 @@ export interface ValidationOpsRunRecord {
     missionReport?: {
       status: "passed" | "failed";
       scenarioCount: number;
+      scenarioIds?: string[];
       passedScenarios: number;
       failedScenarios: number;
       qualityFailures: number;
@@ -449,6 +450,8 @@ export interface ValidationOpsRunRecord {
       toolTimeouts: number;
       sessionsSpawned: number;
       sessionsContinued: number;
+      browserProfileFallbacks: number;
+      browserFailureBuckets: number;
       approvalsRequested: number;
       approvalsDecided: number;
       approvalsApplied: number;
@@ -461,6 +464,30 @@ export interface ValidationOpsRunRecord {
       sourceCoverageFailures: number;
       evidenceEvents: number;
       recoveryEvents: number;
+      scenarioProofs?: Array<{
+        scenario: string;
+        passed: boolean;
+        qualityFailures: number;
+        toolRequested: number;
+        toolResults: number;
+        toolFailed: number;
+        toolCancelled: number;
+        toolTimeouts: number;
+        sessionsSpawned: number;
+        sessionsContinued: number;
+        browserProfileFallbacks: number;
+        browserFailureBuckets: number;
+        approvalsRequested: number;
+        approvalsDecided: number;
+        approvalsApplied: number;
+        livenessActive: number;
+        livenessWaiting: number;
+        livenessStale: number;
+        qualityCheckFailures: number;
+        sourceCoverageFailures: number;
+        evidenceEvents: number;
+        recoveryEvents: number;
+      }>;
     };
     naturalMissionReport?: {
       status: "passed" | "failed";
