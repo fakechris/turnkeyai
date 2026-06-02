@@ -30,10 +30,31 @@ test("real LLM A/B report builder parses args and help", () => {
       requiredSuite: "core",
     }
   );
+  assert.deepEqual(
+    parseRealLlmAbReportBuildArgs([
+      "--spec",
+      "/tmp/spec.json",
+      "--out",
+      "/tmp/report.json",
+      "--markdown-out",
+      "/tmp/report.md",
+    ]),
+    {
+      specPath: "/tmp/spec.json",
+      outPath: "/tmp/report.json",
+      check: false,
+      markdownOutPath: "/tmp/report.md",
+    }
+  );
   assert.deepEqual(parseRealLlmAbReportBuildArgs(["--help"]), { help: true });
   assert.match(buildRealLlmAbReportBuildHelpText(), /real LLM A\/B report builder/);
   assert.match(buildRealLlmAbReportBuildHelpText(), /--suite core/);
+  assert.match(buildRealLlmAbReportBuildHelpText(), /--markdown-out/);
   assert.throws(() => parseRealLlmAbReportBuildArgs(["--spec", "/tmp/spec.json"]), /missing required --out/);
+  assert.throws(
+    () => parseRealLlmAbReportBuildArgs(["--spec", "/tmp/spec.json", "--out", "/tmp/report.json", "--markdown-out"]),
+    /missing value for --markdown-out/
+  );
   assert.throws(
     () => parseRealLlmAbReportBuildArgs(["--spec", "/tmp/spec.json", "--out", "/tmp/report.json", "--suite", "focused"]),
     /--suite must be core/
@@ -127,13 +148,56 @@ test("real LLM A/B report builder CLI writes and checks output", async () => {
       })
     );
 
-    await runRealLlmAbReportBuildCli(["--spec", path.join(dir, "spec.json"), "--out", path.join(dir, "report.json"), "--check"]);
+    await runRealLlmAbReportBuildCli([
+      "--spec",
+      path.join(dir, "spec.json"),
+      "--out",
+      path.join(dir, "report.json"),
+      "--markdown-out",
+      path.join(dir, "report.md"),
+      "--check",
+    ]);
 
     const report = JSON.parse(readFileSync(path.join(dir, "report.json"), "utf8")) as unknown;
+    const markdown = readFileSync(path.join(dir, "report.md"), "utf8");
     assert.equal(validateRealLlmAbAcceptanceReport(report).status, "passed");
+    assert.match(markdown, /# Real LLM A\/B Acceptance Report/);
+    assert.match(markdown, /Capability: focused capability proven/);
     assert.equal(process.exitCode, undefined);
   } finally {
     process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real LLM A/B report builder rejects JSON and Markdown output path collisions", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
+  try {
+    writeFixtureFiles(dir);
+    const specPath = path.join(dir, "spec.json");
+    const outPath = path.join(dir, "report.json");
+    writeFileSync(
+      specPath,
+      JSON.stringify({
+        turnkeyaiNaturalReportPath: "turnkeyai-natural.json",
+        generatedAtMs: 1,
+        scenarios: [
+          {
+            scenarioId: "browser-dynamic",
+            turnkeyaiScenarioId: "natural-browser-dynamic-page",
+            prompt: NATURAL_BROWSER_PROMPT,
+            requiresBrowser: true,
+            referenceArtifactPath: "reference-browser.json",
+          },
+        ],
+      })
+    );
+
+    await assert.rejects(
+      runRealLlmAbReportBuildCli(["--spec", specPath, "--out", outPath, "--markdown-out", outPath]),
+      /--markdown-out must differ from --out/
+    );
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
