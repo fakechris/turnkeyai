@@ -128,6 +128,35 @@ test("session tool result protocol lifts browser profile fallback into evidence 
   assert.match(parsed?.evidence_summary ?? "", /profile-fallback/);
 });
 
+test("session tool result protocol lifts browser recovery buckets into evidence summary", () => {
+  const result = buildSessionToolResult({
+    taskId: "task-1",
+    sessionKey: "worker:browser:task-1",
+    agentId: "browser",
+    missingResultMessage: "missing",
+    result: {
+      workerType: "browser",
+      status: "completed",
+      summary: "Browser sub-agent recovered after a closed session.",
+      payload: {
+        mode: "llm_sub_agent",
+        workerType: "browser",
+        browserRecovery: {
+          resumeMode: "cold",
+          sessionId: "browser-session-new",
+          failureBuckets: [{ bucket: "session_not_found", count: 1 }],
+        },
+        content: "Recovered dashboard queue depth 11.",
+      },
+    },
+  });
+
+  assert.match(result.evidence_summary ?? "", /Browser failure buckets: session_not_found=1/);
+  assert.match(result.evidence_summary ?? "", /Recovered dashboard queue depth 11/);
+  const parsed = parseSessionToolResult(serializeSessionToolResult(result));
+  assert.match(parsed?.evidence_summary ?? "", /session_not_found=1/);
+});
+
 test("session tool result protocol lifts nested browser tool observations into evidence summary", () => {
   const result = buildSessionToolResult({
     taskId: "task-1",

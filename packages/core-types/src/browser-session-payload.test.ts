@@ -15,6 +15,25 @@ test("decode browser session payload reads session, target, and resume mode", ()
     sessionId: "session-1",
     targetId: "target-1",
     resumeMode: "warm",
+    source: "direct",
+  });
+});
+
+test("decode browser session payload reads promoted browser recovery metadata", () => {
+  const decoded = decodeBrowserSessionPayload({
+    mode: "llm_sub_agent",
+    browserRecovery: {
+      sessionId: "session-recovered",
+      targetId: "target-recovered",
+      resumeMode: "cold",
+    },
+  });
+
+  assert.deepEqual(decoded, {
+    sessionId: "session-recovered",
+    targetId: "target-recovered",
+    resumeMode: "cold",
+    source: "browserRecovery",
   });
 });
 

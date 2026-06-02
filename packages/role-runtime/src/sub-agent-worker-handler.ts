@@ -372,10 +372,11 @@ class SubAgentToolExecutor implements RoleToolExecutor {
       this.parentInput.sessionState?.lastResult?.payload;
     const previous = decodeBrowserSessionPayload(previousPayload);
     const workerRunKey = this.workerRunKey();
-    const useWorkerOwnedBrowserSession = Boolean(this.innerSessionState) || !previous?.sessionId;
+    const useWorkerOwnedBrowserSession =
+      Boolean(this.innerSessionState) || !previous?.sessionId || previous?.source === "browserRecovery";
     const ownerType: BrowserSessionOwnerType = useWorkerOwnedBrowserSession ? "worker" : "thread";
     const ownerId = useWorkerOwnedBrowserSession ? workerRunKey : this.parentInput.activation.thread.threadId;
-    const request = {
+    const baseRequest = {
       taskId: `${this.parentInput.activation.handoff.taskId}:${input.call.id}`,
       threadId: this.parentInput.activation.thread.threadId,
       instructions: actionPlan.instructions,
@@ -385,43 +386,96 @@ class SubAgentToolExecutor implements RoleToolExecutor {
       profileOwnerType: "thread" as const,
       profileOwnerId: this.parentInput.activation.thread.threadId,
       leaseHolderRunKey: workerRunKey,
+    };
+    const request = {
+      ...baseRequest,
       ...(previous?.sessionId ? { browserSessionId: previous.sessionId } : {}),
       ...(previous?.targetId ? { targetId: previous.targetId } : {}),
     };
 
     let result: BrowserTaskResult;
+    let recoveredBrowserFailureBuckets: Array<{ bucket: string; count: number }> = [];
     try {
       result = previous?.sessionId
         ? await browserBridge.sendSession({ ...request, browserSessionId: previous.sessionId })
         : await browserBridge.spawnSession(request);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const bucket = classifyBrowserPrivateToolFailureBucket(message);
-      const content = `${bucket}: ${message}`;
-      return {
-        toolCallId: input.call.id,
-        toolName: input.call.name,
-        content,
-        isError: true,
-        raw: {
-          status: "failed",
-          error: message,
-          failureBuckets: [{ bucket, count: 1 }],
-        },
-        progress: [
-          {
-            phase: "failed",
+      if (
+        previous?.sessionId &&
+        actionPlan.actions.length > 0 &&
+        actionPlan.actions.every(isReadOnlyBrowserPrivateAction) &&
+        isRecoverableMissingBrowserSessionFailure(message)
+      ) {
+        try {
+          recoveredBrowserFailureBuckets = [{ bucket: "session_not_found", count: 1 }];
+          result = await browserBridge.spawnSession({
+            ...baseRequest,
+            taskId: `${baseRequest.taskId}:cold-recreate-1`,
+            ownerType: "worker",
+            ownerId: workerRunKey,
+            leaseHolderRunKey: workerRunKey,
+          });
+        } catch (coldError) {
+          const coldMessage = coldError instanceof Error ? coldError.message : String(coldError);
+          const bucket = classifyBrowserPrivateToolFailureBucket(coldMessage);
+          const content = `${bucket}: ${coldMessage}`;
+          return {
+            toolCallId: input.call.id,
             toolName: input.call.name,
-            summary: content,
-            detail: {
+            content,
+            isError: true,
+            raw: {
+              status: "failed",
+              error: coldMessage,
+              priorError: message,
               failureBuckets: [{ bucket, count: 1 }],
-              actionKinds: actionPlan.actions.map((action) => action.kind),
             },
+            progress: [
+              {
+                phase: "failed",
+                toolName: input.call.name,
+                summary: content,
+                detail: {
+                  priorError: message,
+                  failureBuckets: [{ bucket, count: 1 }],
+                  actionKinds: actionPlan.actions.map((action) => action.kind),
+                },
+              },
+            ],
+          };
+        }
+      } else {
+        const bucket = classifyBrowserPrivateToolFailureBucket(message);
+        const content = `${bucket}: ${message}`;
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content,
+          isError: true,
+          raw: {
+            status: "failed",
+            error: message,
+            failureBuckets: [{ bucket, count: 1 }],
           },
-        ],
-      };
+          progress: [
+            {
+              phase: "failed",
+              toolName: input.call.name,
+              summary: content,
+              detail: {
+                failureBuckets: [{ bucket, count: 1 }],
+                actionKinds: actionPlan.actions.map((action) => action.kind),
+              },
+            },
+          ],
+        };
+      }
     }
     let workerResult = browserToolWorkerResult(result);
+    if (recoveredBrowserFailureBuckets.length > 0) {
+      workerResult = withAdditionalBrowserFailureBuckets(workerResult, recoveredBrowserFailureBuckets);
+    }
     if (shouldRetryReadOnlyBrowserPartial(actionPlan.actions, workerResult)) {
       try {
         result = await browserBridge.spawnSession({
@@ -473,6 +527,14 @@ class SubAgentToolExecutor implements RoleToolExecutor {
             sessionId: result.sessionId,
             ...(result.targetId ? { targetId: result.targetId } : {}),
             actionKinds: actionPlan.actions.map((action) => action.kind),
+            ...(readBrowserFailureBucketNames(workerResult.payload).length
+              ? {
+                  failureBuckets: readBrowserFailureBucketNames(workerResult.payload).map((bucket) => ({
+                    bucket,
+                    count: 1,
+                  })),
+                }
+              : {}),
             ...(result.artifactIds.length ? { artifactIds: result.artifactIds } : {}),
             ...(result.screenshotPaths.length ? { screenshotPaths: result.screenshotPaths } : {}),
           },
@@ -782,6 +844,37 @@ function browserToolWorkerResult(result: BrowserTaskResult): WorkerExecutionResu
   };
 }
 
+function withAdditionalBrowserFailureBuckets(
+  result: WorkerExecutionResult,
+  buckets: Array<{ bucket: string; count: number }>
+): WorkerExecutionResult {
+  if (buckets.length === 0) {
+    return result;
+  }
+  const payload = isRecord(result.payload) ? result.payload : {};
+  const merged = new Map<string, number>();
+  for (const bucket of readBrowserFailureBucketRecords(payload)) {
+    merged.set(bucket.bucket, (merged.get(bucket.bucket) ?? 0) + bucket.count);
+  }
+  for (const bucket of buckets) {
+    merged.set(bucket.bucket, (merged.get(bucket.bucket) ?? 0) + bucket.count);
+  }
+  const failureBuckets = [...merged.entries()]
+    .map(([bucket, count]) => ({ bucket, count }))
+    .sort((left, right) => left.bucket.localeCompare(right.bucket));
+  return {
+    ...result,
+    summary: [
+      result.summary,
+      `Browser failure buckets: ${formatBrowserFailureBuckets(failureBuckets)}.`,
+    ].filter(Boolean).join("\n"),
+    payload: {
+      ...payload,
+      failureBuckets,
+    },
+  };
+}
+
 function shouldRetryReadOnlyBrowserPartial(actions: BrowserTaskAction[], result: WorkerExecutionResult): boolean {
   if (result.status !== "partial") {
     return false;
@@ -804,7 +897,15 @@ function isReadOnlyBrowserPrivateAction(action: BrowserTaskAction): boolean {
   );
 }
 
+function isRecoverableMissingBrowserSessionFailure(message: string): boolean {
+  return /\bbrowser session not found\b|\bsession closed\b|\bsession is closed\b/i.test(message);
+}
+
 function readBrowserFailureBucketNames(payload: unknown): string[] {
+  return readBrowserFailureBucketRecords(payload).map((bucket) => bucket.bucket);
+}
+
+function readBrowserFailureBucketRecords(payload: unknown): Array<{ bucket: string; count: number }> {
   if (!isRecord(payload)) {
     return [];
   }
@@ -813,8 +914,15 @@ function readBrowserFailureBucketNames(payload: unknown): string[] {
     return [];
   }
   return buckets
-    .map((entry) => (isRecord(entry) && typeof entry["bucket"] === "string" ? entry["bucket"] : null))
-    .filter((bucket): bucket is string => Boolean(bucket));
+    .map((entry) =>
+      isRecord(entry) && typeof entry["bucket"] === "string"
+        ? {
+            bucket: entry["bucket"],
+            count: typeof entry["count"] === "number" && Number.isFinite(entry["count"]) ? entry["count"] : 1,
+          }
+        : null
+    )
+    .filter((bucket): bucket is { bucket: string; count: number } => Boolean(bucket));
 }
 
 async function runReadOnlyBrowserPlannerFallback(input: {

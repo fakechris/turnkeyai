@@ -2113,25 +2113,32 @@ async function runNaturalBrowserColdRecreationScenario(input: {
   const initialBrowserSessionId = extractBrowserSessionIdForSpawnAgent(initialTimeline, "browser");
   assert.ok(initialBrowserSessionId, "natural browser cold recreation phase one must expose a browser session id");
 
-  const revokeResult = await requestJson<{ browserSessionId: string; status: string; reason: string }>({
+  const cancelResult = await requestJson<{
+    cancelled: boolean;
+    workerRunKey: string;
+    state: { status?: string };
+    browserSessions?: { requested: number; closed: string[]; failed: Array<{ browserSessionId: string; error: string }> };
+  }>({
     method: "POST",
-    url: `${input.baseUrl}/browser-sessions/${encodeURIComponent(initialBrowserSessionId)}/revoke`,
+    url: `${input.baseUrl}/worker-sessions/${encodeURIComponent(initialSessionKey)}/cancel`,
     token: input.token,
     body: {
-      threadId: mission.threadId,
-      missionId: mission.id,
       reason: "natural cold recreation gate",
     },
   });
   assert.equal(
-    revokeResult.browserSessionId,
-    initialBrowserSessionId,
-    "natural browser cold recreation must revoke the phase-one browser session before follow-up"
+    cancelResult.workerRunKey,
+    initialSessionKey,
+    "natural browser cold recreation must cancel the phase-one worker session before follow-up"
   );
   assert.equal(
-    revokeResult.status,
-    "closed",
-    "natural browser cold recreation must confirm browser session closure before follow-up"
+    cancelResult.state.status,
+    "cancelled",
+    "natural browser cold recreation must confirm worker cancellation before follow-up"
+  );
+  assert.ok(
+    cancelResult.browserSessions?.closed?.includes(initialBrowserSessionId),
+    "natural browser cold recreation must close the worker-owned browser session before follow-up"
   );
 
   const followup = [
@@ -6554,10 +6561,20 @@ function extractBrowserSessionIdFromSessionToolResult(
   options: { preferPayloadSessionId?: boolean } = {}
 ): string | null {
   try {
-    const parsed = JSON.parse(content) as { payload?: { sessionId?: unknown }; result?: unknown };
+    const parsed = JSON.parse(content) as {
+      payload?: {
+        sessionId?: unknown;
+        browserRecovery?: { sessionId?: unknown };
+      };
+      result?: unknown;
+    };
     const sessionId = parsed.payload?.sessionId;
+    const recoverySessionId = parsed.payload?.browserRecovery?.sessionId;
     if (options.preferPayloadSessionId && typeof sessionId === "string" && sessionId.trim()) {
       return sessionId.trim();
+    }
+    if (options.preferPayloadSessionId && typeof recoverySessionId === "string" && recoverySessionId.trim()) {
+      return recoverySessionId.trim();
     }
     const contentSessionId = extractBrowserSessionIdFromText(content);
     if (contentSessionId) return contentSessionId;
@@ -6567,6 +6584,9 @@ function extractBrowserSessionIdFromSessionToolResult(
     }
     if (typeof sessionId === "string" && sessionId.trim()) {
       return sessionId.trim();
+    }
+    if (typeof recoverySessionId === "string" && recoverySessionId.trim()) {
+      return recoverySessionId.trim();
     }
   } catch {
     // Fall through to text extraction. Tool-result traces may be truncated

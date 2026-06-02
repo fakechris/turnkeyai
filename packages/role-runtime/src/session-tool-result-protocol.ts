@@ -149,12 +149,14 @@ export function extractWorkerEvidenceSummary(result: WorkerExecutionResult | nul
   }
   const payload = result.payload as Record<string, unknown>;
   const browserProfileFallback = extractBrowserProfileFallbackSummary(payload);
+  const browserFailureBuckets = extractBrowserFailureBucketSummary(payload);
   const nestedToolEvidence = extractNestedToolUseEvidenceSummary(payload);
   const page = payload["page"];
   if (page && typeof page === "object" && !Array.isArray(page)) {
     const pageRecord = page as Record<string, unknown>;
     const lines = [
       browserProfileFallback,
+      browserFailureBuckets,
       nestedToolEvidence,
       readString(pageRecord["finalUrl"]) ? `Final URL: ${readString(pageRecord["finalUrl"])}` : null,
       readString(pageRecord["title"]) ? `Page title: ${readString(pageRecord["title"])}` : null,
@@ -165,7 +167,11 @@ export function extractWorkerEvidenceSummary(result: WorkerExecutionResult | nul
       return summary;
     }
   }
-  return sanitizeEvidenceSummary([browserProfileFallback, nestedToolEvidence, readString(payload["content"])].filter(Boolean).join("\n"));
+  return sanitizeEvidenceSummary(
+    [browserProfileFallback, browserFailureBuckets, nestedToolEvidence, readString(payload["content"])]
+      .filter(Boolean)
+      .join("\n")
+  );
 }
 
 export function sanitizeEvidenceSummary(value: string | null | undefined): string | null {
@@ -270,6 +276,41 @@ function extractBrowserProfileFallbackSummary(payload: Record<string, unknown>):
     return null;
   }
   return `Profile fallback: ${reason}; persistent profile was unavailable, used ${fallbackDir}.`;
+}
+
+function extractBrowserFailureBucketSummary(payload: Record<string, unknown>): string | null {
+  const buckets = [
+    ...readFailureBucketRecords(payload["failureBuckets"]),
+    ...(isRecord(payload["browserRecovery"]) ? readFailureBucketRecords(payload["browserRecovery"]["failureBuckets"]) : []),
+  ];
+  if (buckets.length === 0) {
+    return null;
+  }
+  const merged = new Map<string, number>();
+  for (const bucket of buckets) {
+    merged.set(bucket.bucket, (merged.get(bucket.bucket) ?? 0) + bucket.count);
+  }
+  const summary = [...merged.entries()]
+    .map(([bucket, count]) => `${bucket}=${count}`)
+    .sort()
+    .join(", ");
+  return summary ? `Browser failure buckets: ${summary}.` : null;
+}
+
+function readFailureBucketRecords(value: unknown): Array<{ bucket: string; count: number }> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) =>
+      isRecord(entry) && typeof entry["bucket"] === "string"
+        ? {
+            bucket: entry["bucket"],
+            count: typeof entry["count"] === "number" && Number.isFinite(entry["count"]) ? entry["count"] : 1,
+          }
+        : null
+    )
+    .filter((entry): entry is { bucket: string; count: number } => Boolean(entry));
 }
 
 function extractNestedToolUseEvidenceSummary(payload: Record<string, unknown>): string | null {

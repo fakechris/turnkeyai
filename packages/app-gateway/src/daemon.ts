@@ -802,6 +802,7 @@ const server = http.createServer(async (req, res) => {
           clock,
           roleLoopRunner,
           workerRuntime,
+          browserBridge,
           toolCancellationRegistry,
           idempotencyStore: routeIdempotencyStore,
         },
