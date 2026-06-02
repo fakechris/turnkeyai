@@ -27,6 +27,7 @@ export type RealLlmAbRootCauseBucket =
 
 export interface RealLlmAbScenarioRun {
   system: RealLlmAbSystemId;
+  prompt?: string;
   artifactPath?: string;
   missionId?: string;
   validationId?: string;
@@ -277,6 +278,19 @@ export function validateRealLlmAbAcceptanceReport(
       failures.push(`${scenario.scenarioId}: no-exact-answer-shape policy is not affirmed`);
     }
     for (const system of [scenario.turnkeyai, scenario.reference]) {
+      const runPrompt = normalizePrompt(system.prompt);
+      const scenarioPrompt = normalizePrompt(scenario.prompt);
+      if (!runPrompt) {
+        failures.push(`${scenario.scenarioId}/${system.system}: missing run prompt evidence`);
+      } else if (runPrompt !== scenarioPrompt) {
+        failures.push(`${scenario.scenarioId}/${system.system}: run prompt does not match the scenario prompt`);
+      }
+      const runPromptViolations = detectControlledPromptLanguage(system.prompt ?? "");
+      if (runPromptViolations.length > 0) {
+        failures.push(
+          `${scenario.scenarioId}/${system.system}: run prompt contains controlled-gate language (${runPromptViolations.join(", ")})`
+        );
+      }
       for (const key of REAL_LLM_AB_DIMENSION_KEYS) {
         if (!isDimensionScore(system.dimensionScores[key])) {
           failures.push(`${scenario.scenarioId}/${system.system}: missing dimension score ${key}`);
@@ -463,6 +477,10 @@ function isMemoryRecallScenario(scenarioId: string): boolean {
 
 function readCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function normalizePrompt(prompt: unknown): string {
+  return typeof prompt === "string" ? prompt.replace(/\s+/g, " ").trim() : "";
 }
 
 function isRealLlmAbAcceptanceReport(value: unknown): value is RealLlmAbAcceptanceReport {

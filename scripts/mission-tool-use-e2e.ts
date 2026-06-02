@@ -392,6 +392,7 @@ export interface NaturalScenarioSpec {
 
 export interface NaturalMissionScenarioResult {
   scenario: NaturalMissionE2eScenario;
+  prompt: string;
   mission: Mission;
   timeline: ActivityEvent[];
   metrics: MissionObservabilitySnapshot;
@@ -465,6 +466,7 @@ export type NaturalMissionFailureBucket =
 
 export interface NaturalMissionScenarioReport {
   scenario: NaturalMissionE2eScenario;
+  prompt: string;
   missionId: string;
   status: string;
   threadId?: string;
@@ -1597,7 +1599,16 @@ async function runNaturalMissionScenario(input: {
     artifacts,
     final,
   });
-  const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, artifacts, final, quality };
+  const scenarioResult = {
+    scenario: input.scenario,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    artifacts,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, `natural mission ${input.scenario} quality failures`);
   return scenarioResult;
 }
@@ -1649,7 +1660,15 @@ async function runNaturalBrowserUnavailableScenario(input: {
       metrics,
       final,
     });
-    const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+    const scenarioResult = {
+      scenario: input.scenario,
+      prompt: spec.desc,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+      quality,
+    };
     assertNaturalMissionQualityPassed(scenarioResult, "natural mission natural-browser-unavailable-closeout quality failures");
     return scenarioResult;
   } finally {
@@ -1704,7 +1723,15 @@ async function runNaturalBrowserCdpTimeoutScenario(input: {
       metrics,
       final,
     });
-    const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+    const scenarioResult = {
+      scenario: input.scenario,
+      prompt: spec.desc,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+      quality,
+    };
     assertNaturalMissionQualityPassed(scenarioResult, "natural mission natural-browser-cdp-timeout-closeout quality failures");
     return scenarioResult;
   } finally {
@@ -1759,7 +1786,15 @@ async function runNaturalBrowserDetachedTargetScenario(input: {
       metrics,
       final,
     });
-    const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+    const scenarioResult = {
+      scenario: input.scenario,
+      prompt: spec.desc,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+      quality,
+    };
     assertNaturalMissionQualityPassed(scenarioResult, "natural mission natural-browser-detached-target-closeout quality failures");
     return scenarioResult;
   } finally {
@@ -1814,7 +1849,15 @@ async function runNaturalBrowserAttachFailedScenario(input: {
       metrics,
       final,
     });
-    const scenarioResult = { scenario: input.scenario, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+    const scenarioResult = {
+      scenario: input.scenario,
+      prompt: spec.desc,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+      quality,
+    };
     assertNaturalMissionQualityPassed(scenarioResult, "natural mission natural-browser-attach-failed-closeout quality failures");
     return scenarioResult;
   } finally {
@@ -1894,7 +1937,15 @@ async function runNaturalFollowupScenario(input: {
     phaseOneFinal: initialFinal,
     expectedSessionKey: initialSessionKey,
   });
-  const scenarioResult = { scenario: "natural-followup-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = {
+    scenario: "natural-followup-continuation" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission follow-up quality failures");
   return scenarioResult;
 }
@@ -1982,7 +2033,15 @@ async function runNaturalBrowserFollowupScenario(input: {
     metrics,
     final,
   });
-  const scenarioResult = { scenario: "natural-browser-followup-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = {
+    scenario: "natural-browser-followup-continuation" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission browser follow-up quality failures");
   return scenarioResult;
 }
@@ -2074,7 +2133,15 @@ async function runNaturalBrowserRestartContinuationScenario(input: {
     metrics,
     final,
   });
-  const scenarioResult = { scenario: "natural-browser-restart-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = {
+    scenario: "natural-browser-restart-continuation" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission browser restart continuation quality failures");
   return scenarioResult;
 }
@@ -2204,7 +2271,15 @@ async function runNaturalBrowserColdRecreationScenario(input: {
     metrics,
     final,
   });
-  const scenarioResult = { scenario: "natural-browser-cold-recreation-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = {
+    scenario: "natural-browser-cold-recreation-continuation" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission browser cold recreation quality failures");
   return scenarioResult;
 }
@@ -2258,7 +2333,15 @@ async function runNaturalBrowserProfileLockRecoveryScenario(input: {
       metrics,
       final,
     });
-    const scenarioResult = { scenario: "natural-browser-profile-lock-recovery" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+    const scenarioResult = {
+      scenario: "natural-browser-profile-lock-recovery" as const,
+      prompt: spec.desc,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics,
+      final,
+      quality,
+    };
     assertNaturalMissionQualityPassed(scenarioResult, "natural mission browser profile-lock recovery quality failures");
     return scenarioResult;
   } finally {
@@ -2342,7 +2425,15 @@ async function runNaturalMemoryRecallScenario(input: {
     metrics,
     final,
   });
-  const scenarioResult = { scenario: "natural-memory-recall" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = {
+    scenario: "natural-memory-recall" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission memory recall quality failures");
   return scenarioResult;
 }
@@ -2385,7 +2476,15 @@ async function runNaturalApprovalScenario(input: {
     metrics,
     final,
   });
-  const scenarioResult = { scenario: "natural-approval-dry-run-action" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = {
+    scenario: "natural-approval-dry-run-action" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission approval quality failures");
   return scenarioResult;
 }
@@ -2428,7 +2527,15 @@ async function runNaturalApprovalDeniedScenario(input: {
     metrics,
     final,
   });
-  const scenarioResult = { scenario: "natural-approval-denied-safe-closeout" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = {
+    scenario: "natural-approval-denied-safe-closeout" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission approval-denied quality failures");
   return scenarioResult;
 }
@@ -2464,7 +2571,15 @@ async function runNaturalApprovalPendingScenario(input: {
     metrics: result.metrics,
     final,
   });
-  const scenarioResult = { scenario: "natural-approval-pending-state" as const, mission: result.mission, timeline: result.timeline, metrics: result.metrics, final, quality };
+  const scenarioResult = {
+    scenario: "natural-approval-pending-state" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics: result.metrics,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission approval-pending quality failures");
   return scenarioResult;
 }
@@ -2547,7 +2662,15 @@ async function runNaturalCancelScenario(input: {
     metrics,
     final,
   });
-  const scenarioResult = { scenario: "natural-cancel-active-tool" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = {
+    scenario: "natural-cancel-active-tool" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission cancellation quality failures");
   return scenarioResult;
 }
@@ -2670,7 +2793,15 @@ async function runNaturalCancelFollowupScenario(input: {
     metrics,
     final,
   });
-  const scenarioResult = { scenario: "natural-cancel-followup-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = {
+    scenario: "natural-cancel-followup-continuation" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission cancellation follow-up quality failures");
   return scenarioResult;
 }
@@ -2756,7 +2887,15 @@ async function runNaturalTimeoutFollowupScenario(input: {
     metrics,
     final,
   });
-  const scenarioResult = { scenario: "natural-timeout-followup-continuation" as const, mission: result.mission, timeline: result.timeline, metrics, final, quality };
+  const scenarioResult = {
+    scenario: "natural-timeout-followup-continuation" as const,
+    prompt: spec.desc,
+    mission: result.mission,
+    timeline: result.timeline,
+    metrics,
+    final,
+    quality,
+  };
   assertNaturalMissionQualityPassed(scenarioResult, "natural mission timeout follow-up quality failures");
   return scenarioResult;
 }
@@ -4753,6 +4892,7 @@ export function summarizeMissionScenarioResult(result: MissionScenarioResult): M
 export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScenarioResult): NaturalMissionScenarioReport {
   return {
     scenario: result.scenario,
+    prompt: result.prompt,
     missionId: result.mission.id,
     status: result.mission.status,
     ...(result.mission.threadId ? { threadId: result.mission.threadId } : {}),

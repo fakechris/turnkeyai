@@ -192,6 +192,29 @@ test("real LLM A/B acceptance rejects controlled prompt gates and missing artifa
   ]);
 });
 
+test("real LLM A/B acceptance requires each run to prove the same natural prompt", () => {
+  const missingPromptReport = buildReport({
+    weakenRun: {
+      reference: (run) => {
+        const { prompt: _prompt, ...withoutPrompt } = run;
+        return withoutPrompt;
+      },
+    },
+  });
+  const missingPromptValidation = validateRealLlmAbAcceptanceReport(missingPromptReport);
+  assert.equal(missingPromptValidation.status, "failed");
+  assert.match(missingPromptValidation.failures.join("\n"), /browser-dynamic-page\/reference: missing run prompt evidence/);
+
+  const mismatchedPromptReport = buildReport({
+    weakenRun: {
+      turnkeyai: (run) => ({ ...run, prompt: "请完成一个不同的任务。" }),
+    },
+  });
+  const mismatchedPromptValidation = validateRealLlmAbAcceptanceReport(mismatchedPromptReport);
+  assert.equal(mismatchedPromptValidation.status, "failed");
+  assert.match(mismatchedPromptValidation.failures.join("\n"), /browser-dynamic-page\/turnkeyai: run prompt does not match/);
+});
+
 test("real LLM A/B acceptance summary rejects unrelated artifacts", () => {
   assert.equal(summarizeRealLlmAbAcceptanceReport({ kind: "other", scenarios: [] }), null);
   assert.equal(validateRealLlmAbAcceptanceReport(null).status, "failed");
@@ -208,8 +231,29 @@ function buildReport(
     turnkeyaiArtifactPath?: string | undefined;
     turnkeyaiMissionId?: string | undefined;
     turnkeyaiBrowserEvidence?: RealLlmAbScenarioRun["browserEvidence"];
+    weakenRun?: {
+      turnkeyai?: (run: RealLlmAbScenarioRun) => RealLlmAbScenarioRun;
+      reference?: (run: RealLlmAbScenarioRun) => RealLlmAbScenarioRun;
+    };
   } = {}
 ): RealLlmAbAcceptanceReport {
+  const prompt =
+    overrides.prompt ?? "请打开这个动态页面，理解当前状态，找出应该关注的异常和下一步动作，并给出依据。";
+  const turnkeyaiRun = buildRun({
+    system: "turnkeyai",
+    artifactPath:
+      "turnkeyaiArtifactPath" in overrides ? overrides.turnkeyaiArtifactPath : "artifacts/evals/run/turnkeyai/browser.json",
+    missionId: "turnkeyaiMissionId" in overrides ? overrides.turnkeyaiMissionId : "msn.local.1",
+    dimensionScores: { ...FULL_SCORES, ...overrides.turnkeyaiScores },
+    browserEvidence: overrides.turnkeyaiBrowserEvidence,
+    prompt,
+  });
+  const referenceRun = buildRun({
+    system: "reference",
+    artifactPath: "artifacts/evals/run/reference/browser.json",
+    dimensionScores: { ...FULL_SCORES, ...overrides.referenceScores },
+    prompt,
+  });
   return {
     kind: "turnkeyai.real-llm-ab-acceptance.report",
     status: overrides.status ?? "passed",
@@ -219,9 +263,7 @@ function buildReport(
     scenarios: [
       {
         scenarioId: "browser-dynamic-page",
-        prompt:
-          overrides.prompt ??
-          "请打开这个动态页面，理解当前状态，找出应该关注的异常和下一步动作，并给出依据。",
+        prompt,
         promptPolicy: {
           naturalPrompt: true,
           noForcedToolCall: true,
@@ -229,21 +271,8 @@ function buildReport(
           noExactAnswerShape: true,
         },
         requiresBrowser: true,
-        turnkeyai: buildRun({
-          system: "turnkeyai",
-          artifactPath:
-            "turnkeyaiArtifactPath" in overrides
-              ? overrides.turnkeyaiArtifactPath
-              : "artifacts/evals/run/turnkeyai/browser.json",
-          missionId: "turnkeyaiMissionId" in overrides ? overrides.turnkeyaiMissionId : "msn.local.1",
-          dimensionScores: { ...FULL_SCORES, ...overrides.turnkeyaiScores },
-          browserEvidence: overrides.turnkeyaiBrowserEvidence,
-        }),
-        reference: buildRun({
-          system: "reference",
-          artifactPath: "artifacts/evals/run/reference/browser.json",
-          dimensionScores: { ...FULL_SCORES, ...overrides.referenceScores },
-        }),
+        turnkeyai: overrides.weakenRun?.turnkeyai?.(turnkeyaiRun) ?? turnkeyaiRun,
+        reference: overrides.weakenRun?.reference?.(referenceRun) ?? referenceRun,
       },
     ],
   };
@@ -260,6 +289,7 @@ function buildCoreSuiteReport(input: {
     generatedAtMs: 1,
     scenarios: REAL_LLM_AB_CORE_SUITE_REQUIREMENTS.map((requirement) => {
       const scenarioId = requirement.acceptedScenarioIds[0]!;
+      const prompt = `请完成 ${scenarioId} 场景，给出结论、证据和风险。`;
       const requiresBrowser = scenarioId === "browser-dynamic-page";
       const requiresApproval = scenarioId === "approval-dry-run-action";
       const requiresContinuation = scenarioId === "followup-continuation";
@@ -274,10 +304,11 @@ function buildCoreSuiteReport(input: {
         requiresContinuation,
         requiresTimeoutCloseout,
         scenarioId,
+        prompt,
       });
       return {
         scenarioId,
-        prompt: `请完成 ${scenarioId} 场景，给出结论、证据和风险。`,
+        prompt,
         promptPolicy: {
           naturalPrompt: true,
           noForcedToolCall: true,
@@ -298,6 +329,7 @@ function buildCoreSuiteReport(input: {
           requiresContinuation,
           requiresTimeoutCloseout,
           scenarioId,
+          prompt,
         }),
       };
     }),
@@ -315,6 +347,7 @@ function buildRun(input: {
   requiresTimeoutCloseout?: boolean;
   browserEvidence?: RealLlmAbScenarioRun["browserEvidence"];
   scenarioId?: string;
+  prompt: string;
 }): RealLlmAbScenarioRun {
   const scenarioId = input.scenarioId ?? "browser-dynamic-page";
   const subAgentCount = scenarioId === "long-delegation" ? 2 : 1;
@@ -327,6 +360,7 @@ function buildRun(input: {
         : [];
   return {
     system: input.system,
+    prompt: input.prompt,
     ...(input.artifactPath ? { artifactPath: input.artifactPath } : {}),
     ...(input.missionId ? { missionId: input.missionId } : {}),
     wallClockMs: 42_000,
