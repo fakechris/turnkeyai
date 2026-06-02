@@ -3530,9 +3530,12 @@ export function evaluateNaturalMissionQuality(input: {
   const completed = input.mission.status === expectedMissionStatus && input.metrics.status === expectedMissionStatus;
   const toolNames = collectToolNames(input.timeline);
   const evidenceText = collectTimelineEvidenceText(input.timeline);
+  const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
   const weakAnswerSignals = [
     ...findWeakAnswerSignals(input.final.text),
-    ...(input.spec.allowToolFailure ? [] : findWeakEvidenceSignals(evidenceText)),
+    ...(input.spec.allowToolFailure
+      ? []
+      : findWeakEvidenceSignals(evidenceText, { browserEvidenceExpected: input.spec.requiresBrowser || browserUsed })),
   ];
   const blockingWeakAnswerSignals = weakAnswerSignals.filter(
     (signal) => !(input.spec.allowedWeakAnswerSignals ?? []).includes(signal)
@@ -3541,7 +3544,6 @@ export function evaluateNaturalMissionQuality(input: {
     expectedMissionStatus === "needs_approval" && hasRuntimeEvent(input.timeline, "permission.query")
       ? Math.max(input.metrics.qualityGate.evidenceEvents, 1)
       : input.metrics.qualityGate.evidenceEvents;
-  const browserUsed = toolNames.has("sessions_spawn") && timelineUsesWorker(input.timeline, "browser");
   const artifactLifecycleVisible = (input.artifacts ?? []).some(hasArtifactLifecycleEvidence);
   const profileFallbackCount = input.metrics.browser?.profileFallbacks ?? 0;
   const browserFailureBuckets = input.metrics.browser?.failureBuckets ?? [];
@@ -4095,22 +4097,25 @@ function findWeakAnswerSignals(text: string): string[] {
   return patterns.flatMap((item) => (item.pattern.test(text) ? [item.label] : []));
 }
 
-function findWeakEvidenceSignals(text: string): string[] {
+function findWeakEvidenceSignals(text: string, options: { browserEvidenceExpected: boolean }): string[] {
+  if (!options.browserEvidenceExpected) {
+    return [];
+  }
   const patterns = [
     {
       label: "browser evidence blocked",
       pattern:
-        /\b(?:Cloudflare|Turnstile|anti-bot|captcha|blocked|access denied|forbidden|just a moment|please wait|请稍候)\b/i,
+        /\b(?:Cloudflare|Turnstile|anti-bot|captcha|access denied|forbidden|just a moment|please wait|请稍候)\b|\b(?:browser|page|site|request|navigation|rendered)\b[\s\S]{0,80}\bblocked\b|\bblocked\b[\s\S]{0,80}\b(?:browser|page|site|request|navigation|rendered|Cloudflare|Turnstile|captcha)\b/i,
     },
     {
       label: "browser extraction failed",
       pattern:
-        /\bverification status:\s*failed\b|\b(?:could not|unable to|failed to)\s+(?:access|extract|capture|read|verify|load)\b|\bcontent extraction\b[\s\S]{0,80}\b(?:failed|incomplete|truncated)\b/i,
+        /\bverification status:\s*failed\b|\b(?:could not|unable to|failed to)\s+(?:access|extract|capture|read|load)\s+(?:browser|rendered|DOM|page|dashboard|tab|target|screenshot|snapshot|CDP)\b|\b(?:browser|rendered|DOM|page|dashboard|tab|target|screenshot|snapshot|CDP)\b[\s\S]{0,80}\b(?:access|extract|capture|read|load|content extraction)\b[\s\S]{0,80}\b(?:failed|incomplete|truncated)\b|\bcontent extraction\b[\s\S]{0,80}\b(?:failed|incomplete|truncated)\b/i,
     },
     {
       label: "browser evidence not verified",
       pattern:
-        /\bnot verified\b|\bunverified\b|\bunable to verify\b|\bverification status:\s*(?:failed|incomplete)\b/i,
+        /\bverification status:\s*(?:failed|incomplete)\b|\b(?:browser|rendered|DOM)\s+evidence\b[\s\S]{0,120}\b(?:not verified|unverified|unable to verify|verification incomplete)\b|\b(?:screenshot|snapshot|capture|CDP|target|tab)\b[\s\S]{0,120}\b(?:evidence|verification|capture|snapshot|extract|load)?\b[\s\S]{0,80}\b(?:not verified|unverified|unable to verify|verification incomplete)\b|\b(?:not verified|unverified|unable to verify|verification incomplete)\b[\s\S]{0,120}\b(?:browser|rendered|DOM)\s+evidence\b|\b(?:not verified|unverified|unable to verify|verification incomplete)\b[\s\S]{0,120}\b(?:screenshot|snapshot|capture|CDP|target|tab)\b/i,
     },
     {
       label: "browser transport degraded",

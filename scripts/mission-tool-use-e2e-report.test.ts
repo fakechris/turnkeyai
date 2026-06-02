@@ -1199,11 +1199,26 @@ describe("mission tool-use e2e report", () => {
       bridgeUrl: "http://127.0.0.1/product-bridge",
       productSignalsUrl: "http://127.0.0.1/product-signals",
     });
+    result.timeline[0]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "call",
+      callInput: JSON.stringify({ agent_id: "explore", task: "compare vendor sources" }),
+    };
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Vendor Alpha: $19 per seat; browser automation with traceable screenshots; limited API catalog.",
+        "Vendor Beta: $29 per workspace; approval workflow; separate connector for browser control.",
+      ].join("\n"),
+    };
     result.final.text = [
       "Alpha is $19 per seat and Beta is $29 per workspace.",
-      "Alpha has browser automation and Beta has approval workflow.",
+      "Alpha has browser automation with traceable screenshots and Beta has approval workflow.",
       "Risks: Alpha's API integration catalog is limited; Beta requires a separate browser connector.",
-      "What was verified: no additional details about scale or update cadence were present.",
+      "| Source | Verified Facts | Not Verified |",
+      "| Vendor Alpha | $19/seat; browser automation with traceable screenshots; limited API catalog | plan tiers and scale pricing |",
+      "| Vendor Beta | $29/workspace; approval workflow; separate browser connector | connector pricing |",
     ].join("\n");
 
     const quality = evaluateNaturalMissionQuality({
@@ -1216,7 +1231,109 @@ describe("mission tool-use e2e report", () => {
     });
 
     assert.equal(quality.sourceCoverage.residualRiskVisible, true);
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence not verified"), false);
     assert.equal(quality.failures.includes("final answer does not make residual risk visible"), false);
+  });
+
+  it("does not treat product residual-risk wording as failed browser execution evidence", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-long-delegation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.scenario = "natural-long-delegation";
+    result.metrics.tool = { requested: 3, results: 3, failed: 0, cancelled: 0, timeouts: 0 };
+    result.metrics.sessions = { spawned: 3, continued: 0 };
+    result.metrics.qualityGate.evidenceEvents = 3;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "Calling sessions_spawn(agent_id=\"explore\")",
+        tMs: 1_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "explore", task: "research orchestration" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned orchestration evidence.",
+        tMs: 2_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: "Strength: multi-agent decomposition with durable sub-session history and follow-up.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "Calling sessions_spawn(agent_id=\"browser\")",
+        tMs: 3_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "inspect product signal dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned browser evidence.",
+        tMs: 4_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "Browser bridge capability surface: controls rendered DOM, forms after approval, screenshots, console output, and artifacts. Live signal dashboard shows Stuck missions: 6 and Weak answer rate: 24%.",
+        },
+      },
+      {
+        kind: "tool",
+        text: "Calling sessions_spawn(agent_id=\"explore\")",
+        tMs: 5_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "explore", task: "research product signals" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned signal evidence.",
+        tMs: 6_000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent:
+            "Mission Control should be the default entry point. First-run adoption remains blocked by CLI setup. Production telemetry remains not verified outside the local dashboard fixture.",
+        },
+      },
+    ];
+    result.final.text = [
+      "Build Mission Control as the default entry for the next agent workbench release.",
+      "It matters because the live signal dashboard shows Stuck missions: 6 and Weak answer rate: 24%.",
+      "Do not over-emphasize new browser bridge surface area; browser bridge capabilities are already represented by rendered DOM, approval forms, screenshots, console output, and artifacts.",
+      "Risk: first-run adoption remains blocked by CLI setup and production telemetry remains not verified outside the local fixture, so release quality should be gated on real LLM scenario quality.",
+    ].join("\n");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
+    assert.equal(quality.weakAnswerSignals.includes("browser extraction failed"), false);
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence not verified"), false);
   });
 
   it("accepts degraded fallback wording as visible residual-risk disclosure", () => {
