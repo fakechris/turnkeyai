@@ -336,6 +336,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       sourceResidualRiskVisible: 0,
       sourceUnsupportedClaims: 0,
       recoveryEvents: 0,
+      scenarioProofs: [],
     };
   }
 
@@ -387,6 +388,42 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       summary.sourceResidualRiskVisible += scenario.natural?.sourceCoverage?.residualRiskVisible === true ? 1 : 0;
       summary.sourceUnsupportedClaims += readArrayLength(scenario.natural?.sourceCoverage?.unsupportedClaims);
       summary.recoveryEvents += readNumber(scenario.metrics?.recoveryEvents);
+      if (scenarioId) {
+        const sourceCoverage = scenario.natural?.sourceCoverage;
+        (summary.scenarioProofs ??= []).push({
+          scenario: scenarioId,
+          passed: passing,
+          completed: scenario.natural?.completed === true,
+          stuckOrLoop: scenario.natural?.stuckOrLoop === true,
+          reasonableToolUse: scenario.natural?.reasonableToolUse === true,
+          browserUsed: scenario.natural?.browserUsed === true,
+          subAgentCompleted: scenario.natural?.subAgentCompleted === true,
+          approvalExercised: scenario.natural?.approvalExercised === true,
+          finalAnswerHasEvidence: scenario.natural?.finalAnswerHasEvidence === true,
+          finalAnswerUseful: scenario.natural?.finalAnswerUseful === true,
+          weakAnswerSignals: readArrayLength(scenario.natural?.weakAnswerSignals),
+          toolFailed: readNumber(scenario.metrics?.tools?.failed),
+          toolCancelled: readNumber(scenario.metrics?.tools?.cancelled),
+          toolTimeouts: readNumber(scenario.metrics?.tools?.timeouts),
+          sessionsSpawned: readNumber(scenario.metrics?.sessions?.spawned),
+          sessionsContinued: readNumber(scenario.metrics?.sessions?.continued),
+          browserProfileFallbacks: readNumber(scenario.metrics?.browser?.profileFallbacks),
+          browserFailureBuckets: readBrowserFailureBucketCount(scenario.metrics?.browser?.failureBuckets),
+          approvalsRequested: readNumber(scenario.metrics?.approvals?.requested),
+          approvalsDecided: readNumber(scenario.metrics?.approvals?.decided),
+          approvalsApplied: readNumber(scenario.metrics?.approvals?.applied),
+          livenessActive: readNumber(scenario.metrics?.liveness?.active),
+          livenessWaiting: readNumber(scenario.metrics?.liveness?.waiting),
+          livenessStale: readNumber(scenario.metrics?.liveness?.stale),
+          evidenceEvents: readNumber(scenario.metrics?.evidenceEvents),
+          recoveryEvents: readNumber(scenario.metrics?.recoveryEvents),
+          sourceResidualRiskVisible: sourceCoverage?.residualRiskVisible === true,
+          sourceUnsupportedClaims: readArrayLength(sourceCoverage?.unsupportedClaims),
+          sourceAnswerTermsMissing: readArrayLength(sourceCoverage?.answerTerms?.missing),
+          sourceAnswerPatternsMissing: readArrayLength(sourceCoverage?.answerPatterns?.missing),
+          sourceEvidencePatternsMissing: readArrayLength(sourceCoverage?.evidencePatterns?.missing),
+        });
+      }
       return summary;
     },
     {
@@ -434,6 +471,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       sourceResidualRiskVisible: 0,
       sourceUnsupportedClaims: 0,
       recoveryEvents: 0,
+      scenarioProofs: [],
     }
   );
 }

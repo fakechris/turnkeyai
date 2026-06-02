@@ -229,6 +229,7 @@ function passingMissionAcceptanceReport(
 function passingNaturalMissionAcceptanceReport(
   scenarioIds: string[]
 ): NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["naturalMissionReport"] {
+  const scenarioProofs = scenarioIds.map(passingNaturalMissionScenarioProof);
   return {
     status: "passed",
     scenarioCount: scenarioIds.length,
@@ -238,24 +239,24 @@ function passingNaturalMissionAcceptanceReport(
     completed: scenarioIds.length,
     stuckOrLoop: 0,
     reasonableToolUse: scenarioIds.length,
-    browserUsed: scenarioIds.length,
+    browserUsed: scenarioProofs.filter((proof) => proof.browserUsed).length,
     subAgentCompleted: scenarioIds.length,
-    approvalExercised: 0,
+    approvalExercised: scenarioProofs.filter((proof) => proof.approvalExercised).length,
     finalAnswerHasEvidence: scenarioIds.length,
     finalAnswerUseful: scenarioIds.length,
     weakAnswerSignals: 0,
     toolRequested: scenarioIds.length,
     toolResults: scenarioIds.length,
-    toolFailed: 0,
-    toolCancelled: 0,
-    toolTimeouts: 0,
-    sessionsSpawned: scenarioIds.length,
-    sessionsContinued: 0,
-    browserProfileFallbacks: 0,
-    browserFailureBuckets: 0,
-    approvalsRequested: 0,
-    approvalsDecided: 0,
-    approvalsApplied: 0,
+    toolFailed: scenarioProofs.reduce((sum, proof) => sum + proof.toolFailed, 0),
+    toolCancelled: scenarioProofs.reduce((sum, proof) => sum + proof.toolCancelled, 0),
+    toolTimeouts: scenarioProofs.reduce((sum, proof) => sum + proof.toolTimeouts, 0),
+    sessionsSpawned: scenarioProofs.reduce((sum, proof) => sum + proof.sessionsSpawned, 0),
+    sessionsContinued: scenarioProofs.reduce((sum, proof) => sum + proof.sessionsContinued, 0),
+    browserProfileFallbacks: scenarioProofs.reduce((sum, proof) => sum + proof.browserProfileFallbacks, 0),
+    browserFailureBuckets: scenarioProofs.reduce((sum, proof) => sum + proof.browserFailureBuckets, 0),
+    approvalsRequested: scenarioProofs.reduce((sum, proof) => sum + proof.approvalsRequested, 0),
+    approvalsDecided: scenarioProofs.reduce((sum, proof) => sum + proof.approvalsDecided, 0),
+    approvalsApplied: scenarioProofs.reduce((sum, proof) => sum + proof.approvalsApplied, 0),
     livenessActive: 0,
     livenessWaiting: 0,
     livenessStale: 0,
@@ -273,8 +274,87 @@ function passingNaturalMissionAcceptanceReport(
     sourceEvidenceEventsRequired: scenarioIds.length,
     sourceResidualRiskVisible: scenarioIds.length,
     sourceUnsupportedClaims: 0,
-    recoveryEvents: 0,
+    recoveryEvents: scenarioProofs.reduce((sum, proof) => sum + proof.recoveryEvents, 0),
+    scenarioProofs,
   };
+}
+
+function passingNaturalMissionScenarioProof(
+  scenario: string
+): NonNullable<
+  NonNullable<
+    NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["naturalMissionReport"]
+  >["scenarioProofs"]
+>[number] {
+  const isBrowserFailureCloseout =
+    scenario === "natural-browser-unavailable-closeout" ||
+    scenario === "natural-browser-cdp-timeout-closeout" ||
+    scenario === "natural-browser-detached-target-closeout" ||
+    scenario === "natural-browser-attach-failed-closeout";
+  const base = {
+    scenario,
+    passed: true,
+    completed: true,
+    stuckOrLoop: false,
+    reasonableToolUse: true,
+    browserUsed: scenario.startsWith("natural-browser-") && !isBrowserFailureCloseout,
+    subAgentCompleted: true,
+    approvalExercised: false,
+    finalAnswerHasEvidence: true,
+    finalAnswerUseful: true,
+    weakAnswerSignals: 0,
+    toolFailed: 0,
+    toolCancelled: 0,
+    toolTimeouts: 0,
+    sessionsSpawned: scenario === "natural-long-delegation" ? 2 : 1,
+    sessionsContinued: scenario.includes("followup") || scenario.includes("continuation") ? 1 : 0,
+    browserProfileFallbacks: scenario === "natural-browser-profile-lock-recovery" ? 1 : 0,
+    browserFailureBuckets: isBrowserFailureCloseout ? 1 : 0,
+    approvalsRequested: 0,
+    approvalsDecided: 0,
+    approvalsApplied: 0,
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    evidenceEvents: 1,
+    recoveryEvents: isBrowserFailureCloseout ? 1 : 0,
+    sourceResidualRiskVisible: true,
+    sourceUnsupportedClaims: 0,
+    sourceAnswerTermsMissing: 0,
+    sourceAnswerPatternsMissing: 0,
+    sourceEvidencePatternsMissing: 0,
+  };
+  if (scenario === "natural-approval-dry-run-action") {
+    return {
+      ...base,
+      approvalExercised: true,
+      approvalsRequested: 1,
+      approvalsDecided: 1,
+      approvalsApplied: 1,
+    };
+  }
+  if (scenario === "natural-approval-denied-safe-closeout" || scenario === "natural-approval-pending-state") {
+    return {
+      ...base,
+      approvalExercised: true,
+      approvalsRequested: 1,
+      approvalsDecided: scenario === "natural-approval-denied-safe-closeout" ? 1 : 0,
+    };
+  }
+  if (scenario.includes("timeout")) {
+    return {
+      ...base,
+      toolFailed: 1,
+      toolTimeouts: 1,
+    };
+  }
+  if (scenario.includes("cancel")) {
+    return {
+      ...base,
+      toolCancelled: 1,
+    };
+  }
+  return base;
 }
 
 test("validation routes trim selectors for regression and validation suite runs", async () => {
