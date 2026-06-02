@@ -83,6 +83,7 @@ describe("daemon status", () => {
       assert.equal(result.code, 0);
       assert.match(result.stdout, /pid:\s+\(none\)/);
       assert.match(result.stdout, /health:\s+ok/);
+      assert.match(result.stdout, /auth token:\s+read from env/);
       assert.match(result.stdout, /api auth:\s+ok/);
       assert.match(result.stdout, /transport:\s+local \(local-automation\)/);
       assert.match(result.stdout, /sessions:\s+2/);
@@ -128,11 +129,53 @@ describe("daemon status", () => {
 
       assert.equal(result.code, 0);
       assert.match(result.stdout, /health:\s+ok/);
+      assert.match(result.stdout, /auth token:\s+read from env/);
       assert.match(result.stdout, /api auth:\s+\/bridge\/status returned HTTP 401 \(token rejected\)/);
       assert.match(result.stdout, /turnkeyai app/);
       assert.match(result.stdout, /npm run app -- --no-open/);
       assert.match(result.stdout, /TURNKEYAI_DAEMON_READ_TOKEN/);
       assert.doesNotMatch(result.stdout, /transport:\s+/);
+    } finally {
+      server.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reports when no daemon token is available for authenticated probes", async () => {
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      if (req.url === "/health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (req.url === "/bridge/status") {
+        assert.equal(req.headers.authorization, undefined);
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized", requiredAccess: "read" }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const home = await mkdtemp(path.join(tmpdir(), "turnkeyai-cli-status-no-token-"));
+
+    try {
+      const result = await runCli(["daemon", "status"], {
+        TURNKEYAI_HOME: home,
+        TURNKEYAI_DAEMON_URL: `http://127.0.0.1:${address.port}`,
+        TURNKEYAI_DAEMON_READ_TOKEN: "",
+        TURNKEYAI_DAEMON_TOKEN: "",
+      });
+
+      assert.equal(result.code, 0);
+      assert.match(result.stdout, /health:\s+ok/);
+      assert.match(result.stdout, /auth token:\s+\(none\)/);
+      assert.match(result.stdout, /api auth:\s+\/bridge\/status returned HTTP 401 \(no token sent\)/);
+      assert.match(result.stdout, /TURNKEYAI_DAEMON_READ_TOKEN/);
     } finally {
       server.close();
       await rm(home, { recursive: true, force: true });

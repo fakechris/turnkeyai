@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveDaemonCliToken } from "./daemon-token";
+import type { ResolvedDaemonCliToken } from "./daemon-token";
 
 const DEFAULT_PORT = 4100;
 
@@ -80,8 +81,8 @@ function resolveDaemonUrl(paths: DaemonRuntimePaths): string {
   return `http://127.0.0.1:${port}`;
 }
 
-function resolveDaemonToken(paths: DaemonRuntimePaths): string | null {
-  return resolveDaemonCliToken(process.env, readConfig(paths)?.token, "read")?.token ?? null;
+function resolveDaemonStatusToken(paths: DaemonRuntimePaths): ResolvedDaemonCliToken | null {
+  return resolveDaemonCliToken(process.env, readConfig(paths)?.token, "read");
 }
 
 function readPid(paths: DaemonRuntimePaths): number | null {
@@ -556,22 +557,23 @@ export async function runDaemonStatus(_args: string[]): Promise<void> {
   const paths = getRuntimePaths();
   const pid = readPid(paths);
   const baseUrl = resolveDaemonUrl(paths);
-  const token = resolveDaemonToken(paths);
+  const token = resolveDaemonStatusToken(paths);
   const healthy = await pingHealth(baseUrl);
   const alive = pid !== null && isAlive(pid);
 
   console.log(`pid:        ${pid ?? "(none)"}${alive ? " (alive)" : ""}`);
   console.log(`url:        ${baseUrl}`);
   console.log(`health:     ${healthy ? "ok" : "unreachable"}`);
+  console.log(`auth token: ${token ? `${token.scope} from ${token.source}` : "(none)"}`);
   console.log(`config:     ${existsSync(paths.configFile) ? paths.configFile : "(none)"}`);
   console.log(`data dir:   ${paths.dataDir}`);
   console.log(`logs:       ${paths.logFile}`);
 
   if (healthy) {
     const [status, diagnostics, models] = await Promise.all([
-      fetchJson(`${baseUrl}/bridge/status`, token),
-      fetchJson(`${baseUrl}/diagnostics`, token),
-      fetchJson(`${baseUrl}/models`, token),
+      fetchJson(`${baseUrl}/bridge/status`, token?.token ?? null),
+      fetchJson(`${baseUrl}/diagnostics`, token?.token ?? null),
+      fetchJson(`${baseUrl}/models`, token?.token ?? null),
     ]);
     if (status.ok && status.json && typeof status.json === "object") {
       console.log("api auth:   ok");
@@ -588,7 +590,7 @@ export async function runDaemonStatus(_args: string[]): Promise<void> {
       console.log(`sessions:   ${sessions?.count ?? 0}`);
     } else {
       const detail = status.statusCode
-        ? formatApiAuthFailure(status.statusCode)
+        ? formatApiAuthFailure(status.statusCode, token !== null)
         : `/bridge/status unreachable: ${status.error ?? "request failed"}`;
       console.log(`api auth:   ${detail}`);
     }
@@ -599,11 +601,12 @@ export async function runDaemonStatus(_args: string[]): Promise<void> {
   process.exit(healthy ? 0 : 1);
 }
 
-function formatApiAuthFailure(statusCode: number): string {
+function formatApiAuthFailure(statusCode: number, tokenResolved: boolean): string {
   if (statusCode === 401 || statusCode === 403) {
+    const reason = tokenResolved ? "token rejected" : "no token sent";
     return [
       `/bridge/status returned HTTP ${statusCode}`,
-      "(token rejected).",
+      `(${reason}).`,
       "Reopen Mission Control with `turnkeyai app`,",
       "or from a source checkout run `npm run app -- --no-open`.",
       "For CLI probes, check TURNKEYAI_DAEMON_READ_TOKEN or ~/.turnkeyai/config.json.",
