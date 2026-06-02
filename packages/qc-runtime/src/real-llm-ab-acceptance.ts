@@ -384,14 +384,24 @@ export function buildRealLlmAbMarkdownReport(
   const comparisons = summary.comparisons;
   const losingComparisons = comparisons.filter((comparison) => comparison.scoreDelta < 0 || comparison.rootCauseRequired);
   const rootCauseBuckets = summary.rootCauseBuckets;
+  const effectiveCapabilityClaim = validation.status === "passed" ? summary.capabilityClaim : "unproven";
+  const effectiveStabilityClaim = validation.status === "passed" ? summary.stabilityClaim : "unstable";
+  const reportedClaimLines =
+    effectiveCapabilityClaim === summary.capabilityClaim && effectiveStabilityClaim === summary.stabilityClaim
+      ? []
+      : [
+          `- Reported capability: ${summary.capabilityClaim}`,
+          `- Reported stability: ${summary.stabilityClaim}`,
+        ];
   return [
     "# Real LLM A/B Acceptance Report",
     "",
     "## Conclusion",
     "",
-    `- Capability: ${summary.capabilityClaim}`,
-    `- Stability: ${summary.stabilityClaim}`,
+    `- Capability: ${effectiveCapabilityClaim}`,
+    `- Stability: ${effectiveStabilityClaim}`,
     `- Status: ${validation.status}`,
+    ...reportedClaimLines,
     `- Scenarios: ${summary.scenarioCount}`,
     `- Comparable scenarios: ${summary.comparableScenarios}`,
     `- TurnkeyAI wins/ties/losses: ${summary.turnkeyaiWins}/${summary.turnkeyaiTies}/${summary.turnkeyaiLosses}`,
