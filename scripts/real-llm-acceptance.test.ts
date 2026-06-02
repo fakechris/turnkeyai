@@ -340,6 +340,57 @@ test("real acceptance integrity rejects missing or non-passing report summaries 
     () =>
       assertRealAcceptanceArtifactIntegrity({
         status: "passed",
+        missionScenarios: ["approval"],
+        naturalMissionScenarios: [],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: false,
+        missionReport: passingMissionReport({
+          scenarioIds: ["approval"],
+          scenarioProofs: [{ ...passingMissionScenarioProof("approval"), approvalsApplied: 0 }],
+        }),
+        naturalMissionReport: null,
+      }),
+    /mission E2E report does not prove/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["followup"],
+        naturalMissionScenarios: [],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: false,
+        missionReport: passingMissionReport({
+          scenarioIds: ["followup"],
+          scenarioProofs: [{ ...passingMissionScenarioProof("followup"), sessionsContinued: 0 }],
+        }),
+        naturalMissionReport: null,
+      }),
+    /mission E2E report does not prove/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["browser-dashboard"],
+        naturalMissionScenarios: [],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: false,
+        missionReport: passingMissionReport({
+          scenarioIds: ["browser-dashboard"],
+          scenarioProofs: [{ ...passingMissionScenarioProof("browser-dashboard"), browserFailureBuckets: 1 }],
+        }),
+        naturalMissionReport: null,
+      }),
+    /mission E2E report does not prove/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
         missionScenarios: ["comparison"],
         naturalMissionScenarios: [],
         missionJsonPresent: true,
@@ -637,7 +688,7 @@ function passingMissionScenarioProof(
 ): NonNullable<
   NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["missionReport"]>["scenarioProofs"]
 >[number] {
-  return {
+  const base = {
     scenario,
     passed: true,
     qualityFailures: 0,
@@ -661,6 +712,59 @@ function passingMissionScenarioProof(
     evidenceEvents: 1,
     recoveryEvents: 0,
   };
+  if (scenario === "approval") {
+    return {
+      ...base,
+      approvalsRequested: 1,
+      approvalsDecided: 1,
+      approvalsApplied: 1,
+    };
+  }
+  if (scenario === "followup") {
+    return {
+      ...base,
+      sessionsContinued: 1,
+    };
+  }
+  if (scenario === "cancel") {
+    return {
+      ...base,
+      toolFailed: 1,
+      toolCancelled: 1,
+    };
+  }
+  if (scenario === "timeout-recovery") {
+    return {
+      ...base,
+      toolFailed: 1,
+      toolTimeouts: 1,
+    };
+  }
+  if (scenario === "memory-recall") {
+    return {
+      ...base,
+      toolRequested: 2,
+      toolResults: 2,
+      sessionsSpawned: 0,
+    };
+  }
+  if (scenario === "task-tracking") {
+    return {
+      ...base,
+      toolRequested: 3,
+      toolResults: 3,
+      sessionsSpawned: 0,
+    };
+  }
+  if (scenario === "realistic-brief" || scenario === "product-workbench-brief") {
+    return {
+      ...base,
+      toolRequested: 3,
+      toolResults: 3,
+      sessionsSpawned: 3,
+    };
+  }
+  return base;
 }
 
 function passingTooluseReport(

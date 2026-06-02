@@ -675,11 +675,50 @@ function hasProvenMissionScenario(
       proof.qualityFailures === 0 &&
       proof.qualityCheckFailures === 0 &&
       proof.sourceCoverageFailures === 0 &&
+      proof.browserProfileFallbacks === 0 &&
+      proof.browserFailureBuckets === 0 &&
       proof.livenessActive === 0 &&
       proof.livenessWaiting === 0 &&
       proof.livenessStale === 0 &&
-      proof.evidenceEvents >= 1
+      proof.evidenceEvents >= 1 &&
+      hasExpectedMissionScenarioSignals(scenario, proof)
   );
+}
+
+function hasExpectedMissionScenarioSignals(
+  scenario: string,
+  proof: NonNullable<NonNullable<ReturnType<typeof summarizeMissionE2eReportForValidationOps>>["scenarioProofs"]>[number]
+): boolean {
+  if (scenario === "approval") {
+    return (
+      proof.sessionsSpawned >= 1 &&
+      proof.approvalsRequested >= 1 &&
+      proof.approvalsDecided >= 1 &&
+      proof.approvalsApplied >= 1
+    );
+  }
+  if (scenario === "followup") {
+    return proof.sessionsContinued >= 1;
+  }
+  if (scenario === "cancel") {
+    return proof.toolCancelled >= 1 && proof.toolTimeouts === 0;
+  }
+  if (scenario === "timeout-recovery") {
+    return proof.sessionsSpawned >= 1 && proof.toolFailed >= 1 && proof.toolTimeouts >= 1 && proof.toolCancelled === 0;
+  }
+  if (scenario === "browser-dynamic" || scenario === "browser-dashboard") {
+    return proof.sessionsSpawned >= 1 && proof.toolResults >= 1;
+  }
+  if (scenario === "memory-recall") {
+    return proof.sessionsSpawned === 0 && proof.toolResults >= 2;
+  }
+  if (scenario === "task-tracking") {
+    return proof.sessionsSpawned === 0 && proof.toolResults >= 3;
+  }
+  if (scenario === "realistic-brief" || scenario === "product-workbench-brief") {
+    return proof.sessionsSpawned >= 3 && proof.toolResults >= 3;
+  }
+  return proof.toolResults >= 1;
 }
 
 function buildMissionProofQueues(

@@ -235,7 +235,7 @@ function passingMissionScenarioProof(
     NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["missionReport"]
   >["scenarioProofs"]
 >[number] {
-  return {
+  const base = {
     scenario,
     passed: true,
     qualityFailures: 0,
@@ -259,6 +259,59 @@ function passingMissionScenarioProof(
     evidenceEvents: 1,
     recoveryEvents: 0,
   };
+  if (scenario === "approval") {
+    return {
+      ...base,
+      approvalsRequested: 1,
+      approvalsDecided: 1,
+      approvalsApplied: 1,
+    };
+  }
+  if (scenario === "followup") {
+    return {
+      ...base,
+      sessionsContinued: 1,
+    };
+  }
+  if (scenario === "cancel") {
+    return {
+      ...base,
+      toolFailed: 1,
+      toolCancelled: 1,
+    };
+  }
+  if (scenario === "timeout-recovery") {
+    return {
+      ...base,
+      toolFailed: 1,
+      toolTimeouts: 1,
+    };
+  }
+  if (scenario === "memory-recall") {
+    return {
+      ...base,
+      toolRequested: 2,
+      toolResults: 2,
+      sessionsSpawned: 0,
+    };
+  }
+  if (scenario === "task-tracking") {
+    return {
+      ...base,
+      toolRequested: 3,
+      toolResults: 3,
+      sessionsSpawned: 0,
+    };
+  }
+  if (scenario === "realistic-brief" || scenario === "product-workbench-brief") {
+    return {
+      ...base,
+      toolRequested: 3,
+      toolResults: 3,
+      sessionsSpawned: 3,
+    };
+  }
+  return base;
 }
 
 function passingNaturalMissionAcceptanceReport(
