@@ -241,6 +241,29 @@ test("real acceptance integrity requires passing tool-use report summaries when 
     /tool-use E2E report does not prove/
   );
 
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        tooluseScenarios: ["basic", "basic"],
+        missionScenarios: [],
+        naturalMissionScenarios: [],
+        tooluseJsonPresent: true,
+        missionJsonPresent: false,
+        naturalMissionJsonPresent: false,
+        tooluseReport: passingTooluseReport({
+          scenarioIds: ["basic", "basic"],
+          scenarioProofs: [
+            passingTooluseScenarioProof("basic"),
+            { ...passingTooluseScenarioProof("basic"), passed: false },
+          ],
+        }),
+        missionReport: null,
+        naturalMissionReport: null,
+      }),
+    /tool-use E2E report does not prove/
+  );
+
   assert.doesNotThrow(() =>
     assertRealAcceptanceArtifactIntegrity({
       status: "passed",
@@ -570,6 +593,7 @@ function passingTooluseReport(
   overrides: Partial<NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["tooluseReport"]>> = {}
 ): NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["tooluseReport"]> {
   const scenarioIds = overrides.scenarioIds ?? ["basic"];
+  const scenarioProofs = overrides.scenarioProofs ?? scenarioIds.map((scenario) => passingTooluseScenarioProof(scenario));
   return {
     status: "passed",
     scenarioCount: scenarioIds.length,
@@ -583,18 +607,26 @@ function passingTooluseReport(
     sessionsSpawned: scenarioIds.length,
     childTranscriptMessages: scenarioIds.length * 4,
     permissionEvents: 0,
-    scenarioProofs: scenarioIds.map((scenario) => ({
-      scenario,
-      passed: true,
-      finalBytes: 220,
-      evidenceBullets: 3,
-      qualityFailures: 0,
-      toolCallNames: ["sessions_spawn"],
-      sessionsSpawned: 1,
-      childTranscriptMessages: 4,
-      permissionEvents: 0,
-    })),
+    scenarioProofs,
     ...overrides,
+  };
+}
+
+function passingTooluseScenarioProof(
+  scenario: string
+): NonNullable<
+  NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["tooluseReport"]>["scenarioProofs"]
+>[number] {
+  return {
+    scenario,
+    passed: true,
+    finalBytes: 220,
+    evidenceBullets: 3,
+    qualityFailures: 0,
+    toolCallNames: ["sessions_spawn"],
+    sessionsSpawned: 1,
+    childTranscriptMessages: 4,
+    permissionEvents: 0,
   };
 }
 
