@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  applyNaturalFixtureUrlOverrides,
   assertNaturalPromptAllowed,
   assertFollowupReusedSession,
   assertNaturalFollowupReusedExistingSession,
@@ -550,6 +551,68 @@ describe("mission tool-use e2e report", () => {
       () => assertNaturalPromptAllowed("Call sessions_spawn exactly once and include TURNKEYAI_TEST_OK."),
       /contract-gate language/
     );
+  });
+
+  it("applies natural fixture URL overrides before building scenario prompts", () => {
+    const fixture = applyNaturalFixtureUrlOverrides(
+      {
+        server: {} as never,
+        basicUrl: "http://127.0.0.1/local-fixture",
+        alphaUrl: "http://127.0.0.1/local-alpha",
+        betaUrl: "http://127.0.0.1/local-beta",
+        slowUrl: "http://127.0.0.1/local-slow",
+        cancelResumeUrl: "http://127.0.0.1/local-cancel-resume",
+        cancelResumeStateUrl: "http://127.0.0.1/local-cancel-state",
+        approvalUrl: "http://127.0.0.1/local-approval",
+        dynamicUrl: "http://127.0.0.1/local-dynamic",
+        dashboardUrl: "http://127.0.0.1/local-dashboard",
+        orchestrationUrl: "http://127.0.0.1/local-orchestration",
+        bridgeUrl: "http://127.0.0.1/local-bridge",
+        productSignalsUrl: "http://127.0.0.1/local-signals",
+      },
+      {
+        TURNKEYAI_NATURAL_ALPHA_URL: "http://shared.test/vendor-alpha",
+        TURNKEYAI_NATURAL_BETA_URL: "http://shared.test/vendor-beta",
+        TURNKEYAI_NATURAL_DASHBOARD_URL: "http://shared.test/ops-dashboard",
+        TURNKEYAI_NATURAL_APPROVAL_URL: "http://shared.test/approval-form",
+      }
+    );
+
+    const comparison = buildNaturalScenarioSpec("natural-comparison-research", fixture);
+    assert.match(comparison.desc, /http:\/\/shared\.test\/vendor-alpha/);
+    assert.match(comparison.desc, /http:\/\/shared\.test\/vendor-beta/);
+
+    const browser = buildNaturalScenarioSpec("natural-browser-dynamic-page", fixture);
+    assert.match(browser.desc, /http:\/\/shared\.test\/ops-dashboard/);
+
+    const approval = buildNaturalScenarioSpec("natural-approval-dry-run-action", fixture);
+    assert.match(approval.desc, /http:\/\/shared\.test\/approval-form/);
+  });
+
+  it("keeps the legacy natural browser URL as a dashboard override alias", () => {
+    const fixture = applyNaturalFixtureUrlOverrides(
+      {
+        server: {} as never,
+        basicUrl: "http://127.0.0.1/local-fixture",
+        alphaUrl: "http://127.0.0.1/local-alpha",
+        betaUrl: "http://127.0.0.1/local-beta",
+        slowUrl: "http://127.0.0.1/local-slow",
+        cancelResumeUrl: "http://127.0.0.1/local-cancel-resume",
+        cancelResumeStateUrl: "http://127.0.0.1/local-cancel-state",
+        approvalUrl: "http://127.0.0.1/local-approval",
+        dynamicUrl: "http://127.0.0.1/local-dynamic",
+        dashboardUrl: "http://127.0.0.1/local-dashboard",
+        orchestrationUrl: "http://127.0.0.1/local-orchestration",
+        bridgeUrl: "http://127.0.0.1/local-bridge",
+        productSignalsUrl: "http://127.0.0.1/local-signals",
+      },
+      {
+        TURNKEYAI_NATURAL_BROWSER_URL: "http://shared.test/browser-dashboard",
+      }
+    );
+
+    const browser = buildNaturalScenarioSpec("natural-browser-dynamic-page", fixture);
+    assert.match(browser.desc, /http:\/\/shared\.test\/browser-dashboard/);
   });
 
   it("summarizes natural acceptance evidence without treating markers as the gate", () => {
