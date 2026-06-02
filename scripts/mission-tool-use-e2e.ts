@@ -4092,7 +4092,7 @@ export function findWeakAnswerSignals(text: string): string[] {
     {
       label: "delegation-only closeout",
       pattern:
-        /^\s*(?:\*\*)?(?:lead\s*:\s*)?(?:delegat(?:e|ing)|(?:i(?:'ll| will)\s+delegat(?:e|ing))|hand(?:off|ing off)|handoff)\b|^\s*\[TO:\s*role-[^\]]+\]|^\s*[→-]\s*role-/i,
+        /(?:^|\n)\s*(?:#{1,6}\s+)?(?:\*\*)?(?:lead\s*:\s*)?(?:delegat(?:e|ed|ing)|(?:i(?:'ll| will| have|’ll|’ve)\s+delegat(?:e|ed|ing))|hand(?:off|ed off|ing off)|handoff|handover)\b|(?:^|\n)\s*\[TO:\s*role-[^\]]+\]|(?:^|\n)\s*[→-]\s*role-/i,
     },
     {
       label: "empty summary",

@@ -1548,11 +1548,90 @@ function compactToolResultTraceContent(content: string): { content: string; comp
     final_content: typeof parsed.final_content === "string" ? sliceUtf8(parsed.final_content, 3 * 1024) : null,
     result: typeof parsed.result === "string" ? sliceUtf8(parsed.result, 1024) : "",
   };
-  const compactContent = JSON.stringify(compacted, null, 2);
+  const compactContent = fitCompactToolResultTraceContent(compacted);
   return {
     content: compactContent,
     compacted: compactContent !== content,
   };
+}
+
+function fitCompactToolResultTraceContent(input: Record<string, unknown>): string {
+  const compacted = { ...input };
+  const serialize = () => JSON.stringify(compacted, null, 2);
+  const fits = (value: string) => Buffer.byteLength(value, "utf8") <= ROLE_TOOL_RESULT_TRACE_CAP_BYTES;
+  const trySerialize = () => {
+    const value = serialize();
+    return fits(value) ? value : null;
+  };
+
+  const initial = trySerialize();
+  if (initial) return initial;
+
+  const shrinkStringField = (field: string, maxBytes: number) => {
+    const value = compacted[field];
+    if (typeof value === "string") {
+      compacted[field] = maxBytes > 0 ? sliceUtf8(value, maxBytes) : "";
+    }
+  };
+  const deleteField = (field: string) => {
+    delete compacted[field];
+  };
+  const prunePayload = (field: "screenshotPaths" | "artifactIds", limit: number) => {
+    const payload = compacted.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return;
+    }
+    const record = payload as Record<string, unknown>;
+    const values = readStringArray(record[field]);
+    if (values.length > limit) {
+      record[field] = values.slice(0, limit);
+      record[`${field}Truncated`] = true;
+      record[`${field}Count`] = values.length;
+    }
+  };
+
+  const steps: Array<() => void> = [
+    () => shrinkStringField("final_content", 2048),
+    () => shrinkStringField("result", 768),
+    () => shrinkStringField("evidence_summary", 512),
+    () => shrinkStringField("evidence_excerpt", 512),
+    () => shrinkStringField("final_content", 1024),
+    () => shrinkStringField("result", 384),
+    () => deleteField("evidence_summary"),
+    () => deleteField("evidence_excerpt"),
+    () => shrinkStringField("final_content", 512),
+    () => shrinkStringField("result", 0),
+    () => {
+      compacted.final_content = null;
+    },
+    () => prunePayload("screenshotPaths", 4),
+    () => prunePayload("artifactIds", 16),
+  ];
+
+  for (const step of steps) {
+    step();
+    const value = trySerialize();
+    if (value) return value;
+  }
+
+  const minimal = {
+    protocol: compacted.protocol,
+    status: compacted.status,
+    agent_id: compacted.agent_id,
+    session_key: compacted.session_key,
+    task_id: compacted.task_id,
+    tool_chain: compacted.tool_chain,
+    payload: compacted.payload,
+    result: "session tool result compacted",
+    final_content: null,
+  };
+  const minimalContent = JSON.stringify(minimal, null, 2);
+  if (fits(minimalContent)) return minimalContent;
+  return JSON.stringify({
+    protocol: compacted.protocol,
+    status: compacted.status,
+    result: "session tool result compacted",
+  });
 }
 
 function compactSessionPayloadEvidenceExcerpt(payload: unknown): { evidence_excerpt: string } | Record<string, never> {
