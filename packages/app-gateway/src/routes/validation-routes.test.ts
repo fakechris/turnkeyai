@@ -117,12 +117,34 @@ function passingRealLlmAcceptanceRecord(completedAt = 1_000): ValidationOpsRunRe
     missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
     naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
     browserTooluseEnabled: true,
+    tooluseArtifactPath:
+      ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-acceptance-run-1-tool-use-e2e.json",
     artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-acceptance-run-1-mission-e2e.json",
     naturalArtifactPath:
       ".turnkeyai/data/validation-artifacts/real-llm-acceptance/real-llm-acceptance-run-1-natural-mission-e2e.json",
+    tooluseReport: passingToolUseAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS]),
     missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
     naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
   });
+}
+
+function passingToolUseAcceptanceReport(
+  scenarioIds: string[]
+): NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["tooluseReport"] {
+  return {
+    status: "passed",
+    scenarioCount: scenarioIds.length,
+    scenarioIds,
+    passedScenarios: scenarioIds.length,
+    failedScenarios: 0,
+    qualityFailures: 0,
+    finalBytes: scenarioIds.length * 220,
+    evidenceBullets: scenarioIds.length * 3,
+    toolCalls: scenarioIds.length,
+    sessionsSpawned: scenarioIds.length,
+    childTranscriptMessages: scenarioIds.length * 4,
+    permissionEvents: 0,
+  };
 }
 
 function passingMissionAcceptanceReport(

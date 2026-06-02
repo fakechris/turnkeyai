@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -55,6 +55,7 @@ interface ToolUseE2eOptions {
   modelCatalogPath?: string;
   modelId?: string;
   modelChainId?: string;
+  jsonPath?: string;
 }
 
 type ToolUseScenario = "basic" | "complex" | "acceptance" | "followup" | "timeout" | "approval";
@@ -65,6 +66,7 @@ const DEFAULT_TOOLUSE_NON_BROWSER_MATRIX_SCENARIOS: readonly ToolUseScenario[] =
   DEFAULT_REAL_ACCEPTANCE_TOOLUSE_NON_BROWSER_SCENARIOS;
 
 interface RealToolUseE2eResult {
+  status: "passed";
   mode: "llm-only" | "llm-browser";
   scenario: ToolUseScenario;
   modelCatalogPath: string;
@@ -76,6 +78,13 @@ interface RealToolUseE2eResult {
   spawnedSessionCount?: number;
   childTranscriptMessages?: number;
   permissionEvents?: string[];
+}
+
+interface RealToolUseE2eReport {
+  kind: "turnkeyai.tool-use-e2e.report";
+  status: "passed";
+  generatedAtMs: number;
+  scenarios: RealToolUseE2eResult[];
 }
 
 function parseOptions(args: string[]): ToolUseE2eOptions {
@@ -147,6 +156,15 @@ function parseOptions(args: string[]): ToolUseE2eOptions {
       index += 1;
       continue;
     }
+    if (arg === "--json") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("missing value for --json");
+      }
+      options.jsonPath = value;
+      index += 1;
+      continue;
+    }
     if (arg === "--cdp-timeout-ms") {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) {
@@ -203,6 +221,9 @@ function parseScenarioName(value: string): ToolUseScenario {
 }
 
 async function main(options: ToolUseE2eOptions): Promise<void> {
+  if (options.jsonPath && !options.realLlm) {
+    throw new Error("--json requires --real-llm or --real-llm-matrix");
+  }
   const mock = await runMockNativeToolUseE2e();
   console.log("tool-use mock e2e passed");
   console.log(`llm-rounds: ${mock.llmRounds}`);
@@ -229,12 +250,27 @@ async function main(options: ToolUseE2eOptions): Promise<void> {
     if (options.realLlmMatrix) {
       console.log(`tool-use real llm matrix passed: ${realRuns.map((run) => run.scenario).join(",")}`);
     }
+    await writeRealToolUseReport(options.jsonPath, realRuns);
   }
 
   if (options.withBrowser) {
     await runCommand("npm", ["run", "cdp:smoke", "--", "--timeout-ms", String(options.cdpTimeoutMs)]);
     console.log("tool-use browser e2e passed");
   }
+}
+
+async function writeRealToolUseReport(jsonPath: string | undefined, scenarios: RealToolUseE2eResult[]): Promise<void> {
+  if (!jsonPath) return;
+  const resolved = path.resolve(process.cwd(), jsonPath);
+  await mkdir(path.dirname(resolved), { recursive: true });
+  const report: RealToolUseE2eReport = {
+    kind: "turnkeyai.tool-use-e2e.report",
+    status: "passed",
+    generatedAtMs: Date.now(),
+    scenarios,
+  };
+  await writeFile(resolved, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  console.log(`tool-use-json-report: ${resolved}`);
 }
 
 function printRealLlmResult(real: RealToolUseE2eResult): void {
@@ -512,6 +548,7 @@ async function runRealLlmToolUseE2e(options: ToolUseE2eOptions): Promise<RealToo
       assert.ok((childTranscriptMessages ?? 0) >= 4, "browser sub-agent should persist child transcript entries");
     }
     return {
+      status: "passed",
       mode,
       scenario: options.scenario,
       modelCatalogPath,
