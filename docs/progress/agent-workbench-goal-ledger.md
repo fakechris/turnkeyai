@@ -7064,3 +7064,73 @@ Convergence question:
 - If no, next required gate: run both systems against the shared fixture and
   build a strict same-scenario A/B report with wall-clock, prompt, browser, and
   continuation evidence.
+
+## Checkpoint 2026-06-03 01:50 CST — Natural Gate Semantics Split
+
+Direction: unknown
+
+Execution Kernel:
+- No production agent runtime behavior changed.
+- Natural mission E2E reports now separate the natural capability evaluator
+  result from the raw mission/operator quality gate. The scenario-level
+  `qualityGate` records natural quality, while `missionQualityGate` preserves
+  operator attention for recovered timeout/cancel-style work.
+
+Result Quality:
+- Final-answer generation did not change.
+- The focused natural timeout-followup run produced a useful evidence-backed
+  closeout, but this checkpoint only proves the report can represent that
+  outcome without hiding the failed/timeout attention.
+
+Workbench UX:
+- No UI changed.
+- This removes an acceptance-report ambiguity that could otherwise make a
+  completed natural run look blocked in downstream evidence review.
+
+Browser Reliability:
+- Browser runtime behavior did not change.
+- The focused run stayed profile-fallback free and did not record browser
+  failure buckets.
+
+Acceptance Evidence:
+- PR #433 merged as `32a345c`.
+- Local verification before merge:
+  `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`;
+  `npx tsx --test packages/qc-runtime/src/real-llm-acceptance-summary.test.ts`;
+  `npx tsx --test scripts/real-llm-ab-report-build.test.ts
+  scripts/real-llm-ab-acceptance-check.test.ts
+  scripts/real-llm-ab-spec-build.test.ts`;
+  `npx tsx --test scripts/real-llm-acceptance.test.ts`;
+  `npm run typecheck`; `npm test -- --runInBand`; `npm run build`;
+  `git diff --check`.
+- CI for PR #433 passed: typecheck, test, and build.
+- Focused natural real LLM E2E passed after merge:
+  `npm run mission:e2e:natural:core -- --natural-matrix-scenarios
+  natural-timeout-followup-continuation --scenario-timeout-ms 360000
+  --model-catalog models.local.json --json
+  artifacts/evals/20260603-natural-gate-semantics/turnkeyai/natural-timeout-followup.json`.
+- Real mission `msn.mpwxgwar.1`: status `done`, natural `passed`, duration
+  `274553ms`, tools `2/2`, failed tools `2`, timeouts `2`, sessions `1/1`,
+  browser `yes`, profile fallback `0`, browser buckets `none`, liveness
+  `0/0/0`, final bytes `1436`.
+- The generated report now records `qualityGate=passed` and
+  `missionQualityGate=blocked`; natural failures are empty while
+  `failure_free` remains a failed quality check for operator attention.
+
+Regression Risk:
+- Consumers that treated natural scenario `qualityGate` as the raw mission
+  observability gate must read `missionQualityGate` instead. The A/B builder
+  and validation-ops summary already use natural status/dimension fields rather
+  than the scenario-level quality gate.
+- This checkpoint still does not produce same-scenario A/B evidence, so it
+  cannot claim full capability convergence.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? no
+  capability claim
+- Evidence: a focused real natural timeout-followup run passed and the
+  acceptance artifact now distinguishes natural capability from operator
+  attention without dropping timeout/failure evidence.
+- If no, next required gate: build the same-scenario A/B report using the
+  updated natural artifact shape, then choose the next runtime, prompt, browser,
+  or UX PR from observed losses.
