@@ -322,7 +322,7 @@ function looksLikeCompleteDeniedApprovalCloseout(content: string): boolean {
 }
 
 function looksLikeCompleteApprovedApprovalCloseout(content: string): boolean {
-  if (/\b(?:not completed|blocked|unavailable|not available|disabled|cannot be traversed)\b/i.test(content)) {
+  if (hasApprovedCloseoutFailureText(content)) {
     return false;
   }
   return (
@@ -333,6 +333,25 @@ function looksLikeCompleteApprovedApprovalCloseout(content: string): boolean {
     /\b(?:evidence|observed|showed|confirmed|result)\b/i.test(content) &&
     /\b(?:complete|completed|done|no external side effects?|residual risk|boundary)\b/i.test(content)
   );
+}
+
+function hasApprovedCloseoutFailureText(content: string): boolean {
+  if (/\b(?:not completed|not available|cannot be traversed)\b/i.test(content)) {
+    return true;
+  }
+  return hasUnnegatedTerm(content, /\b(?:blocked|unavailable|disabled)\b/gi);
+}
+
+function hasUnnegatedTerm(content: string, pattern: RegExp): boolean {
+  for (const match of content.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    const prefix = content.slice(Math.max(0, index - 24), index);
+    if (/(?:\bnot\s+|\bnever\s+|\bno longer\s+)$/i.test(prefix)) {
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 function findStalledLeadToolTurn(

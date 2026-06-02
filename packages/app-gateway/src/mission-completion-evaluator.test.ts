@@ -452,6 +452,38 @@ describe("MissionCompletionEvaluator", () => {
     }
   });
 
+  it("does not treat negated failure wording as an approved approval failure", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Submit the local form only after approval.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          metadata: { stopReason: "max_tokens" },
+          content: [
+            "**Approved action:** browser.form.submit.",
+            "The approval was granted and permission was applied.",
+            "The browser form submission completed and was not blocked.",
+            "Evidence observed after the action confirmed the result.",
+            "The task is complete with no external side effects.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
   it("blocks unresolved lead tool turn when no role run is active", () => {
     const stalled = {
       ...message("a-tool", "assistant", 100),
