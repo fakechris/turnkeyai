@@ -672,6 +672,7 @@ function printDoctorHelp(exitCode: number): never {
     "Usage:",
     "  turnkeyai doctor",
     "  turnkeyai doctor --help",
+    "  npm run doctor              Source-checkout fallback when turnkeyai is not on PATH",
     "",
     "Checks:",
     "  node version and local runtime directory",
@@ -689,6 +690,11 @@ function printDoctorHelp(exitCode: number): never {
     "  TURNKEYAI_DAEMON_TOKEN",
     "  TURNKEYAI_DAEMON_ADMIN_TOKEN",
     "  TURNKEYAI_DAEMON_READ_TOKEN",
+    "",
+    "Source checkout:",
+    "  npm run app -- --no-open    Print an authenticated Mission Control URL",
+    "  npm run daemon:status       Check daemon status without a linked turnkeyai command",
+    "  npm run install:local-cli   Link this checkout as the turnkeyai command",
   ];
   const output = exitCode === 0 ? console.log : console.error;
   output(lines.join("\n"));

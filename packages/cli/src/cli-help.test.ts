@@ -48,6 +48,10 @@ describe("cli help", () => {
     assert.equal(result.code, 0);
     assert.match(result.stdout, /TurnkeyAI doctor/);
     assert.match(result.stdout, /daemon readiness from \/diagnostics/);
+    assert.match(result.stdout, /npm run doctor\s+Source-checkout fallback/);
+    assert.match(result.stdout, /npm run app -- --no-open\s+Print an authenticated Mission Control URL/);
+    assert.match(result.stdout, /npm run daemon:status\s+Check daemon status without a linked turnkeyai command/);
+    assert.match(result.stdout, /npm run install:local-cli\s+Link this checkout as the turnkeyai command/);
     assert.doesNotMatch(result.stdout, /\[ok\s*\] node version/);
   });
 
