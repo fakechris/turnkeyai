@@ -41,6 +41,8 @@ test("formatRealAcceptanceNaturalSummary surfaces source coverage counts", () =>
   const summary = formatRealAcceptanceNaturalSummary(
     runWithNaturalReport({
       status: "passed",
+      progressClaim: "natural-evidence",
+      capabilityClaim: "unproven-without-comparative-evidence",
       scenarioCount: 2,
       scenarioIds: ["natural-browser-dynamic-page", "natural-long-delegation"],
       passedScenarios: 2,
@@ -89,7 +91,7 @@ test("formatRealAcceptanceNaturalSummary surfaces source coverage counts", () =>
 
   assert.equal(
     summary,
-    "2/2 natural scenarios · evidence 2/2 · useful 2/2 · source terms 5/6 · source patterns 2/2 · evidence patterns 4/5 · missing 2 · unsupported 0 · risk 2/2"
+    "claim natural-evidence · capability unproven-without-comparative-evidence · 2/2 natural scenarios · evidence 2/2 · useful 2/2 · source terms 5/6 · source patterns 2/2 · evidence patterns 4/5 · missing 2 · unsupported 0 · risk 2/2"
   );
 });
 

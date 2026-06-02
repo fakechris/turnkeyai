@@ -934,6 +934,8 @@ test("validation ops inspection preserves natural mission acceptance summary", (
     naturalArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json",
     naturalMissionReport: {
       status: "passed",
+      progressClaim: "natural-evidence",
+      capabilityClaim: "unproven-without-comparative-evidence",
       scenarioCount: 2,
       scenarioIds: ["natural-browser-dynamic-page", "natural-long-delegation"],
       passedScenarios: 2,
@@ -993,6 +995,8 @@ test("validation ops inspection preserves natural mission acceptance summary", (
     naturalMission: { status: "focused", requested: 2, expected: 21, missing: 19 },
   });
   assert.equal(record.realAcceptance?.naturalMissionReport?.finalAnswerUseful, 2);
+  assert.equal(record.realAcceptance?.naturalMissionReport?.progressClaim, "natural-evidence");
+  assert.equal(record.realAcceptance?.naturalMissionReport?.capabilityClaim, "unproven-without-comparative-evidence");
   assert.equal(record.realAcceptance?.naturalMissionReport?.sourceEvidencePatternsCovered, 6);
   assert.ok(record.selectors?.includes("natural-mission:natural-browser-dynamic-page"));
 });
