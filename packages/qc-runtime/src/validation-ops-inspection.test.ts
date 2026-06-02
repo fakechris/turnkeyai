@@ -473,6 +473,72 @@ test("validation ops inspection requires scenario-specific natural mission proof
   assert.match(realGate?.summary ?? "", /acceptance report evidence is incomplete/);
 });
 
+test("validation ops inspection consumes duplicate natural scenario proofs by occurrence", () => {
+  const duplicateScenario = "natural-comparison-research";
+  const naturalScenarios = [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS, duplicateScenario];
+  const naturalMissionReport = passingNaturalMissionAcceptanceReport(naturalScenarios);
+  assert.ok(naturalMissionReport);
+  let duplicateCount = 0;
+  naturalMissionReport.scenarioProofs = (naturalMissionReport.scenarioProofs ?? []).map((proof) => {
+    if (proof.scenario !== duplicateScenario) return proof;
+    duplicateCount += 1;
+    return duplicateCount === 2 ? { ...proof, passed: false } : proof;
+  });
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-duplicate-natural-proof",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: naturalScenarios,
+    browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/tool-use.json",
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/mission.json",
+    naturalArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json",
+    tooluseReport: passingToolUseAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS]),
+    missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
+    naturalMissionReport,
+  });
+
+  const report = buildValidationOpsReport([record], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "missing");
+});
+
+test("validation ops inspection allows non-blocking natural weak signals when scenario proof passes", () => {
+  const naturalMissionReport = passingNaturalMissionAcceptanceReport([
+    ...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
+  ]);
+  assert.ok(naturalMissionReport);
+  naturalMissionReport.weakAnswerSignals = 1;
+  naturalMissionReport.scenarioProofs = (naturalMissionReport.scenarioProofs ?? []).map((proof) =>
+    proof.scenario === "natural-browser-unavailable-closeout" ? { ...proof, weakAnswerSignals: 1 } : proof
+  );
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-full-with-allowed-natural-weak-signal",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/tool-use.json",
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/mission.json",
+    naturalArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json",
+    tooluseReport: passingToolUseAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS]),
+    missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
+    naturalMissionReport,
+  });
+
+  const report = buildValidationOpsReport([record], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "passed");
+});
+
 test("validation ops inspection lets a newer failed real LLM acceptance invalidate an older proven full run", () => {
   const fullRecord = buildValidationOpsRecordFromRealLlmAcceptance({
     runId: "real-llm-full-pass",
