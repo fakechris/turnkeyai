@@ -1541,12 +1541,12 @@ function compactToolResultTraceContent(content: string): { content: string; comp
     ...(parsed.resumable ? { resumable: parsed.resumable } : {}),
     ...(parsed.timeout_seconds == null ? {} : { timeout_seconds: parsed.timeout_seconds }),
     ...(parsed.evidence_available == null ? {} : { evidence_available: parsed.evidence_available }),
-    ...compactSessionPayloadEvidenceExcerpt(parsed.payload),
-    ...(typeof parsed.evidence_summary === "string" ? { evidence_summary: sliceUtf8(parsed.evidence_summary, 1600) } : {}),
-    final_content: typeof parsed.final_content === "string" ? sliceUtf8(parsed.final_content, 6 * 1024) : null,
-    result: typeof parsed.result === "string" ? sliceUtf8(parsed.result, 1600) : "",
     tool_chain: parsed.tool_chain,
     ...compactSessionPayloadArtifactRefs(parsed.payload),
+    ...compactSessionPayloadEvidenceExcerpt(parsed.payload),
+    ...(typeof parsed.evidence_summary === "string" ? { evidence_summary: sliceUtf8(parsed.evidence_summary, 1024) } : {}),
+    final_content: typeof parsed.final_content === "string" ? sliceUtf8(parsed.final_content, 3 * 1024) : null,
+    result: typeof parsed.result === "string" ? sliceUtf8(parsed.result, 1024) : "",
   };
   const compactContent = JSON.stringify(compacted, null, 2);
   return {

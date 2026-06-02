@@ -4415,11 +4415,17 @@ test("llm role response generator stores evidence-first trace content for oversi
           status: "completed",
           tool_chain: ["explore"],
           result: "Large raw page snapshot. ".repeat(700),
-          final_content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+          final_content: [
+            "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+            "Long browser-rendered evidence detail. ".repeat(500),
+          ].join(" "),
           payload: {
             mode: "llm_sub_agent",
             workerType: "explore",
-            content: "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+            content: [
+              "Verified owner: Release Captain. Verified risk: runbook gap. Mitigation: rollback rehearsal.",
+              "Browser screenshot and DOM evidence detail. ".repeat(250),
+            ].join(" "),
             artifactIds: ["artifact-browser-snapshot", "artifact-browser-screenshot"],
             screenshotPaths: ["/tmp/browser-artifacts/final.png"],
             rawHtml: "<html>".repeat(5000),
@@ -4445,6 +4451,7 @@ test("llm role response generator stores evidence-first trace content for oversi
   assert.ok(traceResult?.content);
   assert.equal(traceResult.contentTruncated, true);
   assert.ok((traceResult.contentBytes ?? 0) > Buffer.byteLength(traceResult.content, "utf8"));
+  assert.ok(Buffer.byteLength(traceResult.content, "utf8") <= 8 * 1024);
   assert.match(traceResult.content, /final_content/);
   assert.match(traceResult.content, /Release Captain/);
   assert.match(traceResult.content, /runbook gap/);

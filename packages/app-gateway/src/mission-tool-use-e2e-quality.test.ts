@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { evaluateFinalQuality, findWeakEvidenceSignals, type ScenarioSpec } from "../../../scripts/mission-tool-use-e2e";
+import {
+  evaluateFinalQuality,
+  findWeakAnswerSignals,
+  findWeakEvidenceSignals,
+  type ScenarioSpec,
+} from "../../../scripts/mission-tool-use-e2e";
 
 function buildSpec(): ScenarioSpec {
   return {
@@ -84,6 +89,29 @@ test("mission E2E quality gate handles long fallback phrasing without regex back
   assert.ok(
     quality.failures.includes("final answer falls back to model knowledge after tool/search/browser unavailable")
   );
+});
+
+test("natural mission weak answer gate rejects delegation-only closeouts", () => {
+  const signals = findWeakAnswerSignals(
+    [
+      "**Delegate to: explore**",
+      "Fetch both vendor pages and return full content for pricing, features, strengths, and risks comparison.",
+    ].join("\n")
+  );
+
+  assert.ok(signals.includes("delegation-only closeout"));
+});
+
+test("natural mission weak answer gate allows synthesized answers that mention delegation as evidence", () => {
+  const signals = findWeakAnswerSignals(
+    [
+      "Recommendation: choose Vendor Alpha for the browser-heavy workflow.",
+      "Evidence: the delegated browser specialist verified queue depth 11 and the analyst verified $19 pricing.",
+      "Residual risk: this is source-bounded to the checked pages.",
+    ].join("\n")
+  );
+
+  assert.ok(!signals.includes("delegation-only closeout"));
 });
 
 test("natural mission weak evidence gate ignores business-scope unverified fields near screenshot terms", () => {
