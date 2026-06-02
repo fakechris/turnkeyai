@@ -43,6 +43,15 @@ export function buildDemoRoles(variant: string) {
         modelRef: "minimax",
         modelChain: "finance_primary",
       },
+      {
+        roleId: "role-browser",
+        name: "Browser",
+        seat: "member" as const,
+        runtime: "local" as const,
+        capabilities: ["browser"],
+        modelRef: "gemini",
+        modelChain: "browser_primary",
+      },
     ];
   }
 

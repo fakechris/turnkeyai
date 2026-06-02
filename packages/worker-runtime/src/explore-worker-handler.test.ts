@@ -357,6 +357,94 @@ test("explore worker rejects private hosts before fetching", async () => {
   assert.match(result?.summary ?? "", /blocked explore URL host/i);
 });
 
+test("explore worker falls back to browser for blocked private hosts when browser is available", async () => {
+  let fetched = false;
+  let browserUrl = "";
+  const handler = new ExploreWorkerHandler({
+    fetchFn: async () => {
+      fetched = true;
+      return new Response("ok", { status: 200 });
+    },
+    browserBridge: {
+      async inspectPublicPage(url) {
+        browserUrl = url;
+        return {
+          requestedUrl: url,
+          finalUrl: url,
+          title: "Local Vendor Alpha",
+          textExcerpt: "Pricing: $19 per seat. Strength: traceable screenshots. Risk: limited API catalog.",
+          statusCode: 200,
+        };
+      },
+    },
+  });
+
+  const result = await handler.run({
+    ...buildExploreInvocationInput(),
+    packet: {
+      ...buildExploreInvocationInput().packet,
+      taskPrompt: "Inspect http://127.0.0.1:49152/vendor-alpha",
+    },
+  });
+
+  assert.equal(fetched, false);
+  assert.equal(browserUrl, "http://127.0.0.1:49152/vendor-alpha");
+  assert.equal(result?.status, "partial");
+  assert.match(result?.summary ?? "", /fell back to browser/i);
+  const payload = result?.payload as {
+    findings: string[];
+    transportAudit: { finalTransport: string; fallbackReason: string; downgraded: boolean };
+  };
+  assert.equal(payload.findings[0], "Pricing: $19 per seat.");
+  assert.equal(payload.transportAudit.finalTransport, "browser");
+  assert.equal(payload.transportAudit.downgraded, true);
+  assert.match(payload.transportAudit.fallbackReason, /blocked explore URL host/i);
+});
+
+test("explore worker keeps blocked private hosts failed when browser fallback is unavailable", async () => {
+  let browserCalled = false;
+  const handler = new ExploreWorkerHandler({
+    browserBridge: {
+      async inspectPublicPage(url) {
+        browserCalled = true;
+        return {
+          requestedUrl: url,
+          finalUrl: url,
+          title: "Should not be used",
+          textExcerpt: "",
+          statusCode: 200,
+        };
+      },
+    },
+  });
+
+  const result = await handler.run({
+    ...buildExploreInvocationInput(),
+    packet: {
+      ...buildExploreInvocationInput().packet,
+      taskPrompt: "Inspect http://127.0.0.1:49152/vendor-alpha",
+      capabilityInspection: {
+        availableWorkers: ["explore"],
+        connectorStates: [],
+        apiStates: [],
+        skillStates: [],
+        transportPreferences: [
+          {
+            capability: "explore",
+            orderedTransports: ["official_api", "business_tool", "browser"],
+          },
+        ],
+        unavailableCapabilities: [],
+        generatedAt: 1,
+      },
+    },
+  });
+
+  assert.equal(browserCalled, false);
+  assert.equal(result?.status, "failed");
+  assert.match(result?.summary ?? "", /browser fallback is not allowed/i);
+});
+
 test("explore worker can explicitly allow loopback hosts for isolated E2E fixtures", async () => {
   let fetchedUrl = "";
   const handler = new ExploreWorkerHandler({
