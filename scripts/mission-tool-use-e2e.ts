@@ -4097,7 +4097,7 @@ function findWeakAnswerSignals(text: string): string[] {
   return patterns.flatMap((item) => (item.pattern.test(text) ? [item.label] : []));
 }
 
-function findWeakEvidenceSignals(text: string, options: { browserEvidenceExpected: boolean }): string[] {
+export function findWeakEvidenceSignals(text: string, options: { browserEvidenceExpected: boolean }): string[] {
   if (!options.browserEvidenceExpected) {
     return [];
   }
@@ -4115,7 +4115,7 @@ function findWeakEvidenceSignals(text: string, options: { browserEvidenceExpecte
     {
       label: "browser evidence not verified",
       pattern:
-        /\bverification status:\s*(?:failed|incomplete)\b|\b(?:browser|rendered|DOM)\s+evidence\b[\s\S]{0,120}\b(?:not verified|unverified|unable to verify|verification incomplete)\b|\b(?:screenshot|snapshot|capture|CDP|target|tab)\b[\s\S]{0,120}\b(?:evidence|verification|capture|snapshot|extract|load)?\b[\s\S]{0,80}\b(?:not verified|unverified|unable to verify|verification incomplete)\b|\b(?:not verified|unverified|unable to verify|verification incomplete)\b[\s\S]{0,120}\b(?:browser|rendered|DOM)\s+evidence\b|\b(?:not verified|unverified|unable to verify|verification incomplete)\b[\s\S]{0,120}\b(?:screenshot|snapshot|capture|CDP|target|tab)\b/i,
+        /\bverification status:\s*(?:failed|incomplete)\b|\b(?:browser|rendered|DOM)\s+evidence\b[\s\S]{0,120}\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b|\b(?:screenshot|snapshot|capture|CDP|target|tab)\s+(?:evidence|verification|capture|snapshot|extract|load)\b[\s\S]{0,80}\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b|\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b[\s\S]{0,120}\b(?:browser|rendered|DOM)\s+evidence\b|\b(?:not verified|unverified|unable to verify|verification\s+(?:is\s+|was\s+)?incomplete)\b[\s\S]{0,120}\b(?:screenshot|snapshot|capture|CDP|target|tab)\s+(?:evidence|verification|capture|snapshot|extract|load)\b/i,
     },
     {
       label: "browser transport degraded",
