@@ -179,10 +179,40 @@ function checkInstalledCliCommand(): CheckResult {
       detail: "turnkeyai command is on PATH",
     };
   }
+  const sourceEntry = resolveSourceCheckoutEntry(process.cwd());
+  if (sourceEntry) {
+    return {
+      name: "installed cli",
+      status: "warn",
+      detail: [
+        "turnkeyai command not on PATH; source checkout entry is available.",
+        `Open ${sourceEntry.launcherPath}, run 'npm run app -- --no-open',`,
+        "or run 'npm run install:local-cli' to link the turnkeyai command.",
+      ].join(" "),
+    };
+  }
   return {
     name: "installed cli",
     status: "warn",
-    detail: "turnkeyai command not on PATH; use npm run app, npm run daemon:status, npx @turnkeyai/cli app, or npm run install:local-cli",
+    detail: "turnkeyai command not on PATH; use 'npx @turnkeyai/cli app' or install with 'npm install -g @turnkeyai/cli'",
+  };
+}
+
+function resolveSourceCheckoutEntry(cwd: string): { launcherPath: string } | null {
+  const packageJsonPath = path.join(cwd, "package.json");
+  const cliSourcePath = path.join(cwd, "packages", "cli", "src", "cli.ts");
+  if (!existsSync(packageJsonPath) || !existsSync(cliSourcePath)) return null;
+  try {
+    const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
+    if (pkg.name !== "turnkeyai") return null;
+  } catch {
+    return null;
+  }
+  const bundledLauncherPath = path.join(cwd, "launchers", "TurnkeyAI Mission Control.command");
+  return {
+    launcherPath: existsSync(bundledLauncherPath)
+      ? bundledLauncherPath
+      : path.join(cwd, "launchers", "TurnkeyAI Mission Control.command"),
   };
 }
 
