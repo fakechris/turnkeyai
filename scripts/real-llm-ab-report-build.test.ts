@@ -97,6 +97,47 @@ test("real LLM A/B report builder emits a checkable report from natural and refe
   }
 });
 
+test("real LLM A/B report builder accepts natural artifact summaries as browser evidence", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
+  try {
+    writeFixtureFiles(dir);
+    const naturalPath = path.join(dir, "turnkeyai-natural.json");
+    const natural = JSON.parse(readFileSync(naturalPath, "utf8")) as {
+      scenarios: Array<{ artifacts: unknown }>;
+    };
+    natural.scenarios[0]!.artifacts = {
+      count: 7,
+      withLifecycle: 7,
+      kinds: ["screenshot", "snapshot"],
+    };
+    writeFileSync(naturalPath, JSON.stringify(natural));
+
+    const report = buildRealLlmAbAcceptanceReport(
+      {
+        turnkeyaiNaturalReportPath: "turnkeyai-natural.json",
+        generatedAtMs: 1,
+        scenarios: [
+          {
+            scenarioId: "browser-dynamic",
+            turnkeyaiScenarioId: "natural-browser-dynamic-page",
+            prompt: NATURAL_BROWSER_PROMPT,
+            requiresBrowser: true,
+            referenceArtifactPath: "reference-browser.json",
+          },
+        ],
+      },
+      { specDir: dir }
+    );
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.scenarios[0]?.turnkeyai.browserEvidence.screenshotCount, 1);
+    assert.equal(report.scenarios[0]?.turnkeyai.browserEvidence.snapshotCount, 1);
+    assert.equal(validateRealLlmAbAcceptanceReport(report).status, "passed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B report builder preserves reference weakness without treating it as a core loss", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
