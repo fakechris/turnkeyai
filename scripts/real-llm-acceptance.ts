@@ -556,6 +556,7 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
       throw new Error("real acceptance passed without a natural mission E2E report artifact");
     }
     assertScenarioCoverage("natural mission", input.naturalMissionScenarios, input.naturalMissionReport.scenarioIds ?? []);
+    const naturalProofsByScenario = buildNaturalProofQueues(input.naturalMissionReport);
     if (
       input.naturalMissionReport.status !== "passed" ||
       input.naturalMissionReport.scenarioCount !== input.naturalMissionScenarios.length ||
@@ -569,11 +570,13 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
       input.naturalMissionReport.stuckOrLoop > 0 ||
       // weakAnswerSignals may include scenario-allowed bounded closeouts;
       // natural.status carries blocking weak-answer failures.
-      input.naturalMissionReport.browserProfileFallbacks > 0 ||
       input.naturalMissionReport.livenessActive > 0 ||
       input.naturalMissionReport.livenessWaiting > 0 ||
       input.naturalMissionReport.livenessStale > 0 ||
-      input.naturalMissionReport.evidenceEvents < input.naturalMissionReport.scenarioCount
+      input.naturalMissionReport.evidenceEvents < input.naturalMissionReport.scenarioCount ||
+      !input.naturalMissionScenarios.every((scenario) =>
+        hasProvenNaturalMissionScenario(scenario, naturalProofsByScenario.get(scenario)?.shift())
+      )
     ) {
       throw new Error("real acceptance natural mission report does not prove a passing capability gate");
     }
@@ -632,6 +635,113 @@ function hasProvenToolUseScenario(
     return proof.sessionsSpawned >= 2 && proof.childTranscriptMessages >= 4;
   }
   return true;
+}
+
+function hasProvenNaturalMissionScenario(
+  scenario: string,
+  proof:
+    | NonNullable<NonNullable<ReturnType<typeof summarizeNaturalMissionE2eReportForValidationOps>>["scenarioProofs"]>[number]
+    | undefined
+): boolean {
+  if (
+    !proof?.passed ||
+    !proof.completed ||
+    proof.stuckOrLoop ||
+    !proof.reasonableToolUse ||
+    !proof.subAgentCompleted ||
+    !proof.finalAnswerHasEvidence ||
+    !proof.finalAnswerUseful ||
+    proof.livenessActive > 0 ||
+    proof.livenessWaiting > 0 ||
+    proof.livenessStale > 0 ||
+    proof.evidenceEvents < 1 ||
+    !proof.sourceResidualRiskVisible ||
+    proof.sourceUnsupportedClaims > 0 ||
+    proof.sourceAnswerTermsMissing > 0 ||
+    proof.sourceAnswerPatternsMissing > 0 ||
+    proof.sourceEvidencePatternsMissing > 0 ||
+    (scenario !== "natural-browser-profile-lock-recovery" && proof.browserProfileFallbacks > 0)
+  ) {
+    return false;
+  }
+  if (isNaturalBrowserActiveScenario(scenario) && !proof.browserUsed) {
+    return false;
+  }
+  if (scenario === "natural-approval-dry-run-action") {
+    return (
+      proof.approvalExercised &&
+      proof.approvalsRequested >= 1 &&
+      proof.approvalsDecided >= 1 &&
+      proof.approvalsApplied >= 1
+    );
+  }
+  if (scenario === "natural-approval-denied-safe-closeout" || scenario === "natural-approval-pending-state") {
+    return proof.approvalExercised && proof.approvalsRequested >= 1;
+  }
+  if (scenario.includes("followup") || scenario.includes("continuation")) {
+    if (proof.sessionsSpawned < 1 || proof.sessionsContinued < 1) {
+      return false;
+    }
+  }
+  if (scenario === "natural-long-delegation") {
+    if (proof.sessionsSpawned < 2) {
+      return false;
+    }
+  }
+  if (scenario === "natural-browser-profile-lock-recovery" && proof.browserProfileFallbacks < 1) {
+    return false;
+  }
+  if (scenario.includes("timeout")) {
+    if (proof.toolFailed < 1 || proof.toolTimeouts < 1) {
+      return false;
+    }
+  }
+  if (scenario.includes("cancel")) {
+    if (proof.toolCancelled < 1) {
+      return false;
+    }
+  }
+  if (isNaturalBrowserFailureCloseoutScenario(scenario)) {
+    if (proof.browserFailureBuckets < 1 || proof.recoveryEvents < 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function buildNaturalProofQueues(
+  report: NonNullable<ReturnType<typeof summarizeNaturalMissionE2eReportForValidationOps>>
+): Map<
+  string,
+  Array<
+    NonNullable<NonNullable<ReturnType<typeof summarizeNaturalMissionE2eReportForValidationOps>>["scenarioProofs"]>[number]
+  >
+> {
+  const queues = new Map<
+    string,
+    Array<
+      NonNullable<NonNullable<ReturnType<typeof summarizeNaturalMissionE2eReportForValidationOps>>["scenarioProofs"]>[number]
+    >
+  >();
+  for (const proof of report.scenarioProofs ?? []) {
+    const queue = queues.get(proof.scenario) ?? [];
+    queue.push(proof);
+    queues.set(proof.scenario, queue);
+  }
+  return queues;
+}
+
+function isNaturalBrowserActiveScenario(scenario: string): boolean {
+  return scenario.startsWith("natural-browser-") && !isNaturalBrowserFailureCloseoutScenario(scenario);
+}
+
+function isNaturalBrowserFailureCloseoutScenario(scenario: string): boolean {
+  return (
+    scenario === "natural-browser-unavailable-closeout" ||
+    scenario === "natural-browser-cdp-timeout-closeout" ||
+    scenario === "natural-browser-detached-target-closeout" ||
+    scenario === "natural-browser-attach-failed-closeout"
+  );
 }
 
 function summarizeTooluseJson(tooluseJsonPath: string): ReturnType<typeof summarizeToolUseE2eReportForValidationOps> {

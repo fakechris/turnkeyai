@@ -682,8 +682,8 @@ function hasProvenNaturalMissionAcceptanceReport(details: ValidationOpsRealAccep
   if (!aggregateProven) {
     return false;
   }
-  const proofByScenario = new Map((report.scenarioProofs ?? []).map((proof) => [proof.scenario, proof]));
-  return scenarios.every((scenario) => hasProvenNaturalMissionScenario(scenario, proofByScenario.get(scenario)));
+  const proofQueuesByScenario = buildNaturalProofQueues(report);
+  return scenarios.every((scenario) => hasProvenNaturalMissionScenario(scenario, proofQueuesByScenario.get(scenario)?.shift()));
 }
 
 function hasProvenNaturalMissionScenario(
@@ -698,7 +698,6 @@ function hasProvenNaturalMissionScenario(
     !proof.subAgentCompleted ||
     !proof.finalAnswerHasEvidence ||
     !proof.finalAnswerUseful ||
-    proof.weakAnswerSignals > 0 ||
     proof.livenessActive > 0 ||
     proof.livenessWaiting > 0 ||
     proof.livenessStale > 0 ||
@@ -768,6 +767,24 @@ function isNaturalBrowserFailureCloseoutScenario(scenario: string): boolean {
     scenario === "natural-browser-detached-target-closeout" ||
     scenario === "natural-browser-attach-failed-closeout"
   );
+}
+
+function buildNaturalProofQueues(
+  report: NonNullable<ValidationOpsRealAcceptanceDetails["naturalMissionReport"]>
+): Map<
+  string,
+  Array<NonNullable<NonNullable<ValidationOpsRealAcceptanceDetails["naturalMissionReport"]>["scenarioProofs"]>[number]>
+> {
+  const queues = new Map<
+    string,
+    Array<NonNullable<NonNullable<ValidationOpsRealAcceptanceDetails["naturalMissionReport"]>["scenarioProofs"]>[number]>
+  >();
+  for (const proof of report.scenarioProofs ?? []) {
+    const queue = queues.get(proof.scenario) ?? [];
+    queue.push(proof);
+    queues.set(proof.scenario, queue);
+  }
+  return queues;
 }
 
 function sameStringMultiset(left: readonly string[], right: readonly string[]): boolean {

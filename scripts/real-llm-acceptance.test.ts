@@ -407,6 +407,52 @@ test("real acceptance integrity rejects incomplete artifacts and weak natural qu
     /natural mission report does not prove/
   );
 
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
+        naturalMissionScenarios: ["natural-browser-dynamic-page"],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: true,
+        missionReport: passingMissionReport(),
+        naturalMissionReport: passingNaturalMissionReport({
+          scenarioIds: ["natural-browser-dynamic-page"],
+          browserUsed: 1,
+          scenarioProofs: [
+            {
+              ...passingNaturalMissionScenarioProof("natural-browser-dynamic-page"),
+              browserUsed: false,
+            },
+          ],
+        }),
+      }),
+    /natural mission report does not prove/
+  );
+
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        missionScenarios: ["comparison"],
+        naturalMissionScenarios: ["natural-comparison-research", "natural-comparison-research"],
+        missionJsonPresent: true,
+        naturalMissionJsonPresent: true,
+        missionReport: passingMissionReport(),
+        naturalMissionReport: passingNaturalMissionReport({
+          scenarioIds: ["natural-comparison-research", "natural-comparison-research"],
+          scenarioProofs: [
+            passingNaturalMissionScenarioProof("natural-comparison-research"),
+            {
+              ...passingNaturalMissionScenarioProof("natural-comparison-research"),
+              passed: false,
+            },
+          ],
+        }),
+      }),
+    /natural mission report does not prove/
+  );
+
   assert.doesNotThrow(() =>
     assertRealAcceptanceArtifactIntegrity({
       status: "passed",
@@ -418,6 +464,26 @@ test("real acceptance integrity rejects incomplete artifacts and weak natural qu
       naturalMissionReport: passingNaturalMissionReport({
         scenarioIds: ["natural-browser-unavailable-closeout"],
         weakAnswerSignals: 1,
+        scenarioProofs: [
+          {
+            ...passingNaturalMissionScenarioProof("natural-browser-unavailable-closeout"),
+            weakAnswerSignals: 1,
+          },
+        ],
+      }),
+    })
+  );
+
+  assert.doesNotThrow(() =>
+    assertRealAcceptanceArtifactIntegrity({
+      status: "passed",
+      missionScenarios: ["comparison"],
+      naturalMissionScenarios: ["natural-browser-profile-lock-recovery"],
+      missionJsonPresent: true,
+      naturalMissionJsonPresent: true,
+      missionReport: passingMissionReport(),
+      naturalMissionReport: passingNaturalMissionReport({
+        scenarioIds: ["natural-browser-profile-lock-recovery"],
       }),
     })
   );
@@ -460,36 +526,7 @@ test("real acceptance integrity accepts passing mission and natural summaries", 
         recoveryEvents: 0,
       },
       naturalMissionReport: {
-        status: "passed",
-        scenarioCount: 1,
-        scenarioIds: ["natural-comparison-research"],
-        passedScenarios: 1,
-        failedScenarios: 0,
-        completed: 1,
-        stuckOrLoop: 0,
-        reasonableToolUse: 1,
-        browserUsed: 0,
-        subAgentCompleted: 1,
-        approvalExercised: 0,
-        finalAnswerHasEvidence: 1,
-        finalAnswerUseful: 1,
-        weakAnswerSignals: 0,
-        toolRequested: 1,
-        toolResults: 1,
-        toolFailed: 0,
-        toolCancelled: 0,
-        toolTimeouts: 0,
-        sessionsSpawned: 1,
-        sessionsContinued: 0,
-        browserProfileFallbacks: 0,
-        approvalsRequested: 0,
-        approvalsDecided: 0,
-        approvalsApplied: 0,
-        livenessActive: 0,
-        livenessWaiting: 0,
-        livenessStale: 0,
-        evidenceEvents: 1,
-        recoveryEvents: 0,
+        ...passingNaturalMissionReport(),
       },
     })
   );
@@ -564,29 +601,87 @@ function passingTooluseReport(
 function passingNaturalMissionReport(
   overrides: Partial<NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["naturalMissionReport"]>> = {}
 ): NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["naturalMissionReport"]> {
+  const scenarioIds = overrides.scenarioIds ?? ["natural-comparison-research"];
+  const scenarioProofs = overrides.scenarioProofs ?? scenarioIds.map(passingNaturalMissionScenarioProof);
   return {
     status: "passed",
-    scenarioCount: 1,
-    scenarioIds: ["natural-comparison-research"],
-    passedScenarios: 1,
+    scenarioCount: scenarioIds.length,
+    scenarioIds,
+    passedScenarios: scenarioIds.length,
     failedScenarios: 0,
-    completed: 1,
+    completed: scenarioIds.length,
     stuckOrLoop: 0,
-    reasonableToolUse: 1,
-    browserUsed: 0,
-    subAgentCompleted: 1,
-    approvalExercised: 0,
-    finalAnswerHasEvidence: 1,
-    finalAnswerUseful: 1,
+    reasonableToolUse: scenarioIds.length,
+    browserUsed: scenarioProofs.filter((proof) => proof.browserUsed).length,
+    subAgentCompleted: scenarioIds.length,
+    approvalExercised: scenarioProofs.filter((proof) => proof.approvalExercised).length,
+    finalAnswerHasEvidence: scenarioIds.length,
+    finalAnswerUseful: scenarioIds.length,
     weakAnswerSignals: 0,
-    toolRequested: 1,
-    toolResults: 1,
+    toolRequested: scenarioIds.length,
+    toolResults: scenarioIds.length,
+    toolFailed: scenarioProofs.reduce((sum, proof) => sum + proof.toolFailed, 0),
+    toolCancelled: scenarioProofs.reduce((sum, proof) => sum + proof.toolCancelled, 0),
+    toolTimeouts: scenarioProofs.reduce((sum, proof) => sum + proof.toolTimeouts, 0),
+    sessionsSpawned: scenarioProofs.reduce((sum, proof) => sum + proof.sessionsSpawned, 0),
+    sessionsContinued: scenarioProofs.reduce((sum, proof) => sum + proof.sessionsContinued, 0),
+    browserProfileFallbacks: scenarioProofs.reduce((sum, proof) => sum + proof.browserProfileFallbacks, 0),
+    browserFailureBuckets: scenarioProofs.reduce((sum, proof) => sum + proof.browserFailureBuckets, 0),
+    approvalsRequested: scenarioProofs.reduce((sum, proof) => sum + proof.approvalsRequested, 0),
+    approvalsDecided: scenarioProofs.reduce((sum, proof) => sum + proof.approvalsDecided, 0),
+    approvalsApplied: scenarioProofs.reduce((sum, proof) => sum + proof.approvalsApplied, 0),
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    evidenceEvents: scenarioIds.length,
+    sourceAnswerTermsCovered: scenarioIds.length,
+    sourceAnswerTermsTotal: scenarioIds.length,
+    sourceAnswerTermsMissing: 0,
+    sourceAnswerPatternsCovered: scenarioIds.length,
+    sourceAnswerPatternsTotal: scenarioIds.length,
+    sourceAnswerPatternsMissing: 0,
+    sourceEvidencePatternsCovered: scenarioIds.length,
+    sourceEvidencePatternsTotal: scenarioIds.length,
+    sourceEvidencePatternsMissing: 0,
+    sourceEvidenceEventsObserved: scenarioIds.length,
+    sourceEvidenceEventsRequired: scenarioIds.length,
+    sourceResidualRiskVisible: scenarioIds.length,
+    sourceUnsupportedClaims: 0,
+    recoveryEvents: scenarioProofs.reduce((sum, proof) => sum + proof.recoveryEvents, 0),
+    scenarioProofs,
+    ...overrides,
+  };
+}
+
+function passingNaturalMissionScenarioProof(
+  scenario: string
+): NonNullable<
+  NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["naturalMissionReport"]>["scenarioProofs"]
+>[number] {
+  const isBrowserFailureCloseout =
+    scenario === "natural-browser-unavailable-closeout" ||
+    scenario === "natural-browser-cdp-timeout-closeout" ||
+    scenario === "natural-browser-detached-target-closeout" ||
+    scenario === "natural-browser-attach-failed-closeout";
+  const base = {
+    scenario,
+    passed: true,
+    completed: true,
+    stuckOrLoop: false,
+    reasonableToolUse: true,
+    browserUsed: scenario.startsWith("natural-browser-") && !isBrowserFailureCloseout,
+    subAgentCompleted: true,
+    approvalExercised: false,
+    finalAnswerHasEvidence: true,
+    finalAnswerUseful: true,
+    weakAnswerSignals: 0,
     toolFailed: 0,
     toolCancelled: 0,
     toolTimeouts: 0,
-    sessionsSpawned: 1,
-    sessionsContinued: 0,
-    browserProfileFallbacks: 0,
+    sessionsSpawned: scenario === "natural-long-delegation" ? 2 : 1,
+    sessionsContinued: scenario.includes("followup") || scenario.includes("continuation") ? 1 : 0,
+    browserProfileFallbacks: scenario === "natural-browser-profile-lock-recovery" ? 1 : 0,
+    browserFailureBuckets: isBrowserFailureCloseout ? 1 : 0,
     approvalsRequested: 0,
     approvalsDecided: 0,
     approvalsApplied: 0,
@@ -594,20 +689,42 @@ function passingNaturalMissionReport(
     livenessWaiting: 0,
     livenessStale: 0,
     evidenceEvents: 1,
-    sourceAnswerTermsCovered: 1,
-    sourceAnswerTermsTotal: 1,
-    sourceAnswerTermsMissing: 0,
-    sourceAnswerPatternsCovered: 1,
-    sourceAnswerPatternsTotal: 1,
-    sourceAnswerPatternsMissing: 0,
-    sourceEvidencePatternsCovered: 1,
-    sourceEvidencePatternsTotal: 1,
-    sourceEvidencePatternsMissing: 0,
-    sourceEvidenceEventsObserved: 1,
-    sourceEvidenceEventsRequired: 1,
-    sourceResidualRiskVisible: 1,
+    recoveryEvents: isBrowserFailureCloseout ? 1 : 0,
+    sourceResidualRiskVisible: true,
     sourceUnsupportedClaims: 0,
-    recoveryEvents: 0,
-    ...overrides,
+    sourceAnswerTermsMissing: 0,
+    sourceAnswerPatternsMissing: 0,
+    sourceEvidencePatternsMissing: 0,
   };
+  if (scenario === "natural-approval-dry-run-action") {
+    return {
+      ...base,
+      approvalExercised: true,
+      approvalsRequested: 1,
+      approvalsDecided: 1,
+      approvalsApplied: 1,
+    };
+  }
+  if (scenario === "natural-approval-denied-safe-closeout" || scenario === "natural-approval-pending-state") {
+    return {
+      ...base,
+      approvalExercised: true,
+      approvalsRequested: 1,
+      approvalsDecided: scenario === "natural-approval-denied-safe-closeout" ? 1 : 0,
+    };
+  }
+  if (scenario.includes("timeout")) {
+    return {
+      ...base,
+      toolFailed: 1,
+      toolTimeouts: 1,
+    };
+  }
+  if (scenario.includes("cancel")) {
+    return {
+      ...base,
+      toolCancelled: 1,
+    };
+  }
+  return base;
 }
