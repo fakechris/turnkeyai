@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ValidationOpsRunRecord } from "../api/types";
-import { formatRealAcceptanceCoverageSummary, formatRealAcceptanceNaturalSummary } from "./RuntimePage";
+import {
+  formatNaturalScenarioProofSummary,
+  formatRealAcceptanceCoverageSummary,
+  formatRealAcceptanceNaturalSummary,
+} from "./RuntimePage";
 
 function runWithNaturalReport(
   naturalMissionReport: NonNullable<NonNullable<ValidationOpsRunRecord["realAcceptance"]>["naturalMissionReport"]>
@@ -25,7 +29,7 @@ function runWithNaturalReport(
         status: "focused",
         tooluse: { status: "focused", requested: 1, expected: 5, missing: 4 },
         mission: { status: "focused", requested: 1, expected: 12, missing: 11 },
-        naturalMission: { status: "focused", requested: 1, expected: 20, missing: 19 },
+        naturalMission: { status: "focused", requested: 1, expected: 21, missing: 20 },
       },
       naturalMissionReport,
     },
@@ -136,7 +140,48 @@ test("formatRealAcceptanceCoverageSummary distinguishes focused gates from relea
       finalAnswerHasEvidence: 1,
       finalAnswerUseful: 1,
     } as unknown as NonNullable<NonNullable<ValidationOpsRunRecord["realAcceptance"]>["naturalMissionReport"]>)),
-    "focused gate · tool-use 1/5 (missing 4) · mission 1/12 (missing 11) · natural 1/20 (missing 19)"
+    "focused gate · tool-use 1/5 (missing 4) · mission 1/12 (missing 11) · natural 1/21 (missing 20)"
+  );
+});
+
+test("formatNaturalScenarioProofSummary surfaces per-scenario proof signals", () => {
+  const summary = formatNaturalScenarioProofSummary({
+    scenario: "natural-browser-dashboard-task",
+    passed: true,
+    completed: true,
+    stuckOrLoop: false,
+    reasonableToolUse: true,
+    browserUsed: true,
+    subAgentCompleted: true,
+    approvalExercised: true,
+    finalAnswerHasEvidence: true,
+    finalAnswerUseful: true,
+    weakAnswerSignals: 0,
+    toolFailed: 1,
+    toolCancelled: 0,
+    toolTimeouts: 1,
+    sessionsSpawned: 1,
+    sessionsContinued: 0,
+    browserProfileFallbacks: 1,
+    browserFailureBuckets: 1,
+    approvalsRequested: 1,
+    approvalsDecided: 1,
+    approvalsApplied: 0,
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    evidenceEvents: 2,
+    recoveryEvents: 1,
+    sourceResidualRiskVisible: true,
+    sourceUnsupportedClaims: 0,
+    sourceAnswerTermsMissing: 1,
+    sourceAnswerPatternsMissing: 0,
+    sourceEvidencePatternsMissing: 2,
+  });
+
+  assert.equal(
+    summary,
+    "status passed · browser yes · sessions 1/0 · evidence 2 · useful yes · risk yes · missing 3 · approval 1/1/0 · tool f/t/c 1/1/0 · browser recovery 1/1"
   );
 });
 

@@ -13,6 +13,7 @@ import type {
   DiagnosticsLogs,
   DiagnosticsSnapshot,
   RuntimeSummaryReport,
+  ValidationOpsRunRecord,
   ValidationOpsReport,
   ValidationOpsStatus,
 } from "../api/types";
@@ -628,6 +629,43 @@ function formatScenarioCoverage(coverage: {
   return coverage.missing > 0 ? `${base} (missing ${coverage.missing})` : base;
 }
 
+type NaturalScenarioProof = NonNullable<
+  NonNullable<NonNullable<ValidationOpsRunRecord["realAcceptance"]>["naturalMissionReport"]>["scenarioProofs"]
+>[number];
+
+export function formatNaturalScenarioProofSummary(proof: NaturalScenarioProof): string {
+  const status = proof.passed ? "passed" : "failed";
+  const signals = [
+    `status ${status}`,
+    `browser ${proof.browserUsed ? "yes" : "no"}`,
+    `sessions ${countOrZero(proof.sessionsSpawned)}/${countOrZero(proof.sessionsContinued)}`,
+    `evidence ${countOrZero(proof.evidenceEvents)}`,
+    `useful ${proof.finalAnswerUseful ? "yes" : "no"}`,
+    `risk ${proof.sourceResidualRiskVisible ? "yes" : "no"}`,
+    `missing ${naturalScenarioMissingCoverage(proof)}`,
+  ];
+  if (proof.approvalExercised) {
+    signals.push(
+      `approval ${countOrZero(proof.approvalsRequested)}/${countOrZero(proof.approvalsDecided)}/${countOrZero(proof.approvalsApplied)}`
+    );
+  }
+  if (countOrZero(proof.toolFailed) > 0 || countOrZero(proof.toolTimeouts) > 0 || countOrZero(proof.toolCancelled) > 0) {
+    signals.push(`tool f/t/c ${countOrZero(proof.toolFailed)}/${countOrZero(proof.toolTimeouts)}/${countOrZero(proof.toolCancelled)}`);
+  }
+  if (countOrZero(proof.browserFailureBuckets) > 0 || countOrZero(proof.browserProfileFallbacks) > 0) {
+    signals.push(`browser recovery ${countOrZero(proof.browserFailureBuckets)}/${countOrZero(proof.browserProfileFallbacks)}`);
+  }
+  return signals.join(" · ");
+}
+
+function naturalScenarioMissingCoverage(proof: NaturalScenarioProof): number {
+  return (
+    countOrZero(proof.sourceAnswerTermsMissing) +
+    countOrZero(proof.sourceAnswerPatternsMissing) +
+    countOrZero(proof.sourceEvidencePatternsMissing)
+  );
+}
+
 function countOrZero(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -825,6 +863,16 @@ function ValidationOpsCard({
                     {formatRealAcceptanceNaturalSummary(run) ? (
                       <div className="runtime-health-action">
                         natural report: {formatRealAcceptanceNaturalSummary(run)}
+                      </div>
+                    ) : null}
+                    {run.realAcceptance?.naturalMissionReport?.scenarioProofs?.slice(0, 4).map((proof, proofIndex) => (
+                      <div key={`${run.runId}:${proof.scenario}:${proofIndex}`} className="runtime-health-action">
+                        natural proof · <span className="mono">{proof.scenario}</span>: {formatNaturalScenarioProofSummary(proof)}
+                      </div>
+                    ))}
+                    {countOrZero(run.realAcceptance?.naturalMissionReport?.scenarioProofs?.length) > 4 ? (
+                      <div className="runtime-health-action">
+                        natural proof · {countOrZero(run.realAcceptance?.naturalMissionReport?.scenarioProofs?.length) - 4} more scenario(s)
                       </div>
                     ) : null}
                   </div>
