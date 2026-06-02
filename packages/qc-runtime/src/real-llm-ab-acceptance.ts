@@ -131,6 +131,12 @@ export interface RealLlmAbAcceptanceValidation {
   summary: RealLlmAbAcceptanceSummary | null;
 }
 
+export type RealLlmAbRequiredSuite = "core";
+
+export interface RealLlmAbAcceptanceValidationOptions {
+  requiredSuite?: RealLlmAbRequiredSuite;
+}
+
 export const REAL_LLM_AB_DIMENSION_KEYS = [
   "taskCompletion",
   "evidenceQuality",
@@ -142,6 +148,46 @@ export const REAL_LLM_AB_DIMENSION_KEYS = [
   "timeoutCloseoutQuality",
   "finalAnswerUsefulness",
 ] as const satisfies readonly RealLlmAbDimensionKey[];
+
+export const REAL_LLM_AB_CORE_SUITE_REQUIREMENTS = [
+  {
+    key: "comparison-research",
+    acceptedScenarioIds: ["comparison-research", "natural-comparison-research"],
+  },
+  {
+    key: "browser-dynamic-page",
+    acceptedScenarioIds: ["browser-dynamic-page", "natural-browser-dynamic-page"],
+  },
+  {
+    key: "followup-continuation",
+    acceptedScenarioIds: [
+      "followup-continuation",
+      "natural-followup-continuation",
+      "natural-browser-followup-continuation",
+    ],
+  },
+  {
+    key: "approval-dry-run-action",
+    acceptedScenarioIds: ["approval-dry-run-action", "natural-approval-dry-run-action"],
+  },
+  {
+    key: "long-delegation",
+    acceptedScenarioIds: ["long-delegation", "natural-long-delegation"],
+  },
+  {
+    key: "timeout-closeout",
+    acceptedScenarioIds: [
+      "timeout-closeout",
+      "timeout-partial-closeout",
+      "natural-timeout-partial-closeout",
+      "natural-timeout-followup-continuation",
+    ],
+  },
+  {
+    key: "memory-recall",
+    acceptedScenarioIds: ["memory-recall", "natural-memory-recall"],
+  },
+] as const;
 
 const CORE_LOSS_DIMENSIONS = new Set<RealLlmAbDimensionKey>([
   "taskCompletion",
@@ -180,7 +226,10 @@ export function summarizeRealLlmAbAcceptanceReport(report: unknown): RealLlmAbAc
   };
 }
 
-export function validateRealLlmAbAcceptanceReport(report: unknown): RealLlmAbAcceptanceValidation {
+export function validateRealLlmAbAcceptanceReport(
+  report: unknown,
+  options: RealLlmAbAcceptanceValidationOptions = {}
+): RealLlmAbAcceptanceValidation {
   const summary = summarizeRealLlmAbAcceptanceReport(report);
   if (!summary || !isRealLlmAbAcceptanceReport(report)) {
     return { status: "failed", failures: ["not a real LLM A/B acceptance report"], summary: null };
@@ -238,6 +287,15 @@ export function validateRealLlmAbAcceptanceReport(report: unknown): RealLlmAbAcc
     }
     if (comparison.rootCauseRequired) {
       failures.push(`${comparison.scenarioId}: root-cause review required before claiming capability`);
+    }
+  }
+  if (options.requiredSuite === "core") {
+    for (const requirement of REAL_LLM_AB_CORE_SUITE_REQUIREMENTS) {
+      const acceptedScenarioIds: readonly string[] = requirement.acceptedScenarioIds;
+      const match = report.scenarios.find((scenario) => acceptedScenarioIds.includes(scenario.scenarioId));
+      if (!match) {
+        failures.push(`core suite missing required scenario: ${requirement.key}`);
+      }
     }
   }
   return {
