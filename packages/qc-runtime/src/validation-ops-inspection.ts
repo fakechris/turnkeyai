@@ -663,7 +663,7 @@ function hasProvenNaturalMissionAcceptanceReport(details: ValidationOpsRealAccep
   if (scenarios.length === 0) return true;
   const report = details.naturalMissionReport;
   if (!details.naturalArtifactPath || !report) return false;
-  return (
+  const aggregateProven =
     report.status === "passed" &&
     report.scenarioCount === scenarios.length &&
     report.passedScenarios === report.scenarioCount &&
@@ -674,12 +674,99 @@ function hasProvenNaturalMissionAcceptanceReport(details: ValidationOpsRealAccep
     report.finalAnswerHasEvidence === report.scenarioCount &&
     report.finalAnswerUseful === report.scenarioCount &&
     report.stuckOrLoop === 0 &&
-    report.browserProfileFallbacks === 0 &&
     report.livenessActive === 0 &&
     report.livenessWaiting === 0 &&
     report.livenessStale === 0 &&
     report.evidenceEvents >= report.scenarioCount &&
-    sameStringMultiset(scenarios, report.scenarioIds ?? [])
+    sameStringMultiset(scenarios, report.scenarioIds ?? []);
+  if (!aggregateProven) {
+    return false;
+  }
+  const proofByScenario = new Map((report.scenarioProofs ?? []).map((proof) => [proof.scenario, proof]));
+  return scenarios.every((scenario) => hasProvenNaturalMissionScenario(scenario, proofByScenario.get(scenario)));
+}
+
+function hasProvenNaturalMissionScenario(
+  scenario: string,
+  proof: NonNullable<NonNullable<ValidationOpsRealAcceptanceDetails["naturalMissionReport"]>["scenarioProofs"]>[number] | undefined
+): boolean {
+  if (
+    !proof?.passed ||
+    !proof.completed ||
+    proof.stuckOrLoop ||
+    !proof.reasonableToolUse ||
+    !proof.subAgentCompleted ||
+    !proof.finalAnswerHasEvidence ||
+    !proof.finalAnswerUseful ||
+    proof.weakAnswerSignals > 0 ||
+    proof.livenessActive > 0 ||
+    proof.livenessWaiting > 0 ||
+    proof.livenessStale > 0 ||
+    proof.evidenceEvents < 1 ||
+    !proof.sourceResidualRiskVisible ||
+    proof.sourceUnsupportedClaims > 0 ||
+    proof.sourceAnswerTermsMissing > 0 ||
+    proof.sourceAnswerPatternsMissing > 0 ||
+    proof.sourceEvidencePatternsMissing > 0 ||
+    (scenario !== "natural-browser-profile-lock-recovery" && proof.browserProfileFallbacks > 0)
+  ) {
+    return false;
+  }
+  if (isNaturalBrowserActiveScenario(scenario) && !proof.browserUsed) {
+    return false;
+  }
+  if (scenario === "natural-approval-dry-run-action") {
+    return (
+      proof.approvalExercised &&
+      proof.approvalsRequested >= 1 &&
+      proof.approvalsDecided >= 1 &&
+      proof.approvalsApplied >= 1
+    );
+  }
+  if (scenario === "natural-approval-denied-safe-closeout" || scenario === "natural-approval-pending-state") {
+    return proof.approvalExercised && proof.approvalsRequested >= 1;
+  }
+  if (scenario.includes("followup") || scenario.includes("continuation")) {
+    if (proof.sessionsSpawned < 1 || proof.sessionsContinued < 1) {
+      return false;
+    }
+  }
+  if (scenario === "natural-long-delegation") {
+    if (proof.sessionsSpawned < 2) {
+      return false;
+    }
+  }
+  if (scenario === "natural-browser-profile-lock-recovery" && proof.browserProfileFallbacks < 1) {
+    return false;
+  }
+  if (scenario.includes("timeout")) {
+    if (proof.toolFailed < 1 || proof.toolTimeouts < 1) {
+      return false;
+    }
+  }
+  if (scenario.includes("cancel")) {
+    if (proof.toolCancelled < 1) {
+      return false;
+    }
+  }
+  if (isNaturalBrowserFailureCloseoutScenario(scenario)) {
+    if (proof.browserFailureBuckets < 1 || proof.recoveryEvents < 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isNaturalBrowserActiveScenario(scenario: string): boolean {
+  return scenario.startsWith("natural-browser-") && !isNaturalBrowserFailureCloseoutScenario(scenario);
+}
+
+function isNaturalBrowserFailureCloseoutScenario(scenario: string): boolean {
+  return (
+    scenario === "natural-browser-unavailable-closeout" ||
+    scenario === "natural-browser-cdp-timeout-closeout" ||
+    scenario === "natural-browser-detached-target-closeout" ||
+    scenario === "natural-browser-attach-failed-closeout"
   );
 }
 
