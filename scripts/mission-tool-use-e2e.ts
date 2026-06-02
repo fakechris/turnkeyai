@@ -394,6 +394,7 @@ export interface NaturalScenarioSpec {
 export interface NaturalMissionScenarioResult {
   scenario: NaturalMissionE2eScenario;
   prompt: string;
+  durationMs?: number;
   mission: Mission;
   timeline: ActivityEvent[];
   metrics: MissionObservabilitySnapshot;
@@ -469,6 +470,7 @@ export interface NaturalMissionScenarioReport {
   scenario: NaturalMissionE2eScenario;
   prompt: string;
   missionId: string;
+  durationMs: number;
   status: string;
   threadId?: string;
   timelineEvents: number;
@@ -898,27 +900,30 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
             timeoutMs: options.scenarioTimeoutMs,
             restartDaemon,
           });
-          naturalResults.push(result);
+          const durationMs = Date.now() - scenarioStartedAt;
+          const timedResult = withNaturalScenarioDuration(result, durationMs);
+          naturalResults.push(timedResult);
           console.log(
             formatNaturalMissionScenarioPass({
-              result,
+              result: timedResult,
               index: index + 1,
               total: naturalScenarios.length,
-              durationMs: Date.now() - scenarioStartedAt,
+              durationMs,
             })
           );
-          printNaturalScenarioResult(result);
+          printNaturalScenarioResult(timedResult);
         } catch (error) {
           if (error instanceof NaturalMissionScenarioQualityError) {
-            naturalResults.push(error.result);
-            naturalQualityErrors.push(`- ${scenario}: ${error.result.quality.failures.join("; ")}`);
+            const timedResult = withNaturalScenarioDuration(error.result, Date.now() - scenarioStartedAt);
+            naturalResults.push(timedResult);
+            naturalQualityErrors.push(`- ${scenario}: ${timedResult.quality.failures.join("; ")}`);
             if (options.continueOnFailure) {
               console.error(
                 `natural mission scenario quality failed: ${scenario} (${index + 1}/${naturalScenarios.length}, ${
-                  Date.now() - scenarioStartedAt
-                }ms) failures=${error.result.quality.failures.join("; ")}`
+                  timedResult.durationMs ?? 0
+                }ms) failures=${timedResult.quality.failures.join("; ")}`
               );
-              printNaturalScenarioResult(error.result);
+              printNaturalScenarioResult(timedResult);
               continue;
             }
             if (options.jsonPath) {
@@ -4927,6 +4932,7 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
     scenario: result.scenario,
     prompt: result.prompt,
     missionId: result.mission.id,
+    durationMs: readNaturalScenarioDurationMs(result),
     status: result.mission.status,
     ...(result.mission.threadId ? { threadId: result.mission.threadId } : {}),
     timelineEvents: result.timeline.length,
@@ -4989,6 +4995,19 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
       excerpt: compactExcerpt(result.final.text, 500),
     },
   };
+}
+
+function withNaturalScenarioDuration(
+  result: NaturalMissionScenarioResult,
+  durationMs: number
+): NaturalMissionScenarioResult {
+  return { ...result, durationMs: Math.max(0, durationMs) };
+}
+
+function readNaturalScenarioDurationMs(result: NaturalMissionScenarioResult): number {
+  return typeof result.durationMs === "number" && Number.isFinite(result.durationMs)
+    ? Math.max(0, result.durationMs)
+    : 0;
 }
 
 function summarizeMissionArtifacts(

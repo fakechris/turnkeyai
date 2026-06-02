@@ -230,6 +230,22 @@ test("real LLM A/B acceptance requires each run to prove the same natural prompt
   assert.match(mismatchedPromptValidation.failures.join("\n"), /browser-dynamic-page\/turnkeyai: run prompt does not match/);
 });
 
+test("real LLM A/B acceptance requires wall-clock evidence for each run", () => {
+  const report = buildReport({
+    weakenRun: {
+      turnkeyai: (run) => {
+        const { wallClockMs: _wallClockMs, ...withoutWallClock } = run;
+        return withoutWallClock;
+      },
+    },
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report);
+
+  assert.equal(validation.status, "failed");
+  assert.match(validation.failures.join("\n"), /browser-dynamic-page\/turnkeyai: missing positive wall-clock runtime evidence/);
+});
+
 test("real LLM A/B acceptance summary rejects unrelated artifacts", () => {
   assert.equal(summarizeRealLlmAbAcceptanceReport({ kind: "other", scenarios: [] }), null);
   assert.equal(validateRealLlmAbAcceptanceReport(null).status, "failed");
