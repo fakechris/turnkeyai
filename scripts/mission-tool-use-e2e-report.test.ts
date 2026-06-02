@@ -980,6 +980,7 @@ describe("mission tool-use e2e report", () => {
     assert.ok(report.requiredQualitySignals.includes("root-cause-dimension-scores"));
     assert.ok(report.requiredQualitySignals.includes("failure-bucket-attribution"));
     assert.equal(report.status, "passed");
+    assert.equal(report.failureCollectionMode, "fail-fast");
     assert.equal(report.scenarioCount, 1);
     assert.deepEqual(report.scenarioIds, ["natural-browser-dynamic-page"]);
     assert.equal(report.passedScenarios, 1);
@@ -1010,6 +1011,35 @@ describe("mission tool-use e2e report", () => {
       unsupportedClaims: [],
     });
     assert.equal(report.scenarios[0]?.metrics.browser.profileFallbacks, 0);
+  });
+
+  it("keeps complete natural matrix evidence when quality failures are collected", () => {
+    const passing = fakeNaturalResult();
+    const failed = fakeNaturalResult();
+    failed.scenario = "natural-approval-dry-run-action";
+    failed.mission.id = "msn.natural.failed.1";
+    failed.quality.status = "failed";
+    failed.quality.failures = ["weak answer signals: browser evidence blocked"];
+    failed.quality.weakAnswerSignals = ["browser evidence blocked"];
+    failed.quality.dimensionScores.evidenceQuality = 1;
+    failed.quality.failureBuckets = ["answer_quality", "browser_reliability"];
+
+    const report = buildNaturalMissionE2eJsonReport({
+      startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
+      completedAt: Date.UTC(2026, 4, 30, 12, 0, 7),
+      results: [passing, failed],
+      failureCollectionMode: "quality-failures-collected",
+    });
+
+    assert.equal(report.status, "failed");
+    assert.equal(report.failureCollectionMode, "quality-failures-collected");
+    assert.equal(report.scenarioCount, 2);
+    assert.equal(report.passedScenarios, 1);
+    assert.equal(report.failedScenarios, 1);
+    assert.deepEqual(report.scenarioIds, ["natural-browser-dynamic-page", "natural-approval-dry-run-action"]);
+    assert.equal(report.scenarios[1]?.natural.status, "failed");
+    assert.deepEqual(report.scenarios[1]?.natural.failures, ["weak answer signals: browser evidence blocked"]);
+    assert.deepEqual(report.scenarios[1]?.natural.failureBuckets, ["answer_quality", "browser_reliability"]);
   });
 
   it("fails natural quality on weak fallback answers and missing browser evidence", () => {
