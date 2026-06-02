@@ -661,7 +661,7 @@ function hasProvenMissionAcceptanceReport(
   if (scenarios.length === 0) return true;
   const report = details.missionReport;
   if (!record.artifactPath || !report) return false;
-  return (
+  const aggregateProven =
     report.status === "passed" &&
     report.scenarioCount === scenarios.length &&
     report.passedScenarios === report.scenarioCount &&
@@ -672,8 +672,47 @@ function hasProvenMissionAcceptanceReport(
     report.livenessWaiting === 0 &&
     report.livenessStale === 0 &&
     report.evidenceEvents >= report.scenarioCount &&
-    sameStringMultiset(scenarios, report.scenarioIds ?? [])
+    sameStringMultiset(scenarios, report.scenarioIds ?? []);
+  if (!aggregateProven) {
+    return false;
+  }
+  const proofQueuesByScenario = buildMissionProofQueues(report);
+  return scenarios.every((scenario) => hasProvenMissionScenario(scenario, proofQueuesByScenario.get(scenario)?.shift()));
+}
+
+function hasProvenMissionScenario(
+  scenario: string,
+  proof: NonNullable<NonNullable<ValidationOpsRealAcceptanceDetails["missionReport"]>["scenarioProofs"]>[number] | undefined
+): boolean {
+  return Boolean(
+    proof?.scenario === scenario &&
+      proof.passed &&
+      proof.qualityFailures === 0 &&
+      proof.qualityCheckFailures === 0 &&
+      proof.sourceCoverageFailures === 0 &&
+      proof.livenessActive === 0 &&
+      proof.livenessWaiting === 0 &&
+      proof.livenessStale === 0 &&
+      proof.evidenceEvents >= 1
   );
+}
+
+function buildMissionProofQueues(
+  report: NonNullable<ValidationOpsRealAcceptanceDetails["missionReport"]>
+): Map<
+  string,
+  Array<NonNullable<NonNullable<ValidationOpsRealAcceptanceDetails["missionReport"]>["scenarioProofs"]>[number]>
+> {
+  const queues = new Map<
+    string,
+    Array<NonNullable<NonNullable<ValidationOpsRealAcceptanceDetails["missionReport"]>["scenarioProofs"]>[number]>
+  >();
+  for (const proof of report.scenarioProofs ?? []) {
+    const queue = queues.get(proof.scenario) ?? [];
+    queue.push(proof);
+    queues.set(proof.scenario, queue);
+  }
+  return queues;
 }
 
 function hasProvenNaturalMissionAcceptanceReport(details: ValidationOpsRealAcceptanceDetails): boolean {

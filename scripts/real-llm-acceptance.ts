@@ -539,6 +539,7 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
       throw new Error("real acceptance passed without a mission E2E report artifact");
     }
     assertScenarioCoverage("mission E2E", input.missionScenarios, input.missionReport.scenarioIds ?? []);
+    const missionProofsByScenario = buildMissionProofQueues(input.missionReport);
     if (
       input.missionReport.status !== "passed" ||
       input.missionReport.scenarioCount !== input.missionScenarios.length ||
@@ -549,7 +550,10 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
       input.missionReport.livenessActive > 0 ||
       input.missionReport.livenessWaiting > 0 ||
       input.missionReport.livenessStale > 0 ||
-      input.missionReport.evidenceEvents < input.missionReport.scenarioCount
+      input.missionReport.evidenceEvents < input.missionReport.scenarioCount ||
+      !input.missionScenarios.every((scenario) =>
+        hasProvenMissionScenario(scenario, missionProofsByScenario.get(scenario)?.shift())
+      )
     ) {
       throw new Error("real acceptance mission E2E report does not prove a passing capability gate");
     }
@@ -650,6 +654,43 @@ function buildToolUseProofQueues(
   const queues = new Map<
     string,
     Array<NonNullable<NonNullable<ReturnType<typeof summarizeToolUseE2eReportForValidationOps>>["scenarioProofs"]>[number]>
+  >();
+  for (const proof of report.scenarioProofs ?? []) {
+    const queue = queues.get(proof.scenario) ?? [];
+    queue.push(proof);
+    queues.set(proof.scenario, queue);
+  }
+  return queues;
+}
+
+function hasProvenMissionScenario(
+  scenario: string,
+  proof:
+    | NonNullable<NonNullable<ReturnType<typeof summarizeMissionE2eReportForValidationOps>>["scenarioProofs"]>[number]
+    | undefined
+): boolean {
+  return Boolean(
+    proof?.scenario === scenario &&
+      proof.passed &&
+      proof.qualityFailures === 0 &&
+      proof.qualityCheckFailures === 0 &&
+      proof.sourceCoverageFailures === 0 &&
+      proof.livenessActive === 0 &&
+      proof.livenessWaiting === 0 &&
+      proof.livenessStale === 0 &&
+      proof.evidenceEvents >= 1
+  );
+}
+
+function buildMissionProofQueues(
+  report: NonNullable<ReturnType<typeof summarizeMissionE2eReportForValidationOps>>
+): Map<
+  string,
+  Array<NonNullable<NonNullable<ReturnType<typeof summarizeMissionE2eReportForValidationOps>>["scenarioProofs"]>[number]>
+> {
+  const queues = new Map<
+    string,
+    Array<NonNullable<NonNullable<ReturnType<typeof summarizeMissionE2eReportForValidationOps>>["scenarioProofs"]>[number]>
   >();
   for (const proof of report.scenarioProofs ?? []) {
     const queue = queues.get(proof.scenario) ?? [];

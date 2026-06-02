@@ -212,6 +212,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       sourceCoverageFailures: 0,
       evidenceEvents: 0,
       recoveryEvents: 0,
+      scenarioProofs: [],
     };
   }
 
@@ -220,37 +221,81 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       const passing = isPassingMissionScenario(scenario);
       const scenarioId = readString(scenario.scenario);
       if (scenarioId) (summary.scenarioIds ??= []).push(scenarioId);
+      const qualityFailures = Array.isArray(scenario.final?.qualityFailures) ? scenario.final.qualityFailures.length : 0;
+      const toolRequested = readNumber(scenario.metrics?.tools?.requested);
+      const toolResults = readNumber(scenario.metrics?.tools?.results);
+      const toolFailed = readNumber(scenario.metrics?.tools?.failed);
+      const toolCancelled = readNumber(scenario.metrics?.tools?.cancelled);
+      const toolTimeouts = readNumber(scenario.metrics?.tools?.timeouts);
+      const sessionsSpawned = readNumber(scenario.metrics?.sessions?.spawned);
+      const sessionsContinued = readNumber(scenario.metrics?.sessions?.continued);
+      const browserProfileFallbacks = readNumber(scenario.metrics?.browser?.profileFallbacks);
+      const browserFailureBuckets = readBrowserFailureBucketCount(scenario.metrics?.browser?.failureBuckets);
+      const approvalsRequested = readNumber(scenario.metrics?.approvals?.requested);
+      const approvalsDecided = readNumber(scenario.metrics?.approvals?.decided);
+      const approvalsApplied = readNumber(scenario.metrics?.approvals?.applied);
+      const livenessActive = readNumber(scenario.metrics?.liveness?.active);
+      const livenessWaiting = readNumber(scenario.metrics?.liveness?.waiting);
+      const livenessStale = readNumber(scenario.metrics?.liveness?.stale);
+      const qualityChecks = readQualityChecks(scenario.metrics?.qualityChecks);
+      const qualityCheckFailures = qualityChecks.filter((check) => isBlockingQualityCheckFailure(scenario, check)).length;
+      const sourceCoverageFailures = qualityChecks.filter(
+        (check) => check.name === "source_coverage" && check.status === "fail"
+      ).length;
+      const evidenceEvents = readNumber(scenario.metrics?.evidenceEvents);
+      const recoveryEvents = readNumber(scenario.metrics?.recoveryEvents);
       summary.passedScenarios += passing ? 1 : 0;
       summary.failedScenarios += passing ? 0 : 1;
-      summary.qualityFailures += Array.isArray(scenario.final?.qualityFailures)
-        ? scenario.final.qualityFailures.length
-        : 0;
-      summary.toolRequested += readNumber(scenario.metrics?.tools?.requested);
-      summary.toolResults += readNumber(scenario.metrics?.tools?.results);
-      summary.toolFailed += readNumber(scenario.metrics?.tools?.failed);
-      summary.toolCancelled += readNumber(scenario.metrics?.tools?.cancelled);
-      summary.toolTimeouts += readNumber(scenario.metrics?.tools?.timeouts);
-      summary.sessionsSpawned += readNumber(scenario.metrics?.sessions?.spawned);
-      summary.sessionsContinued += readNumber(scenario.metrics?.sessions?.continued);
-      summary.browserProfileFallbacks += readNumber(scenario.metrics?.browser?.profileFallbacks);
-      summary.browserFailureBuckets += readBrowserFailureBucketCount(scenario.metrics?.browser?.failureBuckets);
-      summary.approvalsRequested += readNumber(scenario.metrics?.approvals?.requested);
-      summary.approvalsDecided += readNumber(scenario.metrics?.approvals?.decided);
-      summary.approvalsApplied += readNumber(scenario.metrics?.approvals?.applied);
-      summary.livenessActive += readNumber(scenario.metrics?.liveness?.active);
-      summary.livenessWaiting += readNumber(scenario.metrics?.liveness?.waiting);
-      summary.livenessStale += readNumber(scenario.metrics?.liveness?.stale);
-      const qualityChecks = readQualityChecks(scenario.metrics?.qualityChecks);
+      summary.qualityFailures += qualityFailures;
+      summary.toolRequested += toolRequested;
+      summary.toolResults += toolResults;
+      summary.toolFailed += toolFailed;
+      summary.toolCancelled += toolCancelled;
+      summary.toolTimeouts += toolTimeouts;
+      summary.sessionsSpawned += sessionsSpawned;
+      summary.sessionsContinued += sessionsContinued;
+      summary.browserProfileFallbacks += browserProfileFallbacks;
+      summary.browserFailureBuckets += browserFailureBuckets;
+      summary.approvalsRequested += approvalsRequested;
+      summary.approvalsDecided += approvalsDecided;
+      summary.approvalsApplied += approvalsApplied;
+      summary.livenessActive += livenessActive;
+      summary.livenessWaiting += livenessWaiting;
+      summary.livenessStale += livenessStale;
       summary.qualityCheckWarnings += qualityChecks.filter((check) => check.status === "warn").length;
-      summary.qualityCheckFailures += qualityChecks.filter((check) => isBlockingQualityCheckFailure(scenario, check)).length;
+      summary.qualityCheckFailures += qualityCheckFailures;
       summary.sourceCoverageWarnings += qualityChecks.filter(
         (check) => check.name === "source_coverage" && check.status === "warn"
       ).length;
-      summary.sourceCoverageFailures += qualityChecks.filter(
-        (check) => check.name === "source_coverage" && check.status === "fail"
-      ).length;
-      summary.evidenceEvents += readNumber(scenario.metrics?.evidenceEvents);
-      summary.recoveryEvents += readNumber(scenario.metrics?.recoveryEvents);
+      summary.sourceCoverageFailures += sourceCoverageFailures;
+      summary.evidenceEvents += evidenceEvents;
+      summary.recoveryEvents += recoveryEvents;
+      if (scenarioId) {
+        (summary.scenarioProofs ??= []).push({
+          scenario: scenarioId,
+          passed: passing,
+          qualityFailures,
+          toolRequested,
+          toolResults,
+          toolFailed,
+          toolCancelled,
+          toolTimeouts,
+          sessionsSpawned,
+          sessionsContinued,
+          browserProfileFallbacks,
+          browserFailureBuckets,
+          approvalsRequested,
+          approvalsDecided,
+          approvalsApplied,
+          livenessActive,
+          livenessWaiting,
+          livenessStale,
+          qualityCheckFailures,
+          sourceCoverageFailures,
+          evidenceEvents,
+          recoveryEvents,
+        });
+      }
       return summary;
     },
     {
@@ -281,6 +326,7 @@ export function summarizeMissionE2eReportForValidationOps(report: unknown): Miss
       sourceCoverageFailures: 0,
       evidenceEvents: 0,
       recoveryEvents: 0,
+      scenarioProofs: [],
     }
   );
 }

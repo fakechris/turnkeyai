@@ -441,6 +441,71 @@ test("validation ops inspection requires scenario-specific tool-use proof for fu
   assert.match(realGate?.summary ?? "", /acceptance report evidence is incomplete/);
 });
 
+test("validation ops inspection requires scenario-specific mission proof for full release readiness", () => {
+  const missionReport = passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]);
+  assert.ok(missionReport);
+  missionReport.scenarioProofs = (missionReport.scenarioProofs ?? []).map((proof) =>
+    proof.scenario === "browser-dashboard" ? { ...proof, passed: false } : proof
+  );
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-full-with-weak-mission-proof",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/tool-use.json",
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/mission.json",
+    naturalArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json",
+    tooluseReport: passingToolUseAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS]),
+    missionReport,
+    naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
+  });
+
+  const report = buildValidationOpsReport([record], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "missing");
+  assert.match(realGate?.summary ?? "", /acceptance report evidence is incomplete/);
+});
+
+test("validation ops inspection consumes duplicate mission scenario proofs by occurrence", () => {
+  const duplicateScenario = "comparison";
+  const missionScenarios = [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS, duplicateScenario];
+  const missionReport = passingMissionAcceptanceReport(missionScenarios);
+  assert.ok(missionReport);
+  let duplicateCount = 0;
+  missionReport.scenarioProofs = (missionReport.scenarioProofs ?? []).map((proof) => {
+    if (proof.scenario !== duplicateScenario) return proof;
+    duplicateCount += 1;
+    return duplicateCount === 2 ? { ...proof, passed: false } : proof;
+  });
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-duplicate-mission-proof",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios,
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/tool-use.json",
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/mission.json",
+    naturalArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json",
+    tooluseReport: passingToolUseAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS]),
+    missionReport,
+    naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
+  });
+
+  const report = buildValidationOpsReport([record], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "missing");
+  assert.match(realGate?.summary ?? "", /acceptance report evidence is incomplete/);
+});
+
 test("validation ops inspection consumes duplicate tool-use scenario proofs by occurrence", () => {
   const duplicateScenario = "basic";
   const tooluseScenarios = [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS, duplicateScenario];
@@ -1100,6 +1165,7 @@ test("validation ops inspection surfaces fresh and stale baseline status", () =>
 function passingMissionAcceptanceReport(
   scenarioIds: string[]
 ): NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["missionReport"] {
+  const scenarioProofs = scenarioIds.map((scenario) => passingMissionScenarioProof(scenario));
   return {
     status: "passed",
     scenarioCount: scenarioIds.length,
@@ -1127,6 +1193,40 @@ function passingMissionAcceptanceReport(
     sourceCoverageWarnings: 0,
     sourceCoverageFailures: 0,
     evidenceEvents: scenarioIds.length,
+    recoveryEvents: 0,
+    scenarioProofs,
+  };
+}
+
+function passingMissionScenarioProof(
+  scenario: string
+): NonNullable<
+  NonNullable<
+    NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["missionReport"]
+  >["scenarioProofs"]
+>[number] {
+  return {
+    scenario,
+    passed: true,
+    qualityFailures: 0,
+    toolRequested: 1,
+    toolResults: 1,
+    toolFailed: 0,
+    toolCancelled: 0,
+    toolTimeouts: 0,
+    sessionsSpawned: 1,
+    sessionsContinued: 0,
+    browserProfileFallbacks: 0,
+    browserFailureBuckets: 0,
+    approvalsRequested: 0,
+    approvalsDecided: 0,
+    approvalsApplied: 0,
+    livenessActive: 0,
+    livenessWaiting: 0,
+    livenessStale: 0,
+    qualityCheckFailures: 0,
+    sourceCoverageFailures: 0,
+    evidenceEvents: 1,
     recoveryEvents: 0,
   };
 }
