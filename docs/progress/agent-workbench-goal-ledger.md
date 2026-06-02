@@ -7006,3 +7006,61 @@ Convergence question:
   tail passed with clean liveness.
 - If no, next required gate: produce the same-scenario A/B report and use that
   evidence to choose the next runtime, prompt, browser, or UX PR.
+
+## Checkpoint 2026-06-02 23:13 CST — Shared Fixture Natural Gate Support
+
+Direction: unknown
+
+Execution Kernel:
+- No production agent runtime behavior changed.
+- Natural mission E2E now resolves alpha, beta, dashboard, and approval fixture
+  URLs once before scenario prompt construction. This lets the same natural
+  prompt be reused against a shared fixture in same-scenario acceptance.
+
+Result Quality:
+- Final-answer generation did not change.
+- This removes a measurement flaw: previous same-scenario evidence could use
+  different fixture URLs per system, making prompt equality and source evidence
+  invalid.
+
+Workbench UX:
+- No UI changed.
+- User-visible workbench behavior remains unproven by this checkpoint.
+
+Browser Reliability:
+- Browser runtime behavior did not change.
+- Dashboard URL overrides are now routed through the same fixture resolver,
+  which makes browser-required acceptance scenarios easier to run against a
+  shared rendered page.
+
+Acceptance Evidence:
+- Focused report tests passed:
+  `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`.
+- Typecheck passed:
+  `npm run typecheck`.
+- Shared-fixture real natural comparison passed with URL overrides:
+  `TURNKEYAI_NATURAL_ALPHA_URL=http://127.0.0.1:57293/vendor-alpha
+  TURNKEYAI_NATURAL_BETA_URL=http://127.0.0.1:57293/vendor-beta
+  npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-comparison-research --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  artifacts/evals/20260602-231047-shared-fixture-natural-comparison/natural-comparison-research.json`.
+- Real mission `msn.mpwryk3l.1`: status `done`, natural `passed`, duration
+  `35254ms`, tools `1/1`, sessions `1/0`, browser `yes`, profile fallback
+  `0`, browser buckets `none`, liveness `0/0/0`, final bytes `2333`.
+
+Regression Risk:
+- Fixture URL override validation is intentionally limited to absolute HTTP(S)
+  URLs. Invalid env values now fail the harness early instead of silently
+  producing a mismatched prompt.
+- This checkpoint does not produce the same-scenario A/B report. It only
+  removes the prompt/fixture mismatch that made previous reports too weak.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? no
+  capability claim
+- Evidence: acceptance infrastructure now supports shared fixture prompts and a
+  focused real natural run passed through the override path.
+- If no, next required gate: run both systems against the shared fixture and
+  build a strict same-scenario A/B report with wall-clock, prompt, browser, and
+  continuation evidence.

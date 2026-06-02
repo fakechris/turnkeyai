@@ -231,7 +231,7 @@ const PRODUCT_BRIDGE_SOURCE_LABEL = "Bridge capability research";
 const PRODUCT_SIGNALS_SOURCE_LABEL = "Product signals browser";
 const REALISTIC_BRIEF_FINAL_MARKER = "TURNKEYAI_MISSION_REALISTIC_BRIEF_OK";
 
-interface FixtureServer {
+export interface FixtureServer {
   server: Server;
   basicUrl: string;
   alphaUrl: string;
@@ -807,6 +807,11 @@ function printHelp(exitCode: number): never {
     "  --list-scenarios              Print scenario names and exit",
     "  --help, -h                    Show this help and exit",
     "",
+    "Natural fixture URL overrides:",
+    "  TURNKEYAI_NATURAL_ALPHA_URL, TURNKEYAI_NATURAL_BETA_URL",
+    "  TURNKEYAI_NATURAL_DASHBOARD_URL, TURNKEYAI_NATURAL_APPROVAL_URL",
+    "  TURNKEYAI_NATURAL_BROWSER_URL remains a dashboard URL alias",
+    "",
     "Scenarios:",
     `  ${MISSION_E2E_SCENARIOS.join(", ")}`,
     "Natural scenarios:",
@@ -824,8 +829,9 @@ function printHelp(exitCode: number): never {
 async function main(options: MissionToolUseE2eOptions): Promise<void> {
   const startedAt = Date.now();
   const modelCatalogPath = resolveModelCatalogPath(options.modelCatalogPath);
-  const fixture = await startFixtureServer();
-  await assertRenderedFixtureEvidenceHidden(fixture);
+  const localFixture = await startFixtureServer();
+  const fixture = applyNaturalFixtureUrlOverrides(localFixture);
+  await assertRenderedFixtureEvidenceHidden(localFixture);
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "turnkeyai-mission-e2e-"));
   const port = await allocatePort();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -3321,13 +3327,12 @@ export function buildNaturalScenarioSpec(
     };
   }
   if (scenario === "natural-browser-dynamic-page") {
-    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
     return {
       scenario,
       title: "Natural browser dynamic page review",
       desc: [
         "Review this operations dashboard as a user would see it in the browser.",
-        `Dashboard: ${dynamicUrl}`,
+        `Dashboard: ${fixture.dashboardUrl}`,
         "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
         "Summarize the operational state, escalation trigger, owner, and recommended next action for an operator.",
         "Also state the residual risk or unverified scope that remains after the browser check.",
@@ -3354,13 +3359,12 @@ export function buildNaturalScenarioSpec(
     };
   }
   if (scenario === "natural-browser-dashboard-task") {
-    const dashboardUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
     return {
       scenario,
       title: "Natural browser dashboard operator task",
       desc: [
         "An operator asks for help reading a live operations dashboard in the browser before paging anyone.",
-        `Dashboard: ${dashboardUrl}`,
+        `Dashboard: ${fixture.dashboardUrl}`,
         "The important state may appear only after client-side rendering finishes.",
         "Explain the current operational state, whether the escalation policy is triggered, who should own the next action, and what risk remains after your check.",
         "Use only evidence gathered during this mission, and separate verified dashboard facts from anything still unverified.",
@@ -3408,13 +3412,12 @@ export function buildNaturalScenarioSpec(
     };
   }
   if (scenario === "natural-browser-followup-continuation") {
-    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
     return {
       scenario,
       title: "Natural browser follow-up continuation",
       desc: [
         "Review this operations dashboard as a user would see it in the browser.",
-        `Dashboard: ${dynamicUrl}`,
+        `Dashboard: ${fixture.dashboardUrl}`,
         "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
         "Summarize the operational state, escalation trigger, owner, and recommended next action for an operator.",
         "A follow-up may ask you to continue from the same browser context and re-check the rendered dashboard state.",
@@ -3438,13 +3441,12 @@ export function buildNaturalScenarioSpec(
     };
   }
   if (scenario === "natural-browser-restart-continuation") {
-    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
     return {
       scenario,
       title: "Natural browser restart continuation",
       desc: [
         "Review this operations dashboard as a user would see it in the browser.",
-        `Dashboard: ${dynamicUrl}`,
+        `Dashboard: ${fixture.dashboardUrl}`,
         "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
         "Summarize the operational state, escalation trigger, owner, and recommended next action for an operator.",
         "The mission may be continued after a daemon restart, so preserve enough browser context for a later follow-up.",
@@ -3470,13 +3472,12 @@ export function buildNaturalScenarioSpec(
     };
   }
   if (scenario === "natural-browser-cold-recreation-continuation") {
-    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
     return {
       scenario,
       title: "Natural browser cold recreation continuation",
       desc: [
         "Review this operations dashboard as a user would see it in the browser.",
-        `Dashboard: ${dynamicUrl}`,
+        `Dashboard: ${fixture.dashboardUrl}`,
         "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
         "Summarize the operational state, escalation trigger, owner, and recommended next action for an operator.",
         "A later follow-up may need to continue even if the previous browser session is unavailable; recover by reopening the same read-only dashboard when needed.",
@@ -3509,13 +3510,12 @@ export function buildNaturalScenarioSpec(
     };
   }
   if (scenario === "natural-browser-profile-lock-recovery") {
-    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
     return {
       scenario,
       title: "Natural browser profile-lock recovery",
       desc: [
         "Review this operations dashboard through a browser-visible pass, as an operator would see it.",
-        `Dashboard: ${dynamicUrl}`,
+        `Dashboard: ${fixture.dashboardUrl}`,
         "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
         "Raw server HTML is not enough for this review.",
         "The persistent browser profile may be temporarily unavailable; recover with a safe isolated browser context if needed and keep that recovery visible.",
@@ -3714,13 +3714,12 @@ export function buildNaturalScenarioSpec(
     };
   }
   if (scenario === "natural-browser-unavailable-closeout") {
-    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
     return {
       scenario,
       title: "Natural browser unavailable closeout",
       desc: [
         "Review this operations dashboard as a user would see it in the browser.",
-        `Dashboard: ${dynamicUrl}`,
+        `Dashboard: ${fixture.dashboardUrl}`,
         "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
         "If the browser cannot be reached, close out with what was verified, what remains unverified, and the next action an operator should take.",
       ].join("\n"),
@@ -3750,13 +3749,12 @@ export function buildNaturalScenarioSpec(
     };
   }
   if (scenario === "natural-browser-cdp-timeout-closeout") {
-    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
     return {
       scenario,
       title: "Natural browser CDP timeout closeout",
       desc: [
         "Review this operations dashboard as a user would see it in the browser.",
-        `Dashboard: ${dynamicUrl}`,
+        `Dashboard: ${fixture.dashboardUrl}`,
         "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
         "If the browser times out while capturing the rendered page, close out with what was verified, what remains unverified, and the next action an operator should take.",
       ].join("\n"),
@@ -3788,13 +3786,12 @@ export function buildNaturalScenarioSpec(
     };
   }
   if (scenario === "natural-browser-detached-target-closeout") {
-    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
     return {
       scenario,
       title: "Natural browser detached target closeout",
       desc: [
         "Review this operations dashboard as a user would see it in the browser.",
-        `Dashboard: ${dynamicUrl}`,
+        `Dashboard: ${fixture.dashboardUrl}`,
         "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
         "If the browser target detaches while capturing the rendered page, close out with what was verified, what remains unverified, and the next action an operator should take.",
       ].join("\n"),
@@ -3823,13 +3820,12 @@ export function buildNaturalScenarioSpec(
     };
   }
   if (scenario === "natural-browser-attach-failed-closeout") {
-    const dynamicUrl = process.env.TURNKEYAI_NATURAL_BROWSER_URL?.trim() || fixture.dashboardUrl;
     return {
       scenario,
       title: "Natural browser attach failure closeout",
       desc: [
         "Review this operations dashboard as a user would see it in the browser.",
-        `Dashboard: ${dynamicUrl}`,
+        `Dashboard: ${fixture.dashboardUrl}`,
         "The useful evidence may be rendered by client-side JavaScript after the HTML loads.",
         "If the browser cannot attach to the target page, close out with what was verified, what remains unverified, and the next action an operator should take.",
       ].join("\n"),
@@ -5500,6 +5496,39 @@ async function startFixtureServer(): Promise<FixtureServer> {
     bridgeUrl: `http://127.0.0.1:${port}/product-bridge`,
     productSignalsUrl: `http://127.0.0.1:${port}/product-signals`,
   };
+}
+
+export function applyNaturalFixtureUrlOverrides(
+  fixture: FixtureServer,
+  env: NodeJS.ProcessEnv = process.env
+): FixtureServer {
+  return {
+    ...fixture,
+    alphaUrl: readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_ALPHA_URL, "TURNKEYAI_NATURAL_ALPHA_URL") ?? fixture.alphaUrl,
+    betaUrl: readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_BETA_URL, "TURNKEYAI_NATURAL_BETA_URL") ?? fixture.betaUrl,
+    approvalUrl:
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_APPROVAL_URL, "TURNKEYAI_NATURAL_APPROVAL_URL") ??
+      fixture.approvalUrl,
+    dashboardUrl:
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_DASHBOARD_URL, "TURNKEYAI_NATURAL_DASHBOARD_URL") ??
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_BROWSER_URL, "TURNKEYAI_NATURAL_BROWSER_URL") ??
+      fixture.dashboardUrl,
+  };
+}
+
+function readNaturalFixtureUrlOverride(value: string | undefined, name: string): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`${name} must be an absolute http(s) URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${name} must use http or https`);
+  }
+  return parsed.toString();
 }
 
 async function assertRenderedFixtureEvidenceHidden(fixture: FixtureServer): Promise<void> {
