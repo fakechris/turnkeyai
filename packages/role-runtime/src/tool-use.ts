@@ -1494,7 +1494,8 @@ async function executeSessionsSend(
 function resolveWorkerSessionRecord(
   records: WorkerSessionRecord[],
   requestedSessionKey: string,
-  callerThreadId: string
+  callerThreadId: string,
+  options: { allowSingletonMalformedFallback?: boolean } = { allowSingletonMalformedFallback: true }
 ): WorkerSessionRecord | null {
   const visibleRecords = records.filter((record) => record.context?.threadId === callerThreadId);
   const exact = visibleRecords.find((record) => record.workerRunKey === requestedSessionKey);
@@ -1542,7 +1543,11 @@ function resolveWorkerSessionRecord(
       return taskMatches[0]!;
     }
   }
-  if (isMalformedOrTruncatedSessionKey(requestedSessionKey) && visibleRecords.length === 1) {
+  if (
+    options.allowSingletonMalformedFallback !== false &&
+    isMalformedOrTruncatedSessionKey(requestedSessionKey) &&
+    visibleRecords.length === 1
+  ) {
     return visibleRecords[0]!;
   }
   return null;
@@ -1709,8 +1714,8 @@ async function executeSessionsHistory(
   workerRuntime: WorkerRuntime,
   input: RoleToolExecutionInput
 ): Promise<RoleToolExecutionResult> {
-  const sessionKey = requiredString(input.call.input.session_key);
-  if (!sessionKey) {
+  const requestedSessionKey = requiredString(input.call.input.session_key);
+  if (!requestedSessionKey) {
     return errorResult(input.call, "sessions_history requires session_key");
   }
   // codex K3.5: enforce thread ownership. workerRuntime.getState
@@ -1719,12 +1724,18 @@ async function executeSessionsHistory(
   // not-found error code so the lead can't probe for foreign session
   // existence.
   const callerThreadId = input.activation.thread.threadId;
-  const record = workerRuntime.listSessions
-    ? (await workerRuntime.listSessions()).find((r) => r.workerRunKey === sessionKey)
-    : null;
-  if (!record || record.context?.threadId !== callerThreadId) {
-    return errorResult(input.call, `session not found: ${sessionKey}`);
+  const records = workerRuntime.listSessions ? await workerRuntime.listSessions() : [];
+  // Truncated or model-abbreviated keys cannot use a direct get(id)
+  // lookup. Keep this O(N) scan scoped to the caller's thread inside
+  // resolveWorkerSessionRecord until WorkerRuntime grows an indexed
+  // canonical-key resolver.
+  const record = resolveWorkerSessionRecord(records, requestedSessionKey, callerThreadId, {
+    allowSingletonMalformedFallback: false,
+  });
+  if (!record) {
+    return errorResult(input.call, `session not found: ${requestedSessionKey}`);
   }
+  const sessionKey = record.workerRunKey;
   const state = await workerRuntime.getState(sessionKey);
   if (!state) {
     return errorResult(input.call, `session not found: ${sessionKey}`);

@@ -4589,6 +4589,232 @@ test("sessions_history falls back to legacy lastResult when durable history is a
   ]);
 });
 
+test("sessions_history resolves a unique truncated session_key against same-thread sessions", async () => {
+  const fullSessionKey = "worker:browser:task:TASK-1780419742666-2414:call_function_51fzkl5zklts_1";
+  let readStateKey: string | null = null;
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: fullSessionKey,
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "TASK-1780419742666-2414",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: fullSessionKey,
+            workerType: "browser",
+            status: "cancelled",
+            createdAt: 90,
+            updatedAt: 140,
+          },
+        },
+        {
+          workerRunKey: "worker:browser:task:TASK-1780419742666-2414:call_function_foreign_1",
+          executionToken: 2,
+          context: {
+            threadId: "thread-foreign",
+            flowId: "flow-foreign",
+            taskId: "TASK-1780419742666-2414",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-foreign",
+          },
+          state: {
+            workerRunKey: "worker:browser:task:TASK-1780419742666-2414:call_function_foreign_1",
+            workerType: "browser",
+            status: "cancelled",
+            createdAt: 90,
+            updatedAt: 140,
+          },
+        },
+      ];
+    },
+    async getState(workerRunKey: string) {
+      readStateKey = workerRunKey;
+      return {
+        workerRunKey,
+        workerType: "browser" as const,
+        status: "cancelled" as const,
+        createdAt: 90,
+        updatedAt: 140,
+        currentTaskId: "TASK-1780419742666-2414",
+        history: [
+          {
+            id: "worker-history:slow-source:assistant-final",
+            role: "assistant" as const,
+            content: "Slow source timed out; resumable follow-up required.",
+            createdAt: 140,
+            metadata: { kind: "assistant_final" },
+          },
+        ],
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-history-truncated",
+      name: "sessions_history",
+      input: {
+        session_key: "worker:browser:task:TASK-1780419742666-2414:call_function_51fzk…",
+        tail: true,
+        limit: 10,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Read slow-source history.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { session_key: string; messages: Array<{ content: string }> };
+  assert.equal(result.isError, undefined);
+  assert.equal(readStateKey, fullSessionKey);
+  assert.equal(body.session_key, fullSessionKey);
+  assert.equal(body.messages[0]?.content, "Slow source timed out; resumable follow-up required.");
+});
+
+test("sessions_history does not resolve an ambiguous truncated session_key", async () => {
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:task:TASK-1:call_function_bk111111_1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "TASK-1",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:task:TASK-1:call_function_bk111111_1",
+            workerType: "browser",
+            status: "cancelled",
+            createdAt: 90,
+            updatedAt: 140,
+          },
+        },
+        {
+          workerRunKey: "worker:browser:task:TASK-1:call_function_bk222222_1",
+          executionToken: 2,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "TASK-1",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:task:TASK-1:call_function_bk222222_1",
+            workerType: "browser",
+            status: "cancelled",
+            createdAt: 90,
+            updatedAt: 140,
+          },
+        },
+      ];
+    },
+    async getState() {
+      assert.fail("getState should not be called for an ambiguous history key");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-history-ambiguous",
+      name: "sessions_history",
+      input: {
+        session_key: "worker:browser:task:TASK-1:call_function_bk",
+        tail: true,
+        limit: 10,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Read slow-source history.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(result.content, "session not found: worker:browser:task:TASK-1:call_function_bk");
+});
+
+test("sessions_history does not resolve a foreign malformed key to the only visible session", async () => {
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:browser:task:TASK-local:call_function_local_1",
+          executionToken: 1,
+          context: {
+            threadId: "thread-1",
+            flowId: "flow-1",
+            taskId: "TASK-local",
+            roleId: "role-lead",
+            parentSpanId: "role:role:role-lead:thread:thread-1",
+          },
+          state: {
+            workerRunKey: "worker:browser:task:TASK-local:call_function_local_1",
+            workerType: "browser",
+            status: "done",
+            createdAt: 90,
+            updatedAt: 140,
+          },
+        },
+      ];
+    },
+    async getState() {
+      assert.fail("getState should not be called for a foreign malformed history key");
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({ workerRuntime, availableWorkerKinds: ["browser"] });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-history-foreign-malformed",
+      name: "sessions_history",
+      input: {
+        session_key: "work… | unrelated foreign continuation",
+        tail: true,
+        limit: 10,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Read slow-source history.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(result.content, "session not found: work… | unrelated foreign continuation");
+});
+
 test("memory_search and memory_get expose durable thread memory to the role", async () => {
   const executor = createWorkerSessionToolExecutor({
     workerRuntime: {} as WorkerRuntime,
