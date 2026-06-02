@@ -128,7 +128,10 @@ describe("daemon status", () => {
 
       assert.equal(result.code, 0);
       assert.match(result.stdout, /health:\s+ok/);
-      assert.match(result.stdout, /api auth:\s+\/bridge\/status returned HTTP 401/);
+      assert.match(result.stdout, /api auth:\s+\/bridge\/status returned HTTP 401 \(token rejected\)/);
+      assert.match(result.stdout, /turnkeyai app/);
+      assert.match(result.stdout, /npm run app -- --no-open/);
+      assert.match(result.stdout, /TURNKEYAI_DAEMON_READ_TOKEN/);
       assert.doesNotMatch(result.stdout, /transport:\s+/);
     } finally {
       server.close();

@@ -235,7 +235,7 @@ model keys, failed real-LLM validation runs, and browser transport warnings.
 | Symptom | Check |
 | --- | --- |
 | `turnkeyai: command not found` | From a source checkout, open `launchers/TurnkeyAI Mission Control.command`, run `npm run app -- --no-open`, or run `npm run install:local-cli`; outside a checkout use `npx @turnkeyai/cli app`. |
-| `Auth token required` | Reopen through `turnkeyai app`; do not manually type the bare `/app` URL. |
+| `Auth token required` | Reopen through `turnkeyai app` or `npm run app -- --no-open`; if `turnkeyai daemon status` reports token rejected, check `TURNKEYAI_DAEMON_READ_TOKEN` and `~/.turnkeyai/config.json`. |
 | Control Center stuck creating a mission | Check `turnkeyai daemon status`, Runtime readiness, and `turnkeyai daemon logs --follow`. |
 | Browser work fails immediately | Check `turnkeyai bridge status`, Chrome profile ownership, and `TURNKEYAI_BROWSER_TRANSPORT`. |
 | Direct-CDP unavailable | Confirm `TURNKEYAI_BROWSER_CDP_ENDPOINT` and run `npm run cdp:smoke -- --timeout-ms 45000`. |
