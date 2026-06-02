@@ -6912,3 +6912,97 @@ Convergence question:
   cancellation follow-up continuation, and long delegation with clean liveness.
 - Next required gate: run the broader natural core/A-B acceptance slice before
   making any production-readiness claim.
+
+## Checkpoint 2026-06-02 22:52 CST — Approval Closeout Completion Evidence
+
+Direction: unknown
+
+Execution Kernel:
+- The mission completion evaluator now treats complete approved approval
+  closeouts as terminal final answers even when the provider reports
+  `max_tokens`, matching the existing denied-approval closeout behavior.
+- The rule remains bounded: approved closeouts must mention approval/action,
+  applied permission, browser action/submission, observed evidence/result, and
+  completion or safety boundary language. Answers that say the approved action
+  was blocked or not completed still become `incomplete_final_answer`.
+- This fixes a real natural failure where permission query/result/applied and
+  browser work completed, but the mission was marked `blocked` after a
+  post-decision final answer.
+
+Result Quality:
+- The fixed scenario now reaches a useful final answer with approval evidence
+  instead of an operator-facing blocked mission.
+- This is focused capability evidence for the approval closeout path only. It
+  does not prove the full complex-task workbench goal or replace same-scenario
+  A/B acceptance.
+
+Workbench UX:
+- No UI changed.
+- User-visible impact is that an approved dry-run action can now finish as
+  `done` instead of showing a blocker after the action and final answer already
+  completed.
+
+Browser Reliability:
+- No browser transport code changed.
+- The rerun used browser work without profile fallback or browser failure
+  buckets, but browser reliability remains separately gated by dynamic-page,
+  dashboard, profile-lock, and CDP failure scenarios.
+
+Acceptance Evidence:
+- Initial broad natural core run passed the first two scenarios, then exposed
+  the approval closeout bug:
+  `natural-comparison-research` mission `msn.mpwqwgdq.1`, status `done`,
+  natural `passed`, duration `27212ms`, tools `2/2`, sessions `2/0`, browser
+  `yes`, liveness `0/0/0`;
+  `natural-browser-dynamic-page` mission `msn.mpwqx1dl.2`, status `done`,
+  natural `passed`, duration `35219ms`, tools `1/1`, sessions `1/0`, browser
+  `yes`, artifacts `5`, artifact lifecycle `5`, profile fallback `0`, browser
+  buckets `none`, liveness `0/0/0`;
+  `natural-approval-dry-run-action` mission `msn.mpwqxsju.3` ended `blocked`
+  with `mission.incomplete_final_answer` after permission result/applied and
+  browser session completion.
+- Focused tests passed as part of the repo test glob:
+  `npm test -- --runInBand packages/app-gateway/src/mission-completion-evaluator.test.ts`
+  reported `1555` passing tests.
+- Focused real natural approval rerun passed:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-approval-dry-run-action --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  artifacts/evals/20260602-224621-approval-closeout-completion/natural-approval-dry-run-action.json`.
+- Approval rerun mission `msn.mpwr34rv.1`: status `done`, natural `passed`,
+  duration `157971ms`, tools `4/4`, sessions `1/1`, approval exercised `true`,
+  browser `yes`, profile fallback `0`, browser buckets `none`, liveness
+  `0/0/0`, final bytes `1031`.
+- Tail natural core rerun passed:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-timeout-partial-closeout,natural-memory-recall,natural-long-delegation
+  --model-catalog models.local.json --scenario-timeout-ms 300000 --json
+  artifacts/evals/20260602-224922-natural-core-tail-after-approval-closeout/natural-core-tail.json`.
+- Tail missions:
+  `natural-timeout-partial-closeout` `msn.mpwr70zw.1`, status `done`,
+  natural `passed`, duration `196126ms`, tools `1/1`, timeouts `1`, liveness
+  `0/0/0`;
+  `natural-memory-recall` `msn.mpwrb8bs.2`, status `done`, natural `passed`,
+  duration `16106ms`, tools `2/2`, tool names `memory_get` and
+  `memory_search`, liveness `0/0/0`;
+  `natural-long-delegation` `msn.mpwrbkr7.3`, status `done`, natural `passed`,
+  duration `59378ms`, tools `3/3`, sessions `3/0`, browser `yes`, artifacts
+  `6`, artifact lifecycle `6`, browser buckets `none`, liveness `0/0/0`.
+
+Regression Risk:
+- The approval-closeout recognizer is text-based because provider stop reasons
+  can be conservative. The negative test prevents a broad bypass for blocked or
+  not-completed approved actions.
+- The focused approval scenario took `157971ms`; that is a passing correctness
+  gate, not an acceptable final latency target.
+- Same-scenario A/B acceptance is still missing for this checkpoint, so the
+  overall production-grade claim remains unproven.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? no
+  broad claim
+- Evidence: a real natural approval failure was reproduced, fixed at the
+  mission completion layer, and rerun successfully; the remaining natural core
+  tail passed with clean liveness.
+- If no, next required gate: produce the same-scenario A/B report and use that
+  evidence to choose the next runtime, prompt, browser, or UX PR.
