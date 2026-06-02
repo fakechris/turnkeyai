@@ -2737,9 +2737,26 @@ function containsPrivateOrLoopbackHttpUrl(text: string): boolean {
 }
 
 function extractHttpUrls(text: string): string[] {
-  return Array.from(text.matchAll(/\bhttps?:\/\/[^\s"'`<>)\],;]+/gi)).map((match) =>
-    (match[0] ?? "").replace(/[.!?。，“”‘’！？：:]+$/g, "")
-  );
+  return Array.from(text.matchAll(/\bhttps?:\/\/[^\s"'`<>]+/gi))
+    .map((match) => trimHttpUrlCandidate(match[0] ?? ""))
+    .filter(Boolean);
+}
+
+function trimHttpUrlCandidate(candidate: string): string {
+  let value = candidate.trim();
+  while (value) {
+    try {
+      new URL(value);
+      return value;
+    } catch {
+      const next = value.replace(/[)\],;.!?。，“”‘’！？：:]$/g, "");
+      if (next === value) {
+        return value;
+      }
+      value = next;
+    }
+  }
+  return value;
 }
 
 function isPrivateOrLoopbackHostname(hostname: string): boolean {
@@ -2750,7 +2767,7 @@ function isPrivateOrLoopbackHostname(hostname: string): boolean {
   if (normalized.startsWith("::ffff:")) {
     return isPrivateOrLoopbackHostname(normalized.slice("::ffff:".length));
   }
-  if (/^(?:fc|fd)[0-9a-f]{2}:/i.test(normalized) || /^fe80:/i.test(normalized)) {
+  if (/^(?:fc|fd)[0-9a-f]{2}:/i.test(normalized) || /^fe[89ab][0-9a-f]:/i.test(normalized)) {
     return true;
   }
   const parts = normalized.split(".");
@@ -2763,7 +2780,14 @@ function isPrivateOrLoopbackHostname(hostname: string): boolean {
   }
   const a = numbers[0]!;
   const b = numbers[1]!;
-  return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254)
+  );
 }
 
 function buildGatewayInput(input: {
