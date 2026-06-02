@@ -230,7 +230,7 @@ export function buildSessionToolDefinitions(
     {
       name: "sessions_spawn",
       description:
-        "Spawn a specialist sub-agent session for an isolated task. Use explore first for public source research, pricing/docs pages, and read-only URL extraction. Use browser for authenticated, interactive, visual, JS-rendered, localhost, private-network, or internal pages when direct source extraction is insufficient or unsafe. Use finance for market data.",
+        "Spawn a specialist sub-agent session for an isolated task. Use explore first for public source research, pricing/docs pages, and read-only URL extraction. Use browser directly for authenticated, interactive, visual, JS-rendered, localhost, loopback, private-network, internal, dashboard, or user-session pages. Use finance for market data.",
       inputSchema: {
         type: "object",
         additionalProperties: false,

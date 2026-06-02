@@ -13,7 +13,8 @@ test("native tool capability registry drives schemas and prompt harness from the
   const list = definitions.find((definition) => definition.name === "sessions_list");
   assert.match(spawn?.description ?? "", /Use explore first for public source research/);
   assert.match(spawn?.description ?? "", /pricing\/docs pages/);
-  assert.match(spawn?.description ?? "", /Use browser for authenticated, interactive, visual, JS-rendered, localhost/);
+  assert.match(spawn?.description ?? "", /Use browser directly for authenticated, interactive, visual, JS-rendered, localhost/);
+  assert.match(spawn?.description ?? "", /loopback, private-network, internal, dashboard, or user-session pages/);
   const spawnSchema = spawn?.inputSchema as {
     properties?: { agent_id?: { enum?: string[] } };
   };

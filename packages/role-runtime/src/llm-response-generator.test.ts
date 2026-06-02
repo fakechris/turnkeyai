@@ -4957,6 +4957,7 @@ test("llm role response generator reroutes private URL research spawns to browse
   });
 
   assert.equal(executedCalls[0]?.input.agent_id, "browser");
+  assert.match(String(executedCalls[0]?.input.task ?? ""), /127\.0\.0\.1:49152\/vendor-alpha/);
   assert.match(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
   assert.match(result.content, /\$19 per seat/);
 });
@@ -4994,6 +4995,15 @@ test("llm role response generator reroutes link-local and wildcard URL research 
               agent_id: "explore",
               label: "ipv6-local",
               task: "Check http://[fe90::1]/vendor-alpha. and report the rendered page facts.",
+            },
+          },
+          {
+            id: "toolu-local-domain",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "explore",
+              label: "local-domain",
+              task: "Review http://printer.local/status and report only observed status fields.",
             },
           },
         ],
@@ -5065,11 +5075,12 @@ test("llm role response generator reroutes link-local and wildcard URL research 
 
   assert.deepEqual(
     executedCalls.map((call) => call.input.agent_id),
-    ["browser", "browser", "browser"]
+    ["browser", "browser", "browser", "browser"]
   );
   assert.match(String(executedCalls[0]?.input.task ?? ""), /169\.254\.169\.254/);
   assert.match(String(executedCalls[1]?.input.task ?? ""), /0\.0\.0\.0:49152/);
   assert.match(String(executedCalls[2]?.input.task ?? ""), /\[fe90::1\]/);
+  assert.match(String(executedCalls[3]?.input.task ?? ""), /printer\.local\/status/);
 });
 
 test("llm role response generator keeps public URL research spawns on explore", async () => {

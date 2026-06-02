@@ -2761,7 +2761,7 @@ function trimHttpUrlCandidate(candidate: string): string {
 
 function isPrivateOrLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (normalized === "localhost" || normalized === "::1") {
+  if (normalized === "localhost" || normalized === "::1" || normalized.endsWith(".local")) {
     return true;
   }
   if (normalized.startsWith("::ffff:")) {
