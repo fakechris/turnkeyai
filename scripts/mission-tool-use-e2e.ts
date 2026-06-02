@@ -524,6 +524,11 @@ export interface NaturalMissionE2eJsonReport {
   completedAt: string;
   durationMs: number;
   failureCollectionMode: "fail-fast" | "quality-failures-collected" | "partial-failure-collected";
+  interruptedScenario?: {
+    scenario: NaturalMissionE2eScenario;
+    completedScenarioCount: number;
+    error: string;
+  };
   scenarios: NaturalMissionScenarioReport[];
 }
 
@@ -951,6 +956,10 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
                 startedAt,
                 completedAt: Date.now(),
                 results: naturalResults,
+                interruptedScenario: {
+                  scenario,
+                  error: errorMessage(error),
+                },
               })
             );
             console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
@@ -4876,12 +4885,28 @@ export function buildNaturalMissionPartialFailureJsonReport(input: {
   startedAt: number;
   completedAt: number;
   results: NaturalMissionScenarioResult[];
+  interruptedScenario?: {
+    scenario: NaturalMissionE2eScenario;
+    error: string;
+  };
 }): NaturalMissionE2eJsonReport {
+  const report = buildNaturalMissionE2eJsonReport({
+    ...input,
+    failureCollectionMode: "partial-failure-collected",
+  });
+  const interruptedScenario =
+    input.interruptedScenario === undefined
+      ? {}
+      : {
+          interruptedScenario: {
+            scenario: input.interruptedScenario.scenario,
+            completedScenarioCount: input.results.length,
+            error: compactExcerpt(input.interruptedScenario.error, 2000),
+          },
+        };
   return {
-    ...buildNaturalMissionE2eJsonReport({
-      ...input,
-      failureCollectionMode: "partial-failure-collected",
-    }),
+    ...report,
+    ...interruptedScenario,
     status: "failed",
   };
 }

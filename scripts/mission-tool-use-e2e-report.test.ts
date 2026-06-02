@@ -1114,6 +1114,10 @@ describe("mission tool-use e2e report", () => {
       startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
       completedAt: Date.UTC(2026, 4, 30, 12, 0, 7),
       results: [passing],
+      interruptedScenario: {
+        scenario: "natural-approval-dry-run-action",
+        error: "mission reached done before requesting approval",
+      },
     });
 
     assert.equal(report.status, "failed");
@@ -1122,6 +1126,11 @@ describe("mission tool-use e2e report", () => {
     assert.equal(report.passedScenarios, 1);
     assert.equal(report.failedScenarios, 0);
     assert.deepEqual(report.scenarioIds, ["natural-browser-dynamic-page"]);
+    assert.deepEqual(report.interruptedScenario, {
+      scenario: "natural-approval-dry-run-action",
+      completedScenarioCount: 1,
+      error: "mission reached done before requesting approval",
+    });
   });
 
   it("fails natural quality on weak fallback answers and missing browser evidence", () => {
