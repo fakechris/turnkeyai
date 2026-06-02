@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import {
   REAL_LLM_AB_DIMENSION_KEYS,
   validateRealLlmAbAcceptanceReport,
+  type RealLlmAbRequiredSuite,
   type RealLlmAbAcceptanceReport,
   type RealLlmAbDimensionKey,
   type RealLlmAbDimensionScore,
@@ -16,6 +17,7 @@ export interface RealLlmAbReportBuildOptions {
   specPath: string;
   outPath: string;
   check: boolean;
+  requiredSuite?: RealLlmAbRequiredSuite;
 }
 
 export interface RealLlmAbReportBuildSpec {
@@ -142,6 +144,7 @@ export function parseRealLlmAbReportBuildArgs(args: string[]): RealLlmAbReportBu
   let specPath: string | undefined;
   let outPath: string | undefined;
   let check = false;
+  let requiredSuite: RealLlmAbRequiredSuite | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--spec") {
@@ -158,6 +161,15 @@ export function parseRealLlmAbReportBuildArgs(args: string[]): RealLlmAbReportBu
       check = true;
       continue;
     }
+    if (arg === "--suite") {
+      const value = readValue(args, index, arg);
+      if (value !== "core") {
+        throw new Error("--suite must be core");
+      }
+      requiredSuite = value;
+      index += 1;
+      continue;
+    }
     throw new Error(`unknown argument: ${arg}`);
   }
   if (!specPath) {
@@ -166,7 +178,7 @@ export function parseRealLlmAbReportBuildArgs(args: string[]): RealLlmAbReportBu
   if (!outPath) {
     throw new Error("missing required --out <path>");
   }
-  return { specPath, outPath, check };
+  return { specPath, outPath, check, ...(requiredSuite ? { requiredSuite } : {}) };
 }
 
 export async function runRealLlmAbReportBuildCli(args: string[]): Promise<void> {
@@ -183,7 +195,7 @@ export async function runRealLlmAbReportBuildCli(args: string[]): Promise<void> 
   writeFileSync(options.outPath, `${JSON.stringify(report, null, 2)}\n`);
   console.log(`real LLM A/B report written: ${options.outPath}`);
   if (options.check) {
-    const validation = validateRealLlmAbAcceptanceReport(report);
+    const validation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: options.requiredSuite });
     if (validation.status !== "passed") {
       console.error("real LLM A/B acceptance failed");
       for (const failure of validation.failures) {
@@ -193,6 +205,9 @@ export async function runRealLlmAbReportBuildCli(args: string[]): Promise<void> 
       return;
     }
     console.log("real LLM A/B acceptance passed");
+    if (options.requiredSuite) {
+      console.log(`suite=${options.requiredSuite}`);
+    }
   }
 }
 
@@ -201,9 +216,10 @@ export function buildRealLlmAbReportBuildHelpText(): string {
     "TurnkeyAI real LLM A/B report builder",
     "",
     "Usage:",
-    "  npm run acceptance:ab:build -- --spec <path> --out <path> [--check]",
+    "  npm run acceptance:ab:build -- --spec <path> --out <path> [--check] [--suite core]",
     "",
     "The spec points at a TurnkeyAI natural mission report and same-scenario reference artifacts.",
+    "--suite core requires the full core scenario set when --check is used.",
     "The generated report can be validated with npm run acceptance:ab:check.",
   ].join("\n");
 }

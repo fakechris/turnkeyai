@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   detectControlledPromptLanguage,
+  REAL_LLM_AB_CORE_SUITE_REQUIREMENTS,
   summarizeRealLlmAbAcceptanceReport,
   validateRealLlmAbAcceptanceReport,
   type RealLlmAbAcceptanceReport,
@@ -61,6 +62,27 @@ test("real LLM A/B acceptance validates comparable natural evidence", () => {
       },
     ],
   });
+});
+
+test("real LLM A/B acceptance keeps focused reports separate from core-suite evidence", () => {
+  const focusedReport = buildReport();
+
+  assert.equal(validateRealLlmAbAcceptanceReport(focusedReport).status, "passed");
+
+  const coreValidation = validateRealLlmAbAcceptanceReport(focusedReport, { requiredSuite: "core" });
+
+  assert.equal(coreValidation.status, "failed");
+  assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: comparison-research/);
+  assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: long-delegation/);
+});
+
+test("real LLM A/B acceptance validates the full core suite when requested", () => {
+  const report = buildCoreSuiteReport();
+
+  const validation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "core" });
+
+  assert.equal(validation.status, "passed");
+  assert.equal(validation.summary?.scenarioCount, REAL_LLM_AB_CORE_SUITE_REQUIREMENTS.length);
 });
 
 test("real LLM A/B acceptance forces root-cause review when TurnkeyAI loses core dimensions", () => {
@@ -169,11 +191,57 @@ function buildReport(
   };
 }
 
+function buildCoreSuiteReport(): RealLlmAbAcceptanceReport {
+  return {
+    kind: "turnkeyai.real-llm-ab-acceptance.report",
+    status: "passed",
+    capabilityClaim: "capability proven",
+    stabilityClaim: "stable",
+    generatedAtMs: 1,
+    scenarios: REAL_LLM_AB_CORE_SUITE_REQUIREMENTS.map((requirement) => {
+      const scenarioId = requirement.acceptedScenarioIds[0]!;
+      const requiresBrowser = scenarioId === "browser-dynamic-page";
+      const requiresApproval = scenarioId === "approval-dry-run-action";
+      return {
+        scenarioId,
+        prompt: `请完成 ${scenarioId} 场景，给出结论、证据和风险。`,
+        promptPolicy: {
+          naturalPrompt: true,
+          noForcedToolCall: true,
+          noFixedMarkerGate: true,
+          noExactAnswerShape: true,
+        },
+        ...(requiresBrowser ? { requiresBrowser: true } : {}),
+        ...(requiresApproval ? { requiresApproval: true } : {}),
+        ...(scenarioId === "followup-continuation" ? { requiresContinuation: true } : {}),
+        ...(scenarioId === "timeout-closeout" ? { requiresTimeoutCloseout: true } : {}),
+        turnkeyai: buildRun({
+          system: "turnkeyai",
+          artifactPath: `artifacts/evals/run/turnkeyai/${scenarioId}.json`,
+          missionId: `msn.${scenarioId}.1`,
+          dimensionScores: FULL_SCORES,
+          requiresBrowser,
+          requiresApproval,
+        }),
+        reference: buildRun({
+          system: "reference",
+          artifactPath: `artifacts/evals/run/reference/${scenarioId}.json`,
+          dimensionScores: FULL_SCORES,
+          requiresBrowser,
+          requiresApproval,
+        }),
+      };
+    }),
+  };
+}
+
 function buildRun(input: {
   system: RealLlmAbScenarioRun["system"];
   artifactPath?: string | undefined;
   missionId?: string | undefined;
   dimensionScores: RealLlmAbScenarioRun["dimensionScores"];
+  requiresBrowser?: boolean;
+  requiresApproval?: boolean;
 }): RealLlmAbScenarioRun {
   return {
     system: input.system,
@@ -185,14 +253,17 @@ function buildRun(input: {
     subAgentCount: 1,
     completedSubAgentCount: 1,
     browserEvidence: {
-      required: true,
+      required: input.requiresBrowser ?? true,
       used: true,
       rendered: true,
       urls: ["http://127.0.0.1:4100/app#/mission/msn.local.1"],
       screenshotCount: 1,
       snapshotCount: 1,
     },
-    approval: { required: false },
+    approval: {
+      required: input.requiresApproval ?? false,
+      ...(input.requiresApproval ? { requested: true, decided: true, applied: true, sideEffectPreventedBeforeApproval: true } : {}),
+    },
     completed: true,
     stuckOrLoop: false,
     finalAnswerUseful: true,

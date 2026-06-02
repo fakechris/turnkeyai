@@ -19,9 +19,23 @@ test("real LLM A/B report builder parses args and help", () => {
     outPath: "/tmp/report.json",
     check: true,
   });
+  assert.deepEqual(
+    parseRealLlmAbReportBuildArgs(["--spec", "/tmp/spec.json", "--out", "/tmp/report.json", "--check", "--suite", "core"]),
+    {
+      specPath: "/tmp/spec.json",
+      outPath: "/tmp/report.json",
+      check: true,
+      requiredSuite: "core",
+    }
+  );
   assert.deepEqual(parseRealLlmAbReportBuildArgs(["--help"]), { help: true });
   assert.match(buildRealLlmAbReportBuildHelpText(), /real LLM A\/B report builder/);
+  assert.match(buildRealLlmAbReportBuildHelpText(), /--suite core/);
   assert.throws(() => parseRealLlmAbReportBuildArgs(["--spec", "/tmp/spec.json"]), /missing required --out/);
+  assert.throws(
+    () => parseRealLlmAbReportBuildArgs(["--spec", "/tmp/spec.json", "--out", "/tmp/report.json", "--suite", "focused"]),
+    /--suite must be core/
+  );
 });
 
 test("real LLM A/B report builder emits a checkable report from natural and reference artifacts", () => {
