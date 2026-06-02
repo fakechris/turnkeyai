@@ -1070,6 +1070,58 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.failures.includes("forbidden unsupported rendered queue depth"));
   });
 
+  it("fails natural quality when completed browser evidence is degraded or unverified", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-dynamic-page", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      requiredEvidencePatterns: [],
+      requiredAnswerPatterns: [],
+    };
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Tool sessions_spawn returned:",
+        '{ "status": "completed", "final_content": "Verification Status: FAILED - could not access pricing data. Cloudflare Turnstile blocked the page. Anthropic content extraction incomplete due to session lease conflict and budget truncation. All pricing numbers are not verified." }',
+      ].join("\n"),
+    };
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.final.text = [
+      "Queue depth is 11 with 3 SLA breaches.",
+      "Incident Commander should own the escalation.",
+      "The recommended next action is to prioritize browser-visible operator evidence and describe residual risk.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.status, "failed");
+    assert.ok(quality.weakAnswerSignals.includes("browser evidence blocked"));
+    assert.ok(quality.weakAnswerSignals.includes("browser extraction failed"));
+    assert.ok(quality.weakAnswerSignals.includes("browser evidence not verified"));
+    assert.ok(quality.weakAnswerSignals.includes("browser transport degraded"));
+    assert.ok(
+      quality.failures.some((failure) => failure.includes("weak answer signals")),
+      "degraded evidence must be a blocking natural quality signal"
+    );
+  });
+
   it("fails natural quality when the final answer hides residual risk", () => {
     const result = fakeNaturalResult();
     const spec = {
