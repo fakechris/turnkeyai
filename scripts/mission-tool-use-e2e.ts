@@ -4490,6 +4490,7 @@ export function evaluateNaturalSourceCoverage(input: {
 function normalizeNaturalAnswerTermText(value: string): string {
   return value
     .toLowerCase()
+    .replace(/\bnot\s+verified\b/g, "unverified")
     .replace(/[‐‑‒–—-]/g, " ")
     .replace(/\s+/g, " ")
     .trim();

@@ -2866,7 +2866,7 @@ describe("mission tool-use e2e report", () => {
         kind: "thought",
         text: [
           "Verified facts now include Release Captain ownership, the runbook gap, and rollback rehearsal as the mitigation.",
-          "Unverified items remain whether the same risk exists outside this source and whether the operator cancellation skipped any intermediate evidence.",
+          "Not verified items remain whether the same risk exists outside this source and whether the operator cancellation skipped any intermediate evidence.",
           "Residual risk: the cancelled first attempt delayed verification, but the resumed source evidence is now available for the release-risk note.",
         ].join(" "),
         tMs: 4000,

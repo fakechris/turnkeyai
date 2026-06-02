@@ -6824,3 +6824,91 @@ Convergence question:
   and use wall-clock evidence to decide whether the next root-cause PR targets
   runtime latency, prompt/delegation, browser reliability, or final-answer
   quality.
+
+## Checkpoint 2026-06-02 22:29 CST — Read-Only Follow-Up Approval Repair Guard
+
+Direction: converging
+
+Execution Kernel:
+- The approval repair heuristic now respects explicit read-only task language
+  that says no browser form, click, navigation, or approval-gated action is
+  needed. This prevents a read-only continuation from being rerouted into a
+  permission query repair loop.
+- The positive approval-gated browser path remains covered by existing tests,
+  so this does not weaken side-effect gating.
+- Natural answer-term normalization now treats `not verified` as equivalent to
+  `unverified` for quality scoring. This matches the residual-risk language
+  users naturally write without relaxing evidence-pattern checks.
+
+Result Quality:
+- The prior natural cancellation follow-up failure mode was a real prompt
+  harness problem: a read-only prompt could trigger an irrelevant approval
+  correction and pollute final synthesis.
+- The focused real run completed with source evidence, residual risk, no weak
+  answer signals, no unsupported claims, and full dimension scores.
+- The first real run in this checkpoint failed before cancellation because the
+  harness did not observe a running worker session for the tool call. A rerun
+  reached final synthesis and exposed a quality-gate synonym issue, which was
+  fixed before the passing gate.
+
+Workbench UX:
+- No UI changed.
+- User-visible impact is cleaner follow-up answers: read-only source
+  continuations no longer need to explain that an approval correction does not
+  apply.
+
+Browser Reliability:
+- No browser code changed.
+- The passing scenario was read-only source continuation and did not require
+  browser use. Browser reliability remains covered by browser-specific natural
+  gates.
+
+Acceptance Evidence:
+- Focused tests passed:
+  `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts`.
+- Focused real natural E2E passed:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-cancel-followup-continuation --model-catalog models.local.json
+  --scenario-timeout-ms 300000 --json
+  artifacts/evals/20260602-222800-read-only-approval-repair-guard-after-quality/natural-cancel-followup-continuation.json`.
+- Real mission: `msn.mpwqfjil.1`, status `done`, natural `passed`, duration
+  `54915ms`, tools `3/3`, sessions `1/1`, liveness `0/0/0`, evidence events
+  `3/2`, source coverage `3/3` terms, `2/2` answer patterns, `2/2` evidence
+  patterns, unsupported claims `0`, weak-answer signals `none`.
+- Artifact scan found no approval-repair pollution:
+  no `Runtime correction`, no `approval-gated browser action`, and no
+  `permission_query` text in the final natural report.
+- Tail natural matrix passed:
+  `npm run mission:e2e:natural -- --natural-matrix-scenarios
+  natural-cancel-active-tool,natural-cancel-followup-continuation,natural-long-delegation
+  --model-catalog models.local.json --scenario-timeout-ms 300000 --json
+  artifacts/evals/20260602-223023-read-only-approval-repair-tail/tail-natural-matrix.json`.
+- Tail missions:
+  `natural-cancel-active-tool` `msn.mpwqilvj.1`, status `blocked`, duration
+  `8081ms`, tools `1/0`, liveness `0/0/0`;
+  `natural-cancel-followup-continuation` `msn.mpwqis3x.2`, status `done`,
+  duration `53375ms`, tools `3/3`, sessions `1/1`, liveness `0/0/0`;
+  `natural-long-delegation` `msn.mpwqjxal.3`, status `done`, duration
+  `68417ms`, tools `3/3`, sessions `3/0`, artifacts `15`, browser buckets
+  `none`, liveness `0/0/0`.
+
+Regression Risk:
+- The new repair guard depends on explicit read-only language; vague prompts
+  that merely omit approval language still follow the existing approval repair
+  path when they request browser side effects.
+- `not verified` normalization could hide a bad answer only if the answer also
+  passes all required evidence patterns, residual-risk checks, unsupported
+  claim checks, and usefulness checks.
+- The initial pre-cancel worker observation miss should be watched. It did not
+  recur in the passing run, but if it repeats it belongs to the acceptance
+  harness/worker-observation bucket, not this prompt guard.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes
+- Evidence: the focused natural cancellation follow-up gate now completes with
+  useful evidence-backed output and without irrelevant approval repair
+  correction text; the tail natural matrix also passed active cancellation,
+  cancellation follow-up continuation, and long delegation with clean liveness.
+- Next required gate: run the broader natural core/A-B acceptance slice before
+  making any production-readiness claim.

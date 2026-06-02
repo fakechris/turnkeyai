@@ -584,6 +584,59 @@ test("llm role response generator repairs approval-gated answers that skipped na
   assert.equal(gatewayInputs.length, 5);
 });
 
+test("llm role response generator does not repair read-only tasks that explicitly disclaim approval-gated browser actions", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length > 1) {
+      throw new Error("read-only source check should not trigger approval repair");
+    }
+    return {
+      text: "Verified source facts: Release Captain owns the handoff. Residual risk: cancelled evidence lowers confidence.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "permission_query",
+          description: "Request approval",
+          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+        },
+      ];
+    },
+    async execute() {
+      throw new Error("read-only source check must not execute approval tools");
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Continue from the cancelled source-check attempt in this mission.",
+        "This is a read-only source check; no browser form, click, navigation action, or approval-gated action is needed.",
+        "Separate verified facts from unverified items, describe residual risk, and explain how the earlier cancellation affects confidence.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(gatewayInputs.length, 1);
+  assert.match(result.content, /Release Captain/);
+  assert.doesNotMatch(result.content, /correction does not apply/i);
+});
+
 test("llm role response generator keeps tools enabled when approval-gated browser inspection needs parent permission", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const executedCalls: RoleToolExecutionInput["call"][] = [];
