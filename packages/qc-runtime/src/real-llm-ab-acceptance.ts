@@ -358,6 +358,77 @@ export function validateRealLlmAbAcceptanceReport(
   };
 }
 
+export function buildRealLlmAbMarkdownReport(
+  report: unknown,
+  options: RealLlmAbAcceptanceValidationOptions = {}
+): string {
+  const validation = validateRealLlmAbAcceptanceReport(report, options);
+  const summary = validation.summary;
+  if (!summary || !isRealLlmAbAcceptanceReport(report)) {
+    return [
+      "# Real LLM A/B Acceptance Report",
+      "",
+      "## Conclusion",
+      "",
+      "- Capability: unproven",
+      "- Stability: unproven",
+      "- Status: failed",
+      "",
+      "## Failures",
+      "",
+      ...validation.failures.map((failure) => `- ${failure}`),
+      "",
+    ].join("\n");
+  }
+
+  const comparisons = summary.comparisons;
+  const losingComparisons = comparisons.filter((comparison) => comparison.scoreDelta < 0 || comparison.rootCauseRequired);
+  const rootCauseBuckets = summary.rootCauseBuckets;
+  return [
+    "# Real LLM A/B Acceptance Report",
+    "",
+    "## Conclusion",
+    "",
+    `- Capability: ${summary.capabilityClaim}`,
+    `- Stability: ${summary.stabilityClaim}`,
+    `- Status: ${validation.status}`,
+    `- Scenarios: ${summary.scenarioCount}`,
+    `- Comparable scenarios: ${summary.comparableScenarios}`,
+    `- TurnkeyAI wins/ties/losses: ${summary.turnkeyaiWins}/${summary.turnkeyaiTies}/${summary.turnkeyaiLosses}`,
+    `- Root-cause review required: ${summary.rootCauseRequiredScenarios}`,
+    "",
+    "## Where TurnkeyAI Lost Or Needs Review",
+    "",
+    ...(losingComparisons.length === 0
+      ? ["- None."]
+      : losingComparisons.map((comparison) => formatComparisonLossLine(comparison))),
+    "",
+    "## Root-Cause Buckets",
+    "",
+    ...(rootCauseBuckets.length === 0 ? ["- None."] : rootCauseBuckets.map((bucket) => `- ${bucket}`)),
+    "",
+    "## Next Root-Cause PRs",
+    "",
+    ...formatNextRootCausePrs(rootCauseBuckets),
+    "",
+    "## Scenario Scores",
+    "",
+    "| Scenario | TurnkeyAI | Reference | Delta | Root Cause Required |",
+    "| --- | ---: | ---: | ---: | --- |",
+    ...comparisons.map(
+      (comparison) =>
+        `| ${comparison.scenarioId} | ${comparison.turnkeyaiScore} | ${comparison.referenceScore} | ${formatDelta(
+          comparison.scoreDelta
+        )} | ${comparison.rootCauseRequired ? "yes" : "no"} |`
+    ),
+    "",
+    "## Validation Failures",
+    "",
+    ...(validation.failures.length === 0 ? ["- None."] : validation.failures.map((failure) => `- ${failure}`)),
+    "",
+  ].join("\n");
+}
+
 export function detectControlledPromptLanguage(prompt: string): string[] {
   const checks: Array<[string, RegExp]> = [
     ["exactly-once", /\bexactly\s+once\b/i],
@@ -386,6 +457,7 @@ function compareScenarioPair(scenario: RealLlmAbScenarioPair): RealLlmAbScenario
     !comparable ||
     scenario.turnkeyai.stuckOrLoop === true ||
     hasWeakTurnkeyAiAnswer(scenario.turnkeyai) ||
+    hasRequiredTurnkeyAiProofGap(scenario) ||
     lossDimensions.filter((key) => CORE_LOSS_DIMENSIONS.has(key)).length >= 2;
   return {
     scenarioId: scenario.scenarioId,
@@ -428,6 +500,38 @@ function deriveRootCauseBuckets(
   return buckets;
 }
 
+function formatComparisonLossLine(comparison: RealLlmAbScenarioComparison): string {
+  const dimensions =
+    comparison.turnkeyaiLossDimensions.length > 0 ? comparison.turnkeyaiLossDimensions.join(", ") : "none";
+  const buckets = comparison.rootCauseBuckets.length > 0 ? comparison.rootCauseBuckets.join(", ") : "none";
+  return `- ${comparison.scenarioId}: delta ${formatDelta(comparison.scoreDelta)}; loss dimensions: ${dimensions}; root-cause buckets: ${buckets}.`;
+}
+
+function formatNextRootCausePrs(buckets: readonly RealLlmAbRootCauseBucket[]): string[] {
+  if (buckets.length === 0) {
+    return ["- No root-cause PR is required by this report."];
+  }
+  const unique = mergeStringSet([...buckets]);
+  return unique.map((bucket) => `- ${bucket}: ${ROOT_CAUSE_PR_GUIDANCE[bucket]}`);
+}
+
+const ROOT_CAUSE_PR_GUIDANCE: Record<RealLlmAbRootCauseBucket, string> = {
+  prompt_harness: "tighten task, delegation, evidence, and closeout prompt guidance before changing UI surfaces.",
+  tool_selection: "fix tool schema visibility, tool routing, or disabled-tool admission so the model selects the right capability.",
+  sub_agent_runtime: "prove specialist sub-agents complete independent work instead of forcing the lead to compensate.",
+  browser_reliability: "repair browser session/profile/transport recovery so browser failures do not become weak answers or loops.",
+  memory_context: "repair memory recall, freshness, invalidation, or context pressure behavior before claiming continuity.",
+  timeout_cancel_continue: "repair timeout, cancellation, continuation, or resumable-session semantics with natural follow-up evidence.",
+  permission_flow: "repair approval query/result/applied behavior and prove side effects stay gated until approval.",
+  final_answer_quality: "repair evidence policy, source coverage, unsupported-claim filtering, or final synthesis quality.",
+  ui_replay_visibility: "repair replay ordering, grouping, or visibility only after the runtime evidence chain is present.",
+  acceptance_harness: "repair the acceptance harness when it cannot distinguish real capability from fixture-shaped evidence.",
+};
+
+function formatDelta(delta: number): string {
+  return delta > 0 ? `+${delta}` : String(delta);
+}
+
 function scoreRun(run: RealLlmAbScenarioRun): number {
   return REAL_LLM_AB_DIMENSION_KEYS.reduce((sum, key) => sum + run.dimensionScores[key], 0);
 }
@@ -443,6 +547,40 @@ function hasWeakTurnkeyAiAnswer(run: RealLlmAbScenarioRun): boolean {
     (run.weakAnswerSignals?.length ?? 0) > 0 ||
     (run.unsupportedClaims?.length ?? 0) > 0
   );
+}
+
+function hasRequiredTurnkeyAiProofGap(scenario: RealLlmAbScenarioPair): boolean {
+  if (
+    scenario.requiresBrowser &&
+    (scenario.turnkeyai.browserEvidence?.used !== true ||
+      scenario.turnkeyai.browserEvidence?.rendered !== true ||
+      readCount(scenario.turnkeyai.browserEvidence?.screenshotCount) +
+        readCount(scenario.turnkeyai.browserEvidence?.snapshotCount) +
+        readCount(scenario.turnkeyai.browserEvidence?.logCount) ===
+        0)
+  ) {
+    return true;
+  }
+  if (
+    scenario.requiresApproval &&
+    (scenario.turnkeyai.approval?.requested !== true ||
+      scenario.turnkeyai.approval?.sideEffectPreventedBeforeApproval !== true)
+  ) {
+    return true;
+  }
+  if (scenario.requiresContinuation && !hasTurnkeyAiContinuationEvidence(scenario.turnkeyai)) {
+    return true;
+  }
+  if (scenario.requiresTimeoutCloseout && !hasTurnkeyAiTimeoutCloseoutEvidence(scenario.turnkeyai)) {
+    return true;
+  }
+  if (isLongDelegationScenario(scenario.scenarioId) && !hasTurnkeyAiLongDelegationEvidence(scenario.turnkeyai)) {
+    return true;
+  }
+  if (isMemoryRecallScenario(scenario.scenarioId) && !hasToolSequence(scenario.turnkeyai, ["memory_search", "memory_get"])) {
+    return true;
+  }
+  return false;
 }
 
 function hasTurnkeyAiContinuationEvidence(run: RealLlmAbScenarioRun): boolean {
