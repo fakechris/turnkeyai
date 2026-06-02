@@ -25,6 +25,7 @@ interface MissionToolUseE2eOptions {
   naturalMatrixScenarios?: NaturalMissionE2eScenario[];
   threadEntry: boolean;
   jsonPath?: string;
+  continueOnFailure: boolean;
 }
 
 type DaemonChildProcess = ChildProcessByStdio<null, Readable, Readable>;
@@ -520,6 +521,7 @@ export interface NaturalMissionE2eJsonReport {
   startedAt: string;
   completedAt: string;
   durationMs: number;
+  failureCollectionMode: "fail-fast" | "quality-failures-collected";
   scenarios: NaturalMissionScenarioReport[];
 }
 
@@ -632,6 +634,7 @@ function parseOptions(args: string[]): MissionToolUseE2eOptions {
     naturalScenario: "natural-comparison-research",
     naturalMatrix: false,
     threadEntry: false,
+    continueOnFailure: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -661,6 +664,10 @@ function parseOptions(args: string[]): MissionToolUseE2eOptions {
     }
     if (arg === "--thread-entry") {
       options.threadEntry = true;
+      continue;
+    }
+    if (arg === "--continue-on-failure") {
+      options.continueOnFailure = true;
       continue;
     }
     if (arg === "--model-catalog") {
@@ -790,6 +797,7 @@ function printHelp(exitCode: number): never {
     "  --natural-matrix               Run the natural mission acceptance matrix",
     "  --natural-scenario <name>      Run one natural mission scenario",
     "  --natural-matrix-scenarios <a,b,...> Run a comma-separated natural scenario matrix",
+    "  --continue-on-failure       Continue natural matrices after quality failures that still produced scenario evidence",
     "  --thread-entry                 Run natural /threads + /messages real-entry scenarios",
     "  --scenario-timeout-ms <ms>     Per-scenario timeout. Default: 180000",
     "  --model-catalog <path>         Model catalog path. Also reads TURNKEYAI_MODEL_CATALOG, models.local.json, models.json",
@@ -876,6 +884,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
         options.naturalMatrixScenarios ??
         (options.naturalMatrix ? [...NATURAL_MISSION_E2E_SCENARIOS] : [options.naturalScenario]);
       const naturalResults: NaturalMissionScenarioResult[] = [];
+      const naturalQualityErrors: string[] = [];
       for (const [index, scenario] of naturalScenarios.entries()) {
         const scenarioStartedAt = Date.now();
         console.log(formatNaturalMissionScenarioStart({ scenario, index: index + 1, total: naturalScenarios.length }));
@@ -902,6 +911,16 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
         } catch (error) {
           if (error instanceof NaturalMissionScenarioQualityError) {
             naturalResults.push(error.result);
+            naturalQualityErrors.push(`- ${scenario}: ${error.result.quality.failures.join("; ")}`);
+            if (options.continueOnFailure) {
+              console.error(
+                `natural mission scenario quality failed: ${scenario} (${index + 1}/${naturalScenarios.length}, ${
+                  Date.now() - scenarioStartedAt
+                }ms) failures=${error.result.quality.failures.join("; ")}`
+              );
+              printNaturalScenarioResult(error.result);
+              continue;
+            }
             if (options.jsonPath) {
               writeNaturalMissionE2eJsonReport(
                 options.jsonPath,
@@ -909,6 +928,7 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
                   startedAt,
                   completedAt: Date.now(),
                   results: naturalResults,
+                  failureCollectionMode: "fail-fast",
                 })
               );
               console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
@@ -925,9 +945,20 @@ async function main(options: MissionToolUseE2eOptions): Promise<void> {
           startedAt,
           completedAt,
           results: naturalResults,
+          failureCollectionMode: options.continueOnFailure ? "quality-failures-collected" : "fail-fast",
         });
         writeNaturalMissionE2eJsonReport(options.jsonPath, report);
         console.log(`natural-mission-e2e-json: ${path.resolve(options.jsonPath)}`);
+      }
+      if (naturalQualityErrors.length > 0) {
+        throw new Error(
+          [
+            `natural mission real llm matrix failed ${naturalQualityErrors.length}/${naturalScenarios.length} scenario(s) after collecting available quality evidence:`,
+            ...naturalQualityErrors,
+            "",
+            `daemon output tail:\n${daemon.output()}`,
+          ].join("\n")
+        );
       }
       if (naturalScenarios.length > 1) {
         console.log(`natural mission real llm matrix passed: ${naturalScenarios.join(",")}`);
@@ -4787,6 +4818,7 @@ export function buildNaturalMissionE2eJsonReport(input: {
   startedAt: number;
   completedAt: number;
   results: NaturalMissionScenarioResult[];
+  failureCollectionMode?: NaturalMissionE2eJsonReport["failureCollectionMode"];
 }): NaturalMissionE2eJsonReport {
   const scenarios = input.results.map(summarizeNaturalMissionScenarioResult);
   const passedScenarios = scenarios.filter((scenario) => scenario.natural.status === "passed").length;
@@ -4823,6 +4855,7 @@ export function buildNaturalMissionE2eJsonReport(input: {
     startedAt: new Date(input.startedAt).toISOString(),
     completedAt: new Date(input.completedAt).toISOString(),
     durationMs: Math.max(0, input.completedAt - input.startedAt),
+    failureCollectionMode: input.failureCollectionMode ?? "fail-fast",
     scenarios,
   };
 }
