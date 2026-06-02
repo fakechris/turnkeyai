@@ -4872,6 +4872,182 @@ test("llm role response generator prefers completed sub-agent finals over siblin
   );
 });
 
+test("llm role response generator reroutes private URL research spawns to browser", async () => {
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (!input.messages.some((message) => message.role === "tool")) {
+      return {
+        text: "Checking the local vendor page.",
+        toolCalls: [
+          {
+            id: "toolu-local-source",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "explore",
+              label: "Vendor Alpha",
+              task: "Fetch http://127.0.0.1:49152/vendor-alpha and extract pricing, strengths, and risks.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "Vendor Alpha pricing is $19 per seat. Evidence came from the rendered browser page.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-local-source",
+          session_key: "worker:browser:task-local-source:toolu-local-source",
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          tool_chain: [input.call.input.agent_id],
+          result: "Browser rendered evidence: Vendor Alpha pricing is $19 per seat.",
+          final_content: "Vendor Alpha pricing is $19 per seat.",
+          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: "Vendor Alpha pricing is $19 per seat." },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      capabilityInspection: {
+        availableWorkers: ["browser", "explore"],
+        connectorStates: [],
+        apiStates: [],
+        skillStates: [],
+        transportPreferences: [],
+        unavailableCapabilities: [],
+        generatedAt: 1,
+      },
+    },
+  });
+
+  assert.equal(executedCalls[0]?.input.agent_id, "browser");
+  assert.match(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
+  assert.match(result.content, /\$19 per seat/);
+});
+
+test("llm role response generator keeps public URL research spawns on explore", async () => {
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (!input.messages.some((message) => message.role === "tool")) {
+      return {
+        text: "Checking the public source.",
+        toolCalls: [
+          {
+            id: "toolu-public-source",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "explore",
+              label: "Vendor Alpha",
+              task: "Fetch https://example.com/vendor-alpha and extract pricing, strengths, and risks.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "Public source evidence complete.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-public-source",
+          session_key: "worker:explore:task-public-source:toolu-public-source",
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          tool_chain: [input.call.input.agent_id],
+          result: "Explore evidence complete.",
+          final_content: "Explore evidence complete.",
+          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: "Explore evidence complete." },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      capabilityInspection: {
+        availableWorkers: ["browser", "explore"],
+        connectorStates: [],
+        apiStates: [],
+        skillStates: [],
+        transportPreferences: [],
+        unavailableCapabilities: [],
+        generatedAt: 1,
+      },
+    },
+  });
+
+  assert.equal(executedCalls[0]?.input.agent_id, "explore");
+});
+
 test("llm role response generator continues timed-out sibling before final synthesis for coverage-critical tasks", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;

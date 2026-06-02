@@ -13,7 +13,7 @@ test("native tool capability registry drives schemas and prompt harness from the
   const list = definitions.find((definition) => definition.name === "sessions_list");
   assert.match(spawn?.description ?? "", /Use explore first for public source research/);
   assert.match(spawn?.description ?? "", /pricing\/docs pages/);
-  assert.match(spawn?.description ?? "", /Use browser for authenticated, interactive, visual, or JS-rendered pages/);
+  assert.match(spawn?.description ?? "", /Use browser for authenticated, interactive, visual, JS-rendered, localhost/);
   const spawnSchema = spawn?.inputSchema as {
     properties?: { agent_id?: { enum?: string[] } };
   };
@@ -38,13 +38,15 @@ test("native tool capability registry drives schemas and prompt harness from the
   assert.match(harness, /Preserve exact user-provided entity names/);
   assert.match(harness, /spawn explore first/);
   assert.match(harness, /pricing, documentation, or read-only URL extraction/);
-  assert.match(harness, /Escalate to browser only when explore reports/);
+  assert.match(harness, /localhost, loopback, private-network, internal/);
+  assert.match(harness, /spawn browser directly/);
   assert.match(harness, /Do not append guessed categories/);
   assert.match(harness, /emit at most five session tool calls total/);
   assert.match(harness, /exactly two focused calls/);
   assert.match(harness, /Do not downgrade the task to read-only inspection/);
   assert.match(harness, /use explore first/);
-  assert.match(harness, /Use browser only after explore\/static extraction is blocked/);
+  assert.match(harness, /Use browser first for localhost, loopback, private-network/);
+  assert.match(harness, /use browser after explore\/static extraction is blocked/);
   assert.match(harness, /Parent runtime handles permission_query/);
   assert.match(harness, /Do not substitute explore\/static fetch for that browser evidence/);
   assert.match(harness, /exact final answer skeleton/);

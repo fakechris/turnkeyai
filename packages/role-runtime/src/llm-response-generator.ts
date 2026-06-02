@@ -221,12 +221,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           ? findSessionContinuationLookupDirective(input.packet.taskPrompt, sessionContinuationContext)
           : null;
       let toolCalls = normalizeApprovalGatedBrowserSpawnCalls(
-        normalizeSessionToolCalls(
-          applySessionContinuationLookupDirective(
-            applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective),
-            sessionContinuationLookupDirective
+        normalizePrivateUrlResearchSpawnCalls(
+          normalizeSessionToolCalls(
+            applySessionContinuationLookupDirective(
+              applySessionContinuationDirective(result.toolCalls ?? [], sessionContinuationDirective),
+              sessionContinuationLookupDirective
+            ),
+            sessionContinuationContext
           ),
-          sessionContinuationContext
+          {
+            browserAvailable: input.packet.capabilityInspection?.availableWorkers?.includes("browser") ?? false,
+          }
         ),
         {
           taskPrompt: input.packet.taskPrompt,
@@ -2571,6 +2576,39 @@ function normalizeSessionToolCalls(toolCalls: LLMToolCall[], sessionContext = ""
   });
 }
 
+function normalizePrivateUrlResearchSpawnCalls(
+  toolCalls: LLMToolCall[],
+  context: { browserAvailable: boolean }
+): LLMToolCall[] {
+  if (!context.browserAvailable) {
+    return toolCalls;
+  }
+  return toolCalls.map((call) => {
+    if (call.name !== "sessions_spawn" || readStringInput(call.input, "agent_id") !== "explore") {
+      return call;
+    }
+    const task = readStringInput(call.input, "task") ?? "";
+    const label = readStringInput(call.input, "label") ?? "";
+    if (!containsPrivateOrLoopbackHttpUrl([task, label].join("\n"))) {
+      return call;
+    }
+    return {
+      ...call,
+      input: {
+        ...call.input,
+        agent_id: "browser",
+        task: [
+          "Use the browser worker for this local/private URL source; do not use public-source fetch.",
+          "Inspect the rendered page as the user would see it, extract only observed facts, and mark missing fields as not verified.",
+          task,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      },
+    };
+  });
+}
+
 function normalizeApprovalGatedBrowserSpawnCalls(
   toolCalls: LLMToolCall[],
   context: { taskPrompt: string; sessionContext: string }
@@ -2685,6 +2723,47 @@ function readTruncatedSessionKeyPrefix(sessionKey: string): string | null {
 function readStringInput(input: Record<string, unknown>, key: string): string | undefined {
   const value = input[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function containsPrivateOrLoopbackHttpUrl(text: string): boolean {
+  return extractHttpUrls(text).some((url) => {
+    try {
+      const parsed = new URL(url);
+      return isPrivateOrLoopbackHostname(parsed.hostname);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function extractHttpUrls(text: string): string[] {
+  return Array.from(text.matchAll(/\bhttps?:\/\/[^\s"'`<>)\],;]+/gi)).map((match) =>
+    (match[0] ?? "").replace(/[.!?。，“”‘’！？：:]+$/g, "")
+  );
+}
+
+function isPrivateOrLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized === "::1") {
+    return true;
+  }
+  if (normalized.startsWith("::ffff:")) {
+    return isPrivateOrLoopbackHostname(normalized.slice("::ffff:".length));
+  }
+  if (/^(?:fc|fd)[0-9a-f]{2}:/i.test(normalized) || /^fe80:/i.test(normalized)) {
+    return true;
+  }
+  const parts = normalized.split(".");
+  if (parts.length !== 4 || !parts.every((part) => /^\d+$/.test(part))) {
+    return false;
+  }
+  const numbers = parts.map((part) => Number(part));
+  if (numbers.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  const a = numbers[0]!;
+  const b = numbers[1]!;
+  return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
 }
 
 function buildGatewayInput(input: {
