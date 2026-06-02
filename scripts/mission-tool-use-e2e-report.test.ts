@@ -967,7 +967,8 @@ describe("mission tool-use e2e report", () => {
 
     assert.equal(report.kind, "turnkeyai.natural-mission-e2e.report");
     assert.equal(report.evidenceMode, "natural-real-llm");
-    assert.equal(report.progressClaim, "capability");
+    assert.equal(report.progressClaim, "natural-evidence");
+    assert.equal(report.capabilityClaim, "unproven-without-comparative-evidence");
     assert.equal(report.promptPolicy.forbidsContractGateLanguage, true);
     assert.ok(report.promptPolicy.forbiddenPatterns.some((pattern) => pattern.includes("exactly once")));
     assert.ok(report.requiredQualitySignals.includes("source-backed-evidence"));
@@ -978,6 +979,10 @@ describe("mission tool-use e2e report", () => {
     assert.ok(report.requiredQualitySignals.includes("root-cause-dimension-scores"));
     assert.ok(report.requiredQualitySignals.includes("failure-bucket-attribution"));
     assert.equal(report.status, "passed");
+    assert.equal(report.scenarioCount, 1);
+    assert.deepEqual(report.scenarioIds, ["natural-browser-dynamic-page"]);
+    assert.equal(report.passedScenarios, 1);
+    assert.equal(report.failedScenarios, 0);
     assert.equal(report.durationMs, 5000);
     assert.equal(report.scenarios[0]?.scenario, "natural-browser-dynamic-page");
     assert.equal(report.scenarios[0]?.artifacts.count, 1);
