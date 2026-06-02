@@ -48,6 +48,7 @@ export * from "./operator-inspection";
 export * from "./permission-governance-policy";
 export * from "./prompt-inspection";
 export * from "./prompt-admission-policy";
+export * from "./real-llm-ab-acceptance";
 export * from "./real-llm-acceptance-summary";
 export * from "./replay-inspection";
 export * from "./runtime-chain-inspection";

@@ -26,6 +26,7 @@
     "mission:e2e:natural": "tsx scripts/mission-tool-use-e2e.ts --natural-matrix",
     "mission:e2e:thread-entry": "tsx scripts/mission-tool-use-e2e.ts --thread-entry",
     "acceptance:real": "tsx scripts/real-llm-acceptance.ts",
+    "acceptance:ab:check": "tsx scripts/real-llm-ab-acceptance-check.ts",
     "ledger:check": "tsx scripts/agent-workbench-ledger-check.ts",
     "control-center:smoke": "tsx scripts/control-center-ui-smoke.ts",
     "pack:cli": "npm pack --workspace @turnkeyai/cli --dry-run",
