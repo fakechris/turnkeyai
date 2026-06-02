@@ -620,6 +620,22 @@ export function formatRealAcceptanceCoverageSummary(run: ValidationOpsReport["la
   ].join(" · ");
 }
 
+export function formatValidationRunArtifactPaths(
+  run: ValidationOpsReport["latestRuns"][number]
+): Array<{ label: string; path: string }> {
+  const artifacts: Array<{ label: string; path: string }> = [];
+  if (run.realAcceptance?.tooluseArtifactPath) {
+    artifacts.push({ label: "tool-use artifact", path: run.realAcceptance.tooluseArtifactPath });
+  }
+  if (run.artifactPath) {
+    artifacts.push({ label: run.realAcceptance ? "mission artifact" : "artifact", path: run.artifactPath });
+  }
+  if (run.realAcceptance?.naturalArtifactPath) {
+    artifacts.push({ label: "natural artifact", path: run.realAcceptance.naturalArtifactPath });
+  }
+  return artifacts;
+}
+
 function formatScenarioCoverage(coverage: {
   requested: number;
   expected: number;
@@ -845,11 +861,11 @@ function ValidationOpsCard({
                     <div className="runtime-health-detail">
                       {run.runType} · {run.issueCount} issue(s) · {formatRelativeAge(run.completedAt)}
                     </div>
-                    {run.artifactPath ? (
-                      <div className="runtime-health-action runtime-artifact-path">
-                        artifact: <span className="mono">{run.artifactPath}</span>
+                    {formatValidationRunArtifactPaths(run).map((artifact) => (
+                      <div key={`${run.runId}:${artifact.label}`} className="runtime-health-action runtime-artifact-path">
+                        {artifact.label}: <span className="mono">{artifact.path}</span>
                       </div>
-                    ) : null}
+                    ))}
                     {formatRealAcceptanceCoverageSummary(run) ? (
                       <div className="runtime-health-action">
                         coverage: {formatRealAcceptanceCoverageSummary(run)}
