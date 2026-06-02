@@ -62,7 +62,8 @@ test("real LLM A/B report builder emits a checkable report from natural and refe
     );
 
     assert.equal(report.status, "passed");
-    assert.equal(report.capabilityClaim, "capability proven");
+    assert.equal(report.capabilityClaim, "focused capability proven");
+    assert.equal(report.stabilityClaim, "focused stable");
     assert.equal(report.scenarios[0]?.turnkeyai.prompt, NATURAL_BROWSER_PROMPT);
     assert.equal(report.scenarios[0]?.reference.prompt, NATURAL_BROWSER_PROMPT);
     assert.equal(report.scenarios[0]?.turnkeyai.missionId, "msn.test.1");

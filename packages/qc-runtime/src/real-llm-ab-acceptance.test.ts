@@ -33,8 +33,8 @@ test("real LLM A/B acceptance validates comparable natural evidence", () => {
   assert.deepEqual(validation.failures, []);
   assert.deepEqual(validation.summary, {
     status: "passed",
-    capabilityClaim: "capability proven",
-    stabilityClaim: "stable",
+    capabilityClaim: "focused capability proven",
+    stabilityClaim: "focused stable",
     scenarioCount: 1,
     comparableScenarios: 1,
     turnkeyaiWins: 0,
@@ -75,6 +75,7 @@ test("real LLM A/B acceptance keeps focused reports separate from core-suite evi
   assert.equal(coreValidation.status, "failed");
   assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: comparison-research/);
   assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: long-delegation/);
+  assert.match(coreValidation.failures.join("\n"), /focused capability evidence is not core capability evidence/);
 });
 
 test("real LLM A/B markdown conclusion downgrades unvalidated capability claims", () => {
@@ -85,8 +86,8 @@ test("real LLM A/B markdown conclusion downgrades unvalidated capability claims"
   assert.match(markdown, /- Capability: unproven/);
   assert.match(markdown, /- Stability: unstable/);
   assert.match(markdown, /- Status: failed/);
-  assert.match(markdown, /- Reported capability: capability proven/);
-  assert.match(markdown, /- Reported stability: stable/);
+  assert.match(markdown, /- Reported capability: focused capability proven/);
+  assert.match(markdown, /- Reported stability: focused stable/);
   assert.match(markdown, /core suite missing required scenario: comparison-research/);
 });
 
@@ -271,8 +272,8 @@ function buildReport(
   return {
     kind: "turnkeyai.real-llm-ab-acceptance.report",
     status: overrides.status ?? "passed",
-    capabilityClaim: overrides.capabilityClaim ?? "capability proven",
-    stabilityClaim: overrides.stabilityClaim ?? "stable",
+    capabilityClaim: overrides.capabilityClaim ?? "focused capability proven",
+    stabilityClaim: overrides.stabilityClaim ?? "focused stable",
     generatedAtMs: 1,
     scenarios: [
       {

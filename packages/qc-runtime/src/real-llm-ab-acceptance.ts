@@ -98,8 +98,8 @@ export interface RealLlmAbScenarioPair {
 export interface RealLlmAbAcceptanceReport {
   kind: "turnkeyai.real-llm-ab-acceptance.report";
   status: "passed" | "failed";
-  capabilityClaim: "capability proven" | "unproven";
-  stabilityClaim: "stable" | "unstable" | "unproven";
+  capabilityClaim: "capability proven" | "focused capability proven" | "unproven";
+  stabilityClaim: "stable" | "focused stable" | "unstable" | "unproven";
   generatedAtMs?: number;
   scenarios: RealLlmAbScenarioPair[];
 }
@@ -122,8 +122,8 @@ export interface RealLlmAbScenarioComparison {
 
 export interface RealLlmAbAcceptanceSummary {
   status: "passed" | "failed";
-  capabilityClaim: "capability proven" | "unproven";
-  stabilityClaim: "stable" | "unstable" | "unproven";
+  capabilityClaim: "capability proven" | "focused capability proven" | "unproven";
+  stabilityClaim: "stable" | "focused stable" | "unstable" | "unproven";
   scenarioCount: number;
   comparableScenarios: number;
   turnkeyaiWins: number;
@@ -251,10 +251,27 @@ export function validateRealLlmAbAcceptanceReport(
   if (report.status !== "passed") {
     failures.push("report status is not passed");
   }
-  if (report.capabilityClaim !== "capability proven") {
+  const coreSuiteCovered = coversCoreSuite(report);
+  if (report.capabilityClaim === "capability proven") {
+    if (!coreSuiteCovered) {
+      failures.push("capability proven requires the full core suite");
+    }
+  } else if (report.capabilityClaim === "focused capability proven") {
+    if (options.requiredSuite === "core") {
+      failures.push("focused capability evidence is not core capability evidence");
+    }
+  } else {
     failures.push("capability claim is not proven");
   }
-  if (report.stabilityClaim !== "stable") {
+  if (report.stabilityClaim === "stable") {
+    if (!coreSuiteCovered) {
+      failures.push("stable claim requires the full core suite");
+    }
+  } else if (report.stabilityClaim === "focused stable") {
+    if (options.requiredSuite === "core") {
+      failures.push("focused stability evidence is not core stability evidence");
+    }
+  } else {
     failures.push("stability claim is not stable");
   }
   if (report.scenarios.length === 0) {
@@ -639,8 +656,13 @@ function isRealLlmAbAcceptanceReport(value: unknown): value is RealLlmAbAcceptan
   return (
     report.kind === "turnkeyai.real-llm-ab-acceptance.report" &&
     (report.status === "passed" || report.status === "failed") &&
-    (report.capabilityClaim === "capability proven" || report.capabilityClaim === "unproven") &&
-    (report.stabilityClaim === "stable" || report.stabilityClaim === "unstable" || report.stabilityClaim === "unproven") &&
+    (report.capabilityClaim === "capability proven" ||
+      report.capabilityClaim === "focused capability proven" ||
+      report.capabilityClaim === "unproven") &&
+    (report.stabilityClaim === "stable" ||
+      report.stabilityClaim === "focused stable" ||
+      report.stabilityClaim === "unstable" ||
+      report.stabilityClaim === "unproven") &&
     Array.isArray(report.scenarios) &&
     report.scenarios.every(isScenarioPair)
   );
@@ -659,6 +681,13 @@ function isScenarioPair(value: unknown): value is RealLlmAbScenarioPair {
     isScenarioRun(scenario.turnkeyai, "turnkeyai") &&
     isScenarioRun(scenario.reference, "reference")
   );
+}
+
+function coversCoreSuite(report: RealLlmAbAcceptanceReport): boolean {
+  return REAL_LLM_AB_CORE_SUITE_REQUIREMENTS.every((requirement) => {
+    const acceptedScenarioIds: readonly string[] = requirement.acceptedScenarioIds;
+    return report.scenarios.some((scenario) => acceptedScenarioIds.includes(scenario.scenarioId));
+  });
 }
 
 function isScenarioRun(value: unknown, system: RealLlmAbSystemId): value is RealLlmAbScenarioRun {

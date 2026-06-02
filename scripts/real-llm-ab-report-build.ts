@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  REAL_LLM_AB_CORE_SUITE_REQUIREMENTS,
   REAL_LLM_AB_DIMENSION_KEYS,
   validateRealLlmAbAcceptanceReport,
   type RealLlmAbRequiredSuite,
@@ -283,6 +284,7 @@ export function buildRealLlmAbAcceptanceReport(
       }),
     };
   });
+  const coreSuiteCovered = coversCoreSuiteScenarioIds(scenarios.map((scenario) => scenario.scenarioId));
   const draft: RealLlmAbAcceptanceReport = {
     kind: "turnkeyai.real-llm-ab-acceptance.report",
     status: "failed",
@@ -294,17 +296,24 @@ export function buildRealLlmAbAcceptanceReport(
   const validation = validateRealLlmAbAcceptanceReport({
     ...draft,
     status: "passed",
-    capabilityClaim: "capability proven",
-    stabilityClaim: "stable",
+    capabilityClaim: coreSuiteCovered ? "capability proven" : "focused capability proven",
+    stabilityClaim: coreSuiteCovered ? "stable" : "focused stable",
   });
   return validation.status === "passed"
     ? {
         ...draft,
         status: "passed",
-        capabilityClaim: "capability proven",
-        stabilityClaim: "stable",
+        capabilityClaim: coreSuiteCovered ? "capability proven" : "focused capability proven",
+        stabilityClaim: coreSuiteCovered ? "stable" : "focused stable",
       }
     : draft;
+}
+
+function coversCoreSuiteScenarioIds(scenarioIds: readonly string[]): boolean {
+  return REAL_LLM_AB_CORE_SUITE_REQUIREMENTS.every((requirement) => {
+    const acceptedScenarioIds: readonly string[] = requirement.acceptedScenarioIds;
+    return scenarioIds.some((scenarioId) => acceptedScenarioIds.includes(scenarioId));
+  });
 }
 
 function buildTurnkeyAiRun(input: {
