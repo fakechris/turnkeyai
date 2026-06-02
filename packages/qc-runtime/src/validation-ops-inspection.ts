@@ -598,8 +598,8 @@ function hasProvenToolUseAcceptanceReport(details: ValidationOpsRealAcceptanceDe
   if (!aggregateProven) {
     return false;
   }
-  const proofByScenario = new Map((report.scenarioProofs ?? []).map((proof) => [proof.scenario, proof]));
-  return scenarios.every((scenario) => hasProvenToolUseScenario(scenario, proofByScenario.get(scenario)));
+  const proofQueuesByScenario = buildToolUseProofQueues(report);
+  return scenarios.every((scenario) => hasProvenToolUseScenario(scenario, proofQueuesByScenario.get(scenario)?.shift()));
 }
 
 function hasProvenToolUseScenario(
@@ -633,6 +633,24 @@ function hasProvenToolUseScenario(
     return proof.sessionsSpawned >= 2 && proof.childTranscriptMessages >= 4;
   }
   return true;
+}
+
+function buildToolUseProofQueues(
+  report: NonNullable<ValidationOpsRealAcceptanceDetails["tooluseReport"]>
+): Map<
+  string,
+  Array<NonNullable<NonNullable<ValidationOpsRealAcceptanceDetails["tooluseReport"]>["scenarioProofs"]>[number]>
+> {
+  const queues = new Map<
+    string,
+    Array<NonNullable<NonNullable<ValidationOpsRealAcceptanceDetails["tooluseReport"]>["scenarioProofs"]>[number]>
+  >();
+  for (const proof of report.scenarioProofs ?? []) {
+    const queue = queues.get(proof.scenario) ?? [];
+    queue.push(proof);
+    queues.set(proof.scenario, queue);
+  }
+  return queues;
 }
 
 function hasProvenMissionAcceptanceReport(

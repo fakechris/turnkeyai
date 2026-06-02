@@ -519,6 +519,7 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
       throw new Error("real acceptance passed without a tool-use E2E report artifact");
     }
     assertScenarioCoverage("tool-use E2E", tooluseScenarios, input.tooluseReport.scenarioIds ?? []);
+    const tooluseProofsByScenario = buildToolUseProofQueues(input.tooluseReport);
     if (
       input.tooluseReport.status !== "passed" ||
       input.tooluseReport.scenarioCount !== tooluseScenarios.length ||
@@ -526,7 +527,9 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
       input.tooluseReport.failedScenarios > 0 ||
       input.tooluseReport.qualityFailures > 0 ||
       input.tooluseReport.toolCalls < input.tooluseReport.scenarioCount ||
-      !tooluseScenarios.every((scenario) => hasProvenToolUseScenario(scenario, input.tooluseReport))
+      !tooluseScenarios.every((scenario) =>
+        hasProvenToolUseScenario(scenario, tooluseProofsByScenario.get(scenario)?.shift())
+      )
     ) {
       throw new Error("real acceptance tool-use E2E report does not prove a passing capability gate");
     }
@@ -608,9 +611,10 @@ function sameScenarioMultiset(left: string[], right: string[]): boolean {
 
 function hasProvenToolUseScenario(
   scenario: string,
-  report: NonNullable<ReturnType<typeof summarizeToolUseE2eReportForValidationOps>>
+  proof:
+    | NonNullable<NonNullable<ReturnType<typeof summarizeToolUseE2eReportForValidationOps>>["scenarioProofs"]>[number]
+    | undefined
 ): boolean {
-  const proof = report.scenarioProofs?.find((item) => item.scenario === scenario);
   if (!proof?.passed || proof.qualityFailures > 0 || proof.finalBytes <= 0 || proof.evidenceBullets <= 0) {
     return false;
   }
@@ -635,6 +639,24 @@ function hasProvenToolUseScenario(
     return proof.sessionsSpawned >= 2 && proof.childTranscriptMessages >= 4;
   }
   return true;
+}
+
+function buildToolUseProofQueues(
+  report: NonNullable<ReturnType<typeof summarizeToolUseE2eReportForValidationOps>>
+): Map<
+  string,
+  Array<NonNullable<NonNullable<ReturnType<typeof summarizeToolUseE2eReportForValidationOps>>["scenarioProofs"]>[number]>
+> {
+  const queues = new Map<
+    string,
+    Array<NonNullable<NonNullable<ReturnType<typeof summarizeToolUseE2eReportForValidationOps>>["scenarioProofs"]>[number]>
+  >();
+  for (const proof of report.scenarioProofs ?? []) {
+    const queue = queues.get(proof.scenario) ?? [];
+    queue.push(proof);
+    queues.set(proof.scenario, queue);
+  }
+  return queues;
 }
 
 function hasProvenNaturalMissionScenario(

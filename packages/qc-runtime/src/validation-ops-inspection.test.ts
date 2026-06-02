@@ -441,6 +441,40 @@ test("validation ops inspection requires scenario-specific tool-use proof for fu
   assert.match(realGate?.summary ?? "", /acceptance report evidence is incomplete/);
 });
 
+test("validation ops inspection consumes duplicate tool-use scenario proofs by occurrence", () => {
+  const duplicateScenario = "basic";
+  const tooluseScenarios = [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS, duplicateScenario];
+  const tooluseReport = passingToolUseAcceptanceReport(tooluseScenarios);
+  let duplicateCount = 0;
+  tooluseReport.scenarioProofs = (tooluseReport.scenarioProofs ?? []).map((proof) => {
+    if (proof.scenario !== duplicateScenario) return proof;
+    duplicateCount += 1;
+    return duplicateCount === 2 ? { ...proof, passed: false } : proof;
+  });
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-duplicate-tooluse-proof",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios,
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/tool-use.json",
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/mission.json",
+    naturalArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json",
+    tooluseReport,
+    missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
+    naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
+  });
+
+  const report = buildValidationOpsReport([record], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "missing");
+  assert.match(realGate?.summary ?? "", /acceptance report evidence is incomplete/);
+});
+
 test("validation ops inspection requires scenario-specific natural mission proof for full release readiness", () => {
   const naturalMissionReport = passingNaturalMissionAcceptanceReport([
     ...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
