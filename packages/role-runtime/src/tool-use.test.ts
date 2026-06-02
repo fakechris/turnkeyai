@@ -374,6 +374,100 @@ test("sessions_spawn rejects worker kinds that were not advertised as executable
   assert.match(result.content, /explore/);
 });
 
+test("sessions_spawn routes public read-only browser source extraction to explore when available", async () => {
+  let capturedPreferredWorkers: unknown = null;
+  const workerRuntime = {
+    async spawn(input: WorkerInvocationInput) {
+      capturedPreferredWorkers = input.packet.preferredWorkerKinds;
+      return { workerType: "explore", workerRunKey: "worker:explore:task-1" };
+    },
+    async send() {
+      return {
+        workerType: "explore",
+        status: "completed",
+        summary: "Pricing source extracted.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser", "explore"],
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-public-source",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Fetch and extract pricing from https://example.com/pricing for a public source comparison.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Compare pricing pages.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { agent_id?: string };
+  assert.deepEqual(capturedPreferredWorkers, ["explore"]);
+  assert.equal(body.agent_id, "explore");
+  assert.match(result.progress?.[0]?.summary ?? "", /Started explore sub-agent/);
+});
+
+test("sessions_spawn keeps browser for rendered, interactive, or user-session source tasks", async () => {
+  let capturedPreferredWorkers: unknown = null;
+  const workerRuntime = {
+    async spawn(input: WorkerInvocationInput) {
+      capturedPreferredWorkers = input.packet.preferredWorkerKinds;
+      return { workerType: "browser", workerRunKey: "worker:browser:task-1" };
+    },
+    async send() {
+      return {
+        workerType: "browser",
+        status: "completed",
+        summary: "Rendered dashboard inspected.",
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["browser", "explore"],
+  });
+
+  const result = await executor.execute({
+    call: {
+      id: "call-rendered-dashboard",
+      name: "sessions_spawn",
+      input: {
+        agent_id: "browser",
+        task: "Open https://example.com/dashboard and inspect the JS-rendered dashboard as a user would see it.",
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Review dashboard.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  const body = JSON.parse(result.content) as { agent_id?: string };
+  assert.deepEqual(capturedPreferredWorkers, ["browser"]);
+  assert.equal(body.agent_id, "browser");
+  assert.match(result.progress?.[0]?.summary ?? "", /Started browser sub-agent/);
+});
+
 test("sessions_spawn enforces per-parent active sub-agent concurrency before spawning", async () => {
   let spawnCalled = false;
   const activation = buildActivation();
