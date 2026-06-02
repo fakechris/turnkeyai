@@ -1931,7 +1931,7 @@ async function runNaturalFollowupScenario(input: {
     "Continue from the previous work on this mission.",
     "Ask the same Vendor Alpha research thread to revisit its notes and turn the evidence into a decision note for a product lead.",
     "Keep continuity with that earlier research thread rather than starting the same Vendor Alpha work from scratch.",
-    "Keep the answer source-bounded and call out any remaining uncertainty from the collected evidence.",
+    "Keep the answer source-bounded and call out any remaining risk or uncertainty from the collected evidence.",
   ].join("\n");
   assertNaturalPromptAllowed(followup);
   await requestJson<{ accepted: boolean; missionId: string }>({

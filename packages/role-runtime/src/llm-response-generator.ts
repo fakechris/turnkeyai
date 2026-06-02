@@ -622,6 +622,26 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
       if (completedSession) {
         if (
+          shouldContinueIndependentEvidenceStreams({
+            taskPrompt: input.packet.taskPrompt,
+            messages,
+            toolTrace,
+            tools: initialGatewayInput.tools,
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "user",
+              content: buildIndependentEvidenceStreamContinuationPrompt({
+                requiredStreams: inferIndependentEvidenceStreamCount(input.packet.taskPrompt),
+                completedSessions: countCompletedSessionEvidenceResults(toolTrace),
+              }),
+            },
+          ];
+          continue;
+        }
+        if (
           shouldRepairMissingApprovalGate({
             taskPrompt: input.packet.taskPrompt,
             resultText: completedSession.finalContents.join("\n\n"),
@@ -662,6 +682,8 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             "Do not add capabilities, target users, pricing, open-source claims, or product positioning unless they are stated in this source content.",
             "If a requested dimension is missing or uncertain in the source content, write not verified.",
             "Preserve uncertainty labels. Preserve source URLs only when the original user did not forbid links or source URLs.",
+            "For each Source N evidence block below, carry at least one verified fact into the final answer or explicitly say that source did not verify a required dimension.",
+            "For approval-gated work, include the approved action, the evidence observed after the approved action, and the residual risk or no-external-side-effect boundary.",
             ...(completedSession.browserRecoverySummaries.length
               ? [
                   "The source also includes browser continuity metadata.",
@@ -1805,6 +1827,75 @@ function shouldContinueTimedOutSiblingSession(input: {
   return isCoverageCriticalDelegationTask(input.taskPrompt);
 }
 
+function shouldContinueIndependentEvidenceStreams(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  tools?: GenerateTextInput["tools"];
+}): boolean {
+  if (!hasToolDefinition(input.tools, "sessions_spawn")) {
+    return false;
+  }
+  if (hasIndependentEvidenceStreamContinuationPrompt(input.messages)) {
+    return false;
+  }
+  const requiredStreams = inferIndependentEvidenceStreamCount(input.taskPrompt);
+  if (requiredStreams < 3) {
+    return false;
+  }
+  return countCompletedSessionEvidenceResults(input.toolTrace) < requiredStreams;
+}
+
+function inferIndependentEvidenceStreamCount(taskPrompt: string): number {
+  if (/\b(?:three|3) independent evidence streams\b/i.test(taskPrompt)) {
+    return 3;
+  }
+  if (/\bgather evidence from (?:three|3) independent child sessions\b/i.test(taskPrompt)) {
+    return 3;
+  }
+  const sourceLineCount = taskPrompt
+    .split(/\r?\n/)
+    .filter((line) => /^\s*(?:[-*]\s*)?(?:Research source|Capability source|Live signal dashboard|[A-Z][\w -]{2,30}: use (?:an? )?(?:explore|browser) session)\b/i.test(line))
+    .length;
+  return sourceLineCount >= 3 ? sourceLineCount : 0;
+}
+
+function countCompletedSessionEvidenceResults(toolTrace: NativeToolRoundTrace[]): number {
+  let count = 0;
+  for (const round of toolTrace) {
+    for (const result of round.results) {
+      if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+        continue;
+      }
+      if (!result.content) {
+        continue;
+      }
+      const parsed = parseSessionToolResult(result.content);
+      if (!parsed || parsed.status !== "completed" || !readCompletedSessionEvidence(parsed)) {
+        continue;
+      }
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function hasIndependentEvidenceStreamContinuationPrompt(messages: LLMMessage[]): boolean {
+  return messages.some((message) =>
+    readMessageContentText(message.content).includes("Runtime correction: this task declares multiple independent evidence streams.")
+  );
+}
+
+function buildIndependentEvidenceStreamContinuationPrompt(input: { requiredStreams: number; completedSessions: number }): string {
+  return [
+    "Runtime correction: this task declares multiple independent evidence streams.",
+    `Only ${input.completedSessions} of ${input.requiredStreams} required delegated evidence stream(s) have completed.`,
+    "Do not finalize yet. Spawn separate focused sessions for the remaining independent streams so evidence is not collapsed into one worker.",
+    "Keep the original source labels, source URLs, required dimensions, and stop conditions. Use browser for browser-visible, live dashboard, rendered, or client-side evidence.",
+    "After all independent stream results return, synthesize once from the completed delegated evidence.",
+  ].join("\n");
+}
+
 function isCoverageCriticalDelegationTask(taskPrompt: string): boolean {
   const text = taskPrompt.toLowerCase();
   const sourceCount = [
@@ -2229,6 +2320,7 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
   if (!isExplicitSessionContinuationRequest(latestUserText)) {
     return null;
   }
+  const messageHint = buildSessionContinuationMessageHint(taskPrompt, latestUserText);
   const sessionResults = extractSessionToolResultRecords(taskPrompt);
   for (let index = sessionResults.length - 1; index >= 0; index -= 1) {
     const result = sessionResults[index]!;
@@ -2241,7 +2333,7 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
     }
     return {
       sessionKey: sessionKey.trim(),
-      messageHint: latestUserText,
+      messageHint,
     };
   }
   const sessionMatches = [...taskPrompt.matchAll(/"session_key"\s*:\s*"([^"]+)"/g)];
@@ -2257,7 +2349,7 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
     }
     return {
       sessionKey,
-      messageHint: latestUserText,
+      messageHint,
     };
   }
   return null;
@@ -2272,7 +2364,7 @@ function findSessionContinuationLookupDirective(taskPrompt: string, context: str
     return null;
   }
   return {
-    messageHint: latestUserText,
+    messageHint: buildSessionContinuationMessageHint(taskPrompt, latestUserText),
   };
 }
 
@@ -2496,6 +2588,37 @@ function extractLatestUserContinuationText(taskPrompt: string): string {
   return sliceUtf8(content.replace(/\s+/g, " ").trim() || "Continue the same delegated work from the existing session.", 1200);
 }
 
+function buildSessionContinuationMessageHint(taskPrompt: string, latestUserText: string): string {
+  const priorContext = extractPriorContinuationContext(taskPrompt, latestUserText);
+  if (!priorContext) {
+    return latestUserText;
+  }
+  return [
+    latestUserText,
+    "",
+    "Continuation context from the original task:",
+    priorContext,
+    "",
+    "Preserve the original task's decision criteria, required dimensions, entity names, source labels, and user terminology from that context unless the latest user message explicitly changes scope.",
+  ].join("\n");
+}
+
+function extractPriorContinuationContext(taskPrompt: string, latestUserText: string): string {
+  const latestIndex = taskPrompt.lastIndexOf(latestUserText);
+  const priorRaw = latestIndex > 0 ? taskPrompt.slice(0, latestIndex) : taskPrompt;
+  const compact = priorRaw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^\[?tool\]?[:：\s]/i.test(line))
+    .filter((line) => !line.includes(SESSION_TOOL_RESULT_PROTOCOL))
+    .filter((line) => !/^\{.*"session_key".*\}$/.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return sliceUtf8(compact, 1600);
+}
+
 function applySessionContinuationDirective(
   toolCalls: LLMToolCall[],
   directive: SessionContinuationDirective | null
@@ -2513,7 +2636,7 @@ function applySessionContinuationDirective(
               input: {
                 ...call.input,
                 session_key: directive.sessionKey,
-                message: readStringInput(call.input, "message") ?? directive.messageHint,
+                message: mergeSessionContinuationMessage(directive, readStringInput(call.input, "message")),
               },
             }
           : call
@@ -2531,12 +2654,23 @@ function applySessionContinuationDirective(
       name: "sessions_send",
       input: {
         session_key: directive.sessionKey,
-        message: readStringInput(rewritten.input, "task") ?? directive.messageHint,
+        message: mergeSessionContinuationMessage(directive, readStringInput(rewritten.input, "task")),
         ...(readStringInput(rewritten.input, "label") ? { label: readStringInput(rewritten.input, "label") } : {}),
       },
     },
     ...toolCalls.slice(spawnIndex + 1).filter((call) => call.name !== "sessions_spawn"),
   ];
+}
+
+function mergeSessionContinuationMessage(directive: SessionContinuationDirective, proposedMessage: string | undefined): string {
+  const proposed = proposedMessage?.trim();
+  if (!proposed || proposed === directive.messageHint || proposed.includes("Continuation context from the original task")) {
+    return proposed || directive.messageHint;
+  }
+  if (!directive.messageHint.includes("Continuation context from the original task")) {
+    return proposed;
+  }
+  return [proposed, "", "Runtime continuity guard:", directive.messageHint].join("\n");
 }
 
 function applySessionContinuationLookupDirective(
@@ -2611,6 +2745,9 @@ function normalizePrivateUrlResearchSpawnCalls(
     const task = readStringInput(call.input, "task") ?? "";
     const label = readStringInput(call.input, "label") ?? "";
     if (!containsPrivateOrLoopbackHttpUrl([task, label].join("\n"))) {
+      return call;
+    }
+    if (allowsLoopbackExploreForE2E() && containsLoopbackHttpUrl([task, label].join("\n"))) {
       return call;
     }
     return {
@@ -2757,6 +2894,21 @@ function containsPrivateOrLoopbackHttpUrl(text: string): boolean {
   });
 }
 
+function containsLoopbackHttpUrl(text: string): boolean {
+  return extractHttpUrls(text).some((url) => {
+    try {
+      const parsed = new URL(url);
+      return isLoopbackHostname(parsed.hostname);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function allowsLoopbackExploreForE2E(): boolean {
+  return process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE === "1";
+}
+
 function extractHttpUrls(text: string): string[] {
   return Array.from(text.matchAll(/\bhttps?:\/\/[^\s"'`<>]+/gi))
     .map((match) => trimHttpUrlCandidate(match[0] ?? ""))
@@ -2782,7 +2934,7 @@ function trimHttpUrlCandidate(candidate: string): string {
 
 function isPrivateOrLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (normalized === "localhost" || normalized === "::1" || normalized.endsWith(".local")) {
+  if (isLoopbackHostname(hostname) || normalized.endsWith(".local")) {
     return true;
   }
   if (normalized.startsWith("::ffff:")) {
@@ -2809,6 +2961,22 @@ function isPrivateOrLoopbackHostname(hostname: string): boolean {
     (a === 192 && b === 168) ||
     (a === 169 && b === 254)
   );
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized === "::1") {
+    return true;
+  }
+  if (normalized.startsWith("::ffff:")) {
+    return isLoopbackHostname(normalized.slice("::ffff:".length));
+  }
+  const parts = normalized.split(".");
+  if (parts.length !== 4 || !parts.every((part) => /^\d+$/.test(part))) {
+    return false;
+  }
+  const numbers = parts.map((part) => Number(part));
+  return numbers.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) && numbers[0] === 127;
 }
 
 function buildGatewayInput(input: {
@@ -2901,6 +3069,11 @@ function finalSynthesisFormatContract(): string[] {
     "Do not write status preambles such as 'All tool calls returned' or 'Producing the final answer'.",
     "For exact-skeleton answers, keep each requested bullet compact, usually one sentence, while preserving required markers, facts, and residual risk.",
     "Do not collapse requested bullets into a paragraph. Do not add extra sections, summaries, notes, or prose after an exact requested shape.",
+    "Evidence synthesis contract:",
+    "Unless the original task's exact output shape forbids extra labels, include concise verified evidence, unverified scope or residual risk, and the recommendation or next action.",
+    "When delegated Source N evidence blocks are provided, cover every source in the final answer. Preserve source-specific facts such as counts, rates, owners, URLs, screenshots, artifacts, approvals, and limitations.",
+    "Do not promote a source's partial, missing, timed-out, blocked, or unverified observation into a confirmed claim. Mark missing dimensions as not verified.",
+    "For approval-gated or mutating work, state what was approved, what was applied, what evidence changed after the action, and what residual risk or no-external-side-effect boundary remains.",
   ];
 }
 

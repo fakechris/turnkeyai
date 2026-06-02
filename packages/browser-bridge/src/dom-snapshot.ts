@@ -6,6 +6,7 @@ export async function captureDomSnapshot(input: {
   requestedUrl: string;
   statusCode: number;
 }): Promise<BrowserSnapshotResult> {
+  await waitForRenderedBody(input.page);
   const data = (await input.page.evaluate(`(() => {
     function escapeSelector(value) {
       return value.replace(/([ #;?%&,.+*~':"!^$[\\]()=>|/@])/g, "\\\\$1");
@@ -106,4 +107,18 @@ export async function captureDomSnapshot(input: {
     statusCode: input.statusCode,
     interactives: data.interactives,
   };
+}
+
+async function waitForRenderedBody(page: Page): Promise<void> {
+  await page.waitForLoadState("domcontentloaded", { timeout: 5_000 }).catch(() => {});
+  await page
+    .waitForFunction(
+      `(() => {
+        const text = document.body ? document.body.innerText.replace(/\\s+/g, " ").trim() : "";
+        return Boolean(text) && !/^Loading\\b/i.test(text);
+      })()`,
+      undefined,
+      { timeout: 2_000 }
+    )
+    .catch(() => {});
 }

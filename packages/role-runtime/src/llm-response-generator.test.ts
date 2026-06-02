@@ -1509,6 +1509,110 @@ test("llm role response generator prunes older oversized tool results before lat
   assert.ok((gatewayInputs[3]?.envelope?.toolResultBytes ?? 0) <= 32 * 1024);
 });
 
+test("llm role response generator does not finalize multi-stream delegation after one session", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-one", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Collect all three streams in one broad pass.",
+        label: "broad product brief",
+      });
+    }
+    if (gatewayInputs.length === 2) {
+      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
+      return {
+        text: "Calling remaining focused tools.",
+        toolCalls: [
+          {
+            id: "toolu-two",
+            name: "sessions_spawn",
+            input: { agent_id: "explore", task: "Check orchestration source only.", label: "orchestration" },
+          },
+          {
+            id: "toolu-three",
+            name: "sessions_spawn",
+            input: { agent_id: "browser", task: "Check live dashboard source only.", label: "signals" },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "Final answer from three independent streams.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: `task-${input.call.id}`,
+          session_key: `worker:${input.call.input.agent_id}:task-${input.call.id}`,
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          result: `${input.call.input.label} evidence complete.`,
+          final_content: `${input.call.input.label} verified evidence. Residual risk: local fixture only.`,
+          payload: {
+            mode: "llm_sub_agent",
+            content: `${input.call.input.label} verified evidence. Residual risk: local fixture only.`,
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Prepare a product-ready brief about the next release.",
+        "These are three independent evidence streams.",
+        "Research source: http://127.0.0.1/orchestration",
+        "Capability source: http://127.0.0.1/bridge",
+        "Live signal dashboard: http://127.0.0.1/signals",
+        "Use browser-visible evidence for the live signal dashboard.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer from three independent streams.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.id),
+    ["toolu-one", "toolu-two", "toolu-three"]
+  );
+  assert.equal(gatewayInputs.length, 3);
+});
+
 test("llm role response generator prunes aggregate tool result budget before final synthesis", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const largeA = "A".repeat(8_000);
@@ -1773,6 +1877,8 @@ test("llm role response generator synthesizes instead of falling back when tool 
     )
   );
   assert.ok(finalSynthesisPrompt(gatewayInputs[3])?.includes("Do not collapse requested bullets into a paragraph"));
+  assert.ok(finalSynthesisPrompt(gatewayInputs[3])?.includes("Evidence synthesis contract"));
+  assert.ok(finalSynthesisPrompt(gatewayInputs[3])?.includes("unverified scope or residual risk"));
   const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
   assert.equal(closeout?.reason, "round_limit");
   assert.equal(closeout?.maxRounds, 2);
@@ -2268,6 +2374,9 @@ test("llm role response generator forces sessions_send for explicit continuation
   );
   assert.equal(executedCalls.length, 1);
   assert.equal(executedCalls[0]?.name, "sessions_send");
+  assert.match(String(executedCalls[0]?.input.message), /Continuation context from the original task/);
+  assert.match(String(executedCalls[0]?.input.message), /release-risk note/);
+  assert.match(String(executedCalls[0]?.input.message), /decision criteria/);
 });
 
 test("llm role response generator routes continuation follow-up to cancelled session", async () => {
@@ -2351,6 +2460,7 @@ test("llm role response generator routes continuation follow-up to cancelled ses
   assert.equal(executedCalls.length, 1);
   assert.equal(gatewayInputs.length, 2);
   assert.match(readToolContent(gatewayInputs[1]!.messages.at(-1)!.content), /completed delegated session evidence/i);
+  assert.match(readToolContent(gatewayInputs[1]!.messages.at(-1)!.content), /cover every source/i);
   assert.match(readToolContent(gatewayInputs[1]!.messages.at(-1)!.content), /Cancelled session resumed with source evidence/);
   const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
   assert.equal(closeout?.reason, "completed_sub_agent_final");
@@ -2435,6 +2545,9 @@ test("llm role response generator routes explicit follow-up to completed session
   assert.equal(result.content, "Final answer from completed-session continuation.");
   assert.equal(executedCalls[0]?.name, "sessions_send");
   assert.equal(executedCalls[0]?.input.session_key, "worker:browser:task-dashboard:toolu-browser");
+  assert.match(String(executedCalls[0]?.input.message), /Continuation context from the original task/);
+  assert.match(String(executedCalls[0]?.input.message), /operations dashboard review/);
+  assert.match(String(executedCalls[0]?.input.message), /decision criteria/);
   assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /Runtime session continuation directive/);
 });
 
@@ -3620,8 +3733,11 @@ test("llm role response generator synthesizes immediately after completed browse
     }
     assert.equal(input.toolChoice, "none");
     assert.equal(input.tools, undefined);
-    assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /completed delegated session evidence/);
-    assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /TURNKEYAI_APPROVAL_FIXTURE_OK/);
+    const finalPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
+    assert.match(finalPrompt, /completed delegated session evidence/);
+    assert.match(finalPrompt, /approved action/i);
+    assert.match(finalPrompt, /residual risk or no-external-side-effect boundary/i);
+    assert.match(finalPrompt, /TURNKEYAI_APPROVAL_FIXTURE_OK/);
     return {
       text: "Final synthesized answer from browser evidence.",
       modelId: "claude-test",
@@ -5114,6 +5230,89 @@ test("llm role response generator reroutes private URL research spawns to browse
   assert.match(String(executedCalls[0]?.input.task ?? ""), /127\.0\.0\.1:49152\/vendor-alpha/);
   assert.match(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
   assert.match(result.content, /\$19 per seat/);
+});
+
+test("llm role response generator allows loopback explore only for isolated E2E fixture mode", async () => {
+  const previous = process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+  process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = "1";
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (!input.messages.some((message) => message.role === "tool")) {
+      return toolCallResult("toolu-local-source", "sessions_spawn", {
+        agent_id: "explore",
+        label: "Local fixture source",
+        task: "Fetch http://127.0.0.1:49152/vendor-alpha and extract observed facts.",
+      });
+    }
+    return {
+      text: "Local fixture source checked through explore.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-local-source",
+          session_key: "worker:explore:task-local-source:toolu-local-source",
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          result: "Explore fetched local fixture evidence.",
+          final_content: "Explore fetched local fixture evidence.",
+          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: "Explore fetched local fixture evidence." },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  try {
+    await generator.generate({
+      activation: buildActivation(),
+      packet: {
+        ...buildPacket(),
+        capabilityInspection: {
+          availableWorkers: ["browser", "explore"],
+          connectorStates: [],
+          apiStates: [],
+          skillStates: [],
+          transportPreferences: [],
+          unavailableCapabilities: [],
+          generatedAt: 1,
+        },
+      },
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+    } else {
+      process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = previous;
+    }
+  }
+
+  assert.equal(executedCalls[0]?.input.agent_id, "explore");
+  assert.doesNotMatch(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
 });
 
 test("llm role response generator reroutes link-local and wildcard URL research spawns to browser", async () => {
