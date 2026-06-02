@@ -525,7 +525,8 @@ export function assertRealAcceptanceArtifactIntegrity(input: {
       input.tooluseReport.passedScenarios !== input.tooluseReport.scenarioCount ||
       input.tooluseReport.failedScenarios > 0 ||
       input.tooluseReport.qualityFailures > 0 ||
-      input.tooluseReport.toolCalls < input.tooluseReport.scenarioCount
+      input.tooluseReport.toolCalls < input.tooluseReport.scenarioCount ||
+      !tooluseScenarios.every((scenario) => hasProvenToolUseScenario(scenario, input.tooluseReport))
     ) {
       throw new Error("real acceptance tool-use E2E report does not prove a passing capability gate");
     }
@@ -600,6 +601,37 @@ function sameScenarioMultiset(left: string[], right: string[]): boolean {
     }
   }
   return counts.size === 0;
+}
+
+function hasProvenToolUseScenario(
+  scenario: string,
+  report: NonNullable<ReturnType<typeof summarizeToolUseE2eReportForValidationOps>>
+): boolean {
+  const proof = report.scenarioProofs?.find((item) => item.scenario === scenario);
+  if (!proof?.passed || proof.qualityFailures > 0 || proof.finalBytes <= 0 || proof.evidenceBullets <= 0) {
+    return false;
+  }
+  if (!proof.toolCallNames.includes("sessions_spawn") || proof.sessionsSpawned < 1) {
+    return false;
+  }
+  if (scenario === "approval") {
+    return (
+      proof.toolCallNames.includes("permission_query") &&
+      proof.toolCallNames.includes("permission_result") &&
+      proof.toolCallNames.includes("permission_applied") &&
+      proof.permissionEvents >= 3
+    );
+  }
+  if (scenario === "followup") {
+    return proof.toolCallNames.includes("sessions_send") && proof.sessionsSpawned === 1 && proof.childTranscriptMessages >= 4;
+  }
+  if (scenario === "timeout") {
+    return proof.sessionsSpawned === 1;
+  }
+  if (scenario === "complex") {
+    return proof.sessionsSpawned >= 2 && proof.childTranscriptMessages >= 4;
+  }
+  return true;
 }
 
 function summarizeTooluseJson(tooluseJsonPath: string): ReturnType<typeof summarizeToolUseE2eReportForValidationOps> {

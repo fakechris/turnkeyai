@@ -134,16 +134,30 @@ export function summarizeToolUseE2eReportForValidationOps(report: unknown): Tool
       const scenarioId = readString(scenario.scenario);
       const qualityFailures = readNumber(scenario.qualityFailures);
       const passing = scenario.status === "passed" && qualityFailures === 0;
+      const toolCallNames = readStringArray(scenario.toolCallNames);
       if (scenarioId) (summary.scenarioIds ??= []).push(scenarioId);
       summary.passedScenarios += passing ? 1 : 0;
       summary.failedScenarios += passing ? 0 : 1;
       summary.qualityFailures += qualityFailures;
       summary.finalBytes += readNumber(scenario.finalBytes);
       summary.evidenceBullets += readNumber(scenario.evidenceBullets);
-      summary.toolCalls += readArrayLength(scenario.toolCallNames);
+      summary.toolCalls += toolCallNames.length;
       summary.sessionsSpawned += readNumber(scenario.spawnedSessionCount);
       summary.childTranscriptMessages += readNumber(scenario.childTranscriptMessages);
       summary.permissionEvents += readArrayLength(scenario.permissionEvents);
+      if (scenarioId) {
+        (summary.scenarioProofs ??= []).push({
+          scenario: scenarioId,
+          passed: passing,
+          finalBytes: readNumber(scenario.finalBytes),
+          evidenceBullets: readNumber(scenario.evidenceBullets),
+          qualityFailures,
+          toolCallNames,
+          sessionsSpawned: readNumber(scenario.spawnedSessionCount),
+          childTranscriptMessages: readNumber(scenario.childTranscriptMessages),
+          permissionEvents: readArrayLength(scenario.permissionEvents),
+        });
+      }
       return summary;
     },
     {
@@ -159,6 +173,7 @@ export function summarizeToolUseE2eReportForValidationOps(report: unknown): Tool
       sessionsSpawned: 0,
       childTranscriptMessages: 0,
       permissionEvents: 0,
+      scenarioProofs: [],
     }
   );
 }
@@ -507,6 +522,11 @@ function readNumber(value: unknown): number {
 
 function readArrayLength(value: unknown): number {
   return Array.isArray(value) ? value.length : 0;
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => (typeof item === "string" && item.trim() ? [item.trim()] : []));
 }
 
 function readString(value: unknown): string | null {

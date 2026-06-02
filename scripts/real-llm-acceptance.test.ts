@@ -209,6 +209,38 @@ test("real acceptance integrity requires passing tool-use report summaries when 
     /tool-use E2E report does not prove/
   );
 
+  assert.throws(
+    () =>
+      assertRealAcceptanceArtifactIntegrity({
+        status: "passed",
+        tooluseScenarios: ["approval"],
+        missionScenarios: [],
+        naturalMissionScenarios: [],
+        tooluseJsonPresent: true,
+        missionJsonPresent: false,
+        naturalMissionJsonPresent: false,
+        tooluseReport: passingTooluseReport({
+          scenarioIds: ["approval"],
+          scenarioProofs: [
+            {
+              scenario: "approval",
+              passed: true,
+              finalBytes: 220,
+              evidenceBullets: 3,
+              qualityFailures: 0,
+              toolCallNames: ["sessions_spawn"],
+              sessionsSpawned: 1,
+              childTranscriptMessages: 4,
+              permissionEvents: 0,
+            },
+          ],
+        }),
+        missionReport: null,
+        naturalMissionReport: null,
+      }),
+    /tool-use E2E report does not prove/
+  );
+
   assert.doesNotThrow(() =>
     assertRealAcceptanceArtifactIntegrity({
       status: "passed",
@@ -500,19 +532,31 @@ function passingMissionReport(
 function passingTooluseReport(
   overrides: Partial<NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["tooluseReport"]>> = {}
 ): NonNullable<Parameters<typeof assertRealAcceptanceArtifactIntegrity>[0]["tooluseReport"]> {
+  const scenarioIds = overrides.scenarioIds ?? ["basic"];
   return {
     status: "passed",
-    scenarioCount: 1,
-    scenarioIds: ["basic"],
-    passedScenarios: 1,
+    scenarioCount: scenarioIds.length,
+    scenarioIds,
+    passedScenarios: scenarioIds.length,
     failedScenarios: 0,
     qualityFailures: 0,
-    finalBytes: 220,
-    evidenceBullets: 3,
-    toolCalls: 1,
-    sessionsSpawned: 1,
-    childTranscriptMessages: 4,
+    finalBytes: scenarioIds.length * 220,
+    evidenceBullets: scenarioIds.length * 3,
+    toolCalls: scenarioIds.length,
+    sessionsSpawned: scenarioIds.length,
+    childTranscriptMessages: scenarioIds.length * 4,
     permissionEvents: 0,
+    scenarioProofs: scenarioIds.map((scenario) => ({
+      scenario,
+      passed: true,
+      finalBytes: 220,
+      evidenceBullets: 3,
+      qualityFailures: 0,
+      toolCallNames: ["sessions_spawn"],
+      sessionsSpawned: 1,
+      childTranscriptMessages: 4,
+      permissionEvents: 0,
+    })),
     ...overrides,
   };
 }

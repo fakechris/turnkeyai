@@ -49,6 +49,30 @@ test("summarizeToolUseE2eReportForValidationOps aggregates real tool-use matrix 
     sessionsSpawned: 2,
     childTranscriptMessages: 8,
     permissionEvents: 3,
+    scenarioProofs: [
+      {
+        scenario: "basic",
+        passed: true,
+        finalBytes: 240,
+        evidenceBullets: 3,
+        qualityFailures: 0,
+        toolCallNames: ["sessions_spawn"],
+        sessionsSpawned: 1,
+        childTranscriptMessages: 4,
+        permissionEvents: 0,
+      },
+      {
+        scenario: "approval",
+        passed: true,
+        finalBytes: 320,
+        evidenceBullets: 4,
+        qualityFailures: 0,
+        toolCallNames: ["permission_query", "permission_result", "permission_applied", "sessions_spawn"],
+        sessionsSpawned: 1,
+        childTranscriptMessages: 4,
+        permissionEvents: 3,
+      },
+    ],
   });
 });
 

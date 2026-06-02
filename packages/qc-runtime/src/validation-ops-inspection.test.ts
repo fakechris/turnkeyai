@@ -403,6 +403,44 @@ test("validation ops inspection does not pass full coverage without real report 
   assert.match(realGate?.summary ?? "", /full release coverage is recorded, but acceptance report evidence is incomplete/);
 });
 
+test("validation ops inspection requires scenario-specific tool-use proof for full release readiness", () => {
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-full-with-weak-tooluse-proof",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/tool-use.json",
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/mission.json",
+    naturalArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json",
+    tooluseReport: {
+      ...passingToolUseAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS]),
+      scenarioProofs: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS].map((scenario) => ({
+        scenario,
+        passed: true,
+        finalBytes: 220,
+        evidenceBullets: 3,
+        qualityFailures: 0,
+        toolCallNames: ["sessions_spawn"],
+        sessionsSpawned: 1,
+        childTranscriptMessages: 0,
+        permissionEvents: 0,
+      })),
+    },
+    missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
+    naturalMissionReport: passingNaturalMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS]),
+  });
+
+  const report = buildValidationOpsReport([record], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "missing");
+  assert.match(realGate?.summary ?? "", /acceptance report evidence is incomplete/);
+});
+
 test("validation ops inspection lets a newer failed real LLM acceptance invalidate an older proven full run", () => {
   const fullRecord = buildValidationOpsRecordFromRealLlmAcceptance({
     runId: "real-llm-full-pass",
@@ -963,7 +1001,10 @@ function passingMissionAcceptanceReport(
 
 function passingToolUseAcceptanceReport(
   scenarioIds: string[]
-): NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["tooluseReport"] {
+): NonNullable<
+  NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["tooluseReport"]
+> {
+  const scenarioProofs = scenarioIds.map((scenario) => passingToolUseScenarioProof(scenario));
   return {
     status: "passed",
     scenarioCount: scenarioIds.length,
@@ -976,8 +1017,50 @@ function passingToolUseAcceptanceReport(
     toolCalls: scenarioIds.length,
     sessionsSpawned: scenarioIds.length,
     childTranscriptMessages: scenarioIds.length * 4,
+    permissionEvents: scenarioProofs.reduce((sum, proof) => sum + proof.permissionEvents, 0),
+    scenarioProofs,
+  };
+}
+
+function passingToolUseScenarioProof(
+  scenario: string
+): NonNullable<
+  NonNullable<
+    NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["tooluseReport"]
+  >["scenarioProofs"]
+>[number] {
+  const base = {
+    scenario,
+    passed: true,
+    finalBytes: 220,
+    evidenceBullets: 3,
+    qualityFailures: 0,
+    toolCallNames: ["sessions_spawn"],
+    sessionsSpawned: 1,
+    childTranscriptMessages: 4,
     permissionEvents: 0,
   };
+  if (scenario === "approval") {
+    return {
+      ...base,
+      toolCallNames: ["permission_query", "permission_result", "permission_applied", "sessions_spawn"],
+      permissionEvents: 3,
+    };
+  }
+  if (scenario === "followup") {
+    return {
+      ...base,
+      toolCallNames: ["sessions_spawn", "sessions_send"],
+    };
+  }
+  if (scenario === "complex") {
+    return {
+      ...base,
+      sessionsSpawned: 2,
+      childTranscriptMessages: 4,
+    };
+  }
+  return base;
 }
 
 function passingNaturalMissionAcceptanceReport(
