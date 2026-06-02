@@ -3503,12 +3503,15 @@ export function evaluateNaturalMissionQuality(input: {
   const failures: string[] = [];
   const expectedMissionStatus = input.spec.expectedMissionStatus ?? "done";
   const completed = input.mission.status === expectedMissionStatus && input.metrics.status === expectedMissionStatus;
-  const weakAnswerSignals = findWeakAnswerSignals(input.final.text);
+  const toolNames = collectToolNames(input.timeline);
+  const evidenceText = collectTimelineEvidenceText(input.timeline);
+  const weakAnswerSignals = [
+    ...findWeakAnswerSignals(input.final.text),
+    ...(input.spec.allowToolFailure ? [] : findWeakEvidenceSignals(evidenceText)),
+  ];
   const blockingWeakAnswerSignals = weakAnswerSignals.filter(
     (signal) => !(input.spec.allowedWeakAnswerSignals ?? []).includes(signal)
   );
-  const toolNames = collectToolNames(input.timeline);
-  const evidenceText = collectTimelineEvidenceText(input.timeline);
   const effectiveEvidenceEvents =
     expectedMissionStatus === "needs_approval" && hasRuntimeEvent(input.timeline, "permission.query")
       ? Math.max(input.metrics.qualityGate.evidenceEvents, 1)
@@ -3907,6 +3910,38 @@ function findWeakAnswerSignals(text: string): string[] {
     },
   ];
   return patterns.flatMap((item) => (item.pattern.test(text) ? [item.label] : []));
+}
+
+function findWeakEvidenceSignals(text: string): string[] {
+  const patterns = [
+    {
+      label: "browser evidence blocked",
+      pattern:
+        /\b(?:Cloudflare|Turnstile|anti-bot|captcha|blocked|access denied|forbidden|just a moment|please wait|请稍候)\b/i,
+    },
+    {
+      label: "browser extraction failed",
+      pattern:
+        /\bverification status:\s*failed\b|\b(?:could not|unable to|failed to)\s+(?:access|extract|capture|read|verify|load)\b|\bcontent extraction\b[\s\S]{0,80}\b(?:failed|incomplete|truncated)\b/i,
+    },
+    {
+      label: "browser evidence not verified",
+      pattern:
+        /\bnot verified\b|\bunverified\b|\bunable to verify\b|\bverification status:\s*(?:failed|incomplete)\b/i,
+    },
+    {
+      label: "browser transport degraded",
+      pattern:
+        /\b(?:transport_failure|session lease conflict|lease conflict|budget truncation|result truncation|snapshot truncation)\b/i,
+    },
+  ];
+  const signals: string[] = [];
+  for (const item of patterns) {
+    if (item.pattern.test(text) && !signals.includes(item.label)) {
+      signals.push(item.label);
+    }
+  }
+  return signals;
 }
 
 export function formatMissionScenarioStart(input: {
