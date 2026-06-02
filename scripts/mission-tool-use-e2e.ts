@@ -4084,11 +4084,16 @@ function readToolResultSessionKey(event: ActivityEvent): string | null {
   }
 }
 
-function findWeakAnswerSignals(text: string): string[] {
+export function findWeakAnswerSignals(text: string): string[] {
   const patterns = [
     { label: "tool unavailable fallback", pattern: /搜索工具.{0,12}(?:无法|不可用|没有返回)|(?:search|browser|tool).{0,24}(?:unavailable|not available|failed|not working|unable)/i },
     { label: "model-knowledge fallback", pattern: /(?:based on|using) (?:my )?(?:knowledge|training data)|(?:基于|根据)我的(?:知识库|知识|训练数据)/i },
     { label: "placeholder uncertainty", pattern: /\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|estimate|estimated|probably|maybe)\b|待确认|估算/i },
+    {
+      label: "delegation-only closeout",
+      pattern:
+        /(?:^|\n)\s*(?:#{1,6}\s+)?(?:\*\*)?(?:lead\s*:\s*)?(?:delegat(?:e|ed|ing)|(?:i(?:'ll| will| have|’ll|’ve)\s+delegat(?:e|ed|ing))|hand(?:off|ed off|ing off)|handoff|handover)\b|(?:^|\n)\s*\[TO:\s*role-[^\]]+\]|(?:^|\n)\s*[→-]\s*role-/i,
+    },
     {
       label: "empty summary",
       pattern: /^\s*(?:I don't have enough information|I am unable to provide|I cannot determine|无法提供|不能确定)\b/i,
