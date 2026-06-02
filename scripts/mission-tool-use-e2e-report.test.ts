@@ -1713,9 +1713,9 @@ describe("mission tool-use e2e report", () => {
   it("requires rendered browser evidence for natural dashboard scenarios", () => {
     const result = fakeNaturalResult();
     const spec = {
-      scenario: "natural-browser-dynamic-page" as const,
-      title: "Browser page",
-      desc: "Review a browser page.",
+      scenario: "natural-browser-dashboard-task" as const,
+      title: "Browser dashboard task",
+      desc: "Review a browser dashboard.",
       minBytes: 120,
       minToolResults: 1,
       maxToolResults: 6,
@@ -1753,7 +1753,7 @@ describe("mission tool-use e2e report", () => {
 
   it("accepts natural rendered evidence phrasing for browser dashboard facts", () => {
     const result = fakeNaturalResult();
-    const spec = buildNaturalScenarioSpec("natural-browser-dynamic-page", {
+    const spec = buildNaturalScenarioSpec("natural-browser-dashboard-task", {
       alphaUrl: "http://127.0.0.1/vendor-alpha",
       betaUrl: "http://127.0.0.1/vendor-beta",
       dashboardUrl: "http://127.0.0.1/ops-dashboard",
@@ -1768,11 +1768,11 @@ describe("mission tool-use e2e report", () => {
       toolName: "sessions_spawn",
       toolPhase: "result",
       resultContent:
-        "Browser-rendered dashboard evidence: queue depth is now 11, SLA breaches are 3, and the recommended owner is Incident Commander.",
+        "Browser-rendered dashboard evidence: queue depth is now 11, SLA breaches are 3, Escalation threshold says queue depth above 5 or SLA breaches above 0, and the recommended owner is Incident Commander.",
     };
     result.final.text = [
-      "Queue depth is 11 and SLA breaches are 3, so the dashboard state needs operator attention now.",
-      "Incident Commander should own the next action, review the queue, and coordinate the escalation.",
+      "Queue depth is 11 and SLA breaches are 3, so the escalation policy is triggered and the dashboard state needs operator attention now.",
+      "Incident Commander should own the next action, page the on-call, review the queue, and coordinate the escalation.",
       "The recommendation is evidence-backed by browser-rendered dashboard facts, with residual risk limited to the local fixture and missing per-ticket detail.",
     ].join(" ");
 
