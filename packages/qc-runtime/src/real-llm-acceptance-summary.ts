@@ -116,6 +116,8 @@ const NATURAL_DIMENSION_SCORE_KEYS = [
 interface NaturalMissionE2eReportShape {
   kind?: unknown;
   status?: unknown;
+  progressClaim?: unknown;
+  capabilityClaim?: unknown;
   scenarios?: unknown;
 }
 
@@ -348,10 +350,12 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
   if (!isNaturalMissionE2eReportShape(report) || report.kind !== "turnkeyai.natural-mission-e2e.report") {
     return null;
   }
+  const naturalEvidenceClaims = readNaturalEvidenceClaims(report);
   const scenarios = Array.isArray(report.scenarios) ? report.scenarios.filter(isNaturalScenarioReportShape) : [];
   if (scenarios.length === 0) {
     return {
       status: report.status === "passed" ? "passed" : "failed",
+      ...naturalEvidenceClaims,
       scenarioCount: 0,
       scenarioIds: [],
       passedScenarios: 0,
@@ -500,6 +504,7 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
     },
     {
       status: report.status === "passed" ? "passed" : "failed",
+      ...naturalEvidenceClaims,
       scenarioCount: scenarios.length,
       scenarioIds: [],
       passedScenarios: 0,
@@ -616,6 +621,18 @@ function hasUnexpectedForcedCloseout(scenario: MissionScenarioReportShape): bool
 
 function isNaturalMissionE2eReportShape(value: unknown): value is NaturalMissionE2eReportShape {
   return typeof value === "object" && value !== null;
+}
+
+function readNaturalEvidenceClaims(report: NaturalMissionE2eReportShape): {
+  progressClaim?: string;
+  capabilityClaim?: string;
+} {
+  const progressClaim = readString(report.progressClaim);
+  const capabilityClaim = readString(report.capabilityClaim);
+  return {
+    ...(progressClaim ? { progressClaim } : {}),
+    ...(capabilityClaim ? { capabilityClaim } : {}),
+  };
 }
 
 function isNaturalScenarioReportShape(value: unknown): value is NaturalScenarioReportShape {

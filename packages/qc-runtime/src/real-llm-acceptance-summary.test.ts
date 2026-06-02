@@ -288,6 +288,8 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
   const summary = summarizeNaturalMissionE2eReportForValidationOps({
     kind: "turnkeyai.natural-mission-e2e.report",
     status: "failed",
+    progressClaim: "natural-evidence",
+    capabilityClaim: "unproven-without-comparative-evidence",
     scenarios: [
       {
         scenario: "natural-browser-dynamic-page",
@@ -367,6 +369,8 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
 
   assert.deepEqual(summary, {
     status: "failed",
+    progressClaim: "natural-evidence",
+    capabilityClaim: "unproven-without-comparative-evidence",
     scenarioCount: 2,
     scenarioIds: ["natural-browser-dynamic-page", "natural-long-delegation"],
     passedScenarios: 1,

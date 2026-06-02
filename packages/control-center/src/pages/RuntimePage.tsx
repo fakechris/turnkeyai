@@ -594,7 +594,12 @@ export function formatRealAcceptanceNaturalSummary(run: ValidationOpsReport["lat
     countOrZero(naturalReport.sourceAnswerTermsMissing) +
     countOrZero(naturalReport.sourceAnswerPatternsMissing) +
     countOrZero(naturalReport.sourceEvidencePatternsMissing);
+  const claimParts = [
+    naturalReport.progressClaim ? `claim ${naturalReport.progressClaim}` : null,
+    naturalReport.capabilityClaim ? `capability ${naturalReport.capabilityClaim}` : null,
+  ].filter((part): part is string => part != null);
   return [
+    ...claimParts,
     `${countOrZero(naturalReport.passedScenarios)}/${countOrZero(naturalReport.scenarioCount)} natural scenarios`,
     `evidence ${countOrZero(naturalReport.finalAnswerHasEvidence)}/${countOrZero(naturalReport.scenarioCount)}`,
     `useful ${countOrZero(naturalReport.finalAnswerUseful)}/${countOrZero(naturalReport.scenarioCount)}`,

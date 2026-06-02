@@ -197,6 +197,8 @@ export interface ValidationOpsRealAcceptanceDetails {
   };
   naturalMissionReport?: {
     status: "passed" | "failed";
+    progressClaim?: string;
+    capabilityClaim?: string;
     scenarioCount: number;
     scenarioIds?: string[];
     passedScenarios: number;

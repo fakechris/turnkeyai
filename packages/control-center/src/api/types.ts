@@ -491,6 +491,8 @@ export interface ValidationOpsRunRecord {
     };
     naturalMissionReport?: {
       status: "passed" | "failed";
+      progressClaim?: string;
+      capabilityClaim?: string;
       scenarioCount: number;
       scenarioIds?: string[];
       passedScenarios: number;
