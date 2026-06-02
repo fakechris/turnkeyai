@@ -6,6 +6,7 @@ import {
   formatNaturalScenarioProofSummary,
   formatRealAcceptanceCoverageSummary,
   formatRealAcceptanceNaturalSummary,
+  formatValidationRunArtifactPaths,
 } from "./RuntimePage";
 
 function runWithNaturalReport(
@@ -203,5 +204,50 @@ test("formatRealAcceptanceCoverageSummary stays hidden for legacy records", () =
       },
     }),
     null
+  );
+});
+
+test("formatValidationRunArtifactPaths surfaces every real acceptance proof artifact", () => {
+  assert.deepEqual(
+    formatValidationRunArtifactPaths({
+      runId: "run.real.1",
+      runType: "real-llm-acceptance",
+      title: "Real acceptance",
+      status: "passed",
+      completedAt: Date.now(),
+      durationMs: 10_000,
+      issueCount: 0,
+      artifactPath: "validation-artifacts/real-llm-acceptance/mission.json",
+      realAcceptance: {
+        tooluseScenarios: ["basic"],
+        missionScenarios: ["realistic-brief"],
+        naturalMissionScenarios: ["natural-browser-dashboard-task"],
+        browserTooluseEnabled: true,
+        totalCases: 3,
+        tooluseArtifactPath: "validation-artifacts/real-llm-acceptance/tool-use.json",
+        naturalArtifactPath: "validation-artifacts/real-llm-acceptance/natural.json",
+      },
+    }),
+    [
+      { label: "tool-use artifact", path: "validation-artifacts/real-llm-acceptance/tool-use.json" },
+      { label: "mission artifact", path: "validation-artifacts/real-llm-acceptance/mission.json" },
+      { label: "natural artifact", path: "validation-artifacts/real-llm-acceptance/natural.json" },
+    ]
+  );
+});
+
+test("formatValidationRunArtifactPaths keeps legacy artifact labels stable", () => {
+  assert.deepEqual(
+    formatValidationRunArtifactPaths({
+      runId: "run.legacy.1",
+      runType: "release-readiness",
+      title: "Release readiness",
+      status: "passed",
+      completedAt: Date.now(),
+      durationMs: 10_000,
+      issueCount: 0,
+      artifactPath: "validation-artifacts/release-readiness.json",
+    }),
+    [{ label: "artifact", path: "validation-artifacts/release-readiness.json" }]
   );
 });

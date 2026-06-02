@@ -772,6 +772,22 @@ try {
       await artifactPath.isVisible(),
       "release acceptance should surface the latest real acceptance mission artifact path"
     );
+    const tooluseArtifactPath = page
+      .locator(".card", { hasText: "Release acceptance" })
+      .locator("text=tool-use artifact: validation-artifacts/real-llm-acceptance/tool-use-e2e-ui.json");
+    await tooluseArtifactPath.waitFor({ state: "visible" });
+    assert(
+      await tooluseArtifactPath.isVisible(),
+      "release acceptance should surface the latest real acceptance tool-use artifact path"
+    );
+    const naturalArtifactPath = page
+      .locator(".card", { hasText: "Release acceptance" })
+      .locator("text=natural artifact: validation-artifacts/real-llm-acceptance/natural-mission-e2e-ui.json");
+    await naturalArtifactPath.waitFor({ state: "visible" });
+    assert(
+      await naturalArtifactPath.isVisible(),
+      "release acceptance should surface the latest real acceptance natural mission artifact path"
+    );
     assert(
       await page.locator(".card", { hasText: "mission report: 4/4 mission scenarios" }).isVisible(),
       "release acceptance should surface real mission scenario summary"
@@ -2142,6 +2158,8 @@ function validationOpsFixture() {
           ],
           browserTooluseEnabled: true,
           totalCases: 12,
+          tooluseArtifactPath: "validation-artifacts/real-llm-acceptance/tool-use-e2e-ui.json",
+          naturalArtifactPath: "validation-artifacts/real-llm-acceptance/natural-mission-e2e-ui.json",
           releaseCoverage: {
             status: "focused",
             tooluse: { status: "full", requested: 5, expected: 5, missing: 0 },
