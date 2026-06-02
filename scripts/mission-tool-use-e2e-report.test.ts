@@ -576,6 +576,12 @@ describe("mission tool-use e2e report", () => {
         TURNKEYAI_NATURAL_BETA_URL: "http://shared.test/vendor-beta",
         TURNKEYAI_NATURAL_DASHBOARD_URL: "http://shared.test/ops-dashboard",
         TURNKEYAI_NATURAL_APPROVAL_URL: "http://shared.test/approval-form",
+        TURNKEYAI_NATURAL_SLOW_URL: "http://shared.test/slow-fixture",
+        TURNKEYAI_NATURAL_CANCEL_RESUME_URL: "http://shared.test/cancel-resume",
+        TURNKEYAI_NATURAL_DYNAMIC_URL: "http://shared.test/dynamic-dashboard",
+        TURNKEYAI_NATURAL_ORCHESTRATION_URL: "http://shared.test/product-orchestration",
+        TURNKEYAI_NATURAL_BRIDGE_URL: "http://shared.test/product-bridge",
+        TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL: "http://shared.test/product-signals",
       }
     );
 
@@ -588,6 +594,19 @@ describe("mission tool-use e2e report", () => {
 
     const approval = buildNaturalScenarioSpec("natural-approval-dry-run-action", fixture);
     assert.match(approval.desc, /http:\/\/shared\.test\/approval-form/);
+
+    const delegation = buildNaturalScenarioSpec("natural-long-delegation", fixture);
+    assert.match(delegation.desc, /http:\/\/shared\.test\/product-orchestration/);
+    assert.match(delegation.desc, /http:\/\/shared\.test\/product-bridge/);
+    assert.match(delegation.desc, /http:\/\/shared\.test\/product-signals/);
+
+    const timeout = buildNaturalScenarioSpec("natural-timeout-followup-continuation", fixture);
+    assert.match(timeout.desc, /http:\/\/shared\.test\/slow-fixture/);
+
+    const cancelResume = buildNaturalScenarioSpec("natural-cancel-followup-continuation", fixture);
+    assert.match(cancelResume.desc, /http:\/\/shared\.test\/cancel-resume/);
+
+    assert.equal(fixture.dynamicUrl, "http://shared.test/dynamic-dashboard");
   });
 
   it("keeps the legacy natural browser URL as a dashboard override alias", () => {

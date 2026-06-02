@@ -815,6 +815,9 @@ function printHelp(exitCode: number): never {
     "Natural fixture URL overrides:",
     "  TURNKEYAI_NATURAL_ALPHA_URL, TURNKEYAI_NATURAL_BETA_URL",
     "  TURNKEYAI_NATURAL_DASHBOARD_URL, TURNKEYAI_NATURAL_APPROVAL_URL",
+    "  TURNKEYAI_NATURAL_SLOW_URL, TURNKEYAI_NATURAL_CANCEL_RESUME_URL",
+    "  TURNKEYAI_NATURAL_DYNAMIC_URL, TURNKEYAI_NATURAL_ORCHESTRATION_URL",
+    "  TURNKEYAI_NATURAL_BRIDGE_URL, TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL",
     "  TURNKEYAI_NATURAL_BROWSER_URL remains a dashboard URL alias",
     "",
     "Scenarios:",
@@ -5555,13 +5558,29 @@ export function applyNaturalFixtureUrlOverrides(
     ...fixture,
     alphaUrl: readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_ALPHA_URL, "TURNKEYAI_NATURAL_ALPHA_URL") ?? fixture.alphaUrl,
     betaUrl: readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_BETA_URL, "TURNKEYAI_NATURAL_BETA_URL") ?? fixture.betaUrl,
+    slowUrl: readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_SLOW_URL, "TURNKEYAI_NATURAL_SLOW_URL") ?? fixture.slowUrl,
+    cancelResumeUrl:
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_CANCEL_RESUME_URL, "TURNKEYAI_NATURAL_CANCEL_RESUME_URL") ??
+      fixture.cancelResumeUrl,
     approvalUrl:
       readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_APPROVAL_URL, "TURNKEYAI_NATURAL_APPROVAL_URL") ??
       fixture.approvalUrl,
+    dynamicUrl:
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_DYNAMIC_URL, "TURNKEYAI_NATURAL_DYNAMIC_URL") ??
+      fixture.dynamicUrl,
     dashboardUrl:
       readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_DASHBOARD_URL, "TURNKEYAI_NATURAL_DASHBOARD_URL") ??
       readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_BROWSER_URL, "TURNKEYAI_NATURAL_BROWSER_URL") ??
       fixture.dashboardUrl,
+    orchestrationUrl:
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_ORCHESTRATION_URL, "TURNKEYAI_NATURAL_ORCHESTRATION_URL") ??
+      fixture.orchestrationUrl,
+    bridgeUrl:
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_BRIDGE_URL, "TURNKEYAI_NATURAL_BRIDGE_URL") ??
+      fixture.bridgeUrl,
+    productSignalsUrl:
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL, "TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL") ??
+      fixture.productSignalsUrl,
   };
 }
 
