@@ -7,6 +7,7 @@
     "./soak-suite": "./src/soak-suite.ts",
     "./scenario-parity-acceptance": "./src/scenario-parity-acceptance.ts",
     "./real-world-suite": "./src/real-world-suite.ts",
+    "./real-llm-ab-acceptance": "./src/real-llm-ab-acceptance.ts",
     "./real-llm-acceptance-summary": "./src/real-llm-acceptance-summary.ts",
     "./release-readiness": "./src/release-readiness.ts",
     "./real-llm-acceptance-defaults": "./src/real-llm-acceptance-defaults.ts",
