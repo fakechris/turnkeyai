@@ -130,6 +130,17 @@ export interface ValidationOpsRealAcceptanceDetails {
     sessionsSpawned: number;
     childTranscriptMessages: number;
     permissionEvents: number;
+    scenarioProofs?: Array<{
+      scenario: string;
+      passed: boolean;
+      finalBytes: number;
+      evidenceBullets: number;
+      qualityFailures: number;
+      toolCallNames: string[];
+      sessionsSpawned: number;
+      childTranscriptMessages: number;
+      permissionEvents: number;
+    }>;
   };
   missionReport?: {
     status: "passed" | "failed";

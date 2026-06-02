@@ -409,7 +409,33 @@ export interface ValidationOpsRunRecord {
       mission: ValidationOpsRealAcceptanceCoverage;
       naturalMission: ValidationOpsRealAcceptanceCoverage;
     };
+    tooluseArtifactPath?: string;
     naturalArtifactPath?: string;
+    tooluseReport?: {
+      status: "passed" | "failed";
+      scenarioCount: number;
+      scenarioIds?: string[];
+      passedScenarios: number;
+      failedScenarios: number;
+      qualityFailures: number;
+      finalBytes: number;
+      evidenceBullets: number;
+      toolCalls: number;
+      sessionsSpawned: number;
+      childTranscriptMessages: number;
+      permissionEvents: number;
+      scenarioProofs?: Array<{
+        scenario: string;
+        passed: boolean;
+        finalBytes: number;
+        evidenceBullets: number;
+        qualityFailures: number;
+        toolCallNames: string[];
+        sessionsSpawned: number;
+        childTranscriptMessages: number;
+        permissionEvents: number;
+      }>;
+    };
     missionReport?: {
       status: "passed" | "failed";
       scenarioCount: number;

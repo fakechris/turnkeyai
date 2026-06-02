@@ -587,15 +587,52 @@ function hasProvenToolUseAcceptanceReport(details: ValidationOpsRealAcceptanceDe
   if (scenarios.length === 0) return true;
   const report = details.tooluseReport;
   if (!details.tooluseArtifactPath || !report) return false;
-  return (
+  const aggregateProven =
     report.status === "passed" &&
     report.scenarioCount === scenarios.length &&
     report.passedScenarios === report.scenarioCount &&
     report.failedScenarios === 0 &&
     report.qualityFailures === 0 &&
     report.toolCalls >= report.scenarioCount &&
-    sameStringMultiset(scenarios, report.scenarioIds ?? [])
-  );
+    sameStringMultiset(scenarios, report.scenarioIds ?? []);
+  if (!aggregateProven) {
+    return false;
+  }
+  const proofByScenario = new Map((report.scenarioProofs ?? []).map((proof) => [proof.scenario, proof]));
+  return scenarios.every((scenario) => hasProvenToolUseScenario(scenario, proofByScenario.get(scenario)));
+}
+
+function hasProvenToolUseScenario(
+  scenario: string,
+  proof: NonNullable<NonNullable<ValidationOpsRealAcceptanceDetails["tooluseReport"]>["scenarioProofs"]>[number] | undefined
+): boolean {
+  if (!proof?.passed || proof.qualityFailures > 0 || proof.finalBytes <= 0 || proof.evidenceBullets <= 0) {
+    return false;
+  }
+  if (!proof.toolCallNames.includes("sessions_spawn")) {
+    return false;
+  }
+  if (proof.sessionsSpawned < 1) {
+    return false;
+  }
+  if (scenario === "approval") {
+    return (
+      proof.toolCallNames.includes("permission_query") &&
+      proof.toolCallNames.includes("permission_result") &&
+      proof.toolCallNames.includes("permission_applied") &&
+      proof.permissionEvents >= 3
+    );
+  }
+  if (scenario === "followup") {
+    return proof.toolCallNames.includes("sessions_send") && proof.sessionsSpawned === 1 && proof.childTranscriptMessages >= 4;
+  }
+  if (scenario === "timeout") {
+    return proof.sessionsSpawned === 1;
+  }
+  if (scenario === "complex") {
+    return proof.sessionsSpawned >= 2 && proof.childTranscriptMessages >= 4;
+  }
+  return true;
 }
 
 function hasProvenMissionAcceptanceReport(

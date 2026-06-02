@@ -130,7 +130,10 @@ function passingRealLlmAcceptanceRecord(completedAt = 1_000): ValidationOpsRunRe
 
 function passingToolUseAcceptanceReport(
   scenarioIds: string[]
-): NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["tooluseReport"] {
+): NonNullable<
+  NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["tooluseReport"]
+> {
+  const scenarioProofs = scenarioIds.map((scenario) => passingToolUseScenarioProof(scenario));
   return {
     status: "passed",
     scenarioCount: scenarioIds.length,
@@ -143,8 +146,50 @@ function passingToolUseAcceptanceReport(
     toolCalls: scenarioIds.length,
     sessionsSpawned: scenarioIds.length,
     childTranscriptMessages: scenarioIds.length * 4,
+    permissionEvents: scenarioProofs.reduce((sum, proof) => sum + proof.permissionEvents, 0),
+    scenarioProofs,
+  };
+}
+
+function passingToolUseScenarioProof(
+  scenario: string
+): NonNullable<
+  NonNullable<
+    NonNullable<ReturnType<typeof buildValidationOpsRecordFromRealLlmAcceptance>["realAcceptance"]>["tooluseReport"]
+  >["scenarioProofs"]
+>[number] {
+  const base = {
+    scenario,
+    passed: true,
+    finalBytes: 220,
+    evidenceBullets: 3,
+    qualityFailures: 0,
+    toolCallNames: ["sessions_spawn"],
+    sessionsSpawned: 1,
+    childTranscriptMessages: 4,
     permissionEvents: 0,
   };
+  if (scenario === "approval") {
+    return {
+      ...base,
+      toolCallNames: ["permission_query", "permission_result", "permission_applied", "sessions_spawn"],
+      permissionEvents: 3,
+    };
+  }
+  if (scenario === "followup") {
+    return {
+      ...base,
+      toolCallNames: ["sessions_spawn", "sessions_send"],
+    };
+  }
+  if (scenario === "complex") {
+    return {
+      ...base,
+      sessionsSpawned: 2,
+      childTranscriptMessages: 4,
+    };
+  }
+  return base;
 }
 
 function passingMissionAcceptanceReport(
