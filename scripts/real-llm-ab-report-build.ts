@@ -50,6 +50,7 @@ interface NaturalMissionReportShape {
 
 interface NaturalMissionScenarioShape {
   scenario?: unknown;
+  prompt?: unknown;
   missionId?: unknown;
   threadId?: unknown;
   status?: unknown;
@@ -110,6 +111,14 @@ interface MissionMetricsShape {
 
 interface GenericReferenceArtifactShape {
   system?: unknown;
+  prompt?: unknown;
+  userPrompt?: unknown;
+  input?: {
+    prompt?: unknown;
+  };
+  request?: {
+    prompt?: unknown;
+  };
   durationMs?: unknown;
   timedOut?: unknown;
   missionId?: unknown;
@@ -313,6 +322,7 @@ function buildTurnkeyAiRun(input: {
   const toolTimeouts = readNumber(metrics.tools?.timeouts);
   return {
     system: "turnkeyai",
+    prompt: readString(input.scenario.prompt) ?? "",
     artifactPath: input.artifactPath,
     ...(readString(input.scenario.missionId) ? { missionId: readString(input.scenario.missionId)! } : {}),
     ...(readString(input.scenario.threadId) ? { transcriptPath: `thread:${readString(input.scenario.threadId)!}` } : {}),
@@ -384,6 +394,7 @@ function buildReferenceRun(input: {
   const hasFollowup = Boolean(input.artifact.followup);
   return {
     system: "reference",
+    prompt: readReferencePrompt(input.artifact) ?? "",
     artifactPath: input.artifactPath,
     ...(readString(input.artifact.missionId) ? { missionId: readString(input.artifact.missionId)! } : {}),
     ...(readString(input.artifact.validationId) ? { validationId: readString(input.artifact.validationId)! } : {}),
@@ -530,6 +541,15 @@ function readString(value: unknown): string | null {
 
 function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.flatMap((item) => (typeof item === "string" && item.trim() ? [item.trim()] : [])) : [];
+}
+
+function readReferencePrompt(artifact: GenericReferenceArtifactShape): string | null {
+  return (
+    readString(artifact.prompt) ??
+    readString(artifact.userPrompt) ??
+    readString(artifact.input?.prompt) ??
+    readString(artifact.request?.prompt)
+  );
 }
 
 function readDimensionScore(value: unknown): RealLlmAbDimensionScore {

@@ -13,6 +13,8 @@ import {
   runRealLlmAbReportBuildCli,
 } from "./real-llm-ab-report-build";
 
+const NATURAL_BROWSER_PROMPT = "请打开这个动态页面，理解当前状态，找出应该关注的异常和下一步动作，并给出依据。";
+
 test("real LLM A/B report builder parses args and help", () => {
   assert.deepEqual(parseRealLlmAbReportBuildArgs(["--spec", "/tmp/spec.json", "--out", "/tmp/report.json", "--check"]), {
     specPath: "/tmp/spec.json",
@@ -50,7 +52,7 @@ test("real LLM A/B report builder emits a checkable report from natural and refe
           {
             scenarioId: "browser-dynamic",
             turnkeyaiScenarioId: "natural-browser-dynamic-page",
-            prompt: "请打开这个动态页面，理解当前状态，找出应该关注的异常和下一步动作，并给出依据。",
+            prompt: NATURAL_BROWSER_PROMPT,
             requiresBrowser: true,
             referenceArtifactPath: "reference-browser.json",
           },
@@ -61,6 +63,8 @@ test("real LLM A/B report builder emits a checkable report from natural and refe
 
     assert.equal(report.status, "passed");
     assert.equal(report.capabilityClaim, "capability proven");
+    assert.equal(report.scenarios[0]?.turnkeyai.prompt, NATURAL_BROWSER_PROMPT);
+    assert.equal(report.scenarios[0]?.reference.prompt, NATURAL_BROWSER_PROMPT);
     assert.equal(report.scenarios[0]?.turnkeyai.missionId, "msn.test.1");
     assert.equal(report.scenarios[0]?.turnkeyai.dimensionScores.finalAnswerUsefulness, 2);
     assert.equal(report.scenarios[0]?.reference.dimensionScores.browserAuthenticity, 2);
@@ -82,7 +86,7 @@ test("real LLM A/B report builder preserves reference weakness without treating 
           {
             scenarioId: "browser-dynamic",
             turnkeyaiScenarioId: "natural-browser-dynamic-page",
-            prompt: "请打开这个动态页面，理解当前状态，找出应该关注的异常和下一步动作，并给出依据。",
+            prompt: NATURAL_BROWSER_PROMPT,
             requiresBrowser: true,
             referenceArtifactPath: "reference-browser.json",
           },
@@ -114,7 +118,7 @@ test("real LLM A/B report builder CLI writes and checks output", async () => {
           {
             scenarioId: "browser-dynamic",
             turnkeyaiScenarioId: "natural-browser-dynamic-page",
-            prompt: "请打开这个动态页面，理解当前状态，找出应该关注的异常和下一步动作，并给出依据。",
+            prompt: NATURAL_BROWSER_PROMPT,
             requiresBrowser: true,
             referenceArtifactPath: "reference-browser.json",
           },
@@ -133,8 +137,61 @@ test("real LLM A/B report builder CLI writes and checks output", async () => {
   }
 });
 
-function writeFixtureFiles(dir: string, options: { referenceUseful?: boolean } = {}): void {
+test("real LLM A/B report builder leaves missing or mismatched run prompts unproven", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
+  try {
+    writeFixtureFiles(dir, { referencePrompt: undefined });
+    const missingPromptReport = buildRealLlmAbAcceptanceReport(
+      {
+        turnkeyaiNaturalReportPath: "turnkeyai-natural.json",
+        generatedAtMs: 1,
+        scenarios: [
+          {
+            scenarioId: "browser-dynamic",
+            turnkeyaiScenarioId: "natural-browser-dynamic-page",
+            prompt: NATURAL_BROWSER_PROMPT,
+            requiresBrowser: true,
+            referenceArtifactPath: "reference-browser.json",
+          },
+        ],
+      },
+      { specDir: dir }
+    );
+    const missingPromptValidation = validateRealLlmAbAcceptanceReport(missingPromptReport);
+    assert.equal(missingPromptReport.status, "failed");
+    assert.match(missingPromptValidation.failures.join("\n"), /reference: missing run prompt evidence/);
+
+    writeFixtureFiles(dir, { referencePrompt: "请用另一个任务检查一个不同页面。" });
+    const mismatchedPromptReport = buildRealLlmAbAcceptanceReport(
+      {
+        turnkeyaiNaturalReportPath: "turnkeyai-natural.json",
+        generatedAtMs: 1,
+        scenarios: [
+          {
+            scenarioId: "browser-dynamic",
+            turnkeyaiScenarioId: "natural-browser-dynamic-page",
+            prompt: NATURAL_BROWSER_PROMPT,
+            requiresBrowser: true,
+            referenceArtifactPath: "reference-browser.json",
+          },
+        ],
+      },
+      { specDir: dir }
+    );
+    const mismatchedPromptValidation = validateRealLlmAbAcceptanceReport(mismatchedPromptReport);
+    assert.equal(mismatchedPromptReport.status, "failed");
+    assert.match(mismatchedPromptValidation.failures.join("\n"), /reference: run prompt does not match/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function writeFixtureFiles(
+  dir: string,
+  options: { referenceUseful?: boolean; referencePrompt?: string | undefined } = {}
+): void {
   const referenceUseful = options.referenceUseful ?? true;
+  const referencePrompt = "referencePrompt" in options ? options.referencePrompt : NATURAL_BROWSER_PROMPT;
   writeFileSync(
     path.join(dir, "turnkeyai-natural.json"),
     JSON.stringify({
@@ -143,6 +200,7 @@ function writeFixtureFiles(dir: string, options: { referenceUseful?: boolean } =
       scenarios: [
         {
           scenario: "natural-browser-dynamic-page",
+          prompt: NATURAL_BROWSER_PROMPT,
           missionId: "msn.test.1",
           threadId: "THREAD-test",
           status: "done",
@@ -190,6 +248,7 @@ function writeFixtureFiles(dir: string, options: { referenceUseful?: boolean } =
     path.join(dir, "reference-browser.json"),
     JSON.stringify({
       system: "reference",
+      ...(referencePrompt ? { prompt: referencePrompt } : {}),
       threadId: "THREAD-reference",
       durationMs: 12000,
       timedOut: false,
