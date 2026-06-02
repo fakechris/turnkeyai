@@ -547,6 +547,14 @@ function findNaturalScenario(report: NaturalMissionReportShape, scenarioId: stri
 }
 
 function countArtifacts(value: unknown, kind: string): number {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const summary = value as { count?: unknown; kinds?: unknown };
+    const kinds = readStringArray(summary.kinds);
+    if (kinds.includes(kind)) {
+      return readNumber(summary.count) > 0 ? 1 : 0;
+    }
+    return 0;
+  }
   if (!Array.isArray(value)) return 0;
   return value.filter((item) => typeof item === "object" && item !== null && readString((item as { kind?: unknown }).kind) === kind)
     .length;
