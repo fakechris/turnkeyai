@@ -9,6 +9,7 @@ import {
   assertNaturalScenarioPromptsAllowed,
   buildNaturalScenarioSpec,
   buildNaturalMissionE2eJsonReport,
+  buildNaturalMissionPartialFailureJsonReport,
   buildMissionE2eJsonReport,
   evaluateNaturalMissionQuality,
   extractCancelledSessionKey,
@@ -1104,6 +1105,23 @@ describe("mission tool-use e2e report", () => {
     assert.equal(report.scenarios[1]?.natural.status, "failed");
     assert.deepEqual(report.scenarios[1]?.natural.failures, ["weak answer signals: browser evidence blocked"]);
     assert.deepEqual(report.scenarios[1]?.natural.failureBuckets, ["answer_quality", "browser_reliability"]);
+  });
+
+  it("preserves partial natural matrix evidence when a later scenario throws", () => {
+    const passing = fakeNaturalResult();
+
+    const report = buildNaturalMissionPartialFailureJsonReport({
+      startedAt: Date.UTC(2026, 4, 30, 12, 0, 0),
+      completedAt: Date.UTC(2026, 4, 30, 12, 0, 7),
+      results: [passing],
+    });
+
+    assert.equal(report.status, "failed");
+    assert.equal(report.failureCollectionMode, "partial-failure-collected");
+    assert.equal(report.scenarioCount, 1);
+    assert.equal(report.passedScenarios, 1);
+    assert.equal(report.failedScenarios, 0);
+    assert.deepEqual(report.scenarioIds, ["natural-browser-dynamic-page"]);
   });
 
   it("fails natural quality on weak fallback answers and missing browser evidence", () => {
