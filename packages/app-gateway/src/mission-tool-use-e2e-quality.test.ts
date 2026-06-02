@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { evaluateFinalQuality, type ScenarioSpec } from "../../../scripts/mission-tool-use-e2e";
+import { evaluateFinalQuality, findWeakEvidenceSignals, type ScenarioSpec } from "../../../scripts/mission-tool-use-e2e";
 
 function buildSpec(): ScenarioSpec {
   return {
@@ -84,4 +84,24 @@ test("mission E2E quality gate handles long fallback phrasing without regex back
   assert.ok(
     quality.failures.includes("final answer falls back to model knowledge after tool/search/browser unavailable")
   );
+});
+
+test("natural mission weak evidence gate ignores business-scope unverified fields near screenshot terms", () => {
+  const signals = findWeakEvidenceSignals(
+    [
+      "Verified facts: browser automation capability; traceable screenshots; limited API catalog.",
+      "Unverified / Not Confirmed: target market, security certifications, support SLA, and company background.",
+    ].join("\n"),
+    { browserEvidenceExpected: true }
+  );
+
+  assert.deepEqual(signals, []);
+});
+
+test("natural mission weak evidence gate still catches explicit screenshot evidence verification failures", () => {
+  const signals = findWeakEvidenceSignals("Screenshot evidence verification is incomplete after the page capture.", {
+    browserEvidenceExpected: true,
+  });
+
+  assert.ok(signals.includes("browser evidence not verified"));
 });
