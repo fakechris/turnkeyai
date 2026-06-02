@@ -1228,8 +1228,9 @@ function appendBrowserApprovalContext(
   task: string,
   context: BrowserSideEffectApprovalContext
 ): string {
+  const delegatedTask = sanitizeApprovedBrowserTaskForSubAgent(task);
   return [
-    task,
+    delegatedTask,
     "",
     "Runtime approval context:",
     `- The parent runtime approval is granted and the permission cache is already applied for scoped browser action ${context.action}.`,
@@ -1237,6 +1238,26 @@ function appendBrowserApprovalContext(
     ...(context.cacheKey ? [`- Permission cache key: ${context.cacheKey}.`] : []),
     "- Perform only this approved scoped browser action, then verify the browser result.",
   ].join("\n");
+}
+
+function sanitizeApprovedBrowserTaskForSubAgent(task: string): string {
+  const keptLines = task
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !isParentApprovalInstruction(line));
+  const cleaned = keptLines.join("\n").trim();
+  return cleaned || task;
+}
+
+function isParentApprovalInstruction(line: string): boolean {
+  return (
+    /^\s*(?:[-*]\s*)?(?:use\s+)?permission_(?:query|result|applied)\b/i.test(line) ||
+    /^\s*(?:[-*]\s*)?(?:request|ask|obtain|wait for|await|requires?|need(?:s|ed)?|must have)\b.{0,80}\b(?:approval|permission)\b/i.test(
+      line
+    ) ||
+    /\bparent agent\b.{0,80}\b(?:approval|permission)\b/i.test(line) ||
+    /^\s*(?:[-*]\s*)?(?:do not|don't)\b.{0,80}\bwithout\b.{0,80}\b(?:approval|permission)\b/i.test(line)
+  );
 }
 
 function extractDelegationParentContext(

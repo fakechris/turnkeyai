@@ -128,6 +128,72 @@ test("session tool result protocol lifts browser profile fallback into evidence 
   assert.match(parsed?.evidence_summary ?? "", /profile-fallback/);
 });
 
+test("session tool result protocol lifts nested browser tool observations into evidence summary", () => {
+  const result = buildSessionToolResult({
+    taskId: "task-1",
+    sessionKey: "worker:browser:task-1",
+    agentId: "browser",
+    missingResultMessage: "missing",
+    result: {
+      workerType: "browser",
+      status: "completed",
+      summary: "Browser sub-agent finished.",
+      payload: {
+        mode: "llm_sub_agent",
+        workerType: "browser",
+        content: "Sub-agent final omitted dashboard metrics.",
+        metadata: {
+          toolUse: {
+            rounds: [
+              {
+                results: [
+                  {
+                    toolName: "browser_snapshot",
+                    content: JSON.stringify({
+                      status: "completed",
+                      summary: "Browser snapshot captured dashboard.",
+                      payload: {
+                        page: {
+                          finalUrl: "http://127.0.0.1/product-signals",
+                          title: "Workbench product signals",
+                          textExcerpt:
+                            "Stuck missions: 6. Weak-answer rate: 24%. Local product signal fixture only.",
+                        },
+                      },
+                    }),
+                  },
+                  {
+                    toolName: "browser_act",
+                    content: "Clicked Save.",
+                  },
+                  {
+                    toolName: "browser_snapshot",
+                    content: "Snapshot text without the structured tool-result envelope.",
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    },
+  });
+
+  assert.match(result.evidence_summary ?? "", /browser_snapshot/);
+  assert.match(result.evidence_summary ?? "", /Stuck missions: 6/);
+  assert.match(result.evidence_summary ?? "", /Weak-answer rate: 24%/);
+  assert.doesNotMatch(result.evidence_summary ?? "", /Clicked Save/);
+  assert.doesNotMatch(result.evidence_summary ?? "", /without the structured tool-result envelope/);
+  assert.ok(
+    (result.evidence_summary ?? "").indexOf("Stuck missions: 6") <
+      (result.evidence_summary ?? "").indexOf("Sub-agent final omitted dashboard metrics")
+  );
+
+  const parsed = parseSessionToolResult(serializeSessionToolResult(result));
+  assert.match(parsed?.evidence_summary ?? "", /Final URL: http:\/\/127\.0\.0\.1\/product-signals/);
+  assert.match(parsed?.evidence_summary ?? "", /Workbench product signals/);
+});
+
 test("session tool result protocol normalizes legacy session results", () => {
   const parsed = parseSessionToolResult(
     JSON.stringify({

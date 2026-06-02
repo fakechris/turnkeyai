@@ -149,11 +149,13 @@ export function extractWorkerEvidenceSummary(result: WorkerExecutionResult | nul
   }
   const payload = result.payload as Record<string, unknown>;
   const browserProfileFallback = extractBrowserProfileFallbackSummary(payload);
+  const nestedToolEvidence = extractNestedToolUseEvidenceSummary(payload);
   const page = payload["page"];
   if (page && typeof page === "object" && !Array.isArray(page)) {
     const pageRecord = page as Record<string, unknown>;
     const lines = [
       browserProfileFallback,
+      nestedToolEvidence,
       readString(pageRecord["finalUrl"]) ? `Final URL: ${readString(pageRecord["finalUrl"])}` : null,
       readString(pageRecord["title"]) ? `Page title: ${readString(pageRecord["title"])}` : null,
       readString(pageRecord["textExcerpt"]) ? `Excerpt: ${readString(pageRecord["textExcerpt"])}` : null,
@@ -163,7 +165,7 @@ export function extractWorkerEvidenceSummary(result: WorkerExecutionResult | nul
       return summary;
     }
   }
-  return sanitizeEvidenceSummary([browserProfileFallback, readString(payload["content"])].filter(Boolean).join("\n"));
+  return sanitizeEvidenceSummary([browserProfileFallback, nestedToolEvidence, readString(payload["content"])].filter(Boolean).join("\n"));
 }
 
 export function sanitizeEvidenceSummary(value: string | null | undefined): string | null {
@@ -268,6 +270,74 @@ function extractBrowserProfileFallbackSummary(payload: Record<string, unknown>):
     return null;
   }
   return `Profile fallback: ${reason}; persistent profile was unavailable, used ${fallbackDir}.`;
+}
+
+function extractNestedToolUseEvidenceSummary(payload: Record<string, unknown>): string | null {
+  const metadata = payload["metadata"];
+  if (!isRecord(metadata)) {
+    return null;
+  }
+  const toolUse = metadata["toolUse"];
+  if (!isRecord(toolUse) || !Array.isArray(toolUse["rounds"])) {
+    return null;
+  }
+  const parts: string[] = [];
+  for (const round of toolUse["rounds"]) {
+    if (!isRecord(round) || !Array.isArray(round["results"])) {
+      continue;
+    }
+    for (const result of round["results"]) {
+      if (!isRecord(result)) {
+        continue;
+      }
+      const toolName = readString(result["toolName"]);
+      const content = readString(result["content"]);
+      if (!toolName || !content || !isEvidenceBearingNestedTool(toolName)) {
+        continue;
+      }
+      const evidence = extractNestedToolResultEvidence(content);
+      if (evidence) {
+        parts.push(`${toolName}: ${evidence}`);
+      }
+    }
+  }
+  return dedupeStrings(parts).join("\n") || null;
+}
+
+function isEvidenceBearingNestedTool(toolName: string): boolean {
+  return /^(?:browser_(?:open|snapshot|scroll|console|screenshot)|explore_|finance_)/.test(toolName);
+}
+
+function extractNestedToolResultEvidence(content: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) {
+    return null;
+  }
+  const payload = parsed["payload"];
+  const payloadRecord = isRecord(payload) ? payload : null;
+  const page = isRecord(payloadRecord?.["page"]) ? payloadRecord["page"] : null;
+  const summary = readString(parsed["summary"]);
+  const contentText = readString(payloadRecord?.["content"]);
+  const pageFinalUrl = page ? readString(page["finalUrl"]) : null;
+  const pageTitle = page ? readString(page["title"]) : null;
+  const pageExcerpt = page ? readString(page["textExcerpt"]) : null;
+  const lines = [
+    summary,
+    contentText,
+    pageFinalUrl ? `Final URL: ${pageFinalUrl}` : null,
+    pageTitle ? `Page title: ${pageTitle}` : null,
+    pageExcerpt ? `Excerpt: ${pageExcerpt}` : null,
+  ].filter((line): line is string => Boolean(line));
+  return sanitizeEvidenceSummary(dedupeStrings(lines).join("\n"));
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

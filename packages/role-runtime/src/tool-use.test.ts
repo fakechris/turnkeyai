@@ -1440,7 +1440,13 @@ test("sessions_spawn waits for approval and resumes the same tool call before br
       name: "sessions_spawn",
       input: {
         agent_id: "browser",
-        task: "Submit the final account update form.",
+        task: [
+          "Open the local approval form.",
+          "Use permission_query before submitting the form.",
+          "Request approval before applying the browser action.",
+          'Verify the page says "Approval required before submitting".',
+          "Submit the final account update form and verify the result.",
+        ].join("\n"),
       },
     },
     activation: buildActivation(),
@@ -1469,6 +1475,11 @@ test("sessions_spawn waits for approval and resumes the same tool call before br
   assert.match(spawnedTaskPrompt, /parent runtime approval is granted/i);
   assert.match(spawnedTaskPrompt, /permission cache is already applied/i);
   assert.match(spawnedTaskPrompt, /browser\.form\.submit/i);
+  assert.match(spawnedTaskPrompt, /Open the local approval form/);
+  assert.match(spawnedTaskPrompt, /Approval required before submitting/);
+  assert.match(spawnedTaskPrompt, /Submit the final account update form and verify the result/);
+  assert.doesNotMatch(spawnedTaskPrompt, /permission_query/i);
+  assert.doesNotMatch(spawnedTaskPrompt, /Request approval before applying/i);
 });
 
 test("sessions_spawn returns structured permission error when approval wait fails", async () => {
