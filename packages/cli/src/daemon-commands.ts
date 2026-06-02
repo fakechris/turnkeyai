@@ -588,7 +588,7 @@ export async function runDaemonStatus(_args: string[]): Promise<void> {
       console.log(`sessions:   ${sessions?.count ?? 0}`);
     } else {
       const detail = status.statusCode
-        ? `/bridge/status returned HTTP ${status.statusCode}`
+        ? formatApiAuthFailure(status.statusCode)
         : `/bridge/status unreachable: ${status.error ?? "request failed"}`;
       console.log(`api auth:   ${detail}`);
     }
@@ -597,6 +597,19 @@ export async function runDaemonStatus(_args: string[]): Promise<void> {
   }
 
   process.exit(healthy ? 0 : 1);
+}
+
+function formatApiAuthFailure(statusCode: number): string {
+  if (statusCode === 401 || statusCode === 403) {
+    return [
+      `/bridge/status returned HTTP ${statusCode}`,
+      "(token rejected).",
+      "Reopen Mission Control with `turnkeyai app`,",
+      "or from a source checkout run `npm run app -- --no-open`.",
+      "For CLI probes, check TURNKEYAI_DAEMON_READ_TOKEN or ~/.turnkeyai/config.json.",
+    ].join(" ");
+  }
+  return `/bridge/status returned HTTP ${statusCode}`;
 }
 
 function printDiagnosticsStatus(result: FetchJsonResult): void {
