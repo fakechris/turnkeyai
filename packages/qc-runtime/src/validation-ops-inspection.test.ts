@@ -602,6 +602,38 @@ test("validation ops inspection requires scenario-specific natural mission proof
   assert.match(realGate?.summary ?? "", /acceptance report evidence is incomplete/);
 });
 
+test("validation ops inspection requires spawned browser sessions for active natural browser proof", () => {
+  const naturalMissionReport = passingNaturalMissionAcceptanceReport([
+    ...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
+  ]);
+  assert.ok(naturalMissionReport);
+  naturalMissionReport.scenarioProofs = (naturalMissionReport.scenarioProofs ?? []).map((proof) =>
+    proof.scenario === "natural-browser-dashboard-task" ? { ...proof, browserUsed: true, sessionsSpawned: 0 } : proof
+  );
+  const record = buildValidationOpsRecordFromRealLlmAcceptance({
+    runId: "real-llm-full-with-browser-proof-without-session",
+    startedAt: 100,
+    completedAt: 150,
+    status: "passed",
+    tooluseScenarios: [...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS],
+    missionScenarios: [...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS],
+    naturalMissionScenarios: [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS],
+    browserTooluseEnabled: true,
+    tooluseArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/tool-use.json",
+    artifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/mission.json",
+    naturalArtifactPath: ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json",
+    tooluseReport: passingToolUseAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS]),
+    missionReport: passingMissionAcceptanceReport([...DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS]),
+    naturalMissionReport,
+  });
+
+  const report = buildValidationOpsReport([record], 10);
+  const realGate = report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance");
+
+  assert.equal(realGate?.status, "missing");
+  assert.match(realGate?.summary ?? "", /acceptance report evidence is incomplete/);
+});
+
 test("validation ops inspection consumes duplicate natural scenario proofs by occurrence", () => {
   const duplicateScenario = "natural-comparison-research";
   const naturalScenarios = [...DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS, duplicateScenario];

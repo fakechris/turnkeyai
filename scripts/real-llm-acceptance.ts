@@ -766,8 +766,10 @@ function hasProvenNaturalMissionScenario(
   ) {
     return false;
   }
-  if (isNaturalBrowserActiveScenario(scenario) && !proof.browserUsed) {
-    return false;
+  if (isNaturalBrowserActiveScenario(scenario)) {
+    if (!proof.browserUsed || proof.sessionsSpawned < 1) {
+      return false;
+    }
   }
   if (scenario === "natural-approval-dry-run-action") {
     return (
