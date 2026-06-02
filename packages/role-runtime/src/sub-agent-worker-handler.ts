@@ -493,7 +493,7 @@ function buildBrowserPrivateToolDefinitions(): LLMToolDefinition[] {
         properties: {
           url: { type: "string", description: "Absolute http(s) URL to open." },
           note: { type: "string", description: "Optional short note for the resulting snapshot." },
-          screenshot: { type: "boolean", description: "Also capture a screenshot after the page opens." },
+          screenshot: { type: "boolean", description: "Capture a screenshot after the page opens. Defaults to true; set false only when the parent explicitly does not need visual evidence." },
         },
         required: ["url"],
       },
@@ -582,7 +582,7 @@ function buildBrowserPrivateActionPlan(input: RoleToolExecutionInput):
         { kind: "open", url },
         { kind: "snapshot", note: requiredString(raw.note) ?? "after-open" },
       ];
-      if (raw.screenshot === true) {
+      if (raw.screenshot !== false) {
         actions.push({ kind: "screenshot", label: "after-open" });
       }
       return { instructions: `Open ${url} and observe the page.`, actions };

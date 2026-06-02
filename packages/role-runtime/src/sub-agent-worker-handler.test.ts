@@ -245,7 +245,6 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
     if (toolResultCount === 0) {
       return toolCallResult("tool-1", "browser_open", {
         url: "https://example.test",
-        screenshot: true,
       });
     }
     if (toolResultCount === 1) {
@@ -328,6 +327,41 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
   ]);
   assert.equal(transcript.filter((entry) => entry.metadata?.kind === "tool_progress").length, 6);
   assert.equal(transcript.at(-1)?.content, "Browser evidence captured.");
+});
+
+test("LLMSubAgentWorkerHandler lets browser_open opt out of the default evidence screenshot", async () => {
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_open", {
+        url: "https://example.test",
+        screenshot: false,
+      });
+    }
+    return textResult("Browser evidence captured without a screenshot.");
+  };
+  const bridgeCalls: Array<{ actions?: Array<{ kind: string }> }> = [];
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async spawnSession(input) {
+        bridgeCalls.push(input);
+        return browserResult({
+          title: "Example",
+          finalUrl: "https://example.test/",
+          traceKinds: input.actions.map((action) => action.kind),
+        });
+      },
+    }),
+  });
+
+  const result = await handler.run(buildInvocationInput("browser"));
+
+  assert.equal(result?.status, "completed");
+  assert.deepEqual(bridgeCalls[0]?.actions?.map((action) => action.kind), ["open", "snapshot"]);
 });
 
 test("LLMSubAgentWorkerHandler retries read-only private browser partial transport evidence once", async () => {
