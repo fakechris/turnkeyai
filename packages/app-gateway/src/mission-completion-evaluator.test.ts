@@ -389,6 +389,69 @@ describe("MissionCompletionEvaluator", () => {
     });
   });
 
+  it("accepts complete approved approval closeout even when the provider reports max tokens", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Submit the local form only after approval.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          metadata: { stopReason: "max_tokens" },
+          content: [
+            "**Approved action:** browser.form.submit.",
+            "The approval was granted and permission was applied for the browser form submission.",
+            "The dry-run form was submitted in the browser.",
+            "Evidence observed after the action confirmed the local result.",
+            "The task is complete; residual risk is limited to isolated local test data with no external side effects.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
+  it("blocks approved approval closeout when the final answer says the action did not complete", () => {
+    const decision = evaluateMissionCompletion({
+      mission,
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Submit the local form only after approval.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          metadata: { stopReason: "max_tokens" },
+          content: [
+            "**Approved action:** browser.form.submit.",
+            "The approval was granted and permission was applied.",
+            "The form submission was not completed because the browser action was blocked.",
+          ].join("\n"),
+        },
+      ],
+      roleRuns: [idleRun],
+    });
+
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "incomplete_final_answer");
+      assert.deepEqual(decision.patch, { status: "blocked", blockers: 1 });
+      assert.equal(decision.recovery?.kind, "incomplete_final_answer");
+    }
+  });
+
   it("blocks unresolved lead tool turn when no role run is active", () => {
     const stalled = {
       ...message("a-tool", "assistant", 100),

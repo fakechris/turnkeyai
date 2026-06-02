@@ -270,7 +270,7 @@ function isIncompleteLeadFinalAnswer(
 ): { message: TeamMessage; reason: "max_tokens" | "truncated_markdown" } | null {
   const stopReason = readStringMetadata(message.metadata, "stopReason");
   if (isMaxTokensStopReason(stopReason)) {
-    if (looksLikeCompleteDeniedApprovalCloseout(message.content)) {
+    if (looksLikeCompleteApprovalCloseout(message.content)) {
       return null;
     }
     return { message, reason: "max_tokens" };
@@ -306,6 +306,10 @@ function looksLikeTruncatedMarkdown(content: string): boolean {
   return /(\*\*|__|\[)$/.test(lastNonEmpty.trim());
 }
 
+function looksLikeCompleteApprovalCloseout(content: string): boolean {
+  return looksLikeCompleteDeniedApprovalCloseout(content) || looksLikeCompleteApprovedApprovalCloseout(content);
+}
+
 function looksLikeCompleteDeniedApprovalCloseout(content: string): boolean {
   return (
     /\bdenied\b/i.test(content) &&
@@ -314,6 +318,20 @@ function looksLikeCompleteDeniedApprovalCloseout(content: string): boolean {
       content
     ) &&
     /\b(?:complete|closed out|closes cleanly|no further browser work is queued)\b/i.test(content)
+  );
+}
+
+function looksLikeCompleteApprovedApprovalCloseout(content: string): boolean {
+  if (/\b(?:not completed|blocked|unavailable|not available|disabled|cannot be traversed)\b/i.test(content)) {
+    return false;
+  }
+  return (
+    /\bapproved\b/i.test(content) &&
+    /\b(?:permission|approval|action)\b/i.test(content) &&
+    /\b(?:applied|granted|authorized)\b/i.test(content) &&
+    /\b(?:submit(?:ted|tal)?|form submission|click(?:ed)?|browser action)\b/i.test(content) &&
+    /\b(?:evidence|observed|showed|confirmed|result)\b/i.test(content) &&
+    /\b(?:complete|completed|done|no external side effects?|residual risk|boundary)\b/i.test(content)
   );
 }
 
