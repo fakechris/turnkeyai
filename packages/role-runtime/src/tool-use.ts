@@ -978,9 +978,14 @@ async function executeSessionsSpawn(
     const available = [...executableWorkerKinds].join(", ") || "(none)";
     return errorResult(input.call, `Worker kind ${agentId} is not available. Available worker kinds: ${available}.`);
   }
+  const effectiveAgentId = resolveEffectiveSessionSpawnWorkerKind({
+    requestedAgentId: agentId,
+    task,
+    executableWorkerKinds,
+  });
   const gate = await maybeGateBrowserSideEffect({
     input,
-    workerType: agentId,
+    workerType: effectiveAgentId,
     instruction: task,
     toolPermissionService,
   });
@@ -1001,7 +1006,7 @@ async function executeSessionsSpawn(
   const packet = {
     ...input.packet,
     taskPrompt: delegatedTaskPrompt,
-    preferredWorkerKinds: [agentId],
+    preferredWorkerKinds: [effectiveAgentId],
     continuityMode: "fresh" as const,
     ...(runtimeApprovalContext ? { runtimeApprovalContext } : {}),
     workerSession: {
@@ -1011,7 +1016,7 @@ async function executeSessionsSpawn(
     },
   };
   const workerActivation = scopeWorkerActivationToToolCall(input.activation, input.call.id);
-  const timeoutMs = resolveToolTimeoutMs(input.call.input.timeout_seconds, agentId, maxSessionToolTimeoutMs);
+  const timeoutMs = resolveToolTimeoutMs(input.call.input.timeout_seconds, effectiveAgentId, maxSessionToolTimeoutMs);
   const spawnAttempt = await (sessionSpawnGate ?? new AsyncSerialGate()).run(async () => {
     const concurrencyError = await maybeRejectSessionConcurrency(workerRuntime, input, sessionConcurrency);
     if (concurrencyError) {
@@ -1027,7 +1032,7 @@ async function executeSessionsSpawn(
   }
   const spawned = spawnAttempt.spawned;
   if (!spawned) {
-    return errorResult(input.call, `No worker handler available for ${agentId}`);
+    return errorResult(input.call, `No worker handler available for ${effectiveAgentId}`);
   }
   const registration = toolCancellationRegistry?.register({
     threadId: input.activation.thread.threadId,
@@ -1093,7 +1098,7 @@ async function executeSessionsSpawn(
       toolCallId: input.call.id,
     });
   }
-  const missingResultMessage = `${agentId} sub-agent returned no executable result. The requested task did not match the worker's implemented capability.`;
+  const missingResultMessage = `${effectiveAgentId} sub-agent returned no executable result. The requested task did not match the worker's implemented capability.`;
   const sessionToolResult = buildSessionToolResult({
     taskId: input.activation.handoff.taskId,
     sessionKey: spawned.workerRunKey,
@@ -1114,7 +1119,7 @@ async function executeSessionsSpawn(
       {
         phase: "started",
         toolName: input.call.name,
-        summary: `Started ${agentId} sub-agent session ${spawned.workerRunKey}.`,
+        summary: `Started ${effectiveAgentId} sub-agent session ${spawned.workerRunKey}.`,
         detail: { session_key: spawned.workerRunKey, agent_id: spawned.workerType },
       },
       {
@@ -1126,6 +1131,42 @@ async function executeSessionsSpawn(
     ],
     raw: result,
   };
+}
+
+function resolveEffectiveSessionSpawnWorkerKind(input: {
+  requestedAgentId: WorkerKind;
+  task: string;
+  executableWorkerKinds: ReadonlySet<WorkerKind>;
+}): WorkerKind {
+  if (
+    input.requestedAgentId === "browser" &&
+    input.executableWorkerKinds.has("explore") &&
+    shouldRoutePublicReadOnlySourceTaskToExplore(input.task)
+  ) {
+    return "explore";
+  }
+  return input.requestedAgentId;
+}
+
+function shouldRoutePublicReadOnlySourceTaskToExplore(task: string): boolean {
+  const normalized = task.toLowerCase();
+  if (!hasPublicReadOnlySourceSignal(normalized)) return false;
+  if (hasBrowserRequiredSignal(normalized)) return false;
+  return true;
+}
+
+function hasPublicReadOnlySourceSignal(input: string): boolean {
+  return (
+    /\b(?:pricing|price|docs?|documentation|source pages?|public sources?|url extraction|read-only url|fetch|extract|research|compare|comparison|evidence ledger)\b/i.test(
+      input
+    ) && /https?:\/\//i.test(input)
+  );
+}
+
+function hasBrowserRequiredSignal(input: string): boolean {
+  return /\b(?:authenticated|login|logged in|account|session|interactive|click|fill|submit|save|purchase|delete|update|visual|screenshot|snapshot|js-rendered|javascript-rendered|client-side|rendered dashboard|dashboard|as a user would see|browser session|active browser)\b/i.test(
+    input
+  );
 }
 
 function scopeWorkerActivationToToolCall(activation: RoleActivationInput, toolCallId: string): RoleActivationInput {
