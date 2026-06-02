@@ -302,6 +302,9 @@ export function validateRealLlmAbAcceptanceReport(
       } else if (runPrompt !== scenarioPrompt) {
         failures.push(`${scenario.scenarioId}/${system.system}: run prompt does not match the scenario prompt`);
       }
+      if (readCount(system.wallClockMs) <= 0) {
+        failures.push(`${scenario.scenarioId}/${system.system}: missing positive wall-clock runtime evidence`);
+      }
       const runPromptViolations = detectControlledPromptLanguage(system.prompt ?? "");
       if (runPromptViolations.length > 0) {
         failures.push(

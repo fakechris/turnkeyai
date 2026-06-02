@@ -6771,3 +6771,56 @@ Convergence question:
   no stuck spans and no browser failure buckets.
 - Remaining P0: reduce cancellation-follow-up latency and run broader natural
   E2E coverage before making a general production-readiness claim.
+
+## Checkpoint 2026-06-02 22:15 CST — Per-Scenario Acceptance Runtime Evidence
+
+Direction: unknown
+
+Execution Kernel:
+- No agent execution, browser transport, prompt, or session runtime behavior
+  changed.
+- Natural mission E2E reports now preserve per-scenario `durationMs`, and the
+  same-scenario acceptance report builder maps that to TurnkeyAI `wallClockMs`.
+- Same-scenario acceptance validation now rejects reports where either system
+  lacks positive wall-clock runtime evidence.
+
+Result Quality:
+- Final-answer generation did not change.
+- This makes future quality comparisons less subjective: a task that passes
+  content checks but takes too long cannot silently lose timing evidence in the
+  acceptance artifact.
+
+Workbench UX:
+- No UI changed.
+- User-visible behavior remains unproven by this checkpoint. The value is in
+  stronger evidence for the next real acceptance run.
+
+Browser Reliability:
+- No browser code changed.
+- Browser-required scenarios still need real rendered evidence and artifact
+  proof; this checkpoint only ensures their elapsed time is captured alongside
+  that evidence.
+
+Acceptance Evidence:
+- Focused tests passed:
+  `npx tsx --test packages/qc-runtime/src/real-llm-ab-acceptance.test.ts
+  scripts/real-llm-ab-report-build.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts`.
+- No real LLM E2E ran for this checkpoint, so it cannot be claimed as a
+  capability improvement.
+
+Regression Risk:
+- Older same-scenario acceptance JSON without per-run wall-clock evidence will
+  now fail validation. That is intentional because those artifacts cannot prove
+  stuck/slow behavior.
+- Natural scenario reports without `durationMs` summarize as `0ms`, so they
+  remain visible but cannot pass same-scenario acceptance validation until a new
+  run is generated.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? no claim
+- Evidence: structural acceptance contract only; no real user task was rerun.
+- If no, next required gate: run a fresh natural same-scenario acceptance slice
+  and use wall-clock evidence to decide whether the next root-cause PR targets
+  runtime latency, prompt/delegation, browser reliability, or final-answer
+  quality.

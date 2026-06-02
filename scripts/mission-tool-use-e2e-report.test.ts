@@ -987,6 +987,7 @@ describe("mission tool-use e2e report", () => {
     assert.equal(report.failedScenarios, 0);
     assert.equal(report.durationMs, 5000);
     assert.equal(report.scenarios[0]?.scenario, "natural-browser-dynamic-page");
+    assert.equal(report.scenarios[0]?.durationMs, 3210);
     assert.equal(report.scenarios[0]?.prompt, "Review this operations dashboard as a user would see it in the browser.");
     assert.equal(report.scenarios[0]?.artifacts.count, 1);
     assert.equal(report.scenarios[0]?.artifacts.withLifecycle, 1);
@@ -3235,6 +3236,7 @@ function fakeNaturalResult(): NaturalMissionScenarioResult {
   return {
     scenario: "natural-browser-dynamic-page",
     prompt: "Review this operations dashboard as a user would see it in the browser.",
+    durationMs: 3210,
     mission: {
       id: "msn.natural.1",
       status: "done",

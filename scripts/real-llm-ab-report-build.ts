@@ -55,6 +55,7 @@ interface NaturalMissionScenarioShape {
   scenario?: unknown;
   prompt?: unknown;
   missionId?: unknown;
+  durationMs?: unknown;
   threadId?: unknown;
   status?: unknown;
   metrics?: MissionMetricsShape;
@@ -361,6 +362,7 @@ function buildTurnkeyAiRun(input: {
     artifactPath: input.artifactPath,
     ...(readString(input.scenario.missionId) ? { missionId: readString(input.scenario.missionId)! } : {}),
     ...(readString(input.scenario.threadId) ? { transcriptPath: `thread:${readString(input.scenario.threadId)!}` } : {}),
+    wallClockMs: readNumber(input.scenario.durationMs),
     toolCallCount: readNumber(metrics.tools?.requested),
     toolResultCount: readNumber(metrics.tools?.results),
     toolSequence,

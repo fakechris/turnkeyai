@@ -88,6 +88,7 @@ test("real LLM A/B report builder emits a checkable report from natural and refe
     assert.equal(report.scenarios[0]?.turnkeyai.prompt, NATURAL_BROWSER_PROMPT);
     assert.equal(report.scenarios[0]?.reference.prompt, NATURAL_BROWSER_PROMPT);
     assert.equal(report.scenarios[0]?.turnkeyai.missionId, "msn.test.1");
+    assert.equal(report.scenarios[0]?.turnkeyai.wallClockMs, 17_500);
     assert.equal(report.scenarios[0]?.turnkeyai.dimensionScores.finalAnswerUsefulness, 2);
     assert.equal(report.scenarios[0]?.reference.dimensionScores.browserAuthenticity, 2);
     assert.equal(validateRealLlmAbAcceptanceReport(report).status, "passed");
@@ -267,6 +268,7 @@ function writeFixtureFiles(
           scenario: "natural-browser-dynamic-page",
           prompt: NATURAL_BROWSER_PROMPT,
           missionId: "msn.test.1",
+          durationMs: 17_500,
           threadId: "THREAD-test",
           status: "done",
           metrics: {
