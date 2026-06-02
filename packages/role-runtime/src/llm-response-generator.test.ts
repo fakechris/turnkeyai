@@ -1523,6 +1523,7 @@ test("llm role response generator does not finalize multi-stream delegation afte
       });
     }
     if (gatewayInputs.length === 2) {
+      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
       assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
       return {
         text: "Calling remaining focused tools.",
@@ -1627,6 +1628,7 @@ test("llm role response generator keeps correcting multi-stream delegation until
       });
     }
     if (gatewayInputs.length === 2) {
+      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
       assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
       return toolCallResult("toolu-two", "sessions_spawn", {
         agent_id: "explore",
@@ -1635,6 +1637,7 @@ test("llm role response generator keeps correcting multi-stream delegation until
       });
     }
     if (gatewayInputs.length === 3) {
+      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
       assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
       return toolCallResult("toolu-three", "sessions_spawn", {
         agent_id: "browser",
@@ -1725,6 +1728,7 @@ test("llm role response generator does not count a continued session as a new in
       });
     }
     if (gatewayInputs.length === 2) {
+      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
       assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
       return {
         text: "Continuing one session and starting another.",
@@ -1748,6 +1752,7 @@ test("llm role response generator does not count a continued session as a new in
       };
     }
     if (gatewayInputs.length === 3) {
+      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
       assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /multiple independent evidence streams/);
       return toolCallResult("toolu-three", "sessions_spawn", {
         agent_id: "browser",
@@ -5529,6 +5534,89 @@ test("llm role response generator allows loopback explore only for isolated E2E 
 
   assert.equal(executedCalls[0]?.input.agent_id, "explore");
   assert.doesNotMatch(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
+});
+
+test("llm role response generator keeps private non-loopback URLs on the browser path in E2E fixture mode", async () => {
+  const previous = process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+  process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = "1";
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (!input.messages.some((message) => message.role === "tool")) {
+      return toolCallResult("toolu-mixed-source", "sessions_spawn", {
+        agent_id: "explore",
+        label: "Mixed fixture and private source",
+        task: "Compare http://127.0.0.1:49152/vendor-alpha with http://192.168.0.10/admin and report observed facts.",
+      });
+    }
+    return {
+      text: "Mixed private source stayed on browser path.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-mixed-source",
+          session_key: "worker:browser:task-mixed-source:toolu-mixed-source",
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          result: "Browser inspected mixed private URL source safely.",
+          final_content: "Browser inspected mixed private URL source safely.",
+          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: "Browser inspected mixed private URL source safely." },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  try {
+    await generator.generate({
+      activation: buildActivation(),
+      packet: {
+        ...buildPacket(),
+        capabilityInspection: {
+          availableWorkers: ["browser", "explore"],
+          connectorStates: [],
+          apiStates: [],
+          skillStates: [],
+          transportPreferences: [],
+          unavailableCapabilities: [],
+          generatedAt: 1,
+        },
+      },
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+    } else {
+      process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = previous;
+    }
+  }
+
+  assert.equal(executedCalls[0]?.input.agent_id, "browser");
+  assert.match(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
 });
 
 test("llm role response generator reroutes link-local and wildcard URL research spawns to browser", async () => {

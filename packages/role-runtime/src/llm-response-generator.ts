@@ -639,6 +639,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
               }),
             },
           ];
+          nextToolChoice = { type: "tool", name: "sessions_spawn" };
           continue;
         }
         if (
@@ -2749,7 +2750,8 @@ function normalizePrivateUrlResearchSpawnCalls(
     if (!containsPrivateOrLoopbackHttpUrl([task, label].join("\n"))) {
       return call;
     }
-    if (allowsLoopbackExploreForE2E() && containsLoopbackHttpUrl([task, label].join("\n"))) {
+    const combined = [task, label].join("\n");
+    if (allowsLoopbackExploreForE2E() && containsLoopbackHttpUrl(combined) && !containsPrivateNonLoopbackHttpUrl(combined)) {
       return call;
     }
     return {
@@ -2901,6 +2903,17 @@ function containsLoopbackHttpUrl(text: string): boolean {
     try {
       const parsed = new URL(url);
       return isLoopbackHostname(parsed.hostname);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function containsPrivateNonLoopbackHttpUrl(text: string): boolean {
+  return extractHttpUrls(text).some((url) => {
+    try {
+      const parsed = new URL(url);
+      return isPrivateOrLoopbackHostname(parsed.hostname) && !isLoopbackHostname(parsed.hostname);
     } catch {
       return false;
     }
