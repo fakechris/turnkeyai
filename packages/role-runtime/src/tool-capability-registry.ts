@@ -230,7 +230,7 @@ export function buildSessionToolDefinitions(
     {
       name: "sessions_spawn",
       description:
-        "Spawn a specialist sub-agent session for an isolated task. Use explore first for public source research, pricing/docs pages, and read-only URL extraction. Use browser for authenticated, interactive, visual, or JS-rendered pages when direct source extraction is insufficient. Use finance for market data.",
+        "Spawn a specialist sub-agent session for an isolated task. Use explore first for public source research, pricing/docs pages, and read-only URL extraction. Use browser directly for authenticated, interactive, visual, JS-rendered, localhost, loopback, private-network, internal, dashboard, or user-session pages. Use finance for market data.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -457,7 +457,7 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
     "## Sub-Agent Sessions",
     "Use sessions_spawn only when delegation materially helps: parallel independent work, context isolation, specialist browser work, or verification.",
     "Each spawned task must be self-contained. Include exact URLs, paths, scope, output format, stop conditions, and constraints the child will not otherwise know.",
-    "For public source research, comparison, pricing, documentation, or read-only URL extraction, spawn explore first. Escalate to browser only when explore reports the source is blocked, requires interaction/login, or needs rendered visual/client-side evidence.",
+    "For public source research, comparison, pricing, documentation, or read-only URL extraction, spawn explore first. For localhost, loopback, private-network, internal, authenticated, dashboard, user-session, or rendered/client-side URLs, spawn browser directly; explore is for public fetchable sources and may reject private hosts by policy.",
     "Preserve exact user-provided entity names in delegated research. Do not append guessed categories or domains such as smart lock, blockchain, SaaS, or library unless the user supplied that category.",
     "For ambiguous product names without URLs, ask sub-agents to first search the exact name and official website/domain, then mark ambiguity explicitly instead of steering the search toward a guessed meaning.",
     "Keep each spawned task to a manageable size, roughly 10-15 tool calls. If the work is larger, split it into smaller independent sessions.",
@@ -484,9 +484,9 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
 function renderBrowserWorkerSection(): string {
   return [
     "## Browser Worker Rules",
-    "- Browser work is for authenticated pages, JS-rendered pages, visual inspection, interactive actions, and pages where direct fetch is insufficient.",
+    "- Browser work is for authenticated pages, JS-rendered pages, visual inspection, interactive actions, localhost/private-network/internal pages, and pages where direct fetch is insufficient.",
     "- When the task says to review a page as a user would see it, inspect a JS-rendered/client-rendered page, or verify a rendered dashboard, use the browser worker. Do not substitute explore/static fetch for that browser evidence.",
-    "- For public research, pricing pages, docs pages, and read-only URL extraction, use explore first. Use browser only after explore/static extraction is blocked, incomplete, or the task explicitly requires rendered/visual/user-session evidence.",
+    "- For public research, pricing pages, docs pages, and read-only URL extraction, use explore first. Use browser first for localhost, loopback, private-network, internal, dashboard, rendered, visual, or user-session evidence; otherwise use browser after explore/static extraction is blocked or incomplete.",
     "- For personal dashboards or account data, prefer the browser worker because it can use the user's active browser session.",
     "- Keep browser tasks bounded: specify target URL or search query, required fields, output format, and when to stop.",
     "- If the user asks to carry out an approved browser action such as submit, save, purchase, send, delete, or update, the delegated browser task must include that requested action and its approval boundary. Do not downgrade the task to read-only inspection unless the user only asked for inspection.",
