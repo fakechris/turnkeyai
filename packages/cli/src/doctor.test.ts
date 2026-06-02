@@ -21,7 +21,10 @@ describe("doctor", () => {
 
       assert.equal(result.code, 0);
       assert.match(result.stdout, /\[warn\] relay extension\s+not installed; only required when TURNKEYAI_BROWSER_TRANSPORT=relay/);
-      assert.match(result.stdout, /\[warn\] installed cli\s+turnkeyai command not on PATH/);
+      assert.match(result.stdout, /\[warn\] installed cli\s+turnkeyai command not on PATH; source checkout entry is available/);
+      assert.match(result.stdout, /TurnkeyAI Mission Control\.command/);
+      assert.match(result.stdout, /npm run app -- --no-open/);
+      assert.match(result.stdout, /npm run install:local-cli/);
       assert.match(result.stdout, /turnkeyai doctor: 2 warning\(s\), no failures/);
     } finally {
       server.close();
