@@ -2058,7 +2058,7 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
     [
       "Verification did not complete within the tool budget.",
       "",
-      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating the missing source as verified.",
+      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.",
     ].join("\n")
   );
   assert.equal(executedTools, 1);
@@ -2169,7 +2169,14 @@ test("llm role response generator routes continuation follow-up to timed-out ses
     packet,
   });
 
-  assert.equal(result.content, "Final answer from resumed session evidence.");
+  assert.equal(
+    result.content,
+    [
+      "Final answer from resumed session evidence.",
+      "",
+      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.",
+    ].join("\n")
+  );
   assert.equal(executedCalls[0]?.name, "sessions_send");
   assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /Runtime session continuation directive/);
   assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /worker:explore:task-1:toolu-timeout/);
@@ -2251,7 +2258,14 @@ test("llm role response generator forces sessions_send for explicit continuation
     },
   });
 
-  assert.equal(result.content, "Final answer after forced session continuation.");
+  assert.equal(
+    result.content,
+    [
+      "Final answer after forced session continuation.",
+      "",
+      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.",
+    ].join("\n")
+  );
   assert.equal(executedCalls.length, 1);
   assert.equal(executedCalls[0]?.name, "sessions_send");
 });
@@ -2906,6 +2920,146 @@ test("llm role response generator routes follow-up through sessions_list result 
   assert.deepEqual(
     executedCalls.map((call) => call.name),
     ["sessions_list", "sessions_send"]
+  );
+});
+
+test("llm role response generator forces continuation after list resolves a truncated timeout key", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const fullSessionKey = "worker:browser:task:TASK-1:call_function_bezmwfxl30as_1";
+  const truncatedSessionKey = "worker:browser:task:TASK-1:call_function_bezmwfxl";
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-history", "sessions_history", {
+        session_key: truncatedSessionKey,
+        tail: true,
+        limit: 20,
+      });
+    }
+    if (executedCalls.length === 1 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-list", "sessions_list", {
+        limit: 10,
+      });
+    }
+    if (executedCalls.length === 2 && input.toolChoice !== "none") {
+      return {
+        text: "I found the resumable session but can answer directly.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "Final answer from recovered timeout continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_history",
+          description: "Read session history",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" } } },
+        },
+        {
+          name: "sessions_list",
+          description: "List sessions",
+          inputSchema: { type: "object", properties: { limit: { type: "number" } } },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "sessions_history") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          isError: true,
+          content: `session not found: ${input.call.input.session_key}`,
+        };
+      }
+      if (input.call.name === "sessions_list") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            sessions: [
+              {
+                session_key: fullSessionKey,
+                agent_id: "browser",
+                status: "resumable",
+                label: "slow-fixture-risk-check",
+              },
+            ],
+          }),
+        };
+      }
+      assert.equal(input.call.name, "sessions_send");
+      assert.equal(input.call.input.session_key, fullSessionKey);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-timeout",
+          session_key: fullSessionKey,
+          agent_id: "browser",
+          status: "completed",
+          result: "Recovered slow source evidence.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the slow-source attempt in this mission.",
+        "",
+        "Recent turns:",
+        "[user] Continue from the slow-source attempt in this mission.",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "timeout",
+          session_key: truncatedSessionKey,
+          agent_id: "browser",
+          result: "WORKER_TIMEOUT",
+          resumable: true,
+        }),
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(
+    result.content,
+    [
+      "Final answer from recovered timeout continuation.",
+      "",
+      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.",
+    ].join("\n")
+  );
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_history", "sessions_list", "sessions_send"]
   );
 });
 

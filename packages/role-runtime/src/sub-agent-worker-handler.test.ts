@@ -640,6 +640,77 @@ test("LLMSubAgentWorkerHandler promotes browser private recovery metadata above 
   });
 });
 
+test("LLMSubAgentWorkerHandler cold-recreates read-only browser tools when the prior browser session is gone", async () => {
+  const bridgeCalls: string[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    const sawToolResult = input.messages.some((message) => message.role === "tool" && message.toolCallId === "tool-1");
+    if (!sawToolResult) {
+      return toolCallResult("tool-1", "browser_snapshot", { note: "continue-from-existing-tab" });
+    }
+    return textResult("Recovered dashboard evidence after recreating the browser session.");
+  };
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    gateway,
+    browserBridge: buildBrowserBridge({
+      async sendSession(input) {
+        bridgeCalls.push("send");
+        assert.equal(input.ownerType, "worker");
+        assert.equal(input.ownerId, "worker:browser:existing");
+        throw new Error("browser session not found: browser-session-old");
+      },
+      async spawnSession(input) {
+        bridgeCalls.push("spawn");
+        assert.equal(input.ownerType, "worker");
+        assert.equal((input as { browserSessionId?: string }).browserSessionId, undefined);
+        return browserResult({
+          sessionId: "browser-session-new",
+          targetId: "target-new",
+          resumeMode: "cold",
+          title: "Ops Console",
+        });
+      },
+    }),
+  });
+
+  const result = await handler.run({
+    ...buildInvocationInput("browser"),
+    sessionState: {
+      workerRunKey: "worker:browser:existing",
+      workerType: "browser",
+      status: "resumable",
+      createdAt: 1,
+      updatedAt: 2,
+      lastResult: {
+        workerType: "browser",
+        status: "completed",
+        summary: "Existing browser session.",
+        payload: {
+          mode: "llm_sub_agent",
+          browserRecovery: {
+            sessionId: "browser-session-old",
+            targetId: "target-old",
+            resumeMode: "warm",
+          },
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(bridgeCalls, ["send", "spawn"]);
+  assert.equal(result?.status, "completed");
+  assert.match(result?.summary ?? "", /Resume mode: cold/);
+  assert.deepEqual((result?.payload as { browserRecovery?: unknown }).browserRecovery, {
+    resumeMode: "cold",
+    sessionId: "browser-session-new",
+    targetId: "target-new",
+    failureBuckets: [{ bucket: "session_not_found", count: 1 }],
+    summary: "Browser recovery metadata: Resume mode: cold. Session ID: browser-session-new. Browser failure buckets: session_not_found=1.",
+  });
+});
+
 test("LLMSubAgentWorkerHandler preserves browser profile fallback metadata from private tools", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;

@@ -5,6 +5,7 @@ import {
   WORKER_KINDS,
 } from "@turnkeyai/core-types/team";
 import type {
+  BrowserBridge,
   Clock,
   IdGenerator,
   RoleLoopRunner,
@@ -73,6 +74,7 @@ export interface WorkflowRouteDeps {
   clock: Clock;
   roleLoopRunner?: Pick<RoleLoopRunner, "cancel">;
   workerRuntime?: Pick<WorkerRuntime, "cancel" | "listSessions">;
+  browserBridge?: Pick<BrowserBridge, "listSessions" | "closeSession">;
   toolCancellationRegistry?: ToolCancellationRegistry;
   idempotencyStore?: RouteIdempotencyStore;
 }
@@ -213,9 +215,14 @@ export async function handleWorkflowRoutes(input: {
           body: { error: "worker session not found", workerRunKey },
         };
       }
+      const browserSessions = await closeWorkerOwnedBrowserSessions({
+        browserBridge: deps.browserBridge,
+        workerRunKey,
+        reason,
+      });
       return {
         statusCode: 200,
-        body: { cancelled: true, workerRunKey, state },
+        body: { cancelled: true, workerRunKey, state, browserSessions },
       };
     };
     const result = deps.idempotencyStore
@@ -702,6 +709,53 @@ async function cancelWorkerSessionsForToolCalls(input: {
     }
   }
   return { cancelledIds, terminalIds, failedIds };
+}
+
+async function closeWorkerOwnedBrowserSessions(input: {
+  browserBridge: Pick<BrowserBridge, "listSessions" | "closeSession"> | undefined;
+  workerRunKey: string;
+  reason: string;
+}): Promise<{
+  requested: number;
+  closed: string[];
+  failed: Array<{ browserSessionId: string; error: string }>;
+}> {
+  if (!input.browserBridge) {
+    return { requested: 0, closed: [], failed: [] };
+  }
+  const browserBridge = input.browserBridge;
+  const sessions = await browserBridge.listSessions({
+    ownerType: "worker",
+    ownerId: input.workerRunKey,
+  });
+  const closeResults = await Promise.all(
+    sessions.map(async (session) => {
+      try {
+        await browserBridge.closeSession(
+          session.browserSessionId,
+          `worker session cancelled: ${input.reason}`
+        );
+        return { status: "closed" as const, browserSessionId: session.browserSessionId };
+      } catch (error) {
+        return {
+          status: "failed" as const,
+          browserSessionId: session.browserSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })
+  );
+  const closed = closeResults
+    .filter((result) => result.status === "closed")
+    .map((result) => result.browserSessionId);
+  const failed = closeResults
+    .filter((result) => result.status === "failed")
+    .map((result) => ({ browserSessionId: result.browserSessionId, error: result.error }));
+  return {
+    requested: sessions.length,
+    closed,
+    failed,
+  };
 }
 
 function resolveAssistantToolStatus(

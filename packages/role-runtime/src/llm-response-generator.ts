@@ -214,8 +214,11 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       }
 
       const sessionContinuationContext = buildContinuationDirectiveContext(input.packet.taskPrompt, messages);
+      const contextualSessionContinuationDirective = activeToolLoop
+        ? findSessionContinuationDirective(sessionContinuationContext)
+        : null;
       const sessionContinuationDirective =
-        baseSessionContinuationDirective ?? (activeToolLoop ? findSessionContinuationDirective(sessionContinuationContext) : null);
+        contextualSessionContinuationDirective ?? baseSessionContinuationDirective;
       const sessionContinuationLookupDirective =
         !sessionContinuationDirective && activeToolLoop
           ? findSessionContinuationLookupDirective(input.packet.taskPrompt, sessionContinuationContext)
@@ -435,6 +438,14 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         break;
       }
       if (!activeToolLoop || toolCalls.length === 0) {
+        if (
+          activeToolLoop &&
+          isExplicitSessionContinuationRequest(extractLatestUserContinuationText(input.packet.taskPrompt)) &&
+          contextHasTimeoutSessionResult(buildContinuationDirectiveContext(input.packet.taskPrompt, messages)) &&
+          toolTrace.some((roundTrace) => roundTrace.calls.some((call) => call.name === "sessions_send"))
+        ) {
+          result = maybeAppendTimeoutContinuationVisibility(result);
+        }
         break;
       }
       const maxWallClockMs = activeToolLoop.maxWallClockMs;
@@ -671,6 +682,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           browserRecoverySummaries: completedSession.browserRecoverySummaries,
         });
+        if (
+          isExplicitSessionContinuationRequest(extractLatestUserContinuationText(input.packet.taskPrompt)) &&
+          contextHasTimeoutSessionResult(buildContinuationDirectiveContext(input.packet.taskPrompt, messages))
+        ) {
+          result = maybeAppendTimeoutContinuationVisibility(result);
+        }
         result = maybeRedactForbiddenLocalUrls({
           result,
           packet: input.packet,
@@ -731,7 +748,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             timeoutSignal.evidenceAvailable
               ? "Produce the best final answer from the evidence already gathered and state any remaining uncertainty."
               : "No usable evidence was gathered before the timeout. Say that verification did not complete, summarize what was attempted, and tell the user they can ask to continue.",
-            "Include one concise continuation sentence: the user can continue or retry the same source check with a longer timeout before treating the missing source as verified.",
+            "Include one concise continuation sentence: the user can continue or retry the same source check with a longer timeout before treating missing evidence as verified.",
           ],
         });
         throwIfAborted(input.signal);
@@ -1905,7 +1922,7 @@ function maybeAppendTimeoutContinuationVisibility(result: GenerateTextResult): G
   }
   return {
     ...result,
-    text: `${result.text.trim()}\n\nContinuation: this source check is resumable; continue or retry with a longer timeout before treating the missing source as verified.`.trim(),
+    text: `${result.text.trim()}\n\nContinuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.`.trim(),
   };
 }
 
@@ -2316,6 +2333,10 @@ function shouldCloseoutCancelledSessionWithoutContinuation(input: { taskPrompt: 
 
 function contextHasCancelledSessionResult(context: string): boolean {
   return extractSessionToolResultRecords(context).some((result) => result["status"] === "cancelled");
+}
+
+function contextHasTimeoutSessionResult(context: string): boolean {
+  return extractSessionToolResultRecords(context).some((result) => result["status"] === "timeout");
 }
 
 function contextHasSessionListResult(context: string): boolean {

@@ -774,6 +774,71 @@ test("workflow routes cancel worker sessions directly", async () => {
     cancelled: true,
     workerRunKey: "worker:browser:1",
     state: cancelledState,
+    browserSessions: {
+      requested: 0,
+      closed: [],
+      failed: [],
+    },
+  });
+});
+
+test("workflow routes close worker-owned browser sessions when cancelling a worker session", async () => {
+  const closed: Array<{ browserSessionId: string; reason: string | undefined }> = [];
+  const cancelledState: WorkerSessionState = {
+    workerRunKey: "worker:browser:1",
+    workerType: "browser",
+    status: "cancelled",
+    createdAt: 100,
+    updatedAt: 200,
+  };
+  const response = createResponse();
+
+  await handleWorkflowRoutes({
+    req: createRequest({
+      method: "POST",
+      url: "/worker-sessions/worker%3Abrowser%3A1/cancel",
+      body: { reason: "operator cancelled sub-agent session" },
+    }),
+    res: response.res,
+    url: new URL("http://127.0.0.1/worker-sessions/worker%3Abrowser%3A1/cancel"),
+    deps: createDeps({
+      workerRuntime: {
+        async cancel() {
+          return cancelledState;
+        },
+      },
+      browserBridge: {
+        async listSessions(input) {
+          assert.deepEqual(input, {
+            ownerType: "worker",
+            ownerId: "worker:browser:1",
+          });
+          return [
+            {
+              browserSessionId: "browser-session-worker-1",
+              ownerType: "worker",
+              ownerId: "worker:browser:1",
+            },
+          ] as any;
+        },
+        async closeSession(browserSessionId, reason) {
+          closed.push({ browserSessionId, reason });
+        },
+      },
+    }),
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.deepEqual(closed, [
+    {
+      browserSessionId: "browser-session-worker-1",
+      reason: "worker session cancelled: operator cancelled sub-agent session",
+    },
+  ]);
+  assert.deepEqual(response.json.browserSessions, {
+    requested: 1,
+    closed: ["browser-session-worker-1"],
+    failed: [],
   });
 });
 
@@ -839,6 +904,11 @@ test("workflow routes replay idempotent worker session cancellation without canc
       cancelled: true,
       workerRunKey: "worker:browser:1",
       state: cancelledState,
+      browserSessions: {
+        requested: 0,
+        closed: [],
+        failed: [],
+      },
     });
   }
 

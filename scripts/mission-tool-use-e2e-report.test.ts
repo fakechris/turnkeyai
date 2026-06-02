@@ -2466,7 +2466,12 @@ describe("mission tool-use e2e report", () => {
       ...result.timeline[4]!.runtime,
       resultContent: JSON.stringify({
         status: "completed",
-        payload: { sessionId: "browser-session-recreated", resumeMode: "cold" },
+        payload: {
+          browserRecovery: {
+            sessionId: "browser-session-recreated",
+            resumeMode: "cold",
+          },
+        },
         result:
           "Cold recreation performed. Target resolution: new_target. Rendered dashboard evidence shows Queue depth: 11, SLA breaches: 3, and Recommended owner: Incident Commander. Stale prior path: /tmp/browser-artifacts/browser-session-original/02-dashboard.png",
       }),
