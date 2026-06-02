@@ -576,6 +576,17 @@ describe("mission tool-use e2e report", () => {
       },
       weakAnswerSignals: [],
       failures: [],
+      dimensionScores: {
+        taskCompletion: 2,
+        evidenceQuality: 2,
+        toolUseAppropriateness: 2,
+        browserAuthenticity: 2,
+        subAgentIndependence: 2,
+        continuationBehavior: 2,
+        permissionCorrectness: 2,
+        timeoutCloseoutQuality: 2,
+      },
+      failureBuckets: [],
     });
     assert.equal(summary.final.bytes > 0, true);
     assert.equal(summary.final.excerpt.includes("recommended next action"), true);
@@ -964,12 +975,25 @@ describe("mission tool-use e2e report", () => {
     assert.ok(report.requiredQualitySignals.includes("no-unsupported-claims"));
     assert.ok(report.requiredQualitySignals.includes("browser-profile-fallback-policy"));
     assert.ok(report.requiredQualitySignals.includes("browser-failure-bucket-policy"));
+    assert.ok(report.requiredQualitySignals.includes("root-cause-dimension-scores"));
+    assert.ok(report.requiredQualitySignals.includes("failure-bucket-attribution"));
     assert.equal(report.status, "passed");
     assert.equal(report.durationMs, 5000);
     assert.equal(report.scenarios[0]?.scenario, "natural-browser-dynamic-page");
     assert.equal(report.scenarios[0]?.artifacts.count, 1);
     assert.equal(report.scenarios[0]?.artifacts.withLifecycle, 1);
     assert.equal(report.scenarios[0]?.natural.profileFallbackFree, true);
+    assert.deepEqual(report.scenarios[0]?.natural.dimensionScores, {
+      taskCompletion: 2,
+      evidenceQuality: 2,
+      toolUseAppropriateness: 2,
+      browserAuthenticity: 2,
+      subAgentIndependence: 2,
+      continuationBehavior: 2,
+      permissionCorrectness: 2,
+      timeoutCloseoutQuality: 2,
+    });
+    assert.deepEqual(report.scenarios[0]?.natural.failureBuckets, []);
     assert.deepEqual(report.scenarios[0]?.natural.sourceCoverage, {
       answerTerms: { covered: 2, total: 2, missing: [] },
       answerPatterns: { covered: 0, total: 0, missing: [] },
@@ -1014,6 +1038,10 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.failures.some((failure) => failure.includes("browser")));
     assert.ok(quality.weakAnswerSignals.includes("tool unavailable fallback"));
     assert.ok(quality.weakAnswerSignals.includes("model-knowledge fallback"));
+    assert.equal(quality.dimensionScores.browserAuthenticity, 0);
+    assert.equal(quality.dimensionScores.evidenceQuality, 0);
+    assert.ok(quality.failureBuckets.includes("browser_reliability"));
+    assert.ok(quality.failureBuckets.includes("answer_quality"));
   });
 
   it("reports structured natural source coverage gaps for missing evidence and unsupported claims", () => {
@@ -3159,6 +3187,17 @@ function fakeNaturalResult(): NaturalMissionScenarioResult {
       },
       weakAnswerSignals: [],
       failures: [],
+      dimensionScores: {
+        taskCompletion: 2,
+        evidenceQuality: 2,
+        toolUseAppropriateness: 2,
+        browserAuthenticity: 2,
+        subAgentIndependence: 2,
+        continuationBehavior: 2,
+        permissionCorrectness: 2,
+        timeoutCloseoutQuality: 2,
+      },
+      failureBuckets: [],
     },
   };
 }

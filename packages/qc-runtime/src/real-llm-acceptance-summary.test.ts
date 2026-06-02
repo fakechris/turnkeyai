@@ -310,6 +310,8 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
             unsupportedClaims: [],
           },
           weakAnswerSignals: [],
+          dimensionScores: passingNaturalDimensionScores(),
+          failureBuckets: [],
         },
         metrics: {
           tools: { requested: 2, results: 2, failed: 0, cancelled: 0, timeouts: 0 },
@@ -342,6 +344,13 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
             unsupportedClaims: ["unsupported pricing"],
           },
           weakAnswerSignals: ["tool unavailable fallback", "model-knowledge fallback"],
+          dimensionScores: {
+            ...passingNaturalDimensionScores(),
+            taskCompletion: 0,
+            evidenceQuality: 0,
+            subAgentIndependence: 0,
+          },
+          failureBuckets: ["runtime_lifecycle", "answer_quality"],
         },
         metrics: {
           tools: { requested: 3, results: 1, failed: 1, cancelled: 1, timeouts: 1 },
@@ -401,6 +410,10 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
     sourceResidualRiskVisible: 1,
     sourceUnsupportedClaims: 1,
     recoveryEvents: 1,
+    dimensionScoreTotal: 26,
+    dimensionScoreMax: 32,
+    lowDimensionScores: 3,
+    failureBuckets: ["answer_quality", "runtime_lifecycle"],
     scenarioProofs: [
       {
         scenario: "natural-browser-dynamic-page",
@@ -434,6 +447,8 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
         sourceAnswerTermsMissing: 0,
         sourceAnswerPatternsMissing: 0,
         sourceEvidencePatternsMissing: 0,
+        dimensionScores: passingNaturalDimensionScores(),
+        failureBuckets: [],
       },
       {
         scenario: "natural-long-delegation",
@@ -467,6 +482,13 @@ test("summarizeNaturalMissionE2eReportForValidationOps aggregates natural capabi
         sourceAnswerTermsMissing: 2,
         sourceAnswerPatternsMissing: 1,
         sourceEvidencePatternsMissing: 3,
+        dimensionScores: {
+          ...passingNaturalDimensionScores(),
+          taskCompletion: 0,
+          evidenceQuality: 0,
+          subAgentIndependence: 0,
+        },
+        failureBuckets: ["runtime_lifecycle", "answer_quality"],
       },
     ],
   });
@@ -476,3 +498,16 @@ test("summarizeNaturalMissionE2eReportForValidationOps rejects unrelated artifac
   assert.equal(summarizeNaturalMissionE2eReportForValidationOps({ kind: "other", scenarios: [] }), null);
   assert.equal(summarizeNaturalMissionE2eReportForValidationOps(null), null);
 });
+
+function passingNaturalDimensionScores() {
+  return {
+    taskCompletion: 2,
+    evidenceQuality: 2,
+    toolUseAppropriateness: 2,
+    browserAuthenticity: 2,
+    subAgentIndependence: 2,
+    continuationBehavior: 2,
+    permissionCorrectness: 2,
+    timeoutCloseoutQuality: 2,
+  };
+}

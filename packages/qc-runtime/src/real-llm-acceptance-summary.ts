@@ -96,9 +96,22 @@ interface NaturalScenarioReportShape {
       unsupportedClaims?: unknown;
     };
     weakAnswerSignals?: unknown;
+    dimensionScores?: unknown;
+    failureBuckets?: unknown;
   };
   metrics?: MissionScenarioReportShape["metrics"];
 }
+
+const NATURAL_DIMENSION_SCORE_KEYS = [
+  "taskCompletion",
+  "evidenceQuality",
+  "toolUseAppropriateness",
+  "browserAuthenticity",
+  "subAgentIndependence",
+  "continuationBehavior",
+  "permissionCorrectness",
+  "timeoutCloseoutQuality",
+] as const;
 
 interface NaturalMissionE2eReportShape {
   kind?: unknown;
@@ -382,6 +395,10 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       sourceResidualRiskVisible: 0,
       sourceUnsupportedClaims: 0,
       recoveryEvents: 0,
+      dimensionScoreTotal: 0,
+      dimensionScoreMax: 0,
+      lowDimensionScores: 0,
+      failureBuckets: [],
       scenarioProofs: [],
     };
   }
@@ -434,6 +451,13 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       summary.sourceResidualRiskVisible += scenario.natural?.sourceCoverage?.residualRiskVisible === true ? 1 : 0;
       summary.sourceUnsupportedClaims += readArrayLength(scenario.natural?.sourceCoverage?.unsupportedClaims);
       summary.recoveryEvents += readNumber(scenario.metrics?.recoveryEvents);
+      const dimensionScores = readNaturalDimensionScores(scenario.natural?.dimensionScores);
+      const failureBuckets = readStringArray(scenario.natural?.failureBuckets);
+      summary.dimensionScoreTotal = (summary.dimensionScoreTotal ?? 0) + sumNaturalDimensionScores(dimensionScores);
+      summary.dimensionScoreMax = (summary.dimensionScoreMax ?? 0) + NATURAL_DIMENSION_SCORE_KEYS.length * 2;
+      summary.lowDimensionScores =
+        (summary.lowDimensionScores ?? 0) + NATURAL_DIMENSION_SCORE_KEYS.filter((key) => dimensionScores[key] < 2).length;
+      summary.failureBuckets = mergeStringSet(summary.failureBuckets, failureBuckets);
       if (scenarioId) {
         const sourceCoverage = scenario.natural?.sourceCoverage;
         (summary.scenarioProofs ??= []).push({
@@ -468,6 +492,8 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
           sourceAnswerTermsMissing: readArrayLength(sourceCoverage?.answerTerms?.missing),
           sourceAnswerPatternsMissing: readArrayLength(sourceCoverage?.answerPatterns?.missing),
           sourceEvidencePatternsMissing: readArrayLength(sourceCoverage?.evidencePatterns?.missing),
+          dimensionScores,
+          failureBuckets,
         });
       }
       return summary;
@@ -517,6 +543,10 @@ export function summarizeNaturalMissionE2eReportForValidationOps(report: unknown
       sourceResidualRiskVisible: 0,
       sourceUnsupportedClaims: 0,
       recoveryEvents: 0,
+      dimensionScoreTotal: 0,
+      dimensionScoreMax: 0,
+      lowDimensionScores: 0,
+      failureBuckets: [],
       scenarioProofs: [],
     }
   );
@@ -611,6 +641,25 @@ function readArrayLength(value: unknown): number {
 function readStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => (typeof item === "string" && item.trim() ? [item.trim()] : []));
+}
+
+function readNaturalDimensionScores(value: unknown): Record<(typeof NATURAL_DIMENSION_SCORE_KEYS)[number], number> {
+  const source = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  return Object.fromEntries(
+    NATURAL_DIMENSION_SCORE_KEYS.map((key) => [key, readDimensionScore(source[key])])
+  ) as Record<(typeof NATURAL_DIMENSION_SCORE_KEYS)[number], number>;
+}
+
+function readDimensionScore(value: unknown): number {
+  return value === 0 || value === 1 || value === 2 ? value : 0;
+}
+
+function sumNaturalDimensionScores(scores: Record<(typeof NATURAL_DIMENSION_SCORE_KEYS)[number], number>): number {
+  return NATURAL_DIMENSION_SCORE_KEYS.reduce((sum, key) => sum + scores[key], 0);
+}
+
+function mergeStringSet(current: string[] | undefined, next: string[]): string[] {
+  return [...new Set([...(current ?? []), ...next])].sort();
 }
 
 function readString(value: unknown): string | null {

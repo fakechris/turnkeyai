@@ -412,6 +412,8 @@ export interface NaturalMissionQuality {
   sourceCoverage: NaturalSourceCoverage;
   weakAnswerSignals: string[];
   failures: string[];
+  dimensionScores: NaturalMissionDimensionScores;
+  failureBuckets: NaturalMissionFailureBucket[];
 }
 
 export interface NaturalSourceCoverage {
@@ -437,6 +439,27 @@ export interface NaturalSourceCoverage {
   residualRiskVisible: boolean;
   unsupportedClaims: string[];
 }
+
+export interface NaturalMissionDimensionScores {
+  taskCompletion: 0 | 1 | 2;
+  evidenceQuality: 0 | 1 | 2;
+  toolUseAppropriateness: 0 | 1 | 2;
+  browserAuthenticity: 0 | 1 | 2;
+  subAgentIndependence: 0 | 1 | 2;
+  continuationBehavior: 0 | 1 | 2;
+  permissionCorrectness: 0 | 1 | 2;
+  timeoutCloseoutQuality: 0 | 1 | 2;
+}
+
+export type NaturalMissionFailureBucket =
+  | "runtime_lifecycle"
+  | "tool_selection"
+  | "browser_reliability"
+  | "sub_agent_runtime"
+  | "continuation"
+  | "permission"
+  | "timeout_closeout"
+  | "answer_quality";
 
 export interface NaturalMissionScenarioReport {
   scenario: NaturalMissionE2eScenario;
@@ -466,6 +489,8 @@ export interface NaturalMissionScenarioReport {
     sourceCoverage: NaturalSourceCoverage;
     weakAnswerSignals: string[];
     failures: string[];
+    dimensionScores: NaturalMissionDimensionScores;
+    failureBuckets: NaturalMissionFailureBucket[];
   };
   final: {
     bytes: number;
@@ -3677,6 +3702,26 @@ export function evaluateNaturalMissionQuality(input: {
   for (const label of sourceCoverage.answerPatterns.missing) {
     failures.push(`missing ${label}`);
   }
+  const dimensionScores = scoreNaturalMissionDimensions({
+    spec: input.spec,
+    completed,
+    stuckOrLoop,
+    reasonableToolUse,
+    browserUsed,
+    profileFallbackPolicySatisfied,
+    browserFailureBuckets,
+    subAgentCompleted,
+    approvalExercised,
+    finalAnswerHasEvidence,
+    finalAnswerUseful,
+    sourceCoverage,
+    blockingWeakAnswerSignals,
+    nonCancelledFailures,
+    recoveredFailurePolicySatisfied,
+    recoveredTimeoutPolicySatisfied,
+    sessionsContinued: input.metrics.sessions.continued,
+    toolTimeouts: input.metrics.tool.timeouts,
+  });
 
   return {
     status: failures.length === 0 ? "passed" : "failed",
@@ -3692,7 +3737,145 @@ export function evaluateNaturalMissionQuality(input: {
     sourceCoverage,
     weakAnswerSignals,
     failures,
+    dimensionScores,
+    failureBuckets: bucketNaturalMissionFailures({
+      spec: input.spec,
+      failures,
+      dimensionScores,
+      approvalsRequested: input.metrics.approvals.requested,
+      approvalsApplied: input.metrics.approvals.applied,
+      sessionsContinued: input.metrics.sessions.continued,
+    }),
   };
+}
+
+function scoreNaturalMissionDimensions(input: {
+  spec: NaturalScenarioSpec;
+  completed: boolean;
+  stuckOrLoop: boolean;
+  reasonableToolUse: boolean;
+  browserUsed: boolean;
+  profileFallbackPolicySatisfied: boolean;
+  browserFailureBuckets: Array<{ bucket: string; count: number; latestAtMs: number }>;
+  subAgentCompleted: boolean;
+  approvalExercised: boolean;
+  finalAnswerHasEvidence: boolean;
+  finalAnswerUseful: boolean;
+  sourceCoverage: NaturalSourceCoverage;
+  blockingWeakAnswerSignals: string[];
+  nonCancelledFailures: number;
+  recoveredFailurePolicySatisfied: boolean;
+  recoveredTimeoutPolicySatisfied: boolean;
+  sessionsContinued: number;
+  toolTimeouts: number;
+}): NaturalMissionDimensionScores {
+  return {
+    taskCompletion: scoreBoolean(input.completed && !input.stuckOrLoop, input.completed || !input.stuckOrLoop),
+    evidenceQuality: scoreBoolean(
+      input.finalAnswerHasEvidence &&
+        input.finalAnswerUseful &&
+        input.sourceCoverage.residualRiskVisible &&
+        input.sourceCoverage.unsupportedClaims.length === 0 &&
+        input.blockingWeakAnswerSignals.length === 0,
+      input.finalAnswerHasEvidence || input.finalAnswerUseful
+    ),
+    toolUseAppropriateness: scoreBoolean(
+      input.reasonableToolUse &&
+        (input.spec.allowToolFailure ||
+          input.nonCancelledFailures === 0 ||
+          input.recoveredFailurePolicySatisfied ||
+          input.recoveredTimeoutPolicySatisfied),
+      input.reasonableToolUse
+    ),
+    browserAuthenticity: scoreOptionalRequirement(
+      input.spec.requiresBrowser ||
+        input.spec.requiresProfileFallback === true ||
+        (input.spec.requiredBrowserFailureBuckets ?? []).length > 0,
+      input.browserUsed ||
+        input.spec.requiresProfileFallback === true ||
+        (input.spec.requiredBrowserFailureBuckets ?? []).length > 0,
+      (!input.spec.requiresBrowser || input.browserUsed) &&
+        input.profileFallbackPolicySatisfied &&
+        (input.spec.requiredBrowserFailureBuckets ?? []).every((bucket) =>
+          input.browserFailureBuckets.some((item) => item.bucket === bucket && item.count > 0)
+        )
+    ),
+    subAgentIndependence: scoreBoolean(input.subAgentCompleted, input.spec.minSpawnedSessions === 0 || input.subAgentCompleted),
+    continuationBehavior: scoreOptionalRequirement(
+      input.spec.scenario.includes("followup") || input.spec.scenario.includes("continuation"),
+      input.sessionsContinued > 0,
+      input.sessionsContinued >= (input.spec.minContinuedSessions ?? 1) && input.subAgentCompleted
+    ),
+    permissionCorrectness: scoreOptionalRequirement(input.spec.requiresApproval, input.approvalExercised, input.approvalExercised),
+    timeoutCloseoutQuality: scoreOptionalRequirement(
+      input.spec.requiresTimeout || input.toolTimeouts > 0 || input.spec.allowRecoveredTimeout === true,
+      input.toolTimeouts > 0,
+      input.recoveredTimeoutPolicySatisfied || (input.spec.allowToolFailure && input.sourceCoverage.residualRiskVisible)
+    ),
+  };
+}
+
+function scoreBoolean(full: boolean, partial: boolean): 0 | 1 | 2 {
+  if (full) return 2;
+  if (partial) return 1;
+  return 0;
+}
+
+function scoreOptionalRequirement(required: boolean, observed: boolean, full: boolean): 0 | 1 | 2 {
+  if (!required) return 2;
+  return scoreBoolean(full, observed);
+}
+
+function bucketNaturalMissionFailures(input: {
+  spec: NaturalScenarioSpec;
+  failures: string[];
+  dimensionScores: NaturalMissionDimensionScores;
+  approvalsRequested: number;
+  approvalsApplied: number;
+  sessionsContinued: number;
+}): NaturalMissionFailureBucket[] {
+  const buckets = new Set<NaturalMissionFailureBucket>();
+  if (input.dimensionScores.taskCompletion < 2 || input.failures.some((failure) => /status|stuck|loop|liveness/i.test(failure))) {
+    buckets.add("runtime_lifecycle");
+  }
+  if (input.dimensionScores.toolUseAppropriateness < 2 || input.failures.some((failure) => /tool use|missing required tool/i.test(failure))) {
+    buckets.add("tool_selection");
+  }
+  if (
+    input.dimensionScores.browserAuthenticity < 2 ||
+    input.failures.some((failure) => /browser|profile|artifact lifecycle/i.test(failure))
+  ) {
+    buckets.add("browser_reliability");
+  }
+  if (input.dimensionScores.subAgentIndependence < 2 || input.failures.some((failure) => /sub-agent/i.test(failure))) {
+    buckets.add("sub_agent_runtime");
+  }
+  if (
+    input.dimensionScores.continuationBehavior < 2 ||
+    ((input.spec.scenario.includes("followup") || input.spec.scenario.includes("continuation")) && input.sessionsContinued < 1)
+  ) {
+    buckets.add("continuation");
+  }
+  if (
+    input.dimensionScores.permissionCorrectness < 2 ||
+    (input.spec.requiresApproval && input.approvalsRequested < 1) ||
+    (input.spec.requiresApproval && input.spec.approvalDecision === undefined && input.approvalsApplied < 1)
+  ) {
+    buckets.add("permission");
+  }
+  if (
+    input.dimensionScores.timeoutCloseoutQuality < 2 ||
+    input.failures.some((failure) => /timeout|timed-out/i.test(failure))
+  ) {
+    buckets.add("timeout_closeout");
+  }
+  if (
+    input.dimensionScores.evidenceQuality < 2 ||
+    input.failures.some((failure) => /evidence|answer|risk|weak|forbidden|missing/i.test(failure))
+  ) {
+    buckets.add("answer_quality");
+  }
+  return [...buckets].sort();
 }
 
 export function evaluateNaturalSourceCoverage(input: {
@@ -4093,6 +4276,8 @@ export function buildNaturalMissionE2eJsonReport(input: {
       "no-weak-answer-signals",
       "browser-profile-fallback-policy",
       "browser-failure-bucket-policy",
+      "root-cause-dimension-scores",
+      "failure-bucket-attribution",
     ],
     status: scenarios.every((scenario) => scenario.natural.status === "passed") ? "passed" : "failed",
     startedAt: new Date(input.startedAt).toISOString(),
@@ -4220,6 +4405,8 @@ export function summarizeNaturalMissionScenarioResult(result: NaturalMissionScen
       sourceCoverage: result.quality.sourceCoverage,
       weakAnswerSignals: [...result.quality.weakAnswerSignals],
       failures: [...result.quality.failures],
+      dimensionScores: result.quality.dimensionScores,
+      failureBuckets: [...result.quality.failureBuckets],
     },
     final: {
       bytes: Buffer.byteLength(result.final.text, "utf8"),
