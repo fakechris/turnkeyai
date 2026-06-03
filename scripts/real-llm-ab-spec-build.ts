@@ -3,7 +3,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { REAL_LLM_AB_CORE_SUITE_REQUIREMENTS } from "@turnkeyai/qc-runtime/real-llm-ab-acceptance";
-import { DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS } from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
+import {
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS,
+} from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
 
 import type { RealLlmAbReportBuildSpec } from "./real-llm-ab-report-build";
 
@@ -14,7 +17,7 @@ export interface RealLlmAbSpecBuildOptions {
   requiredSuite: RealLlmAbSpecBuildSuite;
 }
 
-export type RealLlmAbSpecBuildSuite = "core" | "browser-focused";
+export type RealLlmAbSpecBuildSuite = "core" | "browser-focused" | "browser-reliability";
 
 interface NaturalMissionReportShape {
   kind?: unknown;
@@ -54,7 +57,7 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
     if (arg === "--suite") {
       const value = readValue(args, index, arg);
       if (!isRealLlmAbSpecBuildSuite(value)) {
-        throw new Error("--suite must be one of: core, browser-focused");
+        throw new Error("--suite must be one of: core, browser-focused, browser-reliability");
       }
       requiredSuite = value;
       index += 1;
@@ -105,10 +108,11 @@ export function buildRealLlmAbSpecBuildHelpText(): string {
     "TurnkeyAI real LLM A/B build-spec generator",
     "",
     "Usage:",
-    "  npm run acceptance:ab:spec -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused> --out <path>",
+    "  npm run acceptance:ab:spec -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused|browser-reliability> --out <path>",
     "",
     "The generator selects natural same-scenario runs for the requested A/B suite.",
     "core covers the full P0 natural runtime gate; browser-focused covers external and complex browser gates.",
+    "browser-reliability covers browser failure/recovery gates such as profile fallback, target/session recovery, and CDP failure closeout.",
     "Reference artifacts must be named <natural-scenario-id>.json in --reference-dir.",
   ].join("\n");
 }
@@ -195,6 +199,12 @@ interface RealLlmAbSpecRequirement {
 
 function suiteRequirements(suite: RealLlmAbSpecBuildSuite): readonly RealLlmAbSpecRequirement[] {
   if (suite === "core") return REAL_LLM_AB_CORE_SUITE_REQUIREMENTS;
+  if (suite === "browser-reliability") {
+    return DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS.map((scenarioId) => ({
+      key: scenarioId.replace(/^natural-/, ""),
+      acceptedScenarioIds: [scenarioId],
+    }));
+  }
   return DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS.map((scenarioId) => ({
     key: scenarioId.replace(/^natural-/, ""),
     acceptedScenarioIds: [scenarioId],
@@ -238,12 +248,16 @@ function requiresBrowser(scenarioId: string): boolean {
     scenarioId === "natural-browser-restart-continuation" ||
     scenarioId === "natural-browser-cold-recreation-continuation" ||
     scenarioId === "natural-browser-profile-lock-recovery" ||
+    scenarioId === "natural-browser-unavailable-closeout" ||
+    scenarioId === "natural-browser-cdp-timeout-closeout" ||
+    scenarioId === "natural-browser-detached-target-closeout" ||
+    scenarioId === "natural-browser-attach-failed-closeout" ||
     scenarioId === "natural-long-delegation"
   );
 }
 
 function isRealLlmAbSpecBuildSuite(value: string): value is RealLlmAbSpecBuildSuite {
-  return value === "core" || value === "browser-focused";
+  return value === "core" || value === "browser-focused" || value === "browser-reliability";
 }
 
 function isNaturalScenario(value: unknown): value is NaturalMissionScenarioShape {

@@ -31,7 +31,7 @@ export function parseRealLlmAbAcceptanceCheckArgs(args: string[]): RealLlmAbAcce
     if (arg === "--suite") {
       const value = readValue(args, index, arg);
       if (!isRealLlmAbRequiredSuite(value)) {
-        throw new Error("--suite must be one of: core, browser-focused");
+        throw new Error("--suite must be one of: core, browser-focused, browser-reliability");
       }
       requiredSuite = value;
       index += 1;
@@ -87,7 +87,7 @@ export function buildRealLlmAbAcceptanceCheckHelpText(): string {
     "TurnkeyAI real LLM A/B acceptance report check",
     "",
     "Usage:",
-    "  npm run acceptance:ab:check -- --json <path> [--suite <core|browser-focused>] [--markdown-out <path>]",
+    "  npm run acceptance:ab:check -- --json <path> [--suite <core|browser-focused|browser-reliability>] [--markdown-out <path>]",
     "",
     "The report must contain natural same-scenario TurnkeyAI and reference-system evidence.",
     "--suite requires the selected scenario set before treating the report as capability evidence for that slice.",
@@ -97,7 +97,7 @@ export function buildRealLlmAbAcceptanceCheckHelpText(): string {
 }
 
 function isRealLlmAbRequiredSuite(value: string): value is RealLlmAbRequiredSuite {
-  return value === "core" || value === "browser-focused";
+  return value === "core" || value === "browser-focused" || value === "browser-reliability";
 }
 
 function readValue(args: string[], index: number, arg: string): string {

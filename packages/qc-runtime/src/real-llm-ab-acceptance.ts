@@ -1,4 +1,7 @@
-import { DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS } from "./real-llm-acceptance-defaults";
+import {
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS,
+} from "./real-llm-acceptance-defaults";
 
 export type RealLlmAbSystemId = "turnkeyai" | "reference";
 
@@ -146,7 +149,7 @@ export interface RealLlmAbAcceptanceValidation {
   summary: RealLlmAbAcceptanceSummary | null;
 }
 
-export type RealLlmAbRequiredSuite = "core" | "browser-focused";
+export type RealLlmAbRequiredSuite = "core" | "browser-focused" | "browser-reliability";
 
 export interface RealLlmAbAcceptanceValidationOptions {
   requiredSuite?: RealLlmAbRequiredSuite;
@@ -219,6 +222,15 @@ export const REAL_LLM_AB_CORE_SUITE_REQUIREMENTS = [
 
 export const REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS =
   DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS.map((scenarioId) => ({
+    key: scenarioId.replace(/^natural-/, ""),
+    acceptedScenarioIds: [scenarioId],
+  })) as readonly {
+    key: string;
+    acceptedScenarioIds: readonly string[];
+  }[];
+
+export const REAL_LLM_AB_BROWSER_RELIABILITY_SUITE_REQUIREMENTS =
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS.map((scenarioId) => ({
     key: scenarioId.replace(/^natural-/, ""),
     acceptedScenarioIds: [scenarioId],
   })) as readonly {
@@ -754,6 +766,8 @@ function requiredSuiteRequirements(suite: RealLlmAbRequiredSuite): readonly {
       return REAL_LLM_AB_CORE_SUITE_REQUIREMENTS;
     case "browser-focused":
       return REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS;
+    case "browser-reliability":
+      return REAL_LLM_AB_BROWSER_RELIABILITY_SUITE_REQUIREMENTS;
     default: {
       const exhaustive: never = suite;
       return exhaustive;

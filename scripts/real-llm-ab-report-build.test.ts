@@ -53,6 +53,23 @@ test("real LLM A/B report builder parses args and help", () => {
       "/tmp/spec.json",
       "--out",
       "/tmp/report.json",
+      "--check",
+      "--suite",
+      "browser-reliability",
+    ]),
+    {
+      specPath: "/tmp/spec.json",
+      outPath: "/tmp/report.json",
+      check: true,
+      requiredSuite: "browser-reliability",
+    }
+  );
+  assert.deepEqual(
+    parseRealLlmAbReportBuildArgs([
+      "--spec",
+      "/tmp/spec.json",
+      "--out",
+      "/tmp/report.json",
       "--markdown-out",
       "/tmp/report.md",
     ]),
@@ -66,6 +83,7 @@ test("real LLM A/B report builder parses args and help", () => {
   assert.deepEqual(parseRealLlmAbReportBuildArgs(["--help"]), { help: true });
   assert.match(buildRealLlmAbReportBuildHelpText(), /real LLM A\/B report builder/);
   assert.match(buildRealLlmAbReportBuildHelpText(), /browser-focused/);
+  assert.match(buildRealLlmAbReportBuildHelpText(), /browser-reliability/);
   assert.match(buildRealLlmAbReportBuildHelpText(), /--markdown-out/);
   assert.throws(() => parseRealLlmAbReportBuildArgs(["--spec", "/tmp/spec.json"]), /missing required --out/);
   assert.throws(
@@ -74,7 +92,7 @@ test("real LLM A/B report builder parses args and help", () => {
   );
   assert.throws(
     () => parseRealLlmAbReportBuildArgs(["--spec", "/tmp/spec.json", "--out", "/tmp/report.json", "--suite", "focused"]),
-    /--suite must be one of: core, browser-focused/
+    /--suite must be one of: core, browser-focused, browser-reliability/
   );
 });
 
@@ -316,6 +334,64 @@ test("real LLM A/B report builder CLI checks the browser-focused suite", async (
   }
 });
 
+test("real LLM A/B report builder CLI checks the browser-reliability suite", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
+  const previousExitCode = process.exitCode;
+  const scenarios = [
+    "natural-browser-followup-continuation",
+    "natural-browser-restart-continuation",
+    "natural-browser-cold-recreation-continuation",
+    "natural-browser-profile-lock-recovery",
+    "natural-browser-unavailable-closeout",
+    "natural-browser-cdp-timeout-closeout",
+    "natural-browser-detached-target-closeout",
+    "natural-browser-attach-failed-closeout",
+  ].map((scenario) => ({
+    scenario,
+    prompt: `请运行 ${scenario} 的自然浏览器可靠性验收，保留证据、风险和下一步动作。`,
+  }));
+  try {
+    process.exitCode = undefined;
+    writeBrowserFocusedFixtureFiles(dir, { scenarios });
+    writeFileSync(
+      path.join(dir, "spec.json"),
+      JSON.stringify({
+        turnkeyaiNaturalReportPath: "turnkeyai-natural.json",
+        generatedAtMs: 1,
+        scenarios: scenarios.map((scenario) => ({
+          scenarioId: scenario.scenario,
+          turnkeyaiScenarioId: scenario.scenario,
+          prompt: scenario.prompt,
+          requiresBrowser: true,
+          referenceArtifactPath: `${scenario.scenario}.json`,
+        })),
+      })
+    );
+
+    await runRealLlmAbReportBuildCli([
+      "--spec",
+      path.join(dir, "spec.json"),
+      "--out",
+      path.join(dir, "report.json"),
+      "--markdown-out",
+      path.join(dir, "report.md"),
+      "--suite",
+      "browser-reliability",
+      "--check",
+    ]);
+
+    const report = JSON.parse(readFileSync(path.join(dir, "report.json"), "utf8")) as unknown;
+    const markdown = readFileSync(path.join(dir, "report.md"), "utf8");
+    assert.equal(validateRealLlmAbAcceptanceReport(report, { requiredSuite: "browser-reliability" }).status, "passed");
+    assert.match(markdown, /Capability: focused capability proven/);
+    assert.match(markdown, /Status: passed/);
+    assert.equal(process.exitCode, undefined);
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B report builder rejects JSON and Markdown output path collisions", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
@@ -485,8 +561,13 @@ function writeFixtureFiles(
   );
 }
 
-function writeBrowserFocusedFixtureFiles(dir: string): void {
-  const scenarios = [
+function writeBrowserFocusedFixtureFiles(
+  dir: string,
+  options: {
+    scenarios?: Array<{ scenario: string; prompt: string }>;
+  } = {}
+): void {
+  const scenarios = options.scenarios ?? [
     {
       scenario: "natural-browser-external-page-review",
       prompt: "请查看外部页面，判断当前主要风险、证据和建议动作。",

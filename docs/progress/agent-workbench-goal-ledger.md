@@ -8464,3 +8464,99 @@ Convergence question:
 - Next required gate: continue P0 with broader browser reliability and
   production-natural scenarios beyond the core fixture suite before claiming
   general production-grade stability.
+
+## 2026-06-04 03:13 CST - Browser Reliability Natural Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added a first-class `browser-reliability` real LLM A/B suite selector. It
+  covers browser follow-up/restart/cold recreation, profile-lock fallback, CDP
+  unavailable, CDP command timeout, detached target, and attach failure
+  closeout scenarios.
+- Added `mission:e2e:natural:browser-reliability` so the full natural browser
+  reliability matrix can be run without hand-copying scenario names.
+- This is deliberately an acceptance-gate improvement plus real natural
+  evidence. It does not change runtime behavior and does not weaken prompts.
+
+Result Quality:
+- Fresh natural real LLM browser reliability run passed 8/8:
+  - `natural-browser-followup-continuation`: mission `msn.mpyfsaai.1`,
+    tools `3/3`, sessions `1/1`, browser `yes`, profile fallbacks `0`,
+    browser buckets `none`, weak signals `none`.
+  - `natural-browser-restart-continuation`: mission `msn.mpyfu2oh.2`,
+    tools `3/3`, sessions `1/1`, browser `yes`, profile fallbacks `0`,
+    browser buckets `none`, weak signals `none`.
+  - `natural-browser-cold-recreation-continuation`: mission `msn.mpyfvusb.1`,
+    tools `3/3`, sessions `1/1`, browser `yes`, profile fallbacks `0`,
+    browser buckets `session_not_found=1`, weak signals `none`.
+  - `natural-browser-profile-lock-recovery`: mission `msn.mpyfxt7s.1`,
+    tools `1/1`, sessions `1/0`, browser `yes`, profile fallbacks `1`,
+    browser buckets `none`, weak signals `none`.
+  - `natural-browser-unavailable-closeout`: mission `msn.mpyfygl8.1`,
+    tools `1/1`, sessions `1/0`, browser `yes`, profile fallbacks `0`,
+    browser buckets `browser_cdp_unavailable=1`, weak signals
+    `tool unavailable fallback`.
+  - `natural-browser-cdp-timeout-closeout`: mission `msn.mpyfyxrj.1`,
+    browser `yes`, profile fallbacks `0`, browser buckets
+    `cdp_command_timeout=1`, weak signals `none`.
+  - `natural-browser-detached-target-closeout`: mission `msn.mpyfzl49.1`,
+    tools `2/2`, sessions `1/0`, browser `yes`, profile fallbacks `0`,
+    browser buckets `detached_target=1`, weak signals `none`.
+  - `natural-browser-attach-failed-closeout`: mission `msn.mpyg0h13.1`,
+    tools `1/1`, sessions `1/0`, browser `yes`, profile fallbacks `0`,
+    browser buckets `attach_failed=1`, weak signals `tool unavailable
+    fallback`.
+- Every scenario reported `natural=passed`, stuck/loop `false`, reasonable
+  tool use `true`, final evidence `true`, and final usefulness `true`.
+
+Workbench UX:
+- No UI changed.
+- Workbench replay ordering, markdown rendering, and user-visible thought
+  process remain P1. This checkpoint only proves the underlying browser
+  reliability event chain and result quality for this natural matrix.
+
+Browser Reliability:
+- This checkpoint materially improves browser reliability evidence because it
+  covers recovery and closeout paths that were outside the core A/B suite:
+  restart continuation, cold browser-session recreation, profile-lock fallback,
+  unavailable browser CDP, CDP timeout, detached target, and attach failure.
+- It still does not prove authenticated-site reliability, hostile anti-bot
+  pages, desktop control, or long-lived multi-hour browser sessions.
+
+Acceptance Evidence:
+- Focused suite tests:
+  `npx tsx --test packages/qc-runtime/src/real-llm-acceptance-defaults.test.ts
+  packages/qc-runtime/src/real-llm-ab-acceptance.test.ts
+  scripts/real-llm-ab-spec-build.test.ts
+  scripts/real-llm-ab-report-build.test.ts
+  scripts/real-llm-ab-acceptance-check.test.ts`
+  passed.
+- Typecheck:
+  `npm run typecheck` passed.
+- Natural browser reliability run:
+  `npm run mission:e2e:natural:browser-reliability -- --model-catalog
+  models.local.json --scenario-timeout-ms 360000 --json
+  artifacts/evals/20260604-browser-reliability-suite/turnkeyai-natural-browser-reliability.json`
+  passed.
+- Same-scenario A/B for `browser-reliability` was not run because the local
+  reference evidence set is incomplete; only a profile-lock reference artifact
+  was found. No comparative reliability parity claim is made here.
+- The natural JSON report remains local evidence and is not committed.
+
+Regression Risk:
+- The new suite can fail future PRs if any reliability scenario is missing,
+  which is intended. It turns scattered browser failure evidence into a single
+  explicit gate.
+- The main risk is over-claiming: this is natural browser reliability evidence,
+  not full browser-reliability A/B parity. The ledger keeps that distinction.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes, for browser reliability under natural prompts; unknown for comparative
+  browser-reliability parity.
+- Evidence: the new browser reliability natural gate passed 8/8 with real
+  failure/recovery buckets and no stuck/loop behavior.
+- Next required gate: collect/provide same-scenario reference artifacts for the
+  `browser-reliability` suite, then run
+  `acceptance:ab:spec/build --suite browser-reliability`.

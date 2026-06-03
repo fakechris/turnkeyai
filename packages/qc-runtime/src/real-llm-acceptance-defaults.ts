@@ -62,6 +62,17 @@ export const DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS = [
   "natural-memory-recall",
 ] as const;
 
+export const DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS = [
+  "natural-browser-followup-continuation",
+  "natural-browser-restart-continuation",
+  "natural-browser-cold-recreation-continuation",
+  "natural-browser-profile-lock-recovery",
+  "natural-browser-unavailable-closeout",
+  "natural-browser-cdp-timeout-closeout",
+  "natural-browser-detached-target-closeout",
+  "natural-browser-attach-failed-closeout",
+] as const;
+
 export const DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS = [
   "natural-browser-external-page-review",
   "natural-browser-complex-page-review",
