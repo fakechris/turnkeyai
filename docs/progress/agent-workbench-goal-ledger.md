@@ -7432,3 +7432,40 @@ Convergence question:
 - If no, next required gate: build the same-scenario A/B report from the
   current passing core artifact and the reference workbench evidence, then use
   the losses to pick the next P0 runtime, prompt, or browser reliability PR.
+
+## 2026-06-03 15:33 CST - Timeout Continuation Guidance Recovery
+
+Direction: converging
+
+Execution Kernel:
+- Runtime synthesis now preserves user-visible timeout continuation guidance after an explicit `sessions_send` follow-up succeeds, even when the raw timeout result is no longer present in the final synthesis context.
+- The suffix is gated on an explicit continuation request plus actual `sessions_send` execution, and prompt fallback checks are bounded to the latest prompt suffix to avoid scanning large task prompts.
+
+Result Quality:
+- The natural timeout follow-up row moved from a weak closeout failure to a useful evidence-backed answer with explicit resumability guidance.
+- This does not prove global production readiness; it proves one P0 continuation/timeout closeout failure class improved under real LLM acceptance.
+
+Workbench UX:
+- No new UI surface changed. The user-visible improvement is in the mission answer itself: a recovered timeout continuation now tells the user how to interpret the prior timeout and how to continue/retry safely.
+- Remaining UX risk is that replay/thought-process rendering still needs to make continuation state and residual risk easy to inspect in the workbench.
+
+Browser Reliability:
+- No browser transport or profile-isolation behavior changed in this checkpoint.
+- Browser reliability remains covered by the separate natural browser rows; this checkpoint only touches session continuation synthesis after timeout recovery.
+
+Acceptance Evidence:
+- PR: #442, merged into `main` as `48a1eb6b6b786748f23f61ce8352a62601e9c20b`.
+- Local verification before merge: `npm test -- --runInBand packages/role-runtime/src/llm-response-generator.test.ts`, `npm run typecheck`, `npm run build`, and `git diff --check` all passed.
+- Natural real LLM E2E: `natural-timeout-followup-continuation` passed, mission `msn.mpxq3ake.1`, thread `THREAD-1780470375997-1`.
+- Natural real LLM E2E: `natural-memory-recall` passed, mission `msn.mpxqgdpz.1`, thread `THREAD-1780470986614-1`.
+- CI on PR #442 passed `test`, `build`, and `typecheck` before merge.
+
+Regression Risk:
+- The main risk was false-positive continuation guidance on non-timeout follow-ups. Review found this and the predicate was tightened to require structured timeout evidence or explicit prior/session/source timeout wording.
+- The regression test now asserts that `sessions_send` executed, not only that the final answer contains the suffix.
+- Remaining gap: this checkpoint used focused natural rows plus earlier same-run core evidence, not a fresh full natural core matrix after #442.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes, narrowly for timeout continuation closeout behavior.
+- Evidence: a real natural timeout-followup scenario that previously failed answer-quality gates passed after the runtime change.
+- If no, next required gate: run the full natural core matrix and same-scenario A/B gate before broad capability claims.
