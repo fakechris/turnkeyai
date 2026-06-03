@@ -1237,6 +1237,10 @@ test("sessions_spawn does not require mutation approval for read-only dashboard 
       "send-next-action",
       "Open the rendered dashboard, review the queue status, and send the recommended next action to the operator with residual risk.",
     ],
+    [
+      "send-back-next-action",
+      "Open the rendered dashboard, review the queue status, and send back the recommended next action to the operator with residual risk.",
+    ],
   ] as const) {
     let spawnCalled = false;
     let permissionRequested = false;

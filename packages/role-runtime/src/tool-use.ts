@@ -923,7 +923,7 @@ function isReadOnlyBrowserActionVerbContext(input: string, verb: string, index: 
     const suffix = input
       .slice(Math.max(0, index + verb.length), Math.max(0, index + verb.length + 120))
       .toLowerCase();
-    return /^\s+(?:a\s+|an\s+|the\s+|your\s+|back\s+)?(?:(?:recommended\s+)?next\s+actions?|answer|summary|summar(?:y|ies)|report|findings|review|recommendation|recommendations|result|results|evidence)\b[\s\S]{0,60}\b(?:to|for)\s+(?:the\s+)?(?:operator|user|lead|requester|product leader|product lead)\b/.test(
+    return /^\s+(?:back\s+)?(?:a\s+|an\s+|the\s+|your\s+)?(?:(?:recommended\s+)?next\s+actions?|answer|summary|summar(?:y|ies)|report|findings|review|recommendation|recommendations|result|results|evidence)\b[\s\S]{0,60}\b(?:to|for)\s+(?:the\s+)?(?:operator|user|lead|requester|product leader|product lead)\b/.test(
       suffix
     );
   }
