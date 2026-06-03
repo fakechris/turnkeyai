@@ -106,6 +106,34 @@ describe("MissionCompletionEvaluator", () => {
     });
   });
 
+  it("blocks stale pending-approval final answers after approvals clear", () => {
+    const decision = evaluateMissionCompletion({
+      mission: { ...mission, pendingApprovals: 0 },
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Submit the local form after approval.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content:
+            "**Pending operator approval.** Awaiting decision before executing the dry-run browser form submission.",
+        },
+      ],
+      roleRuns: [],
+    });
+
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "incomplete_final_answer");
+      assert.deepEqual(decision.patch, { status: "blocked", blockers: 1 });
+      assert.equal(decision.recovery?.kind, "incomplete_final_answer");
+      assert.equal(decision.recovery?.reason, "stale_pending_approval");
+    }
+  });
+
   it("keeps archived and draft missions terminal even if approvals remain", () => {
     for (const status of ["archived", "draft"] as const) {
       const decision = evaluateMissionCompletion({
