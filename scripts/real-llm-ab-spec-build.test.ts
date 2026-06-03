@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   buildRealLlmAbCoreSpec,
+  buildRealLlmAbSpec,
   buildRealLlmAbSpecBuildHelpText,
   parseRealLlmAbSpecBuildArgs,
   runRealLlmAbSpecBuildCli,
@@ -19,6 +20,11 @@ const CORE_NATURAL_SCENARIOS = [
   "natural-long-delegation",
   "natural-timeout-followup-continuation",
   "natural-memory-recall",
+] as const;
+
+const BROWSER_FOCUSED_NATURAL_SCENARIOS = [
+  "natural-browser-external-page-review",
+  "natural-browser-complex-page-review",
 ] as const;
 
 test("real LLM A/B spec builder parses args and help", () => {
@@ -42,6 +48,25 @@ test("real LLM A/B spec builder parses args and help", () => {
   );
   assert.deepEqual(parseRealLlmAbSpecBuildArgs(["--help"]), { help: true });
   assert.match(buildRealLlmAbSpecBuildHelpText(), /A\/B build-spec generator/);
+  assert.match(buildRealLlmAbSpecBuildHelpText(), /browser-focused/);
+  assert.deepEqual(
+    parseRealLlmAbSpecBuildArgs([
+      "--natural-report",
+      "/tmp/natural.json",
+      "--reference-dir",
+      "/tmp/reference",
+      "--suite",
+      "browser-focused",
+      "--out",
+      "/tmp/spec.json",
+    ]),
+    {
+      naturalReportPath: "/tmp/natural.json",
+      referenceDir: "/tmp/reference",
+      requiredSuite: "browser-focused",
+      outPath: "/tmp/spec.json",
+    }
+  );
   assert.throws(() => parseRealLlmAbSpecBuildArgs(["--natural-report", "/tmp/natural.json"]), /missing required --reference-dir/);
   assert.throws(
     () =>
@@ -55,7 +80,7 @@ test("real LLM A/B spec builder parses args and help", () => {
         "--out",
         "/tmp/spec.json",
       ]),
-    /--suite must be core/
+    /--suite must be one of: core, browser-focused/
   );
 });
 
@@ -94,6 +119,34 @@ test("real LLM A/B spec builder emits the full core suite from a natural report"
   }
 });
 
+test("real LLM A/B spec builder emits the browser-focused suite from a natural report", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-spec-"));
+  try {
+    const { naturalReportPath, referenceDir, outPath } = writeCoreFixture(dir, {
+      scenarios: BROWSER_FOCUSED_NATURAL_SCENARIOS,
+    });
+    const spec = buildRealLlmAbSpec({
+      naturalReportPath,
+      referenceDir,
+      outPath,
+      suite: "browser-focused",
+      generatedAtMs: 1,
+    });
+
+    assert.equal(spec.kind, "turnkeyai.real-llm-ab-acceptance.build-spec");
+    assert.equal(spec.generatedAtMs, 1);
+    assert.deepEqual(
+      spec.scenarios.map((scenario) => scenario.scenarioId),
+      [...BROWSER_FOCUSED_NATURAL_SCENARIOS]
+    );
+    assert.ok(spec.scenarios.every((scenario) => scenario.requiresBrowser === true));
+    assert.ok(spec.scenarios.every((scenario) => scenario.promptPolicy?.naturalPrompt === true));
+    assert.ok(spec.scenarios.every((scenario) => scenario.referenceArtifactPath.endsWith(`${scenario.scenarioId}.json`)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B spec builder CLI writes a core build spec", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-spec-"));
   try {
@@ -115,6 +168,29 @@ test("real LLM A/B spec builder CLI writes a core build spec", async () => {
   }
 });
 
+test("real LLM A/B spec builder CLI writes a browser-focused build spec", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-spec-"));
+  try {
+    const { naturalReportPath, referenceDir, outPath } = writeCoreFixture(dir, {
+      scenarios: BROWSER_FOCUSED_NATURAL_SCENARIOS,
+    });
+    await runRealLlmAbSpecBuildCli([
+      "--natural-report",
+      naturalReportPath,
+      "--reference-dir",
+      referenceDir,
+      "--suite",
+      "browser-focused",
+      "--out",
+      outPath,
+    ]);
+    const spec = JSON.parse(readFileSync(outPath, "utf8")) as { scenarios: unknown[] };
+    assert.equal(spec.scenarios.length, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B spec builder rejects incomplete natural or reference evidence", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-spec-"));
   try {
@@ -131,6 +207,19 @@ test("real LLM A/B spec builder rejects incomplete natural or reference evidence
     assert.throws(
       () => buildRealLlmAbCoreSpec({ naturalReportPath: complete.naturalReportPath, referenceDir: complete.referenceDir, outPath }),
       /missing reference artifact for natural-memory-recall/
+    );
+
+    const focused = writeCoreFixture(dir, { scenarios: BROWSER_FOCUSED_NATURAL_SCENARIOS });
+    rmSync(path.join(focused.referenceDir, "natural-browser-complex-page-review.json"), { force: true });
+    assert.throws(
+      () =>
+        buildRealLlmAbSpec({
+          naturalReportPath: focused.naturalReportPath,
+          referenceDir: focused.referenceDir,
+          outPath,
+          suite: "browser-focused",
+        }),
+      /missing reference artifact for natural-browser-complex-page-review/
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

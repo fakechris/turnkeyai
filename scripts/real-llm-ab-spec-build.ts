@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { REAL_LLM_AB_CORE_SUITE_REQUIREMENTS } from "@turnkeyai/qc-runtime/real-llm-ab-acceptance";
+import { DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS } from "@turnkeyai/qc-runtime/real-llm-acceptance-defaults";
 
 import type { RealLlmAbReportBuildSpec } from "./real-llm-ab-report-build";
 
@@ -10,8 +11,10 @@ export interface RealLlmAbSpecBuildOptions {
   naturalReportPath: string;
   referenceDir: string;
   outPath: string;
-  requiredSuite: "core";
+  requiredSuite: RealLlmAbSpecBuildSuite;
 }
+
+export type RealLlmAbSpecBuildSuite = "core" | "browser-focused";
 
 interface NaturalMissionReportShape {
   kind?: unknown;
@@ -30,7 +33,7 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
   let naturalReportPath: string | undefined;
   let referenceDir: string | undefined;
   let outPath: string | undefined;
-  let requiredSuite: "core" | undefined;
+  let requiredSuite: RealLlmAbSpecBuildSuite | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--natural-report") {
@@ -50,8 +53,8 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
     }
     if (arg === "--suite") {
       const value = readValue(args, index, arg);
-      if (value !== "core") {
-        throw new Error("--suite must be core");
+      if (!isRealLlmAbSpecBuildSuite(value)) {
+        throw new Error("--suite must be one of: core, browser-focused");
       }
       requiredSuite = value;
       index += 1;
@@ -85,10 +88,11 @@ export async function runRealLlmAbSpecBuildCli(args: string[]): Promise<void> {
     console.log(buildRealLlmAbSpecBuildHelpText());
     return;
   }
-  const spec = buildRealLlmAbCoreSpec({
+  const spec = buildRealLlmAbSpec({
     naturalReportPath: options.naturalReportPath,
     referenceDir: options.referenceDir,
     outPath: options.outPath,
+    suite: options.requiredSuite,
   });
   const resolvedOutPath = path.resolve(options.outPath);
   mkdirSync(path.dirname(resolvedOutPath), { recursive: true });
@@ -101,17 +105,42 @@ export function buildRealLlmAbSpecBuildHelpText(): string {
     "TurnkeyAI real LLM A/B build-spec generator",
     "",
     "Usage:",
-    "  npm run acceptance:ab:spec -- --natural-report <path> --reference-dir <dir> --suite core --out <path>",
+    "  npm run acceptance:ab:spec -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused> --out <path>",
     "",
-    "The generator selects one natural scenario for every core A/B requirement.",
+    "The generator selects natural same-scenario runs for the requested A/B suite.",
+    "core covers the full P0 natural runtime gate; browser-focused covers external and complex browser gates.",
     "Reference artifacts must be named <natural-scenario-id>.json in --reference-dir.",
   ].join("\n");
+}
+
+export function buildRealLlmAbSpec(input: {
+  naturalReportPath: string;
+  referenceDir: string;
+  outPath: string;
+  suite: RealLlmAbSpecBuildSuite;
+  generatedAtMs?: number;
+}): RealLlmAbReportBuildSpec {
+  return buildRealLlmAbSpecForRequirements({
+    ...input,
+    requirements: suiteRequirements(input.suite),
+  });
 }
 
 export function buildRealLlmAbCoreSpec(input: {
   naturalReportPath: string;
   referenceDir: string;
   outPath: string;
+  generatedAtMs?: number;
+}): RealLlmAbReportBuildSpec {
+  return buildRealLlmAbSpec({ ...input, suite: "core" });
+}
+
+function buildRealLlmAbSpecForRequirements(input: {
+  naturalReportPath: string;
+  referenceDir: string;
+  outPath: string;
+  suite: RealLlmAbSpecBuildSuite;
+  requirements: readonly RealLlmAbSpecRequirement[];
   generatedAtMs?: number;
 }): RealLlmAbReportBuildSpec {
   const naturalReportPath = path.resolve(input.naturalReportPath);
@@ -127,10 +156,10 @@ export function buildRealLlmAbCoreSpec(input: {
       naturalScenarios.set(readString(scenario.scenario)!, scenario);
     }
   }
-  const scenarios = REAL_LLM_AB_CORE_SUITE_REQUIREMENTS.map((requirement) => {
+  const scenarios = input.requirements.map((requirement) => {
     const naturalScenario = findRequirementScenario(naturalScenarios, requirement.acceptedScenarioIds);
     if (!naturalScenario) {
-      throw new Error(`natural report is missing core A/B scenario: ${requirement.key}`);
+      throw new Error(`natural report is missing ${input.suite} A/B scenario: ${requirement.key}`);
     }
     const scenarioId = readString(naturalScenario.scenario)!;
     const referenceArtifactPath = path.join(referenceDir, `${scenarioId}.json`);
@@ -157,6 +186,19 @@ export function buildRealLlmAbCoreSpec(input: {
     turnkeyaiNaturalReportPath: toRelativePath(outDir, naturalReportPath),
     scenarios,
   };
+}
+
+interface RealLlmAbSpecRequirement {
+  key: string;
+  acceptedScenarioIds: readonly string[];
+}
+
+function suiteRequirements(suite: RealLlmAbSpecBuildSuite): readonly RealLlmAbSpecRequirement[] {
+  if (suite === "core") return REAL_LLM_AB_CORE_SUITE_REQUIREMENTS;
+  return DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS.map((scenarioId) => ({
+    key: scenarioId.replace(/^natural-/, ""),
+    acceptedScenarioIds: [scenarioId],
+  }));
 }
 
 function findRequirementScenario(
@@ -190,12 +232,18 @@ function requiresBrowser(scenarioId: string): boolean {
   return (
     scenarioId === "natural-browser-dynamic-page" ||
     scenarioId === "natural-browser-dashboard-task" ||
+    scenarioId === "natural-browser-external-page-review" ||
+    scenarioId === "natural-browser-complex-page-review" ||
     scenarioId === "natural-browser-followup-continuation" ||
     scenarioId === "natural-browser-restart-continuation" ||
     scenarioId === "natural-browser-cold-recreation-continuation" ||
     scenarioId === "natural-browser-profile-lock-recovery" ||
     scenarioId === "natural-long-delegation"
   );
+}
+
+function isRealLlmAbSpecBuildSuite(value: string): value is RealLlmAbSpecBuildSuite {
+  return value === "core" || value === "browser-focused";
 }
 
 function isNaturalScenario(value: unknown): value is NaturalMissionScenarioShape {
