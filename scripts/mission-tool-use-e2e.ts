@@ -4691,8 +4691,10 @@ function hasTimedOutToolResultEvidenceSummary(event: ActivityEvent): boolean {
       status?: unknown;
       evidence_available?: unknown;
       evidence_summary?: unknown;
-    };
+    } | null;
     return (
+      parsed !== null &&
+      typeof parsed === "object" &&
       parsed.status === "timeout" &&
       parsed.evidence_available === true &&
       typeof parsed.evidence_summary === "string" &&
