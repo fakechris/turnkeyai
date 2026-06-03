@@ -1247,6 +1247,48 @@ describe("mission tool-use e2e report", () => {
     assert.ok(quality.failures.includes("forbidden unsupported rendered queue depth"));
   });
 
+  it("counts recommendation wording as the recommend answer term without weakening evidence checks", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-comparison-research", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+      }),
+      requiredAnswerTerms: ["Alpha", "Beta", "$19", "$29", "recommend", "risk"],
+    };
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.final.text = [
+      "Vendor Alpha costs $19 per seat and has a risk around its limited API integration catalog.",
+      "Vendor Beta costs $29 per workspace and its risk is that browser control needs a separate connector.",
+      "The recommendation is to choose Alpha for a lower-cost browser automation trial, while choosing Beta when approval workflows matter more.",
+      "Residual risk: user scale and broader integration depth remain not verified from the supplied sources.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.sourceCoverage.answerTerms, {
+      covered: 6,
+      total: 6,
+      missing: [],
+    });
+    assert.equal(quality.finalAnswerHasEvidence, true);
+    assert.equal(quality.status, "passed");
+  });
+
   it("fails natural quality when completed browser evidence is degraded or unverified", () => {
     const result = fakeNaturalResult();
     const spec = {

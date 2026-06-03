@@ -1236,7 +1236,7 @@ function appendBrowserApprovalContext(
     `- The parent runtime approval is granted and the permission cache is already applied for scoped browser action ${context.action}.`,
     `- Scope: ${context.scope}.`,
     ...(context.cacheKey ? [`- Permission cache key: ${context.cacheKey}.`] : []),
-    "- Perform only this approved scoped browser action, then verify the browser result.",
+    ...approvedBrowserActionInstructions(context),
   ].join("\n");
 }
 
@@ -1247,6 +1247,17 @@ function sanitizeApprovedBrowserTaskForSubAgent(task: string): string {
     .filter((line) => line.length > 0 && !isParentApprovalInstruction(line));
   const cleaned = keptLines.join("\n").trim();
   return cleaned || task;
+}
+
+function approvedBrowserActionInstructions(context: BrowserSideEffectApprovalContext): string[] {
+  if (context.action === "browser.form.submit") {
+    return [
+      "- Required approved action: submit the local browser form under this approval.",
+      "- Use browser_open and browser_snapshot as needed, then use browser_act on the submit control with submit=true.",
+      "- Do not stop after inspection; verify the post-submit browser result before returning.",
+    ];
+  }
+  return ["- Perform only this approved scoped browser action, then verify the browser result."];
 }
 
 function isParentApprovalInstruction(line: string): boolean {
