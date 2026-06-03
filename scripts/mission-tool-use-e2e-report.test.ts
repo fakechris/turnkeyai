@@ -665,6 +665,7 @@ describe("mission tool-use e2e report", () => {
         orchestrationUrl: "http://127.0.0.1/local-orchestration",
         bridgeUrl: "http://127.0.0.1/local-bridge",
         productSignalsUrl: "http://127.0.0.1/local-signals",
+        externalPageUrl: "https://local.example/external",
       },
       {
         TURNKEYAI_NATURAL_ALPHA_URL: "http://shared.test/vendor-alpha",
@@ -677,6 +678,7 @@ describe("mission tool-use e2e report", () => {
         TURNKEYAI_NATURAL_ORCHESTRATION_URL: "http://shared.test/product-orchestration",
         TURNKEYAI_NATURAL_BRIDGE_URL: "http://shared.test/product-bridge",
         TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL: "http://shared.test/product-signals",
+        TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL: "https://news.ycombinator.com/",
       }
     );
 
@@ -701,6 +703,26 @@ describe("mission tool-use e2e report", () => {
     const cancelResume = buildNaturalScenarioSpec("natural-cancel-followup-continuation", fixture);
     assert.match(cancelResume.desc, /http:\/\/shared\.test\/cancel-resume/);
 
+    const external = buildNaturalScenarioSpec("natural-browser-external-page-review", fixture);
+    assert.match(external.desc, /https:\/\/news\.ycombinator\.com\//);
+    assert.equal(external.requiresBrowser, true);
+    assert.equal(external.requiresApproval, false);
+    assert.ok(external.requiredAnswerTerms.includes("Hacker News"));
+    assert.ok(
+      (external.requiredEvidencePatterns ?? []).some((pattern) => pattern.label.toLowerCase().includes("hacker news")),
+    );
+
+    const overriddenExternal = buildNaturalScenarioSpec("natural-browser-external-page-review", {
+      ...fixture,
+      externalPageUrl: "https://example.com/status",
+    });
+    assert.match(overriddenExternal.desc, /https:\/\/example\.com\/status/);
+    assert.equal(overriddenExternal.requiredAnswerTerms.includes("Hacker News"), false);
+    assert.equal(
+      (overriddenExternal.requiredEvidencePatterns ?? []).some((pattern) => pattern.label.toLowerCase().includes("hacker news")),
+      false,
+    );
+
     assert.equal(fixture.dynamicUrl, "http://shared.test/dynamic-dashboard");
   });
 
@@ -720,6 +742,7 @@ describe("mission tool-use e2e report", () => {
         orchestrationUrl: "http://127.0.0.1/local-orchestration",
         bridgeUrl: "http://127.0.0.1/local-bridge",
         productSignalsUrl: "http://127.0.0.1/local-signals",
+        externalPageUrl: "https://local.example/external",
       },
       {
         TURNKEYAI_NATURAL_BROWSER_URL: "http://shared.test/browser-dashboard",
@@ -728,6 +751,40 @@ describe("mission tool-use e2e report", () => {
 
     const browser = buildNaturalScenarioSpec("natural-browser-dynamic-page", fixture);
     assert.match(browser.desc, /http:\/\/shared\.test\/browser-dashboard/);
+  });
+
+  it("rejects credentialed or fragment-bearing natural fixture URL overrides", () => {
+    const fixture = {
+      server: {} as never,
+      basicUrl: "http://127.0.0.1/local-fixture",
+      alphaUrl: "http://127.0.0.1/local-alpha",
+      betaUrl: "http://127.0.0.1/local-beta",
+      slowUrl: "http://127.0.0.1/local-slow",
+      cancelResumeUrl: "http://127.0.0.1/local-cancel-resume",
+      cancelResumeStateUrl: "http://127.0.0.1/local-cancel-state",
+      approvalUrl: "http://127.0.0.1/local-approval",
+      dynamicUrl: "http://127.0.0.1/local-dynamic",
+      dashboardUrl: "http://127.0.0.1/local-dashboard",
+      orchestrationUrl: "http://127.0.0.1/local-orchestration",
+      bridgeUrl: "http://127.0.0.1/local-bridge",
+      productSignalsUrl: "http://127.0.0.1/local-signals",
+      externalPageUrl: "https://local.example/external",
+    };
+
+    assert.throws(
+      () =>
+        applyNaturalFixtureUrlOverrides(fixture, {
+          TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL: "https://user:secret@example.com/",
+        }),
+      /must not include URL credentials/,
+    );
+    assert.throws(
+      () =>
+        applyNaturalFixtureUrlOverrides(fixture, {
+          TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL: "https://example.com/#token",
+        }),
+      /must not include a URL fragment/,
+    );
   });
 
   it("summarizes natural acceptance evidence without treating markers as the gate", () => {
