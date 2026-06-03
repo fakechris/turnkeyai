@@ -2023,7 +2023,7 @@ function countCompletedSessionEvidenceResults(toolTrace: NativeToolRoundTrace[])
       if (!result.content) {
         continue;
       }
-      const parsed = parseSessionToolResult(result.content ?? "");
+      const parsed = parseSessionToolResult(result.content);
       if (!parsed || parsed.status !== "completed" || !readCompletedSessionEvidence(parsed)) {
         continue;
       }
@@ -3257,7 +3257,7 @@ function hasCompletedBrowserSessionEvidence(toolTrace: NativeToolRoundTrace[]): 
       if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
         return false;
       }
-      const parsed = parseSessionToolResult(result.content ?? "");
+      const parsed = result.content ? parseSessionToolResult(result.content) : null;
       return Boolean(parsed && parsed.status === "completed" && parsed.agent_id === "browser" && readCompletedSessionEvidence(parsed));
     })
   );

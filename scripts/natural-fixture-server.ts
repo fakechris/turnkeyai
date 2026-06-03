@@ -51,6 +51,8 @@ export async function runNaturalFixtureServerCli(): Promise<void> {
 
   await new Promise<void>((resolve) => {
     const stop = (): void => {
+      process.off("SIGINT", stop);
+      process.off("SIGTERM", stop);
       fixture.server.close(() => resolve());
     };
     process.once("SIGINT", stop);

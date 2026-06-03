@@ -4926,19 +4926,14 @@ function stripNegatedBrowserBlockerEvidence(text: string): string {
     .join("\n");
 }
 
+const NEGATED_BROWSER_BLOCKER_PATTERNS = [
+  /\b(?:no|without)\b[\s\S]{0,100}\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b/i,
+  /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b[\s\S]{0,100}\b(?:not observed|not present|not encountered|not seen|did not occur|was not observed|were not observed)\b/i,
+  /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b[\s\S]{0,100}(?:\|\s*No\b|:\s*No\b|-\s*No\b|\u2014\s*No\b)/i,
+] as const;
+
 function isNegatedBrowserBlockerLine(line: string): boolean {
-  const blocker = "(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)";
-  return (
-    new RegExp(`\\b(?:no|without)\\b[\\s\\S]{0,100}\\b${blocker}\\b`, "i").test(line) ||
-    new RegExp(
-      `\\b${blocker}\\b[\\s\\S]{0,100}\\b(?:not observed|not present|not encountered|not seen|did not occur|was not observed|were not observed)\\b`,
-      "i"
-    ).test(line) ||
-    new RegExp(
-      `\\b${blocker}\\b[\\s\\S]{0,100}(?:\\|\\s*No\\b|:\\s*No\\b|-\\s*No\\b|—\\s*No\\b)`,
-      "i"
-    ).test(line)
-  );
+  return NEGATED_BROWSER_BLOCKER_PATTERNS.some((pattern) => pattern.test(line));
 }
 
 export function formatMissionScenarioStart(input: {
