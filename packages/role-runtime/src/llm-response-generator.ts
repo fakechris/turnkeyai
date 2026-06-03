@@ -220,7 +220,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
       const sessionContinuationDirective =
         contextualSessionContinuationDirective ?? baseSessionContinuationDirective;
       const sessionContinuationLookupDirective =
-        !sessionContinuationDirective && activeToolLoop
+        !sessionContinuationDirective && activeToolLoop && !isAppliedApprovalBrowserContinuation(input.packet.taskPrompt)
           ? findSessionContinuationLookupDirective(input.packet.taskPrompt, sessionContinuationContext)
           : null;
       let toolCalls = normalizeApprovalGatedBrowserSpawnCalls(
@@ -438,8 +438,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         break;
       }
       if (!activeToolLoop || toolCalls.length === 0) {
-        if (activeToolLoop && shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace })) {
-          result = maybeAppendTimeoutContinuationVisibility(result);
+        if (activeToolLoop) {
+          if (
+            shouldAppendRecoveredTimeoutCloseoutVisibility({
+              resultText: result.text,
+              taskPrompt: input.packet.taskPrompt,
+              messages,
+              toolTrace,
+            })
+          ) {
+            result = maybeAppendRecoveredTimeoutCloseoutVisibility(result);
+          } else if (shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace })) {
+            result = maybeAppendTimeoutContinuationVisibility(result);
+          }
         }
         break;
       }
@@ -672,6 +683,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           ];
           continue;
         }
+        const preserveRecoveredTimeoutCloseout = shouldPreserveRecoveredTimeoutCloseout({
+          taskPrompt: input.packet.taskPrompt,
+          messages,
+          toolTrace,
+          evidenceText: completedSession.finalContents.join("\n\n"),
+        });
         toolLoopCloseout = {
           reason: "completed_sub_agent_final",
           maxRounds,
@@ -698,6 +715,13 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             "Preserve uncertainty labels. Preserve source URLs only when the original user did not forbid links or source URLs.",
             "For each Source N evidence block below, carry at least one verified fact into the final answer or explicitly say that source did not verify a required dimension.",
             "For approval-gated work, include the approved action, the evidence observed after the approved action, and the residual risk or no-external-side-effect boundary.",
+            ...(preserveRecoveredTimeoutCloseout
+              ? [
+                  "This completed source followed a timeout or timed-out continuation.",
+                  "Preserve user-visible timeout closeout: say what was recovered, whether the timeout still limits the conclusion, and what continue/retry/longer-timeout path remains if future evidence is missing.",
+                  "Do not reduce the timeout closeout to 'no action required' solely because resumed evidence eventually arrived.",
+                ]
+              : []),
             ...(completedSession.browserRecoverySummaries.length
               ? [
                   "The source also includes browser continuity metadata.",
@@ -718,7 +742,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           browserRecoverySummaries: completedSession.browserRecoverySummaries,
         });
-        if (shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace })) {
+        const shouldAppendRecoveredTimeoutCloseout =
+          preserveRecoveredTimeoutCloseout ||
+          shouldAppendRecoveredTimeoutCloseoutVisibility({
+            resultText: result.text,
+            taskPrompt: input.packet.taskPrompt,
+            messages,
+            toolTrace,
+          });
+        if (shouldAppendRecoveredTimeoutCloseout) {
+          result = maybeAppendRecoveredTimeoutCloseoutVisibility(result);
+        } else if (shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace })) {
           result = maybeAppendTimeoutContinuationVisibility(result);
         }
         result = maybeRedactForbiddenLocalUrls({
@@ -1853,7 +1887,7 @@ function findIncompleteApprovedBrowserSession(input: {
   if (!requestsApprovalGatedBrowserAction(input.taskPrompt)) {
     return null;
   }
-  if (latestPermissionToolName(input.toolTrace) !== "permission_applied") {
+  if (latestPermissionToolName(input.toolTrace) !== "permission_applied" && !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
     return null;
   }
   for (const result of input.results) {
@@ -2095,13 +2129,97 @@ function maybeAppendBrowserRecoveryVisibility(input: {
 }
 
 function maybeAppendTimeoutContinuationVisibility(result: GenerateTextResult): GenerateTextResult {
-  if (/\b(?:continue|retry|resume|resumable|next step|longer timeout)\b/i.test(result.text)) {
+  if (hasTimeoutCloseoutGuidance(result.text)) {
     return result;
   }
   return {
     ...result,
     text: `${result.text.trim()}\n\nContinuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.`.trim(),
   };
+}
+
+function shouldAppendRecoveredTimeoutCloseoutVisibility(input: {
+  resultText: string;
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  return (
+    hasSessionTimeoutEvidence(input) &&
+    toolTraceHasCall(input.toolTrace, "sessions_send") &&
+    mentionsTimeout(input.resultText) &&
+    !hasTimeoutCloseoutGuidance(input.resultText)
+  );
+}
+
+function maybeAppendRecoveredTimeoutCloseoutVisibility(result: GenerateTextResult): GenerateTextResult {
+  if (hasTimeoutCloseoutGuidance(result.text)) {
+    return result;
+  }
+  return {
+    ...result,
+    text: `${result.text.trim()}\n\nTimeout closeout: the resumed source produced usable evidence, but future release-gated checks should keep a retry path or a longer timeout before treating missing evidence as verified.`.trim(),
+  };
+}
+
+function shouldPreserveRecoveredTimeoutCloseout(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  evidenceText: string;
+}): boolean {
+  if (shouldAppendTimeoutContinuationVisibility(input)) {
+    return true;
+  }
+  return (
+    hasSessionTimeoutEvidence(input) &&
+    toolTraceHasCall(input.toolTrace, "sessions_send") &&
+    mentionsTimeout(input.evidenceText)
+  );
+}
+
+function hasTimeoutCloseoutGuidance(text: string): boolean {
+  return (
+    /\b(?:continue|retry|resume|resumable|longer timeout|timeout-gated)\b/i.test(text) ||
+    /\b(?:next step|next action)\b[\s\S]{0,80}\b(?:continue|retry|resume|longer timeout)\b/i.test(text) ||
+    /\b(?:configure|increase|extend)\b[\s\S]{0,80}\b(?:tool-call\s+)?timeouts?\b/i.test(text) ||
+    /\btimeouts?\b[\s\S]{0,80}\b(?:retry|extend|increase|recover|configure|exclude|timeout-gated|use a longer timeout|with a longer timeout)\b/i.test(
+      text
+    )
+  );
+}
+
+function mentionsTimeout(text: string): boolean {
+  return /\b(?:timeout|timed out)\b/i.test(text);
+}
+
+function toolTraceHasCall(toolTrace: NativeToolRoundTrace[], toolName: string): boolean {
+  return toolTrace.some((roundTrace) => roundTrace.calls.some((call) => call.name === toolName));
+}
+
+function toolTraceHasTimeoutResult(toolTrace: NativeToolRoundTrace[]): boolean {
+  return toolTrace.some((roundTrace) =>
+    roundTrace.results.some((result) => {
+      if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+        return false;
+      }
+      if (typeof result.content !== "string") {
+        return false;
+      }
+      return parseSessionToolResult(result.content)?.status === "timeout";
+    })
+  );
+}
+
+function hasSessionTimeoutEvidence(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (toolTraceHasTimeoutResult(input.toolTrace)) {
+    return true;
+  }
+  return contextHasTimeoutSessionResult(buildContinuationDirectiveContext(input.taskPrompt, input.messages));
 }
 
 function maybeRedactForbiddenLocalUrls(input: { result: GenerateTextResult; packet: RolePromptPacket }): GenerateTextResult {
@@ -2146,6 +2264,9 @@ function shouldRepairMissingApprovalGate(input: {
   if (hasMissingApprovalGateRepairPrompt(input.messages)) {
     return false;
   }
+  if (taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
+    return false;
+  }
   if (hasPermissionGateEvidence(input.toolTrace)) {
     return false;
   }
@@ -2175,7 +2296,7 @@ function shouldRepairStalePendingApproval(input: {
   if (!mentionsPendingApproval(input.resultText) || !requestsApprovalGatedBrowserAction(input.taskPrompt)) {
     return false;
   }
-  return latestPermissionToolName(input.toolTrace) === "permission_applied";
+  return latestPermissionToolName(input.toolTrace) === "permission_applied" || taskPromptSaysApprovalAlreadyApplied(input.taskPrompt);
 }
 
 function shouldRepairIncompleteApprovedBrowserAction(input: {
@@ -2190,7 +2311,7 @@ function shouldRepairIncompleteApprovedBrowserAction(input: {
   if (!requestsApprovalGatedBrowserAction(input.taskPrompt)) {
     return false;
   }
-  if (latestPermissionToolName(input.toolTrace) !== "permission_applied") {
+  if (latestPermissionToolName(input.toolTrace) !== "permission_applied" && !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
     return false;
   }
   return matchesAny(input.resultText, INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS);
@@ -2226,7 +2347,21 @@ function shouldRepairWeakEvidenceSynthesis(input: {
   if (matchesAny(input.resultText, WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS)) {
     return true;
   }
+  if (shouldRepairMissingRequestedRiskDimension(input)) {
+    return true;
+  }
   return !taskRequestsEstimate(input.taskPrompt) && matchesAny(input.resultText, WEAK_ESTIMATE_SYNTHESIS_PATTERNS);
+}
+
+function shouldRepairMissingRequestedRiskDimension(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+}): boolean {
+  if (!/\brisks?\b/i.test(input.taskPrompt) || /\brisks?\b/i.test(input.resultText)) {
+    return false;
+  }
+  return input.messages.some((message) => /\brisks?\b/i.test(readMessageContentText(message.content)));
 }
 
 function taskRequestsEstimate(taskPrompt: string): boolean {
@@ -2383,9 +2518,19 @@ function hasWeakEvidenceSynthesisRepairPrompt(messages: LLMMessage[]): boolean {
 }
 
 function mentionsPendingApproval(text: string): boolean {
-  return /\b(?:approval pending|approval request is pending|permission request is pending|pending operator decision|awaiting (?:your decision|operator approval)|waiting for (?:your|operator) decision|waiting for operator|once (?:you )?approve|once approved|before (?:the )?(?:browser worker )?can|still pending)\b/i.test(
+  return /\b(?:approval pending|approval is pending|approval is still pending|approval request is pending|approval request is still pending|permission request is pending|permission request is still pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once you approve|after you approve|before (?:the )?(?:browser worker )?can)\b/i.test(
     text
   );
+}
+
+function taskPromptSaysApprovalAlreadyApplied(taskPrompt: string): boolean {
+  return /\b(?:runtime\s+)?permission cache\b[\s\S]{0,120}\balready applied\b|\bpermission\.applied\b|\bpermission_applied\b/i.test(
+    taskPrompt
+  );
+}
+
+function isAppliedApprovalBrowserContinuation(taskPrompt: string): boolean {
+  return taskPromptSaysApprovalAlreadyApplied(taskPrompt) && requestsApprovalGatedBrowserAction(taskPrompt);
 }
 
 function requestsApprovalGatedBrowserAction(taskPrompt: string): boolean {
@@ -2473,6 +2618,8 @@ function buildWeakEvidenceSynthesisRepairPrompt(): string {
     "Do not call tools. Rewrite the final answer using only the delegated session evidence already present.",
     "For facts directly present in the evidence, say observed or verified instead of maybe, probably, estimate, estimated, TBD, to be confirmed, pending confirmation, or similar placeholder wording.",
     "For facts absent from the evidence, write not verified and name the missing dimension without guessing.",
+    "Preserve requested dimension labels from the user when evidence supports them, such as pricing, strength, risk, owner, and next action.",
+    "Do not rename a requested risk dimension into only generic weaknesses, open questions, or uncertainty when risk evidence is present.",
     "Keep residual risk visible, but do not downgrade verified source facts into estimates.",
   ].join("\n");
 }
@@ -2634,12 +2781,7 @@ function shouldAppendTimeoutContinuationVisibility(input: {
     return false;
   }
   const context = buildContinuationDirectiveContext(input.taskPrompt, input.messages);
-  return (
-    contextHasTimeoutSessionResult(context) ||
-    /\b(?:(?:earlier|previous|prior|original)\s+(?:session\s+)?(?:timeout|timed out)|(?:session|connection|source)\s+(?:timeout|timed out))\b/i.test(
-      taskPromptSuffix
-    )
-  );
+  return toolTraceHasTimeoutResult(input.toolTrace) || contextHasTimeoutSessionResult(context);
 }
 
 function contextHasSessionListResult(context: string): boolean {

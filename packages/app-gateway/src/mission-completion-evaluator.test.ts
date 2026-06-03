@@ -106,6 +106,77 @@ describe("MissionCompletionEvaluator", () => {
     });
   });
 
+  it("blocks stale pending-approval final answers after approvals clear", () => {
+    const decision = evaluateMissionCompletion({
+      mission: { ...mission, pendingApprovals: 0 },
+      messages: [
+        {
+          ...message("u-1", "user", 50),
+          content: "Submit the local form after approval.",
+        },
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content:
+            "**Pending operator approval.** Awaiting decision before executing the dry-run browser form submission.",
+        },
+      ],
+      roleRuns: [],
+    });
+
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "incomplete_final_answer");
+      assert.deepEqual(decision.patch, { status: "blocked", blockers: 1 });
+      assert.equal(decision.recovery?.kind, "incomplete_final_answer");
+      assert.equal(decision.recovery?.reason, "stale_pending_approval");
+    }
+  });
+
+  it("does not block complete approval closeouts that mention once-approved context", () => {
+    const decision = evaluateMissionCompletion({
+      mission: { ...mission, pendingApprovals: 0 },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Once approved, the form was submitted successfully. Evidence confirms completion.",
+        },
+      ],
+      roleRuns: [],
+    });
+
+    assert.deepEqual(decision, {
+      action: "update",
+      reason: "final_answer",
+      patch: { status: "done", progress: 1 },
+    });
+  });
+
+  it("blocks future-tense once-you-approve final answers after approvals clear", () => {
+    const decision = evaluateMissionCompletion({
+      mission: { ...mission, pendingApprovals: 0 },
+      messages: [
+        {
+          ...message("a-final", "assistant", 100),
+          roleId: "role-lead",
+          name: "Lead",
+          content: "Once you approve, I will proceed with the browser action.",
+        },
+      ],
+      roleRuns: [],
+    });
+
+    assert.equal(decision.action, "update");
+    if (decision.action === "update") {
+      assert.equal(decision.reason, "incomplete_final_answer");
+      assert.equal(decision.recovery?.kind, "incomplete_final_answer");
+      assert.equal(decision.recovery?.reason, "stale_pending_approval");
+    }
+  });
+
   it("keeps archived and draft missions terminal even if approvals remain", () => {
     for (const status of ["archived", "draft"] as const) {
       const decision = evaluateMissionCompletion({
