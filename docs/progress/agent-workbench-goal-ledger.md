@@ -7516,3 +7516,90 @@ Convergence question:
 - Is complex-task stable delivery closer than the previous checkpoint? yes, narrowly for foreground timeout-continuation latency.
 - Evidence: same natural scenario remained useful and evidence-backed while duration dropped from `334949ms` to `112725ms`.
 - If no, next required gate: run the broader natural core/A-B suite and use failures to choose the next P0 runtime, prompt harness, or browser reliability PR.
+
+## 2026-06-03 21:05 CST - Core Natural And Same-Scenario A/B Gate
+
+Direction: converging
+
+Execution Kernel:
+- No new kernel code changed in this checkpoint. The checkpoint validates the
+  current `main` runtime after the foreground timeout-continuation work landed.
+- The full natural core suite exercised native tool use, sub-agent delegation,
+  browser work, approval gating, `sessions_send` continuation, timeout
+  closeout, and durable memory recall under natural prompts.
+- This is evidence for the current core runtime path. It is not evidence that
+  every production workload, browser environment, or long-running agent mode is
+  complete.
+
+Result Quality:
+- The current full natural core report passed all 7 scenarios with no weak
+  answer signals:
+  comparison research, browser dynamic page, follow-up continuation,
+  approval-gated dry-run action, long delegation, timeout follow-up
+  continuation, and memory recall.
+- Same-scenario A/B passed with 7 comparable scenarios and 7 TurnkeyAI wins.
+  TurnkeyAI scored `18/18` in every core row in the generated report.
+- The reference-side black-box runs did not produce source-specific evidence in
+  this sampling window, so this proves TurnkeyAI is ahead of that comparable
+  run set. It does not by itself prove broad market-level production readiness.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- User-visible runtime behavior improved only insofar as the mission outputs
+  reached useful, evidence-backed final answers for the core natural suite.
+- Replay/thought-process readability, final-answer placement, follow-up send
+  responsiveness, and user-visible continuation/cancel controls remain P1
+  work, not closed by this gate.
+
+Browser Reliability:
+- Browser-required natural rows passed without weak-answer signals.
+- The timeout-followup row also reported browser usage without profile fallback
+  or browser failure buckets in the current core natural report.
+- Remaining browser risk: this gate used a local fixture environment. It still
+  needs periodic validation against hostile real pages, profile-lock
+  conditions, and unavailable/unstable CDP endpoints.
+
+Acceptance Evidence:
+- Current code baseline: `main` at
+  `ed87b0aa9eae69e5872592359d2244fcd34179db`.
+- Natural real LLM E2E command previously run on this baseline:
+  `npm run mission:e2e:natural:core -- --model-catalog /Users/chris/workspace/turnkeyai/models.local.json --scenario-timeout-ms 360000 --json artifacts/evals/20260603-after-timeout-budget-main/natural-core.json`
+- Natural core artifact:
+  `artifacts/evals/20260603-after-timeout-budget-main/natural-core.json`
+- Natural core missions:
+  - `natural-comparison-research`: `msn.mpxz3k5t.1`
+  - `natural-browser-dynamic-page`: `msn.mpxz4g0s.2`
+  - `natural-followup-continuation`: `msn.mpxz55ni.3`
+  - `natural-approval-dry-run-action`: `msn.mpxz699a.4`
+  - `natural-long-delegation`: `msn.mpxz74kw.5`
+  - `natural-timeout-followup-continuation`: `msn.mpxz8rkd.6`
+  - `natural-memory-recall`: `msn.mpxzb8rm.7`
+- Same-scenario A/B artifacts generated locally and intentionally left
+  untracked:
+  - `artifacts/evals/20260603-after-timeout-budget-main/ab/ab-report.json`
+  - `artifacts/evals/20260603-after-timeout-budget-main/ab/check-report.md`
+- Verification commands:
+  - `npm run acceptance:ab:spec -- --natural-report artifacts/evals/20260603-after-timeout-budget-main/natural-core.json --reference-dir artifacts/evals/20260603-after-timeout-budget-main/reference --suite core --out artifacts/evals/20260603-after-timeout-budget-main/ab/ab-build-spec.json`
+  - `npm run acceptance:ab:build -- --spec artifacts/evals/20260603-after-timeout-budget-main/ab/ab-build-spec.json --out artifacts/evals/20260603-after-timeout-budget-main/ab/ab-report.json --markdown-out artifacts/evals/20260603-after-timeout-budget-main/ab/report.md --suite core --check`
+  - `npm run acceptance:ab:check -- --json artifacts/evals/20260603-after-timeout-budget-main/ab/ab-report.json --suite core --markdown-out artifacts/evals/20260603-after-timeout-budget-main/ab/check-report.md`
+- A/B result: passed, `scenarios=7`, `comparable=7`,
+  `turnkeyaiWins=7`, `turnkeyaiLosses=0`, `suite=core`.
+
+Regression Risk:
+- The A/B reference artifacts are local evidence only and must not be committed.
+  Future claims need fresh same-prompt artifacts if fixture URLs or prompts
+  change.
+- Because the natural core report was generated before this ledger checkpoint,
+  the next runtime PR should rerun at least the affected natural rows and should
+  run the full core gate again before making another broad capability claim.
+- The current evidence does not close P1 workbench UX or hostile browser-page
+  reliability. It only moves the P0 core natural/A-B gate forward.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes,
+  for the scoped P0 core natural/A-B gate.
+- Evidence: full natural core passed 7/7 on current `main`, and same-scenario
+  A/B passed with 7 comparable rows and no TurnkeyAI losses.
+- If no, next required gate: run a hostile-browser/profile-lock natural slice
+  and a workbench replay UX check before treating browser reliability and
+  user-visible thought-process delivery as production-ready.
