@@ -8292,3 +8292,92 @@ Convergence question:
 - Evidence: the previously pending browser-focused same-scenario A/B gate now
   passes with two comparable scenarios, no losses, and no root-cause buckets.
 - Remaining proof: full core natural A/B parity is still not established.
+
+## 2026-06-04 01:55 CST - Core Natural Runtime Continuation Repair
+
+Direction: converging
+
+Execution Kernel:
+- Fixed two P0 runtime failures exposed by natural real LLM runs:
+  - Completed sub-agent evidence could be falsely downgraded during final
+    synthesis as inaccessible, blocked, incomplete, or truncated even when the
+    delegated session evidence was usable.
+  - Explicit timeout follow-up could continue a completed sibling session
+    instead of the timed-out/resumable source session.
+- Added a conservative continuation guard: when the user explicitly asks to
+  continue but the runtime has no trustworthy continuation directive, a
+  model-proposed `sessions_send` is mediated through `sessions_list` before any
+  worker receives a follow-up.
+- Tightened timeout-like follow-up handling so completed sibling sessions do
+  not steal continuation when the user asks to resume a slow source, timeout,
+  source-check, or resumable attempt.
+- Improved the natural timeout follow-up gate so it waits for the phase-one
+  timed-out `sessions_spawn` result to become visible before sending the
+  follow-up. This does not relax the natural prompt or final quality checks; it
+  removes a race in observing the async mission timeline.
+
+Result Quality:
+- Fresh natural real LLM timeout follow-up rerun passed after the continuation
+  guard:
+  - `natural-timeout-followup-continuation`: mission `msn.mpydsk0l.1`,
+    `tools=5/5`, `sessions=2/1`, `browser=yes`, stuck/loop `false`, weak
+    answer signals `none`, final evidence/usefulness `true`.
+- Fresh full core natural matrix passed 7/7:
+  - `natural-comparison-research`: mission `msn.mpydw5fk.1`.
+  - `natural-browser-dynamic-page`: mission `msn.mpydx1ao.2`.
+  - `natural-followup-continuation`: mission `msn.mpydxvkg.3`.
+  - `natural-approval-dry-run-action`: mission `msn.mpydzdx5.4`.
+  - `natural-long-delegation`: mission `msn.mpye078u.5`.
+  - `natural-timeout-followup-continuation`: mission `msn.mpye1n8k.6`.
+  - `natural-memory-recall`: mission `msn.mpye40l0.7`.
+- All seven scenarios reported `natural=passed`, stuck/loop `false`, final
+  evidence/usefulness `true`, and weak answer signals `none`.
+
+Workbench UX:
+- No Workbench UI changed.
+- This checkpoint improves the process data Workbench can later replay, but it
+  does not prove thought-process layout or markdown rendering quality.
+
+Browser Reliability:
+- Browser-backed scenarios used browser workers and reported no profile
+  fallback and no browser failure buckets in the full core natural run.
+- The memory scenario correctly did not require browser use.
+- This does not prove broad hostile-page or authenticated browsing reliability.
+
+Acceptance Evidence:
+- Focused runtime tests:
+  `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts
+  packages/role-runtime/src/tool-capability-registry.test.ts`
+- Natural timeout follow-up rerun:
+  `npm run mission:e2e:natural -- --model-catalog models.local.json
+  --natural-matrix-scenarios natural-timeout-followup-continuation
+  --scenario-timeout-ms 360000 --json
+  artifacts/evals/20260604-timeout-followup-after-timeout-like-guard/natural-timeout-followup-continuation.json`
+- Full core natural run:
+  `npm run mission:e2e:natural:core -- --model-catalog models.local.json
+  --scenario-timeout-ms 360000 --json
+  artifacts/evals/20260604-core-after-timeout-like-guard/turnkeyai-natural-core.json`
+- Same-scenario A/B was attempted but did not produce a report because the
+  available local reference directory lacks
+  `natural-timeout-followup-continuation.json`. Therefore this checkpoint does
+  not claim full core A/B parity.
+
+Regression Risk:
+- The new continuation guard can add one `sessions_list` round before a
+  follow-up when the runtime cannot prove the correct session from context.
+  This is intentional: it trades a small extra tool step for avoiding wrong
+  sibling continuation.
+- The false evidence-blocked repair only runs after completed delegated
+  evidence exists and only when the completed evidence itself does not contain
+  actual blocker language.
+- Remaining risk: same-scenario core A/B is still blocked on complete reference
+  artifacts, so comparative parity remains unproven.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes, for the full core natural matrix; unknown for full core same-scenario
+  A/B.
+- Evidence: the current branch passes the fresh full natural core matrix 7/7,
+  including long delegation, approval, memory recall, and timeout continuation.
+- Remaining proof: collect or provide the missing same-scenario reference
+  timeout-followup artifact, then build/check the full core A/B report.

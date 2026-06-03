@@ -2996,6 +2996,90 @@ test("llm role response generator routes continuation follow-up to timed-out ses
   assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /worker:explore:task-1:toolu-timeout/);
 });
 
+test("llm role response generator prefers resumable timeout session over later completed session on follow-up", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  let gatewayCalls = 0;
+  gateway.generate = async () => {
+    gatewayCalls += 1;
+    if (gatewayCalls === 1) {
+      return toolCallResult("toolu-continue-wrong-session", "sessions_send", {
+        session_key: "worker:browser:task-dashboard:toolu-browser",
+        message: "Continue the dashboard context.",
+      });
+    }
+    return {
+      text: "Final answer from the resumed slow-source evidence.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.name, "sessions_send");
+      assert.equal(input.call.input.session_key, "worker:explore:task-1:toolu-timeout");
+      assert.match(String(input.call.input.message), /Continue from the slow-source attempt/);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:explore:task-1:toolu-timeout",
+          agent_id: "explore",
+          status: "completed",
+          result: "Resumed slow-source evidence.",
+          final_content: "Verified resumed slow-source evidence. Earlier timeout no longer limits the conclusion.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content: "Verified resumed slow-source evidence. Earlier timeout no longer limits the conclusion.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the slow-source attempt in this mission and finish the release-risk note.",
+        "",
+        "Recent turns:",
+        "[user] Continue from the slow-source attempt in this mission and finish the release-risk note.",
+        '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"timeout","session_key":"worker:explore:task-1:toolu-timeout","agent_id":"explore","result":"WORKER_TIMEOUT","resumable":true}',
+        '[tool] {"protocol":"turnkeyai.session_tool_result.v1","status":"completed","session_key":"worker:browser:task-dashboard:toolu-browser","agent_id":"browser","result":"Dashboard evidence.","final_content":"Dashboard evidence."}',
+      ].join("\n"),
+    },
+  });
+
+  assert.match(result.content, /resumed slow-source evidence/);
+  assert.deepEqual(
+    executedCalls.map((call) => call.input.session_key),
+    ["worker:explore:task-1:toolu-timeout"]
+  );
+});
+
 test("llm role response generator does not append recovered timeout closeout without raw timeout evidence", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const executedCalls: RoleToolExecutionInput["call"][] = [];
@@ -3918,6 +4002,236 @@ test("llm role response generator routes follow-up through sessions_list result 
   });
 
   assert.equal(result.content, "Final answer from listed-session continuation.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_list", "sessions_send"]
+  );
+});
+
+test("llm role response generator lists sessions before trusting model-provided continuation keys without a directive", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const timeoutSessionKey = "worker:explore:task:TASK-1:call_function_timeout_1";
+  const browserSessionKey = "worker:browser:task:TASK-1:call_function_browser_1";
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-wrong-send-first", "sessions_send", {
+        session_key: browserSessionKey,
+        message: "Continue the browser sibling.",
+      });
+    }
+    if (executedCalls.length === 1 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-wrong-send-second", "sessions_send", {
+        session_key: browserSessionKey,
+        message: "Continue the browser sibling after listing.",
+      });
+    }
+    return {
+      text: "Final answer from corrected timeout continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_list",
+          description: "List sessions",
+          inputSchema: { type: "object", properties: { limit: { type: "number" } } },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "sessions_list") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            sessions: [
+              {
+                session_key: timeoutSessionKey,
+                agent_id: "explore",
+                status: "timeout",
+                resumable: true,
+                label: "slow-source attempt",
+              },
+              {
+                session_key: browserSessionKey,
+                agent_id: "browser",
+                status: "completed",
+                label: "browser sibling",
+              },
+            ],
+          }),
+        };
+      }
+      assert.equal(input.call.name, "sessions_send");
+      assert.equal(input.call.input.session_key, timeoutSessionKey);
+      assert.match(String(input.call.input.message), /Continue the browser sibling after listing/);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-timeout",
+          session_key: timeoutSessionKey,
+          agent_id: "explore",
+          status: "completed",
+          result: "Corrected timeout session completed.",
+          final_content: "Corrected timeout session completed.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the slow-source attempt in this mission and finish the release-risk note.",
+        "",
+        "Recent turns:",
+        "[user] Continue from the slow-source attempt in this mission and finish the release-risk note.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer from corrected timeout continuation.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_list", "sessions_send"]
+  );
+});
+
+test("llm role response generator does not continue completed sibling when timeout-like follow-up lacks timeout result JSON", async () => {
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const timeoutSessionKey = "worker:explore:task:TASK-2:call_function_timeout_1";
+  const browserSessionKey = "worker:browser:task:TASK-2:call_function_browser_1";
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (executedCalls.length === 0 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-wrong-browser-send", "sessions_send", {
+        session_key: browserSessionKey,
+        message: "Continue the browser sibling.",
+      });
+    }
+    if (executedCalls.length === 1 && input.toolChoice !== "none") {
+      return toolCallResult("toolu-still-browser-send", "sessions_send", {
+        session_key: browserSessionKey,
+        message: "Finish the slow-source release-risk note.",
+      });
+    }
+    return {
+      text: "Final answer from timeout source continuation.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_list",
+          description: "List sessions",
+          inputSchema: { type: "object", properties: { limit: { type: "number" } } },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "sessions_list") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            sessions: [
+              {
+                session_key: timeoutSessionKey,
+                agent_id: "explore",
+                status: "timeout",
+                resumable: true,
+                label: "slow-source attempt",
+              },
+              {
+                session_key: browserSessionKey,
+                agent_id: "browser",
+                status: "completed",
+                label: "rendered sibling",
+              },
+            ],
+          }),
+        };
+      }
+      assert.equal(input.call.name, "sessions_send");
+      assert.equal(input.call.input.session_key, timeoutSessionKey);
+      assert.match(String(input.call.input.message), /slow-source release-risk note/);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-timeout",
+          session_key: timeoutSessionKey,
+          agent_id: "explore",
+          status: "completed",
+          result: "Timeout source continuation completed.",
+          final_content: "Timeout source continuation completed.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Evaluate a slow source for a release-risk note. The earlier attempt timed out and the mission can continue.",
+        "",
+        "Recent turns:",
+        "[tool] Slow-source attempt timed out after the bounded attempt; continue is available.",
+        `[tool] ${JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "completed",
+          session_key: browserSessionKey,
+          agent_id: "browser",
+          result: "Browser sibling completed.",
+        })}`,
+        "[user] Continue from the slow-source attempt in this mission and finish the release-risk note.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "Final answer from timeout source continuation.");
   assert.deepEqual(
     executedCalls.map((call) => call.name),
     ["sessions_list", "sessions_send"]
@@ -4936,6 +5250,141 @@ test("llm role response generator repairs weak uncertainty in completed session 
 
   assert.match(result.content, /observed \$19\/seat price point/);
   assert.doesNotMatch(result.content, /\b(?:estimate|probably|maybe|TBD|to be confirmed|pending confirmation)\b/i);
+  assert.equal(gatewayInputs.length, 3);
+});
+
+test("llm role response generator repairs completed session synthesis that falsely marks evidence blocked", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "Calling independent sessions.",
+        toolCalls: [
+          {
+            id: "toolu-orchestration",
+            name: "sessions_spawn",
+            input: { agent_id: "explore", label: "Orchestration research", task: "Fetch orchestration evidence." },
+          },
+          {
+            id: "toolu-bridge",
+            name: "sessions_spawn",
+            input: { agent_id: "explore", label: "Bridge capability research", task: "Fetch bridge evidence." },
+          },
+          {
+            id: "toolu-signals",
+            name: "sessions_spawn",
+            input: { agent_id: "browser", label: "Product signals dashboard", task: "Inspect rendered dashboard evidence." },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 2) {
+      assert.equal(input.toolChoice, "none");
+      return {
+        text: [
+          "evidence",
+          "- orchestration evidence: Source 1 content was partially truncated and the full roadmap was not accessible via this interface.",
+          "- bridge evidence: TURNKEYAI_PRODUCT_BRIDGE_OK; browser bridge controls; browser-only boundary and first-run setup risk.",
+          "- browser signal evidence: TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK; Stuck missions: 6; Weak answer rate: 24%; browser-rendered JavaScript.",
+          "decision",
+          "- recommendation: make Mission Control the default entry.",
+          "- next actions: improve onboarding, quality gates, and bridge diagnostics.",
+          "- residual risk: source-bounded to local fixtures.",
+        ].join("\n"),
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "none");
+    const repairPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
+    assert.match(repairPrompt, /falsely marks completed evidence/);
+    assert.match(repairPrompt, /Source 1 completed evidence/);
+    assert.match(repairPrompt, /TURNKEYAI_PRODUCT_ORCHESTRATION_OK/);
+    return {
+      text: [
+        "evidence",
+        "- orchestration evidence: Orchestration research; TURNKEYAI_PRODUCT_ORCHESTRATION_OK; primary user story verified, with multi-agent decomposition, durable sub-session history, and clearer entry-point gap.",
+        "- bridge evidence: Bridge capability research; TURNKEYAI_PRODUCT_BRIDGE_OK; browser bridge controls; browser-only boundary and first-run setup risk.",
+        "- browser signal evidence: Product signals dashboard; TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK; Stuck missions: 6; Weak answer rate: 24%; browser-rendered JavaScript.",
+        "decision",
+        "- recommendation: make Mission Control the default entry and gate release on real LLM scenario quality.",
+        "- next actions: improve onboarding, mission completion quality, and bridge/runtime diagnostics.",
+        "- residual risk: source-bounded to local fixtures; real-world validation remains.",
+      ].join("\n"),
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      const label = String(input.call.input.label ?? "");
+      const evidence =
+        label === "Orchestration research"
+          ? "TURNKEYAI_PRODUCT_ORCHESTRATION_OK. Primary user story: a product lead starts one mission, then specialist agents watch documents, browser state, and work items until a decision-ready brief is produced. Strength: multi-agent decomposition with durable sub-session history and follow-up. Gap: users need clearer entry points than a developer command line."
+          : label === "Bridge capability research"
+            ? "TURNKEYAI_PRODUCT_BRIDGE_OK. Controls: browser bridge controls open pages, inspect rendered DOM, act after approval, and collect screenshots. Boundary: browser-only; no desktop control outside the browser. Risk: command-line setup blocks first-run adoption."
+            : "TURNKEYAI_PRODUCT_WORKBENCH_SIGNAL_OK. Stuck missions: 6. Weak answer rate: 24%. Recommended next action: make Mission Control the default entry and gate release on real LLM scenario quality. Evidence came from browser-rendered JavaScript.";
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: `task-${input.call.id}`,
+          session_key: `worker:${input.call.input.agent_id}:task-${input.call.id}`,
+          agent_id: input.call.input.agent_id,
+          label,
+          status: "completed",
+          tool_chain: [input.call.input.agent_id],
+          result: evidence,
+          final_content: evidence,
+          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: evidence },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Prepare a product-ready brief for the next agent workbench release.",
+        "Gather evidence from three independent child sessions before finalizing.",
+        "Do not include source URLs in the final answer.",
+        "Keep residual risk visible.",
+      ].join("\n"),
+    },
+  });
+
+  assert.match(result.content, /TURNKEYAI_PRODUCT_ORCHESTRATION_OK/);
+  assert.match(result.content, /durable sub-session history/);
+  assert.doesNotMatch(result.content, /truncated|not accessible|inaccessible|content was partially/i);
   assert.equal(gatewayInputs.length, 3);
 });
 

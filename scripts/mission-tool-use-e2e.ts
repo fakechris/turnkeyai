@@ -2912,22 +2912,24 @@ async function runNaturalTimeoutFollowupScenario(input: {
   });
   assert.ok(mission.threadId, "natural timeout follow-up mission requires a linked team thread");
 
-  await waitForNaturalMissionCompletion({
+  const phaseOne = await waitForNaturalMissionCompletion({
     baseUrl: input.baseUrl,
     token: input.token,
     missionId: mission.id,
     timeoutMs: input.timeoutMs,
     allowBlocked: true,
   });
-  const initialTimeline = await requestJson<ActivityEvent[]>({
-    method: "GET",
-    url: `${input.baseUrl}/missions/${encodeURIComponent(mission.id)}/timeline?limit=300`,
+  const timeoutObservation = await waitForTimedOutSessionKey({
+    baseUrl: input.baseUrl,
     token: input.token,
+    missionId: mission.id,
+    initialTimeline: phaseOne.timeline,
+    timeoutMs: Math.min(input.timeoutMs, 20_000),
   });
+  const initialTimeline = timeoutObservation.timeline;
   const initialFinal = findLatestThoughtEvent(initialTimeline);
   assert.ok(initialFinal, "natural timeout follow-up phase one must include an assistant answer");
-  const timeoutSessionKey = extractTimedOutSessionKey(initialTimeline);
-  assert.ok(timeoutSessionKey, "natural timeout follow-up requires a session_key from the timed-out sessions_spawn result");
+  const timeoutSessionKey = timeoutObservation.sessionKey;
   await assertWorkerSessionResumableAfterTimeout({
     baseUrl: input.baseUrl,
     token: input.token,
@@ -3326,6 +3328,42 @@ async function waitForNaturalMissionCompletion(input: {
   }
   throw new Error(
     `natural mission did not complete within ${input.timeoutMs}ms:\n${summarizeMissionState(latestMission, latestTimeline)}`
+  );
+}
+
+async function waitForTimedOutSessionKey(input: {
+  baseUrl: string;
+  token: string;
+  missionId: string;
+  initialTimeline?: ActivityEvent[];
+  timeoutMs: number;
+}): Promise<{ sessionKey: string; timeline: ActivityEvent[] }> {
+  const startedAt = Date.now();
+  let latestTimeline: ActivityEvent[] = input.initialTimeline ?? [];
+  const fetchTimeline = () =>
+    requestJson<ActivityEvent[]>({
+      method: "GET",
+      url: `${input.baseUrl}/missions/${encodeURIComponent(input.missionId)}/timeline?limit=300`,
+      token: input.token,
+    });
+  while (Date.now() - startedAt < input.timeoutMs) {
+    const sessionKey = extractTimedOutSessionKey(latestTimeline);
+    if (sessionKey) {
+      return { sessionKey, timeline: latestTimeline };
+    }
+    latestTimeline = await fetchTimeline();
+    await sleep(500);
+  }
+  latestTimeline = await fetchTimeline();
+  const sessionKey = extractTimedOutSessionKey(latestTimeline);
+  if (sessionKey) {
+    return { sessionKey, timeline: latestTimeline };
+  }
+  throw new Error(
+    `natural timeout follow-up requires a session_key from the timed-out sessions_spawn result:\n${summarizeMissionState(
+      null,
+      latestTimeline
+    )}`
   );
 }
 
