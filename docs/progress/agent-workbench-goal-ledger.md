@@ -7469,3 +7469,50 @@ Convergence question:
 - Is complex-task stable delivery closer than the previous checkpoint? yes, narrowly for timeout continuation closeout behavior.
 - Evidence: a real natural timeout-followup scenario that previously failed answer-quality gates passed after the runtime change.
 - If no, next required gate: run the full natural core matrix and same-scenario A/B gate before broad capability claims.
+
+## 2026-06-03 19:06 CST - Foreground Tool Budget And Timeout Follow-Up Latency
+
+Direction: converging
+
+Execution Kernel:
+- Active native tool execution now receives a linked `AbortSignal` from the role tool loop wall-clock budget.
+- Session tools propagate that signal into worker execution. Runtime wall-clock aborts interrupt the worker and return a resumable timeout result instead of letting the foreground mission wait on the worker's longer requested timeout.
+- Production daemon composition now uses a short foreground session tool cap by default, with environment overrides for deployments that deliberately want longer waits.
+- `sessions_send` follow-ups against non-cancelled sessions are capped to the foreground continuation budget even if the model asks for a longer explicit timeout.
+
+Result Quality:
+- The focused natural timeout-followup scenario still produced a useful evidence-backed closeout and did not show weak-answer signals.
+- The final answer stopped reporting 120s/150s resumed waits after the foreground cap was applied.
+- This is capability evidence for one timeout-continuation latency failure class only. It does not prove the full agent workbench target.
+
+Workbench UX:
+- No UI surface changed.
+- User-visible behavior improved through mission latency: the same natural timeout-continuation scenario completed in roughly two minutes instead of roughly five and a half minutes.
+- Replay UX still needs separate validation for readable thought/process order and tool result display.
+
+Browser Reliability:
+- No browser profile or CDP recovery behavior changed in this checkpoint.
+- The focused natural run used browser tooling and reported no profile fallback and no browser failure buckets.
+
+Acceptance Evidence:
+- Structural tests passed:
+  - `npx tsx --test packages/role-runtime/src/tool-use.test.ts packages/role-runtime/src/llm-response-generator.test.ts packages/role-runtime/src/sub-agent-worker-handler.test.ts packages/role-runtime/src/tool-capability-registry.test.ts`
+  - `npm run typecheck`
+  - `npm run build`
+  - `git diff --check`
+  - `npm test -- --runInBand`
+- Natural real LLM E2E comparison for `natural-timeout-followup-continuation`:
+  - Baseline artifact: `artifacts/evals/20260603-active-tool-budget/natural-timeout-followup.json`, mission `msn.mpxx1n5h.1`, duration `334949ms`, final referenced `30s initial, 150s resume`.
+  - Intermediate artifact: `artifacts/evals/20260603-wallclock-policy/natural-timeout-followup.json`, mission `msn.mpxxy8g7.1`, duration `292788ms`, final referenced `20s` and `120s`.
+  - Intermediate artifact: `artifacts/evals/20260603-wallclock-policy-v2/natural-timeout-followup.json`, mission `msn.mpxya7sp.1`, duration `304765ms`, final referenced `120s` twice.
+  - Current artifact: `artifacts/evals/20260603-wallclock-policy-v3/natural-timeout-followup.json`, mission `msn.mpxyjd0o.1`, duration `112725ms`, natural status `passed`, no stuck/loop, browser used, no weak-answer signals, final referenced `25s` and `30s` bounded attempts.
+
+Regression Risk:
+- The production default foreground cap may interrupt slow but legitimate single-call work earlier than before. This is intentional for user-facing responsiveness, and deployments can override the cap with environment settings.
+- The change is not a substitute for full natural core and same-scenario A/B validation.
+- Long-running work still needs stronger product semantics around resumable sessions, background progress, and user-visible continuation controls.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes, narrowly for foreground timeout-continuation latency.
+- Evidence: same natural scenario remained useful and evidence-backed while duration dropped from `334949ms` to `112725ms`.
+- If no, next required gate: run the broader natural core/A-B suite and use failures to choose the next P0 runtime, prompt harness, or browser reliability PR.

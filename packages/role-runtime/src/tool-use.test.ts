@@ -2040,6 +2040,205 @@ test("sessions_spawn interrupts the worker and returns a resumable timeout resul
   assert.equal(result.progress?.at(-1)?.detail?.evidence_available, true);
 });
 
+test("sessions_send treats tool-loop wall-clock abort as resumable timeout", async () => {
+  let resumeStarted!: () => void;
+  let interruptedReason: string | null = null;
+  const resumeStartedPromise = new Promise<void>((resolve) => {
+    resumeStarted = resolve;
+  });
+  const controller = new AbortController();
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:slow-followup",
+          workerType: "explore",
+          context: {
+            threadId: "thread-1",
+            label: "slow follow-up",
+          },
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:slow-followup",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 2,
+        continuationDigest: {
+          reason: "timeout_summary",
+          summary: "Verified the release page title before the active tool budget expired.",
+          createdAt: 2,
+        },
+      };
+    },
+    async resume() {
+      resumeStarted();
+      await new Promise(() => undefined);
+      return null;
+    },
+    async interrupt(input: { reason?: string }) {
+      interruptedReason = input.reason ?? null;
+      return {
+        workerRunKey: "worker:explore:slow-followup",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 3,
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    maxSessionToolTimeoutMs: 480_000,
+    hardTimeoutGraceMs: 1,
+  });
+
+  const executePromise = executor.execute({
+    call: {
+      id: "call-wall-clock-abort",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:slow-followup",
+        message: "Continue the slow source check.",
+        timeout_seconds: 150,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue the slow source.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+    signal: controller.signal,
+  });
+
+  await resumeStartedPromise;
+  controller.abort("Tool-use wall-clock budget reached (2m).");
+  const result = await executePromise;
+  const body = JSON.parse(result.content) as {
+    status: string;
+    timeout_seconds: number;
+    evidence_available: boolean;
+    evidence_summary: string;
+  };
+  assert.match(interruptedReason ?? "", /Tool-use wall-clock budget reached/);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
+  assert.equal(body.timeout_seconds, 45);
+  assert.equal(body.evidence_available, true);
+  assert.match(body.evidence_summary, /release page title/);
+});
+
+test("sessions_send caps running follow-up timeout to the foreground continuation budget", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let resumeStarted!: () => void;
+  let interrupted = false;
+  const resumeStartedPromise = new Promise<void>((resolve) => {
+    resumeStarted = resolve;
+  });
+  const workerRuntime = {
+    async listSessions() {
+      return [
+        {
+          workerRunKey: "worker:explore:running-followup",
+          workerType: "explore",
+          context: { threadId: "thread-1" },
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      ];
+    },
+    async getState() {
+      return {
+        workerRunKey: "worker:explore:running-followup",
+        workerType: "explore",
+        status: interrupted ? "resumable" : "running",
+        createdAt: 1,
+        updatedAt: interrupted ? 3 : 2,
+        ...(interrupted
+          ? {
+              continuationDigest: {
+                reason: "timeout_summary",
+                summary: "Collected partial follow-up evidence before timeout.",
+                createdAt: 3,
+              },
+            }
+          : {}),
+      };
+    },
+    async resume() {
+      resumeStarted();
+      await new Promise(() => undefined);
+      return null;
+    },
+    async interrupt() {
+      interrupted = true;
+      return {
+        workerRunKey: "worker:explore:running-followup",
+        workerType: "explore",
+        status: "resumable",
+        createdAt: 1,
+        updatedAt: 3,
+      };
+    },
+  } as unknown as WorkerRuntime;
+  const executor = createWorkerSessionToolExecutor({
+    workerRuntime,
+    availableWorkerKinds: ["explore"],
+    maxSessionToolTimeoutMs: 480_000,
+    hardTimeoutGraceMs: 0,
+  });
+
+  const executePromise = executor.execute({
+    call: {
+      id: "call-running-followup-cap",
+      name: "sessions_send",
+      input: {
+        session_key: "worker:explore:running-followup",
+        message: "Continue the slow source check.",
+        timeout_seconds: 150,
+      },
+    },
+    activation: buildActivation(),
+    packet: {
+      roleId: "role-lead",
+      roleName: "Lead",
+      seat: "lead",
+      systemPrompt: "Lead.",
+      taskPrompt: "Continue the slow source.",
+      outputContract: "Return result.",
+      suggestedMentions: [],
+    },
+  });
+
+  await resumeStartedPromise;
+  t.mock.timers.tick(45_000);
+  await Promise.resolve();
+  t.mock.timers.tick(0);
+  await Promise.resolve();
+  const result = await executePromise;
+  const body = JSON.parse(result.content) as {
+    status: string;
+    timeout_seconds: number;
+    evidence_summary: string;
+  };
+  assert.equal(interrupted, true);
+  assert.equal(result.isError, true);
+  assert.equal(body.status, "timeout");
+  assert.equal(body.timeout_seconds, 45);
+  assert.match(body.evidence_summary, /partial follow-up evidence/);
+});
+
 test("sessions_spawn observes late worker rejection after returning timeout", async () => {
   let unhandled: unknown = null;
   const onUnhandled = (reason: unknown) => {

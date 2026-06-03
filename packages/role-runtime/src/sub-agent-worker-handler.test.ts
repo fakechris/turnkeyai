@@ -1247,6 +1247,77 @@ test("LLMSubAgentWorkerHandler stops before private tools when aborted after an 
   assert.equal(innerCalled, false);
 });
 
+test("LLMSubAgentWorkerHandler passes abort signals into explore private tools", async () => {
+  const controller = new AbortController();
+  let innerStarted = false;
+  let observedAbortReason: string | null = null;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () => toolCallResult("tool-1", "explore_run", { instruction: "Fetch the slow source." });
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "explore",
+    innerHandler: buildInnerHandler({
+      kind: "explore",
+      async run(input) {
+        assert.ok(input.signal, "private explore tool should receive an abort signal");
+        return new Promise<WorkerExecutionResult | null>((_resolve, reject) => {
+          input.signal?.addEventListener(
+            "abort",
+            () => {
+              observedAbortReason = typeof input.signal?.reason === "string" ? input.signal.reason : "aborted";
+              reject(new Error(observedAbortReason));
+            },
+            { once: true }
+          );
+          innerStarted = true;
+        });
+      },
+    }),
+    gateway,
+  });
+
+  const pending = handler.run({
+    ...buildInvocationInput("explore"),
+    signal: controller.signal,
+  });
+  await waitUntil(() => innerStarted);
+  controller.abort("session tool timeout");
+  const result = await pending;
+
+  assert.equal(result?.status, "partial");
+  assert.match(result?.summary ?? "", /interrupted before completion/i);
+  assert.equal(observedAbortReason, "session tool timeout");
+});
+
+test("LLMSubAgentWorkerHandler aborts browser private tools while browser transport is still pending", async () => {
+  const controller = new AbortController();
+  let browserStarted = false;
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async () =>
+    toolCallResult("tool-1", "browser_open", { url: "https://example.test/slow", screenshot: false });
+  const handler = new LLMSubAgentWorkerHandler({
+    kind: "browser",
+    innerHandler: buildInnerHandler({ kind: "browser" }),
+    browserBridge: buildBrowserBridge({
+      async spawnSession() {
+        browserStarted = true;
+        await new Promise(() => undefined);
+        return browserResult({});
+      },
+    }),
+    gateway,
+  });
+
+  const pending = handler.run({
+    ...buildInvocationInput("browser"),
+    signal: controller.signal,
+  });
+  await waitUntil(() => browserStarted);
+  controller.abort("session tool timeout");
+  const result = await pending;
+
+  assert.equal(result?.status, "partial");
+});
+
 test("LLMSubAgentWorkerHandler returns a tool error for malformed private tool input", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;

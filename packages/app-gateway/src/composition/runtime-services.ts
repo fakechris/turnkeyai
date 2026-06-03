@@ -67,8 +67,12 @@ import { reconcileWorkerBindingsOnStartup } from "../worker-binding-startup-reco
 import type { DaemonFoundations } from "./foundations";
 
 const DEFAULT_AGENT_TOOL_MAX_ROUNDS = 128;
-const DEFAULT_AGENT_TOOL_TIMEOUT_MS = 18 * 60 * 1_000;
-const DEFAULT_AGENT_TOOL_WALL_CLOCK_MS = 30 * 60 * 1_000;
+const DEFAULT_AGENT_TOOL_TIMEOUT_MS = readPositiveIntegerEnv("TURNKEYAI_AGENT_TOOL_TIMEOUT_MS", 45_000);
+const DEFAULT_AGENT_TOOL_WALL_CLOCK_MS = readPositiveIntegerEnv("TURNKEYAI_AGENT_TOOL_WALL_CLOCK_MS", 120_000);
+const DEFAULT_AGENT_TOOL_HARD_TIMEOUT_GRACE_MS = readPositiveIntegerEnv(
+  "TURNKEYAI_AGENT_TOOL_HARD_TIMEOUT_GRACE_MS",
+  10_000
+);
 const DEFAULT_AGENT_TOOL_MAX_PARALLEL_CALLS = 5;
 const DEFAULT_AGENT_TOOL_MAX_CALLS_PER_ROUND = 5;
 const DEFAULT_AGENT_TOOL_MAX_PARENT_SESSIONS = 5;
@@ -267,6 +271,7 @@ export async function composeDaemonRuntimeServices(
               executor: createWorkerSessionToolExecutor({
                 workerRuntime,
                 maxSessionToolTimeoutMs: DEFAULT_AGENT_TOOL_TIMEOUT_MS,
+                hardTimeoutGraceMs: DEFAULT_AGENT_TOOL_HARD_TIMEOUT_GRACE_MS,
                 sessionConcurrency: {
                   maxPerParentConcurrent: DEFAULT_AGENT_TOOL_MAX_PARENT_SESSIONS,
                   maxGlobalActive: DEFAULT_AGENT_TOOL_MAX_GLOBAL_SESSIONS,
