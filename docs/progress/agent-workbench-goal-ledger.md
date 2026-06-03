@@ -8267,7 +8267,7 @@ Acceptance Evidence:
   `npm run acceptance:ab:spec -- --natural-report
   artifacts/evals/20260604-browser-focused-shared-fixture/turnkeyai-natural-browser-focused-after-routing.json
   --reference-dir
-  /Users/chris/workspace/turnkeyai-p0-runtime/artifacts/evals/20260603-browser-focused-ab/reference-shared-fixture
+  ../turnkeyai-p0-runtime/artifacts/evals/20260603-browser-focused-ab/reference-shared-fixture
   --suite browser-focused --out
   artifacts/evals/20260604-after-454-browser-focused-ab/ab-build-spec.json`
   `npm run acceptance:ab:build -- --spec
