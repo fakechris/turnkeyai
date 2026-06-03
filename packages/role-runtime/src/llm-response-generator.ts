@@ -438,12 +438,19 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         break;
       }
       if (!activeToolLoop || toolCalls.length === 0) {
-        if (
-          activeToolLoop &&
-          (shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace }) ||
-            shouldAppendRecoveredTimeoutCloseoutVisibility({ resultText: result.text, toolTrace }))
-        ) {
-          result = maybeAppendTimeoutContinuationVisibility(result);
+        if (activeToolLoop) {
+          if (
+            shouldAppendRecoveredTimeoutCloseoutVisibility({
+              resultText: result.text,
+              taskPrompt: input.packet.taskPrompt,
+              messages,
+              toolTrace,
+            })
+          ) {
+            result = maybeAppendRecoveredTimeoutCloseoutVisibility(result);
+          } else if (shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace })) {
+            result = maybeAppendTimeoutContinuationVisibility(result);
+          }
         }
         break;
       }
@@ -735,11 +742,17 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           browserRecoverySummaries: completedSession.browserRecoverySummaries,
         });
-        if (
+        const shouldAppendRecoveredTimeoutCloseout =
           preserveRecoveredTimeoutCloseout ||
-          shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace }) ||
-          shouldAppendRecoveredTimeoutCloseoutVisibility({ resultText: result.text, toolTrace })
-        ) {
+          shouldAppendRecoveredTimeoutCloseoutVisibility({
+            resultText: result.text,
+            taskPrompt: input.packet.taskPrompt,
+            messages,
+            toolTrace,
+          });
+        if (shouldAppendRecoveredTimeoutCloseout) {
+          result = maybeAppendRecoveredTimeoutCloseoutVisibility(result);
+        } else if (shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace })) {
           result = maybeAppendTimeoutContinuationVisibility(result);
         }
         result = maybeRedactForbiddenLocalUrls({
@@ -1874,7 +1887,7 @@ function findIncompleteApprovedBrowserSession(input: {
   if (!requestsApprovalGatedBrowserAction(input.taskPrompt)) {
     return null;
   }
-  if (latestPermissionToolName(input.toolTrace) !== "permission_applied") {
+  if (latestPermissionToolName(input.toolTrace) !== "permission_applied" && !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
     return null;
   }
   for (const result of input.results) {
@@ -2127,9 +2140,26 @@ function maybeAppendTimeoutContinuationVisibility(result: GenerateTextResult): G
 
 function shouldAppendRecoveredTimeoutCloseoutVisibility(input: {
   resultText: string;
+  taskPrompt: string;
+  messages: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
-  return toolTraceHasCall(input.toolTrace, "sessions_send") && mentionsTimeout(input.resultText) && !hasTimeoutCloseoutGuidance(input.resultText);
+  return (
+    hasSessionTimeoutEvidence(input) &&
+    toolTraceHasCall(input.toolTrace, "sessions_send") &&
+    mentionsTimeout(input.resultText) &&
+    !hasTimeoutCloseoutGuidance(input.resultText)
+  );
+}
+
+function maybeAppendRecoveredTimeoutCloseoutVisibility(result: GenerateTextResult): GenerateTextResult {
+  if (hasTimeoutCloseoutGuidance(result.text)) {
+    return result;
+  }
+  return {
+    ...result,
+    text: `${result.text.trim()}\n\nTimeout closeout: the resumed source produced usable evidence, but future release-gated checks should keep a retry path or a longer timeout before treating missing evidence as verified.`.trim(),
+  };
 }
 
 function shouldPreserveRecoveredTimeoutCloseout(input: {
@@ -2141,12 +2171,17 @@ function shouldPreserveRecoveredTimeoutCloseout(input: {
   if (shouldAppendTimeoutContinuationVisibility(input)) {
     return true;
   }
-  return toolTraceHasCall(input.toolTrace, "sessions_send") && mentionsTimeout(input.evidenceText);
+  return (
+    hasSessionTimeoutEvidence(input) &&
+    toolTraceHasCall(input.toolTrace, "sessions_send") &&
+    mentionsTimeout(input.evidenceText)
+  );
 }
 
 function hasTimeoutCloseoutGuidance(text: string): boolean {
   return (
-    /\b(?:continue|retry|resume|resumable|next step|next action|longer timeout|timeout-gated)\b/i.test(text) ||
+    /\b(?:continue|retry|resume|resumable|longer timeout|timeout-gated)\b/i.test(text) ||
+    /\b(?:next step|next action)\b[\s\S]{0,80}\b(?:continue|retry|resume|longer timeout)\b/i.test(text) ||
     /\b(?:configure|increase|extend)\b[\s\S]{0,80}\b(?:tool-call\s+)?timeouts?\b/i.test(text) ||
     /\btimeouts?\b[\s\S]{0,80}\b(?:retry|extend|increase|recover|configure|exclude|timeout-gated|use a longer timeout|with a longer timeout)\b/i.test(
       text
@@ -2160,6 +2195,31 @@ function mentionsTimeout(text: string): boolean {
 
 function toolTraceHasCall(toolTrace: NativeToolRoundTrace[], toolName: string): boolean {
   return toolTrace.some((roundTrace) => roundTrace.calls.some((call) => call.name === toolName));
+}
+
+function toolTraceHasTimeoutResult(toolTrace: NativeToolRoundTrace[]): boolean {
+  return toolTrace.some((roundTrace) =>
+    roundTrace.results.some((result) => {
+      if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+        return false;
+      }
+      if (typeof result.content !== "string") {
+        return false;
+      }
+      return parseSessionToolResult(result.content)?.status === "timeout";
+    })
+  );
+}
+
+function hasSessionTimeoutEvidence(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (toolTraceHasTimeoutResult(input.toolTrace)) {
+    return true;
+  }
+  return contextHasTimeoutSessionResult(buildContinuationDirectiveContext(input.taskPrompt, input.messages));
 }
 
 function maybeRedactForbiddenLocalUrls(input: { result: GenerateTextResult; packet: RolePromptPacket }): GenerateTextResult {
@@ -2251,7 +2311,7 @@ function shouldRepairIncompleteApprovedBrowserAction(input: {
   if (!requestsApprovalGatedBrowserAction(input.taskPrompt)) {
     return false;
   }
-  if (latestPermissionToolName(input.toolTrace) !== "permission_applied") {
+  if (latestPermissionToolName(input.toolTrace) !== "permission_applied" && !taskPromptSaysApprovalAlreadyApplied(input.taskPrompt)) {
     return false;
   }
   return matchesAny(input.resultText, INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS);
@@ -2301,8 +2361,7 @@ function shouldRepairMissingRequestedRiskDimension(input: {
   if (!/\brisks?\b/i.test(input.taskPrompt) || /\brisks?\b/i.test(input.resultText)) {
     return false;
   }
-  const messageText = input.messages.map((message) => readMessageContentText(message.content)).join("\n");
-  return /\brisks?\b/i.test(messageText);
+  return input.messages.some((message) => /\brisks?\b/i.test(readMessageContentText(message.content)));
 }
 
 function taskRequestsEstimate(taskPrompt: string): boolean {
@@ -2459,7 +2518,7 @@ function hasWeakEvidenceSynthesisRepairPrompt(messages: LLMMessage[]): boolean {
 }
 
 function mentionsPendingApproval(text: string): boolean {
-  return /\b(?:approval pending|approval is pending|approval request is pending|permission request is pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once (?:you )?approve|once approved|before (?:the )?(?:browser worker )?can|still pending)\b/i.test(
+  return /\b(?:approval pending|approval is pending|approval is still pending|approval request is pending|approval request is still pending|permission request is pending|permission request is still pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once you approve|after you approve|before (?:the )?(?:browser worker )?can)\b/i.test(
     text
   );
 }
@@ -2722,12 +2781,7 @@ function shouldAppendTimeoutContinuationVisibility(input: {
     return false;
   }
   const context = buildContinuationDirectiveContext(input.taskPrompt, input.messages);
-  return (
-    contextHasTimeoutSessionResult(context) ||
-    /\b(?:(?:earlier|previous|prior|original)\s+(?:session\s+)?(?:timeout|timed out)|(?:session|connection|source)\s+(?:timeout|timed out))\b/i.test(
-      taskPromptSuffix
-    )
-  );
+  return toolTraceHasTimeoutResult(input.toolTrace) || contextHasTimeoutSessionResult(context);
 }
 
 function contextHasSessionListResult(context: string): boolean {
