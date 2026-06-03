@@ -3933,7 +3933,7 @@ export function buildNaturalScenarioSpec(
         {
           label: "continuation guidance",
           pattern:
-            /\b(?:continue|retry|resume|resumable|next step|next action|longer timeout|timeout-gated)\b|(?:\b(?:configure|increase|extend)\b[\s\S]{0,80}\b(?:tool-call\s+)?timeouts?\b)|(?:\btimeouts?\b[\s\S]{0,80}\b(?:retry|extend|increase|longer|recover|configure|exclude|timeout-gated)\b)/i,
+            /\b(?:continue|retry|resume|resumable|longer timeout|timeout-gated)\b|(?:\b(?:next step|next action)\b[\s\S]{0,80}\b(?:continue|retry|resume|longer timeout)\b)|(?:\b(?:configure|increase|extend)\b[\s\S]{0,80}\b(?:tool-call\s+)?timeouts?\b)|(?:\btimeouts?\b[\s\S]{0,80}\b(?:retry|extend|increase|recover|configure|exclude|timeout-gated|use a longer timeout|with a longer timeout)\b)/i,
         },
       ],
       forbiddenPatterns: [
@@ -7631,7 +7631,7 @@ function findLatestApprovalAppliedIndex(timeline: ActivityEvent[], approvedIds: 
 
 export function isStalePendingApprovalThought(text: string): boolean {
   const normalized = text.replace(/[*_`#>\[\]()]/g, " ").replace(/\s+/g, " ").trim();
-  return /\b(?:approval pending|approval is pending|approval request is pending|approval request submitted|permission request is pending|pending operator approval|pending operator decision|pending\W+operator\s+(?:approval|decision)|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once (?:you )?approve|still pending)\b/i.test(
+  return /\b(?:approval pending|approval is pending|approval is still pending|approval request is pending|approval request is still pending|approval request submitted|permission request is pending|permission request is still pending|pending operator approval|pending operator decision|pending\W+operator\s+(?:approval|decision)|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once (?:you )?approve)\b/i.test(
     normalized
   );
 }
