@@ -4262,6 +4262,96 @@ test("llm role response generator synthesizes immediately after completed browse
   assert.equal(closeout?.finalContentCount, 1);
 });
 
+test("llm role response generator preserves browser evidence summary when child final is weak", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-browser-signals", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Open the live product signal dashboard and report rendered counters.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.equal(input.tools, undefined);
+    const finalPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
+    assert.match(finalPrompt, /Source 1 evidence/);
+    assert.match(finalPrompt, /Stuck missions: 6/);
+    assert.match(finalPrompt, /Weak answer rate: 24%/);
+    assert.ok(
+      finalPrompt.indexOf("Stuck missions: 6") <
+        finalPrompt.indexOf("The dashboard rendered client-side; exact counters were not verified.")
+    );
+    return {
+      text: "Final brief uses rendered dashboard evidence: Stuck missions: 6 and Weak answer rate: 24%.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-signals",
+          session_key: "worker:browser:task-signals:toolu-browser-signals",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "Browser worker completed product signal dashboard review.",
+          evidence_summary: [
+            "Browser snapshot: Workbench product signals.",
+            "Rendered counters: Stuck missions: 6. Weak answer rate: 24%.",
+            "Recommended next action: make Mission Control the default entry.",
+          ].join("\n"),
+          final_content: "The dashboard rendered client-side; exact counters were not verified.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            content: "The dashboard rendered client-side; exact counters were not verified.",
+            sessionId: "brw-signals",
+            page: {
+              finalUrl: "http://127.0.0.1/product-signals",
+              title: "Workbench product signals",
+              textExcerpt: "Stuck missions: 6. Weak answer rate: 24%. Mission Control default entry.",
+            },
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.equal(
+    result.content,
+    "Final brief uses rendered dashboard evidence: Stuck missions: 6 and Weak answer rate: 24%."
+  );
+  assert.equal(gatewayInputs.length, 2);
+});
+
 test("llm role response generator repairs completed session synthesis that omits requested next action", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
