@@ -192,6 +192,7 @@ describe("mission tool-use e2e report", () => {
     assert.equal(isStalePendingApprovalThought("Permission request is pending operator decision (`ap-1`)."), true);
     assert.equal(isStalePendingApprovalThought("The approval request is **pending** operator decision."), true);
     assert.equal(isStalePendingApprovalThought("The approval request is pending. I will wait before proceeding."), true);
+    assert.equal(isStalePendingApprovalThought("**Pending operator approval.** Awaiting decision before executing."), true);
     assert.equal(
       isStalePendingApprovalThought("Approval request submitted. Awaiting operator decision on the dry-run form submission."),
       true
@@ -456,6 +457,100 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(alternateQuality.failures, []);
+  });
+
+  it("accepts approved dry-run submission evidence without treating permission safety text as blocked browser evidence", () => {
+    const result = fakeNaturalResult();
+    const spec = buildNaturalScenarioSpec("natural-approval-dry-run-action", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    result.scenario = "natural-approval-dry-run-action";
+    result.metrics.tool.results = 4;
+    result.metrics.sessions.spawned = 1;
+    result.metrics.sessions.continued = 1;
+    result.metrics.approvals = { requested: 1, decided: 1, applied: 1 };
+    result.metrics.qualityGate.evidenceEvents = 4;
+    result.timeline = [
+      {
+        kind: "tool",
+        text: 'Calling sessions_spawn(agent_id="browser")',
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "open local approval form" }),
+        },
+      },
+      {
+        kind: "approval",
+        text: "Requested approval for browser.form.submit.",
+        tMs: 1200,
+        approvalId: "approval-1",
+        runtime: { eventType: "permission.query", status: "pending", approvalId: "approval-1" },
+      },
+      {
+        kind: "approval",
+        text: "Approved browser.form.submit.",
+        tMs: 1500,
+        approvalId: "approval-1",
+        runtime: { eventType: "permission.result", status: "approved", approvalId: "approval-1" },
+      },
+      {
+        kind: "approval",
+        text: "Applied approval for browser.form.submit.",
+        tMs: 1550,
+        approvalId: "approval-1",
+        runtime: { eventType: "permission.applied", status: "applied", approvalId: "approval-1" },
+      },
+      {
+        kind: "tool",
+        text: "Tool sessions_spawn returned approval-gate evidence.",
+        tMs: 1800,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: [
+            "Approval request: permission.query blocked browser.form.submit before browser work started.",
+            "Approval decision/application: permission.result approved the request and permission.applied cached it.",
+            'Browser fixture evidence: pre-submit state was "Dry-run has not been submitted" and post-submit state was "Dry-run submitted locally after approval; no external mutation was performed."',
+          ].join("\n"),
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "**Dry-run form submission - completed.**",
+          "Approved action: browser.form.submit.",
+          "Permission cache: Applied.",
+          "Pre-submit state: Dry-run has not been submitted.",
+          "Post-submit state: Dry-run submitted locally after approval; no external mutation was performed.",
+          "Residual risk: Confirmed local-only; no external mutation performed.",
+        ].join("\n"),
+        tMs: 2000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.approvalExercised, true);
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
   });
 
   it("accepts pending approval as a natural paused state without decision or permission application", () => {
