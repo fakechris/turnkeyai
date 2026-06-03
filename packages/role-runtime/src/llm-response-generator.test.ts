@@ -2746,6 +2746,95 @@ test("llm role response generator routes continuation follow-up to timed-out ses
   assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /worker:explore:task-1:toolu-timeout/);
 });
 
+test("llm role response generator preserves timeout guidance after successful continuation without raw timeout context", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-continue", "sessions_send", {
+        session_key: "worker:explore:task-1:toolu-timeout",
+        message: "Resume the slow source check and return the release-risk note.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: "The resumed source verified the fixture and the earlier timeout no longer limits the release-risk conclusion.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.name, "sessions_send");
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:explore:task-1:toolu-timeout",
+          agent_id: "explore",
+          status: "completed",
+          result: "Resumed session evidence.",
+          final_content:
+            "Verified resumed source evidence. The earlier timeout no longer limits the release-risk conclusion.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content: "Verified resumed source evidence. The earlier timeout no longer limits the release-risk conclusion.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Task brief:",
+        "Continue from the slow-source attempt in this mission.",
+        "Resume the existing source-check context if possible and turn the outcome into a release-risk note.",
+        "Explain whether the earlier timeout still limits the conclusion.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(
+    result.content,
+    [
+      "The resumed source verified the fixture and the earlier timeout no longer limits the release-risk conclusion.",
+      "",
+      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.",
+    ].join("\n")
+  );
+  assert.equal(gatewayInputs.length, 2);
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_send"]
+  );
+});
+
 test("llm role response generator forces sessions_send for explicit continuation when the model answers directly", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
