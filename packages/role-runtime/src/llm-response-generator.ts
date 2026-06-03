@@ -438,12 +438,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         break;
       }
       if (!activeToolLoop || toolCalls.length === 0) {
-        if (
-          activeToolLoop &&
-          isExplicitSessionContinuationRequest(extractLatestUserContinuationText(input.packet.taskPrompt)) &&
-          contextHasTimeoutSessionResult(buildContinuationDirectiveContext(input.packet.taskPrompt, messages)) &&
-          toolTrace.some((roundTrace) => roundTrace.calls.some((call) => call.name === "sessions_send"))
-        ) {
+        if (activeToolLoop && shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace })) {
           result = maybeAppendTimeoutContinuationVisibility(result);
         }
         break;
@@ -723,10 +718,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           taskPrompt: input.packet.taskPrompt,
           browserRecoverySummaries: completedSession.browserRecoverySummaries,
         });
-        if (
-          isExplicitSessionContinuationRequest(extractLatestUserContinuationText(input.packet.taskPrompt)) &&
-          contextHasTimeoutSessionResult(buildContinuationDirectiveContext(input.packet.taskPrompt, messages))
-        ) {
+        if (shouldAppendTimeoutContinuationVisibility({ taskPrompt: input.packet.taskPrompt, messages, toolTrace })) {
           result = maybeAppendTimeoutContinuationVisibility(result);
         }
         result = maybeRedactForbiddenLocalUrls({
@@ -2624,6 +2616,24 @@ function contextHasCancelledSessionResult(context: string): boolean {
 
 function contextHasTimeoutSessionResult(context: string): boolean {
   return extractSessionToolResultRecords(context).some((result) => result["status"] === "timeout");
+}
+
+function shouldAppendTimeoutContinuationVisibility(input: {
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+}): boolean {
+  if (
+    !isExplicitSessionContinuationRequest(extractLatestUserContinuationText(input.taskPrompt)) &&
+    !isExplicitSessionContinuationRequest(input.taskPrompt)
+  ) {
+    return false;
+  }
+  if (!input.toolTrace.some((roundTrace) => roundTrace.calls.some((call) => call.name === "sessions_send"))) {
+    return false;
+  }
+  const context = buildContinuationDirectiveContext(input.taskPrompt, input.messages);
+  return contextHasTimeoutSessionResult(context) || /\b(?:earlier|previous|prior|original)?\s*(?:timeout|timed out)\b/i.test(input.taskPrompt);
 }
 
 function contextHasSessionListResult(context: string): boolean {
