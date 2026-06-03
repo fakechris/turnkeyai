@@ -3082,6 +3082,34 @@ describe("mission tool-use e2e report", () => {
     });
     assert.deepEqual(quality.failures, []);
 
+    result.metrics.browser = {
+      profileFallbacks: 0,
+      failureBuckets: [{ bucket: "transport_failure", count: 1, latestAtMs: 1_700_000_004_000 }],
+    };
+    const recoveredTransportQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(recoveredTransportQuality.failures, []);
+
+    result.metrics.browser.failureBuckets = [
+      { bucket: "browser_cdp_unavailable", count: 1, latestAtMs: 1_700_000_004_000 },
+    ];
+    const unavailableBrowserQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(unavailableBrowserQuality.failures, [
+      "unexpected browser failure bucket(s): browser_cdp_unavailable=1",
+    ]);
+
+    result.metrics.browser.failureBuckets = [];
     result.final.text = [
       "Verified facts: the slow-source attempt timed out and the resumed attempt also returned no source content.",
       "Unverified items: cannot determine whether the endpoint is permanently unavailable or temporarily slow.",
@@ -3096,6 +3124,21 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(boundedUnavailableQuality.failures, []);
+
+    result.final.text = [
+      "Verified facts: the resumed slow-source check reached HTTP 200 and returned the expected fixture acknowledgment.",
+      "Unverified items: production freshness and non-fixture behavior remain outside this check.",
+      "Residual risk: a shorter timeout can incorrectly classify the intentionally delayed source as unavailable.",
+      "Recommendation: configure tool-call timeouts for this source at 180 seconds or keep it out of timeout-gated release checks when the delay is intentional.",
+    ].join(" ");
+    const configuredTimeoutGuidanceQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(configuredTimeoutGuidanceQuality.failures, []);
 
     result.metrics.tool.timeouts = 0;
     const missingTimeout = evaluateNaturalMissionQuality({

@@ -3930,7 +3930,11 @@ export function buildNaturalScenarioSpec(
       minEvidenceEvents: 2,
       requiredAnswerTerms: ["verified", "unverified", "risk"],
       requiredAnswerPatterns: [
-        { label: "continuation guidance", pattern: /\b(?:continue|retry|resume|resumable|next step|longer timeout)\b/i },
+        {
+          label: "continuation guidance",
+          pattern:
+            /\b(?:continue|retry|resume|resumable|next step|next action|recommendation|recommended|configure|longer timeout|tool-call timeout|timeout-gated)\b/i,
+        },
       ],
       forbiddenPatterns: [
         { label: "pretends slow source was verified before continuation", pattern: /confirmed.*slow mission route tool-use fixture.*before.*continue/i },
@@ -4125,6 +4129,7 @@ export function evaluateNaturalMissionQuality(input: {
   const artifactLifecycleVisible = (input.artifacts ?? []).some(hasArtifactLifecycleEvidence);
   const profileFallbackCount = input.metrics.browser?.profileFallbacks ?? 0;
   const browserFailureBuckets = input.metrics.browser?.failureBuckets ?? [];
+  const unexpectedBrowserFailureBuckets = collectUnexpectedNaturalBrowserFailureBuckets(input.spec, browserFailureBuckets);
   const missionCancelled = hasRuntimeEvent(input.timeline, "mission.cancelled");
   const sourceCoverage = evaluateNaturalSourceCoverage({
     spec: input.spec,
@@ -4186,32 +4191,32 @@ export function evaluateNaturalMissionQuality(input: {
   const nonCancelledFailures = Math.max(0, input.metrics.tool.failed - input.metrics.tool.cancelled);
   const recoveredToolFailures = countRecoveredToolFailures(input.timeline);
   const recoveredToolTimeouts = countRecoveredToolTimeouts(input.timeline);
-  const recoveredFailurePolicySatisfied =
-    nonCancelledFailures === 0 ||
-    (recoveredToolFailures >= nonCancelledFailures &&
-      input.metrics.tool.timeouts === 0 &&
-      input.metrics.liveness.active === 0 &&
-      input.metrics.liveness.waiting === 0 &&
-      input.metrics.liveness.stale === 0 &&
-      browserFailureBuckets.length === 0 &&
-      sourceCoverage.evidencePatterns.missing.length === 0 &&
-      sourceCoverage.answerPatterns.missing.length === 0 &&
-      sourceCoverage.unsupportedClaims.length === 0 &&
-      finalAnswerHasEvidence &&
-      finalAnswerUseful);
-  const recoveredTimeoutPolicySatisfied =
-    input.spec.allowRecoveredTimeout === true &&
-    input.metrics.tool.timeouts > 0 &&
-    recoveredToolTimeouts >= input.metrics.tool.timeouts &&
+  const recoveryCloseoutIsClean =
     input.metrics.liveness.active === 0 &&
     input.metrics.liveness.waiting === 0 &&
     input.metrics.liveness.stale === 0 &&
-    browserFailureBuckets.length === 0 &&
     sourceCoverage.evidencePatterns.missing.length === 0 &&
     sourceCoverage.answerPatterns.missing.length === 0 &&
     sourceCoverage.unsupportedClaims.length === 0 &&
     finalAnswerHasEvidence &&
     finalAnswerUseful;
+  const recoveredBrowserFailurePolicySatisfied =
+    unexpectedBrowserFailureBuckets.length === 0 ||
+    ((input.spec.allowToolFailure || input.spec.allowRecoveredTimeout === true) &&
+      recoveryCloseoutIsClean &&
+      unexpectedBrowserFailureBuckets.every(isRecoverableNaturalBrowserFailureBucket));
+  const recoveredFailurePolicySatisfied =
+    nonCancelledFailures === 0 ||
+    (recoveredToolFailures >= nonCancelledFailures &&
+      input.metrics.tool.timeouts === 0 &&
+      recoveredBrowserFailurePolicySatisfied &&
+      recoveryCloseoutIsClean);
+  const recoveredTimeoutPolicySatisfied =
+    input.spec.allowRecoveredTimeout === true &&
+    input.metrics.tool.timeouts > 0 &&
+    recoveredToolTimeouts >= input.metrics.tool.timeouts &&
+    recoveredBrowserFailurePolicySatisfied &&
+    recoveryCloseoutIsClean;
 
   if (!completed) failures.push(`mission did not reach expected status ${expectedMissionStatus}`);
   if (stuckOrLoop) failures.push("mission appears stuck, looping, or retains live runtime subjects");
@@ -4236,8 +4241,8 @@ export function evaluateNaturalMissionQuality(input: {
         : `browser profile fallback occurred ${profileFallbackCount} time(s)`
     );
   }
-  if (!input.spec.requiresProfileFallback && (input.spec.requiredBrowserFailureBuckets ?? []).length === 0 && browserFailureBuckets.length > 0) {
-    failures.push(`unexpected browser failure bucket(s): ${formatBrowserFailureBuckets(browserFailureBuckets)}`);
+  if (!input.spec.requiresProfileFallback && unexpectedBrowserFailureBuckets.length > 0 && !recoveredBrowserFailurePolicySatisfied) {
+    failures.push(`unexpected browser failure bucket(s): ${formatBrowserFailureBuckets(unexpectedBrowserFailureBuckets)}`);
   }
   for (const bucket of input.spec.requiredBrowserFailureBuckets ?? []) {
     if (!browserFailureBuckets.some((item) => item.bucket === bucket && item.count > 0)) {
@@ -4404,6 +4409,18 @@ function scoreBoolean(full: boolean, partial: boolean): 0 | 1 | 2 {
 function scoreOptionalRequirement(required: boolean, observed: boolean, full: boolean): 0 | 1 | 2 {
   if (!required) return 2;
   return scoreBoolean(full, observed);
+}
+
+function collectUnexpectedNaturalBrowserFailureBuckets(
+  spec: NaturalScenarioSpec,
+  buckets: Array<{ bucket: string; count: number; latestAtMs: number }>
+): Array<{ bucket: string; count: number; latestAtMs: number }> {
+  const required = new Set(spec.requiredBrowserFailureBuckets ?? []);
+  return buckets.filter((bucket) => !required.has(bucket.bucket));
+}
+
+function isRecoverableNaturalBrowserFailureBucket(bucket: { bucket: string }): boolean {
+  return bucket.bucket === "transport_failure";
 }
 
 function bucketNaturalMissionFailures(input: {
