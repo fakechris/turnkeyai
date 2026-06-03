@@ -16,6 +16,12 @@ import {
   DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS,
 } from "./real-llm-acceptance-defaults";
 
+const EXPECTED_TOOLUSE_SCENARIOS = DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS.length;
+const EXPECTED_MISSION_SCENARIOS = DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS.length;
+const EXPECTED_NATURAL_MISSION_SCENARIOS = DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS.length;
+const EXPECTED_FULL_REAL_ACCEPTANCE_CASES =
+  EXPECTED_TOOLUSE_SCENARIOS + EXPECTED_MISSION_SCENARIOS + EXPECTED_NATURAL_MISSION_SCENARIOS;
+
 test("validation ops inspection derives operator-facing records and report counts", () => {
   const releaseRecord = buildValidationOpsRecordFromReleaseReadiness({
     runId: "release-1",
@@ -318,7 +324,7 @@ test("validation ops inspection marks phase1 readiness passed when all exit gate
   assert.equal(report.readiness.nextCommand, "validation-ops");
   assert.equal(report.readiness.gates.find((gate) => gate.gateId === "real-llm-acceptance")?.latestRunId, "real-llm-pass");
   assert.equal(report.closedLoop.measuredRuns, 1);
-  assert.equal(report.closedLoop.totalCases, 38);
+  assert.equal(report.closedLoop.totalCases, EXPECTED_FULL_REAL_ACCEPTANCE_CASES);
 });
 
 test("validation ops inspection does not let focused real LLM acceptance satisfy the release gate", () => {
@@ -341,9 +347,18 @@ test("validation ops inspection does not let focused real LLM acceptance satisfy
   assert.equal(realGate?.status, "missing");
   assert.equal(realGate?.latestRunId, "real-llm-focused-pass");
   assert.match(realGate?.summary ?? "", /only focused coverage is recorded/);
-  assert.match(realGate?.summary ?? "", /tool-use 3\/5 missing 2/);
-  assert.match(realGate?.summary ?? "", /mission 3\/12 missing 9/);
-  assert.match(realGate?.summary ?? "", /natural 1\/21 missing 20/);
+  assert.match(
+    realGate?.summary ?? "",
+    new RegExp(`tool-use 3/${EXPECTED_TOOLUSE_SCENARIOS} missing ${EXPECTED_TOOLUSE_SCENARIOS - 3}`)
+  );
+  assert.match(
+    realGate?.summary ?? "",
+    new RegExp(`mission 3/${EXPECTED_MISSION_SCENARIOS} missing ${EXPECTED_MISSION_SCENARIOS - 3}`)
+  );
+  assert.match(
+    realGate?.summary ?? "",
+    new RegExp(`natural 1/${EXPECTED_NATURAL_MISSION_SCENARIOS} missing ${EXPECTED_NATURAL_MISSION_SCENARIOS - 1}`)
+  );
 });
 
 test("validation ops inspection keeps the latest full real LLM acceptance as the release gate record", () => {
@@ -750,7 +765,12 @@ test("validation ops inspection treats partial real LLM release coverage metadat
   });
   partialCoverageRecord.realAcceptance!.releaseCoverage = {
     status: "full",
-    tooluse: { status: "full", requested: 5, expected: 5, missing: 0 },
+    tooluse: {
+      status: "full",
+      requested: EXPECTED_TOOLUSE_SCENARIOS,
+      expected: EXPECTED_TOOLUSE_SCENARIOS,
+      missing: 0,
+    },
   } as any;
 
   const report = buildValidationOpsReport([partialCoverageRecord], 10);
@@ -758,7 +778,7 @@ test("validation ops inspection treats partial real LLM release coverage metadat
 
   assert.equal(realGate?.status, "missing");
   assert.equal(realGate?.latestRunId, "real-llm-partial-metadata");
-  assert.match(realGate?.summary ?? "", /tool-use 5\/5/);
+  assert.match(realGate?.summary ?? "", new RegExp(`tool-use ${EXPECTED_TOOLUSE_SCENARIOS}/${EXPECTED_TOOLUSE_SCENARIOS}`));
   assert.match(realGate?.summary ?? "", /mission 0\/0/);
   assert.match(realGate?.summary ?? "", /natural 0\/0/);
 });
@@ -885,9 +905,14 @@ test("validation ops inspection preserves real LLM mission report summary", () =
     totalCases: 4,
     releaseCoverage: {
       status: "focused",
-      tooluse: { status: "focused", requested: 2, expected: 5, missing: 3 },
-      mission: { status: "focused", requested: 2, expected: 12, missing: 10 },
-      naturalMission: { status: "skipped", requested: 0, expected: 21, missing: 21 },
+      tooluse: { status: "focused", requested: 2, expected: EXPECTED_TOOLUSE_SCENARIOS, missing: EXPECTED_TOOLUSE_SCENARIOS - 2 },
+      mission: { status: "focused", requested: 2, expected: EXPECTED_MISSION_SCENARIOS, missing: EXPECTED_MISSION_SCENARIOS - 2 },
+      naturalMission: {
+        status: "skipped",
+        requested: 0,
+        expected: EXPECTED_NATURAL_MISSION_SCENARIOS,
+        missing: EXPECTED_NATURAL_MISSION_SCENARIOS,
+      },
     },
     missionReport: {
       status: "passed",
@@ -990,9 +1015,14 @@ test("validation ops inspection preserves natural mission acceptance summary", (
   assert.equal(record.realAcceptance?.naturalArtifactPath, ".turnkeyai/data/validation-artifacts/real-llm-acceptance/natural.json");
   assert.deepEqual(record.realAcceptance?.releaseCoverage, {
     status: "focused",
-    tooluse: { status: "focused", requested: 1, expected: 5, missing: 4 },
-    mission: { status: "focused", requested: 1, expected: 12, missing: 11 },
-    naturalMission: { status: "focused", requested: 2, expected: 21, missing: 19 },
+    tooluse: { status: "focused", requested: 1, expected: EXPECTED_TOOLUSE_SCENARIOS, missing: EXPECTED_TOOLUSE_SCENARIOS - 1 },
+    mission: { status: "focused", requested: 1, expected: EXPECTED_MISSION_SCENARIOS, missing: EXPECTED_MISSION_SCENARIOS - 1 },
+    naturalMission: {
+      status: "focused",
+      requested: 2,
+      expected: EXPECTED_NATURAL_MISSION_SCENARIOS,
+      missing: EXPECTED_NATURAL_MISSION_SCENARIOS - 2,
+    },
   });
   assert.equal(record.realAcceptance?.naturalMissionReport?.finalAnswerUseful, 2);
   assert.equal(record.realAcceptance?.naturalMissionReport?.progressClaim, "natural-evidence");
@@ -1015,9 +1045,14 @@ test("validation ops inspection marks full real acceptance release coverage", ()
 
   assert.deepEqual(record.realAcceptance?.releaseCoverage, {
     status: "full",
-    tooluse: { status: "full", requested: 5, expected: 5, missing: 0 },
-    mission: { status: "full", requested: 12, expected: 12, missing: 0 },
-    naturalMission: { status: "full", requested: 21, expected: 21, missing: 0 },
+    tooluse: { status: "full", requested: EXPECTED_TOOLUSE_SCENARIOS, expected: EXPECTED_TOOLUSE_SCENARIOS, missing: 0 },
+    mission: { status: "full", requested: EXPECTED_MISSION_SCENARIOS, expected: EXPECTED_MISSION_SCENARIOS, missing: 0 },
+    naturalMission: {
+      status: "full",
+      requested: EXPECTED_NATURAL_MISSION_SCENARIOS,
+      expected: EXPECTED_NATURAL_MISSION_SCENARIOS,
+      missing: 0,
+    },
   });
 });
 
@@ -1035,9 +1070,14 @@ test("validation ops inspection counts only expected scenarios in release covera
 
   assert.deepEqual(record.realAcceptance?.releaseCoverage, {
     status: "focused",
-    tooluse: { status: "focused", requested: 1, expected: 5, missing: 4 },
-    mission: { status: "focused", requested: 1, expected: 12, missing: 11 },
-    naturalMission: { status: "focused", requested: 1, expected: 21, missing: 20 },
+    tooluse: { status: "focused", requested: 1, expected: EXPECTED_TOOLUSE_SCENARIOS, missing: EXPECTED_TOOLUSE_SCENARIOS - 1 },
+    mission: { status: "focused", requested: 1, expected: EXPECTED_MISSION_SCENARIOS, missing: EXPECTED_MISSION_SCENARIOS - 1 },
+    naturalMission: {
+      status: "focused",
+      requested: 1,
+      expected: EXPECTED_NATURAL_MISSION_SCENARIOS,
+      missing: EXPECTED_NATURAL_MISSION_SCENARIOS - 1,
+    },
   });
 });
 

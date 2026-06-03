@@ -32,6 +32,8 @@ export const DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS = [
   "natural-comparison-research",
   "natural-browser-dynamic-page",
   "natural-browser-dashboard-task",
+  "natural-browser-external-page-review",
+  "natural-browser-complex-page-review",
   "natural-browser-followup-continuation",
   "natural-browser-restart-continuation",
   "natural-browser-cold-recreation-continuation",
