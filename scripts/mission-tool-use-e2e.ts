@@ -266,6 +266,10 @@ export interface FixtureServer {
   productSignalsUrl: string;
 }
 
+export interface FixtureServerOptions {
+  port?: number;
+}
+
 export interface ScenarioSpec {
   scenario: MissionE2eScenario;
   title: string;
@@ -3555,11 +3559,13 @@ export function buildNaturalScenarioSpec(
       requiredAnswerPatterns: [
         {
           label: "frame source state",
-          pattern: /\bframe\b[\s\S]{0,120}\b(?:backlog\s*7|Frame Captain)\b/i,
+          pattern:
+            /\b(?:frame|embedded source)\b[\s\S]{0,160}\b(?:backlog\s*(?:count\s*(?:of\s*)?)?(?:value:\s*)?7|Frame Captain)\b/i,
         },
         {
           label: "shadow review state",
-          pattern: /\bshadow\b[\s\S]{0,120}\b(?:risk desk|approval required)\b/i,
+          pattern:
+            /\b(?:shadow|review component)\b[\s\S]{0,160}\b(?:risk desk|approval required|approval requirement)\b/i,
         },
         {
           label: "popup drill state",
@@ -4699,7 +4705,10 @@ function collectTimelineEvidenceText(timeline: ActivityEvent[]): string {
 }
 
 function isEvidenceTimelineEvent(event: ActivityEvent): boolean {
-  return event.kind === "tool" || event.kind === "browser" || event.kind === "doc" || event.kind === "artifact";
+  if (event.kind === "tool") {
+    return event.runtime?.["toolPhase"] === "result";
+  }
+  return event.kind === "browser" || event.kind === "doc" || event.kind === "artifact";
 }
 
 function timelineUsesWorker(timeline: ActivityEvent[], workerType: string): boolean {
@@ -5438,7 +5447,7 @@ function writeCancelResumeFixture(res: ServerResponse): void {
 </html>`);
 }
 
-export async function startFixtureServer(): Promise<FixtureServer> {
+export async function startFixtureServer(options: FixtureServerOptions = {}): Promise<FixtureServer> {
   let cancelResumeRequestCount = 0;
   const server = createServer((req, res) => {
     const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
@@ -5863,7 +5872,7 @@ export async function startFixtureServer(): Promise<FixtureServer> {
     res.end("not found");
     return;
   });
-  const port = await listenOnRandomPort(server);
+  const port = await listenOnFixturePort(server, options.port);
   return {
     server,
     basicUrl: `http://127.0.0.1:${port}/fixture`,
@@ -8545,10 +8554,10 @@ async function allocatePort(): Promise<number> {
   return port;
 }
 
-async function listenOnRandomPort(server: Server): Promise<number> {
+async function listenOnFixturePort(server: Server, requestedPort?: number): Promise<number> {
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(requestedPort ?? 0, "127.0.0.1", () => {
       server.off("error", reject);
       resolve();
     });

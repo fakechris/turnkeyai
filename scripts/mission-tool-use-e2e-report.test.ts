@@ -1563,6 +1563,63 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.status, "passed");
   });
 
+  it("does not treat browser-block wording in tool call input as evidence", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-external-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        externalPageUrl: "https://news.ycombinator.com/",
+      }),
+      requiredEvidencePatterns: [],
+      requiredAnswerPatterns: [],
+      requiredAnswerTerms: [],
+      minBytes: 80,
+    };
+    result.scenario = "natural-browser-external-page-review";
+    result.timeline[0]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "call",
+      callInput: JSON.stringify({
+        agent_id: "browser",
+        task: "If the site blocks the browser, report the blocker instead of guessing.",
+      }),
+    };
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Hacker News visible listing evidence with navigation links, comments, and points.",
+        "No redirects, captchas, paywalls, or blocks were observed.",
+      ].join("\n"),
+    };
+    result.final.text = [
+      "Hacker News loaded with visible story listings, comment cues, points, and navigation links.",
+      "The browser result reports no redirects, captchas, paywalls, or blocks during this run.",
+      "Residual risk: live external content can change and login-only actions remain unverified.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
+  });
+
   it("keeps positive blocker evidence when the same line also negates another blocker", () => {
     const result = fakeNaturalResult();
     const spec = {
@@ -1609,6 +1666,56 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), true);
     assert.equal(quality.failures.some((failure) => failure.includes("browser evidence blocked")), true);
     assert.equal(quality.status, "failed");
+  });
+
+  it("accepts complex browser summaries that preserve evidence across page surfaces", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-complex-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        complexBrowserUrl: "http://127.0.0.1/complex-browser",
+      }),
+      minBytes: 120,
+    };
+    result.scenario = "natural-browser-complex-page-review";
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Main page: complex browser workbench with a details popup workflow.",
+        "Frame panel: backlog 7, owner Frame Captain.",
+        "Shadow review: risk desk approval required.",
+        "Popup drill opened: packet P-42 requires manager acknowledgement.",
+        "Residual risk: local complex browser fixture only.",
+      ].join("\n"),
+    };
+    result.final.text = [
+      "Visible operational state: the embedded source frame shows a backlog count of 7 and owner Frame Captain.",
+      "Approval requirement: the shadow review component says risk desk approval required.",
+      "Popup workflow: opening the popup exposes packet P-42 and manager acknowledgement.",
+      "Residual risk: local complex browser fixture only; external production impact remains not verified.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.status, "passed");
+    assert.deepEqual(quality.sourceCoverage.answerPatterns.missing, []);
+    assert.deepEqual(quality.sourceCoverage.evidencePatterns.missing, []);
   });
 
   it("fails natural quality when the final answer hides residual risk", () => {

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildNaturalFixtureServerManifest } from "./natural-fixture-server";
+import {
+  buildNaturalFixtureEnvFile,
+  buildNaturalFixtureServerHelpText,
+  buildNaturalFixtureServerManifest,
+  parseNaturalFixtureServerArgs,
+} from "./natural-fixture-server";
 import { applyNaturalFixtureUrlOverrides, startFixtureServer } from "./mission-tool-use-e2e";
 
 test("natural fixture server manifest exposes browser-focused prompts and URLs", async () => {
@@ -31,4 +36,60 @@ test("natural fixture server manifest exposes browser-focused prompts and URLs",
       });
     });
   }
+});
+
+test("natural fixture server supports a stable requested port", async () => {
+  const first = await startFixtureServer();
+  const port = Number(new URL(first.complexBrowserUrl).port);
+  await new Promise<void>((resolve, reject) => {
+    first.server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+
+  const fixture = await startFixtureServer({ port });
+  try {
+    assert.equal(new URL(fixture.complexBrowserUrl).port, String(port));
+    assert.equal(new URL(fixture.dashboardUrl).port, String(port));
+    assert.equal(new URL(fixture.dynamicUrl).port, String(port));
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      fixture.server.close((error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }
+});
+
+test("natural fixture env file exports browser URL overrides", async () => {
+  const fixture = applyNaturalFixtureUrlOverrides(await startFixtureServer(), {
+    TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL: "https://example.com/browser",
+  } as NodeJS.ProcessEnv);
+  try {
+    const envFile = buildNaturalFixtureEnvFile(buildNaturalFixtureServerManifest(fixture));
+    assert.match(envFile, /^export TURNKEYAI_NATURAL_COMPLEX_BROWSER_URL="http:\/\/127\.0\.0\.1:\d+\/complex-browser"$/m);
+    assert.match(envFile, /^export TURNKEYAI_NATURAL_DASHBOARD_URL="http:\/\/127\.0\.0\.1:\d+\/ops-dashboard"$/m);
+    assert.match(envFile, /^export TURNKEYAI_NATURAL_DYNAMIC_URL="http:\/\/127\.0\.0\.1:\d+\/dynamic-dashboard"$/m);
+    assert.match(envFile, /^export TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL="https:\/\/example\.com\/browser"$/m);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      fixture.server.close((error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }
+});
+
+test("natural fixture server CLI parses output and port options", () => {
+  assert.deepEqual(parseNaturalFixtureServerArgs(["--port", "51277", "--manifest-out", "manifest.json", "--env-out", "fixture.env"]), {
+    port: 51277,
+    manifestOut: "manifest.json",
+    envOut: "fixture.env",
+  });
+  assert.deepEqual(parseNaturalFixtureServerArgs(["--help"]), { help: true });
+  assert.throws(() => parseNaturalFixtureServerArgs(["--port", "nope"]), /--port must be an integer/);
+  assert.match(buildNaturalFixtureServerHelpText(), /--manifest-out/);
 });
