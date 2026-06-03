@@ -184,8 +184,8 @@ export function parseRealLlmAbReportBuildArgs(args: string[]): RealLlmAbReportBu
     }
     if (arg === "--suite") {
       const value = readValue(args, index, arg);
-      if (value !== "core") {
-        throw new Error("--suite must be core");
+      if (!isRealLlmAbRequiredSuite(value)) {
+        throw new Error("--suite must be one of: core, browser-focused");
       }
       requiredSuite = value;
       index += 1;
@@ -254,10 +254,10 @@ export function buildRealLlmAbReportBuildHelpText(): string {
     "TurnkeyAI real LLM A/B report builder",
     "",
     "Usage:",
-    "  npm run acceptance:ab:build -- --spec <path> --out <path> [--check] [--suite core] [--markdown-out <path>]",
+    "  npm run acceptance:ab:build -- --spec <path> --out <path> [--check] [--suite <core|browser-focused>] [--markdown-out <path>]",
     "",
     "The spec points at a TurnkeyAI natural mission report and same-scenario reference artifacts.",
-    "--suite core requires the full core scenario set when --check is used.",
+    "--suite selects the required scenario set when --check is used.",
     "--markdown-out writes the same conclusion-first Markdown report as acceptance:ab:check.",
     "The generated report can be validated with npm run acceptance:ab:check.",
   ].join("\n");
@@ -342,6 +342,10 @@ function coversCoreSuiteScenarioIds(scenarioIds: readonly string[]): boolean {
     const acceptedScenarioIds: readonly string[] = requirement.acceptedScenarioIds;
     return scenarioIds.some((scenarioId) => acceptedScenarioIds.includes(scenarioId));
   });
+}
+
+function isRealLlmAbRequiredSuite(value: string): value is RealLlmAbRequiredSuite {
+  return value === "core" || value === "browser-focused";
 }
 
 function buildTurnkeyAiRun(input: {

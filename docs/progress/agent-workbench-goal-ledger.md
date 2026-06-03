@@ -8020,3 +8020,65 @@ Convergence question:
 - Not yet proven: full same-scenario A/B parity, hostile external browser pages,
   authenticated/live user sessions, and the broader natural suite covering
   memory, approval, timeout continuation, and long delegation in the same run.
+
+## 2026-06-03 23:10 CST - Browser-Focused A/B Gate Tooling Closure
+
+Direction: unknown
+
+Execution Kernel:
+- No runtime behavior changed in this checkpoint.
+- The A/B acceptance tooling now supports a `browser-focused` required suite
+  across report building, report checking, and qc-runtime validation.
+- The focused suite remains separate from the full core suite. Passing it cannot
+  be treated as broad production capability evidence.
+
+Result Quality:
+- No final-answer behavior changed.
+- The gate keeps prompt equality as a hard requirement before accepting
+  same-scenario evidence. This prevented a browser-focused report from passing
+  when the complex-page scenario used different localhost ports across systems.
+
+Workbench UX:
+- No UI changed.
+- User-visible progress remains unproven for this checkpoint because the work
+  closes an acceptance tooling gap rather than changing task execution.
+
+Browser Reliability:
+- No browser session/profile behavior changed.
+- Existing natural TurnkeyAI browser-focused evidence showed browser artifacts
+  and useful answers, but the same-scenario A/B report did not pass because the
+  reference evidence did not use the identical complex-page prompt.
+
+Acceptance Evidence:
+- Focused tooling tests passed:
+  `npx tsx --test packages/qc-runtime/src/real-llm-ab-acceptance.test.ts
+  scripts/real-llm-ab-spec-build.test.ts scripts/real-llm-ab-report-build.test.ts
+  scripts/real-llm-ab-acceptance-check.test.ts`.
+- Local browser-focused build spec was generated from natural evidence:
+  `artifacts/evals/20260603-browser-focused-ab/current-ab/ab-build-spec.json`.
+- Local browser-focused A/B report was generated but failed validation:
+  `artifacts/evals/20260603-browser-focused-ab/current-ab/ab-report.json` and
+  `artifacts/evals/20260603-browser-focused-ab/current-ab/report.md`.
+- Failure reason:
+  `natural-browser-complex-page-review/reference: run prompt does not match the
+  scenario prompt`.
+- The mismatch was a localhost fixture port difference, so this is an evidence
+  collection problem, not proof of a TurnkeyAI browser runtime regression.
+
+Regression Risk:
+- The new risk is accidental over-claiming from focused browser evidence. Tests
+  now assert that `browser-focused` can pass its own suite while still failing
+  when checked as `core`.
+- Next step must collect a same-prompt browser-focused reference run or rerun
+  both systems against a shared stable fixture before claiming browser-focused
+  capability.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  unknown
+- Evidence: the acceptance harness can now evaluate the browser-focused slice,
+  but the available same-scenario evidence is not valid because one reference
+  prompt differs.
+- Next required gate: rerun the browser-focused A/B with identical natural
+  prompts and stable shared fixture URLs, then classify any losses before making
+  runtime or prompt changes.

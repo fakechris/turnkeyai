@@ -36,6 +36,23 @@ test("real LLM A/B report builder parses args and help", () => {
       "/tmp/spec.json",
       "--out",
       "/tmp/report.json",
+      "--check",
+      "--suite",
+      "browser-focused",
+    ]),
+    {
+      specPath: "/tmp/spec.json",
+      outPath: "/tmp/report.json",
+      check: true,
+      requiredSuite: "browser-focused",
+    }
+  );
+  assert.deepEqual(
+    parseRealLlmAbReportBuildArgs([
+      "--spec",
+      "/tmp/spec.json",
+      "--out",
+      "/tmp/report.json",
       "--markdown-out",
       "/tmp/report.md",
     ]),
@@ -48,7 +65,7 @@ test("real LLM A/B report builder parses args and help", () => {
   );
   assert.deepEqual(parseRealLlmAbReportBuildArgs(["--help"]), { help: true });
   assert.match(buildRealLlmAbReportBuildHelpText(), /real LLM A\/B report builder/);
-  assert.match(buildRealLlmAbReportBuildHelpText(), /--suite core/);
+  assert.match(buildRealLlmAbReportBuildHelpText(), /browser-focused/);
   assert.match(buildRealLlmAbReportBuildHelpText(), /--markdown-out/);
   assert.throws(() => parseRealLlmAbReportBuildArgs(["--spec", "/tmp/spec.json"]), /missing required --out/);
   assert.throws(
@@ -57,7 +74,7 @@ test("real LLM A/B report builder parses args and help", () => {
   );
   assert.throws(
     () => parseRealLlmAbReportBuildArgs(["--spec", "/tmp/spec.json", "--out", "/tmp/report.json", "--suite", "focused"]),
-    /--suite must be core/
+    /--suite must be one of: core, browser-focused/
   );
 });
 
@@ -245,6 +262,60 @@ test("real LLM A/B report builder CLI writes and checks output", async () => {
   }
 });
 
+test("real LLM A/B report builder CLI checks the browser-focused suite", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
+  const previousExitCode = process.exitCode;
+  try {
+    process.exitCode = undefined;
+    writeBrowserFocusedFixtureFiles(dir);
+    writeFileSync(
+      path.join(dir, "spec.json"),
+      JSON.stringify({
+        turnkeyaiNaturalReportPath: "turnkeyai-natural.json",
+        generatedAtMs: 1,
+        scenarios: [
+          {
+            scenarioId: "natural-browser-external-page-review",
+            turnkeyaiScenarioId: "natural-browser-external-page-review",
+            prompt: "请查看外部页面，判断当前主要风险、证据和建议动作。",
+            requiresBrowser: true,
+            referenceArtifactPath: "natural-browser-external-page-review.json",
+          },
+          {
+            scenarioId: "natural-browser-complex-page-review",
+            turnkeyaiScenarioId: "natural-browser-complex-page-review",
+            prompt: "请查看复杂交互页面，找出页面状态、异常信号和下一步动作。",
+            requiresBrowser: true,
+            referenceArtifactPath: "natural-browser-complex-page-review.json",
+          },
+        ],
+      })
+    );
+
+    await runRealLlmAbReportBuildCli([
+      "--spec",
+      path.join(dir, "spec.json"),
+      "--out",
+      path.join(dir, "report.json"),
+      "--markdown-out",
+      path.join(dir, "report.md"),
+      "--suite",
+      "browser-focused",
+      "--check",
+    ]);
+
+    const report = JSON.parse(readFileSync(path.join(dir, "report.json"), "utf8")) as unknown;
+    const markdown = readFileSync(path.join(dir, "report.md"), "utf8");
+    assert.equal(validateRealLlmAbAcceptanceReport(report, { requiredSuite: "browser-focused" }).status, "passed");
+    assert.match(markdown, /Capability: focused capability proven/);
+    assert.match(markdown, /Status: passed/);
+    assert.equal(process.exitCode, undefined);
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B report builder rejects JSON and Markdown output path collisions", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
@@ -412,4 +483,92 @@ function writeFixtureFiles(
       },
     })
   );
+}
+
+function writeBrowserFocusedFixtureFiles(dir: string): void {
+  const scenarios = [
+    {
+      scenario: "natural-browser-external-page-review",
+      prompt: "请查看外部页面，判断当前主要风险、证据和建议动作。",
+    },
+    {
+      scenario: "natural-browser-complex-page-review",
+      prompt: "请查看复杂交互页面，找出页面状态、异常信号和下一步动作。",
+    },
+  ];
+  writeFileSync(
+    path.join(dir, "turnkeyai-natural.json"),
+    JSON.stringify({
+      kind: "turnkeyai.natural-mission-e2e.report",
+      status: "passed",
+      scenarios: scenarios.map((scenario, index) => ({
+        scenario: scenario.scenario,
+        prompt: scenario.prompt,
+        missionId: `msn.browser.${index + 1}`,
+        durationMs: 20_000 + index,
+        threadId: `THREAD-browser-${index + 1}`,
+        status: "done",
+        metrics: {
+          tools: { requested: 2, results: 2, failed: 0, cancelled: 0, timeouts: 0 },
+          sessions: { spawned: 1, continued: 0 },
+          browser: { profileFallbacks: 0, failureBuckets: [] },
+          approvals: { requested: 0, decided: 0, applied: 0 },
+          liveness: { active: 0, waiting: 0, stale: 0 },
+          evidenceEvents: 2,
+        },
+        artifacts: [
+          { kind: "screenshot", id: `art.screenshot.${index + 1}` },
+          { kind: "snapshot", id: `art.snapshot.${index + 1}` },
+        ],
+        natural: {
+          status: "passed",
+          completed: true,
+          stuckOrLoop: false,
+          reasonableToolUse: true,
+          browserUsed: true,
+          subAgentCompleted: true,
+          approvalExercised: false,
+          finalAnswerHasEvidence: true,
+          finalAnswerUseful: true,
+          weakAnswerSignals: [],
+          sourceCoverage: { residualRiskVisible: true, unsupportedClaims: [] },
+          dimensionScores: {
+            taskCompletion: 2,
+            evidenceQuality: 2,
+            toolUseAppropriateness: 2,
+            browserAuthenticity: 2,
+            subAgentIndependence: 2,
+            continuationBehavior: 2,
+            permissionCorrectness: 2,
+            timeoutCloseoutQuality: 2,
+            finalAnswerUsefulness: 2,
+          },
+          failureBuckets: [],
+        },
+      })),
+    })
+  );
+  for (const scenario of scenarios) {
+    writeFileSync(
+      path.join(dir, `${scenario.scenario}.json`),
+      JSON.stringify({
+        system: "reference",
+        prompt: scenario.prompt,
+        threadId: `THREAD-reference-${scenario.scenario}`,
+        durationMs: 12_000,
+        timedOut: false,
+        first: {
+          summary: {
+            toolCallCount: 1,
+            toolResultCount: 1,
+            pendingToolCount: 0,
+          },
+        },
+        score: {
+          useful: true,
+          weak: false,
+        },
+      })
+    );
+  }
 }

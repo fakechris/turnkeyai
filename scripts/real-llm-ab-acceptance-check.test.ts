@@ -18,6 +18,10 @@ test("real LLM A/B acceptance check parses the JSON path", () => {
     jsonPath: "/tmp/ab-report.json",
     requiredSuite: "core",
   });
+  assert.deepEqual(parseRealLlmAbAcceptanceCheckArgs(["--json", "/tmp/ab-report.json", "--suite", "browser-focused"]), {
+    jsonPath: "/tmp/ab-report.json",
+    requiredSuite: "browser-focused",
+  });
   assert.deepEqual(parseRealLlmAbAcceptanceCheckArgs(["--json", "/tmp/ab-report.json", "--markdown-out", "/tmp/report.md"]), {
     jsonPath: "/tmp/ab-report.json",
     markdownOutPath: "/tmp/report.md",
@@ -28,14 +32,17 @@ test("real LLM A/B acceptance check exposes help", () => {
   assert.deepEqual(parseRealLlmAbAcceptanceCheckArgs(["--help"]), { help: true });
   assert.match(buildRealLlmAbAcceptanceCheckHelpText(), /real LLM A\/B acceptance report check/);
   assert.match(buildRealLlmAbAcceptanceCheckHelpText(), /natural same-scenario/);
-  assert.match(buildRealLlmAbAcceptanceCheckHelpText(), /--suite core/);
+  assert.match(buildRealLlmAbAcceptanceCheckHelpText(), /browser-focused/);
   assert.match(buildRealLlmAbAcceptanceCheckHelpText(), /--markdown-out/);
 });
 
 test("real LLM A/B acceptance check rejects missing or unknown args", () => {
   assert.throws(() => parseRealLlmAbAcceptanceCheckArgs([]), /missing required --json/);
   assert.throws(() => parseRealLlmAbAcceptanceCheckArgs(["--json"]), /missing value for --json/);
-  assert.throws(() => parseRealLlmAbAcceptanceCheckArgs(["--json", "/tmp/ab-report.json", "--suite", "focused"]), /--suite must be core/);
+  assert.throws(
+    () => parseRealLlmAbAcceptanceCheckArgs(["--json", "/tmp/ab-report.json", "--suite", "focused"]),
+    /--suite must be one of: core, browser-focused/
+  );
   assert.throws(() => parseRealLlmAbAcceptanceCheckArgs(["--json", "/tmp/ab-report.json", "--markdown-out"]), /missing value for --markdown-out/);
   assert.throws(() => parseRealLlmAbAcceptanceCheckArgs(["--unknown"]), /unknown argument/);
 });
