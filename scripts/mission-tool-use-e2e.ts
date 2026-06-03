@@ -4599,6 +4599,7 @@ function countRecoveredToolTimeouts(timeline: ActivityEvent[]): number {
     .map((event, index) => ({ event, index }))
     .filter(({ event }) => isTimedOutToolResultEvent(event))
     .filter(({ event, index }) => {
+      if (hasTimedOutToolResultEvidenceSummary(event)) return true;
       const sessionKey = readToolResultSessionKey(event);
       if (!sessionKey) return false;
       return hasLaterSuccessfulSessionResult(timeline, index, sessionKey);
@@ -4677,6 +4678,32 @@ function readToolResultSessionKey(event: ActivityEvent): string | null {
   } catch {
     const match = value.match(/"session_key"\s*:\s*"([^"]+)"/);
     return match?.[1] ?? null;
+  }
+}
+
+function hasTimedOutToolResultEvidenceSummary(event: ActivityEvent): boolean {
+  const value = event.runtime?.["resultContent"];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(value) as {
+      status?: unknown;
+      evidence_available?: unknown;
+      evidence_summary?: unknown;
+    };
+    return (
+      parsed.status === "timeout" &&
+      parsed.evidence_available === true &&
+      typeof parsed.evidence_summary === "string" &&
+      parsed.evidence_summary.trim().length > 0
+    );
+  } catch {
+    return (
+      /"status"\s*:\s*"timeout"/.test(value) &&
+      /"evidence_available"\s*:\s*true/.test(value) &&
+      /"evidence_summary"\s*:\s*"[^"]*[^\s"][^"]*"/.test(value)
+    );
   }
 }
 

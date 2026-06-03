@@ -7257,3 +7257,119 @@ Convergence question:
   real LLM evidence.
 - If no, next required gate: rerun the full current natural core matrix; if it
   passes, build the same-scenario A/B report before choosing the next P0 fix.
+
+## Checkpoint 2026-06-03 11:23 CST — Natural Core Gate Repair Stack
+
+Direction: converging
+
+Execution Kernel:
+- The current full natural core matrix exposed three P0 runtime/evaluator
+  breaks after the read-only approval fix:
+  - `natural-long-delegation` could finish with a useful, source-backed answer
+    while one sub-agent timeout carried usable evidence summary, but recovered
+    timeout accounting only accepted a later same-session success.
+  - `natural-approval-dry-run-action` could complete permission
+    query/result/applied at the runtime gate and still let the browser
+    sub-agent's "permission tool unavailable in my namespace" wording become
+    the final answer.
+  - `natural-followup-continuation` could downgrade verified source evidence
+    into placeholder uncertainty such as "estimate" during final synthesis.
+- Runtime closeout semantics now count a timed-out session as recovered only
+  when the timeout tool result explicitly carries `evidence_available: true`
+  and a non-empty `evidence_summary`; the existing clean-closeout checks still
+  have to pass.
+- Approved browser-action repair now recognizes namespace/tool-unavailable
+  wording after permission has already been applied and forces the approved
+  browser session instead of accepting the fallback answer.
+- Completed-session final synthesis now gets one no-tools repair pass when it
+  weakens verified evidence with placeholder uncertainty. Exact-shape/JSON
+  final-answer tasks remain excluded.
+
+Result Quality:
+- The final answer quality floor is stronger in two places:
+  - verified facts should remain observed/verified instead of becoming
+    estimates;
+  - browser sub-agent namespace limitations should not be presented as a user
+    blocker after parent approval has already been applied.
+- Timeout recovery is still bounded: evidence-summary timeouts are accepted
+  only with source-backed, useful, liveness-clean closeout.
+
+Workbench UX:
+- No UI changed.
+- User-visible effect is fewer false "tool unavailable" and weak-evidence
+  final answers in mission results.
+
+Browser Reliability:
+- Browser transport behavior did not change in this checkpoint.
+- The passing full matrix recorded profile fallback `0` and browser buckets
+  `none` across browser-involved scenarios.
+- Latency remains a risk: `natural-timeout-followup-continuation` passed but
+  took `245384ms`.
+
+Acceptance Evidence:
+- Failed full natural core before this repair stack:
+  `artifacts/evals/20260603-full-core-after-browser-readonly-fix/turnkeyai/natural-core.json`.
+  Failure: `natural-long-delegation` mission `msn.mpxg4aji.5`, weak signal
+  `browser transport degraded`, bucket `transport_failure=1`.
+- Failed full natural core rerun:
+  `artifacts/evals/20260603-full-core-rerun-after-browser-readonly-fix/turnkeyai/natural-core.json`.
+  Failure: `natural-long-delegation` mission `msn.mpxghvrq.5`, timeout
+  closeout failure with `tools.timeouts=1`.
+- Focused long-delegation control passed:
+  `artifacts/evals/20260603-long-delegation-transport-rootcause/turnkeyai/natural-long-delegation.json`,
+  mission `msn.mpxg9v0v.1`.
+- Prefix matrix control passed:
+  `artifacts/evals/20260603-long-delegation-timeout-rootcause-kept/turnkeyai/natural-core-prefix.json`,
+  mission `msn.mpxgtaoh.5` for long delegation.
+- Failed full natural core after timeout-summary repair:
+  `artifacts/evals/20260603-full-core-after-timeout-summary-recovery/turnkeyai/natural-core.json`.
+  Failure: `natural-approval-dry-run-action` mission `msn.mpxh2u1x.4`,
+  weak signal `tool unavailable fallback`.
+- Focused approval repair passed:
+  `artifacts/evals/20260603-approval-tool-namespace-repair/turnkeyai/natural-approval-dry-run-action.json`,
+  mission `msn.mpxh90nz.1`.
+- Failed full natural core after approval namespace repair:
+  `artifacts/evals/20260603-full-core-after-approval-namespace-repair/turnkeyai/natural-core.json`.
+  Failure: `natural-followup-continuation` mission `msn.mpxhe6q5.3`,
+  weak signal `placeholder uncertainty`.
+- Focused follow-up repair passed:
+  `artifacts/evals/20260603-followup-weak-synthesis-repair/turnkeyai/natural-followup-continuation.json`,
+  mission `msn.mpxhq2dg.1`.
+- Full current natural core matrix passed:
+  `artifacts/evals/20260603-full-core-after-weak-synthesis-repair/turnkeyai/natural-core.json`.
+  Passed scenarios:
+  `natural-comparison-research`, `natural-browser-dynamic-page`,
+  `natural-followup-continuation`, `natural-approval-dry-run-action`,
+  `natural-long-delegation`, `natural-timeout-followup-continuation`,
+  `natural-memory-recall`.
+- Full matrix mission IDs:
+  - `natural-comparison-research`: `msn.mpxhrylx.1`
+  - `natural-browser-dynamic-page`: `msn.mpxhspts.2`
+  - `natural-followup-continuation`: `msn.mpxhthsn.3`
+  - `natural-approval-dry-run-action`: `msn.mpxhuzeg.4`
+  - `natural-long-delegation`: `msn.mpxhw97d.5`
+  - `natural-timeout-followup-continuation`: `msn.mpxhxlbs.6`
+  - `natural-memory-recall`: `msn.mpxi2uo4.7`
+- Focused regression tests passed:
+  - `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts`
+  - `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`
+- Typecheck and whitespace checks passed before the full matrix rerun.
+
+Regression Risk:
+- This checkpoint changes quality/recovery control flow, so the main risk is
+  accepting a weak answer after one repair pass. Tests pin that exact-shape
+  outputs are excluded and that no-evidence timeouts still fail.
+- The full matrix passed once after the repair stack, but this is not yet
+  same-scenario A/B evidence and does not prove production-grade stability.
+- Timeout-followup latency remains high and should be tracked before any
+  production claim.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  converging
+- Evidence: the current 7-scenario natural core gate passed with real LLM
+  mission artifacts after three observed failures were classified and repaired
+  at the runtime/prompt-harness layer.
+- If no, next required gate: build the same-scenario A/B report from the
+  current passing core artifact and the reference workbench evidence, then use
+  the losses to pick the next P0 runtime, prompt, or browser reliability PR.

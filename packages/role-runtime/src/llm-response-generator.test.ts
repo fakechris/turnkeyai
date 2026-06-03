@@ -929,7 +929,7 @@ test("llm role response generator repairs approved browser actions that claim to
     }
     if (gatewayInputs.length === 2) {
       return {
-        text: "Action blocked at final execution: tools unavailable during final synthesis, so browser_act could not be called.",
+        text: "The permission_query tool is not available in my current function namespace, so I can inspect the form but cannot emit the approval request or complete the dry-run submission.",
         modelId: "claude-test",
         providerId: "anthropic",
         protocol: "anthropic-compatible",
@@ -4154,6 +4154,149 @@ test("llm role response generator repairs completed session synthesis that omits
 
   assert.match(result.content, /Next action: retry browser capture/);
   assert.equal(gatewayInputs.length, 3);
+});
+
+test("llm role response generator repairs weak uncertainty in completed session synthesis", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-explore", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Review Vendor Alpha pricing, strength, and risk.",
+      });
+    }
+    if (gatewayInputs.length === 2) {
+      assert.equal(input.toolChoice, "none");
+      return {
+        text: "Vendor Alpha pricing is a lower-bound estimate at $19/seat. It probably fits teams that value browser automation. Risk: integration catalog is limited.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "none");
+    assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /final answer weakens verified evidence/);
+    return {
+      text: "Vendor Alpha has an observed $19/seat price point. Verified strength: browser automation with traceable screenshots. Verified risk: the API integration catalog is limited. Not verified: plan tiers, enterprise support, and user scale. Residual risk: do not treat missing tiers as absent; treat them as not verified.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn an explore sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-alpha",
+          session_key: "worker:explore:task-alpha:toolu-explore",
+          agent_id: "explore",
+          status: "completed",
+          tool_chain: ["explore"],
+          result: "Vendor Alpha: $19/seat. Strength: browser automation and traceable screenshots. Risk: API integration catalog is still limited.",
+          final_content:
+            "Vendor Alpha: $19/seat. Strength: browser automation and traceable screenshots. Risk: API integration catalog is still limited.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: "Start a source-backed review of Vendor Alpha for a product lead. Focus on pricing, strength, and risk.",
+    },
+  });
+
+  assert.match(result.content, /observed \$19\/seat price point/);
+  assert.doesNotMatch(result.content, /\b(?:estimate|probably|maybe|TBD|to be confirmed|pending confirmation)\b/i);
+  assert.equal(gatewayInputs.length, 3);
+});
+
+test("llm role response generator allows estimates when the user asks for estimation", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-explore", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Estimate migration effort from the available notes.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: "Estimated migration effort is 3-5 engineer-days based on the observed package count and two integration points.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn an explore sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-estimate",
+          session_key: "worker:explore:task-estimate:toolu-explore",
+          agent_id: "explore",
+          status: "completed",
+          result: "Observed package count: 4. Integration points: auth and browser bridge.",
+          final_content: "Observed package count: 4. Integration points: auth and browser bridge.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: "Estimate the migration effort from the available notes and give a practical range.",
+    },
+  });
+
+  assert.match(result.content, /Estimated migration effort is 3-5 engineer-days/);
+  assert.equal(gatewayInputs.length, 2);
 });
 
 test("llm role response generator executes one approval-gated browser spawn from duplicate same-round calls", async () => {

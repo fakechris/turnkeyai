@@ -743,6 +743,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           nextToolChoice = "none";
           continue;
         }
+        if (
+          shouldRepairWeakEvidenceSynthesis({
+            taskPrompt: input.packet.taskPrompt,
+            resultText: result.text,
+            messages,
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.text,
+            },
+            {
+              role: "user",
+              content: buildWeakEvidenceSynthesisRepairPrompt(),
+            },
+          ];
+          nextToolChoice = "none";
+          continue;
+        }
         break;
       }
 
@@ -2109,7 +2130,7 @@ function shouldRepairIncompleteApprovedBrowserAction(input: {
   if (latestPermissionToolName(input.toolTrace) !== "permission_applied") {
     return false;
   }
-  return /\b(?:tools? (?:are )?(?:disabled|unavailable)|tool[- ]disabled|final synthesis|browser_act|could not be called|cannot call|could not execute|action blocked|not executed|not completed)\b/i.test(
+  return /\b(?:tools? (?:are |is )?(?:disabled|unavailable|not available)|tool[- ]disabled|not in (?:my |the )?current function namespace|cannot emit (?:the )?(?:approval|permission) request|final synthesis|browser_act|could not be called|cannot call|could not execute|action blocked|not executed|not completed)\b/i.test(
     input.resultText
   );
 }
@@ -2127,6 +2148,29 @@ function shouldRepairMissingRequestedNextAction(input: {
   }
   return !/\b(?:next action|next step|recommended action|recommend(?:ed)?|operator should|should (?:retry|reopen|check|watch|escalate|preserve|request|continue|stop|avoid)|safe fallback|fallback action)\b/i.test(
     input.resultText
+  );
+}
+
+function shouldRepairWeakEvidenceSynthesis(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+}): boolean {
+  if (hasWeakEvidenceSynthesisRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (expectsExactFinalAnswerShape(input.taskPrompt, input.resultText)) {
+    return false;
+  }
+  if (/\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b|待确认/i.test(input.resultText)) {
+    return true;
+  }
+  return !taskRequestsEstimate(input.taskPrompt) && /\b(?:estimate|estimated)\b|估算/i.test(input.resultText);
+}
+
+function taskRequestsEstimate(taskPrompt: string): boolean {
+  return /\b(?:estimate|estimated|estimation|forecast|roughly|approx(?:imate|imately)?|ballpark|range)\b|估算|预估|大概|大致|范围/i.test(
+    taskPrompt
   );
 }
 
@@ -2234,6 +2278,14 @@ function hasMissingRequestedNextActionRepairPrompt(messages: LLMMessage[]): bool
   );
 }
 
+function hasWeakEvidenceSynthesisRepairPrompt(messages: LLMMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes("Runtime correction: final answer weakens verified evidence")
+  );
+}
+
 function mentionsPendingApproval(text: string): boolean {
   return /\b(?:approval pending|approval request is pending|permission request is pending|pending operator decision|awaiting (?:your decision|operator approval)|waiting for (?:your|operator) decision|waiting for operator|once (?:you )?approve|once approved|before (?:the )?(?:browser worker )?can|still pending)\b/i.test(
     text
@@ -2302,6 +2354,16 @@ function buildMissingRequestedNextActionRepairPrompt(): string {
     "Runtime correction: requested next action is missing from the final answer.",
     "Do not call tools. Revise the final answer using only the delegated session evidence already present.",
     "Include a concise next action or safe fallback for the operator, and keep any unverified scope explicit.",
+  ].join("\n");
+}
+
+function buildWeakEvidenceSynthesisRepairPrompt(): string {
+  return [
+    "Runtime correction: final answer weakens verified evidence with placeholder uncertainty.",
+    "Do not call tools. Rewrite the final answer using only the delegated session evidence already present.",
+    "For facts directly present in the evidence, say observed or verified instead of maybe, probably, estimate, estimated, TBD, to be confirmed, pending confirmation, or similar placeholder wording.",
+    "For facts absent from the evidence, write not verified and name the missing dimension without guessing.",
+    "Keep residual risk visible, but do not downgrade verified source facts into estimates.",
   ].join("\n");
 }
 
