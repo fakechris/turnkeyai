@@ -8223,3 +8223,72 @@ Convergence question:
 - Remaining proof: same-scenario browser-focused A/B using the shared fixture
   manifest/env must still run before broader browser capability parity can be
   claimed.
+
+## 2026-06-04 01:10 CST - Browser-Focused Same-Scenario A/B Closed
+
+Direction: converging
+
+Execution Kernel:
+- Merged the browser-required public URL routing fix as PR #454.
+- Rebuilt the browser-focused same-scenario A/B report from the post-fix
+  TurnkeyAI natural report and the existing same-scenario reference artifacts.
+- This closes the previous checkpoint's browser-focused A/B proof gap without
+  changing runtime behavior after merge.
+
+Result Quality:
+- A/B acceptance passed for the browser-focused suite:
+  - Capability: `focused capability proven`.
+  - Stability: `focused stable`.
+  - Scenarios: `2`.
+  - Comparable scenarios: `2`.
+  - TurnkeyAI wins/ties/losses: `2/0/0`.
+  - Root-cause review required: `0`.
+- Scenario scores:
+  - `natural-browser-external-page-review`: TurnkeyAI `18`, reference `10`,
+    delta `+8`.
+  - `natural-browser-complex-page-review`: TurnkeyAI `18`, reference `10`,
+    delta `+8`.
+
+Workbench UX:
+- No UI changed.
+- Replay/thought-process presentation remains unproven by this checkpoint.
+
+Browser Reliability:
+- This checkpoint proves the browser-focused shared-fixture acceptance slice,
+  including one live public page and one complex browser fixture page.
+- It does not prove broad authenticated browsing, hostile sites, long-running
+  browser sessions, or desktop-level reliability.
+
+Acceptance Evidence:
+- PR: #454, merged as `6e6c5a5`.
+- Natural real LLM report:
+  `artifacts/evals/20260604-browser-focused-shared-fixture/turnkeyai-natural-browser-focused-after-routing.json`
+- A/B report build/check:
+  `npm run acceptance:ab:spec -- --natural-report
+  artifacts/evals/20260604-browser-focused-shared-fixture/turnkeyai-natural-browser-focused-after-routing.json
+  --reference-dir
+  ../turnkeyai-p0-runtime/artifacts/evals/20260603-browser-focused-ab/reference-shared-fixture
+  --suite browser-focused --out
+  artifacts/evals/20260604-after-454-browser-focused-ab/ab-build-spec.json`
+  `npm run acceptance:ab:build -- --spec
+  artifacts/evals/20260604-after-454-browser-focused-ab/ab-build-spec.json
+  --out artifacts/evals/20260604-after-454-browser-focused-ab/ab-report.json
+  --suite browser-focused --markdown-out
+  artifacts/evals/20260604-after-454-browser-focused-ab/report.md --check`
+- A/B markdown report:
+  `artifacts/evals/20260604-after-454-browser-focused-ab/report.md`
+- These artifacts remain local evaluation evidence and are not committed.
+
+Regression Risk:
+- The claim is intentionally narrow: browser-focused natural A/B is now proven
+  for this suite, while full core runtime parity remains incomplete.
+- Next risk to attack is the wider P0 matrix, especially continuation,
+  approval, timeout closeout, memory recall, and long delegation under
+  same-scenario A/B.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes, for browser-focused execution.
+- Evidence: the previously pending browser-focused same-scenario A/B gate now
+  passes with two comparable scenarios, no losses, and no root-cause buckets.
+- Remaining proof: full core natural A/B parity is still not established.
