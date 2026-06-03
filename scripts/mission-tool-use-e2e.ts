@@ -3933,7 +3933,7 @@ export function buildNaturalScenarioSpec(
         {
           label: "continuation guidance",
           pattern:
-            /\b(?:continue|retry|resume|resumable|next step|next action|recommendation|recommended|configure|longer timeout|tool-call timeout|timeout-gated)\b/i,
+            /\b(?:continue|retry|resume|resumable|next step|next action|longer timeout|timeout-gated)\b|(?:\b(?:configure|increase|extend)\b[\s\S]{0,80}\b(?:tool-call\s+)?timeouts?\b)|(?:\btimeouts?\b[\s\S]{0,80}\b(?:retry|extend|increase|longer|recover|configure|exclude|timeout-gated)\b)/i,
         },
       ],
       forbiddenPatterns: [
@@ -4416,7 +4416,7 @@ function collectUnexpectedNaturalBrowserFailureBuckets(
   buckets: Array<{ bucket: string; count: number; latestAtMs: number }>
 ): Array<{ bucket: string; count: number; latestAtMs: number }> {
   const required = new Set(spec.requiredBrowserFailureBuckets ?? []);
-  return buckets.filter((bucket) => !required.has(bucket.bucket));
+  return buckets.filter((bucket) => bucket.count > 0 && !required.has(bucket.bucket));
 }
 
 function isRecoverableNaturalBrowserFailureBucket(bucket: { bucket: string }): boolean {
