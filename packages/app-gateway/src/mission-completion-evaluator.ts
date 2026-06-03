@@ -33,7 +33,7 @@ export type MissionCompletionRecovery =
   | {
       kind: "incomplete_final_answer";
       message: TeamMessage;
-      reason: "max_tokens" | "truncated_markdown";
+      reason: "max_tokens" | "truncated_markdown" | "stale_pending_approval";
     }
   | {
       kind: "stalled_tool_turn";
@@ -198,7 +198,7 @@ function isLeadAssistantMessage(mission: Mission, message: TeamMessage): boolean
 function findIncompleteLeadFinalAnswer(
   mission: Mission,
   messages: TeamMessage[]
-): { message: TeamMessage; reason: "max_tokens" | "truncated_markdown" } | null {
+): { message: TeamMessage; reason: "max_tokens" | "truncated_markdown" | "stale_pending_approval" } | null {
   const latest = findLatestLeadAnswerCandidateWithIndex(mission, messages);
   return latest ? isIncompleteLeadFinalAnswer(latest.message) : null;
 }
@@ -267,7 +267,10 @@ function findLatestUserMessageIndex(messages: TeamMessage[]): number {
 
 function isIncompleteLeadFinalAnswer(
   message: TeamMessage
-): { message: TeamMessage; reason: "max_tokens" | "truncated_markdown" } | null {
+): { message: TeamMessage; reason: "max_tokens" | "truncated_markdown" | "stale_pending_approval" } | null {
+  if (looksLikeStalePendingApprovalAnswer(message.content)) {
+    return { message, reason: "stale_pending_approval" };
+  }
   const stopReason = readStringMetadata(message.metadata, "stopReason");
   if (isMaxTokensStopReason(stopReason)) {
     if (looksLikeCompleteApprovalCloseout(message.content)) {
@@ -279,6 +282,12 @@ function isIncompleteLeadFinalAnswer(
     return { message, reason: "truncated_markdown" };
   }
   return null;
+}
+
+function looksLikeStalePendingApprovalAnswer(content: string): boolean {
+  return /\b(?:approval pending|approval is pending|approval request is pending|permission request is pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once (?:you )?approve|once approved|still pending)\b/i.test(
+    content
+  );
 }
 
 function readStringMetadata(
