@@ -24,6 +24,7 @@
     "mission:e2e": "tsx scripts/mission-tool-use-e2e.ts",
     "mission:e2e:matrix": "tsx scripts/mission-tool-use-e2e.ts --matrix",
     "mission:e2e:natural:core": "tsx scripts/mission-tool-use-e2e.ts --natural-matrix --natural-matrix-scenarios natural-comparison-research,natural-browser-dynamic-page,natural-followup-continuation,natural-approval-dry-run-action,natural-long-delegation,natural-timeout-followup-continuation,natural-memory-recall",
+    "mission:e2e:natural:browser-focused": "tsx scripts/mission-tool-use-e2e.ts --natural-matrix --natural-matrix-scenarios natural-browser-external-page-review,natural-browser-complex-page-review",
     "mission:e2e:natural:browser-reliability": "tsx scripts/mission-tool-use-e2e.ts --natural-matrix --natural-matrix-scenarios natural-browser-followup-continuation,natural-browser-restart-continuation,natural-browser-cold-recreation-continuation,natural-browser-profile-lock-recovery,natural-browser-unavailable-closeout,natural-browser-cdp-timeout-closeout,natural-browser-detached-target-closeout,natural-browser-attach-failed-closeout",
     "mission:e2e:natural": "tsx scripts/mission-tool-use-e2e.ts --natural-matrix",
     "mission:e2e:fixtures": "tsx scripts/natural-fixture-server.ts",

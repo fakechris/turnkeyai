@@ -8746,3 +8746,49 @@ Convergence question:
 - Evidence: the browser-reliability suite moved from missing-reference and
   acceptance-mapping failures to a passing same-scenario A/B gate with 8/8
   comparable scenarios.
+
+## 2026-06-04 04:23 CST - Default Natural Gate Includes Browser-Focused Pages
+
+Direction: unknown
+
+Execution Kernel:
+- Broadened the default natural mission acceptance matrix so it includes the
+  external-page and complex-page browser scenarios, not only the core local
+  dashboard and browser-reliability paths.
+- Added a focused `mission:e2e:natural:browser-focused` shortcut for running
+  those two browser-focused natural scenarios without manually typing the
+  scenario list.
+
+Result Quality:
+- No new runtime quality or model capability is claimed in this checkpoint.
+- The change reduces a gate blind spot: a default natural run can no longer
+  skip the external/complex browser tasks that previously had to be invoked
+  explicitly or through later A/B tooling.
+
+Workbench UX:
+- No UI changed.
+
+Browser Reliability:
+- The default natural matrix now exercises browser-visible external and complex
+  page review in addition to dashboard, continuation, profile fallback, and
+  failure-closeout browser paths.
+- This is acceptance coverage, not a browser-runtime behavior change.
+
+Acceptance Evidence:
+- Focused defaults tests should prove the default scenario list and npm
+  shortcuts stay aligned.
+- Capability remains unproven for this checkpoint until a fresh default natural
+  real LLM run or focused browser run is executed and recorded.
+
+Regression Risk:
+- The full natural default gate is now longer and stricter. That is intended
+  for P0 validation, but local developers should use the focused core,
+  browser-focused, or browser-reliability shortcuts when investigating a
+  smaller failure slice.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  unknown for runtime capability; yes for avoiding acceptance drift.
+- Evidence: the default natural gate now covers the same real/complex browser
+  surfaces that the focused A/B suite evaluates, but no new real LLM run has
+  been produced in this checkpoint yet.
