@@ -2748,6 +2748,7 @@ test("llm role response generator routes continuation follow-up to timed-out ses
 
 test("llm role response generator preserves timeout guidance after successful continuation without raw timeout context", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
   gateway.generate = async (input: GenerateTextInput) => {
     gatewayInputs.push(input);
@@ -2778,6 +2779,8 @@ test("llm role response generator preserves timeout guidance after successful co
       ];
     },
     async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      assert.equal(input.call.name, "sessions_send");
       return {
         toolCallId: input.call.id,
         toolName: input.call.name,
@@ -2826,6 +2829,10 @@ test("llm role response generator preserves timeout guidance after successful co
     ].join("\n")
   );
   assert.equal(gatewayInputs.length, 2);
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_send"]
+  );
 });
 
 test("llm role response generator forces sessions_send for explicit continuation when the model answers directly", async () => {
