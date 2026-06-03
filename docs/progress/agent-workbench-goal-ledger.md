@@ -7258,7 +7258,66 @@ Convergence question:
 - If no, next required gate: rerun the full current natural core matrix; if it
   passes, build the same-scenario A/B report before choosing the next P0 fix.
 
-## Checkpoint 2026-06-03 11:23 CST — Natural Core Gate Repair Stack
+## 2026-06-02 17:55 CST - 24-Hour Goal Review
+
+Direction: unknown
+
+Repeated Issue Classes:
+- Natural E2E progress repeatedly exposed closeout-quality problems rather
+  than missing UI affordances: source coverage, residual-risk disclosure,
+  final-answer fallback, cancellation, timeout continuation, and browser
+  evidence visibility.
+- These are core runtime/prompt-harness issues. They should remain ahead of
+  diagnostics or Workbench polish until natural E2E and A/B evidence say
+  otherwise.
+
+E2E Trend:
+- The trend showed useful structural progress, but capability remained
+  unproven without a full natural-core pass and same-scenario A/B report.
+- Focused runs were useful for isolating failures, not sufficient for broad
+  stability claims.
+
+Decision:
+- Keep the next implementation work on P0 natural runtime behavior:
+  completion, cancellation, timeout continuation, browser evidence, and final
+  synthesis quality.
+- Do not move to P1 Workbench UX until the current natural-core matrix and A/B
+  evidence identify the next highest-leverage gap.
+
+Methodology Review Trigger:
+- Trigger methodology review if the next full natural matrix continues to fail
+  for the same class of closeout bugs, or if fixes improve fixture tests without
+  improving natural mission artifacts.
+
+## 2026-06-03 11:20 CST - 24-Hour Goal Review
+
+Direction: unknown
+
+Repeated Issue Classes:
+- Recent natural-core failures clustered around runtime closeout semantics:
+  recovered timeout evidence, approved browser-action namespace fallback, and
+  weak final synthesis wording.
+- This is not enough to claim production stability; it is enough to keep the
+  next step on P0 runtime/prompt-harness evidence rather than UI or diagnostics
+  polish.
+
+E2E Trend:
+- Focused natural E2E runs have been useful for isolating failures, but the
+  trend must be judged by full natural matrix and same-scenario A/B evidence.
+- The next checkpoint must not hide behind a focused rerun if the full matrix
+  or A/B report contradicts it.
+
+Decision:
+- Continue only with P0 work that is tied to natural real LLM evidence.
+- After the current natural-core repair stack, build the same-scenario A/B
+  report before choosing the next runtime, prompt, or browser reliability PR.
+
+Methodology Review Trigger:
+- Trigger methodology review if the next same-scenario A/B report shows no
+  improvement despite the current full natural-core pass, or if timeout
+  continuation latency remains high across repeated natural runs.
+
+## 2026-06-03 11:23 CST - Natural Core Gate Repair Stack
 
 Direction: converging
 

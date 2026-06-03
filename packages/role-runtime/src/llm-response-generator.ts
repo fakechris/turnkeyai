@@ -2130,9 +2130,7 @@ function shouldRepairIncompleteApprovedBrowserAction(input: {
   if (latestPermissionToolName(input.toolTrace) !== "permission_applied") {
     return false;
   }
-  return /\b(?:tools? (?:are |is )?(?:disabled|unavailable|not available)|tool[- ]disabled|not in (?:my |the )?current function namespace|cannot emit (?:the )?(?:approval|permission) request|final synthesis|browser_act|could not be called|cannot call|could not execute|action blocked|not executed|not completed)\b/i.test(
-    input.resultText
-  );
+  return matchesAny(input.resultText, INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS);
 }
 
 function shouldRepairMissingRequestedNextAction(input: {
@@ -2162,16 +2160,41 @@ function shouldRepairWeakEvidenceSynthesis(input: {
   if (expectsExactFinalAnswerShape(input.taskPrompt, input.resultText)) {
     return false;
   }
-  if (/\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b|待确认/i.test(input.resultText)) {
+  if (matchesAny(input.resultText, WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS)) {
     return true;
   }
-  return !taskRequestsEstimate(input.taskPrompt) && /\b(?:estimate|estimated)\b|估算/i.test(input.resultText);
+  return !taskRequestsEstimate(input.taskPrompt) && matchesAny(input.resultText, WEAK_ESTIMATE_SYNTHESIS_PATTERNS);
 }
 
 function taskRequestsEstimate(taskPrompt: string): boolean {
-  return /\b(?:estimate|estimated|estimation|forecast|roughly|approx(?:imate|imately)?|ballpark|range)\b|估算|预估|大概|大致|范围/i.test(
-    taskPrompt
-  );
+  return matchesAny(taskPrompt, ESTIMATE_REQUEST_PATTERNS);
+}
+
+const INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS = [
+  /\btools? (?:are |is )?(?:disabled|unavailable|not available)\b/i,
+  /\btool[- ]disabled\b/i,
+  /\bnot in (?:my |the )?current function namespace\b/i,
+  /\bcannot emit (?:the )?(?:approval|permission) request\b/i,
+  /\b(?:final synthesis|browser_act|could not be called|cannot call|could not execute|action blocked|not executed|not completed)\b/i,
+];
+
+const WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS = [
+  /\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b/i,
+  /(?:^|[^A-Za-z0-9_])待确认(?![A-Za-z0-9_])/,
+];
+
+const WEAK_ESTIMATE_SYNTHESIS_PATTERNS = [
+  /\b(?:estimate|estimated)\b/i,
+  /(?:^|[^A-Za-z0-9_])估算(?![A-Za-z0-9_])/,
+];
+
+const ESTIMATE_REQUEST_PATTERNS = [
+  /\b(?:estimate|estimated|estimation|forecast|roughly|approx(?:imate|imately)?|ballpark|range)\b/i,
+  /(?:^|[^A-Za-z0-9_])(?:估算|预估|大概|大致|范围)(?![A-Za-z0-9_])/,
+];
+
+function matchesAny(value: string, patterns: readonly RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(value));
 }
 
 function shouldRepairStaleDeniedApproval(input: {
