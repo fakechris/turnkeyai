@@ -707,6 +707,18 @@ describe("mission tool-use e2e report", () => {
     assert.match(external.desc, /https:\/\/news\.ycombinator\.com\//);
     assert.equal(external.requiresBrowser, true);
     assert.equal(external.requiresApproval, false);
+    assert.ok(external.requiredAnswerTerms.includes("Hacker News"));
+
+    const overriddenExternal = buildNaturalScenarioSpec("natural-browser-external-page-review", {
+      ...fixture,
+      externalPageUrl: "https://example.com/status",
+    });
+    assert.match(overriddenExternal.desc, /https:\/\/example\.com\/status/);
+    assert.equal(overriddenExternal.requiredAnswerTerms.includes("Hacker News"), false);
+    assert.equal(
+      (overriddenExternal.requiredEvidencePatterns ?? []).some((pattern) => pattern.label.includes("hacker news")),
+      false,
+    );
 
     assert.equal(fixture.dynamicUrl, "http://shared.test/dynamic-dashboard");
   });

@@ -117,6 +117,16 @@ const RENDERED_SLA_BREACHES_VALUE_PATTERN =
   /SLA breach(?:es|\s+count)?[\s\S]{0,100}\b3\b|\b3\b[\s\S]{0,100}SLA breach(?:es|\s+count)?/i;
 const DEFAULT_EXTERNAL_BROWSER_PAGE_URL = "https://news.ycombinator.com/";
 
+function normalizeComparableUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    const pathname = url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "");
+    return `${url.protocol}//${url.host}${pathname}${url.search}`;
+  } catch {
+    return value.replace(/\/+$/, "");
+  }
+}
+
 interface Mission {
   id: string;
   status: string;
@@ -3453,6 +3463,40 @@ export function buildNaturalScenarioSpec(
   }
   if (scenario === "natural-browser-external-page-review") {
     const externalPageUrl = fixture.externalPageUrl ?? DEFAULT_EXTERNAL_BROWSER_PAGE_URL;
+    const usesDefaultExternalPage =
+      normalizeComparableUrl(externalPageUrl) === normalizeComparableUrl(DEFAULT_EXTERNAL_BROWSER_PAGE_URL);
+    const externalRequiredAnswerTerms = usesDefaultExternalPage
+      ? ["Hacker News", "visible", "risk"]
+      : ["visible", "risk"];
+    const externalRequiredAnswerPatterns = usesDefaultExternalPage
+      ? [
+          {
+            label: "visible page structure",
+            pattern: /\b(?:rank(?:ed|ing)?|front page|story|stories|item|items|navigation|comments?|points?)\b/i,
+          },
+          {
+            label: "live external page caveat",
+            pattern: /\b(?:live|external|changed?|changes?|unverified|residual risk|risk)\b/i,
+          },
+        ]
+      : [
+          {
+            label: "visible page structure",
+            pattern: /\b(?:page|site|title|heading|link|button|navigation|menu|section|item|content)\b/i,
+          },
+          {
+            label: "live external page caveat",
+            pattern: /\b(?:live|external|changed?|changes?|unverified|residual risk|risk)\b/i,
+          },
+        ];
+    const externalRequiredEvidencePatterns = usesDefaultExternalPage
+      ? [
+          { label: "hacker news browser evidence", pattern: /\bHacker News\b/i },
+          { label: "visible listing evidence", pattern: /\b(?:comments?|points?|rank(?:ed|ing)?|story|stories|item|items)\b/i },
+        ]
+      : [
+          { label: "browser-visible page evidence", pattern: /\b(?:title|heading|link|button|navigation|menu|section|content|visible)\b/i },
+        ];
     return {
       scenario,
       title: "Natural browser external page review",
@@ -3472,21 +3516,9 @@ export function buildNaturalScenarioSpec(
       requiresApproval: false,
       allowToolFailure: false,
       minEvidenceEvents: 1,
-      requiredAnswerTerms: ["Hacker News", "visible", "risk"],
-      requiredAnswerPatterns: [
-        {
-          label: "visible page structure",
-          pattern: /\b(?:rank(?:ed|ing)?|front page|story|stories|item|items|navigation|comments?|points?)\b/i,
-        },
-        {
-          label: "live external page caveat",
-          pattern: /\b(?:live|external|changed?|changes?|unverified|residual risk|risk)\b/i,
-        },
-      ],
-      requiredEvidencePatterns: [
-        { label: "hacker news browser evidence", pattern: /\bHacker News\b/i },
-        { label: "visible listing evidence", pattern: /\b(?:comments?|points?|rank(?:ed|ing)?|story|stories|item|items)\b/i },
-      ],
+      requiredAnswerTerms: externalRequiredAnswerTerms,
+      requiredAnswerPatterns: externalRequiredAnswerPatterns,
+      requiredEvidencePatterns: externalRequiredEvidencePatterns,
       forbiddenPatterns: [
         { label: "memory-only external page answer", pattern: /based on (?:my )?(?:knowledge|training data|general knowledge)/i },
       ],
