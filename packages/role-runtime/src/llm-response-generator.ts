@@ -1872,10 +1872,14 @@ function findIncompleteApprovedBrowserSession(input: {
     if (!parsed || parsed.status !== "completed" || parsed.agent_id !== "browser") {
       continue;
     }
-    if (typeof parsed.session_key !== "string" || !parsed.session_key.trim()) {
+    if (typeof parsed.session_key !== "string") {
       continue;
     }
-    if (hasExecutedSessionsSend(input.toolTrace, parsed.session_key)) {
+    const sessionKey = parsed.session_key.trim();
+    if (!sessionKey) {
+      continue;
+    }
+    if (hasExecutedSessionsSend(input.toolTrace, sessionKey)) {
       continue;
     }
     const evidence = readCompletedSessionEvidence(parsed) ?? "";
@@ -1883,7 +1887,7 @@ function findIncompleteApprovedBrowserSession(input: {
       continue;
     }
     return {
-      sessionKey: parsed.session_key.trim(),
+      sessionKey,
       evidence: sliceUtf8(evidence, 1400),
     };
   }

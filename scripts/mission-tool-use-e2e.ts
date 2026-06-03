@@ -4526,7 +4526,7 @@ export function evaluateNaturalSourceCoverage(input: {
 function normalizeNaturalAnswerTermText(value: string): string {
   return value
     .toLowerCase()
-    .replace(/\brecommend(?:ation|ations|ed|ing)?\b/g, "recommend")
+    .replace(/\brecommend(?:ation|ations|ed|ing|s)?\b/g, "recommend")
     .replace(/\bnot\s+verified\b/g, "unverified")
     .replace(/[‐‑‒–—-]/g, " ")
     .replace(/\s+/g, " ")
