@@ -6608,7 +6608,7 @@ test("llm role response generator keeps browser-visible loopback tasks on the br
       },
     });
     assert.equal(executedCalls[0]?.input.agent_id, "browser");
-    assert.match(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
+    assert.match(String(executedCalls[0]?.input.task ?? ""), /browser-visible URL source/i);
     assert.match(result.content, /frame, shadow component, and popup/i);
   } finally {
     if (previous === undefined) {
@@ -6812,6 +6812,90 @@ test("llm role response generator repairs browser-visible final answers that ski
   );
   assert.match(result.content, /Frame panel shows backlog 7/i);
   assert.doesNotMatch(result.content, /raw HTTP fetch because the browser tools are unavailable/i);
+});
+
+test("llm role response generator reroutes browser-visible public URL spawns to browser", async () => {
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (!input.messages.some((message) => message.role === "tool")) {
+      return toolCallResult("toolu-public-browser-page", "sessions_spawn", {
+        agent_id: "explore",
+        label: "Live external page",
+        task: "Review https://news.ycombinator.com/ through a browser-visible pass as a user would see it.",
+      });
+    }
+    return {
+      text: "Browser-visible Hacker News evidence captured.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-public-browser-page",
+          session_key: "worker:browser:task-public-browser-page:toolu-public-browser-page",
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          result: "Browser-visible Hacker News evidence captured.",
+          final_content: "Browser-visible Hacker News evidence captured.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: "Browser-visible Hacker News evidence captured.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Review this live external page through a browser-visible pass, as a user would see it.",
+        "Page: https://news.ycombinator.com/",
+        "Do not rely on memory or raw server metadata alone; inspect the browser-rendered page state.",
+      ].join("\n"),
+      capabilityInspection: {
+        availableWorkers: ["browser", "explore"],
+        connectorStates: [],
+        apiStates: [],
+        skillStates: [],
+        transportPreferences: [],
+        unavailableCapabilities: [],
+        generatedAt: 1,
+      },
+    },
+  });
+
+  assert.equal(executedCalls[0]?.input.agent_id, "browser");
+  assert.match(String(executedCalls[0]?.input.task ?? ""), /browser-visible URL source/i);
+  assert.match(String(executedCalls[0]?.input.task ?? ""), /news\.ycombinator\.com/);
+  assert.match(result.content, /Browser-visible Hacker News evidence/);
 });
 
 test("llm role response generator keeps private non-loopback URLs on the browser path in E2E fixture mode", async () => {

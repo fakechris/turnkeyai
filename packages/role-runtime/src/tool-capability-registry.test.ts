@@ -13,8 +13,9 @@ test("native tool capability registry drives schemas and prompt harness from the
   const list = definitions.find((definition) => definition.name === "sessions_list");
   assert.match(spawn?.description ?? "", /Use explore first for public source research/);
   assert.match(spawn?.description ?? "", /pricing\/docs pages/);
+  assert.match(spawn?.description ?? "", /unless the task asks for browser-visible, user-visible, rendered, visual, or interactive page evidence/);
   assert.match(spawn?.description ?? "", /Use browser directly for authenticated, interactive, visual, JS-rendered, localhost/);
-  assert.match(spawn?.description ?? "", /loopback, private-network, internal, dashboard, or user-session pages/);
+  assert.match(spawn?.description ?? "", /loopback, private-network, internal, dashboard, user-session, or browser-visible page-review tasks/);
   const spawnSchema = spawn?.inputSchema as {
     properties?: { agent_id?: { enum?: string[] } };
   };
@@ -52,6 +53,7 @@ test("native tool capability registry drives schemas and prompt harness from the
   assert.match(harness, /Do not downgrade the task to read-only inspection/);
   assert.match(harness, /preserve the original task's decision criteria/i);
   assert.match(harness, /use explore first/);
+  assert.match(harness, /unless the task asks for browser-visible, user-visible, rendered, visual, or interactive page evidence/);
   assert.match(harness, /Use browser first for localhost, loopback, private-network/);
   assert.match(harness, /use browser after explore\/static extraction is blocked/);
   assert.match(harness, /Parent runtime handles permission_query/);

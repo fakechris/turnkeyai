@@ -8145,3 +8145,81 @@ Convergence question:
   unknown
 - Evidence: same-scenario browser evidence collection is now less brittle, but
   no fresh real A/B capability artifact exists yet.
+
+## 2026-06-04 01:00 CST - Browser-Required Public URL Routing
+
+Direction: converging
+
+Execution Kernel:
+- Fixed a natural browser-routing failure exposed by the stable fixture gate.
+  The external browser page scenario produced a useful answer, but the quality
+  gate correctly failed it because the delegated `sessions_spawn` path did not
+  prove `agent_id=browser`.
+- Root cause: the model-visible `sessions_spawn` description still emphasized
+  `explore` for public read-only URLs, while the scenario and harness required
+  a browser-visible pass. The runtime reroute guard also only covered
+  private/loopback URLs and browser-required local fixture targets.
+- Updated session tool guidance so public URLs still use `explore` for normal
+  source research, but browser-visible, user-visible, rendered, visual, or
+  interactive page-review tasks use `browser` directly.
+- Extended spawn normalization so a model-emitted `sessions_spawn(explore)` is
+  rewritten to `browser` when the parent prompt requires browser evidence for
+  the exact URL, including public URLs.
+
+Result Quality:
+- Fresh natural real LLM browser-focused rerun passed after the routing fix:
+  - `natural-browser-external-page-review`: mission `msn.mpyan5sx.1`, status
+    `done`, `browser=yes`, `tools=1/1`, `sessions=1/0`, `artifacts=3`,
+    lifecycle artifacts `3/3`, weak answer signals `none`, stuck/loop `false`.
+  - `natural-browser-complex-page-review`: mission `msn.mpyao37a.2`, status
+    `done`, `browser=yes`, `tools=1/1`, `sessions=1/0`, `artifacts=6`,
+    lifecycle artifacts `6/6`, weak answer signals `none`, stuck/loop `false`.
+- The failed pre-fix artifact is retained only as local evidence that the gate
+  caught a real routing problem; it is not a capability claim.
+
+Workbench UX:
+- No UI changed.
+- This checkpoint improves the underlying execution chain that Workbench will
+  later replay, but it does not prove replay layout or process readability.
+
+Browser Reliability:
+- The browser worker was actually used in both rerun scenarios.
+- Both rerun scenarios completed with no profile fallback and no browser
+  failure buckets.
+- This supports the browser-required routing slice, not broad hostile-page or
+  authenticated browser reliability.
+
+Acceptance Evidence:
+- Focused tests:
+  `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts
+  packages/role-runtime/src/tool-capability-registry.test.ts`
+- Typecheck:
+  `npm run typecheck`
+- Whitespace:
+  `git diff --check`
+- Natural real LLM browser-focused rerun:
+  `npm run mission:e2e:natural -- --model-catalog
+  /Users/chris/workspace/turnkeyai/models.local.json
+  --natural-matrix-scenarios
+  natural-browser-external-page-review,natural-browser-complex-page-review
+  --scenario-timeout-ms 360000 --json
+  artifacts/evals/20260604-browser-focused-shared-fixture/turnkeyai-natural-browser-focused-after-routing.json`
+- No reference artifacts were added to the repo.
+- Full same-scenario A/B remains pending.
+
+Regression Risk:
+- Overrouting risk: ordinary public research should still use `explore`.
+  Regression coverage keeps plain public URL research on explore while routing
+  browser-visible public URL review to browser.
+- Product risk if not fixed: browser-required tasks can silently complete
+  through a non-browser worker, producing plausible answers that fail the actual
+  browser evidence contract.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes, for browser-required public URL routing.
+- Evidence: the exact failed natural slice was rerun and both browser-focused
+  scenarios passed with real browser use and useful terminal answers.
+- Remaining proof: same-scenario browser-focused A/B using the shared fixture
+  manifest/env must still run before broader browser capability parity can be
+  claimed.

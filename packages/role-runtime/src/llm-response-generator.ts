@@ -3183,26 +3183,33 @@ function normalizePrivateUrlResearchSpawnCalls(
     }
     const task = readStringInput(call.input, "task") ?? "";
     const label = readStringInput(call.input, "label") ?? "";
-    if (!containsPrivateOrLoopbackHttpUrl([task, label].join("\n"))) {
+    const combined = [task, label].join("\n");
+    const targetsBrowserRequiredUrl = toolCallTargetsBrowserRequiredUrl({
+      toolCallText: combined,
+      taskPrompt: context.taskPrompt,
+    });
+    if (!containsPrivateOrLoopbackHttpUrl(combined) && !targetsBrowserRequiredUrl) {
       return call;
     }
-    const combined = [task, label].join("\n");
     if (
       allowsLoopbackExploreForE2E() &&
       containsLoopbackHttpUrl(combined) &&
       !containsPrivateNonLoopbackHttpUrl(combined) &&
       !taskRequiresBrowserEvidence(combined) &&
-      !toolCallTargetsBrowserRequiredUrl({ toolCallText: combined, taskPrompt: context.taskPrompt })
+      !targetsBrowserRequiredUrl
     ) {
       return call;
     }
+    const reason = targetsBrowserRequiredUrl
+      ? "Use the browser worker for this browser-visible URL source; do not use public-source fetch."
+      : "Use the browser worker for this local/private URL source; do not use public-source fetch.";
     return {
       ...call,
       input: {
         ...call.input,
         agent_id: "browser",
         task: [
-          "Use the browser worker for this local/private URL source; do not use public-source fetch.",
+          reason,
           "Inspect the rendered page as the user would see it, extract only observed facts, and mark missing fields as not verified.",
           task,
         ]
