@@ -906,6 +906,99 @@ test("llm role response generator repairs stale pending answers after approval i
   assert.equal(gatewayInputs.length, 5);
 });
 
+test("llm role response generator repairs stale pending answers after daemon-applied approval continuation", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "**Pending operator approval.** Awaiting decision before executing the dry-run browser form submission.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 2) {
+      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
+      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approval already applied/);
+      return toolCallResult("toolu-browser-approved", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Submit the approved local dry-run form and verify the submitted status.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: "The approved browser dry-run was submitted and verified.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:browser:task-1:toolu-browser-approved",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "Approved dry-run submit completed.",
+          final_content: "Approved dry-run submit completed. Browser verified the submitted status.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            content: "Approved dry-run submit completed. Browser verified the submitted status.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Operator decision recorded for approval ap-1.",
+        "Action: browser.form.submit.",
+        "The operator approved it and the runtime permission cache is already applied.",
+        "Continue from the approved point: perform only the approved scoped action now, do not ask for approval again, and verify the result before the final answer.",
+      ].join("\n"),
+    },
+  });
+
+  assert.match(result.content, /approved browser dry-run was submitted and verified/i);
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_spawn"]
+  );
+  assert.equal(gatewayInputs.length, 3);
+});
+
 test("llm role response generator repairs approved browser actions that claim tools are unavailable", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const executedCalls: RoleToolExecutionInput["call"][] = [];
@@ -2835,6 +2928,88 @@ test("llm role response generator preserves timeout guidance after successful co
   );
 });
 
+test("llm role response generator preserves timeout closeout when resumed evidence omits guidance", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-continue", "sessions_send", {
+        session_key: "worker:explore:task-1:toolu-timeout",
+        message: "Resume the slow source check and turn the outcome into a release-risk note.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: [
+        "Verified facts: the resumed source returned HTTP 200 with the expected fixture marker.",
+        "Unverified items: response headers and performance baseline were not collected.",
+        "Residual risk: none from the source itself. The earlier 30-second timeout does not limit the conclusion.",
+        "Recommendation: low release risk; no action required.",
+      ].join("\n"),
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_send",
+          description: "Continue a sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-1",
+          session_key: "worker:explore:task-1:toolu-timeout",
+          agent_id: "explore",
+          status: "completed",
+          result: "Resumed slow-source evidence.",
+          final_content:
+            "Verified resumed source evidence. The earlier timeout no longer limits the release-risk conclusion.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "explore",
+            content: "Verified resumed source evidence. The earlier timeout no longer limits the release-risk conclusion.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: "Prepare a release-risk note from the source evidence.",
+    },
+  });
+
+  assert.match(result.content, /earlier 30-second timeout does not limit the conclusion/);
+  assert.match(result.content, /Continuation: this source check is resumable/);
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_send"]
+  );
+  assert.equal(gatewayInputs.length, 2);
+});
+
 test("llm role response generator forces sessions_send for explicit continuation when the model answers directly", async () => {
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -4595,6 +4770,96 @@ test("llm role response generator repairs weak uncertainty in completed session 
 
   assert.match(result.content, /observed \$19\/seat price point/);
   assert.doesNotMatch(result.content, /\b(?:estimate|probably|maybe|TBD|to be confirmed|pending confirmation)\b/i);
+  assert.equal(gatewayInputs.length, 3);
+});
+
+test("llm role response generator repairs completed session synthesis that drops requested risk dimension", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return toolCallResult("toolu-explore", "sessions_spawn", {
+        agent_id: "explore",
+        task: "Review Vendor Alpha pricing, strength, and risk.",
+      });
+    }
+    if (gatewayInputs.length === 2) {
+      assert.equal(input.toolChoice, "none");
+      return {
+        text: [
+          "Vendor Alpha has an observed $19/seat price point.",
+          "Strength: browser automation with traceable screenshots.",
+          "Weaknesses: API integration catalog is still limited.",
+          "Open questions: enterprise support and user scale were not verified.",
+        ].join("\n"),
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "none");
+    const repairPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
+    assert.match(repairPrompt, /Preserve requested dimension labels/);
+    assert.match(repairPrompt, /requested risk dimension/);
+    return {
+      text: [
+        "Vendor Alpha has an observed $19/seat price point.",
+        "Verified strength: browser automation with traceable screenshots.",
+        "Verified risk: the API integration catalog is still limited.",
+        "Residual risk: enterprise support and user scale were not verified.",
+      ].join("\n"),
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn an explore sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-alpha",
+          session_key: "worker:explore:task-alpha:toolu-explore",
+          agent_id: "explore",
+          status: "completed",
+          tool_chain: ["explore"],
+          result: "Vendor Alpha: $19/seat. Strength: browser automation and traceable screenshots. Risk: API integration catalog is still limited.",
+          final_content:
+            "Vendor Alpha: $19/seat. Strength: browser automation and traceable screenshots. Risk: API integration catalog is still limited.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: "Start a source-backed review of Vendor Alpha for a product lead. Focus on pricing, strength, and risk.",
+    },
+  });
+
+  assert.match(result.content, /Verified risk: the API integration catalog is still limited/);
   assert.equal(gatewayInputs.length, 3);
 });
 
