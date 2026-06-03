@@ -110,7 +110,11 @@ export function buildNaturalFixtureEnvFile(manifest: NaturalFixtureServerManifes
       ? ([["TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL", manifest.urls.externalPageUrl]] as const)
       : []),
   ] as const;
-  return `${entries.map(([key, value]) => `export ${key}=${JSON.stringify(value)}`).join("\n")}\n`;
+  return `${entries.map(([key, value]) => `export ${key}=${quoteShellValue(value)}`).join("\n")}\n`;
+}
+
+function quoteShellValue(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export async function runNaturalFixtureServerCli(args = process.argv.slice(2)): Promise<void> {

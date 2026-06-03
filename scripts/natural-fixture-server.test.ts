@@ -65,14 +65,30 @@ test("natural fixture server supports a stable requested port", async () => {
 
 test("natural fixture env file exports browser URL overrides", async () => {
   const fixture = applyNaturalFixtureUrlOverrides(await startFixtureServer(), {
-    TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL: "https://example.com/browser",
+    TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL: "https://example.com/browser?q=owner's-review",
   } as NodeJS.ProcessEnv);
   try {
-    const envFile = buildNaturalFixtureEnvFile(buildNaturalFixtureServerManifest(fixture));
-    assert.match(envFile, /^export TURNKEYAI_NATURAL_COMPLEX_BROWSER_URL="http:\/\/127\.0\.0\.1:\d+\/complex-browser"$/m);
-    assert.match(envFile, /^export TURNKEYAI_NATURAL_DASHBOARD_URL="http:\/\/127\.0\.0\.1:\d+\/ops-dashboard"$/m);
-    assert.match(envFile, /^export TURNKEYAI_NATURAL_DYNAMIC_URL="http:\/\/127\.0\.0\.1:\d+\/dynamic-dashboard"$/m);
-    assert.match(envFile, /^export TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL="https:\/\/example\.com\/browser"$/m);
+    const manifest = buildNaturalFixtureServerManifest(fixture);
+    const envFile = buildNaturalFixtureEnvFile(manifest);
+    assert.match(envFile, /^export TURNKEYAI_NATURAL_COMPLEX_BROWSER_URL='http:\/\/127\.0\.0\.1:\d+\/complex-browser'$/m);
+    assert.match(envFile, /^export TURNKEYAI_NATURAL_DASHBOARD_URL='http:\/\/127\.0\.0\.1:\d+\/ops-dashboard'$/m);
+    assert.match(envFile, /^export TURNKEYAI_NATURAL_DYNAMIC_URL='http:\/\/127\.0\.0\.1:\d+\/dynamic-dashboard'$/m);
+    assert.match(
+      envFile,
+      /^export TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL='https:\/\/example\.com\/browser\?q=owner%27s-review'$/m
+    );
+
+    const rawQuoteEnvFile = buildNaturalFixtureEnvFile({
+      ...manifest,
+      urls: {
+        ...manifest.urls,
+        externalPageUrl: "https://example.com/browser?q=owner's-review",
+      },
+    });
+    assert.match(
+      rawQuoteEnvFile,
+      /^export TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL='https:\/\/example\.com\/browser\?q=owner'\\''s-review'$/m
+    );
   } finally {
     await new Promise<void>((resolve, reject) => {
       fixture.server.close((error) => {
