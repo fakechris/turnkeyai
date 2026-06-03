@@ -4732,6 +4732,7 @@ export function findWeakEvidenceSignals(text: string, options: { browserEvidence
   if (!options.browserEvidenceExpected) {
     return [];
   }
+  const browserEvidenceText = stripPermissionGateSafetyEvidence(text);
   const patterns = [
     {
       label: "browser evidence blocked",
@@ -4756,11 +4757,22 @@ export function findWeakEvidenceSignals(text: string, options: { browserEvidence
   ];
   const signals: string[] = [];
   for (const item of patterns) {
-    if (item.pattern.test(text) && !signals.includes(item.label)) {
+    if (item.pattern.test(browserEvidenceText) && !signals.includes(item.label)) {
       signals.push(item.label);
     }
   }
   return signals;
+}
+
+function stripPermissionGateSafetyEvidence(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .filter(
+      (line) =>
+        !/\bpermission\.query\b[\s\S]{0,160}\bblocked\b[\s\S]{0,160}\bbefore browser work started\b/i.test(line) &&
+        !/\bblocked_before_side_effect\b/i.test(line)
+    )
+    .join("\n");
 }
 
 export function formatMissionScenarioStart(input: {
@@ -7618,8 +7630,9 @@ function findLatestApprovalAppliedIndex(timeline: ActivityEvent[], approvedIds: 
 }
 
 export function isStalePendingApprovalThought(text: string): boolean {
-  return /\b(?:approval pending|approval is pending|approval request is pending|approval request submitted|permission request is pending|pending operator decision|pending\W+operator\s+decision|awaiting (?:your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once (?:you )?approve|still pending)\b/i.test(
-    text
+  const normalized = text.replace(/[*_`#>\[\]()]/g, " ").replace(/\s+/g, " ").trim();
+  return /\b(?:approval pending|approval is pending|approval request is pending|approval request submitted|permission request is pending|pending operator approval|pending operator decision|pending\W+operator\s+(?:approval|decision)|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once (?:you )?approve|still pending)\b/i.test(
+    normalized
   );
 }
 
