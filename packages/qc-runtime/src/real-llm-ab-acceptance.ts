@@ -741,7 +741,16 @@ function requiredSuiteRequirements(suite: RealLlmAbRequiredSuite): readonly {
   key: string;
   acceptedScenarioIds: readonly string[];
 }[] {
-  return suite === "core" ? REAL_LLM_AB_CORE_SUITE_REQUIREMENTS : REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS;
+  switch (suite) {
+    case "core":
+      return REAL_LLM_AB_CORE_SUITE_REQUIREMENTS;
+    case "browser-focused":
+      return REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS;
+    default: {
+      const exhaustive: never = suite;
+      return exhaustive;
+    }
+  }
 }
 
 function isScenarioRun(value: unknown, system: RealLlmAbSystemId): value is RealLlmAbScenarioRun {
