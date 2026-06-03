@@ -361,6 +361,9 @@ function buildTurnkeyAiRun(input: {
   const toolSequence = readStringArray(metrics.tools?.names);
   const sessionsContinued = readNumber(metrics.sessions?.continued);
   const toolTimeouts = readNumber(metrics.tools?.timeouts);
+  const browserEvidenceEvents = input.scenario.natural?.browserUsed === true ? readNumber(metrics.evidenceEvents) : 0;
+  const browserFailureBuckets = readBrowserFailureBucketNames(metrics.browser?.failureBuckets);
+  const weakAnswerSignals = readTurnkeyAiWeakAnswerSignals(input.scenario, browserFailureBuckets);
   return {
     system: "turnkeyai",
     prompt: readString(input.scenario.prompt) ?? "",
@@ -392,9 +395,10 @@ function buildTurnkeyAiRun(input: {
     browserEvidence: {
       required: input.requiresBrowser,
       used: input.scenario.natural?.browserUsed === true,
-      rendered: input.scenario.natural?.browserUsed === true && readNumber(metrics.browser?.profileFallbacks) === 0,
+      rendered: input.scenario.natural?.browserUsed === true && dimensionScores.browserAuthenticity > 0,
       screenshotCount: countArtifacts(input.scenario.artifacts, "screenshot"),
       snapshotCount: countArtifacts(input.scenario.artifacts, "snapshot"),
+      logCount: browserEvidenceEvents,
     },
     approval: {
       required: input.requiresApproval || readNumber(metrics.approvals?.requested) > 0,
@@ -410,7 +414,7 @@ function buildTurnkeyAiRun(input: {
     stuckOrLoop: input.scenario.natural?.stuckOrLoop === true,
     finalAnswerUseful: input.scenario.natural?.finalAnswerUseful === true,
     finalAnswerHasEvidence: input.scenario.natural?.finalAnswerHasEvidence === true,
-    weakAnswerSignals: readStringArray(input.scenario.natural?.weakAnswerSignals),
+    weakAnswerSignals,
     residualRiskVisible: input.scenario.natural?.sourceCoverage?.residualRiskVisible === true,
     unsupportedClaims: readStringArray(input.scenario.natural?.sourceCoverage?.unsupportedClaims),
     dimensionScores,
@@ -535,6 +539,31 @@ function readTurnkeyAiDimensionScores(
     })
   ) as Record<RealLlmAbDimensionKey, RealLlmAbDimensionScore>;
   return scores;
+}
+
+function readTurnkeyAiWeakAnswerSignals(
+  scenario: NaturalMissionScenarioShape,
+  browserFailureBuckets: readonly string[]
+): string[] {
+  const signals = readStringArray(scenario.natural?.weakAnswerSignals);
+  if (
+    browserFailureBuckets.length > 0 &&
+    scenario.natural?.finalAnswerUseful === true &&
+    scenario.natural?.finalAnswerHasEvidence === true &&
+    scenario.natural?.sourceCoverage?.residualRiskVisible === true
+  ) {
+    return signals.filter((signal) => signal !== "tool unavailable fallback");
+  }
+  return signals;
+}
+
+function readBrowserFailureBucketNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const bucket = readString((item as { bucket?: unknown }).bucket);
+    return bucket ? [bucket] : [];
+  });
 }
 
 function findNaturalScenario(report: NaturalMissionReportShape, scenarioId: string): NaturalMissionScenarioShape {
