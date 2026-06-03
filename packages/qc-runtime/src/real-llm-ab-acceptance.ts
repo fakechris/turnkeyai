@@ -692,7 +692,15 @@ function readCount(value: unknown): number {
 }
 
 function normalizePrompt(prompt: unknown): string {
-  return typeof prompt === "string" ? prompt.replace(/\s+/g, " ").trim() : "";
+  if (typeof prompt !== "string") return "";
+  return normalizeLoopbackFixturePorts(prompt).replace(/\s+/g, " ").trim();
+}
+
+function normalizeLoopbackFixturePorts(prompt: string): string {
+  return prompt.replace(
+    /\b(https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])):\d+/gi,
+    "$1:<loopback-port>"
+  );
 }
 
 function isRealLlmAbAcceptanceReport(value: unknown): value is RealLlmAbAcceptanceReport {
