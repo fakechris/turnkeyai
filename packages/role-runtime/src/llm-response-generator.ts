@@ -2623,9 +2623,10 @@ function shouldAppendTimeoutContinuationVisibility(input: {
   messages: LLMMessage[];
   toolTrace: NativeToolRoundTrace[];
 }): boolean {
+  const taskPromptSuffix = input.taskPrompt.slice(Math.max(0, input.taskPrompt.length - 4000));
   if (
-    !isExplicitSessionContinuationRequest(extractLatestUserContinuationText(input.taskPrompt)) &&
-    !isExplicitSessionContinuationRequest(input.taskPrompt)
+    !isExplicitSessionContinuationRequest(extractLatestUserContinuationText(taskPromptSuffix)) &&
+    !isExplicitSessionContinuationRequest(taskPromptSuffix)
   ) {
     return false;
   }
@@ -2633,7 +2634,7 @@ function shouldAppendTimeoutContinuationVisibility(input: {
     return false;
   }
   const context = buildContinuationDirectiveContext(input.taskPrompt, input.messages);
-  return contextHasTimeoutSessionResult(context) || /\b(?:earlier|previous|prior|original)?\s*(?:timeout|timed out)\b/i.test(input.taskPrompt);
+  return contextHasTimeoutSessionResult(context) || /\b(?:earlier|previous|prior|original)?\s*(?:timeout|timed out)\b/i.test(taskPromptSuffix);
 }
 
 function contextHasSessionListResult(context: string): boolean {
