@@ -906,6 +906,93 @@ test("llm role response generator repairs stale pending answers after approval i
   assert.equal(gatewayInputs.length, 5);
 });
 
+test("llm role response generator repairs incomplete approved browser action when approval is daemon-applied", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "The approved browser action was not completed because browser tools were unavailable.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 2) {
+      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_spawn" });
+      assert.match(readToolContent(input.messages.at(-1)?.content ?? ""), /approved browser action has not executed/i);
+      return toolCallResult("toolu-browser-approved", "sessions_spawn", {
+        agent_id: "browser",
+        task: "Submit the approved local dry-run form and verify completion.",
+      });
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: "The approved browser action completed with verified local dry-run evidence.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-approved",
+          session_key: "worker:browser:task-approved:toolu-browser-approved",
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "Approved local dry-run form submission completed.",
+          final_content: "Approved action: browser.form.submit. Evidence observed: local dry-run fixture reported submitted.",
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Open the local approval form and carry the safe local dry-run through the approval gate.",
+        "Runtime permission cache: permission.applied already applied for approval ap-1.",
+        "This is an approval-gated browser form submission.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "The approved browser action completed with verified local dry-run evidence.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["sessions_spawn"]
+  );
+  assert.equal(gatewayInputs.length, 3);
+});
+
 test("llm role response generator repairs stale pending answers after daemon-applied approval continuation", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const executedCalls: RoleToolExecutionInput["call"][] = [];
@@ -2839,7 +2926,7 @@ test("llm role response generator routes continuation follow-up to timed-out ses
   assert.match(readToolContent(gatewayInputs[0]!.messages[1]!.content), /worker:explore:task-1:toolu-timeout/);
 });
 
-test("llm role response generator preserves timeout guidance after successful continuation without raw timeout context", async () => {
+test("llm role response generator does not append recovered timeout closeout without raw timeout evidence", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const executedCalls: RoleToolExecutionInput["call"][] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -2915,11 +3002,7 @@ test("llm role response generator preserves timeout guidance after successful co
 
   assert.equal(
     result.content,
-    [
-      "The resumed source verified the fixture and the earlier timeout no longer limits the release-risk conclusion.",
-      "",
-      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.",
-    ].join("\n")
+    "The resumed source verified the fixture and the earlier timeout no longer limits the release-risk conclusion."
   );
   assert.equal(gatewayInputs.length, 2);
   assert.deepEqual(
@@ -2997,12 +3080,25 @@ test("llm role response generator preserves timeout closeout when resumed eviden
     activation: buildActivation(),
     packet: {
       ...buildPacket(),
-      taskPrompt: "Prepare a release-risk note from the source evidence.",
+      taskPrompt: [
+        "Task brief:",
+        "Prepare a release-risk note from the source evidence.",
+        "",
+        "Recent turns:",
+        JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          status: "timeout",
+          session_key: "worker:explore:task-1:toolu-timeout",
+          agent_id: "explore",
+          result: "WORKER_TIMEOUT",
+          resumable: true,
+        }),
+      ].join("\n"),
     },
   });
 
   assert.match(result.content, /earlier 30-second timeout does not limit the conclusion/);
-  assert.match(result.content, /Continuation: this source check is resumable/);
+  assert.match(result.content, /Timeout closeout: the resumed source produced usable evidence/);
   assert.deepEqual(
     executedCalls.map((call) => call.name),
     ["sessions_send"]
@@ -3889,7 +3985,7 @@ test("llm role response generator forces continuation after list resolves a trun
     [
       "Final answer from recovered timeout continuation.",
       "",
-      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.",
+      "Timeout closeout: the resumed source produced usable evidence, but future release-gated checks should keep a retry path or a longer timeout before treating missing evidence as verified.",
     ].join("\n")
   );
   assert.deepEqual(
