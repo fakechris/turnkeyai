@@ -4706,7 +4706,7 @@ function collectTimelineEvidenceText(timeline: ActivityEvent[]): string {
 
 function isEvidenceTimelineEvent(event: ActivityEvent): boolean {
   if (event.kind === "tool") {
-    return event.runtime?.["toolPhase"] === "result";
+    return event.runtime?.["toolPhase"] === "result" && event.runtime?.["admission"] !== "skipped";
   }
   return event.kind === "browser" || event.kind === "doc" || event.kind === "artifact";
 }

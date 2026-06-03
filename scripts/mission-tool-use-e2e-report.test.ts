@@ -1620,6 +1620,63 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.status, "passed");
   });
 
+  it("does not treat skipped tool results as evidence", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-external-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        externalPageUrl: "https://news.ycombinator.com/",
+      }),
+      requiredEvidencePatterns: [],
+      requiredAnswerPatterns: [],
+      requiredAnswerTerms: [],
+      minBytes: 80,
+    };
+    result.scenario = "natural-browser-external-page-review";
+    result.timeline.unshift({
+      kind: "tool",
+      text: "skipped browser result",
+      tMs: 500,
+      runtime: {
+        toolName: "sessions_spawn",
+        toolPhase: "result",
+        admission: "skipped",
+        resultContent: "Skipped stale tool result said Cloudflare blocked the browser.",
+      },
+    });
+    result.timeline[2]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: "Hacker News loaded normally. No redirects, captchas, paywalls, or blocks were observed.",
+    };
+    result.final.text = [
+      "Hacker News loaded with visible story listings, comment cues, points, and navigation links.",
+      "The current browser result reports no redirects, captchas, paywalls, or blocks during this run.",
+      "Residual risk: live external content can change and login-only actions remain unverified.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
+  });
+
   it("keeps positive blocker evidence when the same line also negates another blocker", () => {
     const result = fakeNaturalResult();
     const spec = {
