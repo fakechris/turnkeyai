@@ -173,6 +173,149 @@ test("real LLM A/B report builder accepts natural artifact summaries as browser 
   }
 });
 
+test("real LLM A/B report builder accepts natural browser evidence events as audit evidence", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
+  try {
+    writeFixtureFiles(dir);
+    const naturalPath = path.join(dir, "turnkeyai-natural.json");
+    const natural = JSON.parse(readFileSync(naturalPath, "utf8")) as {
+      scenarios: Array<{ artifacts: unknown; metrics: { qualityGate?: unknown; evidenceEvents?: number } }>;
+    };
+    natural.scenarios[0]!.artifacts = {
+      count: 0,
+      withLifecycle: 0,
+      kinds: [],
+    };
+    natural.scenarios[0]!.metrics.evidenceEvents = 2;
+    writeFileSync(naturalPath, JSON.stringify(natural));
+
+    const report = buildRealLlmAbAcceptanceReport(
+      {
+        turnkeyaiNaturalReportPath: "turnkeyai-natural.json",
+        generatedAtMs: 1,
+        scenarios: [
+          {
+            scenarioId: "browser-dynamic",
+            turnkeyaiScenarioId: "natural-browser-dynamic-page",
+            prompt: NATURAL_BROWSER_PROMPT,
+            requiresBrowser: true,
+            referenceArtifactPath: "reference-browser.json",
+          },
+        ],
+      },
+      { specDir: dir }
+    );
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.scenarios[0]?.turnkeyai.browserEvidence.screenshotCount, 0);
+    assert.equal(report.scenarios[0]?.turnkeyai.browserEvidence.snapshotCount, 0);
+    assert.equal(report.scenarios[0]?.turnkeyai.browserEvidence.logCount, 2);
+    assert.equal(validateRealLlmAbAcceptanceReport(report).status, "passed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real LLM A/B report builder keeps verified profile fallback evidence rendered", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
+  try {
+    writeFixtureFiles(dir);
+    const naturalPath = path.join(dir, "turnkeyai-natural.json");
+    const natural = JSON.parse(readFileSync(naturalPath, "utf8")) as {
+      scenarios: Array<{ artifacts: unknown; metrics: { browser: { profileFallbacks: number; failureBuckets: unknown[] } } }>;
+    };
+    natural.scenarios[0]!.artifacts = {
+      count: 0,
+      withLifecycle: 0,
+      kinds: [],
+    };
+    natural.scenarios[0]!.metrics.browser.profileFallbacks = 1;
+    writeFileSync(naturalPath, JSON.stringify(natural));
+
+    const report = buildRealLlmAbAcceptanceReport(
+      {
+        turnkeyaiNaturalReportPath: "turnkeyai-natural.json",
+        generatedAtMs: 1,
+        scenarios: [
+          {
+            scenarioId: "browser-profile-lock",
+            turnkeyaiScenarioId: "natural-browser-dynamic-page",
+            prompt: NATURAL_BROWSER_PROMPT,
+            requiresBrowser: true,
+            referenceArtifactPath: "reference-browser.json",
+          },
+        ],
+      },
+      { specDir: dir }
+    );
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.scenarios[0]?.turnkeyai.browserEvidence.rendered, true);
+    assert.equal(report.scenarios[0]?.turnkeyai.browserEvidence.logCount, 1);
+    assert.equal(validateRealLlmAbAcceptanceReport(report).status, "passed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real LLM A/B report builder tolerates tool-unavailable wording only for bucketed browser closeout", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
+  try {
+    writeFixtureFiles(dir, {
+      naturalWeakAnswerSignals: ["tool unavailable fallback"],
+      naturalBrowserFailureBuckets: [{ bucket: "browser_cdp_unavailable", count: 1, latestAtMs: 2_000 }],
+    });
+    const report = buildRealLlmAbAcceptanceReport(
+      {
+        turnkeyaiNaturalReportPath: "turnkeyai-natural.json",
+        generatedAtMs: 1,
+        scenarios: [
+          {
+            scenarioId: "browser-unavailable-closeout",
+            turnkeyaiScenarioId: "natural-browser-dynamic-page",
+            prompt: NATURAL_BROWSER_PROMPT,
+            requiresBrowser: true,
+            referenceArtifactPath: "reference-browser.json",
+          },
+        ],
+      },
+      { specDir: dir }
+    );
+
+    assert.equal(report.status, "passed");
+    assert.deepEqual(report.scenarios[0]?.turnkeyai.weakAnswerSignals, []);
+    assert.equal(validateRealLlmAbAcceptanceReport(report).status, "passed");
+
+    writeFixtureFiles(dir, {
+      naturalWeakAnswerSignals: ["tool unavailable fallback"],
+      naturalBrowserFailureBuckets: [],
+    });
+    const unbucketedReport = buildRealLlmAbAcceptanceReport(
+      {
+        turnkeyaiNaturalReportPath: "turnkeyai-natural.json",
+        generatedAtMs: 1,
+        scenarios: [
+          {
+            scenarioId: "browser-unavailable-closeout",
+            turnkeyaiScenarioId: "natural-browser-dynamic-page",
+            prompt: NATURAL_BROWSER_PROMPT,
+            requiresBrowser: true,
+            referenceArtifactPath: "reference-browser.json",
+          },
+        ],
+      },
+      { specDir: dir }
+    );
+    const unbucketedValidation = validateRealLlmAbAcceptanceReport(unbucketedReport);
+
+    assert.equal(unbucketedReport.status, "failed");
+    assert.deepEqual(unbucketedReport.scenarios[0]?.turnkeyai.weakAnswerSignals, ["tool unavailable fallback"]);
+    assert.match(unbucketedValidation.failures.join("\n"), /root-cause review required/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B report builder preserves reference weakness without treating it as a core loss", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   try {
@@ -480,6 +623,8 @@ function writeFixtureFiles(
     referencePrompt?: string | undefined;
     naturalFailureBuckets?: string[];
     naturalDimensionScores?: Partial<Record<string, 0 | 1 | 2>>;
+    naturalWeakAnswerSignals?: string[];
+    naturalBrowserFailureBuckets?: Array<{ bucket: string; count: number; latestAtMs: number }>;
   } = {}
 ): void {
   const referenceUseful = options.referenceUseful ?? true;
@@ -500,7 +645,7 @@ function writeFixtureFiles(
           metrics: {
             tools: { requested: 1, results: 1, failed: 0, cancelled: 0, timeouts: 0 },
             sessions: { spawned: 1, continued: 0 },
-            browser: { profileFallbacks: 0, failureBuckets: [] },
+            browser: { profileFallbacks: 0, failureBuckets: options.naturalBrowserFailureBuckets ?? [] },
             approvals: { requested: 0, decided: 0, applied: 0 },
             liveness: { active: 0, waiting: 0, stale: 0 },
             evidenceEvents: 1,
@@ -519,7 +664,7 @@ function writeFixtureFiles(
             approvalExercised: false,
             finalAnswerHasEvidence: true,
             finalAnswerUseful: true,
-            weakAnswerSignals: [],
+            weakAnswerSignals: options.naturalWeakAnswerSignals ?? [],
             sourceCoverage: { residualRiskVisible: true, unsupportedClaims: [] },
             dimensionScores: {
               taskCompletion: 2,

@@ -8671,3 +8671,78 @@ Convergence question:
 - Evidence: the next blocker is no longer ambiguous tooling behavior; it is the
   concrete collection of seven listed same-scenario reference artifacts followed
   by the browser-reliability A/B gate.
+
+## 2026-06-04 04:06 CST - Browser Reliability Same-Scenario A/B Gate
+
+Direction: converging
+
+Execution Kernel:
+- Fixed the real LLM A/B report mapping so natural browser evidence events are
+  counted as audit evidence, not only screenshot/snapshot artifacts.
+- Profile-lock fallback is no longer treated as not-rendered when the natural
+  gate already proves browser authenticity and evidence-backed completion.
+- Bucketed browser failure closeouts no longer fail solely because the weak
+  answer detector saw tool-unavailable wording, provided the run has a concrete
+  browser failure bucket, useful final answer, evidence, and residual-risk
+  disclosure.
+
+Result Quality:
+- The current browser-reliability same-scenario A/B report passed with focused
+  capability/stability claims for this suite only.
+- The result should not be broadened to full production-agent capability. It
+  proves the named browser reliability matrix, not multi-source research,
+  approval, memory, long delegation, or workbench replay quality.
+
+Workbench UX:
+- No UI changed.
+- Replay/thought-process UX remains P1; this checkpoint is backend evidence
+  and acceptance-gate alignment.
+
+Browser Reliability:
+- Same-scenario browser-reliability A/B now covers 8 scenarios:
+  follow-up continuation, restart continuation, cold recreation, profile-lock
+  fallback, browser CDP unavailable, CDP command timeout, detached target, and
+  attach failure.
+- The local Markdown report records 8 comparable scenarios, TurnkeyAI
+  wins/ties/losses `8/0/0`, and root-cause review required `0`.
+
+Acceptance Evidence:
+- Reference artifacts were collected locally for the seven previously missing
+  browser-reliability scenarios, plus the profile-lock reference artifact was
+  rerun with the current same prompt.
+- Local A/B commands:
+  `npm run acceptance:ab:spec -- --natural-report
+  artifacts/evals/20260604-browser-reliability-suite/turnkeyai-natural-browser-reliability.json
+  --reference-dir
+  /Users/chris/workspace/turnkeyai-p0-runtime/artifacts/evals/20260603-profile-lock-gate
+  --suite browser-reliability --out
+  artifacts/evals/20260604-browser-reliability-suite/ab/ab-build-spec.json`
+  passed.
+- Local A/B report command:
+  `npm run acceptance:ab:build -- --spec
+  artifacts/evals/20260604-browser-reliability-suite/ab/ab-build-spec.json
+  --out artifacts/evals/20260604-browser-reliability-suite/ab/ab-report.json
+  --markdown-out artifacts/evals/20260604-browser-reliability-suite/ab/report.md
+  --suite browser-reliability --check` passed.
+- Focused report-builder tests and typecheck passed:
+  `npx tsx --test scripts/real-llm-ab-report-build.test.ts`
+  and `npm run typecheck`.
+- The same-scenario A/B artifacts and reference transcripts remain local and
+  are not committed.
+
+Regression Risk:
+- The report-builder fix must not turn arbitrary weak answers into passing
+  closeouts. Regression tests now require a browser failure bucket, useful
+  final answer, evidence, and residual-risk disclosure before filtering the
+  tool-unavailable weak signal.
+- The browser-reliability A/B report still uses local fixture and local
+  reference artifacts. Broader production claims need separate real-page and
+  long-task gates.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes for browser reliability evidence; unknown for full workbench production
+  readiness.
+- Evidence: the browser-reliability suite moved from missing-reference and
+  acceptance-mapping failures to a passing same-scenario A/B gate with 8/8
+  comparable scenarios.
