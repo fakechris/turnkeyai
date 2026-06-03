@@ -8560,3 +8560,62 @@ Convergence question:
 - Next required gate: collect/provide same-scenario reference artifacts for the
   `browser-reliability` suite, then run
   `acceptance:ab:spec/build --suite browser-reliability`.
+
+## 2026-06-04 03:21 CST - Browser Reliability A/B Evidence Gap Listed
+
+Direction: converging
+
+Execution Kernel:
+- Improved the real LLM A/B spec builder so incomplete suite evidence reports
+  every missing natural/reference artifact instead of stopping at the first
+  missing file.
+- This is an acceptance-gate repair, not a runtime behavior change.
+
+Result Quality:
+- No new model capability is claimed in this checkpoint.
+- The current `browser-reliability` A/B block is now explicit: the TurnkeyAI
+  natural report has all 8 scenarios, while the available local reference
+  directory only has `natural-browser-profile-lock-recovery.json`.
+
+Workbench UX:
+- No UI changed.
+
+Browser Reliability:
+- Runtime/browser behavior did not change.
+- The reliability proof path is clearer because the missing same-scenario
+  reference artifacts are now listed in one run:
+  - `natural-browser-followup-continuation.json`
+  - `natural-browser-restart-continuation.json`
+  - `natural-browser-cold-recreation-continuation.json`
+  - `natural-browser-unavailable-closeout.json`
+  - `natural-browser-cdp-timeout-closeout.json`
+  - `natural-browser-detached-target-closeout.json`
+  - `natural-browser-attach-failed-closeout.json`
+
+Acceptance Evidence:
+- Focused spec-builder test:
+  `npx tsx --test scripts/real-llm-ab-spec-build.test.ts` passed.
+- Typecheck:
+  `npm run typecheck` passed.
+- Current blocked A/B spec command now emits the full missing-reference list:
+  `npm run acceptance:ab:spec -- --natural-report
+  artifacts/evals/20260604-browser-reliability-suite/turnkeyai-natural-browser-reliability.json
+  --reference-dir
+  /Users/chris/workspace/turnkeyai-p0-runtime/artifacts/evals/20260603-profile-lock-gate
+  --suite browser-reliability --out
+  artifacts/evals/20260604-browser-reliability-suite/ab/ab-build-spec.json`.
+- No local A/B artifacts are committed.
+
+Regression Risk:
+- The new diagnostic should not weaken suite requirements. Focused tests prove
+  complete suites still build and incomplete suites still fail.
+- Risk remains that browser reliability is over-claimed before the listed
+  reference artifacts are collected. This checkpoint explicitly avoids that
+  claim.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  unknown for runtime capability; yes for the A/B proof path.
+- Evidence: the remaining browser-reliability A/B work is now a concrete
+  seven-artifact reference collection task rather than an ambiguous gate
+  failure.
