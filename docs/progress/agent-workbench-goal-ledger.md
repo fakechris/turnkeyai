@@ -8619,3 +8619,55 @@ Convergence question:
 - Evidence: the remaining browser-reliability A/B work is now a concrete
   seven-artifact reference collection task rather than an ambiguous gate
   failure.
+
+## 2026-06-04 03:35 CST - Browser Reliability Reference Collection Manifest
+
+Direction: unknown
+
+Execution Kernel:
+- Added an optional missing-evidence manifest mode to the real LLM A/B spec
+  builder. When a suite is incomplete, the command still fails, but it can now
+  also write a machine-readable collection manifest for the missing natural
+  scenario or reference artifact evidence.
+- This is an acceptance workflow improvement only. It does not change the
+  agent runtime, prompt harness, browser bridge, or tool execution behavior.
+
+Result Quality:
+- No model or runtime quality claim is made in this checkpoint.
+- The improvement is that the next same-scenario reference run can be driven by
+  exact natural prompts and expected artifact names from the TurnkeyAI natural
+  report, instead of manually reconstructing the collection list from a failing
+  command.
+
+Workbench UX:
+- No UI changed.
+
+Browser Reliability:
+- Browser runtime behavior did not change.
+- The browser-reliability A/B gap is now operationally collectable: the local
+  manifest identifies the seven missing same-scenario reference artifacts and
+  includes the natural prompt for each artifact.
+
+Acceptance Evidence:
+- Focused test:
+  `npx tsx --test scripts/real-llm-ab-spec-build.test.ts` passed.
+- Typecheck:
+  `npm run typecheck` passed.
+- Local blocked A/B spec command was rerun with `--missing-manifest-out` and
+  correctly failed while writing a local manifest under `artifacts/evals/`.
+- The generated manifest and related eval artifacts remain local and are not
+  committed.
+- No same-scenario browser-reliability A/B result is claimed yet.
+
+Regression Risk:
+- The new mode must not weaken the gate. The command still exits incomplete
+  when evidence is missing, and tests cover that behavior.
+- The main risk remains process drift: collecting the listed reference artifacts
+  is required before any browser-reliability parity claim.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  unknown for runtime capability; yes for evidence collection readiness.
+- Evidence: the next blocker is no longer ambiguous tooling behavior; it is the
+  concrete collection of seven listed same-scenario reference artifacts followed
+  by the browser-reliability A/B gate.

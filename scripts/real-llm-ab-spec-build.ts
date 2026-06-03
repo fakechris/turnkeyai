@@ -15,6 +15,7 @@ export interface RealLlmAbSpecBuildOptions {
   referenceDir: string;
   outPath: string;
   requiredSuite: RealLlmAbSpecBuildSuite;
+  missingManifestOutPath?: string;
 }
 
 export type RealLlmAbSpecBuildSuite = "core" | "browser-focused" | "browser-reliability";
@@ -29,6 +30,42 @@ interface NaturalMissionScenarioShape {
   prompt?: unknown;
 }
 
+interface RealLlmAbReferenceCollectionManifest {
+  kind: "turnkeyai.real-llm-ab-reference-collection.manifest";
+  generatedAtMs: number;
+  suite: RealLlmAbSpecBuildSuite;
+  naturalReportPath: string;
+  referenceDir: string;
+  missingEvidence: RealLlmAbReferenceCollectionMissingEvidence[];
+}
+
+interface RealLlmAbReferenceCollectionMissingEvidence {
+  reason: "missing_natural_scenario" | "missing_reference_artifact";
+  requirementKey: string;
+  acceptedScenarioIds: string[];
+  scenarioId?: string;
+  prompt?: string;
+  expectedReferenceArtifactPath?: string;
+}
+
+interface RealLlmAbReferenceCollectionManifestData {
+  generatedAtMs: number;
+  suite: RealLlmAbSpecBuildSuite;
+  naturalReportPath: string;
+  referenceDir: string;
+  missingEvidence: RealLlmAbReferenceCollectionMissingEvidence[];
+}
+
+export class RealLlmAbSpecIncompleteEvidenceError extends Error {
+  readonly missingManifest: RealLlmAbReferenceCollectionManifestData;
+
+  constructor(message: string, missingManifest: RealLlmAbReferenceCollectionManifestData) {
+    super(message);
+    this.name = "RealLlmAbSpecIncompleteEvidenceError";
+    this.missingManifest = missingManifest;
+  }
+}
+
 export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildOptions | { help: true } {
   if (args.some((arg) => arg === "--help" || arg === "-h" || arg === "help")) {
     return { help: true };
@@ -37,6 +74,7 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
   let referenceDir: string | undefined;
   let outPath: string | undefined;
   let requiredSuite: RealLlmAbSpecBuildSuite | undefined;
+  let missingManifestOutPath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--natural-report") {
@@ -51,6 +89,11 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
     }
     if (arg === "--out") {
       outPath = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--missing-manifest-out") {
+      missingManifestOutPath = readValue(args, index, arg);
       index += 1;
       continue;
     }
@@ -82,6 +125,7 @@ export function parseRealLlmAbSpecBuildArgs(args: string[]): RealLlmAbSpecBuildO
     referenceDir,
     outPath,
     requiredSuite,
+    ...(missingManifestOutPath ? { missingManifestOutPath } : {}),
   };
 }
 
@@ -91,12 +135,23 @@ export async function runRealLlmAbSpecBuildCli(args: string[]): Promise<void> {
     console.log(buildRealLlmAbSpecBuildHelpText());
     return;
   }
-  const spec = buildRealLlmAbSpec({
-    naturalReportPath: options.naturalReportPath,
-    referenceDir: options.referenceDir,
-    outPath: options.outPath,
-    suite: options.requiredSuite,
-  });
+  let spec: RealLlmAbReportBuildSpec;
+  try {
+    spec = buildRealLlmAbSpec({
+      naturalReportPath: options.naturalReportPath,
+      referenceDir: options.referenceDir,
+      outPath: options.outPath,
+      suite: options.requiredSuite,
+    });
+  } catch (error) {
+    if (error instanceof RealLlmAbSpecIncompleteEvidenceError && options.missingManifestOutPath) {
+      writeMissingEvidenceManifest({
+        manifestOutPath: options.missingManifestOutPath,
+        ...error.missingManifest,
+      });
+    }
+    throw error;
+  }
   const resolvedOutPath = path.resolve(options.outPath);
   mkdirSync(path.dirname(resolvedOutPath), { recursive: true });
   writeFileSync(resolvedOutPath, `${JSON.stringify(spec, null, 2)}\n`);
@@ -108,12 +163,13 @@ export function buildRealLlmAbSpecBuildHelpText(): string {
     "TurnkeyAI real LLM A/B build-spec generator",
     "",
     "Usage:",
-    "  npm run acceptance:ab:spec -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused|browser-reliability> --out <path>",
+    "  npm run acceptance:ab:spec -- --natural-report <path> --reference-dir <dir> --suite <core|browser-focused|browser-reliability> --out <path> [--missing-manifest-out <path>]",
     "",
     "The generator selects natural same-scenario runs for the requested A/B suite.",
     "core covers the full P0 natural runtime gate; browser-focused covers external and complex browser gates.",
     "browser-reliability covers browser failure/recovery gates such as profile fallback, target/session recovery, and CDP failure closeout.",
     "Reference artifacts must be named <natural-scenario-id>.json in --reference-dir.",
+    "--missing-manifest-out writes a reference collection manifest when required evidence is incomplete, then the command still fails.",
   ].join("\n");
 }
 
@@ -161,6 +217,7 @@ function buildRealLlmAbSpecForRequirements(input: {
     }
   }
   const missingEvidence: string[] = [];
+  const manifestMissingEvidence: RealLlmAbReferenceCollectionMissingEvidence[] = [];
   const scenarioInputs: Array<{
     scenario: NaturalMissionScenarioShape;
     scenarioId: string;
@@ -170,18 +227,41 @@ function buildRealLlmAbSpecForRequirements(input: {
     const naturalScenario = findRequirementScenario(naturalScenarios, requirement.acceptedScenarioIds);
     if (!naturalScenario) {
       missingEvidence.push(`natural report is missing ${input.suite} A/B scenario: ${requirement.key}`);
+      manifestMissingEvidence.push({
+        reason: "missing_natural_scenario",
+        requirementKey: requirement.key,
+        acceptedScenarioIds: [...requirement.acceptedScenarioIds],
+      });
       continue;
     }
     const scenarioId = readString(naturalScenario.scenario)!;
+    const prompt = readString(naturalScenario.prompt)!;
     const referenceArtifactPath = path.join(referenceDir, `${scenarioId}.json`);
     if (!existsSync(referenceArtifactPath)) {
       missingEvidence.push(`missing reference artifact for ${scenarioId}: ${referenceArtifactPath}`);
+      manifestMissingEvidence.push({
+        reason: "missing_reference_artifact",
+        requirementKey: requirement.key,
+        acceptedScenarioIds: [...requirement.acceptedScenarioIds],
+        scenarioId,
+        prompt,
+        expectedReferenceArtifactPath: referenceArtifactPath,
+      });
       continue;
     }
     scenarioInputs.push({ scenario: naturalScenario, scenarioId, referenceArtifactPath });
   }
   if (missingEvidence.length > 0) {
-    throw new Error(`A/B suite evidence is incomplete:\n${missingEvidence.map((item) => `- ${item}`).join("\n")}`);
+    throw new RealLlmAbSpecIncompleteEvidenceError(
+      `A/B suite evidence is incomplete:\n${missingEvidence.map((item) => `- ${item}`).join("\n")}`,
+      {
+        generatedAtMs: input.generatedAtMs ?? Date.now(),
+        suite: input.suite,
+        naturalReportPath,
+        referenceDir,
+        missingEvidence: manifestMissingEvidence,
+      }
+    );
   }
   const scenarios = scenarioInputs.map(({ scenario, scenarioId, referenceArtifactPath }) => {
     return {
@@ -285,6 +365,37 @@ function isNaturalScenario(value: unknown): value is NaturalMissionScenarioShape
 
 function readJsonFile<T>(filePath: string): T {
   return JSON.parse(readFileSync(filePath, "utf8")) as T;
+}
+
+function writeMissingEvidenceManifest(input: {
+  manifestOutPath: string;
+  generatedAtMs: number;
+  suite: RealLlmAbSpecBuildSuite;
+  naturalReportPath: string;
+  referenceDir: string;
+  missingEvidence: RealLlmAbReferenceCollectionMissingEvidence[];
+}): void {
+  const resolvedManifestOutPath = path.resolve(input.manifestOutPath);
+  const manifestDir = path.dirname(resolvedManifestOutPath);
+  const manifest: RealLlmAbReferenceCollectionManifest = {
+    kind: "turnkeyai.real-llm-ab-reference-collection.manifest",
+    generatedAtMs: input.generatedAtMs,
+    suite: input.suite,
+    naturalReportPath: toRelativePath(manifestDir, input.naturalReportPath),
+    referenceDir: toRelativePath(manifestDir, input.referenceDir),
+    missingEvidence: input.missingEvidence.map((item) => {
+      if (item.expectedReferenceArtifactPath) {
+        return {
+          ...item,
+          expectedReferenceArtifactPath: toRelativePath(manifestDir, item.expectedReferenceArtifactPath),
+        };
+      }
+      return item;
+    }),
+  };
+  mkdirSync(manifestDir, { recursive: true });
+  writeFileSync(resolvedManifestOutPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  console.log(`real LLM A/B missing evidence manifest written: ${resolvedManifestOutPath}`);
 }
 
 function readValue(args: string[], index: number, arg: string): string {
