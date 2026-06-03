@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 import {
   DEFAULT_REAL_ACCEPTANCE_MISSION_SCENARIOS,
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS,
   DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS,
   DEFAULT_REAL_ACCEPTANCE_NATURAL_MISSION_SCENARIOS,
   DEFAULT_REAL_ACCEPTANCE_TOOLUSE_BROWSER_SCENARIOS,
@@ -79,9 +80,23 @@ test("real LLM acceptance defaults include the product-level mission matrix", ()
     "natural-timeout-followup-continuation",
     "natural-memory-recall",
   ]);
+  assert.deepEqual([...DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS], [
+    "natural-browser-followup-continuation",
+    "natural-browser-restart-continuation",
+    "natural-browser-cold-recreation-continuation",
+    "natural-browser-profile-lock-recovery",
+    "natural-browser-unavailable-closeout",
+    "natural-browser-cdp-timeout-closeout",
+    "natural-browser-detached-target-closeout",
+    "natural-browser-attach-failed-closeout",
+  ]);
   assert.equal(
     joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS),
     "natural-comparison-research,natural-browser-dynamic-page,natural-followup-continuation,natural-approval-dry-run-action,natural-long-delegation,natural-timeout-followup-continuation,natural-memory-recall"
+  );
+  assert.equal(
+    joinRealAcceptanceScenarios(DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS),
+    "natural-browser-followup-continuation,natural-browser-restart-continuation,natural-browser-cold-recreation-continuation,natural-browser-profile-lock-recovery,natural-browser-unavailable-closeout,natural-browser-cdp-timeout-closeout,natural-browser-detached-target-closeout,natural-browser-attach-failed-closeout"
   );
   const packageJson = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as {
     scripts?: Record<string, string>;
@@ -90,6 +105,12 @@ test("real LLM acceptance defaults include the product-level mission matrix", ()
     packageJson.scripts?.["mission:e2e:natural:core"],
     `tsx scripts/mission-tool-use-e2e.ts --natural-matrix --natural-matrix-scenarios ${joinRealAcceptanceScenarios(
       DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS
+    )}`
+  );
+  assert.equal(
+    packageJson.scripts?.["mission:e2e:natural:browser-reliability"],
+    `tsx scripts/mission-tool-use-e2e.ts --natural-matrix --natural-matrix-scenarios ${joinRealAcceptanceScenarios(
+      DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_RELIABILITY_AB_SCENARIOS
     )}`
   );
 });

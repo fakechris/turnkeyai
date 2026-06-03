@@ -5,6 +5,7 @@ import {
   buildRealLlmAbMarkdownReport,
   detectControlledPromptLanguage,
   REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS,
+  REAL_LLM_AB_BROWSER_RELIABILITY_SUITE_REQUIREMENTS,
   REAL_LLM_AB_CORE_SUITE_REQUIREMENTS,
   summarizeRealLlmAbAcceptanceReport,
   validateRealLlmAbAcceptanceReport,
@@ -92,6 +93,21 @@ test("real LLM A/B acceptance validates the browser-focused suite without claimi
   assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: comparison-research/);
 });
 
+test("real LLM A/B acceptance validates the browser-reliability suite without claiming core coverage", () => {
+  const report = buildBrowserFocusedSuiteReport({
+    scenarios: REAL_LLM_AB_BROWSER_RELIABILITY_SUITE_REQUIREMENTS.map((requirement) => requirement.acceptedScenarioIds[0]!),
+  });
+
+  const reliabilityValidation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "browser-reliability" });
+  const coreValidation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "core" });
+
+  assert.equal(reliabilityValidation.status, "passed");
+  assert.equal(reliabilityValidation.summary?.scenarioCount, REAL_LLM_AB_BROWSER_RELIABILITY_SUITE_REQUIREMENTS.length);
+  assert.equal(coreValidation.status, "failed");
+  assert.match(coreValidation.failures.join("\n"), /focused capability evidence is not core capability evidence/);
+  assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: comparison-research/);
+});
+
 test("real LLM A/B acceptance requires every browser-focused scenario when requested", () => {
   const report = buildBrowserFocusedSuiteReport({
     scenarios: ["natural-browser-external-page-review"],
@@ -103,6 +119,20 @@ test("real LLM A/B acceptance requires every browser-focused scenario when reque
   assert.match(
     validation.failures.join("\n"),
     /browser-focused suite missing required scenario: browser-complex-page-review/
+  );
+});
+
+test("real LLM A/B acceptance requires every browser-reliability scenario when requested", () => {
+  const report = buildBrowserFocusedSuiteReport({
+    scenarios: ["natural-browser-profile-lock-recovery"],
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "browser-reliability" });
+
+  assert.equal(validation.status, "failed");
+  assert.match(
+    validation.failures.join("\n"),
+    /browser-reliability suite missing required scenario: browser-cdp-timeout-closeout/
   );
 });
 

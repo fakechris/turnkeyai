@@ -27,6 +27,17 @@ const BROWSER_FOCUSED_NATURAL_SCENARIOS = [
   "natural-browser-complex-page-review",
 ] as const;
 
+const BROWSER_RELIABILITY_NATURAL_SCENARIOS = [
+  "natural-browser-followup-continuation",
+  "natural-browser-restart-continuation",
+  "natural-browser-cold-recreation-continuation",
+  "natural-browser-profile-lock-recovery",
+  "natural-browser-unavailable-closeout",
+  "natural-browser-cdp-timeout-closeout",
+  "natural-browser-detached-target-closeout",
+  "natural-browser-attach-failed-closeout",
+] as const;
+
 test("real LLM A/B spec builder parses args and help", () => {
   assert.deepEqual(
     parseRealLlmAbSpecBuildArgs([
@@ -49,6 +60,7 @@ test("real LLM A/B spec builder parses args and help", () => {
   assert.deepEqual(parseRealLlmAbSpecBuildArgs(["--help"]), { help: true });
   assert.match(buildRealLlmAbSpecBuildHelpText(), /A\/B build-spec generator/);
   assert.match(buildRealLlmAbSpecBuildHelpText(), /browser-focused/);
+  assert.match(buildRealLlmAbSpecBuildHelpText(), /browser-reliability/);
   assert.deepEqual(
     parseRealLlmAbSpecBuildArgs([
       "--natural-report",
@@ -67,6 +79,24 @@ test("real LLM A/B spec builder parses args and help", () => {
       outPath: "/tmp/spec.json",
     }
   );
+  assert.deepEqual(
+    parseRealLlmAbSpecBuildArgs([
+      "--natural-report",
+      "/tmp/natural.json",
+      "--reference-dir",
+      "/tmp/reference",
+      "--suite",
+      "browser-reliability",
+      "--out",
+      "/tmp/spec.json",
+    ]),
+    {
+      naturalReportPath: "/tmp/natural.json",
+      referenceDir: "/tmp/reference",
+      requiredSuite: "browser-reliability",
+      outPath: "/tmp/spec.json",
+    }
+  );
   assert.throws(() => parseRealLlmAbSpecBuildArgs(["--natural-report", "/tmp/natural.json"]), /missing required --reference-dir/);
   assert.throws(
     () =>
@@ -80,7 +110,7 @@ test("real LLM A/B spec builder parses args and help", () => {
         "--out",
         "/tmp/spec.json",
       ]),
-    /--suite must be one of: core, browser-focused/
+    /--suite must be one of: core, browser-focused, browser-reliability/
   );
 });
 
@@ -147,6 +177,39 @@ test("real LLM A/B spec builder emits the browser-focused suite from a natural r
   }
 });
 
+test("real LLM A/B spec builder emits the browser-reliability suite from a natural report", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-spec-"));
+  try {
+    const { naturalReportPath, referenceDir, outPath } = writeCoreFixture(dir, {
+      scenarios: BROWSER_RELIABILITY_NATURAL_SCENARIOS,
+    });
+    const spec = buildRealLlmAbSpec({
+      naturalReportPath,
+      referenceDir,
+      outPath,
+      suite: "browser-reliability",
+      generatedAtMs: 1,
+    });
+
+    assert.equal(spec.kind, "turnkeyai.real-llm-ab-acceptance.build-spec");
+    assert.equal(spec.generatedAtMs, 1);
+    assert.deepEqual(
+      spec.scenarios.map((scenario) => scenario.scenarioId),
+      [...BROWSER_RELIABILITY_NATURAL_SCENARIOS]
+    );
+    assert.ok(spec.scenarios.every((scenario) => scenario.requiresBrowser === true));
+    assert.equal(
+      spec.scenarios.find((scenario) => scenario.scenarioId === "natural-browser-cdp-timeout-closeout")
+        ?.requiresTimeoutCloseout,
+      true
+    );
+    assert.ok(spec.scenarios.every((scenario) => scenario.promptPolicy?.naturalPrompt === true));
+    assert.ok(spec.scenarios.every((scenario) => scenario.referenceArtifactPath.endsWith(`${scenario.scenarioId}.json`)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B spec builder CLI writes a core build spec", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-spec-"));
   try {
@@ -191,6 +254,29 @@ test("real LLM A/B spec builder CLI writes a browser-focused build spec", async 
   }
 });
 
+test("real LLM A/B spec builder CLI writes a browser-reliability build spec", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-spec-"));
+  try {
+    const { naturalReportPath, referenceDir, outPath } = writeCoreFixture(dir, {
+      scenarios: BROWSER_RELIABILITY_NATURAL_SCENARIOS,
+    });
+    await runRealLlmAbSpecBuildCli([
+      "--natural-report",
+      naturalReportPath,
+      "--reference-dir",
+      referenceDir,
+      "--suite",
+      "browser-reliability",
+      "--out",
+      outPath,
+    ]);
+    const spec = JSON.parse(readFileSync(outPath, "utf8")) as { scenarios: unknown[] };
+    assert.equal(spec.scenarios.length, BROWSER_RELIABILITY_NATURAL_SCENARIOS.length);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B spec builder rejects incomplete natural or reference evidence", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-spec-"));
   try {
@@ -220,6 +306,19 @@ test("real LLM A/B spec builder rejects incomplete natural or reference evidence
           suite: "browser-focused",
         }),
       /missing reference artifact for natural-browser-complex-page-review/
+    );
+
+    const reliability = writeCoreFixture(dir, { scenarios: BROWSER_RELIABILITY_NATURAL_SCENARIOS });
+    rmSync(path.join(reliability.referenceDir, "natural-browser-cdp-timeout-closeout.json"), { force: true });
+    assert.throws(
+      () =>
+        buildRealLlmAbSpec({
+          naturalReportPath: reliability.naturalReportPath,
+          referenceDir: reliability.referenceDir,
+          outPath,
+          suite: "browser-reliability",
+        }),
+      /missing reference artifact for natural-browser-cdp-timeout-closeout/
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
