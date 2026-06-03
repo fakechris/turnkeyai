@@ -207,6 +207,25 @@ test("real LLM A/B acceptance rejects controlled prompt gates and missing artifa
   ]);
 });
 
+test("real LLM A/B acceptance allows natural browser-visible evidence language", () => {
+  assert.deepEqual(
+    detectControlledPromptLanguage(
+      "These are three independent evidence streams. Use specialist work where it helps, and use browser-visible evidence for the live signal dashboard."
+    ),
+    []
+  );
+  assert.deepEqual(
+    detectControlledPromptLanguage("Compare the sources and include rendered browser evidence when the live page matters."),
+    []
+  );
+});
+
+test("real LLM A/B acceptance still rejects explicit tool-call instructions", () => {
+  assert.deepEqual(detectControlledPromptLanguage("Use the browser tool to inspect the page."), ["forced-tool-call"]);
+  assert.deepEqual(detectControlledPromptLanguage("Call sessions_spawn for the browser worker."), ["forced-tool-call"]);
+  assert.deepEqual(detectControlledPromptLanguage("必须调用 browser 工具。"), ["forced-tool-call"]);
+});
+
 test("real LLM A/B acceptance requires each run to prove the same natural prompt", () => {
   const missingPromptReport = buildReport({
     weakenRun: {

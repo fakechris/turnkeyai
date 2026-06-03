@@ -463,13 +463,22 @@ export function detectControlledPromptLanguage(prompt: string): string[] {
   const checks: Array<[string, RegExp]> = [
     ["exactly-once", /\bexactly\s+once\b/i],
     ["exact-final-shape", /\b(?:use|follow)\s+(?:this\s+)?exact\s+(?:final\s+)?(?:answer\s+)?shape\b/i],
-    [
-      "forced-tool-call",
-      /\b(?:(?:must|必须)\s+)?(?:call|use|调用|使用)\s+(?:the\s+)?(?:(?:browser|explore|sessions_[a-z_]+)\s+)?(?:tool|工具|sessions_[a-z_]+|browser|explore)\b/i,
-    ],
+    ["forced-tool-call", forcedToolCallPattern()],
     ["fixed-marker", /\b(?:fixed\s+marker|release\s+marker|marker\s+as\s+(?:the\s+)?pass|TURNKEYAI_[A-Z0-9_]+)\b/i],
   ];
   return checks.flatMap(([name, pattern]) => (pattern.test(prompt) ? [name] : []));
+}
+
+function forcedToolCallPattern(): RegExp {
+  return new RegExp(
+    [
+      "\\b(?:(?:must|必须)\\s+)?(?:call|use)\\s+(?:the\\s+)?(?:browser|explore)\\s+tool\\b",
+      "\\b(?:(?:must|必须)\\s+)?(?:call|use)\\s+(?:the\\s+)?sessions_[a-z_]+\\b",
+      "(?:调用|使用)\\s*(?:browser|explore)\\s*(?:tool|工具)",
+      "(?:调用|使用)\\s*sessions_[a-z_]+",
+    ].join("|"),
+    "i"
+  );
 }
 
 function compareScenarioPair(scenario: RealLlmAbScenarioPair): RealLlmAbScenarioComparison {
