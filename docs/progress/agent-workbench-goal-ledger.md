@@ -8082,3 +8082,66 @@ Convergence question:
 - Next required gate: rerun the browser-focused A/B with identical natural
   prompts and stable shared fixture URLs, then classify any losses before making
   runtime or prompt changes.
+
+## 2026-06-04 00:40 CST - Stable Browser Fixture And Evidence Boundary
+
+Direction: unknown
+
+Execution Kernel:
+- Added stable-port natural fixture support so browser-focused natural runs can
+  share identical localhost URLs across same-scenario A/B collection.
+- Added fixture manifest and shell-env output for the browser-focused prompts
+  and URL overrides. This directly addresses the prior prompt-mismatch failure
+  caused by random fixture ports.
+- Tightened natural evidence collection so tool-call input text is not counted
+  as evidence. Only tool results, browser events, document events, and artifact
+  events feed evidence-pattern and weak-answer checks.
+- Strengthened the browser sub-agent prompt harness to preserve facts across
+  browser-visible surfaces: main page, frames/iframes, shadow/component panels,
+  popups, and tabs.
+
+Result Quality:
+- No new natural real LLM mission was run in this checkpoint.
+- The quality impact is structural: future browser-focused A/B runs can use
+  identical prompts, and the quality evaluator is less likely to mark planning
+  text as observed browser evidence.
+- Capability remains unproven until a fresh same-scenario browser-focused A/B
+  report passes with mission/report artifacts.
+
+Workbench UX:
+- No UI changed.
+- This does not prove replay readability or final-answer display quality.
+
+Browser Reliability:
+- No browser transport behavior changed.
+- The browser sub-agent prompt now makes complex-page evidence preservation
+  explicit, which targets the previously observed failure mode where verified
+  frame/shadow/popup facts could be dropped during sub-agent synthesis.
+- Actual browser reliability remains evidence-gated by the next natural
+  browser-focused A/B run.
+
+Acceptance Evidence:
+- Focused tests:
+  `npx tsx --test packages/role-runtime/src/sub-agent-worker-handler.test.ts
+  scripts/mission-tool-use-e2e-report.test.ts
+  scripts/natural-fixture-server.test.ts`
+- Typecheck:
+  `npm run typecheck`
+- No reference artifacts were added to the repo.
+- No same-scenario A/B artifact was generated in this checkpoint.
+
+Regression Risk:
+- Stable fixture ports can fail if the requested port is occupied; the CLI
+  should surface that as collection setup failure rather than runtime evidence.
+- The relaxed complex-page answer patterns accept equivalent wording for the
+  same required facts, but evidence patterns remain strict for browser-observed
+  frame, shadow, and popup state.
+- Next required gate: run both systems against the same fixture manifest/env,
+  then build and check the browser-focused A/B report before claiming browser
+  capability progress.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  unknown
+- Evidence: same-scenario browser evidence collection is now less brittle, but
+  no fresh real A/B capability artifact exists yet.

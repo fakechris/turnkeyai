@@ -300,6 +300,8 @@ test("LLMSubAgentWorkerHandler exposes structured browser private tools when a b
     "browser_screenshot",
   ]);
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /browser_open/);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /main page, frames\/iframes, shadow DOM or component panels, popups, and additional tabs/);
+  assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /instead of marking it not verified/);
   assert.equal(bridgeCalls.length, 2);
   assert.equal(bridgeCalls[0]?.mode, "spawn");
   assert.equal(bridgeCalls[0]?.input.ownerType, "worker");

@@ -1505,6 +1505,8 @@ function buildSubAgentSystemPrompt(kind: WorkerKind, maxRounds: number): string 
       "Retry the same browser operation at most three times, changing strategy only when the observed failure justifies it.",
       "Prefer element refIds from snapshots over selectors or visible text when interacting with a page.",
       "Capture screenshots when the parent needs visual evidence or when page state is hard to summarize from text.",
+      "For complex pages, preserve verified facts separately for each browser-visible surface: the main page, frames/iframes, shadow DOM or component panels, popups, and additional tabs.",
+      "If any browser-visible surface explicitly provides a requested field or value, carry that field into your final result instead of marking it not verified because another surface did not contain it.",
       "Prefer stable page facts and direct observations over guesses.",
     ].join("\n");
   }
