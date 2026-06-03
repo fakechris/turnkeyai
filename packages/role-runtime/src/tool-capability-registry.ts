@@ -230,7 +230,7 @@ export function buildSessionToolDefinitions(
     {
       name: "sessions_spawn",
       description:
-        "Spawn a specialist sub-agent session for an isolated task. Use explore first for public source research, pricing/docs pages, and read-only URL extraction. Use browser directly for authenticated, interactive, visual, JS-rendered, localhost, loopback, private-network, internal, dashboard, or user-session pages. Use finance for market data.",
+        "Spawn a specialist sub-agent session for an isolated task. Use explore first for public source research, pricing/docs pages, and read-only URL extraction unless the task asks for browser-visible, user-visible, rendered, visual, or interactive page evidence. Use browser directly for authenticated, interactive, visual, JS-rendered, localhost, loopback, private-network, internal, dashboard, user-session, or browser-visible page-review tasks. Use finance for market data.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -457,7 +457,7 @@ function renderDelegationSection(workerKinds: WorkerKind[], seat: RoleSlot["seat
     "## Sub-Agent Sessions",
     "Use sessions_spawn only when delegation materially helps: parallel independent work, context isolation, specialist browser work, or verification.",
     "Each spawned task must be self-contained. Include exact URLs, paths, scope, output format, stop conditions, and constraints the child will not otherwise know.",
-    "For public source research, comparison, pricing, documentation, or read-only URL extraction, spawn explore first. For localhost, loopback, private-network, internal, authenticated, dashboard, user-session, or rendered/client-side URLs, spawn browser directly; explore is for public fetchable sources and may reject private hosts by policy.",
+    "For public source research, comparison, pricing, documentation, or read-only URL extraction, spawn explore first unless the task asks for browser-visible, user-visible, rendered, visual, or interactive page evidence. For localhost, loopback, private-network, internal, authenticated, dashboard, user-session, browser-visible, or rendered/client-side URLs, spawn browser directly; explore is for public fetchable sources and may reject private hosts by policy.",
     "Preserve exact user-provided entity names in delegated research. Do not append guessed categories or domains such as smart lock, blockchain, SaaS, or library unless the user supplied that category.",
     "For ambiguous product names without URLs, ask sub-agents to first search the exact name and official website/domain, then mark ambiguity explicitly instead of steering the search toward a guessed meaning.",
     "Keep each spawned task to a manageable size, roughly 10-15 tool calls. If the work is larger, split it into smaller independent sessions.",
