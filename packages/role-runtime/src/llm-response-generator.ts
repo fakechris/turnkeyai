@@ -743,6 +743,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           nextToolChoice = "none";
           continue;
         }
+        if (
+          shouldRepairWeakEvidenceSynthesis({
+            taskPrompt: input.packet.taskPrompt,
+            resultText: result.text,
+            messages,
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.text,
+            },
+            {
+              role: "user",
+              content: buildWeakEvidenceSynthesisRepairPrompt(),
+            },
+          ];
+          nextToolChoice = "none";
+          continue;
+        }
         break;
       }
 
@@ -2109,9 +2130,7 @@ function shouldRepairIncompleteApprovedBrowserAction(input: {
   if (latestPermissionToolName(input.toolTrace) !== "permission_applied") {
     return false;
   }
-  return /\b(?:tools? (?:are )?(?:disabled|unavailable)|tool[- ]disabled|final synthesis|browser_act|could not be called|cannot call|could not execute|action blocked|not executed|not completed)\b/i.test(
-    input.resultText
-  );
+  return matchesAny(input.resultText, INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS);
 }
 
 function shouldRepairMissingRequestedNextAction(input: {
@@ -2128,6 +2147,54 @@ function shouldRepairMissingRequestedNextAction(input: {
   return !/\b(?:next action|next step|recommended action|recommend(?:ed)?|operator should|should (?:retry|reopen|check|watch|escalate|preserve|request|continue|stop|avoid)|safe fallback|fallback action)\b/i.test(
     input.resultText
   );
+}
+
+function shouldRepairWeakEvidenceSynthesis(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+}): boolean {
+  if (hasWeakEvidenceSynthesisRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (expectsExactFinalAnswerShape(input.taskPrompt, input.resultText)) {
+    return false;
+  }
+  if (matchesAny(input.resultText, WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS)) {
+    return true;
+  }
+  return !taskRequestsEstimate(input.taskPrompt) && matchesAny(input.resultText, WEAK_ESTIMATE_SYNTHESIS_PATTERNS);
+}
+
+function taskRequestsEstimate(taskPrompt: string): boolean {
+  return matchesAny(taskPrompt, ESTIMATE_REQUEST_PATTERNS);
+}
+
+const INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS = [
+  /\btools? (?:are |is )?(?:disabled|unavailable|not available)\b/i,
+  /\btool[- ]disabled\b/i,
+  /\bnot in (?:my |the )?current function namespace\b/i,
+  /\bcannot emit (?:the )?(?:approval|permission) request\b/i,
+  /\b(?:final synthesis|browser_act|could not be called|cannot call|could not execute|action blocked|not executed|not completed)\b/i,
+];
+
+const WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS = [
+  /\b(?:TBD|to be confirmed|needs confirmation|pending confirmation|probably|maybe)\b/i,
+  /(?:^|[^A-Za-z0-9_])待确认(?![A-Za-z0-9_])/,
+];
+
+const WEAK_ESTIMATE_SYNTHESIS_PATTERNS = [
+  /\b(?:estimate|estimated)\b/i,
+  /(?:^|[^A-Za-z0-9_])估算(?![A-Za-z0-9_])/,
+];
+
+const ESTIMATE_REQUEST_PATTERNS = [
+  /\b(?:estimate|estimated|estimation|forecast|roughly|approx(?:imate|imately)?|ballpark|range)\b/i,
+  /(?:^|[^A-Za-z0-9_])(?:估算|预估|大概|大致|范围)(?![A-Za-z0-9_])/,
+];
+
+function matchesAny(value: string, patterns: readonly RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(value));
 }
 
 function shouldRepairStaleDeniedApproval(input: {
@@ -2234,6 +2301,14 @@ function hasMissingRequestedNextActionRepairPrompt(messages: LLMMessage[]): bool
   );
 }
 
+function hasWeakEvidenceSynthesisRepairPrompt(messages: LLMMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes("Runtime correction: final answer weakens verified evidence")
+  );
+}
+
 function mentionsPendingApproval(text: string): boolean {
   return /\b(?:approval pending|approval request is pending|permission request is pending|pending operator decision|awaiting (?:your decision|operator approval)|waiting for (?:your|operator) decision|waiting for operator|once (?:you )?approve|once approved|before (?:the )?(?:browser worker )?can|still pending)\b/i.test(
     text
@@ -2302,6 +2377,16 @@ function buildMissingRequestedNextActionRepairPrompt(): string {
     "Runtime correction: requested next action is missing from the final answer.",
     "Do not call tools. Revise the final answer using only the delegated session evidence already present.",
     "Include a concise next action or safe fallback for the operator, and keep any unverified scope explicit.",
+  ].join("\n");
+}
+
+function buildWeakEvidenceSynthesisRepairPrompt(): string {
+  return [
+    "Runtime correction: final answer weakens verified evidence with placeholder uncertainty.",
+    "Do not call tools. Rewrite the final answer using only the delegated session evidence already present.",
+    "For facts directly present in the evidence, say observed or verified instead of maybe, probably, estimate, estimated, TBD, to be confirmed, pending confirmation, or similar placeholder wording.",
+    "For facts absent from the evidence, write not verified and name the missing dimension without guessing.",
+    "Keep residual risk visible, but do not downgrade verified source facts into estimates.",
   ].join("\n");
 }
 

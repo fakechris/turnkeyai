@@ -3192,6 +3192,150 @@ describe("mission tool-use e2e report", () => {
     );
   });
 
+  it("treats timeout evidence summaries as recovered only when long delegation closes out cleanly", () => {
+    const spec = buildNaturalScenarioSpec("natural-long-delegation", {
+      alphaUrl: "http://127.0.0.1/vendor-alpha",
+      betaUrl: "http://127.0.0.1/vendor-beta",
+      slowUrl: "http://127.0.0.1/slow-fixture",
+      cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+      cancelResumeStateUrl: "http://127.0.0.1/__cancel-resume-state",
+      approvalUrl: "http://127.0.0.1/approval-form",
+      dynamicUrl: "http://127.0.0.1/dynamic-dashboard",
+      dashboardUrl: "http://127.0.0.1/ops-dashboard",
+      orchestrationUrl: "http://127.0.0.1/product-orchestration",
+      bridgeUrl: "http://127.0.0.1/product-bridge",
+      productSignalsUrl: "http://127.0.0.1/product-signals",
+    });
+    const result = fakeNaturalResult();
+    result.scenario = "natural-long-delegation";
+    result.metrics.tool.requested = 3;
+    result.metrics.tool.results = 3;
+    result.metrics.tool.failed = 0;
+    result.metrics.tool.timeouts = 1;
+    result.metrics.sessions.spawned = 3;
+    result.metrics.sessions.continued = 0;
+    result.metrics.qualityGate.evidenceEvents = 3;
+    result.metrics.browser = { profileFallbacks: 0, failureBuckets: [] };
+    result.timeline = [
+      {
+        kind: "tool",
+        text: "orchestration call",
+        tMs: 1000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "explore", task: "research product orchestration" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "orchestration result",
+        tMs: 2000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: JSON.stringify({
+            status: "completed",
+            session_key: "wrk.orchestration.1",
+            result: "The orchestration source verifies multi-agent decomposition and durable sub-session history.",
+          }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "bridge call",
+        tMs: 3000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "explore", task: "research browser bridge controls" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "bridge result",
+        tMs: 4000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: JSON.stringify({
+            status: "completed",
+            session_key: "wrk.bridge.1",
+            result: "The browser bridge controls cover DOM, screenshots, artifacts, command-line setup, provider configuration, and the desktop boundary.",
+          }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "signals browser call",
+        tMs: 5000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "call",
+          callInput: JSON.stringify({ agent_id: "browser", task: "inspect product signals dashboard" }),
+        },
+      },
+      {
+        kind: "tool",
+        text: "signals browser timeout with evidence",
+        tMs: 6000,
+        runtime: {
+          toolName: "sessions_spawn",
+          toolPhase: "result",
+          resultContent: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            status: "timeout",
+            session_key: "wrk.signals.1",
+            agent_id: "browser",
+            evidence_available: true,
+            evidence_summary: "Browser-visible product signals verified Stuck missions: 6 and Weak answer rate: 24%.",
+            result: "Sub-agent session timed out after collecting evidence.",
+          }),
+        },
+      },
+      {
+        kind: "thought",
+        text: [
+          "Recommendation: make Mission Control the default entry point for the next agent workbench release.",
+          "Why it matters: multi-agent coordination is the core workflow, browser bridge controls provide browser-visible evidence, and Stuck missions: 6 with Weak answer rate: 24% make quality gating urgent.",
+          "Do not over-emphasize new browser features before the workbench can reliably synthesize evidence.",
+          "The orchestration stream verifies multi-agent decomposition and durable sub-session history, so the release story should focus on specialists producing a decision-ready brief rather than a single chat response.",
+          "The bridge stream verifies that browser work is a means to gather DOM, screenshots, artifacts, and operator-visible state; it also keeps the desktop boundary and command-line setup/provider configuration blocker visible.",
+          "The browser-visible signals stream verifies the quality pressure: Stuck missions: 6 and Weak answer rate: 24%.",
+          "Residual risk: the signals source came from a recovered timeout evidence summary, so production representativeness remains unverified and the next gate should rerun the same scenario before claiming capability proven.",
+        ].join(" "),
+        tMs: 7000,
+      },
+    ];
+    result.final = result.timeline.at(-1)!;
+
+    const recoveredQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.deepEqual(recoveredQuality.failures, []);
+
+    result.timeline[5]!.runtime!.resultContent = JSON.stringify({
+      protocol: "turnkeyai.session_tool_result.v1",
+      status: "timeout",
+      session_key: "wrk.signals.1",
+      agent_id: "browser",
+      evidence_available: false,
+      result: "Sub-agent session timed out before collecting evidence.",
+    });
+    const unrecoveredQuality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      final: result.final,
+    });
+    assert.ok(unrecoveredQuality.failures.includes("scenario had timed-out tool results"));
+  });
+
   it("extracts the timed-out session key instead of the first spawned session", () => {
     const timeline = [
       {
