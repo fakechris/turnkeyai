@@ -234,6 +234,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           ),
           {
             browserAvailable: input.packet.capabilityInspection?.availableWorkers?.includes("browser") ?? false,
+            taskPrompt: input.packet.taskPrompt,
           }
         ),
         {
@@ -300,6 +301,31 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           memoryFlushes.push(generated.memoryFlush);
         }
         break;
+      }
+      if (
+        activeToolLoop &&
+        toolCalls.length === 0 &&
+        shouldRepairMissingBrowserEvidence({
+          taskPrompt: input.packet.taskPrompt,
+          resultText: result.text,
+          messages,
+          toolTrace,
+          tools: initialGatewayInput.tools,
+        })
+      ) {
+        messages = [
+          ...messages,
+          {
+            role: "assistant",
+            content: result.text,
+          },
+          {
+            role: "user",
+            content: buildMissingBrowserEvidenceRepairPrompt(input.packet.taskPrompt),
+          },
+        ];
+        nextToolChoice = { type: "tool", name: "sessions_spawn" };
+        continue;
       }
       if (
         activeToolLoop &&
@@ -2329,6 +2355,28 @@ function shouldRepairIncompleteApprovedBrowserAction(input: {
   return matchesAny(input.resultText, INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS);
 }
 
+function shouldRepairMissingBrowserEvidence(input: {
+  taskPrompt: string;
+  resultText: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  tools?: GenerateTextInput["tools"];
+}): boolean {
+  if (!hasToolDefinition(input.tools, "sessions_spawn")) {
+    return false;
+  }
+  if (hasMissingBrowserEvidenceRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (!taskRequiresBrowserEvidence(input.taskPrompt)) {
+    return false;
+  }
+  if (hasCompletedBrowserSessionEvidence(input.toolTrace)) {
+    return false;
+  }
+  return matchesAny(input.resultText, MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS);
+}
+
 function shouldRepairMissingRequestedNextAction(input: {
   taskPrompt: string;
   resultText: string;
@@ -2388,6 +2436,13 @@ const INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS = [
   /\b(?:final synthesis|browser_act|could not be called|cannot call|could not execute|action blocked|not executed|not completed)\b/i,
   /\b(?:re-?delegat(?:e|ed|ing|ion)|next step needed)\b/i,
   /\b(?:not submitted|not yet submitted|submission can now be completed|submit can now be completed)\b/i,
+];
+
+const MISSING_BROWSER_EVIDENCE_FINAL_PATTERNS = [
+  /\b(?:browser|rendered|DOM|page|snapshot|screenshot|popup|iframe|frame|shadow)\b[\s\S]{0,120}\b(?:tools?|tooling|worker|agent|session)\b[\s\S]{0,80}\b(?:unavailable|not available|disabled|missing|could not be called|cannot be called|failed)\b/i,
+  /\b(?:tools?|tooling|worker|agent|session)\b[\s\S]{0,80}\b(?:unavailable|not available|disabled|missing|could not be called|cannot be called|failed)\b[\s\S]{0,120}\b(?:browser|rendered|DOM|page|snapshot|screenshot|popup|iframe|frame|shadow)\b/i,
+  /\b(?:static|raw|server|HTTP)\s+(?:fetch|HTML|extraction|request)\b[\s\S]{0,160}\b(?:instead of|without|not)\b[\s\S]{0,120}\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b/i,
+  /\b(?:browser|rendered|DOM|JavaScript|client[- ]side|popup|iframe|frame|shadow)\b[\s\S]{0,160}\b(?:not verified|unverified|unable to verify|was not verified|could not verify)\b/i,
 ];
 
 const WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS = [
@@ -2505,6 +2560,14 @@ function hasIncompleteApprovedBrowserActionRepairPrompt(messages: LLMMessage[]):
   );
 }
 
+function hasMissingBrowserEvidenceRepairPrompt(messages: LLMMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes("Runtime correction: browser-visible evidence is missing")
+  );
+}
+
 function hasIncompleteApprovedBrowserSessionContinuationPrompt(messages: LLMMessage[]): boolean {
   return messages.some(
     (message) =>
@@ -2613,6 +2676,17 @@ function buildIncompleteApprovedBrowserSessionContinuationPrompt(input: {
     "Ask the browser sub-agent to perform the approved browser.form.submit action now, reuse the current page state, use browser_act on the submit control with submit=true, and verify the post-submit page state.",
     "If the browser sub-agent still cannot execute the approved action after this continuation, it must return the concrete blocker and evidence instead of asking the parent to inspect again.",
     `Incomplete browser evidence:\n${input.evidence}`,
+  ].join("\n");
+}
+
+function buildMissingBrowserEvidenceRepairPrompt(taskPrompt: string): string {
+  return [
+    "Runtime correction: browser-visible evidence is missing.",
+    "The task requires browser-observed evidence such as rendered DOM, JavaScript/client-side state, iframe/frame content, shadow-style component state, popup state, dashboard state, or a user-visible page review.",
+    "Do not finalize from raw HTTP fetch, server HTML, memory, or a tool-unavailable explanation while native session tools are still available.",
+    "Call sessions_spawn with agent_id=browser for the browser-visible portion of the task.",
+    "The delegated browser task must include the relevant URL, the visible states to inspect, and a requirement to return only observed facts plus any concrete blocker.",
+    `Original task:\n${sliceUtf8(taskPrompt, 1400)}`,
   ].join("\n");
 }
 
@@ -3098,7 +3172,7 @@ function normalizeSessionToolCalls(toolCalls: LLMToolCall[], sessionContext = ""
 
 function normalizePrivateUrlResearchSpawnCalls(
   toolCalls: LLMToolCall[],
-  context: { browserAvailable: boolean }
+  context: { browserAvailable: boolean; taskPrompt: string }
 ): LLMToolCall[] {
   if (!context.browserAvailable) {
     return toolCalls;
@@ -3113,7 +3187,13 @@ function normalizePrivateUrlResearchSpawnCalls(
       return call;
     }
     const combined = [task, label].join("\n");
-    if (allowsLoopbackExploreForE2E() && containsLoopbackHttpUrl(combined) && !containsPrivateNonLoopbackHttpUrl(combined)) {
+    if (
+      allowsLoopbackExploreForE2E() &&
+      containsLoopbackHttpUrl(combined) &&
+      !containsPrivateNonLoopbackHttpUrl(combined) &&
+      !taskRequiresBrowserEvidence(combined) &&
+      !toolCallTargetsBrowserRequiredUrl({ toolCallText: combined, taskPrompt: context.taskPrompt })
+    ) {
       return call;
     }
     return {
@@ -3169,6 +3249,86 @@ function normalizeApprovalGatedBrowserSpawnCalls(
 
 function isBrowserSessionSpawn(call: LLMToolCall): boolean {
   return call.name === "sessions_spawn" && readStringInput(call.input, "agent_id") === "browser";
+}
+
+function hasCompletedBrowserSessionEvidence(toolTrace: NativeToolRoundTrace[]): boolean {
+  return toolTrace.some((round) =>
+    round.results.some((result) => {
+      if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+        return false;
+      }
+      const parsed = result.content ? parseSessionToolResult(result.content) : null;
+      return Boolean(parsed && parsed.status === "completed" && parsed.agent_id === "browser" && readCompletedSessionEvidence(parsed));
+    })
+  );
+}
+
+function taskRequiresBrowserEvidence(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return false;
+  }
+  if (explicitlyDisclaimsBrowserRenderedEvidence(normalized)) {
+    return false;
+  }
+  return (
+    /\b(?:browser-visible|browser rendered|browser-rendered|browser-observed|as (?:a|an) (?:user|operator) would see|user-visible|visible page|rendered page|rendered DOM|client[- ]side|JavaScript-rendered|JS-rendered|dynamic dashboard|live dashboard)\b/i.test(
+      normalized
+    ) ||
+    /\b(?:iframe|embedded source frame|frame content|shadow(?:-style)? component|shadow DOM|details popup|popup workflow|open the details popup)\b/i.test(
+      normalized
+    )
+  );
+}
+
+function explicitlyDisclaimsBrowserRenderedEvidence(text: string): boolean {
+  return (
+    /\b(?:not|never)\s+(?:a\s+)?(?:browser-visible|browser-rendered|browser rendered|browser-observed|user-visible)\b/i.test(
+      text
+    ) ||
+    /\b(?:no|without)\s+(?:client[- ]side|JavaScript-rendered|JS-rendered|rendered DOM|browser-rendered|browser rendered|browser-visible)\s+(?:rendering|content|evidence|required|needed)?\b/i.test(
+      text
+    ) ||
+    /\bstatic HTML only\b[\s\S]{0,80}\b(?:no|without)\s+(?:JavaScript|JS|client[- ]side|browser-rendered|browser rendered)\b/i.test(
+      text
+    )
+  );
+}
+
+function toolCallTargetsBrowserRequiredUrl(input: { toolCallText: string; taskPrompt: string }): boolean {
+  const urls = extractHttpUrls(input.toolCallText);
+  if (urls.length === 0 || !taskRequiresBrowserEvidence(input.taskPrompt)) {
+    return false;
+  }
+  return urls.some((url) => taskPromptRequiresBrowserForUrl(input.taskPrompt, url));
+}
+
+function taskPromptRequiresBrowserForUrl(taskPrompt: string, url: string): boolean {
+  const normalizedUrl = normalizeUrlForComparison(url);
+  const lines = taskPrompt.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (!extractHttpUrls(line).some((candidate) => normalizeUrlForComparison(candidate) === normalizedUrl)) {
+      continue;
+    }
+    const localContext = [lines[index - 1], line, lines[index + 1], lines[index + 2]]
+      .filter((item): item is string => typeof item === "string")
+      .join("\n");
+    if (taskRequiresBrowserEvidence(localContext)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeUrlForComparison(value: string): string {
+  try {
+    const parsed = new URL(value);
+    parsed.hash = "";
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    return value.trim().replace(/\/+$/, "");
+  }
 }
 
 function looksApprovalGatedBrowserSideEffect(text: string): boolean {

@@ -4876,7 +4876,7 @@ export function findWeakEvidenceSignals(text: string, options: { browserEvidence
   if (!options.browserEvidenceExpected) {
     return [];
   }
-  const browserEvidenceText = stripPermissionGateSafetyEvidence(text);
+  const browserEvidenceText = stripNegatedBrowserBlockerEvidence(stripPermissionGateSafetyEvidence(text));
   const patterns = [
     {
       label: "browser evidence blocked",
@@ -4917,6 +4917,28 @@ function stripPermissionGateSafetyEvidence(text: string): string {
         !/\bblocked_before_side_effect\b/i.test(line)
     )
     .join("\n");
+}
+
+function stripNegatedBrowserBlockerEvidence(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .map(stripNegatedBrowserBlockerLine)
+    .filter((line) => line.trim().length > 0)
+    .join("\n");
+}
+
+const NEGATED_BROWSER_BLOCKER_PATTERNS = [
+  /\b(?:no|without)\b(?:(?!\bbut\b)[\s\S]){0,100}\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b/gi,
+  /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b(?:(?!\bbut\b)[\s\S]){0,100}\b(?:not observed|not present|not encountered|not seen|did not occur|was not observed|were not observed)\b/gi,
+  /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b(?:(?!\bbut\b)[\s\S]){0,100}(?:\|\s*No\b|:\s*No\b|-\s*No\b|\u2014\s*No\b)/gi,
+] as const;
+
+function stripNegatedBrowserBlockerLine(line: string): string {
+  let stripped = line;
+  for (const pattern of NEGATED_BROWSER_BLOCKER_PATTERNS) {
+    stripped = stripped.replace(pattern, " ");
+  }
+  return stripped;
 }
 
 export function formatMissionScenarioStart(input: {
@@ -5416,7 +5438,7 @@ function writeCancelResumeFixture(res: ServerResponse): void {
 </html>`);
 }
 
-async function startFixtureServer(): Promise<FixtureServer> {
+export async function startFixtureServer(): Promise<FixtureServer> {
   let cancelResumeRequestCount = 0;
   const server = createServer((req, res) => {
     const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;

@@ -25,6 +25,7 @@
     "mission:e2e:matrix": "tsx scripts/mission-tool-use-e2e.ts --matrix",
     "mission:e2e:natural:core": "tsx scripts/mission-tool-use-e2e.ts --natural-matrix --natural-matrix-scenarios natural-comparison-research,natural-browser-dynamic-page,natural-followup-continuation,natural-approval-dry-run-action,natural-long-delegation,natural-timeout-followup-continuation,natural-memory-recall",
     "mission:e2e:natural": "tsx scripts/mission-tool-use-e2e.ts --natural-matrix",
+    "mission:e2e:fixtures": "tsx scripts/natural-fixture-server.ts",
     "mission:e2e:thread-entry": "tsx scripts/mission-tool-use-e2e.ts --thread-entry",
     "acceptance:real": "tsx scripts/real-llm-acceptance.ts",
     "acceptance:ab:spec": "tsx scripts/real-llm-ab-spec-build.ts",

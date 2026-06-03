@@ -6526,6 +6526,294 @@ test("llm role response generator allows loopback explore only for isolated E2E 
   assert.doesNotMatch(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
 });
 
+test("llm role response generator keeps browser-visible loopback tasks on the browser path in fixture mode", async () => {
+  const previous = process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+  process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = "1";
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (!input.messages.some((message) => message.role === "tool")) {
+      return toolCallResult("toolu-complex-page", "sessions_spawn", {
+        agent_id: "explore",
+        label: "Complex browser page",
+        task: "Review http://127.0.0.1:49152/complex-browser as an operator would see it. Inspect the rendered DOM, embedded frame, shadow component, and details popup.",
+      });
+    }
+    return {
+      text: "Browser evidence includes the frame, shadow component, and popup state.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-complex-page",
+          session_key: "worker:browser:task-complex-page:toolu-complex-page",
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          result: "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
+          final_content:
+            "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content: "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  try {
+    const result = await generator.generate({
+      activation: buildActivation(),
+      packet: {
+        ...buildPacket(),
+        taskPrompt: [
+          "Review this complex browser page as an operator would see it.",
+          "Page: http://127.0.0.1:49152/complex-browser",
+          "The page combines an embedded source frame, a shadow-style review component, and a details popup workflow.",
+        ].join("\n"),
+        capabilityInspection: {
+          availableWorkers: ["browser", "explore"],
+          connectorStates: [],
+          apiStates: [],
+          skillStates: [],
+          transportPreferences: [],
+          unavailableCapabilities: [],
+          generatedAt: 1,
+        },
+      },
+    });
+    assert.equal(executedCalls[0]?.input.agent_id, "browser");
+    assert.match(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
+    assert.match(result.content, /frame, shadow component, and popup/i);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+    } else {
+      process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = previous;
+    }
+  }
+});
+
+test("llm role response generator does not reroute explicitly static loopback fixtures to browser", async () => {
+  const previous = process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+  process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = "1";
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    if (!input.messages.some((message) => message.role === "tool")) {
+      return toolCallResult("toolu-static-page", "sessions_spawn", {
+        agent_id: "explore",
+        label: "Static fixture source",
+        task: "Fetch http://127.0.0.1:49152/static-fixture. This is static HTML only with no JavaScript-rendered content required.",
+      });
+    }
+    return {
+      text: "Static fixture source checked through explore.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-static-page",
+          session_key: "worker:explore:task-static-page:toolu-static-page",
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          result: "Explore fetched static fixture evidence.",
+          final_content: "Explore fetched static fixture evidence.",
+          payload: { mode: "llm_sub_agent", workerType: input.call.input.agent_id, content: "Explore fetched static fixture evidence." },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  try {
+    await generator.generate({
+      activation: buildActivation(),
+      packet: {
+        ...buildPacket(),
+        taskPrompt: [
+          "Review this static source fixture.",
+          "Source: http://127.0.0.1:49152/static-fixture",
+          "This is static HTML only with no JavaScript-rendered content required.",
+        ].join("\n"),
+        capabilityInspection: {
+          availableWorkers: ["browser", "explore"],
+          connectorStates: [],
+          apiStates: [],
+          skillStates: [],
+          transportPreferences: [],
+          unavailableCapabilities: [],
+          generatedAt: 1,
+        },
+      },
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
+    } else {
+      process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = previous;
+    }
+  }
+
+  assert.equal(executedCalls[0]?.input.agent_id, "explore");
+  assert.doesNotMatch(String(executedCalls[0]?.input.task ?? ""), /local\/private URL source/i);
+});
+
+test("llm role response generator repairs browser-visible final answers that skip browser evidence", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: LLMToolCall[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    const latestMessageText = readToolContent(input.messages.at(-1)?.content ?? "");
+    if (latestMessageText.includes("Runtime correction: browser-visible evidence is missing")) {
+      return toolCallResult("toolu-browser-evidence", "sessions_spawn", {
+        agent_id: "browser",
+        label: "Complex browser page",
+        task: "Open http://127.0.0.1:49152/complex-browser and inspect the rendered frame, shadow component, and popup state.",
+      });
+    }
+    if (input.messages.some((message) => message.role === "tool")) {
+      return {
+        text: "Frame panel shows backlog 7, the shadow review says risk desk approval required, and popup P-42 is open for manager acknowledgement.",
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    return {
+      text: "I used raw HTTP fetch because the browser tools are unavailable, so the rendered DOM, frame, shadow component, and popup were not verified.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-browser-evidence",
+          session_key: "worker:browser:task-browser-evidence:toolu-browser-evidence",
+          agent_id: input.call.input.agent_id,
+          status: "completed",
+          evidence_summary:
+            "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
+          result:
+            "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
+          final_content:
+            "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: input.call.input.agent_id,
+            content:
+              "Frame panel: backlog 7. Shadow review: risk desk approval required. Popup P-42 manager acknowledgement opened.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Review this complex browser page as an operator would see it.",
+        "Page: http://127.0.0.1:49152/complex-browser",
+        "The page combines an embedded source frame, a shadow-style review component, and a details popup workflow.",
+        "Open the details popup, then summarize the visible operational state, owner, approval requirement, and residual risk.",
+      ].join("\n"),
+      capabilityInspection: {
+        availableWorkers: ["browser", "explore"],
+        connectorStates: [],
+        apiStates: [],
+        skillStates: [],
+        transportPreferences: [],
+        unavailableCapabilities: [],
+        generatedAt: 1,
+      },
+    },
+  });
+
+  assert.equal(executedCalls[0]?.input.agent_id, "browser");
+  assert.match(String(executedCalls[0]?.input.task ?? ""), /rendered frame, shadow component, and popup state/i);
+  assert.ok(
+    gatewayInputs.some((input) => input.toolChoice && JSON.stringify(input.toolChoice).includes("sessions_spawn")),
+    "browser-evidence repair should force sessions_spawn"
+  );
+  assert.match(result.content, /Frame panel shows backlog 7/i);
+  assert.doesNotMatch(result.content, /raw HTTP fetch because the browser tools are unavailable/i);
+});
+
 test("llm role response generator keeps private non-loopback URLs on the browser path in E2E fixture mode", async () => {
   const previous = process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE;
   process.env.TURNKEYAI_E2E_ALLOW_LOOPBACK_EXPLORE = "1";

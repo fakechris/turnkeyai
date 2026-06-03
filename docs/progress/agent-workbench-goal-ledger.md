@@ -7921,3 +7921,102 @@ Convergence question:
 - If no, next required gate: run the browser-focused same-scenario A/B slice
   and use its root-cause output to choose between browser reliability,
   prompt/tool selection, final-answer quality, or acceptance-harness work.
+
+## 2026-06-03 22:16 CST - Browser-Required Runtime Repair Natural Gate
+
+Direction: converging
+
+Execution Kernel:
+- Closed one P0 browser/tool-selection gap exposed by browser-focused natural
+  A/B preparation: loopback fixture mode can no longer keep an
+  `explore`-selected session on public-fetch semantics when the delegated task
+  itself asks for browser-visible/rendered DOM, frame, shadow-style component,
+  popup, live dashboard, or user-visible page evidence.
+- Added a final-answer repair guard for browser-required tasks: when native
+  session tools are still available, a final answer that tries to close out from
+  raw/static HTTP evidence or a browser-tool-unavailable explanation is routed
+  back through `sessions_spawn` with `agent_id=browser` before synthesis.
+- This is a core runtime/prompt-harness repair, not UI polish. It reduces the
+  chance that the lead silently does work that belongs to a browser sub-agent.
+
+Result Quality:
+- The natural browser-focused TurnkeyAI run passed twice after this repair path
+  was in place; the second run produced a durable JSON artifact.
+- JSON evidence:
+  `artifacts/evals/20260603-browser-focused-ab/turnkeyai-browser-required-runtime-repair.json`
+- Passing scenarios in that artifact:
+  - `natural-browser-external-page-review`
+    - mission: `msn.mpy5blp3.1`
+    - duration: `43307ms`
+    - tools: `1/1`
+    - sessions: `1/0`
+    - browser: yes
+    - artifacts: `6`, all with lifecycle
+    - browser buckets: none
+    - weak answer signals: none
+    - stuck/loop: no
+  - `natural-browser-complex-page-review`
+    - mission: `msn.mpy5cj3x.2`
+    - duration: `42263ms`
+    - tools: `1/1`
+    - sessions: `1/0`
+    - browser: yes
+    - artifacts: `6`, all with lifecycle
+    - browser buckets: none
+    - weak answer signals: none
+    - stuck/loop: no
+
+Workbench UX:
+- No Workbench UI changed in this checkpoint.
+- The user-visible value is indirect: missions are less likely to produce a
+  weak "tool unavailable" or static-fetch answer for work that requires real
+  browser evidence.
+
+Browser Reliability:
+- Browser-required natural tasks now have two runtime protections:
+  - admission-time reroute from `explore` to `browser` for browser-visible
+    loopback/private work
+  - closeout-time repair when the model tries to finalize without browser
+    evidence
+- The natural gate observed actual browser use, screenshot/snapshot artifacts,
+  artifact lifecycle metadata, no profile fallback, no browser failure buckets,
+  and no active/waiting/stale runtime subjects.
+- During validation, one external-page run produced a good browser result but
+  was incorrectly failed by the weak-answer checker because the final answer
+  said `Site blocked access | No`. The weak-signal parser now treats explicit
+  negated blocker table rows as non-blocking while keeping real blocked-browser
+  failures in the negative tests.
+
+Acceptance Evidence:
+- Focused tests:
+  - `npx tsx --test packages/role-runtime/src/llm-response-generator.test.ts`
+  - `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`
+  - `npx tsx --test scripts/natural-fixture-server.test.ts`
+- Typecheck:
+  - `npm run typecheck`
+- Whitespace:
+  - `git diff --check`
+- Real natural LLM browser-focused run:
+  - `npx tsx scripts/mission-tool-use-e2e.ts --natural-matrix --natural-matrix-scenarios natural-browser-external-page-review,natural-browser-complex-page-review --model-catalog /Users/chris/workspace/turnkeyai/models.local.json --json artifacts/evals/20260603-browser-focused-ab/turnkeyai-browser-required-runtime-repair.json`
+
+Regression Risk:
+- This does not prove the full production-grade agent workbench target.
+- Same-scenario A/B remains unproven for this repaired slice; no reference
+  artifacts were committed or promoted as acceptance evidence.
+- The browser-required repair must not overroute ordinary public source
+  research to browser. Existing and new role-runtime tests keep plain loopback
+  fixture explore mode and public URL research on the explore path unless the
+  delegated task or source-specific prompt requires browser-visible evidence.
+- Next P0 gate should use the same browser-focused prompts in a same-scenario
+  A/B report, or move to the next failing natural core scenario only if that
+  report cannot be run because of external environment constraints.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes, for
+  the browser-required runtime/tool-selection slice.
+- Evidence: two fresh natural real LLM browser scenarios completed with real
+  browser use, useful final answers, artifact lifecycle evidence, no weak
+  answer signals, no browser failure buckets, and no stuck/loop state.
+- Not yet proven: full same-scenario A/B parity, hostile external browser pages,
+  authenticated/live user sessions, and the broader natural suite covering
+  memory, approval, timeout continuation, and long delegation in the same run.
