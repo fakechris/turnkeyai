@@ -1,3 +1,5 @@
+import { DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS } from "./real-llm-acceptance-defaults";
+
 export type RealLlmAbSystemId = "turnkeyai" | "reference";
 
 export type RealLlmAbDimensionKey =
@@ -144,7 +146,7 @@ export interface RealLlmAbAcceptanceValidation {
   summary: RealLlmAbAcceptanceSummary | null;
 }
 
-export type RealLlmAbRequiredSuite = "core";
+export type RealLlmAbRequiredSuite = "core" | "browser-focused";
 
 export interface RealLlmAbAcceptanceValidationOptions {
   requiredSuite?: RealLlmAbRequiredSuite;
@@ -214,6 +216,15 @@ export const REAL_LLM_AB_CORE_SUITE_REQUIREMENTS = [
     acceptedScenarioIds: ["memory-recall", "natural-memory-recall"],
   },
 ] as const;
+
+export const REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS =
+  DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS.map((scenarioId) => ({
+    key: scenarioId.replace(/^natural-/, ""),
+    acceptedScenarioIds: [scenarioId],
+  })) as readonly {
+    key: string;
+    acceptedScenarioIds: readonly string[];
+  }[];
 
 const CORE_LOSS_DIMENSIONS = new Set<RealLlmAbDimensionKey>([
   "taskCompletion",
@@ -392,12 +403,12 @@ export function validateRealLlmAbAcceptanceReport(
       failures.push(`${comparison.scenarioId}: root-cause review required before claiming capability`);
     }
   }
-  if (options.requiredSuite === "core") {
-    for (const requirement of REAL_LLM_AB_CORE_SUITE_REQUIREMENTS) {
+  if (options.requiredSuite) {
+    for (const requirement of requiredSuiteRequirements(options.requiredSuite)) {
       const acceptedScenarioIds: readonly string[] = requirement.acceptedScenarioIds;
       const match = report.scenarios.find((scenario) => acceptedScenarioIds.includes(scenario.scenarioId));
       if (!match) {
-        failures.push(`core suite missing required scenario: ${requirement.key}`);
+        failures.push(`${options.requiredSuite} suite missing required scenario: ${requirement.key}`);
       }
     }
   }
@@ -724,6 +735,13 @@ function coversCoreSuite(report: RealLlmAbAcceptanceReport): boolean {
     const acceptedScenarioIds: readonly string[] = requirement.acceptedScenarioIds;
     return report.scenarios.some((scenario) => acceptedScenarioIds.includes(scenario.scenarioId));
   });
+}
+
+function requiredSuiteRequirements(suite: RealLlmAbRequiredSuite): readonly {
+  key: string;
+  acceptedScenarioIds: readonly string[];
+}[] {
+  return suite === "core" ? REAL_LLM_AB_CORE_SUITE_REQUIREMENTS : REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS;
 }
 
 function isScenarioRun(value: unknown, system: RealLlmAbSystemId): value is RealLlmAbScenarioRun {

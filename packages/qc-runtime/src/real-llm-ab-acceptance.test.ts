@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildRealLlmAbMarkdownReport,
   detectControlledPromptLanguage,
+  REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS,
   REAL_LLM_AB_CORE_SUITE_REQUIREMENTS,
   summarizeRealLlmAbAcceptanceReport,
   validateRealLlmAbAcceptanceReport,
@@ -76,6 +77,33 @@ test("real LLM A/B acceptance keeps focused reports separate from core-suite evi
   assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: comparison-research/);
   assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: long-delegation/);
   assert.match(coreValidation.failures.join("\n"), /focused capability evidence is not core capability evidence/);
+});
+
+test("real LLM A/B acceptance validates the browser-focused suite without claiming core coverage", () => {
+  const report = buildBrowserFocusedSuiteReport();
+
+  const focusedValidation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "browser-focused" });
+  const coreValidation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "core" });
+
+  assert.equal(focusedValidation.status, "passed");
+  assert.equal(focusedValidation.summary?.scenarioCount, REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS.length);
+  assert.equal(coreValidation.status, "failed");
+  assert.match(coreValidation.failures.join("\n"), /focused capability evidence is not core capability evidence/);
+  assert.match(coreValidation.failures.join("\n"), /core suite missing required scenario: comparison-research/);
+});
+
+test("real LLM A/B acceptance requires every browser-focused scenario when requested", () => {
+  const report = buildBrowserFocusedSuiteReport({
+    scenarios: ["natural-browser-external-page-review"],
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "browser-focused" });
+
+  assert.equal(validation.status, "failed");
+  assert.match(
+    validation.failures.join("\n"),
+    /browser-focused suite missing required scenario: browser-complex-page-review/
+  );
 });
 
 test("real LLM A/B markdown conclusion downgrades unvalidated capability claims", () => {
@@ -410,6 +438,49 @@ function buildCoreSuiteReport(input: {
           requiresApproval,
           requiresContinuation,
           requiresTimeoutCloseout,
+          scenarioId,
+          prompt,
+        }),
+      };
+    }),
+  };
+}
+
+function buildBrowserFocusedSuiteReport(input: { scenarios?: readonly string[] } = {}): RealLlmAbAcceptanceReport {
+  const scenarios =
+    input.scenarios ?? REAL_LLM_AB_BROWSER_FOCUSED_SUITE_REQUIREMENTS.map((requirement) => requirement.acceptedScenarioIds[0]!);
+  return {
+    kind: "turnkeyai.real-llm-ab-acceptance.report",
+    status: "passed",
+    capabilityClaim: "focused capability proven",
+    stabilityClaim: "focused stable",
+    generatedAtMs: 1,
+    scenarios: scenarios.map((scenarioId) => {
+      const prompt = `请完成 ${scenarioId} 的真实浏览器页面分析，给出证据和风险。`;
+      return {
+        scenarioId,
+        prompt,
+        promptPolicy: {
+          naturalPrompt: true,
+          noForcedToolCall: true,
+          noFixedMarkerGate: true,
+          noExactAnswerShape: true,
+        },
+        requiresBrowser: true,
+        turnkeyai: buildRun({
+          system: "turnkeyai",
+          artifactPath: `artifacts/evals/run/turnkeyai/${scenarioId}.json`,
+          missionId: `msn.${scenarioId}.1`,
+          dimensionScores: FULL_SCORES,
+          requiresBrowser: true,
+          scenarioId,
+          prompt,
+        }),
+        reference: buildRun({
+          system: "reference",
+          artifactPath: `artifacts/evals/run/reference/${scenarioId}.json`,
+          dimensionScores: FULL_SCORES,
+          requiresBrowser: true,
           scenarioId,
           prompt,
         }),
