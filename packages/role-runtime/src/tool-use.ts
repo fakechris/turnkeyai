@@ -53,6 +53,7 @@ export interface RoleToolExecutionInput {
   call: LLMToolCall;
   activation: RoleActivationInput;
   packet: RolePromptPacket;
+  signal?: AbortSignal;
 }
 
 export interface RoleToolExecutionResult {
@@ -92,6 +93,7 @@ const MAX_SESSION_TOOL_TIMEOUT_SECONDS = 1800;
 const DEFAULT_BROWSER_SESSION_TOOL_TIMEOUT_MS = 18 * 60 * 1_000;
 const DEFAULT_EXPLORE_SESSION_TOOL_TIMEOUT_MS = 8 * 60 * 1_000;
 const DEFAULT_GENERAL_SESSION_TOOL_TIMEOUT_MS = 3 * 60 * 1_000;
+const DEFAULT_RESUMABLE_CONTINUATION_TOOL_TIMEOUT_MS = 45_000;
 const TOOL_PERMISSION_WAIT_MS = 15 * 60 * 1000;
 const DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS = 60_000;
 const DEFAULT_WORKER_TIMEOUT_SUMMARY_GRACE_MS = 60_000;
@@ -1055,7 +1057,8 @@ async function executeSessionsSpawn(
       timeoutMs,
       `sessions_spawn timed out after ${formatTimeoutSeconds(timeoutMs)}.`,
       hardTimeoutGraceMs,
-      registration
+      registration,
+      input.signal
     );
     if (sendResult === WORKER_TOOL_CANCELLED) {
       return cancelledSessionToolResult(input.call, {
@@ -1431,7 +1434,8 @@ async function executeSessionsSend(
       timeoutMs,
       `sessions_send timed out after ${formatTimeoutSeconds(timeoutMs)}.`,
       hardTimeoutGraceMs,
-      registration
+      registration,
+      input.signal
     );
     if (sendResult === WORKER_TOOL_CANCELLED) {
       return cancelledSessionToolResult(input.call, {
@@ -2149,7 +2153,8 @@ async function sendWorkerWithOptionalTimeout(
   timeoutMs: number | null,
   timeoutReason: string,
   hardTimeoutGraceMs = DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS,
-  cancellationPromise?: Promise<typeof WORKER_TOOL_CANCELLED>
+  cancellationPromise?: Promise<typeof WORKER_TOOL_CANCELLED>,
+  abortSignal?: AbortSignal
 ): Promise<WorkerExecutionResult | null | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> {
   const executeWorker = (): Promise<WorkerExecutionResult | null> =>
     input.resumeExisting
@@ -2166,13 +2171,22 @@ async function sendWorkerWithOptionalTimeout(
     // while the interrupted worker is still unwinding. Keep observing that
     // original send so a later rejection cannot terminate the daemon.
   });
-  if (timeoutMs === null) {
-    return cancellationPromise ? Promise.race([sendPromise, cancellationPromise]) : sendPromise;
-  }
   const graceMs =
     typeof hardTimeoutGraceMs === "number" && Number.isFinite(hardTimeoutGraceMs) && hardTimeoutGraceMs >= 0
       ? Math.floor(hardTimeoutGraceMs)
       : DEFAULT_WORKER_TOOL_HARD_ABORT_GRACE_MS;
+  const abortWatcher = createWorkerAbortWatcher(workerRuntime, input, abortSignal, graceMs);
+  if (timeoutMs === null) {
+    try {
+      return await Promise.race([
+        sendPromise,
+        ...(cancellationPromise ? [cancellationPromise] : []),
+        ...(abortWatcher ? [abortWatcher.promise] : []),
+      ]);
+    } finally {
+      abortWatcher?.dispose();
+    }
+  }
   let softTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let hardTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let hardTimeoutFired = false;
@@ -2199,8 +2213,10 @@ async function sendWorkerWithOptionalTimeout(
       sendPromise,
       timeoutPromise,
       ...(cancellationPromise ? [cancellationPromise] : []),
+      ...(abortWatcher ? [abortWatcher.promise] : []),
     ]);
   } finally {
+    abortWatcher?.dispose();
     if (!hardTimeoutFired) {
       if (softTimeoutHandle) {
         clearTimeout(softTimeoutHandle);
@@ -2224,10 +2240,19 @@ async function sendWorkerWithOptionalCancellation(
   timeoutMs: number | null,
   timeoutReason: string,
   hardTimeoutGraceMs: number | undefined,
-  registration: ToolCancellationRegistration | undefined
+  registration: ToolCancellationRegistration | undefined,
+  abortSignal?: AbortSignal
 ): Promise<WorkerExecutionResult | null | typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> {
   if (!registration) {
-    return sendWorkerWithOptionalTimeout(workerRuntime, input, timeoutMs, timeoutReason, hardTimeoutGraceMs);
+    return sendWorkerWithOptionalTimeout(
+      workerRuntime,
+      input,
+      timeoutMs,
+      timeoutReason,
+      hardTimeoutGraceMs,
+      undefined,
+      abortSignal
+    );
   }
   const cancellationPromise: Promise<typeof WORKER_TOOL_CANCELLED> = registration
     .cancelled()
@@ -2238,7 +2263,8 @@ async function sendWorkerWithOptionalCancellation(
     timeoutMs,
     timeoutReason,
     hardTimeoutGraceMs,
-    cancellationPromise
+    cancellationPromise,
+    abortSignal
   );
   const result = await Promise.race([sendPromise, cancellationPromise]);
   if (result === WORKER_TOOL_CANCELLED) {
@@ -2248,6 +2274,79 @@ async function sendWorkerWithOptionalCancellation(
     });
   }
   return result;
+}
+
+function createWorkerAbortWatcher(
+  workerRuntime: WorkerRuntime,
+  input: {
+    workerRunKey: string;
+    activation: RoleActivationInput;
+    packet: RolePromptPacket;
+    toolCallId?: string;
+    resumeExisting?: boolean;
+  },
+  signal: AbortSignal | undefined,
+  graceMs: number
+):
+  | {
+      promise: Promise<typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED>;
+      dispose(): void;
+    }
+  | null {
+  if (!signal) {
+    return null;
+  }
+  let onAbort: (() => void) | null = null;
+  const runAbort = async (): Promise<typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> => {
+    const reason = readAbortReason(signal, "Tool call aborted.");
+    if (isToolLoopWallClockAbort(reason)) {
+      await workerRuntime.interrupt({ workerRunKey: input.workerRunKey, reason });
+      await runWorkerTimeoutSummaryPass(workerRuntime, input, reason, graceMs);
+      return WORKER_TOOL_TIMEOUT;
+    }
+    await workerRuntime.cancel({ workerRunKey: input.workerRunKey, reason });
+    return WORKER_TOOL_CANCELLED;
+  };
+  const recoverAbortFailure = (error: unknown): typeof WORKER_TOOL_CANCELLED => {
+    console.error("worker abort failed", {
+      workerRunKey: input.workerRunKey,
+      error,
+    });
+    return WORKER_TOOL_CANCELLED;
+  };
+  const promise: Promise<typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED> = signal.aborted
+    ? runAbort().catch(recoverAbortFailure)
+    : new Promise<typeof WORKER_TOOL_TIMEOUT | typeof WORKER_TOOL_CANCELLED>((resolve) => {
+        onAbort = () => {
+          void runAbort()
+            .catch(recoverAbortFailure)
+            .then(resolve);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+  return {
+    promise,
+    dispose() {
+      if (onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    },
+  };
+}
+
+function readAbortReason(signal: AbortSignal, fallback: string): string {
+  const reason = signal.reason;
+  if (typeof reason === "string" && reason.trim()) {
+    return reason.trim();
+  }
+  if (reason instanceof Error && reason.message.trim()) {
+    return reason.message.trim();
+  }
+  return fallback;
+}
+
+function isToolLoopWallClockAbort(reason: string): boolean {
+  return /tool-use wall-clock budget reached/i.test(reason);
 }
 
 async function runWorkerTimeoutSummaryPass(
@@ -2454,7 +2553,10 @@ function resolveContinuationToolTimeoutMs(
 ): number {
   const timeoutMs = resolveToolTimeoutMs(value, workerKind, maxTimeoutMs);
   if (currentStatus !== "cancelled") {
-    return timeoutMs;
+    return Math.min(
+      timeoutMs,
+      boundDefaultToolTimeoutMs(DEFAULT_RESUMABLE_CONTINUATION_TOOL_TIMEOUT_MS, maxTimeoutMs)
+    );
   }
   return Math.max(timeoutMs, boundDefaultToolTimeoutMs(defaultToolTimeoutMs(workerKind), maxTimeoutMs));
 }

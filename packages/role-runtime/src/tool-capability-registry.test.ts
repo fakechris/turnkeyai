@@ -45,6 +45,10 @@ test("native tool capability registry drives schemas and prompt harness from the
   assert.match(harness, /emit at most five session tool calls total/);
   assert.match(harness, /exactly two focused calls/);
   assert.match(harness, /three or more independent evidence streams/);
+  assert.match(harness, /Leave timeout_seconds unset for ordinary delegated work/);
+  assert.match(harness, /Do not increase timeout_seconds on a timeout follow-up unless the user explicitly asks/);
+  assert.doesNotMatch(harness, /Suggested caps/);
+  assert.doesNotMatch(harness, /longer timeout/);
   assert.match(harness, /Do not downgrade the task to read-only inspection/);
   assert.match(harness, /preserve the original task's decision criteria/i);
   assert.match(harness, /use explore first/);

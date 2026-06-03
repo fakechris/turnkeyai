@@ -302,6 +302,7 @@ class SubAgentToolExecutor implements RoleToolExecutor {
         ...(this.innerSessionState ? { continuityMode: "resume-existing" as const } : {}),
       },
       ...(sessionState ? { sessionState } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     if (!result) {
       return {
@@ -396,9 +397,13 @@ class SubAgentToolExecutor implements RoleToolExecutor {
     let result: BrowserTaskResult;
     let recoveredBrowserFailureBuckets: Array<{ bucket: string; count: number }> = [];
     try {
-      result = previous?.sessionId
-        ? await browserBridge.sendSession({ ...request, browserSessionId: previous.sessionId })
-        : await browserBridge.spawnSession(request);
+      result = await raceAbort(
+        previous?.sessionId
+          ? browserBridge.sendSession({ ...request, browserSessionId: previous.sessionId })
+          : browserBridge.spawnSession(request),
+        input.signal,
+        "browser private tool cancelled"
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (
@@ -409,13 +414,17 @@ class SubAgentToolExecutor implements RoleToolExecutor {
       ) {
         try {
           recoveredBrowserFailureBuckets = [{ bucket: "session_not_found", count: 1 }];
-          result = await browserBridge.spawnSession({
-            ...baseRequest,
-            taskId: `${baseRequest.taskId}:cold-recreate-1`,
-            ownerType: "worker",
-            ownerId: workerRunKey,
-            leaseHolderRunKey: workerRunKey,
-          });
+          result = await raceAbort(
+            browserBridge.spawnSession({
+              ...baseRequest,
+              taskId: `${baseRequest.taskId}:cold-recreate-1`,
+              ownerType: "worker",
+              ownerId: workerRunKey,
+              leaseHolderRunKey: workerRunKey,
+            }),
+            input.signal,
+            "browser private tool cancelled"
+          );
         } catch (coldError) {
           const coldMessage = coldError instanceof Error ? coldError.message : String(coldError);
           const bucket = classifyBrowserPrivateToolFailureBucket(coldMessage);
@@ -1551,6 +1560,41 @@ function summarizeReply(content: string): string {
   const normalized = content.replace(/\s+/g, " ").trim();
   if (!normalized) return "Sub-agent completed.";
   return normalized.length > 240 ? `${normalized.slice(0, 237)}...` : normalized;
+}
+
+async function raceAbort<T>(work: Promise<T>, signal: AbortSignal | undefined, fallbackReason: string): Promise<T> {
+  work.catch(() => {
+    // If cancellation wins the race, the underlying browser transport may still
+    // reject while unwinding. Observe it so late transport errors do not become
+    // process-level unhandled rejections.
+  });
+  if (!signal) {
+    return work;
+  }
+  throwIfAborted(signal, fallbackReason);
+  let onAbort: (() => void) | undefined;
+  const abortPromise = new Promise<T>((_resolve, reject) => {
+    onAbort = () => reject(new Error(abortReason(signal, fallbackReason)));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, abortPromise]);
+  } finally {
+    if (onAbort) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined, fallbackReason: string): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  throw new Error(abortReason(signal, fallbackReason));
+}
+
+function abortReason(signal: AbortSignal, fallback: string): string {
+  return typeof signal.reason === "string" && signal.reason.trim() ? signal.reason : fallback;
 }
 
 function requiredString(value: unknown): string | null {

@@ -9,7 +9,7 @@ import { LLMGateway } from "@turnkeyai/llm-adapter/gateway";
 import { LLMRoleResponseGenerator } from "./llm-response-generator";
 import type { PreCompactionMemoryFlusher } from "./pre-compaction-memory-flusher";
 import type { RolePromptPacket } from "./prompt-policy";
-import type { RoleToolExecutionInput, RoleToolExecutor } from "./tool-use";
+import type { RoleToolExecutionInput, RoleToolExecutionResult, RoleToolExecutor } from "./tool-use";
 
 test("llm role response generator retries with a smaller request envelope after overflow", async () => {
   const inputs: Array<{ prompt: string; artifactIds: string[] }> = [];
@@ -2601,6 +2601,76 @@ test("llm role response generator synthesizes from evidence when tool wall-clock
   assert.equal(closeout?.evidenceAvailable, true);
 });
 
+test("llm role response generator aborts active tool execution when the wall-clock budget expires", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length <= 2) {
+      return toolCallResult(`toolu-${gatewayInputs.length}`, "sessions_spawn", {
+        agent_id: "explore",
+        task: "Fetch a slow source.",
+      });
+    }
+    return {
+      text: "Final answer from wall-clock closeout.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  let observedAbortReason: string | null = null;
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "sessions_spawn",
+          description: "Spawn a sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      return new Promise<RoleToolExecutionResult>((resolve) => {
+        input.signal?.addEventListener(
+          "abort",
+          () => {
+            observedAbortReason = typeof input.signal?.reason === "string" ? input.signal.reason : "aborted";
+            resolve({
+              toolCallId: input.call.id,
+              toolName: input.call.name,
+              content: observedAbortReason ?? "aborted",
+              isError: true,
+            });
+          },
+          { once: true }
+        );
+      });
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128, maxWallClockMs: 5 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: buildPacket(),
+  });
+
+  assert.match(observedAbortReason ?? "", /Tool-use wall-clock budget reached/);
+  assert.ok(
+    result.content === "Final answer from wall-clock closeout." ||
+      /Tool-use wall-clock budget reached/.test(result.content)
+  );
+  assert.ok(gatewayInputs.length >= 2);
+  const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
+  assert.ok(closeout?.reason === "wall_clock_budget" || closeout?.reason === "tool_evidence_fallback");
+  assert.equal(closeout?.evidenceAvailable, false);
+});
+
 test("llm role response generator does not report closeout evidence for failed-only tool rounds", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
@@ -2802,7 +2872,7 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
     [
       "Verification did not complete within the tool budget.",
       "",
-      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.",
+      "Continuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.",
     ].join("\n")
   );
   assert.equal(executedTools, 1);
@@ -2817,7 +2887,7 @@ test("llm role response generator synthesizes immediately after sub-agent timeou
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("If the task specifies a heading, bullet count"));
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("bare http:// / https:// URLs"));
   assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("Do not copy internal fetch URLs"));
-  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("continue or retry the same source check"));
+  assert.ok(finalSynthesisPrompt(gatewayInputs[1])?.includes("continue the same source check"));
   const closeout = result.metadata?.toolLoopCloseout as Record<string, unknown> | undefined;
   assert.equal(closeout?.reason, "sub_agent_timeout");
   assert.equal(closeout?.toolName, "sessions_spawn");
@@ -2918,7 +2988,7 @@ test("llm role response generator routes continuation follow-up to timed-out ses
     [
       "Final answer from resumed session evidence.",
       "",
-      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.",
+      "Continuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.",
     ].join("\n")
   );
   assert.equal(executedCalls[0]?.name, "sessions_send");
@@ -3187,7 +3257,7 @@ test("llm role response generator forces sessions_send for explicit continuation
     [
       "Final answer after forced session continuation.",
       "",
-      "Continuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.",
+      "Continuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.",
     ].join("\n")
   );
   assert.equal(executedCalls.length, 1);
@@ -3985,7 +4055,7 @@ test("llm role response generator forces continuation after list resolves a trun
     [
       "Final answer from recovered timeout continuation.",
       "",
-      "Timeout closeout: the resumed source produced usable evidence, but future release-gated checks should keep a retry path or a longer timeout before treating missing evidence as verified.",
+      "Timeout closeout: the resumed source produced usable evidence, but future release-gated checks should keep a bounded retry path before treating missing evidence as verified.",
     ].join("\n")
   );
   assert.deepEqual(

@@ -582,6 +582,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         activation: input.activation,
         packet: input.packet,
         toolCalls,
+        toolLoopStartedAtMs,
         ...(input.signal ? { signal: input.signal } : {}),
         onProgress: async (call, progress) => {
           roundTrace.progress?.push(toNativeToolProgressTrace(call, progress, this.clock.now()));
@@ -836,7 +837,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             timeoutSignal.evidenceAvailable
               ? "Produce the best final answer from the evidence already gathered and state any remaining uncertainty."
               : "No usable evidence was gathered before the timeout. Say that verification did not complete, summarize what was attempted, and tell the user they can ask to continue.",
-            "Include one concise continuation sentence: the user can continue or retry the same source check with a longer timeout before treating missing evidence as verified.",
+            "Include one concise continuation sentence: the user can continue the same source check if the missing evidence is still worth waiting for.",
           ],
         });
         throwIfAborted(input.signal);
@@ -1142,6 +1143,7 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     activation: RoleActivationInput;
     packet: RolePromptPacket;
     toolCalls: LLMToolCall[];
+    toolLoopStartedAtMs: number;
     signal?: AbortSignal;
     onProgress?: (call: LLMToolCall, progress: Parameters<typeof recordRoleToolProgress>[0]["progress"]) => Promise<void>;
     onResult?: (result: RoleToolExecutionResult) => Promise<void>;
@@ -1167,20 +1169,27 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
     for (let index = 0; index < executableCalls.length; index += effectiveMaxParallelToolCalls) {
       throwIfAborted(input.signal);
       const chunk = executableCalls.slice(index, index + effectiveMaxParallelToolCalls);
-      const chunkResults = await Promise.all(
-        chunk.map(async (call) => {
-          throwIfAborted(input.signal);
-          await this.emitToolProgressSafely(input.activation, call, {
-            phase: "started",
-            toolName: call.name,
-            summary: `Tool call started: ${call.name}`,
-          }, input.onProgress);
-          try {
+      const toolExecutionSignal = createToolExecutionSignal({
+        elapsedMs: this.clock.now() - input.toolLoopStartedAtMs,
+        ...(input.signal ? { parentSignal: input.signal } : {}),
+        ...(activeToolLoop.maxWallClockMs ? { maxWallClockMs: activeToolLoop.maxWallClockMs } : {}),
+      });
+      try {
+        const chunkResults = await Promise.all(
+          chunk.map(async (call) => {
+            throwIfAborted(input.signal);
+            await this.emitToolProgressSafely(input.activation, call, {
+              phase: "started",
+              toolName: call.name,
+              summary: `Tool call started: ${call.name}`,
+            }, input.onProgress);
+            try {
             throwIfAborted(input.signal);
             const result = await activeToolLoop.executor.execute({
               call,
               activation: input.activation,
               packet: input.packet,
+              ...(toolExecutionSignal.signal ? { signal: toolExecutionSignal.signal } : {}),
             });
             throwIfAborted(input.signal);
             for (const progress of result.progress ?? []) {
@@ -1216,9 +1225,12 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
             await input.onResult?.(result);
             return result;
           }
-        })
-      );
-      results.push(...chunkResults);
+          })
+        );
+        results.push(...chunkResults);
+      } finally {
+        toolExecutionSignal.dispose();
+      }
     }
     for (const call of rejectedCalls) {
       throwIfAborted(input.signal);
@@ -2134,7 +2146,7 @@ function maybeAppendTimeoutContinuationVisibility(result: GenerateTextResult): G
   }
   return {
     ...result,
-    text: `${result.text.trim()}\n\nContinuation: this source check is resumable; continue or retry with a longer timeout before treating missing evidence as verified.`.trim(),
+    text: `${result.text.trim()}\n\nContinuation: this source check is resumable; continue the same source check if the missing evidence is still worth waiting for.`.trim(),
   };
 }
 
@@ -2158,7 +2170,7 @@ function maybeAppendRecoveredTimeoutCloseoutVisibility(result: GenerateTextResul
   }
   return {
     ...result,
-    text: `${result.text.trim()}\n\nTimeout closeout: the resumed source produced usable evidence, but future release-gated checks should keep a retry path or a longer timeout before treating missing evidence as verified.`.trim(),
+    text: `${result.text.trim()}\n\nTimeout closeout: the resumed source produced usable evidence, but future release-gated checks should keep a bounded retry path before treating missing evidence as verified.`.trim(),
   };
 }
 
@@ -2180,10 +2192,10 @@ function shouldPreserveRecoveredTimeoutCloseout(input: {
 
 function hasTimeoutCloseoutGuidance(text: string): boolean {
   return (
-    /\b(?:continue|retry|resume|resumable|longer timeout|timeout-gated)\b/i.test(text) ||
-    /\b(?:next step|next action)\b[\s\S]{0,80}\b(?:continue|retry|resume|longer timeout)\b/i.test(text) ||
+    /\b(?:continue|retry|resume|resumable|bounded retry|timeout-gated)\b/i.test(text) ||
+    /\b(?:next step|next action)\b[\s\S]{0,80}\b(?:continue|retry|resume|bounded retry)\b/i.test(text) ||
     /\b(?:configure|increase|extend)\b[\s\S]{0,80}\b(?:tool-call\s+)?timeouts?\b/i.test(text) ||
-    /\btimeouts?\b[\s\S]{0,80}\b(?:retry|extend|increase|recover|configure|exclude|timeout-gated|use a longer timeout|with a longer timeout)\b/i.test(
+    /\btimeouts?\b[\s\S]{0,80}\b(?:retry|recover|configure|exclude|timeout-gated|bounded retry)\b/i.test(
       text
     )
   );
@@ -3474,6 +3486,53 @@ function deriveToolResultEnvelope(messages: LLMMessage[]): { toolResultCount: nu
   return {
     toolResultCount: toolMessages.length,
     toolResultBytes: Buffer.byteLength(JSON.stringify(toolMessages.map((message) => message.content)), "utf8"),
+  };
+}
+
+function createToolExecutionSignal(input: {
+  parentSignal?: AbortSignal;
+  maxWallClockMs?: number;
+  elapsedMs: number;
+}): { signal?: AbortSignal; dispose(): void } {
+  const maxWallClockMs = input.maxWallClockMs;
+  const hasWallClockBudget =
+    typeof maxWallClockMs === "number" && Number.isFinite(maxWallClockMs) && maxWallClockMs > 0;
+  if (!hasWallClockBudget) {
+    return { ...(input.parentSignal ? { signal: input.parentSignal } : {}), dispose() {} };
+  }
+
+  const controller = new AbortController();
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let parentAbortHandler: (() => void) | null = null;
+  const abort = (reason: unknown) => {
+    if (!controller.signal.aborted) {
+      controller.abort(reason);
+    }
+  };
+
+  if (input.parentSignal?.aborted) {
+    abort(input.parentSignal.reason ?? "operation aborted");
+  } else if (input.parentSignal) {
+    parentAbortHandler = () => abort(input.parentSignal?.reason ?? "operation aborted");
+    input.parentSignal.addEventListener("abort", parentAbortHandler, { once: true });
+  }
+
+  const remainingMs = Math.max(0, Math.ceil(maxWallClockMs - input.elapsedMs));
+  timeoutHandle = setTimeout(
+    () => abort(`Tool-use wall-clock budget reached (${formatDurationMs(maxWallClockMs)}).`),
+    remainingMs
+  );
+
+  return {
+    signal: controller.signal,
+    dispose() {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      if (parentAbortHandler && input.parentSignal) {
+        input.parentSignal.removeEventListener("abort", parentAbortHandler);
+      }
+    },
   };
 }
 

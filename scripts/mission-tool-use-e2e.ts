@@ -3933,7 +3933,7 @@ export function buildNaturalScenarioSpec(
         {
           label: "continuation guidance",
           pattern:
-            /\b(?:continue|retry|resume|resumable|longer timeout|timeout-gated)\b|(?:\b(?:next step|next action)\b[\s\S]{0,80}\b(?:continue|retry|resume|longer timeout)\b)|(?:\b(?:configure|increase|extend)\b[\s\S]{0,80}\b(?:tool-call\s+)?timeouts?\b)|(?:\btimeouts?\b[\s\S]{0,80}\b(?:retry|extend|increase|recover|configure|exclude|timeout-gated|use a longer timeout|with a longer timeout)\b)/i,
+            /\b(?:continue|retry|resume|resumable|bounded retry|timeout-gated)\b|(?:\b(?:next step|next action)\b[\s\S]{0,80}\b(?:continue|retry|resume|bounded retry)\b)|(?:\btimeouts?\b[\s\S]{0,80}\b(?:retry|recover|configure|exclude|timeout-gated|bounded retry)\b)/i,
         },
       ],
       forbiddenPatterns: [
