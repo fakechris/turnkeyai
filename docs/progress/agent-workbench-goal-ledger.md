@@ -7199,3 +7199,61 @@ Convergence question:
 - If no, next required gate: rerun/build the full same-scenario A/B core report
   and use observed losses to pick the next P0 runtime, prompt, or browser
   reliability PR.
+
+## Checkpoint 2026-06-03 10:11 CST — Read-Only Browser Review Approval Gate
+
+Direction: unknown
+
+Execution Kernel:
+- A full natural core run exposed a runtime contract failure in
+  `natural-browser-dynamic-page`: a read-only rendered dashboard review entered
+  `needs_approval` as `browser.mutate` and timed out without a result.
+- The browser side-effect classifier now treats "send/submit a summary,
+  findings, report, result, evidence, or recommended next action to/for the
+  operator/user" as read-only output delivery, not a browser mutation.
+
+Result Quality:
+- Final-answer generation did not change.
+- The focused rerun produced a source-backed operator answer with rendered
+  browser evidence instead of waiting on an unnecessary approval.
+
+Workbench UX:
+- No UI changed.
+- User-visible effect is fewer false pending-approval stalls for read-only
+  browser dashboard/review missions.
+
+Browser Reliability:
+- Browser runtime behavior did not change.
+- The focused rerun used the browser successfully, produced artifact lifecycle
+  evidence, and recorded no browser failure buckets or profile fallback.
+
+Acceptance Evidence:
+- Full natural core attempt before the fix stopped at scenario 2:
+  `artifacts/evals/20260603-full-core-after-pr435/turnkeyai/natural-core.json`.
+- Failure details: `natural-browser-dynamic-page` mission `msn.mpxf0v7o.2`
+  stayed `needs_approval` for `420000ms`, with one pending `browser.mutate`
+  approval after a read-only `sessions_spawn(browser)` call.
+- Focused runtime test passed:
+  `npx tsx --test packages/role-runtime/src/tool-use.test.ts`.
+- Focused natural real LLM E2E passed after the fix:
+  `npm run mission:e2e:natural:core -- --natural-matrix-scenarios
+  natural-browser-dynamic-page --scenario-timeout-ms 420000 --model-catalog
+  models.local.json --json
+  artifacts/evals/20260603-browser-readonly-approval-fix/turnkeyai/natural-browser-dynamic-page.json`.
+- Real mission `msn.mpxfi7lm.1`: status `done`, natural `passed`, duration
+  `54365ms`, tools `1/1`, sessions `1/0`, browser `yes`, artifacts `9/9`
+  with lifecycle, profile fallback `0`, browser buckets `none`, liveness
+  `0/0/0`, final bytes `1332`.
+
+Regression Risk:
+- Actual browser side effects such as submitting forms, ordering, publishing,
+  credential access, or account-changing actions still require approval.
+- This checkpoint has not rerun the full 7-scenario matrix after the fix. It
+  only proves the scenario-2 blocker is removed.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? unknown
+- Evidence: one core browser scenario moved from approval-stuck to completed
+  real LLM evidence.
+- If no, next required gate: rerun the full current natural core matrix; if it
+  passes, build the same-scenario A/B report before choosing the next P0 fix.

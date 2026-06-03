@@ -1227,6 +1227,77 @@ test("sessions_spawn does not require mutation approval for submitting a read-on
   assert.equal(result.isError, undefined);
 });
 
+test("sessions_spawn does not require mutation approval for read-only dashboard next-action review", async () => {
+  for (const [id, task] of [
+    [
+      "dynamic-dashboard-review",
+      "Review the operations dashboard at http://127.0.0.1:4101/ops-dashboard as a user would see it in the browser. Wait for full client-side rendering, then identify the operational state, escalation trigger, owner, and recommended next action for an operator.",
+    ],
+    [
+      "send-next-action",
+      "Open the rendered dashboard, review the queue status, and send the recommended next action to the operator with residual risk.",
+    ],
+  ] as const) {
+    let spawnCalled = false;
+    let permissionRequested = false;
+    const toolPermissionService: ToolPermissionService = {
+      async request() {
+        permissionRequested = true;
+        throw new Error(`${id} should not request mutation approval`);
+      },
+      async result() {
+        throw new Error("not used");
+      },
+      async apply() {
+        throw new Error("not used");
+      },
+    };
+    const workerRuntime = {
+      async spawn() {
+        spawnCalled = true;
+        return { workerType: "browser", workerRunKey: `worker:browser:${id}` };
+      },
+      async send() {
+        return {
+          workerType: "browser",
+          status: "completed",
+          summary: "Reviewed dashboard.",
+        };
+      },
+    } as unknown as WorkerRuntime;
+    const executor = createWorkerSessionToolExecutor({
+      workerRuntime,
+      availableWorkerKinds: ["browser"],
+      toolPermissionService,
+    });
+
+    const result = await executor.execute({
+      call: {
+        id,
+        name: "sessions_spawn",
+        input: {
+          agent_id: "browser",
+          task,
+        },
+      },
+      activation: buildActivation(),
+      packet: {
+        roleId: "role-lead",
+        roleName: "Lead",
+        seat: "lead",
+        systemPrompt: "Lead.",
+        taskPrompt: "Review rendered dashboard.",
+        outputContract: "Return result.",
+        suggestedMentions: [],
+      },
+    });
+
+    assert.equal(spawnCalled, true);
+    assert.equal(permissionRequested, false);
+    assert.equal(result.isError, undefined);
+  }
+});
+
 test("sessions_spawn requires mutation approval for ambiguous browser submit output wording", async () => {
   for (const [id, task] of [
     ["submit-review", "Open the page and submit review."],
