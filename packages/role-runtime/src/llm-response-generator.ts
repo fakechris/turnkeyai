@@ -2023,15 +2023,19 @@ function buildCoverageTimeoutContinuationPrompt(timeoutSignal: SubAgentToolTimeo
 
 function readCompletedSessionEvidence(parsed: NonNullable<ReturnType<typeof parseSessionToolResult>>): string | null {
   if (typeof parsed.final_content === "string" && parsed.final_content.trim()) {
+    const finalContent = parsed.final_content.trim();
+    if (parsed.agent_id === "browser") {
+      const browserEvidence = [parsed.evidence_summary, finalContent, parsed.result]
+        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        .map((item) => item.trim());
+      return browserEvidence.length > 0 ? dedupeStrings(browserEvidence).join("\n\n") : finalContent;
+    }
     const payload = parsed.payload;
     if (payload && typeof payload === "object" && !Array.isArray(payload)) {
       const mode = (payload as Record<string, unknown>)["mode"];
       if (mode === "llm_sub_agent") {
-        return parsed.final_content.trim();
+        return finalContent;
       }
-    }
-    if (parsed.agent_id === "browser") {
-      return parsed.final_content.trim();
     }
   }
   const evidence = [parsed.result, parsed.evidence_summary]
