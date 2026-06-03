@@ -7763,3 +7763,91 @@ Convergence question:
 - If no, next required gate: run popup/OOPIF/shadow-heavy browser evidence
   through natural mission flow, or validate workbench replay UX for the browser
   evidence already collected.
+
+## 2026-06-03 20:51 CST - Complex Browser Page Natural Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added an opt-in natural mission scenario,
+  `natural-browser-complex-page-review`, for a browser-visible page containing
+  an embedded frame, a shadow-style component, and a popup-style drill.
+- The scenario uses the existing natural mission runner and browser worker
+  path; it does not add a new route, bypass the agent runtime, or force a tool
+  call by name.
+- The prompt asks the agent to review the page as an operator, open the visible
+  details popup, and report only browser-verified state.
+
+Result Quality:
+- First strict run completed with a useful final answer but failed the new
+  quality gate because the popup evidence matcher was too exact. The answer and
+  browser-derived facts included packet `P-42`, but the matcher required a
+  specific fixture sentence.
+- After narrowing the fix to the matcher, not the runtime or prompt, the rerun
+  passed with no weak-answer signals and no unsupported external incident
+  claims.
+- The passing final answer covered frame backlog/owner, shadow approval
+  requirement, popup packet/manager acknowledgement, and residual risk.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- User-visible implication is acceptance coverage: replay and mission detail
+  now have natural evidence from a browser task that produced multiple
+  artifacts against a more complex page shape.
+- Thought-process display and folding/order remain P1; this checkpoint is P0
+  capability evidence, not UI polish.
+
+Browser Reliability:
+- Passing run metrics:
+  - scenario: `natural-browser-complex-page-review`
+  - mission: `msn.mpy2e7jh.1`
+  - duration: `51339ms`
+  - tools: `1/1`
+  - sessions: `1/0`
+  - browser: yes
+  - artifacts: `9`, all with lifecycle
+  - profile fallback: `0`
+  - browser buckets: none
+  - stuck/loop: no
+- This proves the natural browser path can handle a local complex page with
+  frame-derived state, shadow-derived state, and a popup-style drill result.
+- It does not prove hostile external popup/OOPIF pages, login flows, anti-bot
+  pages, or raw-CDP expert-lane target attachment inside natural missions.
+
+Acceptance Evidence:
+- Branch baseline: `main` at `a328f7b`.
+- Focused verification before the real run:
+  - `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`
+  - `npm run typecheck`
+  - `git diff --check`
+- Initial strict natural E2E, useful result but failed matcher:
+  `npm run mission:e2e:natural -- --model-catalog /Users/chris/workspace/turnkeyai/models.local.json --natural-matrix-scenarios natural-browser-complex-page-review --scenario-timeout-ms 360000 --json artifacts/evals/20260603-complex-browser-gate/natural-browser-complex-page-review.json`
+  - mission: `msn.mpy28xmn.1`
+  - failure: missing popup evidence matcher only.
+- Passing natural E2E:
+  `npm run mission:e2e:natural -- --model-catalog /Users/chris/workspace/turnkeyai/models.local.json --natural-matrix-scenarios natural-browser-complex-page-review --scenario-timeout-ms 360000 --json artifacts/evals/20260603-complex-browser-gate/natural-browser-complex-page-review-rerun.json`
+  - mission: `msn.mpy2e7jh.1`
+  - natural status: passed
+  - weak answer signals: none
+
+Regression Risk:
+- The new fixture mirrors complex browser structure but still reflects key
+  state into visible text so the current browser worker can verify it through
+  DOM snapshots. It is not a raw shadow-root or popup-target attach proof.
+- The first failed run shows the gate can still oscillate if matchers become
+  over-specific. Future changes should keep evidence checks semantic enough to
+  match real browser evidence while remaining impossible to satisfy from the
+  prompt alone.
+- Next browser reliability work should either run an external complex-page
+  slice or promote raw-CDP complex target evidence into a natural mission flow
+  without exposing raw CDP to the default agent API.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes,
+  for scoped complex local browser-page evidence.
+- Evidence: a natural real LLM browser mission opened and reviewed a complex
+  page, produced artifact lifecycle records, extracted non-prompt facts, and
+  finished without stuck/loop, profile fallback, or browser failure buckets.
+- If no, next required gate: external complex browser page or natural raw-CDP
+  target evidence, followed by replay UX validation of the collected browser
+  evidence.

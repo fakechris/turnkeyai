@@ -69,6 +69,7 @@ export type NaturalMissionE2eScenario =
   | "natural-browser-dynamic-page"
   | "natural-browser-dashboard-task"
   | "natural-browser-external-page-review"
+  | "natural-browser-complex-page-review"
   | "natural-browser-followup-continuation"
   | "natural-browser-restart-continuation"
   | "natural-browser-cold-recreation-continuation"
@@ -93,6 +94,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-browser-dynamic-page",
   "natural-browser-dashboard-task",
   "natural-browser-external-page-review",
+  "natural-browser-complex-page-review",
   "natural-browser-followup-continuation",
   "natural-browser-restart-continuation",
   "natural-browser-cold-recreation-continuation",
@@ -258,6 +260,7 @@ export interface FixtureServer {
   dynamicUrl: string;
   dashboardUrl: string;
   externalPageUrl?: string;
+  complexBrowserUrl: string;
   orchestrationUrl: string;
   bridgeUrl: string;
   productSignalsUrl: string;
@@ -835,7 +838,7 @@ function printHelp(exitCode: number): never {
     "  TURNKEYAI_NATURAL_SLOW_URL, TURNKEYAI_NATURAL_CANCEL_RESUME_URL",
     "  TURNKEYAI_NATURAL_DYNAMIC_URL, TURNKEYAI_NATURAL_ORCHESTRATION_URL",
     "  TURNKEYAI_NATURAL_BRIDGE_URL, TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL",
-    "  TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL",
+    "  TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL, TURNKEYAI_NATURAL_COMPLEX_BROWSER_URL",
     "  TURNKEYAI_NATURAL_BROWSER_URL remains a dashboard URL alias",
     "",
     "Scenarios:",
@@ -3348,6 +3351,7 @@ export function buildNaturalScenarioSpec(
     | "bridgeUrl"
     | "productSignalsUrl"
     | "externalPageUrl"
+    | "complexBrowserUrl"
   >
 ): NaturalScenarioSpec {
   if (scenario === "natural-comparison-research") {
@@ -3523,6 +3527,53 @@ export function buildNaturalScenarioSpec(
       requiredEvidencePatterns: externalRequiredEvidencePatterns,
       forbiddenPatterns: [
         { label: "memory-only external page answer", pattern: /based on (?:my )?(?:knowledge|training data|general knowledge)/i },
+      ],
+    };
+  }
+  if (scenario === "natural-browser-complex-page-review") {
+    return {
+      scenario,
+      title: "Natural complex browser page review",
+      desc: [
+        "Review this complex browser page as an operator would see it.",
+        `Page: ${fixture.complexBrowserUrl}`,
+        "The page combines an embedded source frame, a shadow-style review component, and a details popup workflow.",
+        "Open the details popup, then summarize the visible operational state, owner, approval requirement, and residual risk.",
+        "Use only what the browser-visible page state actually shows. If a section is unavailable, say what was and was not verified.",
+      ].join("\n"),
+      minBytes: 420,
+      minToolResults: 1,
+      maxToolResults: 8,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 4,
+      requiresBrowser: true,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 1,
+      requiresArtifactLifecycle: true,
+      requiredAnswerTerms: ["Frame Captain", "risk desk", "P-42", "residual risk"],
+      requiredAnswerPatterns: [
+        {
+          label: "frame source state",
+          pattern: /\bframe\b[\s\S]{0,120}\b(?:backlog\s*7|Frame Captain)\b/i,
+        },
+        {
+          label: "shadow review state",
+          pattern: /\bshadow\b[\s\S]{0,120}\b(?:risk desk|approval required)\b/i,
+        },
+        {
+          label: "popup drill state",
+          pattern: /\bpopup\b[\s\S]{0,120}\b(?:P-42|manager acknowledgement|opened)\b/i,
+        },
+      ],
+      requiredEvidencePatterns: [
+        { label: "frame browser evidence", pattern: /\bFrame panel:\s*backlog\s*7\b/i },
+        { label: "shadow browser evidence", pattern: /\bShadow review:\s*risk desk approval required\b/i },
+        { label: "popup browser evidence", pattern: /\b(?:popup[\s\S]{0,120}P-42|P-42[\s\S]{0,120}popup|manager acknowledgement)\b/i },
+      ],
+      forbiddenPatterns: [
+        { label: "memory-only complex page answer", pattern: /based on (?:my )?(?:knowledge|training data|general knowledge)/i },
+        { label: "unsupported external incident claim", pattern: /\b(real outage|production outage|customer impact confirmed)\b/i },
       ],
     };
   }
@@ -4185,6 +4236,7 @@ export function assertNaturalScenarioPromptsAllowed(): void {
     orchestrationUrl: "http://127.0.0.1/product-orchestration",
     bridgeUrl: "http://127.0.0.1/product-bridge",
     productSignalsUrl: "http://127.0.0.1/product-signals",
+    complexBrowserUrl: "http://127.0.0.1/complex-browser",
   };
   for (const scenario of NATURAL_MISSION_E2E_SCENARIOS) {
     assertNaturalPromptAllowed(buildNaturalScenarioSpec(scenario, fixture).desc);
@@ -5589,6 +5641,110 @@ async function startFixtureServer(): Promise<FixtureServer> {
 </html>`);
       return;
     }
+    if (pathname === "/complex-browser") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head>
+    <title>Complex Browser Workbench Fixture</title>
+    <script>
+      window.__turnkeyComplexBrowserState = { status: "booting" };
+      const renderStatus = () => {
+        const status = document.getElementById("complex-status");
+        if (!status) return;
+        const frame = window.__turnkeyComplexBrowserState.frame || "Frame panel: waiting for embedded source.";
+        const shadow = window.__turnkeyComplexBrowserState.shadow || "Shadow review: waiting for component.";
+        const popup = window.__turnkeyComplexBrowserState.popup || "Popup drill: not opened.";
+        status.innerHTML = [
+          "<p id='frame-signal'>" + frame + "</p>",
+          "<p id='shadow-signal'>" + shadow + "</p>",
+          "<p id='popup-signal'>" + popup + "</p>",
+          "<p id='complex-risk'>Residual risk: local complex browser fixture only.</p>"
+        ].join("");
+      };
+      const renderComplexFixture = () => {
+        const shadowHost = document.getElementById("shadow-review-host");
+        if (shadowHost && !shadowHost.shadowRoot) {
+          const root = shadowHost.attachShadow({ mode: "open" });
+          root.innerHTML = "<section><h2>Shadow review panel</h2><p>Shadow review: risk desk approval required.</p></section>";
+          window.__turnkeyComplexBrowserState.shadow = "Shadow review: risk desk approval required.";
+        }
+        renderStatus();
+      };
+      window.addEventListener("message", (event) => {
+        if (!event.data || event.data.kind !== "turnkeyai-complex-frame") return;
+        window.__turnkeyComplexBrowserState.frame = event.data.text;
+        renderStatus();
+      });
+      window.addEventListener("DOMContentLoaded", () => {
+        document.getElementById("open-details-popup").addEventListener("click", () => {
+          window.__turnkeyComplexBrowserState.popup = "Popup drill opened: packet P-42 requires manager acknowledgement.";
+          renderStatus();
+          window.open("/complex-browser-popup", "turnkeyai-complex-popup", "width=420,height=320");
+        });
+        renderComplexFixture();
+      }, { once: true });
+    </script>
+  </head>
+  <body>
+    <main id="complex-root">
+      <h1>Complex browser workbench</h1>
+      <p>This page combines an embedded frame, a shadow component, and a popup-style drill.</p>
+      <section id="frame-section">
+        <h2>Embedded source frame</h2>
+        <iframe title="Embedded backlog source" src="/complex-browser-frame" width="640" height="180"></iframe>
+      </section>
+      <section id="shadow-section">
+        <h2>Shadow component wrapper</h2>
+        <div id="shadow-review-host"></div>
+      </section>
+      <button id="open-details-popup" type="button">Open details popup</button>
+      <section id="complex-status" aria-live="polite">
+        <p>Loading complex browser status.</p>
+      </section>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
+    if (pathname === "/complex-browser-frame") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head>
+    <title>Embedded Backlog Source</title>
+    <script>
+      window.addEventListener("DOMContentLoaded", () => {
+        parent.postMessage({
+          kind: "turnkeyai-complex-frame",
+          text: "Frame panel: backlog 7, owner Frame Captain."
+        }, "*");
+      }, { once: true });
+    </script>
+  </head>
+  <body>
+    <main>
+      <h1>Embedded backlog source</h1>
+      <p>Frame panel: backlog 7, owner Frame Captain.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
+    if (pathname === "/complex-browser-popup") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html>
+  <head><title>Complex Browser Popup</title></head>
+  <body>
+    <main>
+      <h1>Popup drill packet</h1>
+      <p>Popup drill opened: packet P-42 requires manager acknowledgement.</p>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
     if (pathname === "/product-orchestration") {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(`<!doctype html>
@@ -5697,6 +5853,7 @@ async function startFixtureServer(): Promise<FixtureServer> {
     approvalUrl: `http://127.0.0.1:${port}/approval-form`,
     dynamicUrl: `http://127.0.0.1:${port}/dynamic-dashboard`,
     dashboardUrl: `http://127.0.0.1:${port}/ops-dashboard`,
+    complexBrowserUrl: `http://127.0.0.1:${port}/complex-browser`,
     orchestrationUrl: `http://127.0.0.1:${port}/product-orchestration`,
     bridgeUrl: `http://127.0.0.1:${port}/product-bridge`,
     productSignalsUrl: `http://127.0.0.1:${port}/product-signals`,
@@ -5729,6 +5886,9 @@ export function applyNaturalFixtureUrlOverrides(
       readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_DASHBOARD_URL, "TURNKEYAI_NATURAL_DASHBOARD_URL") ??
       readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_BROWSER_URL, "TURNKEYAI_NATURAL_BROWSER_URL") ??
       fixture.dashboardUrl,
+    complexBrowserUrl:
+      readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_COMPLEX_BROWSER_URL, "TURNKEYAI_NATURAL_COMPLEX_BROWSER_URL") ??
+      fixture.complexBrowserUrl,
     orchestrationUrl:
       readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_ORCHESTRATION_URL, "TURNKEYAI_NATURAL_ORCHESTRATION_URL") ??
       fixture.orchestrationUrl,

@@ -662,6 +662,7 @@ describe("mission tool-use e2e report", () => {
         approvalUrl: "http://127.0.0.1/local-approval",
         dynamicUrl: "http://127.0.0.1/local-dynamic",
         dashboardUrl: "http://127.0.0.1/local-dashboard",
+        complexBrowserUrl: "http://127.0.0.1/local-complex-browser",
         orchestrationUrl: "http://127.0.0.1/local-orchestration",
         bridgeUrl: "http://127.0.0.1/local-bridge",
         productSignalsUrl: "http://127.0.0.1/local-signals",
@@ -675,6 +676,7 @@ describe("mission tool-use e2e report", () => {
         TURNKEYAI_NATURAL_SLOW_URL: "http://shared.test/slow-fixture",
         TURNKEYAI_NATURAL_CANCEL_RESUME_URL: "http://shared.test/cancel-resume",
         TURNKEYAI_NATURAL_DYNAMIC_URL: "http://shared.test/dynamic-dashboard",
+        TURNKEYAI_NATURAL_COMPLEX_BROWSER_URL: "http://shared.test/complex-browser",
         TURNKEYAI_NATURAL_ORCHESTRATION_URL: "http://shared.test/product-orchestration",
         TURNKEYAI_NATURAL_BRIDGE_URL: "http://shared.test/product-bridge",
         TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL: "http://shared.test/product-signals",
@@ -723,6 +725,16 @@ describe("mission tool-use e2e report", () => {
       false,
     );
 
+    const complexBrowser = buildNaturalScenarioSpec("natural-browser-complex-page-review", fixture);
+    assert.match(complexBrowser.desc, /http:\/\/shared\.test\/complex-browser/);
+    assert.equal(complexBrowser.requiresBrowser, true);
+    assert.equal(complexBrowser.requiresApproval, false);
+    assert.ok(complexBrowser.requiredAnswerTerms.includes("Frame Captain"));
+    assert.equal(complexBrowser.requiresArtifactLifecycle, true);
+    assert.ok(
+      (complexBrowser.requiredEvidencePatterns ?? []).some((pattern) => pattern.label.toLowerCase().includes("shadow")),
+    );
+
     assert.equal(fixture.dynamicUrl, "http://shared.test/dynamic-dashboard");
   });
 
@@ -739,6 +751,7 @@ describe("mission tool-use e2e report", () => {
         approvalUrl: "http://127.0.0.1/local-approval",
         dynamicUrl: "http://127.0.0.1/local-dynamic",
         dashboardUrl: "http://127.0.0.1/local-dashboard",
+        complexBrowserUrl: "http://127.0.0.1/local-complex-browser",
         orchestrationUrl: "http://127.0.0.1/local-orchestration",
         bridgeUrl: "http://127.0.0.1/local-bridge",
         productSignalsUrl: "http://127.0.0.1/local-signals",
@@ -765,6 +778,7 @@ describe("mission tool-use e2e report", () => {
       approvalUrl: "http://127.0.0.1/local-approval",
       dynamicUrl: "http://127.0.0.1/local-dynamic",
       dashboardUrl: "http://127.0.0.1/local-dashboard",
+      complexBrowserUrl: "http://127.0.0.1/local-complex-browser",
       orchestrationUrl: "http://127.0.0.1/local-orchestration",
       bridgeUrl: "http://127.0.0.1/local-bridge",
       productSignalsUrl: "http://127.0.0.1/local-signals",
