@@ -7134,3 +7134,68 @@ Convergence question:
 - If no, next required gate: build the same-scenario A/B report using the
   updated natural artifact shape, then choose the next runtime, prompt, browser,
   or UX PR from observed losses.
+
+## Checkpoint 2026-06-03 09:33 CST — Recovered Transport And Natural Guidance Semantics
+
+Direction: unknown
+
+Execution Kernel:
+- No production agent runtime behavior changed.
+- Natural mission quality evaluation now distinguishes unresolved browser
+  failures from recovered retryable transport history. A recovered
+  `transport_failure` can satisfy natural quality only when the scenario already
+  permits failure/timeout recovery, liveness is clean, and the final answer is
+  useful and source-backed.
+
+Result Quality:
+- Final-answer generation did not change.
+- The timeout-followup natural gate now accepts operational timeout guidance
+  such as configuring a longer tool-call timeout or excluding an intentionally
+  delayed source from timeout-gated release checks. This removes a wording-only
+  failure mode without accepting weak, unsupported, or non-retryable browser
+  failures.
+
+Workbench UX:
+- No UI changed.
+- This checkpoint only affects acceptance semantics and evidence review.
+
+Browser Reliability:
+- Browser runtime behavior did not change.
+- Non-retryable browser buckets, including `browser_cdp_unavailable`, still
+  fail natural quality unless the scenario explicitly requires that bucket.
+- Recovered transport history remains visible through mission/operator quality
+  attention instead of being erased.
+
+Acceptance Evidence:
+- A focused natural timeout-followup run before the change finished with a
+  useful final answer but failed the natural gate only on narrow guidance
+  wording:
+  `artifacts/evals/20260603-recovered-transport-gate/turnkeyai/natural-timeout-followup.json`.
+- Focused report tests passed after the change:
+  `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts`.
+- Typecheck passed:
+  `npm run typecheck`.
+- Focused natural real LLM E2E passed after the change:
+  `npm run mission:e2e:natural:core -- --natural-matrix-scenarios
+  natural-timeout-followup-continuation --scenario-timeout-ms 420000
+  --model-catalog models.local.json --json
+  artifacts/evals/20260603-recovered-transport-gate-rerun/turnkeyai/natural-timeout-followup.json`.
+- Real mission `msn.mpxdz79h.1`: status `done`, natural `passed`, duration
+  `326685ms`, tools `3/3`, sessions `1/1`, browser `yes`, profile fallback
+  `0`, browser buckets `none`, liveness `0/0/0`, final bytes `1937`.
+
+Regression Risk:
+- The evaluator now allows only retryable `transport_failure` as recovered
+  natural evidence. Broader browser outages remain natural failures.
+- This checkpoint does not prove the full core matrix or same-scenario A/B. It
+  prevents two brittle acceptance failures from hiding the next real runtime or
+  prompt issue.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? unknown
+- Evidence: one focused timeout-continuation natural run passed with real LLM
+  evidence after the evaluator stopped overfitting to failure-history and
+  wording shape.
+- If no, next required gate: rerun/build the full same-scenario A/B core report
+  and use observed losses to pick the next P0 runtime, prompt, or browser
+  reliability PR.
