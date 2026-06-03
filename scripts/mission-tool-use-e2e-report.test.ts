@@ -1563,6 +1563,54 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.status, "passed");
   });
 
+  it("keeps positive blocker evidence when the same line also negates another blocker", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-external-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        externalPageUrl: "https://news.ycombinator.com/",
+      }),
+      requiredEvidencePatterns: [],
+      requiredAnswerPatterns: [],
+      requiredAnswerTerms: [],
+      minBytes: 80,
+    };
+    result.scenario = "natural-browser-external-page-review";
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent:
+        "No redirect was observed, but Cloudflare blocked the page with a Turnstile captcha before browser evidence loaded.",
+    };
+    result.metrics.qualityGate.evidenceEvents = 1;
+    result.final.text = [
+      "The browser run reached a blocker before useful page evidence loaded.",
+      "Residual risk: the visible page purpose and navigation cues were not verified because Cloudflare blocked the page.",
+      "Next action: retry with an operator browser session or choose another source.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), true);
+    assert.equal(quality.failures.some((failure) => failure.includes("browser evidence blocked")), true);
+    assert.equal(quality.status, "failed");
+  });
+
   it("fails natural quality when the final answer hides residual risk", () => {
     const result = fakeNaturalResult();
     const spec = {

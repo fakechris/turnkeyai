@@ -4922,18 +4922,23 @@ function stripPermissionGateSafetyEvidence(text: string): string {
 function stripNegatedBrowserBlockerEvidence(text: string): string {
   return text
     .split(/\r?\n/)
-    .filter((line) => !isNegatedBrowserBlockerLine(line))
+    .map(stripNegatedBrowserBlockerLine)
+    .filter((line) => line.trim().length > 0)
     .join("\n");
 }
 
 const NEGATED_BROWSER_BLOCKER_PATTERNS = [
-  /\b(?:no|without)\b[\s\S]{0,100}\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b/i,
-  /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b[\s\S]{0,100}\b(?:not observed|not present|not encountered|not seen|did not occur|was not observed|were not observed)\b/i,
-  /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b[\s\S]{0,100}(?:\|\s*No\b|:\s*No\b|-\s*No\b|\u2014\s*No\b)/i,
+  /\b(?:no|without)\b(?:(?!\bbut\b)[\s\S]){0,100}\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b/gi,
+  /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b(?:(?!\bbut\b)[\s\S]){0,100}\b(?:not observed|not present|not encountered|not seen|did not occur|was not observed|were not observed)\b/gi,
+  /\b(?:Cloudflare|Turnstile|anti-bot|captchas?|access denied|forbidden|blocks?|blocking|blocked|redirect)\b(?:(?!\bbut\b)[\s\S]){0,100}(?:\|\s*No\b|:\s*No\b|-\s*No\b|\u2014\s*No\b)/gi,
 ] as const;
 
-function isNegatedBrowserBlockerLine(line: string): boolean {
-  return NEGATED_BROWSER_BLOCKER_PATTERNS.some((pattern) => pattern.test(line));
+function stripNegatedBrowserBlockerLine(line: string): string {
+  let stripped = line;
+  for (const pattern of NEGATED_BROWSER_BLOCKER_PATTERNS) {
+    stripped = stripped.replace(pattern, " ");
+  }
+  return stripped;
 }
 
 export function formatMissionScenarioStart(input: {

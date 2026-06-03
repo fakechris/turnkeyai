@@ -3268,12 +3268,29 @@ function taskRequiresBrowserEvidence(text: string): boolean {
   if (!normalized) {
     return false;
   }
+  if (explicitlyDisclaimsBrowserRenderedEvidence(normalized)) {
+    return false;
+  }
   return (
     /\b(?:browser-visible|browser rendered|browser-rendered|browser-observed|as (?:a|an) (?:user|operator) would see|user-visible|visible page|rendered page|rendered DOM|client[- ]side|JavaScript-rendered|JS-rendered|dynamic dashboard|live dashboard)\b/i.test(
       normalized
     ) ||
     /\b(?:iframe|embedded source frame|frame content|shadow(?:-style)? component|shadow DOM|details popup|popup workflow|open the details popup)\b/i.test(
       normalized
+    )
+  );
+}
+
+function explicitlyDisclaimsBrowserRenderedEvidence(text: string): boolean {
+  return (
+    /\b(?:not|never)\s+(?:a\s+)?(?:browser-visible|browser-rendered|browser rendered|browser-observed|user-visible)\b/i.test(
+      text
+    ) ||
+    /\b(?:no|without)\s+(?:client[- ]side|JavaScript-rendered|JS-rendered|rendered DOM|browser-rendered|browser rendered|browser-visible)\s+(?:rendering|content|evidence|required|needed)?\b/i.test(
+      text
+    ) ||
+    /\bstatic HTML only\b[\s\S]{0,80}\b(?:no|without)\s+(?:JavaScript|JS|client[- ]side|browser-rendered|browser rendered)\b/i.test(
+      text
     )
   );
 }
