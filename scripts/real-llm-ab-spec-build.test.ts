@@ -320,6 +320,29 @@ test("real LLM A/B spec builder rejects incomplete natural or reference evidence
         }),
       /missing reference artifact for natural-browser-cdp-timeout-closeout/
     );
+
+    const partialReliability = writeCoreFixture(dir, {
+      scenarios: BROWSER_RELIABILITY_NATURAL_SCENARIOS.filter(
+        (scenario) => scenario !== "natural-browser-detached-target-closeout"
+      ),
+    });
+    rmSync(path.join(partialReliability.referenceDir, "natural-browser-cdp-timeout-closeout.json"), { force: true });
+    assert.throws(
+      () =>
+        buildRealLlmAbSpec({
+          naturalReportPath: partialReliability.naturalReportPath,
+          referenceDir: partialReliability.referenceDir,
+          outPath,
+          suite: "browser-reliability",
+        }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /A\/B suite evidence is incomplete/);
+        assert.match(error.message, /missing reference artifact for natural-browser-cdp-timeout-closeout/);
+        assert.match(error.message, /natural report is missing browser-reliability A\/B scenario: browser-detached-target-closeout/);
+        return true;
+      }
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

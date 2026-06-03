@@ -160,20 +160,34 @@ function buildRealLlmAbSpecForRequirements(input: {
       naturalScenarios.set(readString(scenario.scenario)!, scenario);
     }
   }
-  const scenarios = input.requirements.map((requirement) => {
+  const missingEvidence: string[] = [];
+  const scenarioInputs: Array<{
+    scenario: NaturalMissionScenarioShape;
+    scenarioId: string;
+    referenceArtifactPath: string;
+  }> = [];
+  for (const requirement of input.requirements) {
     const naturalScenario = findRequirementScenario(naturalScenarios, requirement.acceptedScenarioIds);
     if (!naturalScenario) {
-      throw new Error(`natural report is missing ${input.suite} A/B scenario: ${requirement.key}`);
+      missingEvidence.push(`natural report is missing ${input.suite} A/B scenario: ${requirement.key}`);
+      continue;
     }
     const scenarioId = readString(naturalScenario.scenario)!;
     const referenceArtifactPath = path.join(referenceDir, `${scenarioId}.json`);
     if (!existsSync(referenceArtifactPath)) {
-      throw new Error(`missing reference artifact for ${scenarioId}: ${referenceArtifactPath}`);
+      missingEvidence.push(`missing reference artifact for ${scenarioId}: ${referenceArtifactPath}`);
+      continue;
     }
+    scenarioInputs.push({ scenario: naturalScenario, scenarioId, referenceArtifactPath });
+  }
+  if (missingEvidence.length > 0) {
+    throw new Error(`A/B suite evidence is incomplete:\n${missingEvidence.map((item) => `- ${item}`).join("\n")}`);
+  }
+  const scenarios = scenarioInputs.map(({ scenario, scenarioId, referenceArtifactPath }) => {
     return {
       scenarioId,
       turnkeyaiScenarioId: scenarioId,
-      prompt: readString(naturalScenario.prompt)!,
+      prompt: readString(scenario.prompt)!,
       promptPolicy: {
         naturalPrompt: true,
         noForcedToolCall: true,
