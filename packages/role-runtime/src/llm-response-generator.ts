@@ -2634,7 +2634,12 @@ function shouldAppendTimeoutContinuationVisibility(input: {
     return false;
   }
   const context = buildContinuationDirectiveContext(input.taskPrompt, input.messages);
-  return contextHasTimeoutSessionResult(context) || /\b(?:earlier|previous|prior|original)?\s*(?:timeout|timed out)\b/i.test(taskPromptSuffix);
+  return (
+    contextHasTimeoutSessionResult(context) ||
+    /\b(?:(?:earlier|previous|prior|original)\s+(?:session\s+)?(?:timeout|timed out)|(?:session|connection|source)\s+(?:timeout|timed out))\b/i.test(
+      taskPromptSuffix
+    )
+  );
 }
 
 function contextHasSessionListResult(context: string): boolean {
