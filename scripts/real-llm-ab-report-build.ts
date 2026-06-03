@@ -11,6 +11,7 @@ import {
   type RealLlmAbAcceptanceReport,
   type RealLlmAbDimensionKey,
   type RealLlmAbDimensionScore,
+  type RealLlmAbRootCauseBucket,
   type RealLlmAbScenarioPair,
   type RealLlmAbScenarioRun,
 } from "@turnkeyai/qc-runtime/real-llm-ab-acceptance";
@@ -409,7 +410,7 @@ function buildTurnkeyAiRun(input: {
     residualRiskVisible: input.scenario.natural?.sourceCoverage?.residualRiskVisible === true,
     unsupportedClaims: readStringArray(input.scenario.natural?.sourceCoverage?.unsupportedClaims),
     dimensionScores,
-    rootCauseBuckets: readStringArray(input.scenario.natural?.failureBuckets) as RealLlmAbScenarioRun["rootCauseBuckets"],
+    rootCauseBuckets: mapNaturalFailureBuckets(input.scenario.natural?.failureBuckets),
   };
 }
 
@@ -599,6 +600,30 @@ function readReferencePrompt(artifact: GenericReferenceArtifactShape): string | 
 
 function readDimensionScore(value: unknown): RealLlmAbDimensionScore {
   return value === 0 || value === 1 || value === 2 ? value : 0;
+}
+
+function mapNaturalFailureBuckets(value: unknown): RealLlmAbRootCauseBucket[] {
+  const mapped = readStringArray(value).flatMap((bucket): RealLlmAbRootCauseBucket[] => {
+    switch (bucket) {
+      case "runtime_lifecycle":
+      case "sub_agent_runtime":
+        return ["sub_agent_runtime"];
+      case "tool_selection":
+        return ["tool_selection"];
+      case "browser_reliability":
+        return ["browser_reliability"];
+      case "continuation":
+      case "timeout_closeout":
+        return ["timeout_cancel_continue"];
+      case "permission":
+        return ["permission_flow"];
+      case "answer_quality":
+        return ["final_answer_quality"];
+      default:
+        return ["acceptance_harness"];
+    }
+  });
+  return [...new Set(mapped)].sort();
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

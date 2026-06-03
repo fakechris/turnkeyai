@@ -4393,7 +4393,7 @@ function scoreNaturalMissionDimensions(input: {
     ),
     permissionCorrectness: scoreOptionalRequirement(input.spec.requiresApproval, input.approvalExercised, input.approvalExercised),
     timeoutCloseoutQuality: scoreOptionalRequirement(
-      input.spec.requiresTimeout || input.toolTimeouts > 0 || input.spec.allowRecoveredTimeout === true,
+      input.spec.requiresTimeout || input.toolTimeouts > 0,
       input.toolTimeouts > 0,
       input.recoveredTimeoutPolicySatisfied || (input.spec.allowToolFailure && input.sourceCoverage.residualRiskVisible)
     ),

@@ -167,6 +167,39 @@ test("real LLM A/B report builder preserves reference weakness without treating 
   }
 });
 
+test("real LLM A/B report builder maps natural failure buckets and blocks zero-dimension capability claims", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
+  try {
+    writeFixtureFiles(dir, {
+      naturalFailureBuckets: ["timeout_closeout"],
+      naturalDimensionScores: { timeoutCloseoutQuality: 0 },
+    });
+    const report = buildRealLlmAbAcceptanceReport(
+      {
+        turnkeyaiNaturalReportPath: "turnkeyai-natural.json",
+        generatedAtMs: 1,
+        scenarios: [
+          {
+            scenarioId: "browser-dynamic",
+            turnkeyaiScenarioId: "natural-browser-dynamic-page",
+            prompt: NATURAL_BROWSER_PROMPT,
+            requiresBrowser: true,
+            referenceArtifactPath: "reference-browser.json",
+          },
+        ],
+      },
+      { specDir: dir }
+    );
+    const validation = validateRealLlmAbAcceptanceReport(report);
+
+    assert.equal(report.status, "failed");
+    assert.deepEqual(report.scenarios[0]?.turnkeyai.rootCauseBuckets, ["timeout_cancel_continue"]);
+    assert.match(validation.failures.join("\n"), /TurnkeyAI scored 0 for timeoutCloseoutQuality/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real LLM A/B report builder CLI writes and checks output", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-build-"));
   const previousExitCode = process.exitCode;
@@ -295,7 +328,12 @@ test("real LLM A/B report builder leaves missing or mismatched run prompts unpro
 
 function writeFixtureFiles(
   dir: string,
-  options: { referenceUseful?: boolean; referencePrompt?: string | undefined } = {}
+  options: {
+    referenceUseful?: boolean;
+    referencePrompt?: string | undefined;
+    naturalFailureBuckets?: string[];
+    naturalDimensionScores?: Partial<Record<string, 0 | 1 | 2>>;
+  } = {}
 ): void {
   const referenceUseful = options.referenceUseful ?? true;
   const referencePrompt = "referencePrompt" in options ? options.referencePrompt : NATURAL_BROWSER_PROMPT;
@@ -345,8 +383,9 @@ function writeFixtureFiles(
               continuationBehavior: 2,
               permissionCorrectness: 2,
               timeoutCloseoutQuality: 2,
+              ...(options.naturalDimensionScores ?? {}),
             },
-            failureBuckets: [],
+            failureBuckets: options.naturalFailureBuckets ?? [],
           },
         },
       ],

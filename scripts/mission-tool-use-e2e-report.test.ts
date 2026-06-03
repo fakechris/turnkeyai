@@ -1525,6 +1525,8 @@ describe("mission tool-use e2e report", () => {
     assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
     assert.equal(quality.weakAnswerSignals.includes("browser extraction failed"), false);
     assert.equal(quality.weakAnswerSignals.includes("browser evidence not verified"), false);
+    assert.equal(quality.dimensionScores.timeoutCloseoutQuality, 2);
+    assert.equal(quality.failureBuckets.includes("timeout_closeout"), false);
   });
 
   it("accepts degraded fallback wording as visible residual-risk disclosure", () => {
@@ -3359,6 +3361,7 @@ describe("mission tool-use e2e report", () => {
       final: result.final,
     });
     assert.deepEqual(recoveredQuality.failures, []);
+    assert.equal(recoveredQuality.dimensionScores.timeoutCloseoutQuality, 2);
 
     result.timeline[5]!.runtime!.resultContent = JSON.stringify({
       protocol: "turnkeyai.session_tool_result.v1",

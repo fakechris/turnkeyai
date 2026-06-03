@@ -184,6 +184,38 @@ test("real LLM A/B acceptance forces root-cause review when TurnkeyAI loses core
   assert.deepEqual(comparison?.rootCauseBuckets, ["final_answer_quality", "prompt_harness", "sub_agent_runtime", "tool_selection"]);
 });
 
+test("real LLM A/B acceptance blocks capability claims when TurnkeyAI has any zero core dimension", () => {
+  const report = buildCoreSuiteReport({
+    weaken: {
+      "long-delegation": (run) => ({
+        ...run,
+        dimensionScores: { ...run.dimensionScores, timeoutCloseoutQuality: 0 },
+      }),
+    },
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report, { requiredSuite: "core" });
+  const comparison = validation.summary?.comparisons.find((item) => item.scenarioId === "long-delegation");
+
+  assert.equal(validation.status, "failed");
+  assert.match(validation.failures.join("\n"), /long-delegation: TurnkeyAI scored 0 for timeoutCloseoutQuality/);
+  assert.equal(comparison?.rootCauseRequired, true);
+  assert.ok(comparison?.rootCauseBuckets.includes("timeout_cancel_continue"));
+});
+
+test("real LLM A/B acceptance rejects unknown root-cause buckets", () => {
+  const report = buildReport({
+    weakenRun: {
+      turnkeyai: (run) => ({ ...run, rootCauseBuckets: ["timeout_closeout" as never] }),
+    },
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report);
+
+  assert.equal(validation.status, "failed");
+  assert.match(validation.failures.join("\n"), /unknown root-cause bucket timeout_closeout/);
+});
+
 test("real LLM A/B acceptance rejects controlled prompt gates and missing artifacts", () => {
   const report = buildReport({
     prompt:
