@@ -8381,3 +8381,86 @@ Convergence question:
   including long delegation, approval, memory recall, and timeout continuation.
 - Remaining proof: collect or provide the missing same-scenario reference
   timeout-followup artifact, then build/check the full core A/B report.
+
+## 2026-06-04 02:47 CST - Full Core A/B Gate Comparable
+
+Direction: converging
+
+Execution Kernel:
+- Merged the natural runtime continuation repair as PR #456 and fast-forwarded
+  local `main` to `848806e`.
+- Fixed the real LLM A/B validator so local fixture prompts remain comparable
+  across random loopback fixture ports. The validator still requires the same
+  task text, same fixture paths, same prompt policy, and same run prompt
+  evidence; it only canonicalizes the local loopback port segment.
+- This removes a false methodology failure where same-scenario evidence was
+  rejected because one run used `127.0.0.1:<port-a>` and another used
+  `127.0.0.1:<port-b>`.
+
+Result Quality:
+- The full core same-scenario A/B gate now passes against the current natural
+  core report:
+  - Status: `passed`.
+  - Capability: `capability proven`.
+  - Stability: `stable`.
+  - Scenarios: `7`.
+  - Comparable scenarios: `7`.
+  - TurnkeyAI wins/ties/losses: `7/0/0`.
+  - Validation failures: `none`.
+- Scenario scores:
+  - `natural-comparison-research`: `18` vs `10`.
+  - `natural-browser-dynamic-page`: `18` vs `10`.
+  - `natural-followup-continuation`: `18` vs `8`.
+  - `natural-approval-dry-run-action`: `18` vs `10`.
+  - `natural-long-delegation`: `18` vs `10`.
+  - `natural-timeout-followup-continuation`: `18` vs `6`.
+  - `natural-memory-recall`: `18` vs `10`.
+
+Workbench UX:
+- No UI changed.
+- This checkpoint still does not prove Workbench replay ordering, markdown
+  rendering, or process readability. Those remain P1 after P0 runtime evidence.
+
+Browser Reliability:
+- The full core A/B gate includes browser-backed dynamic-page and long
+  delegation evidence from the current natural core run.
+- This does not prove broad hostile-page, authenticated-site, or long-lived
+  browser-session reliability outside the evaluated core suite.
+
+Acceptance Evidence:
+- PR #456 merged: `848806e`.
+- Focused A/B validator tests:
+  `npx tsx --test packages/qc-runtime/src/real-llm-ab-acceptance.test.ts
+  scripts/real-llm-ab-spec-build.test.ts scripts/real-llm-ab-report-build.test.ts`
+  passed.
+- Full core A/B build/check:
+  `npm run acceptance:ab:spec -- --natural-report
+  artifacts/evals/20260604-core-after-timeout-like-guard/turnkeyai-natural-core.json
+  --reference-dir
+  /Users/chris/workspace/turnkeyai-p0-runtime/artifacts/evals/20260603-after-timeout-budget-main/reference
+  --suite core --out
+  artifacts/evals/20260604-core-after-timeout-like-guard/ab/ab-build-spec.json`
+  `npm run acceptance:ab:build -- --spec
+  artifacts/evals/20260604-core-after-timeout-like-guard/ab/ab-build-spec.json
+  --out artifacts/evals/20260604-core-after-timeout-like-guard/ab/ab-report.json
+  --suite core --markdown-out
+  artifacts/evals/20260604-core-after-timeout-like-guard/ab/report.md --check`
+  passed with `suite=core`.
+- A/B JSON/Markdown artifacts remain local evidence and are not committed.
+
+Regression Risk:
+- Prompt comparison must not become too permissive. Focused tests now prove
+  different local fixture paths still fail even when loopback ports differ.
+- The capability claim is scoped to the evaluated core natural suite. It does
+  not close remaining P0 risk around broader browser reliability, hostile pages,
+  authenticated workflows, replay UX, or production packaging.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  yes, for the P0 full core natural suite and same-scenario A/B gate.
+- Evidence: the previously missing full core A/B proof is now checkable and
+  passing, with prompt comparability repaired at the methodology layer rather
+  than by weakening natural prompts.
+- Next required gate: continue P0 with broader browser reliability and
+  production-natural scenarios beyond the core fixture suite before claiming
+  general production-grade stability.

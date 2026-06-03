@@ -309,6 +309,44 @@ test("real LLM A/B acceptance requires each run to prove the same natural prompt
   assert.match(mismatchedPromptValidation.failures.join("\n"), /browser-dynamic-page\/turnkeyai: run prompt does not match/);
 });
 
+test("real LLM A/B acceptance compares local fixture prompts across random loopback ports", () => {
+  const prompt =
+    "Review the fixture at http://127.0.0.1:57221/vendor-alpha and compare it with http://127.0.0.1:57221/vendor-beta.";
+  const report = buildReport({
+    prompt,
+    weakenRun: {
+      reference: (run) => ({
+        ...run,
+        prompt:
+          "Review the fixture at http://127.0.0.1:60898/vendor-alpha and compare it with http://127.0.0.1:60898/vendor-beta.",
+      }),
+    },
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report);
+
+  assert.equal(validation.status, "passed");
+  assert.deepEqual(validation.failures, []);
+});
+
+test("real LLM A/B acceptance still rejects different local fixture paths", () => {
+  const prompt = "Review the fixture at http://127.0.0.1:57221/vendor-alpha.";
+  const report = buildReport({
+    prompt,
+    weakenRun: {
+      reference: (run) => ({
+        ...run,
+        prompt: "Review the fixture at http://127.0.0.1:60898/vendor-gamma.",
+      }),
+    },
+  });
+
+  const validation = validateRealLlmAbAcceptanceReport(report);
+
+  assert.equal(validation.status, "failed");
+  assert.match(validation.failures.join("\n"), /browser-dynamic-page\/reference: run prompt does not match/);
+});
+
 test("real LLM A/B acceptance requires wall-clock evidence for each run", () => {
   const report = buildReport({
     weakenRun: {
