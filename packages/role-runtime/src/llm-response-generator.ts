@@ -815,6 +815,28 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
           continue;
         }
         if (
+          completedSession.finalContents.length > 0 &&
+          shouldRepairFalseEvidenceBlockedSynthesis({
+            resultText: result.text,
+            messages,
+            evidenceText: completedSession.finalContents.join("\n\n"),
+          })
+        ) {
+          messages = [
+            ...messages,
+            {
+              role: "assistant",
+              content: result.text,
+            },
+            {
+              role: "user",
+              content: buildFalseEvidenceBlockedSynthesisRepairPrompt(completedSession.finalContents),
+            },
+          ];
+          nextToolChoice = "none";
+          continue;
+        }
+        if (
           shouldRepairWeakEvidenceSynthesis({
             taskPrompt: input.packet.taskPrompt,
             resultText: result.text,
@@ -2413,6 +2435,20 @@ function shouldRepairWeakEvidenceSynthesis(input: {
   return !taskRequestsEstimate(input.taskPrompt) && matchesAny(input.resultText, WEAK_ESTIMATE_SYNTHESIS_PATTERNS);
 }
 
+function shouldRepairFalseEvidenceBlockedSynthesis(input: {
+  resultText: string;
+  messages: LLMMessage[];
+  evidenceText: string;
+}): boolean {
+  if (hasFalseEvidenceBlockedSynthesisRepairPrompt(input.messages)) {
+    return false;
+  }
+  if (!matchesAny(input.resultText, FALSE_EVIDENCE_BLOCKED_SYNTHESIS_PATTERNS)) {
+    return false;
+  }
+  return !matchesAny(input.evidenceText, ACTUAL_EVIDENCE_BLOCKED_PATTERNS);
+}
+
 function shouldRepairMissingRequestedRiskDimension(input: {
   taskPrompt: string;
   resultText: string;
@@ -2453,6 +2489,19 @@ const WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS = [
 const WEAK_ESTIMATE_SYNTHESIS_PATTERNS = [
   /\b(?:estimate|estimated)\b/i,
   /(?:^|[^A-Za-z0-9_])估算(?![A-Za-z0-9_])/,
+];
+
+const FALSE_EVIDENCE_BLOCKED_SYNTHESIS_PATTERNS = [
+  /\b(?:not accessible|not fully accessible|inaccessible)\b/i,
+  /\b(?:source|content|evidence|page|dashboard|browser|rendered|DOM|extraction)\b[\s\S]{0,120}\b(?:failed|unavailable|inaccessible|incomplete|truncated|blocked)\b/i,
+  /\b(?:failed|unavailable|inaccessible|incomplete|truncated|blocked)\b[\s\S]{0,120}\b(?:source|content|evidence|page|dashboard|browser|rendered|DOM|extraction)\b/i,
+];
+
+const ACTUAL_EVIDENCE_BLOCKED_PATTERNS = [
+  /\b(?:could not|unable to|failed to)\s+(?:access|extract|capture|read|load|verify)\b/i,
+  /\b(?:verification status:\s*failed|content extraction\b[\s\S]{0,80}\b(?:failed|incomplete|truncated))\b/i,
+  /\b(?:browser|rendered|DOM|page|dashboard|tab|target|screenshot|snapshot|CDP)\b[\s\S]{0,120}\b(?:failed|unavailable|inaccessible|incomplete|truncated)\b/i,
+  /\b(?:failed|unavailable|inaccessible|incomplete|truncated)\b[\s\S]{0,120}\b(?:browser|rendered|DOM|page|dashboard|tab|target|screenshot|snapshot|CDP)\b/i,
 ];
 
 const ESTIMATE_REQUEST_PATTERNS = [
@@ -2592,6 +2641,14 @@ function hasWeakEvidenceSynthesisRepairPrompt(messages: LLMMessage[]): boolean {
   );
 }
 
+function hasFalseEvidenceBlockedSynthesisRepairPrompt(messages: LLMMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes("Runtime correction: final answer falsely marks completed evidence")
+  );
+}
+
 function mentionsPendingApproval(text: string): boolean {
   return /\b(?:approval pending|approval is pending|approval is still pending|approval request is pending|approval request is still pending|permission request is pending|permission request is still pending|pending operator approval|pending operator decision|awaiting (?:decision|your decision|operator approval|operator decision|operator)|waiting for (?:your|operator) decision|waiting for operator|once you approve|after you approve|before (?:the )?(?:browser worker )?can)\b/i.test(
     text
@@ -2710,6 +2767,17 @@ function buildWeakEvidenceSynthesisRepairPrompt(): string {
   ].join("\n");
 }
 
+function buildFalseEvidenceBlockedSynthesisRepairPrompt(finalContents: string[]): string {
+  return [
+    "Runtime correction: final answer falsely marks completed evidence as blocked, inaccessible, failed, incomplete, or truncated.",
+    "Do not call tools. Rewrite the final answer using only the delegated session evidence already present.",
+    "The completed source evidence below is usable. Do not describe source content, browser evidence, rendered DOM, page content, or extraction as inaccessible, failed, incomplete, blocked, or truncated unless that exact blocker appears in the source evidence.",
+    "Preserve the original requested final answer shape, section labels, bullet labels, no-link rules, and residual-risk requirement.",
+    "It is okay to say the evidence is source-bounded to local fixtures or that real-world validation remains; do not turn that scope limitation into a tool/browser/content failure.",
+    ...finalContents.map((content, index) => `Source ${index + 1} completed evidence:\n${sliceUtf8(content, 2400)}`),
+  ].join("\n");
+}
+
 function parseJsonObject(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "string" || value.trim().length === 0) return null;
   try {
@@ -2742,19 +2810,32 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
   }
   const messageHint = buildSessionContinuationMessageHint(taskPrompt, latestUserText);
   const sessionResults = extractSessionToolResultRecords(taskPrompt);
+  let selectedSessionKey: string | null = null;
+  let selectedPriority = 0;
   for (let index = sessionResults.length - 1; index >= 0; index -= 1) {
     const result = sessionResults[index]!;
     const sessionKey = result["session_key"];
     if (typeof sessionKey !== "string" || !sessionKey.trim()) {
       continue;
     }
-    if (!sessionToolResultSupportsContinuation(result)) {
+    const priority = sessionToolResultContinuationPriority(result);
+    if (priority <= selectedPriority) {
       continue;
     }
-    return {
-      sessionKey: sessionKey.trim(),
-      messageHint,
-    };
+    selectedSessionKey = sessionKey.trim();
+    selectedPriority = priority;
+  }
+  if (selectedSessionKey) {
+    if (
+      selectedPriority < 3 &&
+      continuationRequestPrefersResumableSession({
+        latestUserText,
+        context: taskPrompt,
+      })
+    ) {
+      return null;
+    }
+    return { sessionKey: selectedSessionKey, messageHint };
   }
   const sessionMatches = [...taskPrompt.matchAll(/"session_key"\s*:\s*"([^"]+)"/g)];
   for (let index = sessionMatches.length - 1; index >= 0; index -= 1) {
@@ -2773,6 +2854,16 @@ function findSessionContinuationDirective(taskPrompt: string): SessionContinuati
     };
   }
   return null;
+}
+
+function continuationRequestPrefersResumableSession(input: { latestUserText: string; context: string }): boolean {
+  if (/\b(?:timeout|timed out|resumable|interrupted|cancelled|canceled|slow-source|slow source|source-check)\b/i.test(input.latestUserText)) {
+    return true;
+  }
+  if (!/\b(?:timeout|timed out|WORKER_TIMEOUT|resumable|interrupted|cancelled|canceled)\b/i.test(input.context)) {
+    return false;
+  }
+  return /\b(?:same|existing|previous|prior|attempt|source|retry|resume|continue)\b/i.test(input.latestUserText);
 }
 
 function findSessionContinuationLookupDirective(taskPrompt: string, context: string): SessionContinuationLookupDirective | null {
@@ -2936,13 +3027,20 @@ function collectSessionToolResultRecords(value: unknown, records: Array<Record<s
 }
 
 function sessionToolResultSupportsContinuation(result: Record<string, unknown>): boolean {
+  return sessionToolResultContinuationPriority(result) > 0;
+}
+
+function sessionToolResultContinuationPriority(result: Record<string, unknown>): number {
   if (result["protocol"] !== SESSION_TOOL_RESULT_PROTOCOL) {
-    return false;
+    return 0;
   }
-  if (result["status"] === "completed" || result["status"] === "timeout" || result["status"] === "cancelled") {
-    return true;
+  if (result["status"] === "timeout" || result["status"] === "cancelled" || result["resumable"] === true) {
+    return 3;
   }
-  return result["resumable"] === true;
+  if (result["status"] === "completed") {
+    return 1;
+  }
+  return 0;
 }
 
 function parseJsonObjectsFromContext(context: string): unknown[] {
@@ -3119,8 +3217,23 @@ function applySessionContinuationLookupDirective(
   if (!directive || toolCalls.length === 0) {
     return toolCalls;
   }
-  if (toolCalls.some((call) => call.name === "sessions_send")) {
-    return toolCalls.filter((call) => call.name !== "sessions_spawn");
+  const sendIndex = toolCalls.findIndex((call) => call.name === "sessions_send");
+  if (sendIndex >= 0) {
+    const sent = toolCalls[sendIndex]!;
+    const agentId = inferWorkerKindFromSessionKey(readStringInput(sent.input, "session_key"));
+    return [
+      ...toolCalls.slice(0, sendIndex).filter((call) => call.name !== "sessions_spawn" && call.name !== "sessions_send"),
+      {
+        ...sent,
+        name: "sessions_list",
+        input: {
+          limit: 5,
+          ...(agentId ? { agent_id: agentId, kinds: [agentId] } : {}),
+          reason: `continuation lookup: ${directive.messageHint}`,
+        },
+      },
+      ...toolCalls.slice(sendIndex + 1).filter((call) => call.name !== "sessions_spawn" && call.name !== "sessions_send"),
+    ];
   }
   if (toolCalls.some((call) => call.name === "sessions_list")) {
     return toolCalls.filter((call) => call.name !== "sessions_spawn");
@@ -3144,6 +3257,14 @@ function applySessionContinuationLookupDirective(
     },
     ...toolCalls.slice(spawnIndex + 1).filter((call) => call.name !== "sessions_spawn"),
   ];
+}
+
+function inferWorkerKindFromSessionKey(sessionKey: unknown): string | null {
+  if (typeof sessionKey !== "string") {
+    return null;
+  }
+  const match = sessionKey.match(/^worker:([A-Za-z0-9_-]+):task(?::|-)/);
+  return match?.[1] ?? null;
 }
 
 function normalizeSessionToolCalls(toolCalls: LLMToolCall[], sessionContext = ""): LLMToolCall[] {
