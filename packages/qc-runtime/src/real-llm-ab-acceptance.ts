@@ -162,6 +162,19 @@ export const REAL_LLM_AB_DIMENSION_KEYS = [
   "finalAnswerUsefulness",
 ] as const satisfies readonly RealLlmAbDimensionKey[];
 
+export const REAL_LLM_AB_ROOT_CAUSE_BUCKETS = [
+  "prompt_harness",
+  "tool_selection",
+  "sub_agent_runtime",
+  "browser_reliability",
+  "memory_context",
+  "timeout_cancel_continue",
+  "permission_flow",
+  "final_answer_quality",
+  "ui_replay_visibility",
+  "acceptance_harness",
+] as const satisfies readonly RealLlmAbRootCauseBucket[];
+
 export const REAL_LLM_AB_CORE_SUITE_REQUIREMENTS = [
   {
     key: "comparison-research",
@@ -324,6 +337,13 @@ export function validateRealLlmAbAcceptanceReport(
       for (const key of REAL_LLM_AB_DIMENSION_KEYS) {
         if (!isDimensionScore(system.dimensionScores[key])) {
           failures.push(`${scenario.scenarioId}/${system.system}: missing dimension score ${key}`);
+        } else if (system.system === "turnkeyai" && system.dimensionScores[key] === 0) {
+          failures.push(`${scenario.scenarioId}: TurnkeyAI scored 0 for ${key}; root-cause review required before claiming capability`);
+        }
+      }
+      for (const bucket of system.rootCauseBuckets ?? []) {
+        if (!isRootCauseBucket(bucket)) {
+          failures.push(`${scenario.scenarioId}/${system.system}: unknown root-cause bucket ${bucket}`);
         }
       }
       if (!system.artifactPath && !system.missionId && !system.validationId && !system.transcriptPath) {
@@ -489,8 +509,9 @@ function compareScenarioPair(scenario: RealLlmAbScenarioPair): RealLlmAbScenario
   const lossDimensions = REAL_LLM_AB_DIMENSION_KEYS.filter(
     (key) => scenario.turnkeyai.dimensionScores[key] < scenario.reference.dimensionScores[key]
   );
+  const zeroDimensions = REAL_LLM_AB_DIMENSION_KEYS.filter((key) => scenario.turnkeyai.dimensionScores[key] === 0);
   const rootCauseBuckets = mergeStringSet([
-    ...deriveRootCauseBuckets(scenario, lossDimensions),
+    ...deriveRootCauseBuckets(scenario, mergeStringSet([...lossDimensions, ...zeroDimensions]) as RealLlmAbDimensionKey[]),
     ...(scenario.turnkeyai.rootCauseBuckets ?? []),
   ]);
   const comparable = hasRunEvidence(scenario.turnkeyai) && hasRunEvidence(scenario.reference);
@@ -498,6 +519,7 @@ function compareScenarioPair(scenario: RealLlmAbScenarioPair): RealLlmAbScenario
     !comparable ||
     scenario.turnkeyai.stuckOrLoop === true ||
     hasWeakTurnkeyAiAnswer(scenario.turnkeyai) ||
+    zeroDimensions.length > 0 ||
     hasRequiredTurnkeyAiProofGap(scenario) ||
     lossDimensions.filter((key) => CORE_LOSS_DIMENSIONS.has(key)).length >= 2;
   return {
@@ -714,6 +736,10 @@ function isScenarioRun(value: unknown, system: RealLlmAbSystemId): value is Real
 
 function isDimensionScore(value: unknown): value is RealLlmAbDimensionScore {
   return value === 0 || value === 1 || value === 2;
+}
+
+function isRootCauseBucket(value: unknown): value is RealLlmAbRootCauseBucket {
+  return typeof value === "string" && (REAL_LLM_AB_ROOT_CAUSE_BUCKETS as readonly string[]).includes(value);
 }
 
 function mergeStringSet<T extends string>(values: T[]): T[] {
