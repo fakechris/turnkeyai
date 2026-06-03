@@ -7681,3 +7681,85 @@ Convergence question:
 - If no, next required gate: run a real-page browser reliability slice and a
   workbench replay UX check before treating browser-heavy production tasks as
   broadly ready.
+
+## 2026-06-03 20:06 CST - External Browser Page Natural Gate
+
+Direction: converging
+
+Execution Kernel:
+- Added an opt-in natural mission scenario,
+  `natural-browser-external-page-review`, for real external browser-page
+  validation.
+- The scenario is intentionally not part of the default full natural matrix,
+  because external sites can change or block automation. It is a focused P0
+  gate that must be run when browser reliability claims need real-page
+  evidence.
+- The prompt remains natural: it asks for a browser-visible review of a live
+  external page, concrete visible items/navigation cues, and residual risk. It
+  does not force a tool call, marker, exact answer shape, or one-call behavior.
+
+Result Quality:
+- The first run passed on a live Hacker News front-page review.
+- Final answer included browser-observed page purpose plus concrete visible
+  items with points/comments metadata, and named residual risk from using a
+  live external page.
+- The natural quality gate reported no weak-answer signals, no unsupported
+  claims, and full `18/18` dimension scores for this focused row.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- User-visible improvement is acceptance coverage: future browser-heavy PRs can
+  prove a real external page path instead of relying only on local fixtures and
+  injected failure buckets.
+- Replay ordering and thought-process presentation are still separate P1 gates.
+
+Browser Reliability:
+- The run used a real external page through the browser path and produced
+  browser artifacts.
+- Metrics: browser used, `profileFallbacks=0`, no browser failure buckets, no
+  active/waiting/stale liveness after completion.
+- This does not prove popup-heavy pages, cross-origin iframe-heavy pages,
+  login-only pages, anti-bot pages, or raw-CDP expert-lane recovery on external
+  sites. It closes the first real-page browser natural gate.
+
+Acceptance Evidence:
+- Code baseline while running the gate: branch work on top of `main` at
+  `2577712`.
+- Structural verification:
+  - `npx tsx --test scripts/mission-tool-use-e2e-report.test.ts packages/qc-runtime/src/real-llm-acceptance-defaults.test.ts scripts/real-llm-acceptance.test.ts`
+  - `npm run typecheck`
+- Natural real LLM E2E command:
+  `npm run mission:e2e:natural -- --model-catalog /Users/chris/workspace/turnkeyai/models.local.json --natural-matrix-scenarios natural-browser-external-page-review --scenario-timeout-ms 360000 --json artifacts/evals/20260603-external-browser-gate/natural-browser-external-page-review.json`
+- Natural E2E result:
+  - scenario: `natural-browser-external-page-review`
+  - mission: `msn.mpy0r61v.1`
+  - duration: `62381ms`
+  - tools: `1/1`
+  - sessions: `1/0`
+  - browser: yes
+  - artifacts: `5`, all with lifecycle
+  - profile fallback: `0`
+  - browser buckets: none
+  - stuck/loop: no
+  - weak answer signals: none
+
+Regression Risk:
+- Because the default URL is a live public page, future focused runs may fail
+  because the site changes, blocks automation, or returns different content.
+  That should be treated as browser reliability/environment evidence, not as a
+  reason to weaken the natural quality gate.
+- The scenario keeps the acceptance assertions source-specific but avoids
+  depending on a particular daily story title.
+- This new scenario is opt-in and therefore does not destabilize default local
+  acceptance or core A/B gates.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes,
+  for scoped real external browser-page evidence.
+- Evidence: a natural real LLM browser mission inspected a live external page,
+  produced artifacts, extracted concrete visible page facts, and completed
+  without browser buckets, profile fallback, stuck state, or weak-answer
+  signals.
+- If no, next required gate: run popup/OOPIF/shadow-heavy browser evidence
+  through natural mission flow, or validate workbench replay UX for the browser
+  evidence already collected.

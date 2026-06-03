@@ -68,6 +68,7 @@ export type NaturalMissionE2eScenario =
   | "natural-comparison-research"
   | "natural-browser-dynamic-page"
   | "natural-browser-dashboard-task"
+  | "natural-browser-external-page-review"
   | "natural-browser-followup-continuation"
   | "natural-browser-restart-continuation"
   | "natural-browser-cold-recreation-continuation"
@@ -91,6 +92,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
   "natural-comparison-research",
   "natural-browser-dynamic-page",
   "natural-browser-dashboard-task",
+  "natural-browser-external-page-review",
   "natural-browser-followup-continuation",
   "natural-browser-restart-continuation",
   "natural-browser-cold-recreation-continuation",
@@ -113,6 +115,7 @@ export const NATURAL_MISSION_E2E_SCENARIOS = [
 
 const RENDERED_SLA_BREACHES_VALUE_PATTERN =
   /SLA breach(?:es|\s+count)?[\s\S]{0,100}\b3\b|\b3\b[\s\S]{0,100}SLA breach(?:es|\s+count)?/i;
+const DEFAULT_EXTERNAL_BROWSER_PAGE_URL = "https://news.ycombinator.com/";
 
 interface Mission {
   id: string;
@@ -242,6 +245,7 @@ export interface FixtureServer {
   approvalUrl: string;
   dynamicUrl: string;
   dashboardUrl: string;
+  externalPageUrl?: string;
   orchestrationUrl: string;
   bridgeUrl: string;
   productSignalsUrl: string;
@@ -819,6 +823,7 @@ function printHelp(exitCode: number): never {
     "  TURNKEYAI_NATURAL_SLOW_URL, TURNKEYAI_NATURAL_CANCEL_RESUME_URL",
     "  TURNKEYAI_NATURAL_DYNAMIC_URL, TURNKEYAI_NATURAL_ORCHESTRATION_URL",
     "  TURNKEYAI_NATURAL_BRIDGE_URL, TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL",
+    "  TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL",
     "  TURNKEYAI_NATURAL_BROWSER_URL remains a dashboard URL alias",
     "",
     "Scenarios:",
@@ -3319,7 +3324,19 @@ function findLatestCancellationEvent(timeline: ActivityEvent[]): ActivityEvent |
 
 export function buildNaturalScenarioSpec(
   scenario: NaturalMissionE2eScenario,
-  fixture: Pick<FixtureServer, "alphaUrl" | "betaUrl" | "dashboardUrl" | "approvalUrl" | "slowUrl" | "cancelResumeUrl" | "orchestrationUrl" | "bridgeUrl" | "productSignalsUrl">
+  fixture: Pick<
+    FixtureServer,
+    | "alphaUrl"
+    | "betaUrl"
+    | "dashboardUrl"
+    | "approvalUrl"
+    | "slowUrl"
+    | "cancelResumeUrl"
+    | "orchestrationUrl"
+    | "bridgeUrl"
+    | "productSignalsUrl"
+    | "externalPageUrl"
+  >
 ): NaturalScenarioSpec {
   if (scenario === "natural-comparison-research") {
     return {
@@ -3431,6 +3448,47 @@ export function buildNaturalScenarioSpec(
       forbiddenPatterns: [
         { label: "unsupported external incident claim", pattern: /\b(real outage|production outage|customer impact confirmed)\b/i },
         { label: "unresolved placeholder", pattern: /\b(TBD|to be confirmed|needs confirmation|待确认|估算)\b/i },
+      ],
+    };
+  }
+  if (scenario === "natural-browser-external-page-review") {
+    const externalPageUrl = fixture.externalPageUrl ?? DEFAULT_EXTERNAL_BROWSER_PAGE_URL;
+    return {
+      scenario,
+      title: "Natural browser external page review",
+      desc: [
+        "Review this live external page through a browser-visible pass, as a user would see it.",
+        `Page: ${externalPageUrl}`,
+        "Do not rely on memory or raw server metadata alone; inspect the browser-rendered page state.",
+        "Summarize the page's visible purpose, at least two concrete visible items or navigation cues, and any residual risk from using a live external page.",
+        "If the site blocks, redirects, or changes during the run, say what was actually verified in the browser and what remains unverified.",
+      ].join("\n"),
+      minBytes: 360,
+      minToolResults: 1,
+      maxToolResults: 8,
+      minSpawnedSessions: 1,
+      maxSpawnedSessions: 4,
+      requiresBrowser: true,
+      requiresApproval: false,
+      allowToolFailure: false,
+      minEvidenceEvents: 1,
+      requiredAnswerTerms: ["Hacker News", "visible", "risk"],
+      requiredAnswerPatterns: [
+        {
+          label: "visible page structure",
+          pattern: /\b(?:rank(?:ed|ing)?|front page|story|stories|item|items|navigation|comments?|points?)\b/i,
+        },
+        {
+          label: "live external page caveat",
+          pattern: /\b(?:live|external|changed?|changes?|unverified|residual risk|risk)\b/i,
+        },
+      ],
+      requiredEvidencePatterns: [
+        { label: "hacker news browser evidence", pattern: /\bHacker News\b/i },
+        { label: "visible listing evidence", pattern: /\b(?:comments?|points?|rank(?:ed|ing)?|story|stories|item|items)\b/i },
+      ],
+      forbiddenPatterns: [
+        { label: "memory-only external page answer", pattern: /based on (?:my )?(?:knowledge|training data|general knowledge)/i },
       ],
     };
   }
@@ -5608,6 +5666,7 @@ async function startFixtureServer(): Promise<FixtureServer> {
     orchestrationUrl: `http://127.0.0.1:${port}/product-orchestration`,
     bridgeUrl: `http://127.0.0.1:${port}/product-bridge`,
     productSignalsUrl: `http://127.0.0.1:${port}/product-signals`,
+    externalPageUrl: DEFAULT_EXTERNAL_BROWSER_PAGE_URL,
   };
 }
 
@@ -5615,6 +5674,9 @@ export function applyNaturalFixtureUrlOverrides(
   fixture: FixtureServer,
   env: NodeJS.ProcessEnv = process.env
 ): FixtureServer {
+  const externalPageUrl =
+    readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL, "TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL") ??
+    fixture.externalPageUrl;
   return {
     ...fixture,
     alphaUrl: readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_ALPHA_URL, "TURNKEYAI_NATURAL_ALPHA_URL") ?? fixture.alphaUrl,
@@ -5642,6 +5704,7 @@ export function applyNaturalFixtureUrlOverrides(
     productSignalsUrl:
       readNaturalFixtureUrlOverride(env.TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL, "TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL") ??
       fixture.productSignalsUrl,
+    ...(externalPageUrl ? { externalPageUrl } : {}),
   };
 }
 

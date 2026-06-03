@@ -665,6 +665,7 @@ describe("mission tool-use e2e report", () => {
         orchestrationUrl: "http://127.0.0.1/local-orchestration",
         bridgeUrl: "http://127.0.0.1/local-bridge",
         productSignalsUrl: "http://127.0.0.1/local-signals",
+        externalPageUrl: "https://local.example/external",
       },
       {
         TURNKEYAI_NATURAL_ALPHA_URL: "http://shared.test/vendor-alpha",
@@ -677,6 +678,7 @@ describe("mission tool-use e2e report", () => {
         TURNKEYAI_NATURAL_ORCHESTRATION_URL: "http://shared.test/product-orchestration",
         TURNKEYAI_NATURAL_BRIDGE_URL: "http://shared.test/product-bridge",
         TURNKEYAI_NATURAL_PRODUCT_SIGNALS_URL: "http://shared.test/product-signals",
+        TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL: "https://news.ycombinator.com/",
       }
     );
 
@@ -701,6 +703,11 @@ describe("mission tool-use e2e report", () => {
     const cancelResume = buildNaturalScenarioSpec("natural-cancel-followup-continuation", fixture);
     assert.match(cancelResume.desc, /http:\/\/shared\.test\/cancel-resume/);
 
+    const external = buildNaturalScenarioSpec("natural-browser-external-page-review", fixture);
+    assert.match(external.desc, /https:\/\/news\.ycombinator\.com\//);
+    assert.equal(external.requiresBrowser, true);
+    assert.equal(external.requiresApproval, false);
+
     assert.equal(fixture.dynamicUrl, "http://shared.test/dynamic-dashboard");
   });
 
@@ -720,6 +727,7 @@ describe("mission tool-use e2e report", () => {
         orchestrationUrl: "http://127.0.0.1/local-orchestration",
         bridgeUrl: "http://127.0.0.1/local-bridge",
         productSignalsUrl: "http://127.0.0.1/local-signals",
+        externalPageUrl: "https://local.example/external",
       },
       {
         TURNKEYAI_NATURAL_BROWSER_URL: "http://shared.test/browser-dashboard",
