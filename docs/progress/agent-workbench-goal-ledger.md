@@ -7603,3 +7603,81 @@ Convergence question:
 - If no, next required gate: run a hostile-browser/profile-lock natural slice
   and a workbench replay UX check before treating browser reliability and
   user-visible thought-process delivery as production-ready.
+
+## 2026-06-03 19:54 CST - Browser Reliability Failure-Closeout Gate
+
+Direction: converging
+
+Execution Kernel:
+- No runtime code changed in this checkpoint. The checkpoint validates existing
+  browser recovery and failure-closeout behavior on current `main`.
+- Natural browser profile-lock recovery exercised the browser worker path with
+  an injected persistent-profile lock and verified bounded fallback into an
+  isolated browser context.
+- Natural browser failure-closeout rows exercised unavailable CDP, CDP command
+  timeout, detached target, and attach failure buckets without forcing the lead
+  into repeated retries or generic weak completion.
+
+Result Quality:
+- `natural-browser-profile-lock-recovery` passed with useful final evidence,
+  no weak-answer signals, and `profileFallbacks=1`.
+- The four browser failure-closeout rows all passed as completed, useful,
+  evidence-backed natural missions with no stuck/loop state.
+- `natural-browser-unavailable-closeout` and
+  `natural-browser-attach-failed-closeout` reported the allowed
+  `tool unavailable fallback` weak signal because those scenarios intentionally
+  validate clean unavailable/failure closeout. This is not evidence that normal
+  browser rows can hide behind tool-unavailable fallback language.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- User-visible behavior improved at the runtime-output level: browser failures
+  produced explicit final closeouts instead of indefinite working states.
+- Replay UX remains unproven here. Users still need a separate workbench check
+  for whether failure buckets, profile fallback, and final closeout appear in a
+  readable order.
+
+Browser Reliability:
+- Profile-lock recovery proof:
+  `natural-browser-profile-lock-recovery`, mission `msn.mpy080z7.1`,
+  `profileFallbacks=1`, browser used, no browser failure buckets, no stuck.
+- Failure bucket proof:
+  - `natural-browser-unavailable-closeout`, mission `msn.mpy0a9s7.1`,
+    bucket `browser_cdp_unavailable=1`.
+  - `natural-browser-cdp-timeout-closeout`, mission `msn.mpy0ardc.1`,
+    bucket `cdp_command_timeout=1`.
+  - `natural-browser-detached-target-closeout`, mission `msn.mpy0bju8.1`,
+    bucket `detached_target=1`.
+  - `natural-browser-attach-failed-closeout`, mission `msn.mpy0chqe.1`,
+    bucket `attach_failed=1`.
+- All five focused browser reliability rows ended with
+  `natural-stuck-or-loop=false` and `mission-metrics-liveness=0/0/0`.
+
+Acceptance Evidence:
+- Baseline: `main` at `1d1cf44`.
+- Profile-lock command:
+  `npm run mission:e2e:natural -- --model-catalog /Users/chris/workspace/turnkeyai/models.local.json --natural-matrix-scenarios natural-browser-profile-lock-recovery --scenario-timeout-ms 360000 --json artifacts/evals/20260603-profile-lock-gate/natural-browser-profile-lock-recovery.json`
+- Browser failure-closeout command:
+  `npm run mission:e2e:natural -- --model-catalog /Users/chris/workspace/turnkeyai/models.local.json --natural-matrix-scenarios natural-browser-unavailable-closeout,natural-browser-cdp-timeout-closeout,natural-browser-detached-target-closeout,natural-browser-attach-failed-closeout --scenario-timeout-ms 360000 --json artifacts/evals/20260603-browser-failure-gate/natural-browser-failure-closeouts.json`
+- Local artifacts, intentionally untracked:
+  - `artifacts/evals/20260603-profile-lock-gate/natural-browser-profile-lock-recovery.json`
+  - `artifacts/evals/20260603-browser-failure-gate/natural-browser-failure-closeouts.json`
+
+Regression Risk:
+- These are local fixture and injected-failure gates. They prove bucketed
+  natural closeout and profile-lock fallback semantics, not hostile external
+  website reliability.
+- Browser-required normal rows still must reject profile fallback unless the
+  scenario specifically expects profile-lock recovery.
+- Next browser reliability work should target real complex pages, popup-heavy
+  pages, cross-origin frames, and a longer browser soak rather than adding more
+  local bucket names.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint? yes,
+  for scoped browser recovery and failure-closeout reliability.
+- Evidence: five focused browser natural rows passed with expected profile
+  fallback or failure bucket evidence and no stuck/loop state.
+- If no, next required gate: run a real-page browser reliability slice and a
+  workbench replay UX check before treating browser-heavy production tasks as
+  broadly ready.
