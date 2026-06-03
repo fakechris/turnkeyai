@@ -61,6 +61,7 @@ test("real LLM A/B spec builder parses args and help", () => {
   assert.match(buildRealLlmAbSpecBuildHelpText(), /A\/B build-spec generator/);
   assert.match(buildRealLlmAbSpecBuildHelpText(), /browser-focused/);
   assert.match(buildRealLlmAbSpecBuildHelpText(), /browser-reliability/);
+  assert.match(buildRealLlmAbSpecBuildHelpText(), /--missing-manifest-out/);
   assert.deepEqual(
     parseRealLlmAbSpecBuildArgs([
       "--natural-report",
@@ -89,12 +90,15 @@ test("real LLM A/B spec builder parses args and help", () => {
       "browser-reliability",
       "--out",
       "/tmp/spec.json",
+      "--missing-manifest-out",
+      "/tmp/missing.json",
     ]),
     {
       naturalReportPath: "/tmp/natural.json",
       referenceDir: "/tmp/reference",
       requiredSuite: "browser-reliability",
       outPath: "/tmp/spec.json",
+      missingManifestOutPath: "/tmp/missing.json",
     }
   );
   assert.throws(() => parseRealLlmAbSpecBuildArgs(["--natural-report", "/tmp/natural.json"]), /missing required --reference-dir/);
@@ -343,6 +347,74 @@ test("real LLM A/B spec builder rejects incomplete natural or reference evidence
         return true;
       }
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real LLM A/B spec builder CLI writes a missing evidence manifest for reference collection", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "turnkeyai-ab-spec-"));
+  try {
+    const { naturalReportPath, referenceDir, outPath } = writeCoreFixture(dir, {
+      scenarios: BROWSER_RELIABILITY_NATURAL_SCENARIOS.filter(
+        (scenario) => scenario !== "natural-browser-detached-target-closeout"
+      ),
+    });
+    rmSync(path.join(referenceDir, "natural-browser-cdp-timeout-closeout.json"), { force: true });
+    const manifestPath = path.join(dir, "missing-reference", "manifest.json");
+
+    await assert.rejects(
+      () =>
+        runRealLlmAbSpecBuildCli([
+          "--natural-report",
+          naturalReportPath,
+          "--reference-dir",
+          referenceDir,
+          "--suite",
+          "browser-reliability",
+          "--out",
+          outPath,
+          "--missing-manifest-out",
+          manifestPath,
+        ]),
+      /A\/B suite evidence is incomplete/
+    );
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      kind?: string;
+      generatedAtMs?: number;
+      suite?: string;
+      naturalReportPath?: string;
+      referenceDir?: string;
+      missingEvidence?: Array<{
+        reason?: string;
+        requirementKey?: string;
+        scenarioId?: string;
+        prompt?: string;
+        expectedReferenceArtifactPath?: string;
+      }>;
+    };
+    assert.equal(manifest.kind, "turnkeyai.real-llm-ab-reference-collection.manifest");
+    assert.equal(typeof manifest.generatedAtMs, "number");
+    assert.equal(manifest.suite, "browser-reliability");
+    assert.match(manifest.naturalReportPath ?? "", /natural\.json$/);
+    assert.match(manifest.referenceDir ?? "", /reference$/);
+    assert.equal(manifest.missingEvidence?.length, 2);
+    assert.deepEqual(
+      manifest.missingEvidence?.map((item) => item.reason),
+      ["missing_reference_artifact", "missing_natural_scenario"]
+    );
+    const missingReference = manifest.missingEvidence?.[0];
+    assert.equal(missingReference?.scenarioId, "natural-browser-cdp-timeout-closeout");
+    assert.equal(
+      missingReference?.prompt,
+      "Natural prompt for natural-browser-cdp-timeout-closeout"
+    );
+    assert.match(
+      missingReference?.expectedReferenceArtifactPath ?? "",
+      /natural-browser-cdp-timeout-closeout\.json$/
+    );
+    assert.equal(manifest.missingEvidence?.[1]?.requirementKey, "browser-detached-target-closeout");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
