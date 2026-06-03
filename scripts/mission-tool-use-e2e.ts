@@ -120,8 +120,10 @@ const DEFAULT_EXTERNAL_BROWSER_PAGE_URL = "https://news.ycombinator.com/";
 function normalizeComparableUrl(value: string): string {
   try {
     const url = new URL(value);
+    const defaultPort = (url.protocol === "http:" && url.port === "80") || (url.protocol === "https:" && url.port === "443");
+    const authority = `${url.hostname}${url.port && !defaultPort ? `:${url.port}` : ""}`;
     const pathname = url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "");
-    return `${url.protocol}//${url.host}${pathname}${url.search}`;
+    return `${url.protocol}//${authority}${pathname}${url.search}`;
   } catch {
     return value.replace(/\/+$/, "");
   }
@@ -5751,6 +5753,12 @@ function readNaturalFixtureUrlOverride(value: string | undefined, name: string):
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`${name} must use http or https`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error(`${name} must not include URL credentials`);
+  }
+  if (parsed.hash) {
+    throw new Error(`${name} must not include a URL fragment`);
   }
   return parsed.toString();
 }

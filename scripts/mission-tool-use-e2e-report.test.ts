@@ -708,6 +708,9 @@ describe("mission tool-use e2e report", () => {
     assert.equal(external.requiresBrowser, true);
     assert.equal(external.requiresApproval, false);
     assert.ok(external.requiredAnswerTerms.includes("Hacker News"));
+    assert.ok(
+      (external.requiredEvidencePatterns ?? []).some((pattern) => pattern.label.toLowerCase().includes("hacker news")),
+    );
 
     const overriddenExternal = buildNaturalScenarioSpec("natural-browser-external-page-review", {
       ...fixture,
@@ -716,7 +719,7 @@ describe("mission tool-use e2e report", () => {
     assert.match(overriddenExternal.desc, /https:\/\/example\.com\/status/);
     assert.equal(overriddenExternal.requiredAnswerTerms.includes("Hacker News"), false);
     assert.equal(
-      (overriddenExternal.requiredEvidencePatterns ?? []).some((pattern) => pattern.label.includes("hacker news")),
+      (overriddenExternal.requiredEvidencePatterns ?? []).some((pattern) => pattern.label.toLowerCase().includes("hacker news")),
       false,
     );
 
@@ -748,6 +751,40 @@ describe("mission tool-use e2e report", () => {
 
     const browser = buildNaturalScenarioSpec("natural-browser-dynamic-page", fixture);
     assert.match(browser.desc, /http:\/\/shared\.test\/browser-dashboard/);
+  });
+
+  it("rejects credentialed or fragment-bearing natural fixture URL overrides", () => {
+    const fixture = {
+      server: {} as never,
+      basicUrl: "http://127.0.0.1/local-fixture",
+      alphaUrl: "http://127.0.0.1/local-alpha",
+      betaUrl: "http://127.0.0.1/local-beta",
+      slowUrl: "http://127.0.0.1/local-slow",
+      cancelResumeUrl: "http://127.0.0.1/local-cancel-resume",
+      cancelResumeStateUrl: "http://127.0.0.1/local-cancel-state",
+      approvalUrl: "http://127.0.0.1/local-approval",
+      dynamicUrl: "http://127.0.0.1/local-dynamic",
+      dashboardUrl: "http://127.0.0.1/local-dashboard",
+      orchestrationUrl: "http://127.0.0.1/local-orchestration",
+      bridgeUrl: "http://127.0.0.1/local-bridge",
+      productSignalsUrl: "http://127.0.0.1/local-signals",
+      externalPageUrl: "https://local.example/external",
+    };
+
+    assert.throws(
+      () =>
+        applyNaturalFixtureUrlOverrides(fixture, {
+          TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL: "https://user:secret@example.com/",
+        }),
+      /must not include URL credentials/,
+    );
+    assert.throws(
+      () =>
+        applyNaturalFixtureUrlOverrides(fixture, {
+          TURNKEYAI_NATURAL_EXTERNAL_BROWSER_URL: "https://example.com/#token",
+        }),
+      /must not include a URL fragment/,
+    );
   });
 
   it("summarizes natural acceptance evidence without treating markers as the gate", () => {
