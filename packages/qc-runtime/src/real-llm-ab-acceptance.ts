@@ -214,6 +214,16 @@ const CORE_LOSS_DIMENSIONS = new Set<RealLlmAbDimensionKey>([
   "finalAnswerUsefulness",
 ]);
 
+const FORCED_TOOL_CALL_PATTERN = new RegExp(
+  [
+    "\\b(?:(?:must|必须)\\s+)?(?:call|use)\\s+(?:the\\s+)?(?:browser|explore)\\s+tool\\b",
+    "\\b(?:(?:must|必须)\\s+)?(?:call|use)\\s+(?:the\\s+)?sessions_[a-z_]+\\b",
+    "(?:调用|使用)\\s*(?:browser|explore)\\s*(?:tool|工具)",
+    "(?:调用|使用)\\s*sessions_[a-z_]+",
+  ].join("|"),
+  "i"
+);
+
 export function summarizeRealLlmAbAcceptanceReport(report: unknown): RealLlmAbAcceptanceSummary | null {
   if (!isRealLlmAbAcceptanceReport(report)) {
     return null;
@@ -470,15 +480,7 @@ export function detectControlledPromptLanguage(prompt: string): string[] {
 }
 
 function forcedToolCallPattern(): RegExp {
-  return new RegExp(
-    [
-      "\\b(?:(?:must|必须)\\s+)?(?:call|use)\\s+(?:the\\s+)?(?:browser|explore)\\s+tool\\b",
-      "\\b(?:(?:must|必须)\\s+)?(?:call|use)\\s+(?:the\\s+)?sessions_[a-z_]+\\b",
-      "(?:调用|使用)\\s*(?:browser|explore)\\s*(?:tool|工具)",
-      "(?:调用|使用)\\s*sessions_[a-z_]+",
-    ].join("|"),
-    "i"
-  );
+  return FORCED_TOOL_CALL_PATTERN;
 }
 
 function compareScenarioPair(scenario: RealLlmAbScenarioPair): RealLlmAbScenarioComparison {
