@@ -941,6 +941,10 @@ test("LLMSubAgentWorkerHandler allows approved scoped browser submit after paren
   assert.equal(result?.status, "completed");
   assert.equal(bridgeCalled, true);
   assert.match(String(gatewayInputs[0]?.messages[0]?.content ?? ""), /permission cache is already applied/);
+  const browserActTool = gatewayInputs[0]?.tools?.find((tool) => tool.name === "browser_act");
+  assert.ok(browserActTool, "browser sub-agent prompt must expose browser_act");
+  assert.match(JSON.stringify(browserActTool.inputSchema), /"submit"/);
+  assert.match(JSON.stringify(browserActTool.inputSchema), /browser\.form\.submit/);
   assert.match(readToolContent(gatewayInputs[1]?.messages.find((message) => message.role === "tool")?.content ?? ""), /"status": "completed"/);
 });
 

@@ -621,6 +621,24 @@ export class LLMRoleResponseGenerator implements RoleResponseGenerator {
         continue;
       }
       if (completedSession) {
+        const incompleteApprovedBrowserSession = findIncompleteApprovedBrowserSession({
+          results: toolResults,
+          taskPrompt: input.packet.taskPrompt,
+          messages,
+          toolTrace,
+          tools: initialGatewayInput.tools,
+        });
+        if (incompleteApprovedBrowserSession) {
+          messages = [
+            ...messages,
+            {
+              role: "user",
+              content: buildIncompleteApprovedBrowserSessionContinuationPrompt(incompleteApprovedBrowserSession),
+            },
+          ];
+          nextToolChoice = { type: "tool", name: "sessions_send" };
+          continue;
+        }
         if (
           shouldContinueIndependentEvidenceStreams({
             taskPrompt: input.packet.taskPrompt,
@@ -1827,6 +1845,55 @@ function findCompletedSessionEvidence(results: RoleToolExecutionResult[]): {
   return toolName && finalContents.length > 0 ? { toolName, finalContents, browserRecoverySummaries } : null;
 }
 
+function findIncompleteApprovedBrowserSession(input: {
+  results: RoleToolExecutionResult[];
+  taskPrompt: string;
+  messages: LLMMessage[];
+  toolTrace: NativeToolRoundTrace[];
+  tools?: GenerateTextInput["tools"];
+}): { sessionKey: string; evidence: string } | null {
+  if (!hasToolDefinition(input.tools, "sessions_send")) {
+    return null;
+  }
+  if (hasIncompleteApprovedBrowserSessionContinuationPrompt(input.messages)) {
+    return null;
+  }
+  if (!requestsApprovalGatedBrowserAction(input.taskPrompt)) {
+    return null;
+  }
+  if (latestPermissionToolName(input.toolTrace) !== "permission_applied") {
+    return null;
+  }
+  for (const result of input.results) {
+    if (result.toolName !== "sessions_spawn" && result.toolName !== "sessions_send") {
+      continue;
+    }
+    const parsed = parseSessionToolResult(result.content);
+    if (!parsed || parsed.status !== "completed" || parsed.agent_id !== "browser") {
+      continue;
+    }
+    if (typeof parsed.session_key !== "string") {
+      continue;
+    }
+    const sessionKey = parsed.session_key.trim();
+    if (!sessionKey) {
+      continue;
+    }
+    if (hasExecutedSessionsSend(input.toolTrace, sessionKey)) {
+      continue;
+    }
+    const evidence = readCompletedSessionEvidence(parsed) ?? "";
+    if (!matchesAny(evidence, INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS)) {
+      continue;
+    }
+    return {
+      sessionKey,
+      evidence: sliceUtf8(evidence, 1400),
+    };
+  }
+  return null;
+}
+
 function shouldContinueTimedOutSiblingSession(input: {
   taskPrompt: string;
   messages: LLMMessage[];
@@ -2176,6 +2243,8 @@ const INCOMPLETE_APPROVED_BROWSER_ACTION_PATTERNS = [
   /\bnot in (?:my |the )?current function namespace\b/i,
   /\bcannot emit (?:the )?(?:approval|permission) request\b/i,
   /\b(?:final synthesis|browser_act|could not be called|cannot call|could not execute|action blocked|not executed|not completed)\b/i,
+  /\b(?:re-?delegat(?:e|ed|ing|ion)|next step needed)\b/i,
+  /\b(?:not submitted|not yet submitted|submission can now be completed|submit can now be completed)\b/i,
 ];
 
 const WEAK_UNCERTAINTY_SYNTHESIS_PATTERNS = [
@@ -2293,6 +2362,14 @@ function hasIncompleteApprovedBrowserActionRepairPrompt(messages: LLMMessage[]):
   );
 }
 
+function hasIncompleteApprovedBrowserSessionContinuationPrompt(messages: LLMMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "user" &&
+      readMessageContentText(message.content).includes("Runtime correction: approved browser action is incomplete inside an existing browser session")
+  );
+}
+
 function hasMissingRequestedNextActionRepairPrompt(messages: LLMMessage[]): boolean {
   return messages.some(
     (message) =>
@@ -2369,6 +2446,20 @@ function buildIncompleteApprovedBrowserActionRepairPrompt(): string {
     "Do not finalize with a tool-unavailable or final-synthesis explanation.",
     "Call sessions_spawn with agent_id=browser for the approved scoped browser action.",
     "The delegated browser task must include the approved submit/action, the local form URL when available, and a requirement to verify the resulting page state before final synthesis.",
+  ].join("\n");
+}
+
+function buildIncompleteApprovedBrowserSessionContinuationPrompt(input: {
+  sessionKey: string;
+  evidence: string;
+}): string {
+  return [
+    "Runtime correction: approved browser action is incomplete inside an existing browser session.",
+    `Continue the same browser session with session_key ${input.sessionKey}; do not spawn a replacement session.`,
+    "The approval is already applied. Call sessions_send exactly once for that session_key.",
+    "Ask the browser sub-agent to perform the approved browser.form.submit action now, reuse the current page state, use browser_act on the submit control with submit=true, and verify the post-submit page state.",
+    "If the browser sub-agent still cannot execute the approved action after this continuation, it must return the concrete blocker and evidence instead of asking the parent to inspect again.",
+    `Incomplete browser evidence:\n${input.evidence}`,
   ].join("\n");
 }
 

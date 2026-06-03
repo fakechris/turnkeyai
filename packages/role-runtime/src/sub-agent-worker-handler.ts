@@ -573,7 +573,8 @@ function buildBrowserPrivateToolDefinitions(): LLMToolDefinition[] {
     },
     {
       name: "browser_act",
-      description: "Perform one targeted browser interaction, then snapshot the result.",
+      description:
+        "Perform one targeted browser interaction, then snapshot the result. For an approved form submission, click the submit control with submit=true so the runtime can enforce the browser.form.submit approval boundary.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -582,6 +583,11 @@ function buildBrowserPrivateToolDefinitions(): LLMToolDefinition[] {
           refId: { type: "string", description: "Preferred element ref from a prior snapshot." },
           text: { type: "string", description: "Visible target text for click/hover, text to type, or key name." },
           selector: { type: "string", description: "CSS selector fallback when no refId is available." },
+          submit: {
+            type: "boolean",
+            description:
+              "Set true only when this click submits a form. Requires parent runtime approval for browser.form.submit.",
+          },
         },
         required: ["action"],
       },

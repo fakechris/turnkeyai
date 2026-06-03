@@ -1044,6 +1044,190 @@ test("llm role response generator repairs approved browser actions that claim to
   assert.equal(gatewayInputs.length, 4);
 });
 
+test("llm role response generator continues the same browser session when an approved action is incomplete", async () => {
+  const gatewayInputs: GenerateTextInput[] = [];
+  const executedCalls: RoleToolExecutionInput["call"][] = [];
+  const browserSessionKey = "worker:browser:task-approval:toolu-browser-approved";
+  const gateway = Object.create(LLMGateway.prototype) as LLMGateway;
+  gateway.generate = async (input: GenerateTextInput) => {
+    gatewayInputs.push(input);
+    if (gatewayInputs.length === 1) {
+      return {
+        text: "I will request approval and run the browser session.",
+        toolCalls: [
+          { id: "toolu-query", name: "permission_query", input: { action: "browser.form.submit" } },
+          { id: "toolu-result", name: "permission_result", input: { approval_id: "ap-1" } },
+          { id: "toolu-applied", name: "permission_applied", input: { approval_id: "ap-1" } },
+          {
+            id: "toolu-browser-approved",
+            name: "sessions_spawn",
+            input: {
+              agent_id: "browser",
+              task: "Submit the approved local dry-run form and verify the submitted status.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    if (gatewayInputs.length === 2) {
+      assert.deepEqual(input.toolChoice, { type: "tool", name: "sessions_send" });
+      const repairPrompt = readToolContent(input.messages.at(-1)?.content ?? "");
+      assert.match(repairPrompt, /approved browser action is incomplete inside an existing browser session/);
+      assert.match(repairPrompt, new RegExp(browserSessionKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.match(repairPrompt, /submit=true/);
+      return {
+        text: "I will continue the existing browser session.",
+        toolCalls: [
+          {
+            id: "toolu-browser-continue",
+            name: "sessions_send",
+            input: {
+              session_key: browserSessionKey,
+              message: "Perform the approved browser.form.submit action now and verify the post-submit state.",
+            },
+          },
+        ],
+        modelId: "claude-test",
+        providerId: "anthropic",
+        protocol: "anthropic-compatible",
+        adapterName: "test",
+        raw: {},
+      };
+    }
+    assert.equal(input.toolChoice, "none");
+    return {
+      text: "The approved browser dry-run was submitted and verified.",
+      modelId: "claude-test",
+      providerId: "anthropic",
+      protocol: "anthropic-compatible",
+      adapterName: "test",
+      raw: {},
+    };
+  };
+  const executor: RoleToolExecutor = {
+    definitions() {
+      return [
+        {
+          name: "permission_query",
+          description: "Request approval",
+          inputSchema: { type: "object", properties: { action: { type: "string" } } },
+        },
+        {
+          name: "permission_result",
+          description: "Read approval",
+          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+        },
+        {
+          name: "permission_applied",
+          description: "Mark approval applied",
+          inputSchema: { type: "object", properties: { approval_id: { type: "string" } } },
+        },
+        {
+          name: "sessions_spawn",
+          description: "Spawn a browser sub-agent",
+          inputSchema: { type: "object", properties: { task: { type: "string" }, agent_id: { type: "string" } } },
+        },
+        {
+          name: "sessions_send",
+          description: "Continue a browser sub-agent",
+          inputSchema: { type: "object", properties: { session_key: { type: "string" }, message: { type: "string" } } },
+        },
+      ];
+    },
+    async execute(input: RoleToolExecutionInput) {
+      executedCalls.push(input.call);
+      if (input.call.name === "permission_query") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "approved", approval_id: "ap-1" }),
+        };
+      }
+      if (input.call.name === "permission_result") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "approved", approval_id: "ap-1" }),
+        };
+      }
+      if (input.call.name === "permission_applied") {
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({ status: "applied", approval_id: "ap-1" }),
+        };
+      }
+      if (input.call.name === "sessions_send") {
+        assert.equal(input.call.input.session_key, browserSessionKey);
+        return {
+          toolCallId: input.call.id,
+          toolName: input.call.name,
+          content: JSON.stringify({
+            protocol: "turnkeyai.session_tool_result.v1",
+            task_id: "task-approval",
+            session_key: browserSessionKey,
+            agent_id: "browser",
+            status: "completed",
+            tool_chain: ["browser"],
+            result: "Approved dry-run submit completed.",
+            final_content: "Approved dry-run submit completed. Browser verified the submitted status.",
+            payload: { mode: "llm_sub_agent", workerType: "browser", content: "Approved dry-run submit completed." },
+          }),
+        };
+      }
+      return {
+        toolCallId: input.call.id,
+        toolName: input.call.name,
+        content: JSON.stringify({
+          protocol: "turnkeyai.session_tool_result.v1",
+          task_id: "task-approval",
+          session_key: browserSessionKey,
+          agent_id: "browser",
+          status: "completed",
+          tool_chain: ["browser"],
+          result: "Form inspection completed. Field ref-1 filled. Button ref-2 present, ready.",
+          final_content:
+            "Form inspection completed. Field ref-1 filled. Button ref-2 present, ready. Next step needed: dry-run form submission can now be completed by re-delegating to the same browser session.",
+          payload: {
+            mode: "llm_sub_agent",
+            workerType: "browser",
+            content:
+              "Form inspection completed. Field ref-1 filled. Button ref-2 present, ready. Next step needed: dry-run form submission can now be completed by re-delegating to the same browser session.",
+          },
+        }),
+      };
+    },
+  };
+  const generator = new LLMRoleResponseGenerator({
+    gateway,
+    toolLoop: { executor, maxRounds: 128 },
+  });
+
+  const result = await generator.generate({
+    activation: buildActivation(),
+    packet: {
+      ...buildPacket(),
+      taskPrompt: [
+        "Open the local approval form and prepare a safe dry-run browser form submission for operator review.",
+        "Actually carry the safe local dry-run through the approval gate.",
+        "Request approval before applying the browser action, then report what was approved and what evidence the page showed.",
+      ].join("\n"),
+    },
+  });
+
+  assert.equal(result.content, "The approved browser dry-run was submitted and verified.");
+  assert.deepEqual(
+    executedCalls.map((call) => call.name),
+    ["permission_query", "permission_result", "permission_applied", "sessions_spawn", "sessions_send"]
+  );
+  assert.equal(gatewayInputs.length, 3);
+});
+
 test("llm role response generator repairs stale pending answers after approval is denied", async () => {
   const gatewayInputs: GenerateTextInput[] = [];
   const executedCalls: RoleToolExecutionInput["call"][] = [];

@@ -854,6 +854,9 @@ test("sessions_spawn proceeds with browser side effects after permission cache g
   assert.match(spawnedTaskPrompt, /parent runtime approval is granted/i);
   assert.match(spawnedTaskPrompt, /permission cache is already applied/i);
   assert.match(spawnedTaskPrompt, /browser\.form\.submit/i);
+  assert.match(spawnedTaskPrompt, /Required approved action: submit the local browser form/i);
+  assert.match(spawnedTaskPrompt, /browser_act on the submit control with submit=true/i);
+  assert.match(spawnedTaskPrompt, /Do not stop after inspection/i);
   assert.match(spawnedTaskPrompt, /Parent mission context relevant to this delegated task/);
   assert.match(spawnedTaskPrompt, /Local approval fixture source: http:\/\/127\.0\.0\.1:4101\/approval-form/);
   assert.equal(approvedRuntimeAction, "browser.form.submit");
