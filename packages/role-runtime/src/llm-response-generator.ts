@@ -2028,7 +2028,7 @@ function readCompletedSessionEvidence(parsed: NonNullable<ReturnType<typeof pars
       const browserEvidence = [parsed.evidence_summary, finalContent, parsed.result]
         .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
         .map((item) => item.trim());
-      return browserEvidence.length > 0 ? dedupeStrings(browserEvidence).join("\n\n") : finalContent;
+      return dedupeStrings(browserEvidence).join("\n\n");
     }
     const payload = parsed.payload;
     if (payload && typeof payload === "object" && !Array.isArray(payload)) {
