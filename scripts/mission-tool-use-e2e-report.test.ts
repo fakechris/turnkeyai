@@ -1507,6 +1507,62 @@ describe("mission tool-use e2e report", () => {
     );
   });
 
+  it("accepts browser evidence that explicitly negates blockers", () => {
+    const result = fakeNaturalResult();
+    const spec = {
+      ...buildNaturalScenarioSpec("natural-browser-external-page-review", {
+        alphaUrl: "http://127.0.0.1/vendor-alpha",
+        betaUrl: "http://127.0.0.1/vendor-beta",
+        dashboardUrl: "http://127.0.0.1/ops-dashboard",
+        approvalUrl: "http://127.0.0.1/approval-form",
+        slowUrl: "http://127.0.0.1/slow-fixture",
+        cancelResumeUrl: "http://127.0.0.1/cancel-resume-fixture",
+        orchestrationUrl: "http://127.0.0.1/product-orchestration",
+        bridgeUrl: "http://127.0.0.1/product-bridge",
+        productSignalsUrl: "http://127.0.0.1/product-signals",
+        externalPageUrl: "https://news.ycombinator.com/",
+      }),
+      requiredEvidencePatterns: [],
+      requiredAnswerPatterns: [],
+      requiredAnswerTerms: [],
+      minBytes: 80,
+    };
+    result.scenario = "natural-browser-external-page-review";
+    result.timeline[1]!.runtime = {
+      toolName: "sessions_spawn",
+      toolPhase: "result",
+      resultContent: [
+        "Hacker News visible listing evidence with navigation links, comments, and points.",
+        "Rendering status: Loaded cleanly; no interstitial blocks, captchas, paywall, cookie banner, or redirect observed.",
+        "No redirect, block, or captcha observed during this run.",
+        "| Site blocked access | No - fully loaded |",
+        "| Redirected to another domain | No - URL remained on the target site |",
+      ].join("\n"),
+    };
+    result.metrics.qualityGate.evidenceEvents = 2;
+    result.final.text = [
+      "Hacker News is a live external page with visible story listings and navigation cues.",
+      "Visible items include navigation links such as new, past, comments, ask, show, jobs, submit, and login.",
+      "Visible page evidence also includes comment and point cues on story rows, so the page purpose is user-ranked discussion rather than a static article.",
+      "Verification status: Site blocked access | No - fully loaded; Redirected to another domain | No.",
+      "Next action: treat this as a current browser-visible snapshot for triage or browsing context, not as durable research evidence.",
+      "Residual risk: live external content can change; login behavior, vote actions, deeper scroll content, and interaction outcomes remain unverified.",
+    ].join(" ");
+
+    const quality = evaluateNaturalMissionQuality({
+      spec,
+      mission: result.mission,
+      timeline: result.timeline,
+      metrics: result.metrics,
+      artifacts: result.artifacts,
+      final: result.final,
+    });
+
+    assert.equal(quality.weakAnswerSignals.includes("browser evidence blocked"), false);
+    assert.deepEqual(quality.failures, []);
+    assert.equal(quality.status, "passed");
+  });
+
   it("fails natural quality when the final answer hides residual risk", () => {
     const result = fakeNaturalResult();
     const spec = {
