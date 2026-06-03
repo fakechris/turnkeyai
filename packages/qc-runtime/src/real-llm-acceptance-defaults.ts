@@ -62,6 +62,11 @@ export const DEFAULT_REAL_ACCEPTANCE_NATURAL_CORE_AB_SCENARIOS = [
   "natural-memory-recall",
 ] as const;
 
+export const DEFAULT_REAL_ACCEPTANCE_NATURAL_BROWSER_AB_SCENARIOS = [
+  "natural-browser-external-page-review",
+  "natural-browser-complex-page-review",
+] as const;
+
 export function joinRealAcceptanceScenarios(scenarios: readonly string[]): string {
   return scenarios.join(",");
 }

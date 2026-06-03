@@ -7851,3 +7851,73 @@ Convergence question:
 - If no, next required gate: external complex browser page or natural raw-CDP
   target evidence, followed by replay UX validation of the collected browser
   evidence.
+
+## 2026-06-03 21:11 CST - Browser-Focused Same-Scenario A/B Spec Gate
+
+Direction: unknown
+
+Execution Kernel:
+- Added a browser-focused A/B build-spec suite for the two browser reliability
+  scenarios that were added after the core seven-scenario A/B gate:
+  `natural-browser-external-page-review` and
+  `natural-browser-complex-page-review`.
+- The suite only selects existing natural mission evidence and same-prompt
+  reference artifacts. It does not change runtime behavior, tool routing,
+  prompt harness, browser worker behavior, or model-visible tools.
+- The spec generator now marks both scenarios as browser-required so the A/B
+  report builder must observe rendered browser evidence and artifact evidence
+  before any focused browser claim can pass.
+
+Result Quality:
+- This checkpoint does not produce a new natural LLM result.
+- The quality impact is methodological: future external/complex browser claims
+  can no longer rely only on one-system mission artifacts. They must be
+  compared through the same A/B report path that checks prompt equality,
+  wall-clock evidence, weak-answer signals, browser evidence, and dimension
+  scores.
+- Capability remains unproven for same-scenario external/complex browser A/B
+  until fresh natural TurnkeyAI artifacts and matching reference artifacts are
+  supplied to the focused suite.
+
+Workbench UX:
+- No UI changed in this checkpoint.
+- Replay/thought-process readability remains a separate validation gate and
+  should not be inferred from this A/B spec work.
+
+Browser Reliability:
+- The framework now has a first-class browser-focused A/B suite that covers:
+  - live external browser-page review
+  - complex browser-page review with frame, shadow-style state, and popup-style
+    drill evidence
+- This is stricter than the previous state because the new browser scenarios
+  can be evaluated against same-prompt reference runs without being promoted to
+  a full core capability claim.
+
+Acceptance Evidence:
+- Focused tests:
+  `npx tsx --test scripts/real-llm-ab-spec-build.test.ts scripts/real-llm-ab-report-build.test.ts`
+- Typecheck:
+  `npm run typecheck`
+- No real browser-focused A/B report was generated in this checkpoint.
+- No reference artifacts were added to the repo.
+
+Regression Risk:
+- Risk is limited to acceptance tooling. A bad suite mapping could either skip
+  a browser gate or overclaim browser reliability; tests now assert both
+  browser-focused scenario selection and missing-reference rejection.
+- The next actual capability evidence must run:
+  - fresh TurnkeyAI natural browser-focused scenarios
+  - matching same-prompt reference artifacts
+  - `acceptance:ab:spec -- --suite browser-focused`
+  - `acceptance:ab:build`
+- If that focused A/B report fails, the root-cause bucket should determine the
+  next PR before any further browser or UI changes.
+
+Convergence question:
+- Is complex-task stable delivery closer than the previous checkpoint?
+  unknown.
+- Evidence: the acceptance path is stronger, but no new natural same-scenario
+  A/B artifact exists yet.
+- If no, next required gate: run the browser-focused same-scenario A/B slice
+  and use its root-cause output to choose between browser reliability,
+  prompt/tool selection, final-answer quality, or acceptance-harness work.
