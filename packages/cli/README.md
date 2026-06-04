@@ -123,6 +123,7 @@ into Chrome / Comet via `chrome://extensions` → Developer mode → Load unpack
 | `TURNKEYAI_DAEMON_OPERATOR_TOKEN` | Layered: covers `/bridge/*` + browser routes (preferred for `turnkeyai app`) |
 | `TURNKEYAI_DAEMON_ADMIN_TOKEN` | Layered: covers everything (only chosen by `turnkeyai app` if no operator token is set) |
 | `TURNKEYAI_DAEMON_READ_TOKEN` | Layered: inspection only (Agent Connect downgrades when this is all that's available) |
+| `TURNKEYAI_BROWSER_RELAY_TOKEN` | Layered: relay peer token for Chrome extension registration / heartbeat / action polling |
 | `TURNKEYAI_DATA_DIR` | Override the data directory |
 | `TURNKEYAI_BROWSER_TRANSPORT` | `local` / `relay` / `direct-cdp` |
 | `TURNKEYAI_BROWSER_RELAY_ENDPOINT` | Relay endpoint URL |

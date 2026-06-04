@@ -65,12 +65,13 @@
 
 ### 2.4 Browser runtime
 - Session / target / profile / artifact / ref 持久化
-- `open / snapshot / click / type / scroll / console / screenshot`
+- typed browser actions：`open / snapshot / click / type / hover / key / select / drag / scroll / console / probe / permission / wait / waitFor / dialog / popup / storage / cookie / eval / network / download / upload / screenshot / cdp`
 - Ownership / lease（claim / release / expire / reclaim）
 - `hot / warm / cold` resume
 - `attach / reconnect / reopen / new_target` 决策
 - Target-local snapshot / ref history
 - 三种 transport：local / relay / direct-cdp
+- relay control plane：peer register / heartbeat / target report / action pull / action result / action inspection
 
 ### 2.5 Bridge surface（外部 agent 用）
 - `GET /bridge/status`
@@ -193,7 +194,7 @@
 - 前置：daemon 已启动；relay 扩展或 direct-cdp 已就绪
 - 行为：外部 agent → `POST /bridge/command` 或 `/bridge/advanced` 或 `/bridge/expert` → ambient session 自动管理
 - 验收：成功返回 artifact / snapshot ref；失败返回明确 error bucket；`bridge/status` 能显示 transport / relay / expert 可用性
-- 状态：✅ 已落；raw CDP expert lane 已有 runbook
+- 状态：✅ 已落；relay extension 有 `bridge install-extension` / `doctor` 安装检查，raw CDP expert lane 已有 runbook
 
 #### US-B3 — Transport 重连有统一契约
 

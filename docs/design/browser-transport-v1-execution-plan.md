@@ -1,6 +1,6 @@
 # Browser Transport v1 Execution Plan
 
-> 更新日期：2026-04-22
+> 更新日期：2026-06-04
 > 目的：把 `Browser Relay Bridge v1` 从设计文档收成明确可执行的里程碑、交付物和验收标准。
 
 ## 1. 背景
@@ -8,10 +8,11 @@
 当前 `turnkeyai` 的 browser runtime 已经具备：
 
 - `local` transport 主链
-- relay control plane、peer identity binding、target/action polling/result submit
+- relay control plane、peer identity binding、target/action polling/result submit、action inspection
 - browser-side peer、installable extension artifact 和 extension install smoke
 - relay / direct-cdp smoke、reconnect/workflow-log verification 和 transport soak
 - browser route / relay route 输入与身份边界 hardening
+- CLI `bridge install-extension`、`doctor` relay extension 检查和 layered relay token
 
 当前 browser transport 已经从“代码可跑”推进到“可安装、可验证、可诊断、可进入持续 soak”。剩余重点不再是补第一版能力面，而是把 Phase 1 exit validation 和长期稳态读数跑实。
 
@@ -67,11 +68,14 @@
 - peer register / heartbeat
 - target report
 - action pull / result submit
+- action queue inspection (`GET /relay/actions`)
+- claim token / claim lease / reclaim
 
 验收标准：
 
-- daemon 可列出 peers/targets
+- daemon 可列出 peers/targets/actions
 - stale peer / timeout / result mismatch 可明确报错
+- relay peer token 与 peerId 有身份绑定，后续 heartbeat/report/pull/result 只能由同一绑定身份执行
 
 ### M3. Browser-Side Peer
 
@@ -84,7 +88,7 @@
 - service worker runtime
 - tab observer
 - content-script executor
-- 最小动作 `open / snapshot / click / type`
+- rich action executor
 
 验收标准：
 
@@ -109,8 +113,10 @@
 1. `tsup` bundling 配置
 2. manifest 生成脚本
 3. `packages/browser-relay-peer/dist/extension/*` 第一版产物
-4. `relay:install-smoke` 真机安装和 daemon peer/target 连通验证
-5. README 中的本地安装 / smoke 说明
+4. `turnkeyai bridge install-extension` 安装到 `~/.turnkeyai/extensions/relay`
+5. `turnkeyai doctor` relay extension 检查
+6. `relay:install-smoke` 真机安装和 daemon peer/target 连通验证
+7. README 中的本地安装 / smoke 说明
 
 验收标准：
 
@@ -125,7 +131,7 @@
 交付物：
 
 1. `open / snapshot / click / type / hover / key / select / drag / scroll`
-2. `console / probe / wait / waitFor / dialog / popup`
+2. `console / probe / permission / wait / waitFor / dialog / popup`
 3. `storage / cookie / eval / network / cdp`
 4. `download / upload / screenshot`
 5. relay adapter upload/download artifact safety
@@ -190,34 +196,40 @@
 
 ### 已有核心文件
 
-- [browser-bridge-factory.ts](/Users/chris/workspace/turnkeyai/packages/browser-bridge/src/browser-bridge-factory.ts)
-- [relay-adapter.ts](/Users/chris/workspace/turnkeyai/packages/browser-bridge/src/transport/relay-adapter.ts)
-- [relay-gateway.ts](/Users/chris/workspace/turnkeyai/packages/browser-bridge/src/transport/relay-gateway.ts)
-- [daemon.ts](/Users/chris/workspace/turnkeyai/packages/app-gateway/src/daemon.ts)
-- [daemon-relay-client.ts](/Users/chris/workspace/turnkeyai/packages/browser-relay-peer/src/daemon-relay-client.ts)
-- [peer-runtime.ts](/Users/chris/workspace/turnkeyai/packages/browser-relay-peer/src/peer-runtime.ts)
-- [chrome-extension-service-worker.ts](/Users/chris/workspace/turnkeyai/packages/browser-relay-peer/src/chrome-extension-service-worker.ts)
-- [chrome-tab-observer.ts](/Users/chris/workspace/turnkeyai/packages/browser-relay-peer/src/chrome-tab-observer.ts)
-- [chrome-action-executor.ts](/Users/chris/workspace/turnkeyai/packages/browser-relay-peer/src/chrome-action-executor.ts)
-- [chrome-content-script.ts](/Users/chris/workspace/turnkeyai/packages/browser-relay-peer/src/chrome-content-script.ts)
-- [chrome-extension-manifest.ts](/Users/chris/workspace/turnkeyai/packages/browser-relay-peer/src/chrome-extension-manifest.ts)
+- [browser-bridge-factory.ts](../../packages/browser-bridge/src/browser-bridge-factory.ts)
+- [relay-adapter.ts](../../packages/browser-bridge/src/transport/relay-adapter.ts)
+- [relay-gateway.ts](../../packages/browser-bridge/src/transport/relay-gateway.ts)
+- [relay-protocol.ts](../../packages/browser-bridge/src/transport/relay-protocol.ts)
+- [relay-routes.ts](../../packages/app-gateway/src/routes/relay-routes.ts)
+- [daemon-auth.ts](../../packages/app-gateway/src/daemon-auth.ts)
+- [daemon-relay-client.ts](../../packages/browser-relay-peer/src/daemon-relay-client.ts)
+- [peer-runtime.ts](../../packages/browser-relay-peer/src/peer-runtime.ts)
+- [chrome-extension-service-worker.ts](../../packages/browser-relay-peer/src/chrome-extension-service-worker.ts)
+- [chrome-tab-observer.ts](../../packages/browser-relay-peer/src/chrome-tab-observer.ts)
+- [chrome-action-executor.ts](../../packages/browser-relay-peer/src/chrome-action-executor.ts)
+- [chrome-content-script.ts](../../packages/browser-relay-peer/src/chrome-content-script.ts)
+- [chrome-extension-manifest.ts](../../packages/browser-relay-peer/src/chrome-extension-manifest.ts)
+- [bridge.ts](../../packages/cli/src/bridge.ts)
+- [doctor.ts](../../packages/cli/src/doctor.ts)
 
-### M4 预计新增或重点修改
+### M4 已完成落点
 
 1. `packages/browser-relay-peer/package.json`
 2. `packages/browser-relay-peer/tsup.config.ts` 或等价 bundling 配置
 3. `packages/browser-relay-peer/src/chrome-extension-manifest.ts`
 4. `packages/browser-relay-peer/dist/extension/*`
-5. 安装说明文档
+5. `packages/cli/src/bridge.ts`
+6. `packages/cli/src/doctor.ts`
+7. 安装说明文档
 
-### M5 预计重点修改
+### M5 已完成落点
 
 1. `packages/browser-relay-peer/src/chrome-action-executor.ts`
 2. `packages/browser-relay-peer/src/chrome-content-script.ts`
 3. `packages/browser-bridge/src/transport/relay-protocol.ts`
 4. `packages/browser-bridge/src/transport/relay-adapter.ts`
 
-### M6 预计重点修改
+### M6 已完成落点
 
 1. `packages/qc-runtime/*`
 2. `packages/tui/src/tui.ts`
@@ -237,14 +249,17 @@ npm run build
 M4 之后额外要求：
 
 ```bash
-# 目标形态，不一定是当前已有命令
 npm run build:relay-extension
+turnkeyai bridge install-extension
+turnkeyai doctor
+npm run relay:install-smoke
 ```
 
 M6/M7 之后额外要求：
 
 ```bash
 npm run transport:soak -- --cycles 3
+transport-soak 3 relay direct-cdp
 ```
 
 ## 7. 退出条件
