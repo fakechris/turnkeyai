@@ -1,7 +1,7 @@
 # Browser Relay Extension Local Setup
 
-> 更新日期：2026-04-04  
-> 目的：说明如何在本地构建、安装并验证 `turnkeyai` 的 Chrome relay extension 第一版。
+> 更新日期：2026-06-04
+> 目的：说明如何在本地构建、安装并验证 `turnkeyai` 的 Chrome relay extension。
 
 ## 1. 前提
 
@@ -12,7 +12,21 @@
 3. 支持 unpacked extension flag 的 Chromium 系浏览器
 4. macOS 上若正式版 `Google Chrome` 忽略 `--load-extension` / `--disable-extensions-except`，优先用 `Microsoft Edge` 或 `Chromium`
 
-## 2. 构建扩展产物
+## 2. 安装或构建扩展产物
+
+优先使用 CLI 安装。它会使用已随 CLI 打包的 extension；在源码 checkout 中找不到产物时，会尝试执行 `npm run build:relay-extension`：
+
+```bash
+turnkeyai bridge install-extension
+```
+
+安装后，未打包扩展目录在：
+
+```text
+~/.turnkeyai/extensions/relay
+```
+
+开发时也可以直接在仓库根目录构建：
 
 在仓库根目录执行：
 
@@ -20,7 +34,7 @@
 npm run build:relay-extension
 ```
 
-构建完成后，未打包扩展目录在：
+构建完成后，源码产物目录在：
 
 ```text
 packages/browser-relay-peer/dist/extension
@@ -110,28 +124,31 @@ npm run relay:smoke -- --url https://example.com
 1. 打开对应浏览器的扩展管理页
 2. 打开右上角 `Developer mode`
 3. 选择 `Load unpacked`
-4. 选择目录 `packages/browser-relay-peer/dist/extension`
+4. 选择目录 `~/.turnkeyai/extensions/relay`
+
+开发时也可以选择 `packages/browser-relay-peer/dist/extension`。
 
 ## 5. 当前预期
 
-当前第一版的目标是：
+当前目标是：
 
 1. 扩展能被 Chrome 接受并加载
 2. service worker 能启动
 3. 扩展可以向本地 daemon register peer
-4. relay transport 的最小动作面具备 `open / snapshot / click / type`
-5. 额外动作面已支持 `scroll / console / screenshot`
+4. daemon 可以看到 peer / target
+5. peer 可以通过 long polling 拉取 action 并提交 result
+6. relay transport 可以执行 rich action smoke，并回流 snapshot / trace / screenshot / download artifact
 
 ## 6. 当前限制
 
 截至当前版本，仍然有这些限制：
 
 1. 当前 smoke 仍依赖本地桌面浏览器，不是纯无头链路
-2. 还没有 `direct-cdp-adapter`
-3. relay-specific replay / operator / recovery surface 还没完全接齐
-4. 更长链的 extension action parity 和恢复语义还要继续补
+2. relay gateway 的 peer/action queue 仍是 daemon 内存态，daemon 重启后的真实副作用一致性需要继续靠 recovery/diagnostics 兜住
+3. 多 peer、多 tab、高并发 claim reclaim 的真实环境样本还要继续扩充
+4. provider-specific remote browser 和完整跨浏览器支持不属于 v1 完成范围
 
 ## 7. 参考文档
 
-- [Browser Relay Bridge v1](/Users/chris/workspace/turnkeyai/docs/design/browser-relay-bridge-v1.md)
-- [Browser Transport v1 Execution Plan](/Users/chris/workspace/turnkeyai/docs/design/browser-transport-v1-execution-plan.md)
+- [Browser Relay Bridge v1](./browser-relay-bridge-v1.md)
+- [Browser Transport v1 Execution Plan](./browser-transport-v1-execution-plan.md)
